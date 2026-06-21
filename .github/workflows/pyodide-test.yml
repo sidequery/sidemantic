@@ -22,6 +22,31 @@ jobs:
       - name: Build sidemantic wheel
         run: uv build
 
+      - name: Inspect wheel metadata
+        run: |
+          python - <<'PY'
+          import re
+          from email.parser import Parser
+          from pathlib import Path
+          from zipfile import ZipFile
+
+          wheel = next(Path("dist").glob("*.whl"))
+          with ZipFile(wheel) as archive:
+              metadata_name = next(name for name in archive.namelist() if name.endswith(".dist-info/METADATA"))
+              metadata = Parser().parsestr(archive.read(metadata_name).decode())
+
+          print(metadata)
+          requires = metadata.get_all("Requires-Dist", [])
+          extras = set(metadata.get_all("Provides-Extra", []))
+          heavy_optional = ("textual", "pyarrow", "mcp", "riffq", "altair", "vl-convert-python")
+          for requirement in requires:
+              name = re.split(r"[<>=!~;\[ ]", requirement.strip(), maxsplit=1)[0]
+              if name in heavy_optional:
+                  assert "extra ==" in requirement, requirement
+          assert "serve" in extras
+          assert "workbench" in extras
+          PY
+
       - name: Install Pyodide and dependencies
         run: npm install pyodide glob
 
@@ -51,7 +76,7 @@ jobs:
             const wheelName = wheelPath.split('/').pop();
             pyodide.FS.writeFile(`/tmp/${wheelName}`, wheelData);
 
-            console.log('Installing missing deps and sidemantic...');
+            console.log('Installing sidemantic with the documented Pyodide no-deps path...');
             await pyodide.runPythonAsync(`
               import micropip
               # Install missing pure-Python deps
@@ -62,8 +87,9 @@ jobs:
 
             console.log('Testing basic imports...');
             await pyodide.runPythonAsync(`
-              from sidemantic import Model, Dimension, Metric, Relationship
+              from sidemantic import Model, Dimension, Metric, Relationship, SemanticLayer
               from sidemantic.core.semantic_graph import SemanticGraph
+              from sidemantic.loaders import load_from_directory
               print('✓ Core imports successful')
 
               # Test creating a model (doesn't need duckdb)
@@ -87,6 +113,11 @@ jobs:
               graph = SemanticGraph()
               graph.add_model(model)
               print('✓ SemanticGraph successful')
+
+              layer = SemanticLayer()
+              layer.graph.add_model(model)
+              assert callable(load_from_directory)
+              print('✓ SemanticLayer and loader imports successful')
 
               print('All Pyodide imports and basic operations work!')
             `);

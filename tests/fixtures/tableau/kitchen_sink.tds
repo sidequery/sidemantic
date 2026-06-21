@@ -1,0 +1,69 @@
+<?xml version='1.0' encoding='utf-8' ?>
+<datasource formatted-name='kitchen_sink' version='18.1' xmlns:user='http://www.tableausoftware.com/xml/user'>
+  <connection class='postgres' dbname='analytics' server='localhost'>
+    <relation type='table' name='events' table='[public].[events]' />
+  </connection>
+
+  <!-- Dimensions: all types -->
+  <column datatype='integer' name='[id]' role='dimension' type='ordinal' />
+  <column datatype='string' name='[category]' role='dimension' type='nominal' />
+  <column datatype='date' name='[event_date]' role='dimension' type='quantitative' />
+  <column datatype='datetime' name='[created_at]' role='dimension' type='quantitative' />
+  <column datatype='boolean' name='[is_active]' role='dimension' type='nominal' />
+  <column datatype='real' name='[score]' role='dimension' type='quantitative' />
+
+  <!-- Metrics: all aggregation types -->
+  <column datatype='real' name='[amount]' role='measure' type='quantitative' aggregation='sum' />
+  <column caption='Average Amount' datatype='real' name='[avg_amount]' role='measure' type='quantitative' aggregation='avg'>
+    <calculation class='tableau' formula='[amount]' />
+  </column>
+  <column datatype='integer' name='[event_count]' role='measure' type='quantitative' aggregation='count' />
+  <column caption='Unique Users' datatype='integer' name='[unique_users]' role='measure' type='quantitative' aggregation='countd'>
+    <calculation class='tableau' formula='[user_id]' />
+  </column>
+  <column datatype='real' name='[min_amount]' role='measure' type='quantitative' aggregation='min'>
+    <calculation class='tableau' formula='[amount]' />
+  </column>
+  <column datatype='real' name='[max_amount]' role='measure' type='quantitative' aggregation='max'>
+    <calculation class='tableau' formula='[amount]' />
+  </column>
+  <column datatype='real' name='[median_amount]' role='measure' type='quantitative' aggregation='median'>
+    <calculation class='tableau' formula='[amount]' />
+  </column>
+  <column datatype='real' name='[attr_amount]' role='measure' type='quantitative' aggregation='attr'>
+    <calculation class='tableau' formula='[amount]' />
+  </column>
+
+  <!-- Calculated field: formula translation -->
+  <column caption='Safe Value' datatype='real' name='[calc_safe_value]' role='measure' type='quantitative' aggregation='sum'>
+    <calculation class='tableau' formula='ZN([amount])' />
+  </column>
+
+  <!-- LOD expression: stored raw, not translated -->
+  <column caption='Customer Total' datatype='real' name='[calc_lod]' role='measure' type='quantitative' aggregation='sum'>
+    <calculation class='tableau' formula='{FIXED [customer_id] : SUM([amount])}' />
+  </column>
+
+  <!-- Groups -->
+  <group name='Category Group' name-style='unqualified' user:ui-builder='group-filter'>
+    <groupfilter function='union' user:ui-marker='GroupMember'>
+      <groupfilter function='member' level='[category]' member='Tech' />
+      <groupfilter function='member' level='[category]' member='Science' />
+    </groupfilter>
+  </group>
+
+  <metadata-records>
+    <metadata-record class='column'>
+      <local-name>[events].[id]</local-name>
+      <local-type>integer</local-type>
+      <aggregation>Sum</aggregation>
+      <remote-alias>id</remote-alias>
+    </metadata-record>
+    <metadata-record class='column'>
+      <local-name>[events].[amount]</local-name>
+      <local-type>real</local-type>
+      <aggregation>Sum</aggregation>
+      <remote-alias>amount</remote-alias>
+    </metadata-record>
+  </metadata-records>
+</datasource>

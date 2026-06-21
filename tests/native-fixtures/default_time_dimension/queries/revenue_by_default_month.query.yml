@@ -1,0 +1,4 @@
+metrics:
+  - orders.total_revenue
+order_by:
+  - orders.created_at__month

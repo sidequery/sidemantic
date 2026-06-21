@@ -308,6 +308,432 @@ Model test_model {
         temp_path.unlink()
 
 
+def test_holistics_aql_table_and_metric_functions():
+    """Richer AQL functions (where/filter/group/of_all/exclude/relative_period)
+    are handled best-effort without losing the underlying aggregation."""
+    from sidemantic.adapters.holistics import _translate_aql_to_sql
+
+    # Table functions in a pipe pass through; the aggregation still applies.
+    assert _translate_aql_to_sql("orders | filter(orders.amount > 100) | count(orders.id)") == "COUNT(orders.id)"
+    assert _translate_aql_to_sql("orders | group(orders.status) | sum(orders.amount)") == "SUM(orders.amount)"
+    assert _translate_aql_to_sql("orders | where(orders.status == 'x') | count(orders.id)") == "COUNT(orders.id)"
+
+    # Metric modifiers preserve the inner metric expression.
+    assert _translate_aql_to_sql("count(orders.id) | of_all(products)") == "COUNT(orders.id)"
+    assert _translate_aql_to_sql("sum(orders.amount) | exclude(orders.status)") == "SUM(orders.amount)"
+    assert (
+        _translate_aql_to_sql("sum(orders.amount) | relative_period(orders.created_at, interval(-1 month))")
+        == "SUM(orders.amount)"
+    )
+
+    # Two-argument aggregation form: sum(table, expr) aggregates expr.
+    assert _translate_aql_to_sql("sum(order_items, order_items.quantity * products.price)") == (
+        "SUM(order_items.quantity * products.price)"
+    )
+
+    # Nested aggregation in a ratio still translates each side.
+    assert _translate_aql_to_sql("sum(orders.amount) / count(orders.id)") == "SUM(orders.amount) / COUNT(orders.id)"
+
+
+def test_holistics_inline_dataset_assignment():
+    """Datasets declared with an inline object assignment (Dataset foo = Dataset {...})
+    are resolved, not silently dropped, surfacing their metrics at graph scope."""
+    aml_content = """
+Model base_orders {
+  type: 'table'
+  table_name: 'orders'
+  dimension order_id { type: 'number' }
+  measure order_count { type: 'number' aggregation_type: 'count' }
+}
+
+Dataset inline_ds = Dataset {
+  label: 'Inline DS'
+  models: [base_orders]
+  metric inline_total {
+    label: 'Inline Total'
+    type: 'number'
+    definition: @aql count(base_orders.order_id);;
+  }
+}
+"""
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".aml", delete=False) as f:
+        f.write(aml_content)
+        temp_path = Path(f.name)
+
+    try:
+        graph = HolisticsAdapter().parse(temp_path)
+
+        # The inline dataset surfaces as a model and its metric is graph-scoped.
+        assert "inline_ds" in graph.models
+        assert "inline_total" in graph.metrics
+        assert graph.models["inline_ds"].get_metric("inline_total").sql == "COUNT(base_orders.order_id)"
+    finally:
+        temp_path.unlink()
+
+
+def test_holistics_partial_dataset_assignment_extend():
+    """A PartialDataset declared via object assignment is collected and its
+    metrics compose into a Dataset that extends it. The partial itself is a
+    composition fragment, not a standalone queryable model."""
+    aml_content = """
+Model base_orders {
+  type: 'table'
+  table_name: 'orders'
+  dimension order_id { type: 'number' }
+  measure order_count { type: 'number' aggregation_type: 'count' }
+}
+
+PartialDataset reusable = PartialDataset {
+  metric reusable_count {
+    label: 'Reusable Count'
+    type: 'number'
+    definition: @aql count(base_orders.order_id);;
+  }
+}
+
+Dataset base_ds {
+  label: 'Base DS'
+  models: [base_orders]
+}
+
+Dataset combined = base_ds.extend(reusable)
+"""
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".aml", delete=False) as f:
+        f.write(aml_content)
+        temp_path = Path(f.name)
+
+    try:
+        graph = HolisticsAdapter().parse(temp_path)
+
+        # The extending dataset surfaces with the partial's metric, graph-scoped.
+        assert "combined" in graph.models
+        assert "reusable_count" in graph.metrics
+        assert graph.models["combined"].get_metric("reusable_count").sql == "COUNT(base_orders.order_id)"
+        # The partial fragment is not a standalone queryable model.
+        assert "reusable" not in graph.models
+    finally:
+        temp_path.unlink()
+
+
+def test_holistics_extend_partial_preserves_defining_context(tmp_path):
+    """A Dataset that extends a PartialDataset declared in another module must
+    resolve the partial's field definitions against the partial's own file. A
+    metric whose definition references a const from the partial's module should
+    import as that const's AQL, not the literal const identifier."""
+    finance_dir = tmp_path / "modules" / "finance"
+    finance_dir.mkdir(parents=True)
+
+    # The partial and the const it references live in the `finance` module.
+    (finance_dir / "rev.aml").write_text(
+        """
+const rev_def = @aql sum(base_orders.amount);;
+
+PartialDataset reusable = PartialDataset {
+  metric reusable_rev {
+    label: 'Reusable Rev'
+    type: 'number'
+    definition: rev_def
+  }
+}
+"""
+    )
+
+    # The extending dataset lives at the project root (no module prefix) and pulls
+    # the partial in via a `use` alias.
+    (tmp_path / "root.aml").write_text(
+        """
+use finance { reusable }
+
+Model base_orders {
+  type: 'table'
+  table_name: 'orders'
+  dimension order_id { type: 'number' }
+  dimension amount { type: 'number' }
+}
+
+Dataset base_ds {
+  label: 'Base DS'
+  models: [base_orders]
+}
+
+Dataset combined = base_ds.extend(reusable)
+"""
+    )
+
+    graph = HolisticsAdapter().parse(tmp_path)
+
+    assert "combined" in graph.models
+    assert "reusable_rev" in graph.metrics
+    # The const from the partial's module is resolved, not dropped as a literal.
+    assert graph.metrics["reusable_rev"].sql == "SUM(base_orders.amount)"
+    assert graph.models["combined"].get_metric("reusable_rev").sql == "SUM(base_orders.amount)"
+
+
+def test_holistics_extend_override_preserves_defining_context(tmp_path):
+    """When a PartialDataset from another module overrides an existing field of
+    the same name, the merged child block must keep the overriding partial's
+    defining context. Otherwise the field's `definition: rev_def` const resolves
+    against the consuming dataset's file (where `rev_def` is unknown) and imports
+    as the literal `rev_def` identifier instead of the const's AQL."""
+    finance_dir = tmp_path / "modules" / "finance"
+    finance_dir.mkdir(parents=True)
+
+    # The overriding partial and the const it references live in the `finance`
+    # module. It redefines `revenue` with a definition built from `rev_def`.
+    (finance_dir / "rev.aml").write_text(
+        """
+const rev_def = @aql sum(base_orders.amount);;
+
+PartialDataset override = PartialDataset {
+  metric revenue {
+    label: 'Finance Revenue'
+    type: 'number'
+    definition: rev_def
+  }
+}
+"""
+    )
+
+    # The root file declares a base partial that already defines `revenue`, then
+    # extends it with the `finance` partial which overrides that same field.
+    (tmp_path / "root.aml").write_text(
+        """
+use finance { override }
+
+Model base_orders {
+  type: 'table'
+  table_name: 'orders'
+  dimension order_id { type: 'number' }
+  dimension amount { type: 'number' }
+}
+
+PartialDataset base_part = PartialDataset {
+  metric revenue {
+    label: 'Base Revenue'
+    type: 'number'
+    definition: @aql count(base_orders.order_id);;
+  }
+}
+
+Dataset combined = base_part.extend(override)
+"""
+    )
+
+    graph = HolisticsAdapter().parse(tmp_path)
+
+    assert "combined" in graph.models
+    assert "revenue" in graph.metrics
+    # The overriding field wins and its const from the `finance` module resolves,
+    # rather than falling back to the consuming file and importing as a literal.
+    assert graph.metrics["revenue"].sql == "SUM(base_orders.amount)"
+    assert graph.models["combined"].get_metric("revenue").sql == "SUM(base_orders.amount)"
+
+
+def test_holistics_merge_preserves_per_property_context(tmp_path):
+    """When a partial from another module defines a field whose `definition`
+    references a const from that module, and a consuming partial overrides only a
+    sibling property (e.g. `label`), the merged field block carries the consumer's
+    block-level context. Each property must still resolve against its own authoring
+    file, so `definition: rev_def` resolves to the finance const's AQL instead of
+    importing as the literal `rev_def` identifier."""
+    finance_dir = tmp_path / "modules" / "finance"
+    finance_dir.mkdir(parents=True)
+
+    # The const and the field that uses it live in the `finance` module.
+    (finance_dir / "rev.aml").write_text(
+        """
+const rev_def = @aql sum(base_orders.amount);;
+
+PartialDataset finance_part = PartialDataset {
+  metric revenue {
+    label: 'Finance Revenue'
+    type: 'number'
+    definition: rev_def
+  }
+}
+"""
+    )
+
+    # The root partial overrides ONLY the label of `revenue`, leaving the finance
+    # `definition` property untouched in the merged block.
+    (tmp_path / "root.aml").write_text(
+        """
+use finance { finance_part }
+
+Model base_orders {
+  type: 'table'
+  table_name: 'orders'
+  dimension order_id { type: 'number' }
+  dimension amount { type: 'number' }
+}
+
+PartialDataset root_over = PartialDataset {
+  metric revenue {
+    label: 'Root Label Override'
+  }
+}
+
+Dataset combined = finance_part.extend(root_over)
+"""
+    )
+
+    graph = HolisticsAdapter().parse(tmp_path)
+
+    assert "combined" in graph.models
+    assert "revenue" in graph.metrics
+    # The override applies to the label, but the finance `definition` property keeps
+    # resolving against the finance module rather than the consuming root file.
+    assert graph.metrics["revenue"].label == "Root Label Override"
+    assert graph.metrics["revenue"].sql == "SUM(base_orders.amount)"
+    assert graph.models["combined"].get_metric("revenue").sql == "SUM(base_orders.amount)"
+
+
+def test_holistics_extend_partial_preserves_relationship_context(tmp_path):
+    """When a Dataset extends a PartialDataset from another module and that partial
+    contributes a `relationships` property, the relationship refs must qualify
+    against the partial's module. Otherwise `rel(orders.customer_id > customers.id)`
+    resolves against the consuming root file (`orders`/`customers`) instead of the
+    actual `finance.orders`/`finance.customers`, so the join edge is dropped."""
+    finance_dir = tmp_path / "modules" / "finance"
+    finance_dir.mkdir(parents=True)
+
+    # The models and the partial that joins them all live in the `finance` module.
+    # Its relationship refs are written unqualified, relative to that module.
+    (finance_dir / "ds.aml").write_text(
+        """
+Model orders {
+  type: 'table'
+  table_name: 'orders'
+  dimension order_id { type: 'number' }
+  dimension customer_id { type: 'number' }
+  dimension amount { type: 'number' }
+}
+
+Model customers {
+  type: 'table'
+  table_name: 'customers'
+  dimension id { type: 'number' }
+  dimension name { type: 'text' }
+}
+
+PartialDataset joins = PartialDataset {
+  relationships: [
+    rel(orders.customer_id > customers.id, true)
+  ]
+}
+"""
+    )
+
+    # The extending dataset lives at the project root (no module prefix) and pulls
+    # the partial in via a `use` alias.
+    (tmp_path / "root.aml").write_text(
+        """
+use finance { joins }
+
+Dataset base_ds {
+  label: 'Base DS'
+  models: [finance.orders, finance.customers]
+}
+
+Dataset combined = base_ds.extend(joins)
+"""
+    )
+
+    graph = HolisticsAdapter().parse(tmp_path)
+
+    assert "finance.orders" in graph.models
+    assert "finance.customers" in graph.models
+    # The relationship from the partial's module resolves against `finance`, so the
+    # join edge lands on finance.orders -> finance.customers rather than being
+    # skipped because `orders`/`customers` don't exist in the graph.
+    rels = graph.models["finance.orders"].relationships
+    assert any(
+        r.name == "finance.customers" and r.type == "many_to_one" and r.foreign_key == "customer_id" for r in rels
+    ), f"expected join edge attached, got {[(r.name, r.type) for r in rels]}"
+
+
+def test_holistics_inline_metric_assignment():
+    """A standalone metric written in inline assignment form (Metric x = Metric {...})
+    registers as a graph-level metric, matching block-form standalone metrics."""
+    aml_content = """
+Model base_orders {
+  type: 'table'
+  table_name: 'orders'
+  dimension order_id { type: 'number' }
+  dimension amount { type: 'number' }
+}
+
+Metric revenue = Metric {
+  label: 'Revenue'
+  type: 'number'
+  definition: @aql sum(base_orders.amount);;
+}
+"""
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".aml", delete=False) as f:
+        f.write(aml_content)
+        temp_path = Path(f.name)
+
+    try:
+        graph = HolisticsAdapter().parse(temp_path)
+
+        assert "revenue" in graph.metrics
+        assert graph.metrics["revenue"].sql == "SUM(base_orders.amount)"
+    finally:
+        temp_path.unlink()
+
+
+def test_holistics_inline_dataset_assignment_relationships():
+    """Relationships declared inside an inline Dataset assignment are attached to
+    the referenced models, not dropped (so cross-model metrics have a join path)."""
+    aml_content = """
+Model rel_orders {
+  type: 'table'
+  table_name: 'orders'
+  dimension order_id { type: 'number' }
+  dimension customer_id { type: 'number' }
+  dimension amount { type: 'number' }
+}
+
+Model rel_customers {
+  type: 'table'
+  table_name: 'customers'
+  dimension id { type: 'number' }
+  dimension name { type: 'text' }
+}
+
+Dataset rel_ds = Dataset {
+  label: 'Rel DS'
+  models: [rel_orders, rel_customers]
+  relationships: [
+    rel(rel_orders.customer_id > rel_customers.id, true)
+  ]
+  metric total_amount {
+    label: 'Total Amount'
+    type: 'number'
+    definition: @aql sum(rel_orders.amount);;
+  }
+}
+"""
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".aml", delete=False) as f:
+        f.write(aml_content)
+        temp_path = Path(f.name)
+
+    try:
+        graph = HolisticsAdapter().parse(temp_path)
+
+        assert "total_amount" in graph.metrics
+        rels = graph.models["rel_orders"].relationships
+        assert any(
+            r.name == "rel_customers" and r.type == "many_to_one" and r.foreign_key == "customer_id" for r in rels
+        ), f"expected join edge attached, got {[(r.name, r.type) for r in rels]}"
+    finally:
+        temp_path.unlink()
+
+
 # =============================================================================
 # RELATIONSHIP PARSING TESTS
 # =============================================================================

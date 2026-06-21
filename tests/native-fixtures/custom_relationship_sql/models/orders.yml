@@ -1,0 +1,24 @@
+version: 1
+models:
+  - name: orders
+    table: orders
+    primary_key: order_id
+    dimensions:
+      - name: amount
+        type: numeric
+    relationships:
+      - name: customers
+        type: many_to_one
+        foreign_key_columns: [customer_id, tenant_id]
+        primary_key_columns: [customer_id, tenant_id]
+        sql: "{from}.customer_id = {to}.customer_id AND {from}.tenant_id IS NOT DISTINCT FROM {to}.tenant_id"
+    metrics:
+      - name: total_revenue
+        agg: sum
+        sql: amount
+  - name: customers
+    table: customers
+    primary_key_columns: [customer_id, tenant_id]
+    dimensions:
+      - name: country
+        type: categorical

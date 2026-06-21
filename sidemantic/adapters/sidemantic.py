@@ -8,6 +8,7 @@ import yaml
 
 from sidemantic.adapters.base import BaseAdapter
 from sidemantic.core.dimension import Dimension
+from sidemantic.core.freshness import Freshness
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.parameter import Parameter
@@ -18,8 +19,177 @@ from sidemantic.core.sql_definitions import (
     parse_sql_definitions,
     parse_sql_file_with_frontmatter_extended,
     parse_sql_graph_definitions,
-    parse_sql_model,
+    parse_sql_models,
 )
+
+NATIVE_FORMAT_VERSION = 1
+ROOT_FIELDS = {
+    "version",
+    "connection",
+    "models",
+    "metrics",
+    "parameters",
+    "sql_metrics",
+    "sql_segments",
+}
+MODEL_FIELDS = {
+    "name",
+    "extends",
+    "table",
+    "sql",
+    "dax",
+    "expression_language",
+    "source_uri",
+    "primary_key",
+    "primary_key_columns",
+    "unique_keys",
+    "description",
+    "label",
+    "metadata",
+    "meta",
+    "auto_dimensions",
+    "dimensions",
+    "metrics",
+    "measures",
+    "relationships",
+    "segments",
+    "pre_aggregations",
+    "default_time_dimension",
+    "default_grain",
+    "freshness",
+    "sql_metrics",
+    "sql_segments",
+}
+FRESHNESS_FIELDS = {
+    "watermark",
+    "sql",
+    "ttl_seconds",
+    "ttlSeconds",
+}
+DIMENSION_FIELDS = {
+    "name",
+    "type",
+    "sql",
+    "expr",
+    "dax",
+    "expression_language",
+    "granularity",
+    "supported_granularities",
+    "description",
+    "label",
+    "metadata",
+    "meta",
+    "format",
+    "value_format_name",
+    "parent",
+    "window",
+    "public",
+}
+METRIC_FIELDS = {
+    "name",
+    "extends",
+    "type",
+    "agg",
+    "sql",
+    "expr",
+    "measure",
+    "dax",
+    "expression_language",
+    "metrics",
+    "numerator",
+    "denominator",
+    "offset_window",
+    "window",
+    "grain_to_date",
+    "window_expression",
+    "window_frame",
+    "window_order",
+    "base_metric",
+    "comparison_type",
+    "time_offset",
+    "calculation",
+    "entity",
+    "base_event",
+    "conversion_event",
+    "conversion_window",
+    "steps",
+    "cohort_event",
+    "activity_event",
+    "periods",
+    "retention_granularity",
+    "granularity",
+    "inner_metrics",
+    "entity_dimensions",
+    "having",
+    "fill_nulls_with",
+    "format",
+    "value_format_name",
+    "drill_fields",
+    "non_additive_dimension",
+    "filters",
+    "description",
+    "label",
+    "metadata",
+    "meta",
+    "public",
+}
+RELATIONSHIP_FIELDS = {
+    "name",
+    "type",
+    "foreign_key",
+    "foreign_key_columns",
+    "primary_key",
+    "primary_key_columns",
+    "through",
+    "through_foreign_key",
+    "through_foreign_key_columns",
+    "related_foreign_key",
+    "related_foreign_key_columns",
+    "sql",
+    "metadata",
+}
+SEGMENT_FIELDS = {
+    "name",
+    "sql",
+    "description",
+    "public",
+}
+PRE_AGGREGATION_FIELDS = {
+    "name",
+    "type",
+    "sql",
+    "measures",
+    "dimensions",
+    "time_dimension",
+    "granularity",
+    "partition_granularity",
+    "build_range_start",
+    "build_range_end",
+    "scheduled_refresh",
+    "refresh_key",
+    "indexes",
+    "meta",
+}
+REFRESH_KEY_FIELDS = {
+    "every",
+    "sql",
+    "incremental",
+    "update_window",
+}
+INDEX_FIELDS = {
+    "name",
+    "columns",
+    "type",
+}
+PARAMETER_FIELDS = {
+    "name",
+    "type",
+    "description",
+    "label",
+    "default_value",
+    "allowed_values",
+    "default_to_today",
+}
 
 
 def substitute_env_vars(content: str) -> str:
@@ -76,6 +246,44 @@ def substitute_env_vars(content: str) -> str:
     return content
 
 
+def validate_native_format_version(data: dict) -> None:
+    version = data.get("version")
+    if version in (None, NATIVE_FORMAT_VERSION):
+        return
+    raise ValueError(
+        f"Unsupported native Sidemantic format version {version}; supported version is {NATIVE_FORMAT_VERSION}"
+    )
+
+
+def reject_unknown_fields(
+    mapping: dict,
+    allowed_fields: set[str],
+    context: str,
+    *,
+    source_path: Path | None = None,
+) -> None:
+    """Reject misspelled native fields before constructing permissive Pydantic models."""
+    if not isinstance(mapping, dict):
+        location = f"{source_path}: " if source_path else ""
+        raise ValueError(f"{location}{context} must be a mapping")
+
+    unknown = sorted(set(mapping) - allowed_fields)
+    if unknown:
+        location = f"{source_path}: " if source_path else ""
+        fields = ", ".join(unknown)
+        raise ValueError(f"{location}unknown native field(s) in {context}: {fields}")
+
+
+def normalize_sql_frontmatter(frontmatter: dict) -> dict:
+    validate_native_format_version(frontmatter)
+    normalized = dict(frontmatter)
+    normalized.pop("version", None)
+    normalized.pop("connection", None)
+    normalized.pop("models", None)
+    normalized.pop("parameters", None)
+    return normalized
+
+
 class SidemanticAdapter(BaseAdapter):
     """Adapter for Sidemantic native YAML format.
 
@@ -118,16 +326,16 @@ class SidemanticAdapter(BaseAdapter):
             with open(source_path) as f:
                 content = f.read()
 
-            # Check if file contains MODEL() statement (pure SQL)
-            if "MODEL" in content.upper() and "MODEL (" in content.upper():
-                model = parse_sql_model(content)
-                if model:
+            # Pure SQL model files can use either MODEL(...) or model name from table (...).
+            models = parse_sql_models(content)
+            if models:
+                for model in models:
                     graph.add_model(model)
-                sql_metrics, sql_segments, sql_parameters = parse_sql_graph_definitions(content)
-                if model:
-                    model_metric_names = {metric.name for metric in model.metrics}
-                else:
-                    model_metric_names = set()
+                try:
+                    sql_metrics, sql_segments, sql_parameters = parse_sql_graph_definitions(content)
+                except Exception as exc:
+                    raise ValueError(f"{source_path}: invalid SQL graph definitions: {exc}") from exc
+                model_metric_names = {metric.name for model in models for metric in model.metrics}
                 for metric in sql_metrics:
                     if metric.name not in model_metric_names:
                         graph.add_metric(metric)
@@ -135,13 +343,18 @@ class SidemanticAdapter(BaseAdapter):
                     graph.add_parameter(param)
             else:
                 # YAML frontmatter + SQL metrics/segments
-                frontmatter, sql_metrics, sql_segments, sql_parameters, sql_preaggs = (
-                    parse_sql_file_with_frontmatter_extended(source_path)
-                )
+                try:
+                    frontmatter, sql_metrics, sql_segments, sql_parameters, sql_preaggs = (
+                        parse_sql_file_with_frontmatter_extended(source_path)
+                    )
+                except Exception as exc:
+                    raise ValueError(f"{source_path}: invalid SQL definitions: {exc}") from exc
 
-                # Parse frontmatter as model definition if present
-                if frontmatter:
-                    model = self._parse_model(frontmatter)
+                # Parse frontmatter as a model only when it still contains model fields
+                # after native contract metadata such as `version` is removed.
+                normalized_frontmatter = normalize_sql_frontmatter(frontmatter) if frontmatter else {}
+                if normalized_frontmatter:
+                    model = self._parse_model(normalized_frontmatter, source_path=source_path)
                     if model:
                         # Add SQL-defined metrics/segments to the model
                         model.metrics.extend(sql_metrics)
@@ -171,35 +384,85 @@ class SidemanticAdapter(BaseAdapter):
         if not data:
             return graph
 
+        validate_native_format_version(data)
+        reject_unknown_fields(data, ROOT_FIELDS, "root", source_path=source_path)
+
         # Parse models
         for model_def in data.get("models") or []:
-            model = self._parse_model(model_def)
+            model = self._parse_model(model_def, source_path=source_path)
             if model:
                 graph.add_model(model)
 
         # Parse metrics
         for metric_def in data.get("metrics") or []:
-            metric = self._parse_metric(metric_def)
+            metric = self._parse_metric(metric_def, source_path=source_path, context="metric")
             if metric:
                 graph.add_metric(metric)
         # Parse parameters
         for parameter_def in data.get("parameters") or []:
-            parameter = self._parse_parameter(parameter_def)
+            parameter = self._parse_parameter(parameter_def, source_path=source_path, context="parameter")
             if parameter:
                 graph.add_parameter(parameter)
 
         # Parse SQL-defined metrics/segments if present
         if "sql_metrics" in data:
-            sql_metrics, _ = parse_sql_definitions(data["sql_metrics"])
+            sql_metrics, _ = self._parse_embedded_sql_definitions(
+                data["sql_metrics"], source_path=source_path, block_name="sql_metrics"
+            )
             for metric in sql_metrics:
                 graph.add_metric(metric)
 
         if "sql_segments" in data:
-            _, sql_segments = parse_sql_definitions(data["sql_segments"])
+            _, sql_segments = self._parse_embedded_sql_definitions(
+                data["sql_segments"], source_path=source_path, block_name="sql_segments"
+            )
             # Note: segments need to be attached to models
             # For now, skip graph-level segments
 
+        self._resolve_inheritance(graph)
+
         return graph
+
+    def _parse_embedded_sql_definitions(
+        self,
+        sql: str,
+        *,
+        source_path: Path | None = None,
+        block_name: str,
+        model_name: str | None = None,
+    ) -> tuple[list[Metric], list[Segment]]:
+        try:
+            return parse_sql_definitions(sql)
+        except Exception as exc:
+            scope = f"model '{model_name}' {block_name}" if model_name else block_name
+            location = f"{source_path}: " if source_path else ""
+            raise ValueError(f"{location}invalid {scope}: {exc}") from exc
+
+    def _resolve_inheritance(self, graph: SemanticGraph) -> None:
+        from sidemantic.core.inheritance import (
+            resolve_metric_inheritance,
+            resolve_model_inheritance,
+            resolve_model_metric_inheritance,
+        )
+
+        if any(model.extends for model in graph.models.values()):
+            missing_parent = any(model.extends and model.extends not in graph.models for model in graph.models.values())
+            if not missing_parent:
+                graph.models = resolve_model_inheritance(graph.models)
+                graph._mark_dirty()
+
+        for model in graph.models.values():
+            if model.extends and model.extends not in graph.models:
+                continue
+            resolve_model_metric_inheritance(model)
+
+        if any(metric.extends for metric in graph.metrics.values()):
+            missing_parent = any(
+                metric.extends and metric.extends not in graph.metrics for metric in graph.metrics.values()
+            )
+            if not missing_parent:
+                graph.metrics = resolve_metric_inheritance(graph.metrics)
+                graph._mark_dirty()
 
     def export(self, graph: SemanticGraph, output_path: str | Path) -> None:
         """Export semantic graph to Sidemantic YAML.
@@ -211,18 +474,22 @@ class SidemanticAdapter(BaseAdapter):
         output_path = Path(output_path)
 
         data = {
+            "version": NATIVE_FORMAT_VERSION,
             "models": [self._export_model(model) for model in graph.models.values()],
         }
 
         if graph.metrics:
             data["metrics"] = [self._export_metric(metric, graph) for metric in graph.metrics.values()]
 
+        if graph.parameters:
+            data["parameters"] = [self._export_parameter(parameter) for parameter in graph.parameters.values()]
+
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         with open(output_path, "w") as f:
             yaml.dump(data, f, sort_keys=False, default_flow_style=False)
 
-    def _parse_model(self, model_def: dict) -> Model | None:
+    def _parse_model(self, model_def: dict, *, source_path: Path | None = None) -> Model | None:
         """Parse model definition.
 
         Args:
@@ -231,6 +498,8 @@ class SidemanticAdapter(BaseAdapter):
         Returns:
             Model instance or None
         """
+        reject_unknown_fields(model_def, MODEL_FIELDS, "model", source_path=source_path)
+
         name = model_def.get("name")
         if not name:
             return None
@@ -238,33 +507,60 @@ class SidemanticAdapter(BaseAdapter):
         # Parse joins
         joins = []
         for relationship_def in model_def.get("relationships") or []:
+            reject_unknown_fields(
+                relationship_def,
+                RELATIONSHIP_FIELDS,
+                f"model '{name}' relationship",
+                source_path=source_path,
+            )
+            relationship_sql = relationship_def.get("sql")
+            if relationship_sql is not None and ("{from}" not in relationship_sql or "{to}" not in relationship_sql):
+                location = f"{source_path}: " if source_path else ""
+                raise ValueError(
+                    f"{location}model '{name}' relationship '{relationship_def.get('name')}' sql must include "
+                    "both {from} and {to} placeholders"
+                )
             join = Relationship(
                 name=relationship_def.get("name"),
                 type=relationship_def.get("type"),
-                foreign_key=relationship_def.get("foreign_key"),
-                primary_key=relationship_def.get("primary_key"),
+                foreign_key=relationship_def.get("foreign_key_columns") or relationship_def.get("foreign_key"),
+                primary_key=relationship_def.get("primary_key_columns") or relationship_def.get("primary_key"),
                 metadata=relationship_def.get("metadata"),
                 through=relationship_def.get("through"),
                 through_foreign_key=relationship_def.get("through_foreign_key"),
+                through_foreign_key_columns=relationship_def.get("through_foreign_key_columns"),
                 related_foreign_key=relationship_def.get("related_foreign_key"),
+                active=relationship_def.get("active", True),
+                related_foreign_key_columns=relationship_def.get("related_foreign_key_columns"),
+                sql=relationship_sql,
             )
             joins.append(join)
 
         # Parse dimensions
         dimensions = []
         for dim_def in model_def.get("dimensions") or []:
+            reject_unknown_fields(
+                dim_def,
+                DIMENSION_FIELDS,
+                f"model '{name}' dimension",
+                source_path=source_path,
+            )
             dimension = Dimension(
                 name=dim_def.get("name"),
                 type=dim_def.get("type", "categorical"),  # Default to categorical
                 sql=dim_def.get("sql") or dim_def.get("expr"),
+                dax=dim_def.get("dax"),
+                expression_language=dim_def.get("expression_language"),
                 granularity=dim_def.get("granularity"),
                 supported_granularities=dim_def.get("supported_granularities"),
                 description=dim_def.get("description"),
                 label=dim_def.get("label"),
                 format=dim_def.get("format"),
                 value_format_name=dim_def.get("value_format_name"),
+                public=dim_def.get("public", True),
                 parent=dim_def.get("parent"),
                 metadata=dim_def.get("metadata"),
+                meta=dim_def.get("meta"),
                 window=dim_def.get("window"),
             )
             dimensions.append(dimension)
@@ -272,56 +568,18 @@ class SidemanticAdapter(BaseAdapter):
         # Parse measures/metrics (support both field names for backwards compatibility)
         measures = []
         for measure_def in model_def.get("metrics", model_def.get("measures") or []):
-            measure = Metric(
-                name=measure_def.get("name"),
-                extends=measure_def.get("extends"),
-                agg=measure_def.get("agg"),
-                sql=measure_def.get("sql") or measure_def.get("expr"),
-                type=measure_def.get("type"),
-                filters=measure_def.get("filters"),
-                fill_nulls_with=measure_def.get("fill_nulls_with"),
-                description=measure_def.get("description"),
-                label=measure_def.get("label"),
-                format=measure_def.get("format"),
-                value_format_name=measure_def.get("value_format_name"),
-                drill_fields=measure_def.get("drill_fields"),
-                non_additive_dimension=measure_def.get("non_additive_dimension"),
-                metadata=measure_def.get("metadata"),
-                base_metric=measure_def.get("base_metric"),
-                comparison_type=measure_def.get("comparison_type"),
-                time_offset=measure_def.get("time_offset"),
-                calculation=measure_def.get("calculation"),
-                numerator=measure_def.get("numerator"),
-                denominator=measure_def.get("denominator"),
-                entity=measure_def.get("entity"),
-                base_event=measure_def.get("base_event"),
-                conversion_event=measure_def.get("conversion_event"),
-                conversion_window=measure_def.get("conversion_window"),
-                steps=measure_def.get("steps"),
-                offset_window=measure_def.get("offset_window"),
-                # Retention parameters
-                cohort_event=measure_def.get("cohort_event"),
-                activity_event=measure_def.get("activity_event"),
-                periods=measure_def.get("periods"),
-                retention_granularity=(measure_def.get("retention_granularity") or measure_def.get("granularity"))
-                if measure_def.get("type") == "retention"
-                else None,
-                # Cumulative/window parameters
-                window=measure_def.get("window"),
-                grain_to_date=measure_def.get("grain_to_date"),
-                window_expression=measure_def.get("window_expression"),
-                window_frame=measure_def.get("window_frame"),
-                window_order=measure_def.get("window_order"),
-                # Cohort parameters
-                inner_metrics=measure_def.get("inner_metrics"),
-                entity_dimensions=measure_def.get("entity_dimensions"),
-                having=measure_def.get("having"),
+            measure = self._parse_metric(
+                measure_def,
+                source_path=source_path,
+                context=f"model '{name}' metric",
             )
-            measures.append(measure)
+            if measure:
+                measures.append(measure)
 
         # Parse segments
         segments = []
         for seg_def in model_def.get("segments") or []:
+            reject_unknown_fields(seg_def, SEGMENT_FIELDS, f"model '{name}' segment", source_path=source_path)
             segment = Segment(
                 name=seg_def.get("name"),
                 sql=seg_def.get("sql"),
@@ -332,11 +590,15 @@ class SidemanticAdapter(BaseAdapter):
 
         # Parse SQL-defined metrics/segments if present
         if "sql_metrics" in model_def:
-            sql_metrics, _ = parse_sql_definitions(model_def["sql_metrics"])
+            sql_metrics, _ = self._parse_embedded_sql_definitions(
+                model_def["sql_metrics"], source_path=source_path, block_name="sql_metrics", model_name=name
+            )
             measures.extend(sql_metrics)
 
         if "sql_segments" in model_def:
-            _, sql_segments = parse_sql_definitions(model_def["sql_segments"])
+            _, sql_segments = self._parse_embedded_sql_definitions(
+                model_def["sql_segments"], source_path=source_path, block_name="sql_segments", model_name=name
+            )
             segments.extend(sql_segments)
 
         # Parse pre-aggregations
@@ -344,11 +606,23 @@ class SidemanticAdapter(BaseAdapter):
 
         pre_aggregations = []
         for preagg_def in model_def.get("pre_aggregations") or []:
+            reject_unknown_fields(
+                preagg_def,
+                PRE_AGGREGATION_FIELDS,
+                f"model '{name}' pre_aggregation",
+                source_path=source_path,
+            )
             # Parse refresh_key if present
             refresh_key = None
             if "refresh_key" in preagg_def:
                 refresh_key_def = preagg_def["refresh_key"]
                 if isinstance(refresh_key_def, dict):
+                    reject_unknown_fields(
+                        refresh_key_def,
+                        REFRESH_KEY_FIELDS,
+                        f"model '{name}' pre_aggregation refresh_key",
+                        source_path=source_path,
+                    )
                     refresh_key = RefreshKey(
                         every=refresh_key_def.get("every"),
                         sql=refresh_key_def.get("sql"),
@@ -356,9 +630,19 @@ class SidemanticAdapter(BaseAdapter):
                         update_window=refresh_key_def.get("update_window"),
                     )
 
+            for index_def in preagg_def.get("indexes") or []:
+                if isinstance(index_def, dict):
+                    reject_unknown_fields(
+                        index_def,
+                        INDEX_FIELDS,
+                        f"model '{name}' pre_aggregation index",
+                        source_path=source_path,
+                    )
+
             preagg = PreAggregation(
                 name=preagg_def.get("name"),
                 type=preagg_def.get("type", "rollup"),
+                sql=preagg_def.get("sql"),
                 measures=preagg_def.get("measures") or [],
                 dimensions=preagg_def.get("dimensions") or [],
                 time_dimension=preagg_def.get("time_dimension"),
@@ -369,29 +653,79 @@ class SidemanticAdapter(BaseAdapter):
                 indexes=preagg_def.get("indexes"),
                 build_range_start=preagg_def.get("build_range_start"),
                 build_range_end=preagg_def.get("build_range_end"),
+                meta=preagg_def.get("meta"),
             )
             pre_aggregations.append(preagg)
 
-        return Model(
-            name=name,
-            table=model_def.get("table"),
-            sql=model_def.get("sql"),
-            source_uri=model_def.get("source_uri"),
-            description=model_def.get("description"),
-            extends=model_def.get("extends"),
-            primary_key=model_def.get("primary_key", "id"),
-            relationships=joins,
-            dimensions=dimensions,
-            metrics=measures,
-            segments=segments,
-            pre_aggregations=pre_aggregations,
-            default_time_dimension=model_def.get("default_time_dimension"),
-            default_grain=model_def.get("default_grain"),
-            metadata=model_def.get("metadata"),
-            auto_dimensions=model_def.get("auto_dimensions", False),
-        )
+        model_kwargs = {
+            "name": name,
+            "relationships": joins,
+            "dimensions": dimensions,
+            "metrics": measures,
+            "segments": segments,
+            "pre_aggregations": pre_aggregations,
+        }
+        for field in [
+            "table",
+            "sql",
+            "dax",
+            "expression_language",
+            "source_uri",
+            "description",
+            "extends",
+            "unique_keys",
+            "default_time_dimension",
+            "default_grain",
+            "metadata",
+            "auto_dimensions",
+            "meta",
+        ]:
+            if field in model_def:
+                model_kwargs[field] = model_def.get(field)
 
-    def _parse_metric(self, metric_def: dict) -> Metric | None:
+        if "freshness" in model_def:
+            freshness_def = model_def.get("freshness")
+            if freshness_def is None:
+                model_kwargs["freshness"] = None
+            elif not isinstance(freshness_def, dict):
+                location = f"{source_path}: " if source_path else ""
+                raise ValueError(f"{location}model '{name}' freshness must be a mapping")
+            else:
+                reject_unknown_fields(
+                    freshness_def,
+                    FRESHNESS_FIELDS,
+                    f"model '{name}' freshness",
+                    source_path=source_path,
+                )
+                if (
+                    "ttl_seconds" in freshness_def
+                    and "ttlSeconds" in freshness_def
+                    and freshness_def["ttl_seconds"] != freshness_def["ttlSeconds"]
+                ):
+                    location = f"{source_path}: " if source_path else ""
+                    raise ValueError(
+                        f"{location}model '{name}' freshness has conflicting ttl_seconds and ttlSeconds values"
+                    )
+                model_kwargs["freshness"] = Freshness(
+                    watermark=freshness_def.get("watermark"),
+                    sql=freshness_def.get("sql"),
+                    ttl_seconds=freshness_def.get("ttl_seconds", freshness_def.get("ttlSeconds")),
+                )
+
+        if "primary_key_columns" in model_def:
+            model_kwargs["primary_key"] = model_def.get("primary_key_columns")
+        elif "primary_key" in model_def:
+            model_kwargs["primary_key"] = model_def.get("primary_key")
+
+        return Model(**model_kwargs)
+
+    def _parse_metric(
+        self,
+        metric_def: dict,
+        *,
+        source_path: Path | None = None,
+        context: str = "metric",
+    ) -> Metric | None:
         """Parse measure definition.
 
         Args:
@@ -400,56 +734,76 @@ class SidemanticAdapter(BaseAdapter):
         Returns:
             Measure instance or None
         """
+        reject_unknown_fields(metric_def, METRIC_FIELDS, context, source_path=source_path)
+
         name = metric_def.get("name")
         metric_type = metric_def.get("type")
 
         if not name:
             return None
 
-        return Metric(
-            name=name,
-            extends=metric_def.get("extends"),
-            type=metric_type,
-            description=metric_def.get("description"),
-            label=metric_def.get("label"),
-            metadata=metric_def.get("metadata"),
-            sql=metric_def.get("sql") or metric_def.get("expr") or metric_def.get("measure"),
-            agg=metric_def.get("agg"),
-            numerator=metric_def.get("numerator"),
-            denominator=metric_def.get("denominator"),
-            base_metric=metric_def.get("base_metric"),
-            comparison_type=metric_def.get("comparison_type"),
-            time_offset=metric_def.get("time_offset"),
-            calculation=metric_def.get("calculation"),
-            entity=metric_def.get("entity"),
-            base_event=metric_def.get("base_event"),
-            conversion_event=metric_def.get("conversion_event"),
-            conversion_window=metric_def.get("conversion_window"),
-            steps=metric_def.get("steps"),
-            offset_window=metric_def.get("offset_window"),
-            cohort_event=metric_def.get("cohort_event"),
-            activity_event=metric_def.get("activity_event"),
-            periods=metric_def.get("periods"),
-            retention_granularity=(metric_def.get("retention_granularity") or metric_def.get("granularity"))
-            if metric_type == "retention"
-            else None,
-            inner_metrics=metric_def.get("inner_metrics"),
-            entity_dimensions=metric_def.get("entity_dimensions"),
-            having=metric_def.get("having"),
-            window=metric_def.get("window"),
-            grain_to_date=metric_def.get("grain_to_date"),
-            window_expression=metric_def.get("window_expression"),
-            window_frame=metric_def.get("window_frame"),
-            window_order=metric_def.get("window_order"),
-            filters=metric_def.get("filters"),
-            fill_nulls_with=metric_def.get("fill_nulls_with"),
-            format=metric_def.get("format"),
-            value_format_name=metric_def.get("value_format_name"),
-            drill_fields=metric_def.get("drill_fields"),
-            non_additive_dimension=metric_def.get("non_additive_dimension"),
-        )
+        metric_kwargs = {"name": name}
+        for field in [
+            "extends",
+            "type",
+            "description",
+            "label",
+            "metadata",
+            "dax",
+            "expression_language",
+            "agg",
+            "numerator",
+            "denominator",
+            "base_metric",
+            "comparison_type",
+            "time_offset",
+            "calculation",
+            "entity",
+            "base_event",
+            "conversion_event",
+            "conversion_window",
+            "steps",
+            "offset_window",
+            "cohort_event",
+            "activity_event",
+            "periods",
+            "inner_metrics",
+            "entity_dimensions",
+            "having",
+            "window",
+            "grain_to_date",
+            "window_expression",
+            "window_frame",
+            "window_order",
+            "filters",
+            "fill_nulls_with",
+            "format",
+            "value_format_name",
+            "drill_fields",
+            "non_additive_dimension",
+            "meta",
+            "public",
+        ]:
+            if field in metric_def:
+                metric_kwargs[field] = metric_def.get(field)
 
-    def _parse_parameter(self, parameter_def: dict) -> Parameter | None:
+        if "sql" in metric_def or "expr" in metric_def or "measure" in metric_def:
+            metric_kwargs["sql"] = metric_def.get("sql") or metric_def.get("expr") or metric_def.get("measure")
+
+        if metric_type == "retention" and ("retention_granularity" in metric_def or "granularity" in metric_def):
+            metric_kwargs["retention_granularity"] = metric_def.get("retention_granularity") or metric_def.get(
+                "granularity"
+            )
+
+        return Metric(**metric_kwargs)
+
+    def _parse_parameter(
+        self,
+        parameter_def: dict,
+        *,
+        source_path: Path | None = None,
+        context: str = "parameter",
+    ) -> Parameter | None:
         """Parse parameter definition.
 
         Args:
@@ -458,6 +812,8 @@ class SidemanticAdapter(BaseAdapter):
         Returns:
             Parameter instance or None
         """
+        reject_unknown_fields(parameter_def, PARAMETER_FIELDS, context, source_path=source_path)
+
         name = parameter_def.get("name")
         param_type = parameter_def.get("type")
 
@@ -484,10 +840,14 @@ class SidemanticAdapter(BaseAdapter):
             Model definition dictionary
         """
         result = {"name": model.name}
+        model_dax = _dax_text(model)
 
-        if model.table:
+        if model_dax:
+            result["dax"] = model_dax
+            result["expression_language"] = "dax"
+        elif model.table:
             result["table"] = model.table
-        if model.sql:
+        if model.sql and not model_dax:
             result["sql"] = model.sql
         if model.source_uri:
             result["source_uri"] = model.source_uri
@@ -495,6 +855,8 @@ class SidemanticAdapter(BaseAdapter):
             result["description"] = model.description
         if model.metadata:
             result["metadata"] = model.metadata
+        if model.meta:
+            result["meta"] = model.meta
 
         # Export joins
         if model.relationships:
@@ -512,11 +874,24 @@ class SidemanticAdapter(BaseAdapter):
                         else {}
                     ),
                     **(
+                        {"through_foreign_key_columns": relationship.through_foreign_key_columns}
+                        if relationship.through_foreign_key_columns
+                        else {}
+                    ),
+                    **(
                         {"related_foreign_key": relationship.related_foreign_key}
                         if relationship.related_foreign_key
                         else {}
                     ),
+                    **({"active": relationship.active} if relationship.active is not True else {}),
+                    **(
+                        {"related_foreign_key_columns": relationship.related_foreign_key_columns}
+                        if relationship.related_foreign_key_columns
+                        else {}
+                    ),
+                    **({"sql": relationship.sql} if relationship.sql else {}),
                     **({"metadata": relationship.metadata} if relationship.metadata else {}),
+                    **({"active": relationship.active} if relationship.active is not True else {}),
                 }
                 for relationship in model.relationships
             ]
@@ -533,16 +908,26 @@ class SidemanticAdapter(BaseAdapter):
                     "name": dim.name,
                     "type": dim.type,
                 }
-                if dim.sql:
+                dim_dax = _dax_text(dim)
+                if dim_dax:
+                    dim_def["dax"] = dim_dax
+                    dim_def["expression_language"] = "dax"
+                    if dim.sql:
+                        dim_def["sql"] = dim.sql
+                elif dim.sql:
                     dim_def["sql"] = dim.sql
                 if dim.granularity:
                     dim_def["granularity"] = dim.granularity
+                if dim.supported_granularities:
+                    dim_def["supported_granularities"] = dim.supported_granularities
                 if dim.description:
                     dim_def["description"] = dim.description
                 if dim.label:
                     dim_def["label"] = dim.label
                 if dim.metadata:
                     dim_def["metadata"] = dim.metadata
+                if dim.meta:
+                    dim_def["meta"] = dim.meta
                 if dim.format:
                     dim_def["format"] = dim.format
                 if dim.value_format_name:
@@ -551,6 +936,8 @@ class SidemanticAdapter(BaseAdapter):
                     dim_def["parent"] = dim.parent
                 if dim.window:
                     dim_def["window"] = dim.window
+                if not dim.public:
+                    dim_def["public"] = dim.public
                 result["dimensions"].append(dim_def)
 
         # Export metrics (model-level aggregations)
@@ -561,7 +948,13 @@ class SidemanticAdapter(BaseAdapter):
                     "name": measure.name,
                     "agg": measure.agg,
                 }
-                if measure.sql:
+                measure_dax = _dax_text(measure)
+                if measure_dax:
+                    measure_def["dax"] = measure_dax
+                    measure_def["expression_language"] = "dax"
+                    if measure.sql:
+                        measure_def["sql"] = measure.sql
+                elif measure.sql:
                     measure_def["sql"] = measure.sql
                 if measure.filters:
                     measure_def["filters"] = measure.filters
@@ -571,6 +964,10 @@ class SidemanticAdapter(BaseAdapter):
                     measure_def["label"] = measure.label
                 if measure.metadata:
                     measure_def["metadata"] = measure.metadata
+                if measure.meta:
+                    measure_def["meta"] = measure.meta
+                if not measure.public:
+                    measure_def["public"] = measure.public
                 if measure.format:
                     measure_def["format"] = measure.format
                 if measure.value_format_name:
@@ -628,6 +1025,8 @@ class SidemanticAdapter(BaseAdapter):
                     measure_def["window_frame"] = measure.window_frame
                 if measure.window_order:
                     measure_def["window_order"] = measure.window_order
+                if not measure.public:
+                    measure_def["public"] = measure.public
                 result["metrics"].append(measure_def)
 
         # Export model-level default_time_dimension
@@ -635,6 +1034,15 @@ class SidemanticAdapter(BaseAdapter):
             result["default_time_dimension"] = model.default_time_dimension
         if model.default_grain:
             result["default_grain"] = model.default_grain
+        if model.freshness:
+            freshness = {}
+            if model.freshness.watermark:
+                freshness["watermark"] = model.freshness.watermark
+            if model.freshness.sql:
+                freshness["sql"] = model.freshness.sql
+            if model.freshness.ttl_seconds is not None:
+                freshness["ttl_seconds"] = model.freshness.ttl_seconds
+            result["freshness"] = freshness
 
         # Export segments
         if model.segments:
@@ -649,6 +1057,11 @@ class SidemanticAdapter(BaseAdapter):
                 if not segment.public:  # Only export if non-default (False)
                     seg_def["public"] = segment.public
                 result["segments"].append(seg_def)
+
+        if model.pre_aggregations:
+            result["pre_aggregations"] = [
+                self._export_pre_aggregation(pre_aggregation) for pre_aggregation in model.pre_aggregations
+            ]
 
         return result
 
@@ -674,6 +1087,10 @@ class SidemanticAdapter(BaseAdapter):
             result["label"] = measure.label
         if measure.metadata:
             result["metadata"] = measure.metadata
+        if measure.meta:
+            result["meta"] = measure.meta
+        if not measure.public:
+            result["public"] = measure.public
 
         # Type-specific fields
         if measure.numerator:
@@ -715,17 +1132,114 @@ class SidemanticAdapter(BaseAdapter):
         if measure.having:
             result["having"] = measure.having
         if measure.sql:
-            result["sql"] = measure.sql
-            # Auto-detect and export dependencies for derived measures
-            if measure.type == "derived":
-                dependencies = measure.get_dependencies(graph)
-                if dependencies:
-                    result["metrics"] = list(dependencies)
+            measure_dax = _dax_text(measure)
+            if measure_dax:
+                result["dax"] = measure_dax
+                result["expression_language"] = "dax"
+                result["sql"] = measure.sql
+            else:
+                result["sql"] = measure.sql
+                # Auto-detect and export dependencies for derived measures
+                if measure.type == "derived":
+                    dependencies = measure.get_dependencies(graph)
+                    if dependencies:
+                        result["metrics"] = list(dependencies)
+        else:
+            measure_dax = _dax_text(measure)
+            if measure_dax:
+                result["dax"] = measure_dax
+                result["expression_language"] = "dax"
         if measure.agg:
             result["agg"] = measure.agg
         if measure.window:
             result["window"] = measure.window
         if measure.filters:
             result["filters"] = measure.filters
+        if not measure.public:
+            result["public"] = measure.public
 
         return result
+
+    def _export_pre_aggregation(self, pre_aggregation) -> dict:
+        result = {
+            "name": pre_aggregation.name,
+            "type": pre_aggregation.type,
+        }
+
+        if pre_aggregation.sql:
+            result["sql"] = pre_aggregation.sql
+        if pre_aggregation.measures:
+            result["measures"] = pre_aggregation.measures
+        if pre_aggregation.dimensions:
+            result["dimensions"] = pre_aggregation.dimensions
+        if pre_aggregation.time_dimension:
+            result["time_dimension"] = pre_aggregation.time_dimension
+        if pre_aggregation.granularity:
+            result["granularity"] = pre_aggregation.granularity
+        if pre_aggregation.partition_granularity:
+            result["partition_granularity"] = pre_aggregation.partition_granularity
+        if pre_aggregation.build_range_start:
+            result["build_range_start"] = pre_aggregation.build_range_start
+        if pre_aggregation.build_range_end:
+            result["build_range_end"] = pre_aggregation.build_range_end
+        if pre_aggregation.scheduled_refresh is False:
+            result["scheduled_refresh"] = False
+        if pre_aggregation.refresh_key:
+            result["refresh_key"] = self._export_refresh_key(pre_aggregation.refresh_key)
+        if pre_aggregation.indexes:
+            result["indexes"] = [self._export_index(index) for index in pre_aggregation.indexes]
+        if pre_aggregation.meta:
+            result["meta"] = pre_aggregation.meta
+
+        return result
+
+    def _export_refresh_key(self, refresh_key) -> dict:
+        result = {}
+        if refresh_key.every:
+            result["every"] = refresh_key.every
+        if refresh_key.sql:
+            result["sql"] = refresh_key.sql
+        if refresh_key.incremental:
+            result["incremental"] = refresh_key.incremental
+        if refresh_key.update_window:
+            result["update_window"] = refresh_key.update_window
+        return result
+
+    def _export_index(self, index) -> dict:
+        result = {
+            "name": index.name,
+            "columns": index.columns,
+        }
+        if index.type != "regular":
+            result["type"] = index.type
+        return result
+
+    def _export_parameter(self, parameter: Parameter) -> dict:
+        """Export parameter to dictionary."""
+        result = {
+            "name": parameter.name,
+            "type": parameter.type,
+        }
+
+        if parameter.description:
+            result["description"] = parameter.description
+        if parameter.label:
+            result["label"] = parameter.label
+        if parameter.default_value is not None:
+            result["default_value"] = parameter.default_value
+        if parameter.allowed_values is not None:
+            result["allowed_values"] = parameter.allowed_values
+        if parameter.default_to_today:
+            result["default_to_today"] = parameter.default_to_today
+
+        return result
+
+
+def _dax_text(obj) -> str | None:
+    dax = getattr(obj, "dax", None)
+    if isinstance(dax, str) and dax.strip():
+        return dax
+    expression = getattr(obj, "_dax_expression", None)
+    if isinstance(expression, str) and expression.strip():
+        return expression
+    return None

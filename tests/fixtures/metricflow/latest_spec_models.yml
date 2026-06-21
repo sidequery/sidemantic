@@ -1,0 +1,116 @@
+# Source: https://docs.getdbt.com/docs/build/latest-metrics-spec
+# dbt Core 1.12 / Fusion "latest" MetricFlow YAML spec.
+# Semantic models embedded under top-level `models:` with a nested
+# `semantic_model:` block, column-based `entity:`/`dimension:` under `columns:`,
+# measures folded into `type: simple` metrics, and promoted top-level metric keys.
+
+models:
+  - name: orders
+    description: Order fact table
+    agg_time_dimension: ordered_at
+    semantic_model:
+      enabled: true
+      name: orders
+    columns:
+      - name: order_id
+        entity:
+          type: primary
+          name: order
+      - name: customer_id
+        entity:
+          type: foreign
+          name: customer
+      - name: ordered_at
+        granularity: day
+        dimension:
+          type: time
+      - name: order_status
+        dimension:
+          type: categorical
+          name: status
+    metrics:
+      # Measure folded into a simple metric (agg + expr promoted to top level)
+      - name: order_total
+        type: simple
+        agg: sum
+        expr: amount
+      - name: order_count
+        type: simple
+        agg: count
+
+  - name: customers
+    description: Customer dimension table
+    agg_time_dimension: first_ordered_at
+    semantic_model:
+      enabled: true
+    columns:
+      - name: customer_id
+        entity:
+          type: primary
+          name: customer
+      - name: first_ordered_at
+        granularity: day
+        dimension:
+          type: time
+      - name: region
+        dimension:
+          type: categorical
+
+metrics:
+  # Ratio with promoted numerator/denominator (no type_params)
+  - name: revenue_per_order
+    description: Average revenue per order
+    type: ratio
+    numerator: order_total
+    denominator: order_count
+
+  # Derived with promoted expr + input_metrics (with per-input offset_window/alias)
+  - name: order_total_growth
+    description: Week-over-week order total growth
+    type: derived
+    expr: current_total - total_7_days_ago
+    input_metrics:
+      - name: order_total
+        alias: current_total
+      - name: order_total
+        offset_window: 7 days
+        alias: total_7_days_ago
+
+  # Derived whose inputs are all non-offset aliases: aliases are rewritten back
+  # to their real input metrics so the metric is queryable on its own.
+  - name: net_order_total
+    description: Order total minus a fixed adjustment of itself
+    type: derived
+    expr: gross_total - half_total / 2
+    input_metrics:
+      - name: order_total
+        alias: gross_total
+      - name: order_total
+        alias: half_total
+
+  # Cumulative with promoted input_metric + window + period_agg
+  - name: rolling_30d_revenue
+    description: Trailing 30 day revenue
+    type: cumulative
+    input_metric: order_total
+    window: 30 days
+    period_agg: sum
+
+  # Cumulative with promoted grain_to_date
+  - name: revenue_mtd
+    description: Month-to-date revenue
+    type: cumulative
+    input_metric: order_total
+    grain_to_date: month
+
+  # Conversion with promoted base_metric/conversion_metric/entity (new spec)
+  - name: order_to_repeat_conversion
+    description: Conversion from first order to repeat order
+    type: conversion
+    entity: customer
+    calculation: conversion_rate
+    base_metric: order_count
+    conversion_metric: order_count
+    constant_properties:
+      - base_property: region
+        conversion_property: region

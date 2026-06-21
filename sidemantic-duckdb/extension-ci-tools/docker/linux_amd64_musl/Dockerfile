@@ -1,14 +1,19 @@
-FROM alpine:3
+FROM alpine:3.22
 
 ###
 # Base image setup
 ###
 
 # Setup the basic necessities
-RUN apk update --y -qq
-RUN apk add -qq ccache cmake git ninja ninja-build clang19 gcc libssl3 wget bash zip gettext unzip build-base curl make libffi-dev zlib openssh autoconf linux-headers libunwind-dev jq libtool
-RUN wget https://dl-cdn.alpinelinux.org/alpine/v3.21/community/x86_64/aws-cli-2.22.10-r0.apk
+RUN apk update -q
+RUN apk add -qq ccache cmake git clang19 gcc libssl3 wget bash zip gettext unzip build-base curl make libffi-dev zlib openssh autoconf linux-headers libunwind-dev jq libtool tzdata-utils
+RUN curl --no-progress-meter -LO https://dl-cdn.alpinelinux.org/alpine/v3.21/community/x86_64/aws-cli-2.22.10-r0.apk
 RUN apk add --allow-untrusted aws-cli-2.22.10-r0.apk
+RUN curl --no-progress-meter -LO https://dl-cdn.alpinelinux.org/alpine/v3.23/community/x86_64/ninja-build-1.13.2-r0.apk
+RUN apk add --allow-untrusted ninja-build-1.13.2-r0.apk
+
+# Add ninja to path
+ENV PATH="/usr/lib/ninja-build/bin:${PATH}"
 
 # Setup VCPKG n a mounted volume TODO: figure out how to cache this
 ARG vcpkg_url
@@ -23,9 +28,6 @@ RUN mkdir /vcpkg && \
 ENV VCPKG_ROOT=/vcpkg
 ENV VCPKG_TOOLCHAIN_PATH=/vcpkg/scripts/buildsystems/vcpkg.cmake
 ENV PATH="${VCPKG_ROOT}:${PATH}"
-
-# Add ninja to path
-ENV PATH="/usr/lib/ninja-build/bin:${PATH}"
 
 # Common environment variables
 ENV GEN=ninja
@@ -89,5 +91,19 @@ ENV PATH="/usr/local/go/bin:${PATH}"
 RUN case "$extra_toolchains" in \
   *\;python3\;*) \
     apk add -qq python3 \
+  ;; \
+esac
+
+# Install unixODBC
+RUN case "$extra_toolchains" in \
+  *\;unixodbc\;*) \
+    apk add -qq unixodbc-dev \
+  ;; \
+esac
+
+# Install multimedia libraries (FFmpeg, SDL2) for audio/video extensions
+RUN case "$extra_toolchains" in \
+  *\;multimedia\;*) \
+    apk add -qq nasm sdl2-dev ffmpeg-dev \
   ;; \
 esac

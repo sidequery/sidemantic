@@ -27,6 +27,7 @@ typedef struct {
  * Caller must free the returned string with sidemantic_free().
  */
 char *sidemantic_load_yaml(const char *yaml);
+char *sidemantic_load_yaml_for_context(const char *context, const char *yaml);
 
 /*
  * Load semantic models from a file or directory path.
@@ -36,11 +37,13 @@ char *sidemantic_load_yaml(const char *yaml);
  * Caller must free the returned string with sidemantic_free().
  */
 char *sidemantic_load_file(const char *path);
+char *sidemantic_load_file_for_context(const char *context, const char *path);
 
 /*
  * Clear all loaded semantic models.
  */
 void sidemantic_clear(void);
+void sidemantic_clear_for_context(const char *context);
 
 /*
  * Define a semantic model from SQL definition format.
@@ -48,14 +51,15 @@ void sidemantic_clear(void);
  * Parses the definition, saves to file, and loads into current session.
  * If `replace` is true, removes any existing model with the same name from the file.
  *
- * db_path: Path to the database file (NULL for in-memory).
+ * db_path: Path to the database file (NULL for in-memory/session-local).
  *   - If db_path is "foo.duckdb", definitions are saved to "foo.sidemantic.sql"
- *   - If db_path is NULL or ":memory:", definitions are saved to "./sidemantic_definitions.sql"
+ *   - If db_path is NULL or ":memory:", definitions are not persisted
  *
  * Returns NULL on success, error message on failure.
  * Caller must free the returned string with sidemantic_free().
  */
 char *sidemantic_define(const char *definition_sql, const char *db_path, bool replace);
+char *sidemantic_define_for_context(const char *context, const char *definition_sql, const char *db_path, bool replace);
 
 /*
  * Auto-load definitions from file if it exists.
@@ -67,6 +71,7 @@ char *sidemantic_define(const char *definition_sql, const char *db_path, bool re
  * Caller must free the returned string with sidemantic_free().
  */
 char *sidemantic_autoload(const char *db_path);
+char *sidemantic_autoload_for_context(const char *context, const char *db_path);
 
 /*
  * Add a metric/dimension/segment to a model.
@@ -85,6 +90,7 @@ char *sidemantic_autoload(const char *db_path);
  * Caller must free the returned string with sidemantic_free().
  */
 char *sidemantic_add_definition(const char *definition_sql, const char *db_path, bool is_replace);
+char *sidemantic_add_definition_for_context(const char *context, const char *definition_sql, const char *db_path, bool is_replace);
 
 /*
  * Set the active model for subsequent METRIC/DIMENSION/SEGMENT additions.
@@ -95,11 +101,13 @@ char *sidemantic_add_definition(const char *definition_sql, const char *db_path,
  * Caller must free the returned string with sidemantic_free().
  */
 char *sidemantic_use(const char *model_name);
+char *sidemantic_use_for_context(const char *context, const char *model_name);
 
 /*
  * Check if a table name is a registered semantic model.
  */
 bool sidemantic_is_model(const char *table_name);
+bool sidemantic_is_model_for_context(const char *context, const char *table_name);
 
 /*
  * Get list of registered model names (comma-separated).
@@ -107,6 +115,7 @@ bool sidemantic_is_model(const char *table_name);
  * Caller must free the returned string with sidemantic_free().
  */
 char *sidemantic_list_models(void);
+char *sidemantic_list_models_for_context(const char *context);
 
 /*
  * Rewrite a SQL query using semantic definitions.
@@ -115,6 +124,7 @@ char *sidemantic_list_models(void);
  * Caller must free with sidemantic_free_result().
  */
 SidemanticRewriteResult sidemantic_rewrite(const char *sql);
+SidemanticRewriteResult sidemantic_rewrite_for_context(const char *context, const char *sql);
 
 /*
  * Free a string returned by sidemantic functions.

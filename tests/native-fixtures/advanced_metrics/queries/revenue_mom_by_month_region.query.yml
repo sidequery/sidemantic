@@ -1,0 +1,8 @@
+metrics:
+  - events.revenue_mom
+dimensions:
+  - events.event_date__month
+  - events.region
+order_by:
+  - events.event_date__month
+  - events.region

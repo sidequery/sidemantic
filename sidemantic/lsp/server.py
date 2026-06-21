@@ -17,7 +17,7 @@ from urllib.parse import unquote, urlparse
 from lsprotocol import types as lsp
 from pygls.lsp.server import LanguageServer
 
-from sidemantic.core.dialect import DimensionDef, MetricDef, ModelDef, PropertyEQ, RelationshipDef, SegmentDef, parse
+from sidemantic.core.dialect import def_type_name, is_definition, is_property_eq, parse
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
@@ -218,10 +218,11 @@ def get_python_constructor_context(text: str, line: int, character: int) -> str 
 
 def _definition_type_from_statement(stmt: object) -> str | None:
     """Get top-level Sidemantic definition type from a parsed statement."""
-    statement_type_name = type(stmt).__name__
-    if not statement_type_name.endswith("Def"):
-        return None
-    return statement_type_name.replace("Def", "").upper()
+    from sqlglot import exp
+
+    if isinstance(stmt, exp.Expression):
+        return def_type_name(stmt)
+    return None
 
 
 def _extract_property_pairs(stmt: object) -> list[tuple[str, str]]:
@@ -229,7 +230,7 @@ def _extract_property_pairs(stmt: object) -> list[tuple[str, str]]:
     properties: list[tuple[str, str]] = []
 
     for expr in getattr(stmt, "expressions", []):
-        if not isinstance(expr, PropertyEQ):
+        if not is_property_eq(expr):
             continue
 
         key = str(expr.this.this)
@@ -939,17 +940,17 @@ def validate_document(server: LanguageServer, uri: str):
 
         # Validate each statement
         for stmt in statements:
-            if isinstance(stmt, (ModelDef, DimensionDef, MetricDef, RelationshipDef, SegmentDef)):
+            if is_definition(stmt):
                 # Extract properties
                 props = {}
                 for expr in stmt.expressions:
-                    if isinstance(expr, PropertyEQ):
+                    if is_property_eq(expr):
                         key = expr.this.this
                         value = expr.expression.this
                         props[key] = value
 
                 # Try to create pydantic model for validation
-                def_type = type(stmt).__name__.replace("Def", "").upper()
+                def_type = def_type_name(stmt)
                 model_class = DEF_TYPE_TO_MODEL.get(def_type)
 
                 if model_class and "name" in props:

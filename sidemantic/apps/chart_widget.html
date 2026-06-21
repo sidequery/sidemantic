@@ -39,9 +39,8 @@ html, body {
 </style>
 <div id="chart-root"></div>
 <script id="vega-spec" type="application/json">{{VEGA_SPEC}}</script>
-<script type="module">
-import embed from 'https://esm.sh/vega-embed@6'
-
+{{VEGA_VENDOR_JS}}
+<script>
 const root = document.getElementById('chart-root')
 const specEl = document.getElementById('vega-spec')
 
@@ -55,7 +54,7 @@ try {
   const prefersDark = window.matchMedia?.('(prefers-color-scheme: dark)').matches
   const theme = prefersDark ? 'dark' : undefined
 
-  embed(root, spec, {
+  vegaEmbed(root, spec, {
     actions: { export: true, source: false, compiled: false, editor: false },
     theme,
   }).catch(err => {

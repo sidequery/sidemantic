@@ -40,44 +40,44 @@ sidemantic info examples/ecommerce/models
 ### Interactive workbench
 
 ```bash
-sidemantic workbench examples/ecommerce/models --db examples/ecommerce/data/ecommerce.db
+uvx --from "sidemantic[workbench]" sidemantic workbench examples/ecommerce/models --db examples/ecommerce/data/ecommerce.db
 ```
 
 ### Query from command line
 
 Total revenue:
 ```bash
-sidemantic query examples/ecommerce/models \
-  --db examples/ecommerce/data/ecommerce.db \
-  --sql "SELECT total_revenue FROM orders"
+sidemantic query "SELECT total_revenue FROM orders" \
+  --models examples/ecommerce/models \
+  --db examples/ecommerce/data/ecommerce.db
 ```
 
 Revenue by country:
 ```bash
-sidemantic query examples/ecommerce/models \
-  --db examples/ecommerce/data/ecommerce.db \
-  --sql "SELECT orders.revenue, customers.country FROM orders ORDER BY orders.revenue DESC"
+sidemantic query "SELECT orders.revenue, customers.country FROM orders ORDER BY orders.revenue DESC" \
+  --models examples/ecommerce/models \
+  --db examples/ecommerce/data/ecommerce.db
 ```
 
 Orders by status:
 ```bash
-sidemantic query examples/ecommerce/models \
-  --db examples/ecommerce/data/ecommerce.db \
-  --sql "SELECT orders.order_count, orders.revenue, orders.status FROM orders"
+sidemantic query "SELECT orders.order_count, orders.revenue, orders.status FROM orders" \
+  --models examples/ecommerce/models \
+  --db examples/ecommerce/data/ecommerce.db
 ```
 
 Customer lifetime value by tier:
 ```bash
-sidemantic query examples/ecommerce/models \
-  --db examples/ecommerce/data/ecommerce.db \
-  --sql "SELECT customer_lifetime_value, customers.tier FROM customers"
+sidemantic query "SELECT customer_lifetime_value, customers.tier FROM customers" \
+  --models examples/ecommerce/models \
+  --db examples/ecommerce/data/ecommerce.db
 ```
 
 Product performance:
 ```bash
-sidemantic query examples/ecommerce/models \
-  --db examples/ecommerce/data/ecommerce.db \
-  --sql "SELECT order_items.net_revenue, products.category FROM order_items ORDER BY order_items.net_revenue DESC LIMIT 10"
+sidemantic query "SELECT order_items.net_revenue, products.category FROM order_items ORDER BY order_items.net_revenue DESC LIMIT 10" \
+  --models examples/ecommerce/models \
+  --db examples/ecommerce/data/ecommerce.db
 ```
 
 ### PostgreSQL-compatible server
@@ -85,7 +85,7 @@ sidemantic query examples/ecommerce/models \
 Start a server that BI tools can connect to:
 
 ```bash
-sidemantic serve examples/ecommerce/models \
+uvx --from "sidemantic[serve]" sidemantic serve examples/ecommerce/models \
   --db examples/ecommerce/data/ecommerce.db \
   --port 5433
 ```

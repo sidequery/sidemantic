@@ -1,0 +1,453 @@
+* {
+  box-sizing: border-box;
+}
+
+:root {
+  color-scheme: light;
+  --sdm-background: #ffffff;
+  --sdm-surface: #ffffff;
+  --sdm-border: #e5e7eb;
+  --sdm-border-soft: #eef2f7;
+  --sdm-text: #111827;
+  --sdm-muted: #6b7280;
+  --sdm-accent: #6b7cff;
+  --sdm-accent-soft: rgba(107, 124, 255, 0.14);
+  --sdm-row-hover: #eef2ff;
+  --sdm-row-active: rgba(15, 23, 42, 0.08);
+  --sdm-positive: #15803d;
+  --sdm-negative: #b91c1c;
+}
+
+body {
+  margin: 0;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: var(--sdm-background);
+  color: var(--sdm-text);
+}
+
+.sdm-shell {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+.sdm-shell__header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--sdm-border);
+}
+
+.sdm-eyebrow,
+.sdm-status,
+.sdm-section-heading p,
+.sdm-filter-pill,
+.sdm-empty-state,
+.sdm-error-state {
+  margin: 0;
+  color: var(--sdm-muted);
+  font-size: 12px;
+}
+
+.sdm-shell h1,
+.sdm-shell h2,
+.sdm-shell h3 {
+  margin: 0;
+}
+
+.sdm-shell h1 {
+  font-size: 24px;
+  line-height: 1.15;
+}
+
+.sdm-metric-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  margin: 18px 0;
+}
+
+.sdm-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.sdm-toolbar .sdm-filter-row {
+  flex: 1 1 280px;
+  min-width: 0;
+  margin-top: 0;
+}
+
+.sdm-reset-button {
+  flex: 0 0 auto;
+  min-height: 32px;
+  padding: 6px 10px;
+  border: 1px solid var(--sdm-border);
+  border-radius: 6px;
+  background: var(--sdm-surface);
+  color: var(--sdm-text);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+}
+
+.sdm-reset-button:hover {
+  border-color: var(--sdm-accent);
+}
+
+.sdm-debug-panel,
+.sdm-data-table-wrap,
+.sdm-state-box {
+  min-width: 0;
+  background: var(--sdm-surface);
+  border: 1px solid var(--sdm-border);
+  border-radius: 8px;
+}
+
+.sdm-metric-card,
+.sdm-leaderboard {
+  min-width: 0;
+  background: var(--sdm-surface);
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.sdm-metric-card {
+  display: grid;
+  gap: 8px;
+  width: 100%;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-bottom: 1px solid var(--sdm-border);
+  text-align: left;
+}
+
+button.sdm-metric-card {
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+}
+
+.sdm-metric-card[data-selected="true"] {
+  background: var(--sdm-accent-soft);
+  box-shadow: none;
+}
+
+.sdm-metric-card h3 {
+  padding: 12px 16px 0;
+  color: var(--sdm-text);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.sdm-metric-card__value {
+  margin-top: 0;
+  padding: 0 16px;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+.sdm-metric-card__delta {
+  margin-top: 0;
+  padding: 0 16px;
+  color: var(--sdm-muted);
+  font-size: 10px;
+}
+
+.sdm-metric-card__delta[data-tone="positive"] {
+  color: var(--sdm-positive);
+}
+
+.sdm-metric-card__delta[data-tone="negative"] {
+  color: var(--sdm-negative);
+}
+
+.sdm-leaderboard {
+  min-height: 240px;
+  padding: 10px 0 0;
+  border-right: 1px solid var(--sdm-border);
+  border-bottom: 1px solid var(--sdm-border);
+}
+
+.sdm-section-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+  padding: 0 12px;
+}
+
+.sdm-leaderboard-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  position: relative;
+  padding: 4px 12px;
+  border-top: 0;
+  border-radius: 0;
+  font-size: 11px;
+  overflow: hidden;
+}
+
+.sdm-leaderboard-row:first-child {
+  border-top: 0;
+}
+
+button.sdm-leaderboard-row {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  text-align: left;
+}
+
+.sdm-leaderboard-row::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--bar-width, 0%);
+  background: rgba(107, 124, 255, 0.12);
+}
+
+.sdm-leaderboard-row[data-tone="negative"]::before {
+  background: rgba(185, 28, 28, 0.1);
+}
+
+.sdm-leaderboard-row span,
+.sdm-leaderboard-row strong {
+  position: relative;
+  z-index: 1;
+  min-width: 0;
+}
+
+.sdm-leaderboard-row[data-selected="true"] {
+  background: var(--sdm-row-active);
+}
+
+.sdm-leaderboard-row[data-selected="true"] strong {
+  color: var(--sdm-text);
+}
+
+.sdm-filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.sdm-filter-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 5px 8px;
+  border: 1px solid var(--sdm-border);
+  border-radius: 999px;
+  background: var(--sdm-surface);
+  overflow-wrap: anywhere;
+}
+
+.sdm-filter-pill button {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: #f3f4f6;
+  color: var(--sdm-muted);
+  cursor: pointer;
+}
+
+.sdm-sparkline-wrap {
+  margin-top: 0;
+  overflow: hidden;
+  border-top: 1px solid var(--sdm-border-soft);
+  background: #f8fafc;
+}
+
+.sdm-sparkline {
+  display: block;
+  width: 100%;
+  height: 56px;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.sdm-sparkline__area {
+  fill: rgba(100, 116, 139, 0.12);
+}
+
+.sdm-sparkline__line {
+  fill: none;
+  stroke: #64748b;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.sdm-metric-card[data-selected="true"] .sdm-sparkline-wrap {
+  border-top-color: rgba(79, 70, 229, 0.22);
+  background: #eef2ff;
+}
+
+.sdm-metric-card[data-selected="true"] .sdm-sparkline__area {
+  fill: rgba(107, 124, 255, 0.24);
+}
+
+.sdm-metric-card[data-selected="true"] .sdm-sparkline__line {
+  stroke: var(--sdm-accent);
+  stroke-width: 2.2;
+}
+
+.sdm-column-chart {
+  display: block;
+  width: 100%;
+  height: 160px;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.sdm-column-chart rect {
+  fill: var(--sdm-accent);
+}
+
+.sdm-column-chart rect[data-tone="negative"] {
+  fill: var(--sdm-negative);
+}
+
+.sdm-column-chart__baseline {
+  stroke: var(--sdm-border);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.sdm-column-chart text {
+  fill: var(--sdm-muted);
+  font-size: 10px;
+}
+
+.code-pane,
+.code-editor textarea {
+  width: 100%;
+  margin: 0;
+  border: 0;
+  background: var(--sdm-surface);
+  color: var(--sdm-text);
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  outline: none;
+}
+
+.code-pane {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 12px;
+  overflow: auto;
+  white-space: pre;
+}
+
+.code-editor {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.code-editor .code-pane,
+.code-editor textarea {
+  position: absolute;
+  inset: 0;
+  height: 100%;
+}
+
+.code-editor textarea {
+  display: block;
+  padding: 12px;
+  overflow: auto;
+  background: transparent;
+  color: transparent;
+  caret-color: var(--sdm-text);
+  resize: none;
+  white-space: pre;
+}
+
+.code-editor .code-pane {
+  pointer-events: none;
+}
+
+.code-token--comment {
+  color: #8a94a6;
+}
+
+.code-token--keyword,
+.code-token--key {
+  color: #4f46e5;
+  font-weight: 650;
+}
+
+.code-token--string {
+  color: #0f766e;
+}
+
+.code-token--number,
+.code-token--literal {
+  color: #b45309;
+}
+
+.sdm-debug-panel {
+  margin-top: 18px;
+  padding: 12px;
+}
+
+.sdm-debug-panel pre {
+  overflow: auto;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  font-size: 12px;
+}
+
+.sdm-data-table-wrap {
+  margin-top: 18px;
+  overflow: auto;
+}
+
+.sdm-data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.sdm-data-table th,
+.sdm-data-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--sdm-border-soft);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.sdm-data-table th {
+  color: #4b5563;
+  font-weight: 600;
+}
+
+.sdm-state-box {
+  padding: 14px;
+  overflow-wrap: anywhere;
+}
+
+.sdm-error-state {
+  color: var(--sdm-negative);
+}

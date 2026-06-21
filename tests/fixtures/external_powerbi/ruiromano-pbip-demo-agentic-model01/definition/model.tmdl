@@ -1,0 +1,23 @@
+model Model
+	culture: en-US
+	defaultPowerBIDataSourceVersion: powerBI_V3
+	discourageImplicitMeasures
+	sourceQueryCulture: en-GB
+	dataAccessOptions
+		legacyRedirects
+		returnErrorValuesAsNull
+
+annotation PBI_ProTooling = ["TMDL-Extension"]
+
+ref table Calendar
+ref table Sales
+ref table Product
+
+ref role 'Store - Canada'
+ref role 'Store - United States'
+
+ref perspective Sales
+
+ref cultureInfo en-US
+ref cultureInfo pt-PT
+

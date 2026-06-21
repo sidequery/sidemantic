@@ -1,0 +1,39 @@
+{
+  "name": "sidemantic",
+  "description": "Build, validate, and query Sidemantic semantic models, and generate analytics webapps from them.",
+  "version": "1.0.0",
+  "author": {
+    "name": "Sidemantic",
+    "email": "hello@sidemantic.com",
+    "url": "https://sidemantic.com"
+  },
+  "homepage": "https://sidemantic.com",
+  "repository": "https://github.com/sidequery/sidemantic",
+  "license": "Apache-2.0",
+  "keywords": [
+    "analytics",
+    "semantic-layer",
+    "sql",
+    "dashboard"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Sidemantic",
+    "shortDescription": "Model metrics and build analytics webapps from semantic SQL.",
+    "longDescription": "Sidemantic helps Codex build, validate, query, and migrate SQL-first semantic models, then turn those models into analytics dashboards and app surfaces.",
+    "developerName": "Sidemantic",
+    "category": "Data & Analytics",
+    "capabilities": [
+      "Semantic modeling",
+      "SQL generation",
+      "Analytics webapps"
+    ],
+    "websiteURL": "https://sidemantic.com",
+    "defaultPrompt": [
+      "Create a Sidemantic model from my schema.",
+      "Validate these metrics and dimensions.",
+      "Build a dashboard from my Sidemantic models."
+    ],
+    "brandColor": "#2563EB"
+  }
+}

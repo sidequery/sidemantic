@@ -6,21 +6,32 @@
         "runner": "ubuntu-24.04",
         "vcpkg_target_triplet": "x64-linux-release",
         "vcpkg_host_triplet": "x64-linux-release",
-        "run_in_reduced_ci_mode": true
+        "run_in_reduced_ci_mode": true,
+        "opt_in": false
       },
       {
         "duckdb_arch": "linux_arm64",
         "runner": "ubuntu-24.04-arm",
         "vcpkg_target_triplet": "arm64-linux-release",
         "vcpkg_host_triplet": "arm64-linux-release",
-        "run_in_reduced_ci_mode": false
+        "run_in_reduced_ci_mode": false,
+        "opt_in": false
       },
       {
         "duckdb_arch": "linux_amd64_musl",
         "runner": "ubuntu-24.04",
         "vcpkg_target_triplet": "x64-linux-release",
         "vcpkg_host_triplet": "x64-linux-release",
-        "run_in_reduced_ci_mode": false
+        "run_in_reduced_ci_mode": false,
+        "opt_in": true
+      },
+      {
+        "duckdb_arch": "linux_arm64_musl",
+        "runner": "ubuntu-24.04-arm",
+        "vcpkg_target_triplet": "arm64-linux-release",
+        "vcpkg_host_triplet": "arm64-linux-release",
+        "run_in_reduced_ci_mode": false,
+        "opt_in": true
       }
     ]
   },
@@ -31,14 +42,16 @@
         "osx_build_arch": "x86_64",
         "vcpkg_target_triplet": "x64-osx-release",
         "vcpkg_host_triplet": "arm64-osx-release",
-        "run_in_reduced_ci_mode": false
+        "run_in_reduced_ci_mode": false,
+        "opt_in": false
       },
       {
         "duckdb_arch": "osx_arm64",
         "osx_build_arch": "arm64",
         "vcpkg_target_triplet": "arm64-osx-release",
         "vcpkg_host_triplet": "arm64-osx-release",
-        "run_in_reduced_ci_mode": true
+        "run_in_reduced_ci_mode": true,
+        "opt_in": false
       }
     ]
   },
@@ -46,15 +59,27 @@
     "include": [
       {
         "duckdb_arch": "windows_amd64",
-        "vcpkg_target_triplet": "x64-windows-static-md-release-vs2019comp",
-        "vcpkg_host_triplet": "x64-windows-static-md-release-vs2019comp",
-        "run_in_reduced_ci_mode": true
+        "runner": "windows-latest",
+        "vcpkg_target_triplet": "x64-windows-static-release",
+        "vcpkg_host_triplet": "x64-windows-static-release",
+        "run_in_reduced_ci_mode": true,
+        "opt_in": false
+      },
+      {
+        "duckdb_arch": "windows_arm64",
+        "runner": "windows-11-arm",
+        "vcpkg_target_triplet": "arm64-windows-static-release",
+        "vcpkg_host_triplet": "arm64-windows-static-release",
+        "run_in_reduced_ci_mode": false,
+        "opt_in": true
       },
       {
         "duckdb_arch": "windows_amd64_mingw",
+        "runner": "windows-latest",
         "vcpkg_target_triplet": "x64-mingw-static",
         "vcpkg_host_triplet": "x64-mingw-static",
-        "run_in_reduced_ci_mode": true
+        "run_in_reduced_ci_mode": true,
+        "opt_in": false
       }
     ]
   },
@@ -64,19 +89,22 @@
         "duckdb_arch": "wasm_mvp",
         "vcpkg_target_triplet": "wasm32-emscripten",
         "vcpkg_host_triplet": "x64-linux",
-        "run_in_reduced_ci_mode": true
+        "run_in_reduced_ci_mode": true,
+        "opt_in": false
       },
       {
         "duckdb_arch": "wasm_eh",
         "vcpkg_target_triplet": "wasm32-emscripten",
         "vcpkg_host_triplet": "x64-linux",
-        "run_in_reduced_ci_mode": false
+        "run_in_reduced_ci_mode": false,
+        "opt_in": false
       },
       {
         "duckdb_arch": "wasm_threads",
         "vcpkg_target_triplet": "wasm32-emscripten",
         "vcpkg_host_triplet": "x64-linux",
-        "run_in_reduced_ci_mode": false
+        "run_in_reduced_ci_mode": false,
+        "opt_in": false
       }
     ]
   }

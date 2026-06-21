@@ -1,0 +1,26 @@
+version: 1
+models:
+  - name: orders
+    table: orders
+    primary_key_columns: [tenant_id, order_id]
+    relationships:
+      - name: products
+        type: many_to_many
+        through: order_items
+        through_foreign_key_columns: [tenant_id, order_id]
+        related_foreign_key_columns: [tenant_id, product_id]
+    metrics:
+      - name: total_revenue
+        agg: sum
+        sql: amount
+
+  - name: order_items
+    table: order_items
+    primary_key_columns: [tenant_id, order_id, product_id]
+
+  - name: products
+    table: products
+    primary_key_columns: [tenant_id, product_id]
+    dimensions:
+      - name: category
+        type: categorical

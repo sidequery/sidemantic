@@ -162,7 +162,7 @@ class ADBCAdapter(BaseDatabaseAdapter):
     def execute(self, sql: str) -> ADBCResult:
         """Execute SQL and return wrapped cursor."""
         cursor = self.conn.cursor()
-        cursor.execute(sql)
+        cursor.execute(_ensure_trailing_newline(sql))
         return ADBCResult(cursor)
 
     def executemany(self, sql: str, params: list) -> ADBCResult:
@@ -422,3 +422,10 @@ class ADBCAdapter(BaseDatabaseAdapter):
             return cls(driver=driver, uri=uri)
 
         return cls(driver=driver, uri=url)
+
+
+def _ensure_trailing_newline(sql: str) -> str:
+    # Some ADBC drivers wrap query SQL in another statement. If a generated
+    # query ends with a line comment, a trailing newline keeps wrapper SQL out
+    # of that comment.
+    return sql if sql.endswith("\n") else f"{sql}\n"

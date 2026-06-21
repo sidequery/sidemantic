@@ -1,0 +1,66 @@
+# Synthetic fixture exercising Rill's newer metrics-view features.
+# Field names verified against rilldata/rill runtime/parser/parse_metrics_view.go:
+#   - label (deprecated alias for display_name) on dimensions and measures
+#   - property (deprecated shorthand alias for column) on dimensions
+#   - type: time_comparison measures
+#   - per: field selector on measures
+#   - lookup_table / lookup_key_column / lookup_value_column dimensions
+#   - ai_instructions, cache, watermark, rollups top-level sections
+
+type: metrics_view
+display_name: Parent Sales
+model: sales_model
+timeseries: order_date
+smallest_time_grain: day
+
+ai_instructions: |
+  Treat revenue as net of refunds. Prefer monthly grain for trend questions.
+
+watermark: "MAX(order_date)"
+
+cache:
+  enabled: true
+  key_ttl: 1h
+
+dimensions:
+  # property: is the deprecated shorthand alias for column:
+  - name: region
+    label: Region
+    property: region_code
+  # label: is the deprecated alias for display_name:
+  - name: channel
+    label: Sales Channel
+    column: channel
+  # lookup_table dimension resolves a value from a ClickHouse dictionary
+  - name: country_name
+    display_name: Country Name
+    column: country_code
+    lookup_table: countries
+    lookup_key_column: country_code
+    lookup_value_column: country_name
+
+measures:
+  - name: revenue
+    label: Total Revenue
+    expression: SUM(amount)
+    format_preset: currency_usd
+  - name: orders
+    display_name: Orders
+    expression: COUNT(*)
+  # per: field selector scopes the aggregation
+  - name: revenue_per_region
+    display_name: Revenue per Region
+    expression: SUM(amount)
+    per: region
+  # time_comparison measure: period-over-period from a base measure
+  - name: revenue_prev_period
+    display_name: Revenue (Previous Period)
+    type: time_comparison
+    expression: revenue
+    requires:
+      - revenue
+
+rollups:
+  - model: sales_rollup_daily
+    time_grain: day
+    measures: ['revenue', 'orders']

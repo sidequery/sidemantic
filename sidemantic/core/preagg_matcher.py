@@ -128,6 +128,13 @@ class PreAggregationMatcher:
             if not metric:
                 return False
 
+            if metric.agg == "count_distinct":
+                if metric.name not in (preagg.measures or []):
+                    return False
+                if not self._is_exact_grain(preagg, query_dimensions, query_granularity):
+                    return False
+                continue
+
             if not self._is_measure_derivable(metric, preagg):
                 return False
 
@@ -142,9 +149,7 @@ class PreAggregationMatcher:
         # All filter columns must be available in the pre-agg
         if filters:
             filter_columns = self._extract_filter_columns(filters)
-            available_columns = set(preagg.dimensions or [])
-            if preagg.time_dimension:
-                available_columns.add(preagg.time_dimension)
+            available_columns = self._available_filter_columns(preagg)
 
             for col in filter_columns:
                 if col not in available_columns:
@@ -165,15 +170,36 @@ class PreAggregationMatcher:
 
         columns = set()
         for filter_expr in filters:
-            # Remove model prefix if present (e.g., "orders.status" -> "status")
-            # Simple regex to extract column names before operators
-            # This handles: column = value, column >= value, etc.
-            matches = re.findall(r"(\w+\.)?(\w+)\s*[=<>!]", filter_expr)
-            for match in matches:
-                # match[0] is model prefix (optional), match[1] is column name
-                columns.add(match[1])
+            try:
+                import sqlglot
+                from sqlglot import exp
+
+                parsed = sqlglot.parse_one(filter_expr)
+                parsed_columns = set()
+                for column in parsed.find_all(exp.Column):
+                    if column.find_ancestor(exp.Select):
+                        continue
+                    parsed_columns.add(column.name)
+                if parsed_columns:
+                    columns.update(parsed_columns)
+                    continue
+            except Exception:
+                pass
+
+            # Fallback for malformed or dialect-specific predicates.
+            matches = re.findall(r"(?:(\w+)\.)?(\w+)\s*(?:=|<>|!=|<=|>=|<|>|IN|BETWEEN|LIKE|IS)\b", filter_expr, re.I)
+            for _table_name, column_name in matches:
+                columns.add(column_name)
 
         return columns
+
+    def _available_filter_columns(self, preagg: PreAggregation) -> set[str]:
+        available_columns = set(preagg.dimensions or [])
+        if preagg.time_dimension:
+            available_columns.add(preagg.time_dimension)
+            if preagg.granularity:
+                available_columns.add(f"{preagg.time_dimension}__{preagg.granularity}")
+        return available_columns
 
     def _is_measure_derivable(self, query_metric: Metric, preagg: PreAggregation) -> bool:
         """Check if a metric can be derived from pre-aggregation measures.
@@ -187,6 +213,13 @@ class PreAggregationMatcher:
         """
         preagg_measures = preagg.measures or []
 
+        # Complex metrics can be rebuilt from additive leaf state even when
+        # the derived metric itself is not materialized.
+        if query_metric.type in {"ratio", "derived"} or (
+            not query_metric.type and not query_metric.agg and query_metric.sql
+        ):
+            return self._complex_metric_derivable(query_metric, preagg)
+
         # Check if metric is in the pre-agg measures list
         if query_metric.name not in preagg_measures:
             return False
@@ -195,9 +228,6 @@ class PreAggregationMatcher:
         agg_type = query_metric.agg
 
         if not agg_type:
-            # Complex metric types (ratio, derived, etc.)
-            # For now, conservatively require all component metrics to be present
-            # TODO: More sophisticated logic for derived metrics
             return True
 
         # Simple aggregations
@@ -218,6 +248,23 @@ class PreAggregationMatcher:
             return False
 
         # Default: allow if present
+        return True
+
+    def _complex_metric_derivable(self, query_metric: Metric, preagg: PreAggregation) -> bool:
+        preagg_measures = set(preagg.measures or [])
+        dependencies = query_metric.get_dependencies(model_context=self.model.name)
+        if not dependencies:
+            return query_metric.name in preagg_measures
+
+        for dependency in dependencies:
+            dep_name = dependency.split(".", 1)[1] if "." in dependency else dependency
+            dep_metric = self.model.get_metric(dep_name)
+            if not dep_metric:
+                return False
+            if dep_metric.agg not in {"sum", "count"}:
+                return False
+            if dep_name not in preagg_measures:
+                return False
         return True
 
     def _find_count_measure_for_avg(self, avg_metric: Metric, preagg_measures: list[str]) -> str | None:
@@ -261,6 +308,22 @@ class PreAggregationMatcher:
                 return measure
 
         return None
+
+    def _is_exact_grain(
+        self,
+        preagg: PreAggregation,
+        query_dimensions: list[str],
+        query_granularity: str | None,
+    ) -> bool:
+        preagg_dims = set(preagg.dimensions or [])
+        query_dims = set(query_dimensions)
+        if preagg.time_dimension:
+            query_dims.discard(preagg.time_dimension)
+        if query_dims != preagg_dims:
+            return False
+        if preagg.time_dimension or query_granularity:
+            return bool(preagg.time_dimension) and query_granularity == preagg.granularity
+        return True
 
     def _is_granularity_compatible(
         self,
@@ -345,6 +408,10 @@ class PreAggregationMatcher:
                 query_level = GRANULARITY_HIERARCHY.get(query_granularity, 0)
                 preagg_level = GRANULARITY_HIERARCHY.get(preagg.granularity, 0)
                 score -= abs(query_level - preagg_level) * 5
+        elif not query_granularity and preagg.granularity:
+            # A total query can be answered from a time rollup, but an
+            # otherwise-equivalent total rollup is smaller and should win.
+            score -= 20
 
         return score
 
@@ -399,10 +466,16 @@ class PreAggregationMatcher:
             if not metric:
                 measure_details.append(f"{metric_name} (not found)")
                 measures_ok = False
+            elif metric.agg == "count_distinct" and metric.name in (preagg.measures or []):
+                if self._is_exact_grain(preagg, query_dimensions, query_granularity):
+                    measure_details.append(f"{metric_name} (count_distinct exact grain)")
+                else:
+                    measure_details.append(f"{metric_name} (count_distinct_not_rollup_safe)")
+                    measures_ok = False
             elif not self._is_measure_derivable(metric, preagg):
                 agg = metric.agg or "complex"
                 if agg == "count_distinct":
-                    measure_details.append(f"{metric_name} (count_distinct not derivable from preagg)")
+                    measure_details.append(f"{metric_name} (count_distinct_not_rollup_safe)")
                 elif agg == "avg":
                     measure_details.append(f"{metric_name} (avg needs companion count measure)")
                 elif metric.name not in (preagg.measures or []):
@@ -443,9 +516,7 @@ class PreAggregationMatcher:
         filters = filters or []
         if filters:
             filter_columns = self._extract_filter_columns(filters)
-            available_columns = set(preagg.dimensions or [])
-            if preagg.time_dimension:
-                available_columns.add(preagg.time_dimension)
+            available_columns = self._available_filter_columns(preagg)
 
             missing_cols = {col for col in filter_columns if col not in available_columns}
             filters_ok = len(missing_cols) == 0

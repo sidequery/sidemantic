@@ -83,6 +83,19 @@ def _collect_attrs(node: ast.AST) -> list[str]:
     return []
 
 
+def _collect_name_attrs(node: ast.AST) -> list[str]:
+    """Collect an attribute chain rooted at any Python name."""
+    attrs = []
+    while isinstance(node, ast.Attribute):
+        attrs.append(node.attr)
+        node = node.value
+    if isinstance(node, ast.Name):
+        attrs.append(node.id)
+        attrs.reverse()
+        return attrs
+    return []
+
+
 # Python AST operator to SQL operator
 _OP_MAP: dict[type, str] = {
     ast.Add: "+",
@@ -111,6 +124,9 @@ def _expr_to_sql(node: ast.AST) -> str | None:
     if isinstance(node, ast.Attribute):
         attrs = _collect_attrs(node)
         if attrs:
+            return ".".join(attrs)
+        attrs = _collect_name_attrs(node)
+        if attrs and attrs[0] != "_":
             return ".".join(attrs)
         return None
 
@@ -252,6 +268,9 @@ def _filter_node_to_sql(node: ast.AST) -> str | None:
         attrs = _collect_attrs(node)
         if attrs:
             return ".".join(attrs)
+        attrs = _collect_name_attrs(node)
+        if attrs and attrs[0] != "_":
+            return ".".join(attrs)
         return None
 
     if isinstance(node, ast.Constant):
@@ -303,6 +322,111 @@ def bsl_filter_to_sql(expr: str) -> str:
         f"Cannot translate BSL filter expression to SQL: {expr!r}. "
         "Supported: comparisons, &/|, ~, isin/notin/between/isnull/notnull."
     )
+
+
+def _calc_node_to_sql(node: ast.AST) -> str | None:
+    """Convert a BSL calculated-measure AST node to SQL-like metric refs."""
+    if isinstance(node, ast.Attribute):
+        attrs = _collect_attrs(node)
+        if attrs:
+            return ".".join(attrs)
+        attrs = _collect_name_attrs(node)
+        if attrs and attrs[0] != "_":
+            return ".".join(attrs)
+        return None
+
+    if isinstance(node, ast.Name):
+        if node.id == "_":
+            return None
+        return node.id
+
+    if isinstance(node, ast.BinOp):
+        left = _calc_node_to_sql(node.left)
+        right = _calc_node_to_sql(node.right)
+        op = _OP_MAP.get(type(node.op))
+        if left is None or right is None or op is None:
+            return None
+        if isinstance(node.left, ast.BinOp):
+            left = f"({left})"
+        if isinstance(node.right, ast.BinOp):
+            right = f"({right})"
+        return f"{left} {op} {right}"
+
+    if isinstance(node, ast.Compare):
+        left = _calc_node_to_sql(node.left)
+        if left is None or len(node.ops) != 1 or len(node.comparators) != 1:
+            return None
+        op = _CMP_OP_MAP.get(type(node.ops[0]))
+        right = _calc_node_to_sql(node.comparators[0])
+        if op is None or right is None:
+            return None
+        return f"{left} {op} {right}"
+
+    if isinstance(node, ast.Constant):
+        if isinstance(node.value, str):
+            escaped = node.value.replace("'", "''")
+            return f"'{escaped}'"
+        if isinstance(node.value, bool):
+            return "TRUE" if node.value else "FALSE"
+        if node.value is None:
+            return "NULL"
+        if isinstance(node.value, (int, float)):
+            return str(node.value)
+
+    if isinstance(node, ast.UnaryOp):
+        operand = _calc_node_to_sql(node.operand)
+        if operand is None:
+            return None
+        if isinstance(node.op, ast.USub):
+            return f"-{operand}"
+        if isinstance(node.op, ast.UAdd):
+            return operand
+        if isinstance(node.op, ast.Not):
+            return f"NOT ({operand})"
+
+    if isinstance(node, ast.BoolOp):
+        op = "AND" if isinstance(node.op, ast.And) else "OR"
+        parts = [f"({part})" for part in (_calc_node_to_sql(value) for value in node.values) if part]
+        if len(parts) == len(node.values):
+            return f" {op} ".join(parts)
+        return None
+
+    if isinstance(node, ast.Call):
+        if isinstance(node.func, ast.Attribute):
+            method = node.func.attr
+            if isinstance(node.func.value, ast.Name) and node.func.value.id == "_" and method == "all":
+                if len(node.args) != 1:
+                    return None
+                arg = _calc_node_to_sql(node.args[0])
+                if arg is None:
+                    return None
+                return f"__bsl_all({arg})"
+        if isinstance(node.func, ast.Name):
+            args = [_calc_node_to_sql(arg) for arg in node.args]
+            if any(arg is None for arg in args):
+                return None
+            return f"{node.func.id.upper()}({', '.join(args)})"
+
+    return None
+
+
+def bsl_calc_to_sql(expr: str) -> str:
+    """Convert a BSL calculated measure expression to Sidemantic metric SQL.
+
+    BSL calculated measures are evaluated against the deferred ``_`` scope, so
+    ``_.revenue / _.orders`` means "aggregate revenue divided by aggregate
+    orders". The generated SQL keeps metric names as dependencies for the
+    Sidemantic query compiler to replace later.
+    """
+    try:
+        tree = ast.parse(expr.strip(), mode="eval")
+    except SyntaxError:
+        return expr
+
+    result = _calc_node_to_sql(tree.body)
+    if result is None:
+        raise ValueError(f"Cannot translate BSL calculated measure expression to SQL: {expr!r}")
+    return result
 
 
 def _sql_to_bsl_expr(sql: str, agg: str | None) -> str:

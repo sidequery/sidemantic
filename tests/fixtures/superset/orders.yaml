@@ -5,7 +5,25 @@ schema: public
 sql: null
 cache_timeout: null
 filter_select_enabled: true
+currency_code_column: currency_code
 version: 1.0.0
+
+folders:
+  - uuid: 11111111-1111-1111-1111-111111111111
+    type: folder
+    name: Revenue
+    description: Revenue metrics
+    children:
+      - uuid: 22222222-2222-2222-2222-222222222222
+        type: metric
+        name: total_revenue
+  - uuid: 33333333-3333-3333-3333-333333333333
+    type: folder
+    name: Attributes
+    children:
+      - uuid: 44444444-4444-4444-4444-444444444444
+        type: column
+        name: status
 
 metrics:
   - metric_name: count
@@ -23,8 +41,11 @@ metrics:
     expression: SUM(amount)
     description: Sum of order amounts
     d3format: "$,.2f"
+    currency:
+      symbol: USD
+      symbolPosition: prefix
     extra: null
-    warning_text: null
+    warning_text: Excludes refunded orders
 
   - metric_name: avg_order_value
     verbose_name: Average Order Value
@@ -51,6 +72,7 @@ columns:
     is_dttm: false
     is_active: true
     type: VARCHAR
+    advanced_data_type: internet_address
     groupby: true
     filterable: true
     expression: null
@@ -65,7 +87,8 @@ columns:
     filterable: true
     expression: null
     description: Order creation timestamp
-    python_date_format: null
+    python_date_format: "%Y-%m-%d %H:%M:%S"
+    datetime_format: "%Y-%m-%dT%H:%M:%S"
 
   - column_name: status
     verbose_name: Order Status

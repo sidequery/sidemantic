@@ -5,6 +5,7 @@ import sys
 
 import pytest
 
+from sidemantic.core.semantic_layer import SemanticLayer
 from sidemantic.db.postgres import PostgreSQLAdapter, PostgresResult
 
 
@@ -69,6 +70,7 @@ def test_postgres_adapter_import_error_message(monkeypatch):
 def test_postgres_from_url_matrix(monkeypatch):
     cases = [
         ("postgres://u:p@host:5432/db", {"host": "host", "port": 5432, "database": "db", "user": "u", "password": "p"}),
+        ("postgres://u%40corp:p%40ss%2Fword@host/db", {"user": "u@corp", "password": "p@ss/word"}),
         ("postgresql://u@host/db", {"host": "host", "port": 5432, "database": "db", "user": "u", "password": None}),
         ("postgres://host/db", {"host": "host", "port": 5432, "database": "db", "user": None, "password": None}),
         ("postgres://host", {"host": "host", "port": 5432, "database": "postgres", "user": None, "password": None}),
@@ -102,6 +104,32 @@ def test_postgres_from_url_matrix(monkeypatch):
 
         for key, value in expected.items():
             assert captured[key] == value
+
+
+def test_postgres_connection_dict_encoded_credentials_round_trip(monkeypatch):
+    captured = {}
+
+    def fake_init(self, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(PostgreSQLAdapter, "__init__", fake_init)
+
+    url = SemanticLayer._connection_dict_to_url(
+        {
+            "type": "postgres",
+            "host": "host",
+            "port": 5432,
+            "database": "db",
+            "user": "u@corp",
+            "password": "p@ss/word",
+        }
+    )
+
+    assert url == "postgres://u%40corp:p%40ss%2Fword@host:5432/db"
+    adapter = PostgreSQLAdapter.from_url(url)
+    assert isinstance(adapter, PostgreSQLAdapter)
+    assert captured["user"] == "u@corp"
+    assert captured["password"] == "p@ss/word"
 
 
 def test_postgres_from_url_invalid():

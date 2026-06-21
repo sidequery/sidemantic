@@ -31,41 +31,133 @@ class OmniAdapter(BaseAdapter):
 
         Returns:
             Semantic graph with imported models
+
+        The Omni export layout this handles:
+
+        - ``views/*.view.yaml`` (current Omni) or ``views/*.yaml`` (older exports)
+          define views (models). When ``views/`` is absent, view files are
+          discovered recursively.
+        - ``topics/*.topic.yaml`` define topics (a base view + nested joins). Topics
+          are recorded on ``graph.topics`` and their joins are realized as
+          relationships.
+        - ``relationships.yaml``/``relationships.yml`` is a bare top-level *list* of
+          joins (current Omni). A nested ``relationships:`` key inside
+          ``model.yaml`` is also still supported (older exports).
         """
         graph = SemanticGraph()
+        # Topics are an Omni concept with no native graph slot; expose as attribute.
+        graph.topics = []
         source_path = Path(source)
 
-        # Collect all view .yaml files
-        view_files = []
+        # Collect view, topic and relationship files.
+        view_files: list[Path] = []
+        topic_files: list[Path] = []
+        relationships_files: list[Path] = []
+        model_files: list[Path] = []
+
         if source_path.is_dir():
-            # Look for views in views/ subdirectory or all yaml files
+            # Prefer the conventional subdirectory layout, fall back to recursive.
             views_dir = source_path / "views"
             if views_dir.exists():
-                view_files = list(views_dir.glob("*.yaml")) + list(views_dir.glob("*.yml"))
+                candidate_views = list(views_dir.glob("*.yaml")) + list(views_dir.glob("*.yml"))
             else:
-                view_files = list(source_path.rglob("*.yaml")) + list(source_path.rglob("*.yml"))
+                candidate_views = list(source_path.rglob("*.yaml")) + list(source_path.rglob("*.yml"))
+
+            topics_dir = source_path / "topics"
+            if topics_dir.exists():
+                topic_files = self._glob_topics(topics_dir)
+            else:
+                topic_files = self._glob_topics(source_path)
+
+            # Relationships and model files live at the project root.
+            for candidate in ("relationships.yaml", "relationships.yml"):
+                candidate_path = source_path / candidate
+                if candidate_path.exists():
+                    relationships_files.append(candidate_path)
+            for candidate in ("model.yaml", "model.yml"):
+                candidate_path = source_path / candidate
+                if candidate_path.exists():
+                    model_files.append(candidate_path)
+
+            topic_set = {p.resolve() for p in topic_files}
+            rel_set = {p.resolve() for p in relationships_files}
+            model_set = {p.resolve() for p in model_files}
+            for candidate in candidate_views:
+                resolved = candidate.resolve()
+                if resolved in topic_set or resolved in rel_set or resolved in model_set:
+                    continue
+                if self._is_model_or_relationships_file(candidate):
+                    continue
+                view_files.append(candidate)
         else:
-            view_files = [source_path]
+            # Single file - dispatch by suffix.
+            if self._is_topic_file(source_path):
+                topic_files = [source_path]
+            elif source_path.name in ("relationships.yaml", "relationships.yml"):
+                relationships_files = [source_path]
+            elif source_path.name in ("model.yaml", "model.yml"):
+                model_files = [source_path]
+            else:
+                view_files = [source_path]
 
-        # Parse all views
+        # Parse all views first so relationships/topics can attach to them.
         for view_file in view_files:
-            # Skip model files (relationships defined separately)
-            if "model.yaml" in str(view_file) or "model.yml" in str(view_file):
-                continue
-
             model = self._parse_view(view_file)
             if model:
                 graph.add_model(model)
 
-        # Parse relationships from model file if present
-        if source_path.is_dir():
-            model_file = source_path / "model.yaml"
-            if not model_file.exists():
-                model_file = source_path / "model.yml"
-            if model_file.exists():
-                self._parse_relationships(model_file, graph)
+        # Parse a global relationships file (bare list of joins).
+        for relationships_file in relationships_files:
+            self._parse_relationships_list(self._load_relationships_list(relationships_file), graph)
+
+        # Parse relationships nested inside a model file (older Omni layout).
+        for model_file in model_files:
+            self._parse_relationships(model_file, graph)
+
+        # Parse topics (base view + nested joins).
+        for topic_file in topic_files:
+            self._parse_topic(topic_file, graph)
 
         return graph
+
+    @staticmethod
+    def _is_topic_file(path: Path) -> bool:
+        """Whether a path is an Omni topic file (``*.topic.yaml``/``*.topic.yml``)."""
+        name = path.name.lower()
+        return name.endswith(".topic.yaml") or name.endswith(".topic.yml")
+
+    @classmethod
+    def _glob_topics(cls, directory: Path) -> list[Path]:
+        """Find all topic files under a directory."""
+        topics = list(directory.glob("*.topic.yaml")) + list(directory.glob("*.topic.yml"))
+        if directory.name != "topics":
+            # When scanning recursively also pick up nested topic files.
+            topics = list(directory.rglob("*.topic.yaml")) + list(directory.rglob("*.topic.yml"))
+        return topics
+
+    @classmethod
+    def _is_model_or_relationships_file(cls, path: Path) -> bool:
+        """Whether a candidate view file is actually a model/relationships file."""
+        name = path.name.lower()
+        if name in ("model.yaml", "model.yml", "relationships.yaml", "relationships.yml"):
+            return True
+        # Topic files are handled separately; never treat them as views.
+        return cls._is_topic_file(path)
+
+    @staticmethod
+    def _load_relationships_list(relationships_file: Path) -> list[dict[str, Any]]:
+        """Load a bare top-level list of joins from a relationships file."""
+        with open(relationships_file) as f:
+            data = yaml.safe_load(f)
+
+        if data is None:
+            return []
+        # Current Omni: bare list. Be tolerant of a wrapping ``relationships:`` key.
+        if isinstance(data, dict):
+            data = data.get("relationships") or []
+        if not isinstance(data, list):
+            return []
+        return [rel for rel in data if isinstance(rel, dict)]
 
     def _parse_view(self, file_path: Path) -> Model | None:
         """Parse Omni view YAML into Sidemantic model.
@@ -82,9 +174,6 @@ class OmniAdapter(BaseAdapter):
         if not view or not isinstance(view, dict):
             return None
 
-        # Get view name from filename or name field
-        name = view.get("name") or file_path.stem
-
         # Get table reference
         schema = view.get("schema")
         table_name = view.get("table_name") or view.get("table")
@@ -95,6 +184,27 @@ class OmniAdapter(BaseAdapter):
             table = table_name
         else:
             table = None
+
+        # Derive the view name. Omni references a view as ``{schema}__{table_name}``
+        # when it is scoped to a schema (see the "Reference this view as ..." header
+        # Omni emits), otherwise by its file stem. An explicit ``name:`` always wins.
+        # For schema-less views the file stem is the identifier that relationships and
+        # topics reference, so it must be used even when ``table_name`` differs from it
+        # (e.g. ``views/orders.yaml`` with ``table_name: fact_orders`` is the ``orders``
+        # view, not ``fact_orders``). Using ``table_name`` there would silently drop any
+        # ``join_from_view: orders`` relationship.
+        name = view.get("name")
+        if not name:
+            if schema and table_name:
+                name = f"{schema}__{table_name}"
+            else:
+                # Strip the ``.view`` suffix Omni adds to view filenames.
+                stem = file_path.name
+                for suffix in (".view.yaml", ".view.yml", ".yaml", ".yml"):
+                    if stem.lower().endswith(suffix):
+                        stem = stem[: -len(suffix)]
+                        break
+                name = stem
 
         # Get SQL for query-based views
         sql = view.get("sql")
@@ -178,22 +288,41 @@ class OmniAdapter(BaseAdapter):
 
             sql = re.sub(r"\$\{[^.]+\.([^}]+)\}", r"\1", sql)
 
-        # Handle timeframes for time dimensions
-        timeframes = dim_def.get("timeframes") or []
+        # Handle timeframes for time dimensions. Omni allows multiple timeframes per
+        # time dimension; map the first to the base granularity and keep the full
+        # list as supported_granularities.
+        timeframe_mapping = {
+            "date": "day",
+            "day": "day",
+            "week": "week",
+            "month": "month",
+            "quarter": "quarter",
+            "year": "year",
+            "hour": "hour",
+            "minute": "minute",
+            "second": "second",
+        }
+        timeframes = dim_def.get("timeframes")
         granularity = None
+        supported_granularities = None
         if dim_type == "time" and timeframes:
-            # Map first timeframe to granularity
-            timeframe_mapping = {
-                "date": "day",
-                "week": "week",
-                "month": "month",
-                "quarter": "quarter",
-                "year": "year",
-                "hour": "hour",
-            }
-            if timeframes:
-                first_timeframe = timeframes[0] if isinstance(timeframes, list) else timeframes
-                granularity = timeframe_mapping.get(first_timeframe, "day")
+            if not isinstance(timeframes, list):
+                timeframes = [timeframes]
+            mapped = [timeframe_mapping[tf] for tf in timeframes if tf in timeframe_mapping]
+            if mapped:
+                granularity = mapped[0]
+                # De-duplicate while preserving order.
+                supported_granularities = list(dict.fromkeys(mapped))
+
+        # Preserve Omni-specific dimension metadata that has no first-class field.
+        metadata: dict[str, Any] = {}
+        for key in ("synonyms", "all_values", "sample_values", "suggestion_list", "bin_boundaries"):
+            if key in dim_def and dim_def[key] is not None:
+                metadata[key] = dim_def[key]
+        if dim_def.get("order_by_field") is not None:
+            metadata["order_by_field"] = dim_def["order_by_field"]
+        if timeframes:
+            metadata["timeframes"] = timeframes
 
         return Dimension(
             name=name,
@@ -201,7 +330,10 @@ class OmniAdapter(BaseAdapter):
             sql=sql,
             label=dim_def.get("label"),
             granularity=granularity,
+            supported_granularities=supported_granularities,
             description=dim_def.get("description"),
+            format=dim_def.get("format"),
+            metadata=metadata or None,
         )
 
     def _parse_measure(self, name: str, measure_def: dict[str, Any]) -> Metric | None:
@@ -245,7 +377,9 @@ class OmniAdapter(BaseAdapter):
                             description=measure_def.get("description"),
                         )
 
-        # Map Omni aggregate types
+        # Map Omni aggregate types to Sidemantic aggregations. Omni has several
+        # aggregate types that Sidemantic does not model natively; map them to the
+        # closest supported aggregation and preserve the original in metadata.
         agg_type_str = measure_def.get("aggregate_type", "")
         type_mapping = {
             "count": "count",
@@ -255,6 +389,14 @@ class OmniAdapter(BaseAdapter):
             "avg": "avg",
             "min": "min",
             "max": "max",
+            "median": "median",
+            # Omni percentile/list and the *_distinct_on variants have no direct
+            # Sidemantic aggregation. The distinct-on measures deduplicate rows by a
+            # custom primary key before aggregating; collapsing them to a plain
+            # sum/avg/median would silently drop the dedup and overcount whenever the
+            # source rows fan out. Leave agg unset so they parse as derived/custom-SQL
+            # measures (with the original aggregate_type and custom_primary_key_sql in
+            # metadata) rather than mislabeling the aggregation.
         }
 
         agg = type_mapping.get(agg_type_str)
@@ -277,11 +419,20 @@ class OmniAdapter(BaseAdapter):
                         continue
 
                     for operator, value in conditions.items():
-                        if operator == "is":
-                            filters.append(f"{field} = '{value}'")
-                        elif operator == "greater_than_or_equal_to":
-                            filters.append(f"{field} >= {value}")
-                        # Add more operators as needed
+                        rendered = self._render_filter(field, operator, value)
+                        if rendered:
+                            filters.append(rendered)
+
+        # Preserve Omni-specific measure metadata that has no first-class field.
+        metadata: dict[str, Any] = {}
+        if agg_type_str:
+            metadata["aggregate_type"] = agg_type_str
+        if measure_def.get("synonyms") is not None:
+            metadata["synonyms"] = measure_def["synonyms"]
+        if measure_def.get("percentile") is not None:
+            metadata["percentile"] = measure_def["percentile"]
+        if measure_def.get("custom_primary_key_sql") is not None:
+            metadata["custom_primary_key_sql"] = measure_def["custom_primary_key_sql"]
 
         # Determine metric type
         metric_type = None
@@ -297,7 +448,47 @@ class OmniAdapter(BaseAdapter):
             filters=filters if filters else None,
             label=measure_def.get("label"),
             description=measure_def.get("description"),
+            format=measure_def.get("format"),
+            metadata=metadata or None,
         )
+
+    @staticmethod
+    def _render_filter(field: str, operator: str, value: Any) -> str | None:
+        """Render an Omni filter condition into a SQL WHERE fragment.
+
+        Supports the documented Omni filter operators. Unknown operators are
+        skipped (returns ``None``).
+        """
+
+        def quote(val: Any) -> str:
+            # Numbers and booleans are emitted bare; everything else is quoted.
+            if isinstance(val, bool):
+                return "TRUE" if val else "FALSE"
+            if isinstance(val, (int, float)):
+                return str(val)
+            return f"'{val}'"
+
+        if operator == "is":
+            return f"{field} = {quote(value)}"
+        if operator in ("is_not", "not"):
+            return f"{field} != {quote(value)}"
+        if operator == "greater_than":
+            return f"{field} > {quote(value)}"
+        if operator == "greater_than_or_equal_to":
+            return f"{field} >= {quote(value)}"
+        if operator == "less_than":
+            return f"{field} < {quote(value)}"
+        if operator == "less_than_or_equal_to":
+            return f"{field} <= {quote(value)}"
+        if operator == "contains":
+            return f"{field} LIKE '%{value}%'"
+        if operator == "starts_with":
+            return f"{field} LIKE '{value}%'"
+        if operator == "ends_with":
+            return f"{field} LIKE '%{value}'"
+        if operator == "between" and isinstance(value, (list, tuple)) and len(value) == 2:
+            return f"{field} BETWEEN {quote(value[0])} AND {quote(value[1])}"
+        return None
 
     def _parse_time_offset_to_comparison(self, offset: str) -> str:
         """Parse Omni time offset string to comparison_type.
@@ -358,7 +549,7 @@ class OmniAdapter(BaseAdapter):
         return comparison_name
 
     def _parse_relationships(self, model_file: Path, graph: SemanticGraph) -> None:
-        """Parse relationships from Omni model file.
+        """Parse relationships nested inside an Omni model file (older layout).
 
         Args:
             model_file: Path to model.yaml file
@@ -367,49 +558,159 @@ class OmniAdapter(BaseAdapter):
         with open(model_file) as f:
             model_def = yaml.safe_load(f)
 
-        if not model_def:
+        if not model_def or not isinstance(model_def, dict):
             return
 
         relationships_list = model_def.get("relationships") or []
+        self._parse_relationships_list(relationships_list, graph)
+
+    def _parse_relationships_list(self, relationships_list: list[dict[str, Any]], graph: SemanticGraph) -> None:
+        """Parse a list of Omni join definitions into relationships.
+
+        Args:
+            relationships_list: List of join dicts (``join_from_view``,
+                ``join_to_view``, ``relationship_type``, ``on_sql``, ...).
+            graph: Semantic graph to add relationships to
+        """
+        # Omni cardinalities mapped to Sidemantic relationship types.
+        # ``assumed_many_to_one`` is Omni's auto-inferred variant of many_to_one.
+        type_mapping = {
+            "one_to_one": "one_to_one",
+            "many_to_one": "many_to_one",
+            "assumed_many_to_one": "many_to_one",
+            "one_to_many": "one_to_many",
+            "many_to_many": "many_to_many",
+        }
 
         for rel_def in relationships_list:
+            if not isinstance(rel_def, dict):
+                continue
+
             from_view = rel_def.get("join_from_view")
             to_view = rel_def.get("join_to_view")
 
             if not from_view or not to_view:
                 continue
 
-            # Get relationship type
             rel_type_str = rel_def.get("relationship_type", "many_to_one")
-            type_mapping = {
-                "one_to_one": "one_to_one",
-                "many_to_one": "many_to_one",
-                "one_to_many": "one_to_many",
-                "many_to_many": "many_to_many",
-            }
             rel_type = type_mapping.get(rel_type_str, "many_to_one")
 
-            # Extract foreign key from on_sql
-            on_sql = rel_def.get("on_sql", "")
-            foreign_key = None
-            if on_sql:
-                import re
+            # Extract foreign/primary keys from on_sql: ${from.col} = ${to.col}
+            foreign_key, primary_key = self._keys_from_on_sql(rel_def.get("on_sql", ""), from_view, to_view, rel_type)
 
-                # Try to extract ${from_view.column} = ${to_view.column}
-                matches = re.findall(r"\$\{([^.]+)\.([^}]+)\}", on_sql)
-                for view, column in matches:
-                    if view == from_view:
-                        foreign_key = column
-                        break
+            # Preserve Omni join metadata with no first-class field.
+            metadata: dict[str, Any] = {}
+            if rel_def.get("join_type") is not None:
+                metadata["join_type"] = rel_def["join_type"]
+            if rel_def.get("reversible") is not None:
+                metadata["reversible"] = rel_def["reversible"]
+            if rel_type_str == "assumed_many_to_one":
+                metadata["assumed"] = True
 
-            # Add relationship to from_view
             if from_view in graph.models:
                 relationship = Relationship(
                     name=to_view,
                     type=rel_type,
                     foreign_key=foreign_key,
+                    primary_key=primary_key,
+                    metadata=metadata or None,
                 )
                 graph.models[from_view].relationships.append(relationship)
+
+    @staticmethod
+    def _keys_from_on_sql(
+        on_sql: str, from_view: str, to_view: str, rel_type: str = "many_to_one"
+    ) -> tuple[str | None, str | None]:
+        """Extract ``(foreign_key, primary_key)`` from an Omni ``on_sql`` join.
+
+        The relationship is always attached to ``from_view`` with ``name=to_view``,
+        but Sidemantic's interpretation of ``foreign_key``/``primary_key`` depends on
+        the cardinality (see ``Relationship``):
+
+        - ``many_to_one`` (from_view holds the FK): ``foreign_key`` is the from_view
+          column and ``primary_key`` is the to_view column.
+        - ``one_to_many`` / ``one_to_one`` (to_view holds the FK): ``foreign_key`` is
+          the to_view column (the FK in the related model) and ``primary_key`` is the
+          from_view column (the local key). Assigning these the other way around
+          reverses the join and produces invalid SQL.
+        """
+        from_column = None
+        to_column = None
+        if on_sql:
+            import re
+
+            matches = re.findall(r"\$\{([^.]+)\.([^}]+)\}", on_sql)
+            for view, column in matches:
+                if view == from_view and from_column is None:
+                    from_column = column
+                elif view == to_view and to_column is None:
+                    to_column = column
+
+        if rel_type in ("one_to_many", "one_to_one"):
+            # to_view (related model) holds the foreign key; from_view contributes its key.
+            return to_column, from_column
+        # many_to_one (and default): from_view holds the foreign key.
+        return from_column, to_column
+
+    def _parse_topic(self, topic_file: Path, graph: SemanticGraph) -> None:
+        """Parse an Omni topic file (base view + nested joins).
+
+        Topics are recorded on ``graph.topics`` and their joins are realized as
+        ``many_to_one`` relationships from each parent view to its joined views
+        (mirroring how Omni traverses joins from a base view).
+
+        Args:
+            topic_file: Path to ``*.topic.yaml`` file
+            graph: Semantic graph to add topic + relationships to
+        """
+        with open(topic_file) as f:
+            topic_def = yaml.safe_load(f)
+
+        if not topic_def or not isinstance(topic_def, dict):
+            return
+
+        base_view = topic_def.get("base_view")
+        if not base_view:
+            return
+
+        # Flatten the nested joins map into (parent_view, joined_view) edges.
+        joins = topic_def.get("joins") or {}
+        joined_views: list[str] = []
+        edges: list[tuple[str, str]] = []
+
+        def walk(parent: str, joins_map: Any) -> None:
+            if not isinstance(joins_map, dict):
+                return
+            for joined_view, nested in joins_map.items():
+                joined_views.append(joined_view)
+                edges.append((parent, joined_view))
+                walk(joined_view, nested)
+
+        walk(base_view, joins)
+
+        topic_record = {
+            "name": topic_file.name.lower().split(".topic.")[0] or topic_file.stem,
+            "label": topic_def.get("label"),
+            "description": topic_def.get("description"),
+            "base_view": base_view,
+            "joined_views": joined_views,
+        }
+        graph.topics.append(topic_record)
+
+        # Realize the join graph as relationships (skip duplicates already present).
+        for parent, joined_view in edges:
+            parent_model = graph.models.get(parent)
+            if parent_model is None:
+                continue
+            if any(rel.name == joined_view for rel in parent_model.relationships):
+                continue
+            parent_model.relationships.append(
+                Relationship(
+                    name=joined_view,
+                    type="many_to_one",
+                    metadata={"source": "topic", "topic": topic_record["name"]},
+                )
+            )
 
     def export(self, graph: SemanticGraph, output_path: str | Path) -> None:
         """Export semantic graph to Omni view format.
@@ -651,9 +952,16 @@ class OmniAdapter(BaseAdapter):
                 }
                 rel_def["relationship_type"] = type_mapping.get(rel.type, "many_to_one")
 
-                # Build on_sql
-                from_key = rel.foreign_key or f"{rel.name}_id"
-                to_key = rel.primary_key or "id"
+                # Build on_sql. Which side holds the foreign vs. primary key
+                # depends on cardinality (see Relationship): for many_to_one the
+                # from_view holds the FK; for one_to_many / one_to_one the to_view
+                # (related model) holds the FK and the from_view contributes its key.
+                if rel.type in ("one_to_many", "one_to_one"):
+                    from_key = rel.primary_key or "id"
+                    to_key = rel.foreign_key or f"{model.name}_id"
+                else:
+                    from_key = rel.foreign_key or f"{rel.name}_id"
+                    to_key = rel.primary_key or "id"
                 rel_def["on_sql"] = f"${{{model.name}.{from_key}}} = ${{{rel.name}.{to_key}}}"
 
                 relationships.append(rel_def)

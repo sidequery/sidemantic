@@ -1,0 +1,356 @@
+fixtures:
+  - name: basic_model
+    valid: true
+    seed: seed/duckdb.sql
+    expected_validation: expected/validation.json
+    queries:
+      - name: revenue_by_status
+        file: queries/revenue_by_status.query.yml
+        expected_result: expected/result.json
+        result_columns: [status, total_revenue]
+        sql_contains: [SUM, orders, status]
+    rewrite_queries:
+      - name: revenue_by_status_sql
+        sql: SELECT orders.total_revenue, orders.status FROM orders ORDER BY orders.total_revenue DESC
+        sql_contains: [SUM, GROUP BY, ORDER BY, total_revenue]
+
+  - name: derived_ratio_metrics
+    valid: true
+    seed: seed/duckdb.sql
+    expected_validation: expected/validation.json
+    queries:
+      - name: revenue_metrics_by_status
+        file: queries/revenue_metrics_by_status.query.yml
+        expected_result: expected/result.json
+        result_columns: [status, net_revenue, average_order_value]
+        sql_contains: [gross_revenue, discounts, net_revenue, average_order_value]
+
+  - name: relationships
+    valid: true
+    seed: seed/duckdb.sql
+    expected_validation: expected/validation.json
+    queries:
+      - name: revenue_by_country
+        file: queries/revenue_by_country.query.yml
+        expected_result: expected/result.json
+        result_columns: [country, total_revenue]
+        sql_contains: [JOIN, customers, total_revenue]
+    rewrite_queries:
+      - name: revenue_by_country_sql
+        sql: SELECT orders.total_revenue, customers.country FROM orders ORDER BY customers.country
+        sql_contains: [JOIN, customers, SUM, country]
+
+  - name: sql_model
+    valid: true
+    seed: seed/duckdb.sql
+    expected_validation: expected/validation.json
+    queries:
+      - name: revenue_by_status_from_sql_model
+        file: queries/revenue_by_status.query.yml
+        expected_result: expected/result.json
+        result_columns: [status, total_revenue]
+        sql_contains: [raw_orders, is_deleted, total_revenue]
+
+  - name: compact_sql_model
+    valid: true
+    seed: seed/duckdb.sql
+    expected_validation: expected/validation.json
+    queries:
+      - name: revenue_by_status_from_compact_sql_model
+        file: queries/revenue_by_status.query.yml
+        expected_result: expected/result.json
+        result_columns: [status, total_revenue]
+        sql_contains: [SUM, orders, total_revenue]
+
+  - name: relationship_default_keys
+    valid: true
+    seed: seed/duckdb.sql
+    expected_validation: expected/validation.json
+    queries:
+      - name: customer_count_by_order_status
+        file: queries/customer_count_by_order_status.query.yml
+        expected_result: expected/result.json
+        result_columns: [status, customer_count]
+        sql_contains: [JOIN, customers, orders, customers_cte.id, orders_cte.id]
+      - name: customer_count_by_profile_tier
+        file: queries/customer_count_by_profile_tier.query.yml
+        expected_result: expected/profile_tier_result.json
+        result_columns: [tier, customer_count]
+        sql_contains: [JOIN, customers, profiles, customers_cte.id, profiles_cte.id]
+      - name: payment_count_by_account_region
+        file: queries/payment_count_by_account_region.query.yml
+        expected_result: expected/account_region_result.json
+        result_columns: [region, payment_count]
+        sql_contains: [JOIN, payments, accounts, payments_cte.accounts_id, accounts_cte.account_uid]
+      - name: invoice_count_by_vendor_segment
+        file: queries/invoice_count_by_vendor_segment.query.yml
+        expected_result: expected/vendor_segment_result.json
+        result_columns: [segment, invoice_count]
+        sql_contains: [JOIN, invoices, vendors, invoices_cte.vendor_ref, vendors_cte.vendor_uid]
+
+  - name: native_aliases
+    valid: true
+    seed: seed/duckdb.sql
+    expected_validation: expected/validation.json
+    queries:
+      - name: revenue_by_status
+        file: queries/revenue_by_status.query.yml
+        expected_result: expected/result.json
+        result_columns: [status, total_revenue, revenue_per_order]
+        sql_contains: [order_status, total_revenue, revenue_per_order]
+
+  - name: default_time_dimension
+    valid: true
+    seed: seed/duckdb.sql
+    expected_validation: expected/validation.json
+    queries:
+      - name: revenue_by_default_month
+        file: queries/revenue_by_default_month.query.yml
+        expected_result: expected/result.json
+        result_columns: [created_at__month, total_revenue]
+        sql_contains: [DATE_TRUNC, created_at, total_revenue]
+
+  - name: segments_metric_filters
+    valid: true
+    seed: seed/duckdb.sql
+    expected_validation: expected/validation.json
+    queries:
+      - name: high_value_revenue_by_status
+        file: queries/high_value_revenue_by_status.query.yml
+        expected_result: expected/result.json
+        result_columns: [status, total_revenue, completed_revenue]
+        sql_contains: [CASE WHEN, amount >= 100, completed_revenue]
+
+  - name: composite_keys
+    valid: true
+    seed: seed/duckdb.sql
+    expected_validation: expected/validation.json
+    queries:
+      - name: shipments_by_item
+        file: queries/shipments_by_item.query.yml
+        expected_result: expected/result.json
+        result_columns: [item_id, shipment_count]
+        sql_contains: [order_id, line_number, AND]
+
+  - name: multi_hop_joins
+    valid: true
+    seed: seed/duckdb.sql
+    expected_validation: expected/validation.json
+    queries:
+      - name: item_revenue_by_country
+        file: queries/item_revenue_by_country.query.yml
+        expected_result: expected/result.json
+        result_columns: [country, total_item_revenue]
+        sql_contains: [JOIN, orders, customers]
+
+  - name: many_to_many_relationship
+    valid: true
+    seed: seed/duckdb.sql
+    expected_validation: expected/validation.json
+    queries:
+      - name: revenue_by_category
+        file: queries/revenue_by_category.query.yml
+        expected_result: expected/result.json
+        result_columns: [category, total_revenue]
+        sql_contains: [JOIN, order_items, products]
+
+  - name: many_to_many_composite_keys
+    valid: true
+    seed: seed/duckdb.sql
+    expected_validation: expected/validation.json
+    queries:
+      - name: revenue_by_category
+        file: queries/revenue_by_category.query.yml
+        expected_result: expected/result.json
+        result_columns: [category, total_revenue]
+        sql_contains: [JOIN, order_items, products, tenant_id, order_id, product_id, AND]
+
+  - name: statistical_aggregations
+    valid: true
+    seed: seed/duckdb.sql
+    expected_validation: expected/validation.json
+    queries:
+      - name: amount_stats
+        file: queries/amount_stats.query.yml
+        expected_result: expected/result.json
+        result_columns: [amount_stddev, amount_stddev_pop, amount_variance, amount_variance_pop]
+        sql_contains: [STDDEV, STDDEV_POP, VARIANCE, VAR_POP]
+
+  - name: fanout_symmetric_aggregation
+    valid: true
+    seed: seed/duckdb.sql
+    expected_validation: expected/validation.json
+    queries:
+      - name: credit_by_order_status
+        file: queries/credit_by_order_status.query.yml
+        expected_result: expected/result.json
+        result_columns: [status, total_credit_limit]
+        sql_contains: [JOIN, orders, total_credit_limit]
+        rust_sql_contains: ["SUM(DISTINCT", "HASH(customers_cte.customer_id)"]
+
+  - name: source_uri_model
+    valid: true
+    expected_validation: expected/validation.json
+    queries: []
+
+  - name: table_calculations
+    valid: true
+    seed: seed/duckdb.sql
+    expected_validation: expected/validation.json
+    queries:
+      - name: revenue_with_window_calcs
+        file: queries/revenue_with_window_calcs.query.yml
+        expected_result: expected/result.json
+        result_columns: [status, total_revenue, running_revenue, revenue_pct_of_total]
+        sql_contains: [total_revenue, status]
+        rust_sql_contains: [running_revenue, revenue_pct_of_total, "ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW", NULLIF]
+
+  - name: preaggregation_routing
+    valid: true
+    seed: seed/duckdb.sql
+    expected_validation: expected/validation.json
+    queries:
+      - name: monthly_revenue_by_status
+        file: queries/monthly_revenue_by_status.query.yml
+        expected_result: expected/result.json
+        result_columns: [created_at__month, status, total_revenue]
+        sql_contains: [orders_preagg_monthly_status, used_preagg]
+
+  - name: native_sql_definitions
+    valid: true
+    seed: seed/duckdb.sql
+    expected_validation: expected/validation.json
+    queries:
+      - name: completed_revenue_by_status
+        file: queries/completed_revenue_by_status.query.yml
+        expected_result: expected/result.json
+        result_columns: [status, total_revenue]
+        sql_contains: [completed, total_revenue, orders]
+
+  - name: sql_frontmatter_definitions
+    valid: true
+    seed: seed/duckdb.sql
+    expected_validation: expected/validation.json
+    queries:
+      - name: paid_revenue_by_status
+        file: queries/paid_revenue_by_status.query.yml
+        expected_result: expected/result.json
+        result_columns: [status, total_revenue]
+        sql_contains: [paid, total_revenue, orders]
+
+  - name: embedded_sql_blocks
+    valid: true
+    seed: seed/duckdb.sql
+    expected_validation: expected/validation.json
+    queries:
+      - name: paid_revenue_by_status
+        file: queries/paid_revenue_by_status.query.yml
+        expected_result: expected/result.json
+        result_columns: [status, total_revenue]
+        sql_contains: [paid, total_revenue, orders]
+
+  - name: mixed_yaml_sql_directory
+    valid: true
+    seed: seed/duckdb.sql
+    expected_validation: expected/validation.json
+    queries:
+      - name: revenue_by_country
+        file: queries/revenue_by_country.query.yml
+        expected_result: expected/result.json
+        result_columns: [country, total_revenue]
+        sql_contains: [JOIN, customers, country]
+
+  - name: parameterized_filters
+    valid: true
+    seed: seed/duckdb.sql
+    expected_validation: expected/validation.json
+    queries:
+      - name: paid_revenue_over_threshold
+        file: queries/paid_revenue_over_threshold.query.yml
+        expected_result: expected/result.json
+        result_columns: [status, total_revenue]
+        sql_contains: ["'paid'", ">= 100", total_revenue]
+
+  - name: top_level_metric_contract
+    valid: true
+    seed: seed/duckdb.sql
+    expected_validation: expected/validation.json
+    queries:
+      - name: revenue_per_order
+        file: queries/revenue_per_order.query.yml
+        expected_result: expected/result.json
+        result_columns: [status, finance.revenue_per_order]
+        sql_contains: [finance.revenue_per_order, ">= 10", NULLIF]
+
+  - name: custom_relationship_sql
+    valid: true
+    seed: seed/duckdb.sql
+    expected_validation: expected/validation.json
+    queries:
+      - name: revenue_by_country
+        file: queries/revenue_by_country.query.yml
+        expected_result: expected/result.json
+        result_columns: [country, total_revenue]
+        sql_contains: ["IS NOT DISTINCT FROM", customers, total_revenue]
+
+  - name: advanced_metrics
+    valid: true
+    seed: seed/duckdb.sql
+    expected_validation: expected/validation.json
+    queries:
+      - name: cumulative_revenue_by_month
+        file: queries/cumulative_revenue_by_month.query.yml
+        expected_result: expected/cumulative_revenue_by_month_result.json
+        result_columns: [event_date__month, total_revenue, cumulative_revenue]
+        sql_contains: [SUM, OVER, cumulative_revenue]
+      - name: revenue_mom_by_month_region
+        file: queries/revenue_mom_by_month_region.query.yml
+        expected_result: expected/revenue_mom_by_month_region_result.json
+        result_columns: [event_date__month, region, total_revenue, events.revenue_mom]
+        sql_contains: [LAG, "PARTITION BY", revenue_mom]
+      - name: signup_conversion_by_region
+        file: queries/signup_conversion_by_region.query.yml
+        expected_result: expected/signup_conversion_by_region_result.json
+        result_columns: [region, signup_conversion]
+        sql_contains: [base_events, conversion_events, signup_conversion]
+      - name: signup_retention
+        file: queries/signup_retention.query.yml
+        expected_result: expected/signup_retention_result.json
+        result_columns: [cohort_date, days_since, active_users, cohort_size, retention_pct]
+        sql_contains: ["WITH cohorts", retention_pct, days_since]
+      - name: multi_platform_users
+        file: queries/multi_platform_users.query.yml
+        expected_result: expected/multi_platform_users_result.json
+        result_columns: [region, multi_platform_users]
+        sql_contains: [cohort_sub, platform_count, HAVING, multi_platform_users]
+
+  - name: invalid_duplicate_dimension
+    valid: false
+    expected_validation: expected/validation.json
+    error_contains:
+      - duplicate dimension 'status'
+
+  - name: invalid_default_time_dimension
+    valid: false
+    expected_validation: expected/validation.json
+    error_contains:
+      - default_time_dimension 'created_at' must reference a time dimension
+
+  - name: invalid_preaggregation_reference
+    valid: false
+    expected_validation: expected/validation.json
+    error_contains:
+      - references unknown measure 'missing_revenue'
+
+  - name: invalid_unknown_native_field
+    valid: false
+    expected_validation: expected/validation.json
+    error_contains:
+      - unknown
+      - metrcs
+
+  - name: unsupported_version
+    valid: false
+    expected_validation: expected/validation.json
+    error_contains:
+      - Unsupported native Sidemantic format version

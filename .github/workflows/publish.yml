@@ -15,6 +15,8 @@ on:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
     permissions:
       id-token: write
       contents: write
@@ -29,6 +31,15 @@ jobs:
 
       - name: Set up Python
         run: uv python install 3.12
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Install browser test runtime
+        run: uv run python -m playwright install --with-deps chromium
 
       - name: Get current version
         id: get_version
@@ -59,34 +70,98 @@ jobs:
 
           NEW_VERSION="$MAJOR.$MINOR.$PATCH"
           echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "tag=v$NEW_VERSION" >> $GITHUB_OUTPUT
           echo "VERSION=$NEW_VERSION" >> $GITHUB_ENV
 
-      - name: Update version in pyproject.toml and __init__.py
-        run: |
-          sed -i 's/^version = .*/version = "${{ steps.version.outputs.new_version }}"/' pyproject.toml
-          sed -i 's/^__version__ = .*/__version__ = "${{ steps.version.outputs.new_version }}"/' sidemantic/__init__.py
-          echo "Updated version to ${{ steps.version.outputs.new_version }}"
-
-      - name: Update lock file
-        run: uv lock
-
-      - name: Build package
-        run: uv build
-
-      - name: Publish to PyPI
+      - name: Update version in pyproject.toml, DAX package, and __init__.py
         env:
-          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_TOKEN }}
-        run: uv publish --token $UV_PUBLISH_TOKEN
+          NEW_VERSION: ${{ steps.version.outputs.new_version }}
+        run: |
+          uv run --no-project python - <<'PY'
+          import os
+          from pathlib import Path
+
+          version = os.environ["NEW_VERSION"]
+
+          version_files = (
+              Path("pyproject.toml"),
+              Path("crates/dax-pyo3/pyproject.toml"),
+              Path("crates/dax-pyo3/Cargo.toml"),
+          )
+          for path in version_files:
+              lines = path.read_text().splitlines()
+              path.write_text(
+                  "\n".join(
+                      f'version = "{version}"' if line.startswith("version = ") else line
+                      for line in lines
+                  )
+                  + "\n"
+              )
+
+          init_path = Path("sidemantic/__init__.py")
+          init_lines = init_path.read_text().splitlines()
+          init_path.write_text(
+              "\n".join(
+                  f'__version__ = "{version}"' if line.startswith("__version__ = ") else line
+                  for line in init_lines
+              )
+              + "\n"
+          )
+
+          pyproject_path = Path("pyproject.toml")
+          pyproject_lines = pyproject_path.read_text().splitlines()
+          pyproject_path.write_text(
+              "\n".join(
+                  f'    "sidemantic-dax>={version}",' if line.strip().startswith('"sidemantic-dax>=')
+                  else line
+                  for line in pyproject_lines
+              )
+              + "\n"
+          )
+          PY
+          echo "Updated version to $NEW_VERSION"
+
+      - name: Update lock files
+        run: |
+          cargo generate-lockfile
+          uv lock
+
+      - name: Validate release tree
+        run: |
+          uv run ruff check . --exclude docs/_extensions --exclude sidemantic-duckdb/extension-ci-tools --exclude sidemantic-duckdb/scripts --exclude sidemantic-duckdb/duckdb --exclude sidemantic/adapters/malloy_grammar --exclude sidemantic/adapters/holistics_grammar
+          uv run ruff format --check . --exclude docs/_extensions --exclude sidemantic-duckdb/extension-ci-tools --exclude sidemantic-duckdb/scripts --exclude sidemantic-duckdb/duckdb --exclude sidemantic/adapters/malloy_grammar --exclude sidemantic/adapters/holistics_grammar
+          uv run pytest -v
+
+      - name: Build packages
+        run: |
+          uv build crates/dax-pyo3 --sdist --out-dir dist
+          uv build --out-dir dist
+
+      - name: Run installed-wheel DAX smoke
+        run: |
+          DIST_DIR=$(realpath dist)
+          SIDEMANTIC_WHEEL=$(realpath "$(find dist -name 'sidemantic-[0-9]*.whl' -print -quit)")
+          cd /tmp
+          uv run --no-project --find-links "${DIST_DIR}" --with "${SIDEMANTIC_WHEEL}[dax]" -- python - <<'PY'
+          import sidemantic_dax
+
+          sidemantic_dax.parse_expression("1")
+          PY
 
       - name: Commit version bump and create tag
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add pyproject.toml sidemantic/__init__.py uv.lock
+          git add pyproject.toml sidemantic/__init__.py crates/dax-pyo3/pyproject.toml crates/dax-pyo3/Cargo.toml Cargo.lock uv.lock
           git commit -m "Bump version to ${{ steps.version.outputs.new_version }}"
           git tag -a "v${{ steps.version.outputs.new_version }}" -m "Release v${{ steps.version.outputs.new_version }}"
           git push origin main
           git push origin "v${{ steps.version.outputs.new_version }}"
+
+      - name: Publish to PyPI
+        env:
+          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_TOKEN }}
+        run: uv publish dist/* --token $UV_PUBLISH_TOKEN
 
       - name: Create GitHub Release
         env:

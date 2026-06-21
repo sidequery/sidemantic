@@ -121,6 +121,87 @@ class TestKitchenSinkParsing:
 
         assert summary is not None
 
+    def test_dataset_level_metrics_and_dimensions(self, kitchen_sink_layer):
+        """Dataset-level metric/dimension blocks (AQL, cross-model) are surfaced."""
+        graph = kitchen_sink_layer.graph
+
+        # Datasets surface as models named after the dataset.
+        assert "kitchen_transactions" in graph.models
+        assert "kitchen_sink" in graph.models
+
+        transactions = graph.models["kitchen_transactions"]
+
+        # Dataset dimension authored with an aggregate AQL (count(...)) is
+        # surfaced as a derived metric, since an aggregate cannot be a
+        # groupable dimension.
+        total_buyer_orders = transactions.get_metric("total_buyer_orders")
+        assert total_buyer_orders is not None
+        assert total_buyer_orders.sql == "COUNT(kitchen_orders.order_id)"
+
+        # Dataset metric with no aggregation_type, defined purely via @aql.
+        avg_order_amount = transactions.get_metric("avg_order_amount")
+        assert avg_order_amount is not None
+        assert "SUM(kitchen_orders.amount)" in avg_order_amount.sql
+        assert "COUNT(kitchen_orders.order_id)" in avg_order_amount.sql
+
+        buyer_event_ratio = transactions.get_metric("buyer_event_ratio")
+        assert buyer_event_ratio is not None
+        assert "COUNT(kitchen_events.event_id)" in buyer_event_ratio.sql
+        assert "COUNT(DISTINCT kitchen_buyers.person_id)" in buyer_event_ratio.sql
+
+        sink = graph.models["kitchen_sink"]
+        revenue_per_customer = sink.get_metric("revenue_per_customer")
+        assert revenue_per_customer is not None
+        assert "SUM(kitchen_orders.amount)" in revenue_per_customer.sql
+
+    def test_dataset_metrics_registered_at_graph_scope(self, kitchen_sink_layer):
+        """Dataset metrics are first-class graph metrics, reachable without a
+        model prefix via graph.metrics, list_metrics(), and get_metric()."""
+        layer = kitchen_sink_layer
+        graph = layer.graph
+
+        for name in ("avg_order_amount", "buyer_event_ratio", "total_buyer_orders"):
+            assert name in graph.metrics, f"{name} should be registered at graph scope"
+            assert name in layer.list_metrics()
+            assert layer.get_metric(name).name == name
+
+        # Dataset metric from a different dataset is also surfaced.
+        assert "revenue_per_customer" in graph.metrics
+
+    def test_standalone_metric_and_partial_dataset(self, kitchen_sink_layer):
+        """Standalone Metric blocks register as graph metrics; PartialDataset
+        metrics compose into a Dataset via .extend()."""
+        graph = kitchen_sink_layer.graph
+
+        # Standalone top-level Metric -> graph-level metric.
+        assert "kitchen_global_revenue" in graph.metrics
+        global_revenue = graph.metrics["kitchen_global_revenue"]
+        assert global_revenue.label == "Global Revenue"
+        assert global_revenue.sql == "SUM(kitchen_orders.amount)"
+
+        # Dataset = base.extend(partial_dataset) surfaces the partial's metrics.
+        assert "kitchen_metric_store" in graph.models
+        store = graph.models["kitchen_metric_store"]
+
+        order_count = store.get_metric("reusable_order_count")
+        assert order_count is not None
+        assert order_count.sql == "COUNT(kitchen_orders.order_id)"
+
+        # where() table function preserved through the pipe; count still applies.
+        high_value = store.get_metric("high_value_orders")
+        assert high_value is not None
+        assert high_value.sql == "COUNT(kitchen_orders.order_id)"
+
+        # of_all() metric modifier preserves the inner aggregation.
+        revenue_share = store.get_metric("revenue_share")
+        assert revenue_share is not None
+        assert revenue_share.sql == "SUM(kitchen_orders.amount)"
+
+        # relative_period() period-over-period preserves the inner aggregation.
+        last_month = store.get_metric("revenue_last_month")
+        assert last_month is not None
+        assert last_month.sql == "SUM(kitchen_orders.amount)"
+
     def test_extends_merge(self, kitchen_sink_layer):
         extended = kitchen_sink_layer.graph.models["kitchen_orders_extended"]
         inline = kitchen_sink_layer.graph.models["kitchen_orders_inline"]

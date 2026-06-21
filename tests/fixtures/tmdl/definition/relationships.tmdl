@@ -1,0 +1,6 @@
+relationship 'Sales-Products'
+    fromColumn: 'Sales'[Product Key]
+    toColumn: 'Products'[Product Key]
+    fromCardinality: many
+    toCardinality: one
+    isActive

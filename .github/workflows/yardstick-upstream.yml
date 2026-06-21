@@ -1,0 +1,53 @@
+name: Yardstick Upstream Parity
+
+on:
+  workflow_dispatch:
+    inputs:
+      yardstick_ref:
+        description: "Yardstick ref to test against"
+        required: true
+        default: "main"
+  schedule:
+    - cron: "17 10 * * *"
+  pull_request:
+    paths:
+      - ".github/workflows/yardstick-upstream.yml"
+      - "docs/compatibility/yardstick.md"
+      - "sidemantic/adapters/yardstick.py"
+      - "sidemantic/sql/aggregation_detection.py"
+      - "sidemantic/sql/query_rewriter.py"
+      - "tests/queries/test_yardstick_measures_replay.py"
+      - "tests/queries/test_yardstick_query_rewriter.py"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: yardstick-upstream-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  upstream-parity:
+    name: Live upstream SQL replay
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SIDEMANTIC_YARDSTICK_UPSTREAM_TESTS: "1"
+      YARDSTICK_UPSTREAM_REF: ${{ github.event.inputs.yardstick_ref || 'main' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Replay upstream Yardstick tests
+        run: uv run pytest -q tests/queries/test_yardstick_measures_replay.py -m yardstick_upstream

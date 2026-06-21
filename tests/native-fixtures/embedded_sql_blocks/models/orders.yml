@@ -1,0 +1,19 @@
+version: 1
+models:
+  - name: orders
+    table: orders
+    primary_key: order_id
+    dimensions:
+      - name: status
+        type: categorical
+    sql_metrics: |
+      METRIC (
+        name total_revenue,
+        agg sum,
+        sql amount
+      );
+    sql_segments: |
+      SEGMENT (
+        name paid,
+        sql {model}.status = 'paid'
+      );

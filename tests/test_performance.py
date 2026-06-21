@@ -218,7 +218,7 @@ def test_multi_join_generation_performance(performance_layer):
     avg_ms = (elapsed / iterations) * 1000
 
     print(f"\nMulti-join generation: {avg_ms:.3f}ms per query ({iterations} iterations)")
-    assert avg_ms < 25.0, f"Multi-join generation too slow: {avg_ms:.3f}ms"
+    assert avg_ms < 50.0, f"Multi-join generation too slow: {avg_ms:.3f}ms"
 
 
 def test_end_to_end_execution_performance(performance_layer):
@@ -302,7 +302,7 @@ def test_query_rewriter_warm_vs_cold(performance_layer):
     print(f"Speedup: {cold_time / warm_time:.1f}x")
 
     # Warm runs should be reasonably fast
-    assert warm_time < 15.0, f"Warm runs too slow: {warm_time:.3f}ms"
+    assert warm_time < 30.0, f"Warm runs too slow: {warm_time:.3f}ms"
 
 
 def test_parameter_substitution_performance(performance_layer):

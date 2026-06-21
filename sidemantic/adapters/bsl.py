@@ -10,6 +10,7 @@ Transforms BSL definitions into Sidemantic format:
 - BSL joins -> Relationships
 """
 
+import re
 from pathlib import Path
 
 import yaml
@@ -19,6 +20,7 @@ from sidemantic.adapters.bsl_expr import (
     GRANULARITY_TO_TIME_GRAIN,
     TIME_GRAIN_MAP,
     _sql_to_bsl_expr,
+    bsl_calc_to_sql,
     bsl_filter_to_sql,
     bsl_to_sql,
     is_calc_measure_expr,
@@ -79,6 +81,7 @@ class BSLAdapter(BaseAdapter):
             # Parse single file
             self._parse_file(source_path, graph)
 
+        self._add_join_alias_models(graph)
         return graph
 
     def _parse_file(self, file_path: Path, graph: SemanticGraph) -> None:
@@ -104,7 +107,7 @@ class BSLAdapter(BaseAdapter):
                 if model:
                     graph.add_model(model)
 
-    def _parse_model(self, name: str, model_def: dict, profile: str | None = None) -> Model | None:
+    def _parse_model(self, name: str, model_def: dict, profile: str | dict | None = None) -> Model | None:
         """Parse a BSL model definition into a Sidemantic Model.
 
         Args:
@@ -117,6 +120,7 @@ class BSLAdapter(BaseAdapter):
         """
         table = model_def.get("table")
         description = model_def.get("description")
+        database = model_def.get("database")
 
         # Primary key: explicit field > is_entity dimension > default "id"
         primary_key = model_def.get("primary_key")
@@ -129,6 +133,8 @@ class BSLAdapter(BaseAdapter):
                 dimensions.append(dim)
                 if not primary_key and isinstance(dim_def, dict) and dim_def.get("is_entity"):
                     primary_key = dim_name
+                for derived_dim in self._parse_derived_dimensions(dim_name, dim_def, dim):
+                    dimensions.append(derived_dim)
 
         if not primary_key:
             primary_key = "id"
@@ -158,6 +164,10 @@ class BSLAdapter(BaseAdapter):
                 for i, dim in enumerate(dimensions):
                     if dim.name == time_dim_name and not dim.granularity:
                         dimensions[i] = dim.model_copy(update={"granularity": grain})
+        elif time_dim_name:
+            for i, dim in enumerate(dimensions):
+                if dim.name == time_dim_name and not dim.granularity:
+                    dimensions[i] = dim.model_copy(update={"granularity": "day"})
 
         # Measures and calculated measures
         metrics = []
@@ -167,10 +177,8 @@ class BSLAdapter(BaseAdapter):
                 metrics.append(metric)
 
         for measure_name, measure_def in (model_def.get("calculated_measures") or {}).items():
-            metric = self._parse_measure(measure_name, measure_def)
+            metric = self._parse_measure(measure_name, measure_def, calculated=True)
             if metric:
-                if metric.type != "derived":
-                    metric = metric.model_copy(update={"type": "derived"})
                 metrics.append(metric)
 
         # Joins
@@ -185,13 +193,19 @@ class BSLAdapter(BaseAdapter):
         # Keep model.table for migrator indexing; generator and exporters
         # that check model.sql first will use the filtered subquery.
         model_sql = None
-        metadata = None
+        metadata = {}
+        if profile is not None:
+            metadata["bsl_profile"] = profile
+        if database is not None:
+            metadata["bsl_database"] = database
+        metadata["bsl_table"] = table
+
         filter_expr = model_def.get("filter")
         if filter_expr:
             filter_str = str(filter_expr)
             filter_sql = bsl_filter_to_sql(filter_str)
             model_sql = f"SELECT * FROM {table} WHERE {filter_sql}"
-            metadata = {"bsl_filter": filter_str}
+            metadata["bsl_filter"] = filter_str
 
         return Model(
             name=name,
@@ -204,7 +218,7 @@ class BSLAdapter(BaseAdapter):
             relationships=relationships,
             default_time_dimension=default_time_dimension,
             default_grain=default_grain,
-            metadata=metadata,
+            metadata=metadata or None,
         )
 
     def _parse_dimension(self, name: str, dim_def: str | dict) -> Dimension | None:
@@ -213,27 +227,44 @@ class BSLAdapter(BaseAdapter):
             expr = dim_def
             description = None
             is_time = False
+            is_event_timestamp = False
             time_grain = None
+            source_metadata = None
+            derived_dimensions = None
+            is_entity = False
         else:
             expr = dim_def.get("expr", f"_.{name}")
             description = dim_def.get("description")
             is_time = dim_def.get("is_time_dimension", False)
+            is_event_timestamp = dim_def.get("is_event_timestamp", False)
             time_grain = dim_def.get("smallest_time_grain")
+            source_metadata = dim_def.get("metadata")
+            derived_dimensions = dim_def.get("derived_dimensions")
+            is_entity = dim_def.get("is_entity", False)
 
         sql_expr, agg_type, date_part = bsl_to_sql(expr)
 
         dim_type = "categorical"
         granularity = None
 
-        if is_time:
+        if is_time or is_event_timestamp:
             dim_type = "time"
-            if time_grain:
-                granularity = TIME_GRAIN_MAP.get(time_grain, "day")
+            granularity = TIME_GRAIN_MAP.get(time_grain, "day") if time_grain else "day"
 
         if date_part:
             dim_type = "categorical"
             if sql_expr:
                 sql_expr = f"EXTRACT({date_part.upper()} FROM {sql_expr})"
+
+        metadata = {"bsl_expr": expr}
+        if source_metadata is not None:
+            metadata["bsl_metadata"] = source_metadata
+        if is_event_timestamp:
+            metadata["bsl_is_event_timestamp"] = True
+        if derived_dimensions:
+            metadata["bsl_derived_dimensions"] = list(derived_dimensions)
+        if is_entity:
+            metadata["bsl_is_entity"] = True
 
         return Dimension(
             name=name,
@@ -241,26 +272,61 @@ class BSLAdapter(BaseAdapter):
             sql=sql_expr,
             granularity=granularity,
             description=description,
-            metadata={"bsl_expr": expr},
+            metadata=metadata,
         )
 
-    def _parse_measure(self, name: str, measure_def: str | dict) -> Metric | None:
+    def _parse_derived_dimensions(self, base_name: str, dim_def: str | dict, dim: Dimension) -> list[Dimension]:
+        """Create Sidemantic dimensions for BSL derived dimension parts."""
+        if not isinstance(dim_def, dict):
+            return []
+
+        parts = dim_def.get("derived_dimensions") or []
+        if isinstance(parts, str):
+            parts = [parts]
+
+        derived = []
+        for part in parts:
+            if part not in {"year", "month", "day", "hour", "minute", "second", "week", "quarter"}:
+                continue
+            derived.append(
+                Dimension(
+                    name=f"{base_name}_{part}",
+                    type="categorical",
+                    sql=f"EXTRACT({part.upper()} FROM {dim.sql})",
+                    metadata={
+                        "bsl_generated_from": base_name,
+                        "bsl_derived_part": part,
+                    },
+                )
+            )
+        return derived
+
+    def _parse_measure(self, name: str, measure_def: str | dict, calculated: bool = False) -> Metric | None:
         """Parse BSL measure (simple or extended form)."""
         if isinstance(measure_def, str):
             expr = measure_def
             description = None
+            source_metadata = None
         else:
             expr = measure_def.get("expr", "")
             description = measure_def.get("description")
+            source_metadata = measure_def.get("metadata")
+
+        metadata = {"bsl_expr": expr}
+        if source_metadata is not None:
+            metadata["bsl_metadata"] = source_metadata
 
         # Calc measures reference other measures by name (no _. prefix)
-        if is_calc_measure_expr(expr):
+        if calculated or is_calc_measure_expr(expr):
             return Metric(
                 name=name,
                 type="derived",
-                sql=expr,
+                sql=bsl_calc_to_sql(expr) if calculated else expr,
                 description=description,
-                metadata={"bsl_expr": expr},
+                metadata={
+                    **metadata,
+                    "bsl_is_calculated_measure": True,
+                },
             )
 
         sql_expr, agg_type, date_part = bsl_to_sql(expr)
@@ -273,7 +339,7 @@ class BSLAdapter(BaseAdapter):
             agg=agg_type,
             sql=sql_expr,
             description=description,
-            metadata={"bsl_expr": expr},
+            metadata=metadata,
         )
 
     def _parse_join(self, name: str, join_def: dict) -> Relationship | None:
@@ -296,6 +362,7 @@ class BSLAdapter(BaseAdapter):
             "one_to_many": "one_to_many",
             "many_to_one": "many_to_one",
             "many_to_many": "many_to_many",
+            "cross": "cross",
         }
         rel_type = type_mapping.get(join_type, "many_to_one")
 
@@ -311,12 +378,138 @@ class BSLAdapter(BaseAdapter):
                 else:
                     foreign_key = with_expr
 
+        metadata = {
+            "bsl_model": target_model,
+            "bsl_alias": name,
+            "bsl_join_type": join_type,
+        }
+        if "how" in join_def:
+            metadata["bsl_how"] = join_def["how"]
+        if "with" in join_def:
+            metadata["bsl_with"] = join_def["with"]
+
         return Relationship(
-            name=target_model,
+            name=name,
             type=rel_type,
             foreign_key=foreign_key,
             primary_key=primary_key,
+            metadata=metadata,
         )
+
+    def _add_join_alias_models(self, graph: SemanticGraph) -> None:
+        """Add cloned target models for BSL join aliases and self-joins."""
+        alias_refs: dict[str, list[tuple[Model, Relationship, str]]] = {}
+
+        for model in list(graph.models.values()):
+            for rel in model.relationships:
+                if not rel.metadata:
+                    continue
+                target_model = rel.metadata.get("bsl_model")
+                alias = rel.metadata.get("bsl_alias")
+                if not target_model or not alias or alias == target_model:
+                    continue
+                alias_refs.setdefault(alias, []).append((model, rel, target_model))
+
+        for alias, refs in alias_refs.items():
+            targets = {target_model for _, _, target_model in refs}
+            existing = graph.models.get(alias)
+            existing_alias_target = (existing.metadata or {}).get("bsl_alias_of") if existing else None
+            can_use_global_alias = (
+                len(targets) == 1
+                and (existing is None or existing_alias_target == next(iter(targets)))
+                and alias not in targets
+            )
+
+            if can_use_global_alias:
+                target_model = next(iter(targets))
+                self._clone_join_alias_model(graph, alias, target_model)
+                continue
+
+            for model, rel, target_model in refs:
+                if target_model not in graph.models:
+                    continue
+                scoped_alias = self._scoped_join_alias_name(graph, model.name, alias)
+                self._retarget_join_alias(model, rel, alias, scoped_alias)
+                self._clone_join_alias_model(graph, scoped_alias, target_model, source_model=model.name, alias=alias)
+
+        self._remove_unreferenced_bsl_alias_models(graph)
+
+    def _clone_join_alias_model(
+        self,
+        graph: SemanticGraph,
+        alias_name: str,
+        target_model: str,
+        source_model: str | None = None,
+        alias: str | None = None,
+    ) -> None:
+        """Clone a target model under a BSL join alias name."""
+        if alias_name in graph.models or target_model not in graph.models:
+            return
+
+        target = graph.models[target_model]
+        metadata = dict(target.metadata or {})
+        metadata["bsl_alias_of"] = target_model
+        if source_model:
+            metadata["bsl_alias_source_model"] = source_model
+        if alias:
+            metadata["bsl_alias"] = alias
+        graph.add_model(
+            target.model_copy(
+                deep=True,
+                update={
+                    "name": alias_name,
+                    "relationships": [],
+                    "metadata": metadata,
+                },
+            )
+        )
+
+    def _scoped_join_alias_name(self, graph: SemanticGraph, source_model: str, alias: str) -> str:
+        """Return a stable graph model name for a source-scoped BSL join alias."""
+        base = f"{source_model}_{alias}"
+        candidate = base
+        suffix = 2
+        while candidate in graph.models:
+            metadata = graph.models[candidate].metadata or {}
+            if metadata.get("bsl_alias_source_model") == source_model and metadata.get("bsl_alias") == alias:
+                return candidate
+            candidate = f"{base}_{suffix}"
+            suffix += 1
+        return candidate
+
+    def _retarget_join_alias(self, model: Model, rel: Relationship, alias: str, scoped_alias: str) -> None:
+        """Point a BSL relationship and local alias references at a scoped alias model."""
+        if rel.name == scoped_alias:
+            return
+
+        metadata = dict(rel.metadata or {})
+        metadata["bsl_scoped_alias"] = scoped_alias
+        rel.metadata = metadata
+        rel.name = scoped_alias
+
+        pattern = re.compile(rf"(?<![\w.]){re.escape(alias)}\.")
+        replacement = f"{scoped_alias}."
+
+        for metric in model.metrics:
+            if metric.sql:
+                metric.sql = pattern.sub(replacement, metric.sql)
+        for dimension in model.dimensions:
+            if dimension.sql:
+                dimension.sql = pattern.sub(replacement, dimension.sql)
+
+    def _remove_unreferenced_bsl_alias_models(self, graph: SemanticGraph) -> None:
+        """Drop stale synthetic BSL alias models after aliases are retargeted."""
+        referenced_models = {
+            rel.name
+            for model in graph.models.values()
+            for rel in model.relationships
+            if rel.metadata and rel.metadata.get("bsl_alias")
+        }
+        for model_name, model in list(graph.models.items()):
+            metadata = model.metadata or {}
+            if metadata.get("bsl_alias_of") and model_name not in referenced_models:
+                del graph.models[model_name]
+                graph._mark_dirty()
 
     def export(self, graph: SemanticGraph, output_path: str | Path) -> None:
         """Export semantic graph to BSL YAML format.
@@ -336,16 +529,21 @@ class BSLAdapter(BaseAdapter):
         if output_path.is_dir() or not output_path.suffix:
             output_path.mkdir(parents=True, exist_ok=True)
             for model in resolved_models.values():
+                if model.metadata and model.metadata.get("bsl_alias_of"):
+                    continue
                 model_data = self._export_model(model)
+                self._add_profile_to_export(model_data, model)
                 model_file = output_path / f"{model.name}.yml"
                 with open(model_file, "w") as f:
                     yaml.dump(model_data, f, sort_keys=False, default_flow_style=False)
         else:
             # Single file with all models
-            data = {}
+            data = self._shared_profile_export_data(resolved_models.values())
 
             # Export each model
             for model in resolved_models.values():
+                if model.metadata and model.metadata.get("bsl_alias_of"):
+                    continue
                 model_data = self._export_model(model)
                 data.update(model_data)
 
@@ -353,15 +551,41 @@ class BSLAdapter(BaseAdapter):
             with open(output_path, "w") as f:
                 yaml.dump(data, f, sort_keys=False, default_flow_style=False)
 
+    def _add_profile_to_export(self, data: dict, model: Model) -> None:
+        metadata = model.metadata or {}
+        if "bsl_profile" in metadata:
+            data["profile"] = metadata["bsl_profile"]
+
+    def _shared_profile_export_data(self, models) -> dict:
+        profiles = []
+        for model in models:
+            if model.metadata and model.metadata.get("bsl_alias_of"):
+                continue
+            metadata = model.metadata or {}
+            if "bsl_profile" in metadata:
+                profiles.append(metadata["bsl_profile"])
+
+        if not profiles:
+            return {}
+
+        first_profile = profiles[0]
+        if all(profile == first_profile for profile in profiles):
+            return {"profile": first_profile}
+
+        return {}
+
     def _export_model(self, model: Model) -> dict:
         """Export a Sidemantic Model to BSL format."""
         model_def = {}
 
         if model.table:
-            model_def["table"] = model.table
+            model_def["table"] = (model.metadata or {}).get("bsl_table", model.table)
 
         if model.description:
             model_def["description"] = model.description
+
+        if model.metadata and "bsl_database" in model.metadata:
+            model_def["database"] = model.metadata["bsl_database"]
 
         if model.primary_key and model.primary_key != "id":
             model_def["primary_key"] = model.primary_key
@@ -379,6 +603,8 @@ class BSLAdapter(BaseAdapter):
         # Export dimensions
         dimensions = {}
         for dim in model.dimensions:
+            if dim.metadata and dim.metadata.get("bsl_generated_from"):
+                continue
             dim_data = self._export_dimension(dim, model.primary_key)
             dimensions[dim.name] = dim_data
 
@@ -387,19 +613,29 @@ class BSLAdapter(BaseAdapter):
 
         # Export measures
         measures = {}
+        calculated_measures = {}
         for metric in model.metrics:
             measure_data = self._export_measure(metric)
-            measures[metric.name] = measure_data
+            if (metric.metadata and metric.metadata.get("bsl_is_calculated_measure")) or metric.type in (
+                "derived",
+                "ratio",
+            ):
+                calculated_measures[metric.name] = measure_data
+            else:
+                measures[metric.name] = measure_data
 
         if measures:
             model_def["measures"] = measures
+        if calculated_measures:
+            model_def["calculated_measures"] = calculated_measures
 
         # Export joins (from relationships)
         if model.relationships:
             joins = {}
             for rel in model.relationships:
                 join_def = self._export_join(rel)
-                joins[rel.name] = join_def
+                join_name = (rel.metadata or {}).get("bsl_alias", rel.name)
+                joins[join_name] = join_def
             model_def["joins"] = joins
 
         return {model.name: model_def}
@@ -412,7 +648,16 @@ class BSLAdapter(BaseAdapter):
         else:
             bsl_expr = sql_to_bsl(dim.sql, None, None)
 
-        needs_extended = dim.description or dim.type == "time" or dim.granularity or dim.name == primary_key
+        metadata = dim.metadata or {}
+        needs_extended = (
+            dim.description
+            or dim.type == "time"
+            or dim.granularity
+            or dim.name == primary_key
+            or "bsl_metadata" in metadata
+            or metadata.get("bsl_is_event_timestamp")
+            or metadata.get("bsl_derived_dimensions")
+        )
 
         if not needs_extended:
             return bsl_expr
@@ -425,6 +670,9 @@ class BSLAdapter(BaseAdapter):
         if dim.type == "time":
             result["is_time_dimension"] = True
 
+        if metadata.get("bsl_is_event_timestamp"):
+            result["is_event_timestamp"] = True
+
         if dim.granularity:
             time_grain = GRANULARITY_TO_TIME_GRAIN.get(dim.granularity)
             if time_grain:
@@ -432,6 +680,12 @@ class BSLAdapter(BaseAdapter):
 
         if dim.name == primary_key:
             result["is_entity"] = True
+
+        if metadata.get("bsl_derived_dimensions"):
+            result["derived_dimensions"] = metadata["bsl_derived_dimensions"]
+
+        if "bsl_metadata" in metadata:
+            result["metadata"] = metadata["bsl_metadata"]
 
         return result
 
@@ -454,9 +708,17 @@ class BSLAdapter(BaseAdapter):
             else:
                 bsl_expr = _sql_to_bsl_expr(metric.sql or metric.name, metric.agg)
 
-        if not metric.description:
+        result_metadata = (metric.metadata or {}).get("bsl_metadata")
+
+        if not metric.description and result_metadata is None:
             return bsl_expr
-        return {"expr": bsl_expr, "description": metric.description}
+
+        result = {"expr": bsl_expr}
+        if metric.description:
+            result["description"] = metric.description
+        if result_metadata is not None:
+            result["metadata"] = result_metadata
+        return result
 
     def _export_join(self, rel: Relationship) -> dict:
         """Export relationship to BSL join format.
@@ -473,15 +735,21 @@ class BSLAdapter(BaseAdapter):
             "one_to_many": "many",
             "one_to_one": "one_to_one",
             "many_to_many": "many_to_many",
+            "cross": "cross",
         }
 
+        metadata = rel.metadata or {}
         join_def = {
-            "model": rel.name,
-            "type": type_mapping.get(rel.type, "one"),
+            "model": metadata.get("bsl_model", rel.name),
+            "type": metadata.get("bsl_join_type", type_mapping.get(rel.type, "one")),
         }
+        if "bsl_how" in metadata:
+            join_def["how"] = metadata["bsl_how"]
 
         # Use with: shorthand for single-column FK without explicit primary_key
-        if rel.foreign_key and not rel.primary_key and isinstance(rel.foreign_key, str):
+        if "bsl_with" in metadata:
+            join_def["with"] = metadata["bsl_with"]
+        elif rel.foreign_key and not rel.primary_key and isinstance(rel.foreign_key, str):
             join_def["with"] = f"_.{rel.foreign_key}"
         else:
             if rel.foreign_key:

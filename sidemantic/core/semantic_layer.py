@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
+import os
+from collections.abc import Callable
 from pathlib import Path
+
+import yaml
 
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.semantic_graph import SemanticGraph
+from sidemantic.rust_bridge import get_rust_module, graph_to_rust_yaml
+from sidemantic.rust_parity import is_strict_for
 from sidemantic.sql.generator import SQLGenerator
+
+_RUST_SQL_OUTPUT_DIALECT = "duckdb"
 
 
 class SemanticLayer:
@@ -25,6 +33,8 @@ class SemanticLayer:
         preagg_database: str | None = None,
         preagg_schema: str | None = None,
         init_sql: list[str] | None = None,
+        engine: str | None = None,
+        fallback: bool | None = None,
     ):
         """Initialize semantic layer.
 
@@ -48,13 +58,62 @@ class SemanticLayer:
             preagg_schema: Optional schema name for pre-aggregation tables
             init_sql: SQL statements to run after connecting (DuckDB only, e.g.,
                 loading extensions, attaching catalogs, creating secrets)
+            engine: Runtime engine for native query validation/compilation.
+                Supported values are "python", "rust", and "auto". If omitted,
+                legacy SIDEMANTIC_RS_* environment flags are honored.
+            fallback: Whether explicit Rust/auto engine mode may fall back to Python.
+                Defaults to False for engine="rust" and True for engine="auto".
         """
         from sidemantic.db.base import BaseDatabaseAdapter
 
+        if engine is not None:
+            engine = engine.lower()
+            if engine not in {"python", "rust", "auto"}:
+                raise ValueError("engine must be one of: python, rust, auto")
+
         self.graph = SemanticGraph()
+        self._sql_rewrite_cache: dict[tuple[object, ...], str] = {}
+        self._sql_rewrite_cache_limit = 256
         self.use_preaggregations = use_preaggregations
         self.preagg_database = preagg_database
         self.preagg_schema = preagg_schema
+        self.engine = engine or "python"
+        self._strict_rust_sql_generator_entrypoint = is_strict_for("sql_generator_entrypoint")
+        self._strict_rust_query_validation = is_strict_for("semantic_core_query_validation")
+        if engine == "python":
+            self._use_rust_sql_generator = False
+            self._use_rust_query_validation = False
+            self._rust_sql_verify = False
+            self._rust_no_fallback = fallback is False
+        elif engine == "rust":
+            self._use_rust_sql_generator = True
+            self._use_rust_query_validation = True
+            self._rust_sql_verify = False
+            self._rust_no_fallback = not (fallback if fallback is not None else False)
+        elif engine == "auto":
+            self._use_rust_sql_generator = True
+            self._use_rust_query_validation = True
+            self._rust_sql_verify = False
+            self._rust_no_fallback = not (fallback if fallback is not None else True)
+        else:
+            self._use_rust_sql_generator = (
+                os.getenv("SIDEMANTIC_RS_SQL_GENERATOR", "0") == "1" or self._strict_rust_sql_generator_entrypoint
+            )
+            self._use_rust_query_validation = (
+                os.getenv("SIDEMANTIC_RS_QUERY_VALIDATION", "0") == "1" or self._strict_rust_query_validation
+            )
+            self._rust_sql_verify = (
+                os.getenv("SIDEMANTIC_RS_SQL_GENERATOR_VERIFY", "1") == "1"
+                and not self._strict_rust_sql_generator_entrypoint
+            )
+            self._rust_no_fallback = os.getenv("SIDEMANTIC_RS_NO_FALLBACK", "0") == "1"
+        self._rust_module = None
+        if self._use_rust_sql_generator:
+            try:
+                self._rust_module = get_rust_module()
+            except Exception:
+                if self._rust_no_fallback or self._strict_rust_sql_generator_entrypoint:
+                    raise
 
         # Initialize adapter from connection string or use provided adapter
         if isinstance(connection, BaseDatabaseAdapter):
@@ -74,9 +133,23 @@ class SemanticLayer:
                     for stmt in init_sql:
                         self.adapter.execute(stmt)
             elif connection.startswith("duckdb://"):
-                from sidemantic.db.duckdb import DuckDBAdapter
+                try:
+                    from sidemantic.db.duckdb import DuckDBAdapter
+                except ModuleNotFoundError as exc:
+                    if exc.name != "duckdb":
+                        raise
+                    from sidemantic.db.unavailable import UnavailableDatabaseAdapter
 
-                self.adapter = DuckDBAdapter.from_url(connection, init_sql=init_sql)
+                    self.adapter = UnavailableDatabaseAdapter(
+                        dialect="duckdb",
+                        package="duckdb",
+                        install_hint="Install with `pip install duckdb` or use a database adapter available in this environment.",
+                    )
+                    if init_sql:
+                        for stmt in init_sql:
+                            self.adapter.execute(stmt)
+                else:
+                    self.adapter = DuckDBAdapter.from_url(connection, init_sql=init_sql)
                 self.dialect = dialect or "duckdb"
             elif connection.startswith(("postgres://", "postgresql://")):
                 from sidemantic.db.postgres import PostgreSQLAdapter
@@ -143,6 +216,15 @@ class SemanticLayer:
             self.adapter.close()
 
     @property
+    def adapter(self):
+        """Database adapter accessor with legacy _adapter compatibility."""
+        return self._adapter
+
+    @adapter.setter
+    def adapter(self, value):
+        self._adapter = value
+
+    @property
     def conn(self):
         """Get raw database connection for backward compatibility."""
         return self.adapter.raw_connection
@@ -207,6 +289,7 @@ class SemanticLayer:
             )
 
         self.graph.add_model(model)
+        self._sql_rewrite_cache.clear()
 
     def _normalize_model_table(self, model: Model) -> None:
         """Normalize model.table for the active dialect when needed."""
@@ -423,6 +506,7 @@ class SemanticLayer:
             )
 
         self.graph.add_metric(measure)
+        self._sql_rewrite_cache.clear()
 
     def query(
         self,
@@ -435,6 +519,7 @@ class SemanticLayer:
         ungrouped: bool = False,
         parameters: dict[str, any] | None = None,
         use_preaggregations: bool | None = None,
+        post_process: str | None = None,
     ):
         """Execute a query against the semantic layer.
 
@@ -448,6 +533,9 @@ class SemanticLayer:
             ungrouped: If True, return raw rows without aggregation (no GROUP BY)
             parameters: Template parameters for Jinja2 rendering
             use_preaggregations: Override pre-aggregation routing setting for this query
+            post_process: Optional SQL to wrap around the semantic query result.
+                Use {inner} as a placeholder for the compiled semantic query, e.g.:
+                "SELECT *, revenue / count AS avg_value FROM ({inner})"
 
         Returns:
             DuckDB relation object (can convert to DataFrame with .df() or .to_df())
@@ -462,9 +550,55 @@ class SemanticLayer:
             ungrouped=ungrouped,
             parameters=parameters,
             use_preaggregations=use_preaggregations,
+            post_process=post_process,
         )
 
         return self.adapter.execute(sql)
+
+    def get_import_warnings(self) -> list[dict[str, object]]:
+        """Return structured warnings produced while importing model definitions."""
+        return list(getattr(self.graph, "import_warnings", []) or [])
+
+    def describe_models(self, model_names: list[str] | None = None) -> dict[str, object]:
+        """Return UI/FFI-friendly model metadata, including source and DAX/TMDL state."""
+        from sidemantic.core.introspection import describe_graph
+
+        return describe_graph(self.graph, model_names=model_names)
+
+    def chart(
+        self,
+        metric: str | list[str],
+        *,
+        by: str | list[str] | None = None,
+        mark: str = "auto",
+        filters: list[str] | None = None,
+        segments: list[str] | None = None,
+        order_by: list[str] | None = None,
+        limit: int | None = None,
+        title: str | None = None,
+        use_preaggregations: bool | None = None,
+    ):
+        """Create a headless chart builder from semantic fields.
+
+        Examples:
+            >>> chart = layer.chart("orders.revenue", by="orders.created_at__month").line().brush("x")
+            >>> chart.to_vegalite()
+            >>> chart.to_plotly()
+        """
+        from sidemantic.viz import ChartBuilder
+
+        return ChartBuilder(
+            self,
+            metric,
+            by=by,
+            mark=mark,
+            filters=filters,
+            segments=segments,
+            order_by=order_by,
+            limit=limit,
+            title=title,
+            use_preaggregations=use_preaggregations,
+        )
 
     def compile(
         self,
@@ -479,6 +613,8 @@ class SemanticLayer:
         ungrouped: bool = False,
         parameters: dict[str, any] | None = None,
         use_preaggregations: bool | None = None,
+        aliases: dict[str, str] | None = None,
+        post_process: str | None = None,
     ) -> str:
         """Compile a query to SQL without executing.
 
@@ -493,6 +629,10 @@ class SemanticLayer:
             dialect: SQL dialect override (defaults to layer's dialect)
             ungrouped: If True, return raw rows without aggregation (no GROUP BY)
             use_preaggregations: Override pre-aggregation routing setting for this query
+            aliases: Custom output aliases keyed by semantic field reference
+            post_process: Optional SQL to wrap around the semantic query result.
+                Use {inner} as a placeholder for the compiled semantic query, e.g.:
+                "SELECT *, revenue / count AS avg_value FROM ({inner})"
 
         Returns:
             SQL query string
@@ -506,13 +646,103 @@ class SemanticLayer:
         dimensions = dimensions or []
 
         # Validate query
-        errors = validate_query(metrics, dimensions, self.graph)
+        errors = self._validate_query(metrics, dimensions, validate_query)
         if errors:
             raise QueryValidationError("Query validation failed:\n" + "\n".join(f"  - {e}" for e in errors))
 
         # Determine if pre-aggregations should be used
         use_preaggs = use_preaggregations if use_preaggregations is not None else self.use_preaggregations
 
+        inner_sql = None
+        if self._use_rust_sql_generator:
+            inner_sql = self._compile_with_rust(
+                metrics=metrics,
+                dimensions=dimensions,
+                filters=filters,
+                segments=segments,
+                order_by=order_by,
+                limit=limit,
+                offset=offset,
+                dialect=dialect,
+                ungrouped=ungrouped,
+                parameters=parameters,
+                use_preaggregations=use_preaggs,
+                aliases=aliases,
+            )
+            if inner_sql is None and self._strict_rust_sql_generator_entrypoint:
+                raise ValueError("Rust SQL generator returned no SQL in strict mode")
+            if inner_sql is not None and self._rust_sql_verify:
+                python_sql = self._compile_with_python(
+                    metrics=metrics,
+                    dimensions=dimensions,
+                    filters=filters,
+                    segments=segments,
+                    order_by=order_by,
+                    limit=limit,
+                    offset=offset,
+                    dialect=dialect,
+                    ungrouped=ungrouped,
+                    parameters=parameters,
+                    use_preaggregations=use_preaggs,
+                    aliases=aliases,
+                )
+                if inner_sql.strip() != python_sql.strip():
+                    if self._rust_no_fallback or self._strict_rust_sql_generator_entrypoint:
+                        raise ValueError("Rust SQL generator output mismatch with Python SQL generator")
+                    inner_sql = python_sql
+
+        if inner_sql is None:
+            inner_sql = self._compile_with_python(
+                metrics=metrics,
+                dimensions=dimensions,
+                filters=filters,
+                segments=segments,
+                order_by=order_by,
+                limit=limit,
+                offset=offset,
+                dialect=dialect,
+                ungrouped=ungrouped,
+                parameters=parameters,
+                use_preaggregations=use_preaggs,
+                aliases=aliases,
+            )
+
+        return self._apply_post_process(inner_sql, post_process)
+
+    def _validate_query(
+        self,
+        metrics: list[str],
+        dimensions: list[str],
+        python_validate_query: Callable[[list[str], list[str], SemanticGraph], list[str]],
+    ) -> list[str]:
+        from sidemantic.validation import QueryValidationError
+
+        if self._use_rust_query_validation:
+            try:
+                from sidemantic.rust_bridge import validate_query_with_rust
+
+                return validate_query_with_rust(self.graph, metrics, dimensions)
+            except Exception as e:
+                if self._strict_rust_query_validation or self._rust_no_fallback:
+                    raise QueryValidationError(f"Rust query validation failed: {e}") from e
+
+        return python_validate_query(metrics, dimensions, self.graph)
+
+    def _compile_with_python(
+        self,
+        metrics: list[str] | None,
+        dimensions: list[str] | None,
+        filters: list[str] | None,
+        segments: list[str] | None,
+        order_by: list[str] | None,
+        limit: int | None,
+        offset: int | None,
+        dialect: str | None,
+        ungrouped: bool,
+        parameters: dict[str, any] | None,
+        use_preaggregations: bool,
+        aliases: dict[str, str] | None,
+    ) -> str:
         generator = SQLGenerator(
             self.graph,
             dialect=dialect or self.dialect,
@@ -530,8 +760,107 @@ class SemanticLayer:
             offset=offset,
             ungrouped=ungrouped,
             parameters=parameters,
-            use_preaggregations=use_preaggs,
+            use_preaggregations=use_preaggregations,
+            aliases=aliases,
         )
+
+    def _compile_with_rust(
+        self,
+        metrics: list[str] | None,
+        dimensions: list[str] | None,
+        filters: list[str] | None,
+        segments: list[str] | None,
+        order_by: list[str] | None,
+        limit: int | None,
+        offset: int | None,
+        dialect: str | None,
+        ungrouped: bool,
+        parameters: dict[str, any] | None,
+        use_preaggregations: bool,
+        aliases: dict[str, str] | None,
+    ) -> str | None:
+        if not self._rust_module:
+            if self._rust_no_fallback or self._strict_rust_sql_generator_entrypoint:
+                raise ValueError("Rust SQL generator backend is not initialized")
+            return None
+        if aliases:
+            if self._rust_no_fallback or self._strict_rust_sql_generator_entrypoint:
+                raise ValueError("Rust SQL generator backend does not support compile aliases")
+            return None
+
+        payload = {
+            "metrics": metrics or [],
+            "dimensions": dimensions or [],
+            "filters": list(filters or []),
+            "parameter_values": parameters or {},
+            "segments": segments or [],
+            "order_by": order_by or [],
+            "limit": limit,
+            "offset": offset,
+            "ungrouped": ungrouped,
+            "use_preaggregations": bool(use_preaggregations),
+            "preagg_database": self.preagg_database,
+            "preagg_schema": self.preagg_schema,
+        }
+
+        try:
+            models_yaml = graph_to_rust_yaml(self.graph)
+            query_yaml = yaml.safe_dump(payload, sort_keys=False)
+            sql = self._rust_module.compile_with_yaml(models_yaml, query_yaml)
+
+            target_dialect = dialect or self.dialect
+            if target_dialect != _RUST_SQL_OUTPUT_DIALECT:
+                import sqlglot
+
+                sql = sqlglot.transpile(sql, read=_RUST_SQL_OUTPUT_DIALECT, write=target_dialect)[0]
+                if target_dialect == "bigquery":
+                    sql = sql.replace("TIMESTAMP_TRUNC(", "DATE_TRUNC(")
+
+            if "-- sidemantic:" not in sql:
+                generator = SQLGenerator(
+                    self.graph,
+                    dialect=dialect or self.dialect,
+                    preagg_database=self.preagg_database,
+                    preagg_schema=self.preagg_schema,
+                )
+                segment_filters = generator._resolve_segments(segments or [])
+                all_filters = list(filters or []) + segment_filters
+                model_names = generator._find_required_models(metrics or [], dimensions or [], all_filters)
+                sql = (
+                    sql
+                    + "\n"
+                    + generator._generate_instrumentation_comment(
+                        model_names,
+                        metrics or [],
+                        dimensions or [],
+                        used_preagg=False,
+                    )
+                )
+
+            return sql
+        except Exception as e:
+            if self._rust_no_fallback or self._strict_rust_sql_generator_entrypoint:
+                raise ValueError(f"Rust SQL generator failed: {e}") from e
+            return None
+
+    def _apply_post_process(self, inner_sql: str, post_process: str | None) -> str:
+        if post_process is not None:
+            if "{inner}" not in post_process:
+                raise ValueError("post_process must contain a {inner} placeholder")
+
+            # Strip sidemantic instrumentation comment
+            stripped = inner_sql.rstrip()
+            last_line = stripped.split("\n")[-1].strip()
+            if last_line.startswith("-- sidemantic:"):
+                stripped = "\n".join(stripped.split("\n")[:-1])
+
+            # Inner SQL (including any CTEs) is placed directly in the
+            # subquery position. CTEs inside subqueries are valid SQL in
+            # all target databases and naturally scoped, avoiding name
+            # collisions with CTEs in the post_process SQL.
+            return post_process.replace("{inner}", stripped)
+
+        return inner_sql
 
     def explain(
         self,
@@ -780,10 +1109,10 @@ class SemanticLayer:
         path: str | Path,
         connection: str | BaseDatabaseAdapter | None = None,  # type: ignore # noqa: F821
     ) -> SemanticLayer:
-        """Load semantic layer from native YAML file.
+        """Load semantic layer from a native YAML or standalone TMDL file.
 
         Args:
-            path: Path to YAML file
+            path: Path to YAML, SQL, or standalone TMDL file
             connection: Database connection string, adapter instance, or None
                 (overrides connection in YAML file). Pass an adapter instance
                 when your model files don't include connection config, e.g.:
@@ -792,24 +1121,30 @@ class SemanticLayer:
         Returns:
             SemanticLayer instance
         """
-        import yaml
-
-        from sidemantic.adapters.sidemantic import SidemanticAdapter, substitute_env_vars
-
-        adapter = SidemanticAdapter()
-        graph = adapter.parse(path)
-
-        # If connection not provided as parameter, try to read from YAML file
-        # (skip for .sql files which may have multi-document YAML frontmatter)
         path_obj = Path(path)
-        if connection is None and path_obj.suffix in (".yml", ".yaml"):
-            with open(path) as f:
-                content = f.read()
-            # Substitute environment variables
-            content = substitute_env_vars(content)
-            data = yaml.safe_load(content)
-            if data and "connection" in data:
-                connection = data["connection"]
+        if path_obj.suffix.lower() == ".tmdl":
+            from sidemantic.adapters.tmdl import TMDLAdapter
+
+            graph = TMDLAdapter().parse(path)
+        else:
+            import yaml
+
+            from sidemantic.adapters.sidemantic import SidemanticAdapter, substitute_env_vars
+
+            adapter = SidemanticAdapter()
+            graph = adapter.parse(path)
+            cls._mark_loaded_file_source(graph, source_format="Sidemantic", source_file=path_obj.name)
+
+            # If connection not provided as parameter, try to read from YAML file
+            # (skip for .sql files which may have multi-document YAML frontmatter)
+            if connection is None and path_obj.suffix in (".yml", ".yaml"):
+                with open(path) as f:
+                    content = f.read()
+                # Substitute environment variables
+                content = substitute_env_vars(content)
+                data = yaml.safe_load(content)
+                if data and "connection" in data:
+                    connection = data["connection"]
 
         # Convert dict-style connection config to URL string
         if isinstance(connection, dict):
@@ -823,6 +1158,19 @@ class SemanticLayer:
         layer.graph = graph
 
         return layer
+
+    @staticmethod
+    def _mark_loaded_file_source(graph, *, source_format: str, source_file: str) -> None:
+        for model in graph.models.values():
+            if not hasattr(model, "_source_format"):
+                model._source_format = source_format
+            if not hasattr(model, "_source_file"):
+                model._source_file = source_file
+        for metric in graph.metrics.values():
+            if not hasattr(metric, "_source_format"):
+                metric._source_format = source_format
+            if not hasattr(metric, "_source_file"):
+                metric._source_file = source_file
 
     @staticmethod
     def _connection_dict_to_url(config: dict) -> str:
@@ -860,6 +1208,9 @@ class SemanticLayer:
         """
         from urllib.parse import quote, urlencode
 
+        def quote_userinfo(value) -> str:
+            return quote(str(value), safe="")
+
         conn_type = config.get("type", "duckdb").lower()
 
         if conn_type == "duckdb":
@@ -876,9 +1227,9 @@ class SemanticLayer:
             password = config.get("password", "")
 
             if user and password:
-                return f"postgres://{quote(user)}:{quote(password)}@{host}:{port}/{database}"
+                return f"postgres://{quote_userinfo(user)}:{quote_userinfo(password)}@{host}:{port}/{database}"
             elif user:
-                return f"postgres://{quote(user)}@{host}:{port}/{database}"
+                return f"postgres://{quote_userinfo(user)}@{host}:{port}/{database}"
             else:
                 return f"postgres://{host}:{port}/{database}"
 
@@ -904,9 +1255,9 @@ class SemanticLayer:
                 path += f"/{schema}"
 
             if user and password:
-                return f"snowflake://{quote(user)}:{quote(password)}@{account}{path}"
+                return f"snowflake://{quote_userinfo(user)}:{quote_userinfo(password)}@{account}{path}"
             elif user:
-                return f"snowflake://{quote(user)}@{account}{path}"
+                return f"snowflake://{quote_userinfo(user)}@{account}{path}"
             else:
                 return f"snowflake://{account}{path}"
 
@@ -918,9 +1269,9 @@ class SemanticLayer:
             password = config.get("password", "")
 
             if user and password:
-                return f"clickhouse://{quote(user)}:{quote(password)}@{host}:{port}/{database}"
+                return f"clickhouse://{quote_userinfo(user)}:{quote_userinfo(password)}@{host}:{port}/{database}"
             elif user:
-                return f"clickhouse://{quote(user)}@{host}:{port}/{database}"
+                return f"clickhouse://{quote_userinfo(user)}@{host}:{port}/{database}"
             else:
                 return f"clickhouse://{host}:{port}/{database}"
 
@@ -934,7 +1285,7 @@ class SemanticLayer:
             if not http_path:
                 raise ValueError("Databricks connection requires 'http_path' field")
 
-            return f"databricks://{token}@{server}/{http_path}"
+            return f"databricks://{quote_userinfo(token)}@{server}/{http_path}"
 
         elif conn_type == "spark":
             host = config.get("host", "localhost")
@@ -985,10 +1336,39 @@ class SemanticLayer:
         """
         from sidemantic.sql.query_rewriter import QueryRewriter
 
-        rewriter = QueryRewriter(self.graph, dialect=self.dialect)
-        rewritten_sql = rewriter.rewrite(query)
+        cache_key = (
+            getattr(self.graph, "_version", 0),
+            self.dialect,
+            self.use_preaggregations,
+            os.getenv("SIDEMANTIC_RS_REWRITER", "0"),
+            os.getenv("SIDEMANTIC_RS_NO_FALLBACK", "0"),
+            query,
+        )
+        rewritten_sql = self._sql_rewrite_cache.get(cache_key)
+        if rewritten_sql is None:
+            rewriter = QueryRewriter(self.graph, dialect=self.dialect, use_preaggregations=self.use_preaggregations)
+            rewritten_sql = rewriter.rewrite(query)
+            if len(self._sql_rewrite_cache) >= self._sql_rewrite_cache_limit:
+                self._sql_rewrite_cache.pop(next(iter(self._sql_rewrite_cache)))
+            self._sql_rewrite_cache[cache_key] = rewritten_sql
 
         return self.adapter.execute(rewritten_sql)
+
+    def explain_sql(self, query: str, strict: bool = True):
+        """Explain semantic SQL rewrite planning without executing the query.
+
+        Args:
+            query: SQL query like "SELECT orders.revenue, orders.status FROM orders"
+            strict: If True, raise errors for invalid SQL or unsupported rewrites.
+                    If False, return a passthrough explanation when possible.
+
+        Returns:
+            RewriteExplanation with the chosen plan, candidate plans, and rewritten SQL.
+        """
+        from sidemantic.sql.query_rewriter import QueryRewriter
+
+        rewriter = QueryRewriter(self.graph, dialect=self.dialect, use_preaggregations=self.use_preaggregations)
+        return rewriter.explain(query, strict=strict)
 
     def to_yaml(self, path: str | Path) -> None:
         """Export semantic layer to native YAML file.

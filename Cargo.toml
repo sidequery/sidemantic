@@ -1,0 +1,18 @@
+[workspace]
+members = [
+    "sidemantic-rs",
+    "crates/dax-parser",
+    "crates/dax-pyo3",
+]
+resolver = "2"
+
+# Size-optimized profile for the browser WASM bundle only. Kept separate from
+# the default release profile so the pyo3 extension crates are unaffected
+# (panic = "abort" breaks pyo3's panic-to-exception handling).
+[profile.wasm-release]
+inherits = "release"
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

@@ -23,6 +23,7 @@ from sidemantic.adapters.osi import OSIAdapter
 from sidemantic.adapters.rill import RillAdapter
 from sidemantic.adapters.snowflake import SnowflakeAdapter
 from sidemantic.adapters.superset import SupersetAdapter
+from sidemantic.adapters.tableau import TableauAdapter
 from sidemantic.adapters.thoughtspot import ThoughtSpotAdapter
 from sidemantic.sql.generator import SQLGenerator
 from tests.adapters.test_added_fixture_coverage import (
@@ -52,14 +53,13 @@ ADAPTER_FIXTURE_ROOTS = [
     ("rill", RillAdapter, {".yml", ".yaml"}),
     ("snowflake", SnowflakeAdapter, {".yml", ".yaml"}),
     ("superset", SupersetAdapter, {".yml", ".yaml"}),
+    ("tableau", TableauAdapter, {".tds"}),
     ("thoughtspot", ThoughtSpotAdapter, {".tml"}),
 ]
 
 EXPECTED_PARSE_FAILURES = {
     "tests/fixtures/gooddata/ecommerce_demo_analytics.json": GoodDataParseError,
     "tests/fixtures/gooddata/sdk_declarative_analytics_model.json": GoodDataParseError,
-    "tests/fixtures/gooddata/sdk_declarative_ldm.json": ValidationError,
-    "tests/fixtures/gooddata/sdk_declarative_ldm_with_sql_dataset.json": ValidationError,
     "tests/fixtures/metricflow/sub_daily_grain_to_date_hour.yml": ValidationError,
     "tests/fixtures/metricflow/sub_daily_millisecond.yml": ValidationError,
 }
@@ -77,15 +77,15 @@ EXPECTED_EMPTY_GRAPH_FIXTURES = {
     "tests/fixtures/atscale_sml_kitchen_sink/model_internet_sales.yml",
     "tests/fixtures/atscale_sml_kitchen_sink/model_orders.yml",
     "tests/fixtures/atscale_sml_kitchen_sink/model_returns.yml",
+    "tests/fixtures/atscale_sml_kitchen_sink/package_shared_dims.yml",
+    "tests/fixtures/atscale_sml_kitchen_sink/packages/shared_repos.yml",
     "tests/fixtures/atscale_sml_kitchen_sink/row_security_country.yml",
     "tests/fixtures/cube/rbac_views.yaml",
     "tests/fixtures/holistics/ecommerce.dataset.aml",
     "tests/fixtures/holistics/relationships.aml",
     "tests/fixtures/holistics_kitchen_sink/constants.aml",
     "tests/fixtures/holistics_kitchen_sink/extensions.aml",
-    "tests/fixtures/holistics_kitchen_sink/kitchen_sink.dataset.aml",
     "tests/fixtures/holistics_kitchen_sink/relationships.aml",
-    "tests/fixtures/holistics_kitchen_sink/transactions.dataset.aml",
     "tests/fixtures/lookml/ecommerce_explores.lkml",
     "tests/fixtures/lookml/kitchen_sink_explores.lkml",
     "tests/fixtures/lookml/lkml_model_all_fields.model.lkml",
@@ -98,10 +98,16 @@ EXPECTED_EMPTY_GRAPH_FIXTURES = {
     "tests/fixtures/lookml/segment_attribution_model.model.lkml",
     "tests/fixtures/omni/estore/model.yaml",
     "tests/fixtures/omni/estore/relationships.yaml",
+    # Topic files reference views but define no models of their own; parsed
+    # standalone they yield an empty graph.
+    "tests/fixtures/omni/estore/topics/Customers.topic.yaml",
+    "tests/fixtures/omni/estore/topics/Events.topic.yaml",
+    "tests/fixtures/omni/estore/topics/sessions.topic.yaml",
     "tests/fixtures/omni/model.yaml",
     "tests/fixtures/rill/bids_canvas.yaml",
     "tests/fixtures/rill/bids_explore.yaml",
     "tests/fixtures/rill/nyc_trips_dashboard.yaml",
+    "tests/fixtures/tableau/real_world/document_api_multiple_connections.twb",
     "tests/fixtures/thoughtspot/tpch_liveboard.liveboard.tml",
 }
 
@@ -124,9 +130,10 @@ EXPECTED_LOW_SIGNAL_FIXTURES = {
     "tests/fixtures/malloy/ecommerce_malloydata.malloy",
     "tests/fixtures/malloy/flights_cube.malloy",
     "tests/fixtures/malloy/ga4_config.malloy",
-    "tests/fixtures/omni/estore/topics/Customers.topic.yaml",
-    "tests/fixtures/omni/estore/topics/Events.topic.yaml",
-    "tests/fixtures/omni/estore/topics/sessions.topic.yaml",
+    # Rill derived (parent) metrics view: selects fields from a parent, defines none itself.
+    "tests/fixtures/rill/derived_metrics.yaml",
+    "tests/fixtures/tableau/real_world/document_api_tableau10.tds",
+    "tests/fixtures/tableau/real_world/document_api_tableau93.tds",
 }
 
 NON_EXECUTION_REASON_ALLOWED_ADAPTERS = {
@@ -140,8 +147,16 @@ NON_EXECUTION_REASON_ALLOWED_ADAPTERS = {
         "RillAdapter",
         "ThoughtSpotAdapter",
     },
-    "source_fragments_without_fields": {"AtScaleSMLAdapter", "MalloyAdapter"},
-    "semantic_only_no_sources": {"AtScaleSMLAdapter", "LookMLAdapter", "MalloyAdapter", "OmniAdapter"},
+    "source_fragments_without_fields": {"AtScaleSMLAdapter", "MalloyAdapter", "RillAdapter"},
+    "semantic_only_no_sources": {
+        "AtScaleSMLAdapter",
+        "HolisticsAdapter",
+        "LookMLAdapter",
+        "MalloyAdapter",
+        "OmniAdapter",
+        "RillAdapter",
+        "TableauAdapter",
+    },
     "complex_or_nonportable_sql_fields": {"LookMLAdapter"},
 }
 
@@ -162,6 +177,7 @@ EXACT_SEMANTIC_ADAPTER_FIXTURES = {
     "RillAdapter": "tests/fixtures/rill/cost_monitoring.yaml",
     "SnowflakeAdapter": "tests/fixtures/snowflake/customer_loyalty_metrics.yaml",
     "SupersetAdapter": "tests/fixtures/superset/covid_dashboard.yaml",
+    "TableauAdapter": "tests/fixtures/tableau/kitchen_sink.tds",
     "ThoughtSpotAdapter": "tests/fixtures/thoughtspot/kitchen_sink.table.tml",
 }
 

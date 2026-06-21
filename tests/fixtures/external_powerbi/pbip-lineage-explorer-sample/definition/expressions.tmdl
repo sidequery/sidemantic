@@ -1,0 +1,8 @@
+expression sales_src = m
+	let
+		Source = Sql.Database("myserver.database.windows.net", "mydb"),
+		dbo_Sales = Source{[Schema="dbo",Item="fact_sales"]}[Data],
+		Renamed = Table.RenameColumns(dbo_Sales, {{"order_date", "OrderDate"}, {"sale_amount", "Amount"}, {"product_id", "ProductID"}, {"customer_id", "CustomerID"}, {"qty", "Quantity"}})
+	in
+		Renamed
+	lineageTag: abc123

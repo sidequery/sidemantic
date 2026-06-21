@@ -1,3 +1,5 @@
+version: "0.2.0.dev0"
+
 semantic_model:
   - name: tpcds_analytics
     description: TPC-DS benchmark semantic model

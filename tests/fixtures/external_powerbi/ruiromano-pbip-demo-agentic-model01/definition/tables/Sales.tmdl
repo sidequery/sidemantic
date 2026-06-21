@@ -1,0 +1,255 @@
+table Sales
+
+	measure '# Customers (w/ Sales)' = DISTINCTCOUNT('Sales'[CustomerKey])
+		formatString: #,##0
+
+	measure '# Products (w/ Sales)' = DISTINCTCOUNT('Sales'[ProductKey])
+		formatString: #,##0
+
+	measure 'Sales Qty' = sum('Sales'[Quantity])
+		formatString: #,##0
+
+	measure 'Sales Amount' = SUMX('Sales', 'Sales'[Quantity] * 'Sales'[Net Price])
+		formatString: $ #,##0
+
+
+	/// Sales Amount Last Year considering a full month
+	measure 'Sales Amount (LY)' = IF ([Sales Amount] > 0, CALCULATE([Sales Amount], SAMEPERIODLASTYEAR('Calendar'[Date])))
+		formatString: "€"#,0.###############;("€"#,0.###############);"€"#,0.###############
+
+
+	measure 'Sales Amount Avg per Day' = AVERAGEX(VALUES('Calendar'[Date]), [Sales Amount])
+		formatString: $ #,##0
+
+	measure Margin =
+			SUMX (
+			    Sales,
+			    Sales[Quantity]
+			        * ( Sales[Net Price] - Sales[Unit Cost] )
+			)
+		formatString: $ #,##0
+
+	measure 'Margin (LY)' = CALCULATE([Margin], SAMEPERIODLASTYEAR('Calendar'[Date]))
+		formatString: $ #,##0
+
+	measure '# Sales' = COUNTROWS('Sales')
+		formatString: #,##02
+
+	measure 'Sales Amount (12M average)' =
+
+			VAR v_selDate =
+			    MAX ( 'Calendar'[Date] )
+			VAR v_period =
+			    DATESINPERIOD ( 'Calendar'[Date], v_selDate, -12, MONTH )
+			VAR v_result =
+			    CALCULATE ( AVERAGEX ( VALUES ( 'Calendar'[Date] ), [Sales Amount] ), v_period )
+			VAR v_firstDate =
+			    MINX ( v_period, 'Calendar'[Date] )
+			VAR v_lastDateSales =
+			    MAX ( Sales[Order Date] )
+			RETURN
+			    IF ( v_firstDate <= v_lastDateSales, v_result )
+		formatString: $ #,##0
+
+
+	measure 'Sales Amount (6M average)' =
+			VAR v_selDate =
+			    MAX ( 'Calendar'[Date] )
+			VAR v_period =
+			    DATESINPERIOD ( 'Calendar'[Date], v_selDate, -6, MONTH )
+			VAR v_result =
+			    CALCULATE ( AVERAGEX ( VALUES ( 'Calendar'[Date] ), [Sales Amount] ), v_period )
+			VAR v_firstDate =
+			    MINX ( v_period, 'Calendar'[Date] )
+			VAR v_lastDateSales =
+			    MAX ( Sales[Order Date] )
+			RETURN
+			    IF ( v_firstDate <= v_lastDateSales, v_result )
+		formatString: $ #,##0
+
+	measure 'Margin %' = DIVIDE ( [Margin], [Sales Amount] )
+		formatString: #,##0.00 %
+
+	measure Cost = SUMX ( Sales, Sales[Quantity] * Sales[Unit Cost] )
+		formatString: $ #,##0
+
+	column 'Order Number'
+		dataType: int64
+		formatString: 0
+		summarizeBy: none
+		sourceColumn: Order Number
+
+	column 'Line Number'
+		dataType: int64
+		formatString: 0
+		summarizeBy: none
+		sourceColumn: Line Number
+
+	column 'Order Date'
+		dataType: dateTime
+		formatString: Long Date
+		summarizeBy: none
+		sourceColumn: Order Date
+
+	column 'Delivery Date'
+		dataType: dateTime
+		formatString: Long Date
+		summarizeBy: none
+		sourceColumn: Delivery Date
+
+	column CustomerKey
+		dataType: int64
+		isHidden
+		formatString: 0
+		isAvailableInMdx: false
+		summarizeBy: none
+		sourceColumn: CustomerKey
+
+	column StoreKey
+		dataType: int64
+		isHidden
+		formatString: 0
+		isAvailableInMdx: false
+		summarizeBy: none
+		sourceColumn: StoreKey
+
+	column ProductKey
+		dataType: int64
+		isHidden
+		formatString: 0
+		isAvailableInMdx: false
+		summarizeBy: none
+		sourceColumn: ProductKey
+
+	column 'Unit Cost'
+		dataType: decimal
+		isHidden
+		isAvailableInMdx: false
+		summarizeBy: sum
+		sourceColumn: Unit Cost
+
+
+	column 'Currency Code'
+		dataType: string
+		summarizeBy: none
+		sourceColumn: Currency Code
+
+	column 'Exchange Rate'
+		dataType: decimal
+		summarizeBy: none
+		sourceColumn: Exchange Rate
+
+
+	column Environment
+		dataType: string
+		summarizeBy: none
+		sourceColumn: Environment
+
+	column Time
+		dataType: dateTime
+		formatString: Long Time
+		summarizeBy: none
+		sourceColumn: Time
+
+	column Quantity
+		dataType: int64
+		formatString: 0
+		summarizeBy: sum
+		sourceColumn: Quantity
+
+	column 'Net Price'
+		dataType: decimal
+		formatString: "€"#,0.###############;("€"#,0.###############);"€"#,0.###############
+		summarizeBy: sum
+		sourceColumn: Net Price
+
+
+	partition Sales-ddb4c40b-46fd-49ea-9a19-16e7e640a21a = m
+		mode: import
+		source = ```
+				let
+					// RAW data
+					Source = Csv.Document(
+						Web.Contents(HttpSource, [RelativePath = "RAW-Sales.csv"]),
+						[
+							Delimiter = ",",
+							Columns = 13,
+							Encoding = 65001,
+							QuoteStyle = QuoteStyle.None
+						]
+					),
+					#"Promoted Headers" = Table.PromoteHeaders(Source, [PromoteAllScalars = true]),
+					#"Changed Column Types" = Table.TransformColumnTypes(
+						#"Promoted Headers",
+						{
+							{"Order Number", Int64.Type},
+							{"Line Number", Int64.Type},
+							{"Order Date", type date},
+							{"Delivery Date", type date},
+							{"CustomerKey", Int64.Type},
+							{"StoreKey", Int64.Type},
+							{"ProductKey", Int64.Type},
+							{"Quantity", Int64.Type},
+							{"Unit Price", Currency.Type},
+							{"Net Price", Currency.Type},
+							{"Unit Cost", Currency.Type},
+							{"Currency Code", type text},
+							{"Exchange Rate", Currency.Type}
+						}
+					),
+					#"Added 'Time'" = Table.AddColumn(
+						#"Changed Column Types",
+						"Time",
+						each #time(Number.RoundDown(Number.RandomBetween(0, 23), 0), Number.RoundDown(Number.RandomBetween(0, 59), 0), 0),
+						type time
+					),
+					// Randomize data
+					minDate = List.Min(#"Added 'Time'"[Order Date]),
+					numYearsOnDummyData = 3,
+					yearsDiff = (Date.Year(DateTime.LocalNow()) - numYearsOnDummyData) - Date.Year(minDate),
+					#"AdjustDates" = Table.TransformColumns(
+						#"Added 'Time'",
+						{{"Order Date", each Date.AddYears(_, yearsDiff)}, {"Delivery Date", each Date.AddYears(_, yearsDiff)}}
+					),
+					#"Added [NewQuantity]" = Table.AddColumn(
+						#"AdjustDates",
+						"NewQuantity",
+						each
+							Number.RoundDown(
+								Number.RandomBetween(
+									List.Max({1, [Quantity] - ([Quantity] * Randomizer)}), List.Min(
+										{[Quantity], [Quantity] + ([Quantity] * Randomizer)}
+									)
+								)
+							),
+						Int64.Type
+					),
+					#"Added [NewNetPrice]" = Table.AddColumn(
+						#"Added [NewQuantity]",
+						"NewNetPrice",
+						each
+							Number.Round(
+								Number.RandomBetween(
+									List.Max({1, [Net Price] - ([Net Price] * Randomizer)}),
+									List.Min({[Net Price], [Net Price] + ([Net Price] * Randomizer)})
+								),
+								3
+							),
+						Currency.Type
+					),
+					#"Removed Columns" = Table.RemoveColumns(#"Added [NewNetPrice]", {"Quantity", "Net Price"}),
+					#"Renamed Columns" = Table.RenameColumns(
+						#"Removed Columns", {{"NewQuantity", "Quantity"}, {"NewNetPrice", "Net Price"}}
+					),
+					#"Removed Columns2" = Table.RemoveColumns(#"Renamed Columns", {"Unit Price"}),
+					#"Changed Type1" = Table.TransformColumnTypes(
+						#"Removed Columns2", {{"Delivery Date", type datetime}, {"Order Date", type datetime}}
+					),
+					#"Filtered Rows" = Table.SelectRows(#"Changed Type1", each [Order Date] >= RangeStart and [Order Date] <= RangeEnd),
+					#"Changed Type2" = Table.TransformColumnTypes(
+						#"Filtered Rows", {{"Delivery Date", type date}, {"Order Date", type date}}
+					),
+					#"Added Custom" = Table.AddColumn(#"Changed Type2", "Environment", each Environment, type text)
+				in
+					#"Added Custom"
+			```

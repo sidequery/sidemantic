@@ -4,30 +4,36 @@
 #include "duckdb/parser/parser.hpp"
 #include "duckdb/parser/statement/extension_statement.hpp"
 #include "duckdb/function/table_function.hpp"
+#include "sidemantic.h"
 
-// Rust FFI
-extern "C" {
-    struct SidemanticRewriteResult {
-        char *sql;
-        char *error;
-        bool was_rewritten;
-    };
-
-    char *sidemantic_load_yaml(const char *yaml);
-    char *sidemantic_load_file(const char *path);
-    void sidemantic_clear(void);
-    bool sidemantic_is_model(const char *table_name);
-    char *sidemantic_list_models(void);
-    SidemanticRewriteResult sidemantic_rewrite(const char *sql);
-    void sidemantic_free(char *ptr);
-    void sidemantic_free_result(SidemanticRewriteResult result);
-    char *sidemantic_define(const char *definition_sql, const char *db_path, bool replace);
-    char *sidemantic_autoload(const char *db_path);
-    char *sidemantic_add_definition(const char *definition_sql, const char *db_path, bool is_replace);
-    char *sidemantic_use(const char *model_name);
-}
+#include <cctype>
+#include <cstdint>
 
 namespace duckdb {
+
+static std::string DatabasePath(DatabaseInstance &db) {
+    auto &db_config = db.config;
+    if (!db_config.options.database_path.empty()) {
+        return db_config.options.database_path;
+    }
+    return "";
+}
+
+static std::string ContextKey(DatabaseInstance &db) {
+    auto path = DatabasePath(db);
+    if (!path.empty()) {
+        return "duckdb:" + path;
+    }
+    return "duckdb:memory:" + std::to_string(reinterpret_cast<uintptr_t>(&db));
+}
+
+static const char *ContextKeyPtr(const std::string &context_key) {
+    return context_key.empty() ? nullptr : context_key.c_str();
+}
+
+static const SidemanticParserInfo *ParserInfo(ParserExtensionInfo *info) {
+    return dynamic_cast<const SidemanticParserInfo *>(info);
+}
 
 //=============================================================================
 // TABLE FUNCTION: sidemantic_load(yaml)
@@ -59,7 +65,8 @@ static void SidemanticLoadFunction(ClientContext &context, TableFunctionInput &d
     }
     data.done = true;
 
-    char *error = sidemantic_load_yaml(data.yaml_content.c_str());
+    auto context_key = ContextKey(*context.db);
+    char *error = sidemantic_load_yaml_for_context(ContextKeyPtr(context_key), data.yaml_content.c_str());
     if (error) {
         string error_msg(error);
         sidemantic_free(error);
@@ -100,7 +107,8 @@ static void SidemanticLoadFileFunction(ClientContext &context, TableFunctionInpu
     }
     data.done = true;
 
-    char *error = sidemantic_load_file(data.file_path.c_str());
+    auto context_key = ContextKey(*context.db);
+    char *error = sidemantic_load_file_for_context(ContextKeyPtr(context_key), data.file_path.c_str());
     if (error) {
         string error_msg(error);
         sidemantic_free(error);
@@ -136,7 +144,8 @@ static void SidemanticModelsFunction(ClientContext &context, TableFunctionInput 
     }
     data.done = true;
 
-    char *models_str = sidemantic_list_models();
+    auto context_key = ContextKey(*context.db);
+    char *models_str = sidemantic_list_models_for_context(ContextKeyPtr(context_key));
     if (!models_str) {
         output.SetCardinality(0);
         return;
@@ -176,7 +185,12 @@ static void SidemanticRewriteSqlFunction(DataChunk &args, ExpressionState &state
     auto &sql_vector = args.data[0];
     UnaryExecutor::Execute<string_t, string_t>(
         sql_vector, result, args.size(), [&](string_t sql) {
-            SidemanticRewriteResult res = sidemantic_rewrite(sql.GetString().c_str());
+            std::string context_key;
+            if (state.HasContext()) {
+                context_key = ContextKey(*state.GetContext().db);
+            }
+            SidemanticRewriteResult res =
+                sidemantic_rewrite_for_context(ContextKeyPtr(context_key), sql.GetString().c_str());
 
             if (res.error) {
                 string error_msg(res.error);
@@ -250,6 +264,270 @@ static bool StartsWithKeyword(const std::string &str, const std::string &keyword
 
     end_pos = start + keyword.size();
     return true;
+}
+
+static std::string TrimCopy(const std::string &value) {
+    size_t start = 0;
+    while (start < value.size() && std::isspace(value[start])) {
+        start++;
+    }
+    size_t end = value.size();
+    while (end > start && std::isspace(value[end - 1])) {
+        end--;
+    }
+    return value.substr(start, end - start);
+}
+
+static std::string LowerCopy(const std::string &value) {
+    std::string result;
+    result.reserve(value.size());
+    for (auto ch : value) {
+        result.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
+    }
+    return result;
+}
+
+static bool StartsWithSemanticQueryKeyword(const std::string &query) {
+    size_t pos = 0;
+    return StartsWithKeyword(query, "SELECT", pos) || StartsWithKeyword(query, "WITH", pos);
+}
+
+static bool QueryContainsLoadedModelQualifier(const char *context_key_ptr,
+                                              const std::string &query) {
+    char *models_ptr = sidemantic_list_models_for_context(context_key_ptr);
+    if (!models_ptr) {
+        return false;
+    }
+
+    std::string models(models_ptr);
+    sidemantic_free(models_ptr);
+    auto lower_query = LowerCopy(query);
+
+    size_t start = 0;
+    while (start < models.size()) {
+        auto comma = models.find(',', start);
+        auto model = TrimCopy(models.substr(
+            start, comma == std::string::npos ? std::string::npos : comma - start));
+        if (!model.empty()) {
+            auto qualifier = LowerCopy(model) + ".";
+            if (lower_query.find(qualifier) != std::string::npos) {
+                return true;
+            }
+        }
+        if (comma == std::string::npos) {
+            break;
+        }
+        start = comma + 1;
+    }
+
+    return false;
+}
+
+static bool IsCompactModelStatement(const std::string &query) {
+    size_t model_pos = 0;
+    if (!StartsWithKeyword(query, "MODEL", model_pos)) {
+        return false;
+    }
+
+    auto rest = query.substr(model_pos);
+    size_t start = 0;
+    while (start < rest.size() && std::isspace(static_cast<unsigned char>(rest[start]))) {
+        start++;
+    }
+
+    size_t end = start;
+    while (end < rest.size() &&
+           (std::isalnum(static_cast<unsigned char>(rest[end])) || rest[end] == '_')) {
+        end++;
+    }
+    if (end == start) {
+        return false;
+    }
+
+    size_t from_pos = 0;
+    return StartsWithKeyword(rest.substr(end), "FROM", from_pos);
+}
+
+static bool IsModelBlockStatement(const std::string &query) {
+    size_t model_pos = 0;
+    if (!StartsWithKeyword(query, "MODEL", model_pos)) {
+        return false;
+    }
+
+    auto rest = query.substr(model_pos);
+    size_t start = 0;
+    while (start < rest.size() && std::isspace(static_cast<unsigned char>(rest[start]))) {
+        start++;
+    }
+    return start < rest.size() && rest[start] == '(';
+}
+
+static std::string NativeItemDefinitionType(const std::string &query) {
+    size_t pos = 0;
+    if (StartsWithKeyword(query, "METRIC", pos)) {
+        return "METRIC";
+    }
+    if (StartsWithKeyword(query, "DIMENSION", pos)) {
+        return "DIMENSION";
+    }
+    if (StartsWithKeyword(query, "SEGMENT", pos)) {
+        return "SEGMENT";
+    }
+    return "";
+}
+
+static bool IsBareIdentifier(const std::string &value) {
+    if (value.empty() || !(std::isalpha(value[0]) || value[0] == '_')) {
+        return false;
+    }
+    for (auto ch : value) {
+        if (!(std::isalnum(ch) || ch == '_')) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool StartsWithNameProperty(const std::string &value, size_t pos) {
+    const std::string keyword = "name";
+    if (pos + keyword.size() >= value.size()) {
+        return false;
+    }
+    for (size_t i = 0; i < keyword.size(); i++) {
+        if (std::tolower(value[pos + i]) != keyword[i]) {
+            return false;
+        }
+    }
+    auto separator = value[pos + keyword.size()];
+    return std::isspace(separator) || separator == ':' || separator == '=';
+}
+
+static bool ExtractModelNameProperty(const std::string &body, std::string &name, std::string &error) {
+    auto open = body.find('(');
+    if (open == std::string::npos) {
+        return false;
+    }
+
+    size_t pos = open + 1;
+    bool in_single_quote = false;
+    bool in_double_quote = false;
+    int paren_depth = 0;
+    int bracket_depth = 0;
+    int brace_depth = 0;
+
+    while (pos < body.size()) {
+        while (pos < body.size() && paren_depth == 0 && bracket_depth == 0 &&
+               brace_depth == 0 && (std::isspace(body[pos]) || body[pos] == ',')) {
+            pos++;
+        }
+        if (pos >= body.size() ||
+            (paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 && body[pos] == ')')) {
+            return false;
+        }
+
+        if (paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 &&
+            StartsWithNameProperty(body, pos)) {
+            pos += 4;
+            while (pos < body.size() && std::isspace(body[pos])) {
+                pos++;
+            }
+            if (pos < body.size() && (body[pos] == ':' || body[pos] == '=')) {
+                pos++;
+                while (pos < body.size() && std::isspace(body[pos])) {
+                    pos++;
+                }
+            }
+            if (pos < body.size() && (body[pos] == '\'' || body[pos] == '"')) {
+                auto quote = body[pos];
+                pos++;
+                std::string quoted_name;
+                while (pos < body.size()) {
+                    auto ch = body[pos];
+                    if (ch == quote) {
+                        if (pos + 1 < body.size() && body[pos + 1] == quote) {
+                            quoted_name.push_back(quote);
+                            pos += 2;
+                            continue;
+                        }
+                        name = quoted_name;
+                        return true;
+                    }
+                    quoted_name.push_back(ch);
+                    pos++;
+                }
+                error = "CREATE MODEL body name is unterminated";
+                return false;
+            }
+            size_t name_start = pos;
+            while (pos < body.size() && (std::isalnum(body[pos]) || body[pos] == '_')) {
+                pos++;
+            }
+            if (pos > name_start) {
+                name = body.substr(name_start, pos - name_start);
+                return true;
+            }
+            error = "CREATE MODEL body name must be a bare or quoted identifier";
+            return false;
+        }
+
+        while (pos < body.size()) {
+            auto ch = body[pos];
+            if (in_single_quote) {
+                if (ch == '\'' && pos + 1 < body.size() && body[pos + 1] == '\'') {
+                    pos += 2;
+                    continue;
+                }
+                if (ch == '\'') {
+                    in_single_quote = false;
+                }
+                pos++;
+                continue;
+            }
+            if (in_double_quote) {
+                if (ch == '"' && pos + 1 < body.size() && body[pos + 1] == '"') {
+                    pos += 2;
+                    continue;
+                }
+                if (ch == '"') {
+                    in_double_quote = false;
+                }
+                pos++;
+                continue;
+            }
+
+            if (ch == '\'') {
+                in_single_quote = true;
+            } else if (ch == '"') {
+                in_double_quote = true;
+            } else if (ch == '(') {
+                paren_depth++;
+            } else if (ch == ')') {
+                if (paren_depth > 0) {
+                    paren_depth--;
+                } else if (bracket_depth == 0 && brace_depth == 0) {
+                    return false;
+                }
+            } else if (ch == '[') {
+                bracket_depth++;
+            } else if (ch == ']') {
+                if (bracket_depth > 0) {
+                    bracket_depth--;
+                }
+            } else if (ch == '{') {
+                brace_depth++;
+            } else if (ch == '}') {
+                if (brace_depth > 0) {
+                    brace_depth--;
+                }
+            } else if (ch == ',' && paren_depth == 0 && bracket_depth == 0 &&
+                       brace_depth == 0) {
+                break;
+            }
+            pos++;
+        }
+    }
+
+    return false;
 }
 
 // Check if query is a CREATE [OR REPLACE] METRIC/DIMENSION/SEGMENT statement
@@ -379,7 +657,7 @@ static std::string IsDefinitionStatement(const std::string &query, std::string &
 // Check if stripped query is a CREATE [OR REPLACE] MODEL statement
 // Returns: 0 = not a create model, 1 = create model, 2 = create or replace model
 // Sets definition to be in nom-parser format: "MODEL (name ..., ...)"
-static int IsCreateModelStatement(const std::string &query, std::string &definition) {
+static int IsCreateModelStatement(const std::string &query, std::string &definition, std::string &error) {
     size_t pos = 0;
 
     // Check for CREATE
@@ -423,34 +701,122 @@ static int IsCreateModelStatement(const std::string &query, std::string &definit
         return 0; // No parenthesis found
     }
 
-    // Build definition in nom format: "MODEL (name ..., ...)"
-    // The content inside parens should already have "name xxx" as first property
-    definition = "MODEL " + rest.substr(paren_pos);
+    auto outer_name = TrimCopy(rest.substr(0, paren_pos));
+    auto body = rest.substr(paren_pos);
+    if (!outer_name.empty() && !IsBareIdentifier(outer_name)) {
+        error = "Invalid CREATE MODEL name: " + outer_name;
+        return -1;
+    }
+
+    std::string inner_name;
+    std::string name_error;
+    if (!outer_name.empty() && ExtractModelNameProperty(body, inner_name, name_error)) {
+        if (inner_name != outer_name) {
+            error = "CREATE MODEL name '" + outer_name + "' does not match body name '" + inner_name + "'";
+            return -1;
+        }
+        definition = "MODEL " + body;
+        return is_replace ? 2 : 1;
+    }
+    if (!name_error.empty()) {
+        error = name_error;
+        return -1;
+    }
+
+    if (!outer_name.empty()) {
+        auto after_open = body.substr(1);
+        auto trimmed_after_open = TrimCopy(after_open);
+        if (!trimmed_after_open.empty() && trimmed_after_open[0] == ')') {
+            definition = "MODEL (name " + outer_name + after_open;
+        } else {
+            definition = "MODEL (name " + outer_name + ", " + after_open;
+        }
+        return is_replace ? 2 : 1;
+    }
+
+    definition = "MODEL " + body;
     return is_replace ? 2 : 1;
 }
 
-// Global to store database path for parser extension (set during extension load)
-static std::string g_db_path;
+ParserOverrideResult sidemantic_parser_override(ParserExtensionInfo *info,
+                                                const std::string &query,
+                                                ParserOptions &options) {
+    (void)options;
 
-ParserExtensionParseResult sidemantic_parse(ParserExtensionInfo *,
-                                            const std::string &query) {
-    // Check for SEMANTIC prefix
+    // Keep the legacy SEMANTIC prefix on the parse_function path so definitions
+    // and explicit SEMANTIC SELECT keep their existing behavior.
     std::string stripped_query;
-    if (!StartsWithSemantic(query, stripped_query)) {
-        // Not a semantic query, let DuckDB handle it
-        return ParserExtensionParseResult();
+    if (StartsWithSemantic(query, stripped_query)) {
+        return ParserOverrideResult();
+    }
+
+    // Sidemantic SQL is valid DuckDB SQL, so avoid intercepting broad table scans
+    // such as SELECT * FROM model. No-prefix mode only takes over qualified model
+    // references like SELECT orders.revenue FROM orders.
+    if (!StartsWithSemanticQueryKeyword(query)) {
+        return ParserOverrideResult();
+    }
+
+    auto parser_info = ParserInfo(info);
+    const char *context_key_ptr = parser_info ? ContextKeyPtr(parser_info->context_key) : nullptr;
+    if (!QueryContainsLoadedModelQualifier(context_key_ptr, query)) {
+        return ParserOverrideResult();
+    }
+
+    SidemanticRewriteResult result = sidemantic_rewrite_for_context(context_key_ptr, query.c_str());
+    if (result.error) {
+        sidemantic_free_result(result);
+        return ParserOverrideResult();
+    }
+    if (!result.was_rewritten || !result.sql) {
+        sidemantic_free_result(result);
+        return ParserOverrideResult();
+    }
+
+    string rewritten_sql(result.sql);
+    sidemantic_free_result(result);
+    if (TrimCopy(rewritten_sql) == TrimCopy(query)) {
+        return ParserOverrideResult();
+    }
+
+    try {
+        Parser parser;
+        parser.ParseQuery(rewritten_sql);
+        if (parser.statements.empty()) {
+            return ParserOverrideResult();
+        }
+        return ParserOverrideResult(std::move(parser.statements));
+    } catch (...) {
+        return ParserOverrideResult();
+    }
+}
+
+ParserExtensionParseResult sidemantic_parse(ParserExtensionInfo *info,
+                                            const std::string &query) {
+    auto parser_info = ParserInfo(info);
+    const char *context_key_ptr = parser_info ? ContextKeyPtr(parser_info->context_key) : nullptr;
+    const char *db_path_ptr =
+        parser_info && !parser_info->db_path.empty() ? parser_info->db_path.c_str() : nullptr;
+
+    std::string stripped_query;
+    bool had_semantic_prefix = StartsWithSemantic(query, stripped_query);
+    if (!had_semantic_prefix) {
+        stripped_query = query;
     }
 
     // Check if this is a CREATE [OR REPLACE] MODEL statement
     std::string definition;
-    int create_type = IsCreateModelStatement(stripped_query, definition);
+    std::string create_model_error;
+    int create_type = IsCreateModelStatement(stripped_query, definition, create_model_error);
 
+    if (create_type < 0) {
+        return ParserExtensionParseResult(create_model_error);
+    }
     if (create_type > 0) {
         // This is a CREATE MODEL statement - handle specially
         bool replace = (create_type == 2);
-        const char *db_path_ptr = g_db_path.empty() ? nullptr : g_db_path.c_str();
 
-        char *error = sidemantic_define(definition.c_str(), db_path_ptr, replace);
+        char *error = sidemantic_define_for_context(context_key_ptr, definition.c_str(), db_path_ptr, replace);
         if (error) {
             string error_msg(error);
             sidemantic_free(error);
@@ -458,6 +824,49 @@ ParserExtensionParseResult sidemantic_parse(ParserExtensionInfo *,
         }
 
         // Return a simple SELECT statement as acknowledgment
+        Parser parser;
+        parser.ParseQuery("SELECT 'Model created successfully' AS result");
+        auto statements = std::move(parser.statements);
+
+        return ParserExtensionParseResult(
+            make_uniq_base<ParserExtensionParseData, SidemanticParseData>(
+                std::move(statements[0])));
+    }
+
+    // Check if this is a native SQL model block:
+    //   MODEL (name orders, table orders, primary_key order_id)
+    if (IsModelBlockStatement(stripped_query)) {
+        char *error =
+            sidemantic_define_for_context(context_key_ptr, stripped_query.c_str(), db_path_ptr, false);
+        if (error) {
+            string error_msg(error);
+            sidemantic_free(error);
+            return ParserExtensionParseResult(error_msg);
+        }
+
+        Parser parser;
+        parser.ParseQuery("SELECT 'Model created successfully' AS result");
+        auto statements = std::move(parser.statements);
+
+        return ParserExtensionParseResult(
+            make_uniq_base<ParserExtensionParseData, SidemanticParseData>(
+                std::move(statements[0])));
+    }
+
+    // Check if this is a compact native SQL model block:
+    //   model orders from orders (
+    //     primary key (order_id)
+    //     sum(amount) as revenue
+    //   )
+    if (IsCompactModelStatement(stripped_query)) {
+        char *error =
+            sidemantic_define_for_context(context_key_ptr, stripped_query.c_str(), db_path_ptr, false);
+        if (error) {
+            string error_msg(error);
+            sidemantic_free(error);
+            return ParserExtensionParseResult(error_msg);
+        }
+
         Parser parser;
         parser.ParseQuery("SELECT 'Model created successfully' AS result");
         auto statements = std::move(parser.statements);
@@ -489,7 +898,7 @@ ParserExtensionParseResult sidemantic_parse(ParserExtensionInfo *,
         }
 
         if (!model_name.empty()) {
-            char *error = sidemantic_use(model_name.c_str());
+            char *error = sidemantic_use_for_context(context_key_ptr, model_name.c_str());
             if (error) {
                 string error_msg(error);
                 sidemantic_free(error);
@@ -508,13 +917,34 @@ ParserExtensionParseResult sidemantic_parse(ParserExtensionInfo *,
     }
 
 not_model_switch:
+    // Check if this is a native SQL metric/dimension/segment definition:
+    //   METRIC (name revenue, agg sum, sql amount)
+    //   METRIC revenue AS SUM(amount)
+    std::string native_def_type = NativeItemDefinitionType(stripped_query);
+    if (!native_def_type.empty()) {
+        char *error =
+            sidemantic_add_definition_for_context(context_key_ptr, stripped_query.c_str(), db_path_ptr, false);
+        if (error) {
+            string error_msg(error);
+            sidemantic_free(error);
+            return ParserExtensionParseResult(error_msg);
+        }
+
+        Parser parser;
+        parser.ParseQuery("SELECT '" + native_def_type + " created successfully' AS result");
+        auto statements = std::move(parser.statements);
+
+        return ParserExtensionParseResult(
+            make_uniq_base<ParserExtensionParseData, SidemanticParseData>(
+                std::move(statements[0])));
+    }
+
     // Check if this is a CREATE [OR REPLACE] METRIC/DIMENSION/SEGMENT statement
     bool is_replace = false;
     std::string def_type = IsDefinitionStatement(stripped_query, definition, is_replace);
     if (!def_type.empty()) {
-        const char *db_path_ptr = g_db_path.empty() ? nullptr : g_db_path.c_str();
-
-        char *error = sidemantic_add_definition(definition.c_str(), db_path_ptr, is_replace);
+        char *error =
+            sidemantic_add_definition_for_context(context_key_ptr, definition.c_str(), db_path_ptr, is_replace);
         if (error) {
             string error_msg(error);
             sidemantic_free(error);
@@ -532,8 +962,14 @@ not_model_switch:
                 std::move(statements[0])));
     }
 
+    if (!had_semantic_prefix) {
+        // No-prefix parser fallback only handles Sidemantic statements that DuckDB
+        // cannot parse natively. Valid SELECTs are handled by parser_override.
+        return ParserExtensionParseResult();
+    }
+
     // Regular SEMANTIC SELECT query - try to rewrite using sidemantic
-    SidemanticRewriteResult result = sidemantic_rewrite(stripped_query.c_str());
+    SidemanticRewriteResult result = sidemantic_rewrite_for_context(context_key_ptr, stripped_query.c_str());
 
     // If there was an error, return it
     if (result.error) {
@@ -606,29 +1042,28 @@ static void LoadInternal(ExtensionLoader &loader) {
     auto &db = loader.GetDatabaseInstance();
     auto &config = DBConfig::GetConfig(db);
 
-    // Capture database path for CREATE MODEL statements
-    auto &db_config = db.config;
-    if (!db_config.options.database_path.empty()) {
-        g_db_path = db_config.options.database_path;
-    } else {
-        g_db_path.clear();
-    }
+    auto db_path = DatabasePath(db);
+    auto context_key = ContextKey(db);
 
     // Auto-load definitions from file if it exists
-    const char *db_path_ptr = g_db_path.empty() ? nullptr : g_db_path.c_str();
-    char *error = sidemantic_autoload(db_path_ptr);
+    const char *db_path_ptr = db_path.empty() ? nullptr : db_path.c_str();
+    char *error = sidemantic_autoload_for_context(ContextKeyPtr(context_key), db_path_ptr);
     if (error) {
-        // Log warning but don't fail extension load
-        // fprintf(stderr, "Warning: failed to autoload sidemantic definitions: %s\n", error);
+        std::string message = "Failed to autoload sidemantic definitions: " + std::string(error);
         sidemantic_free(error);
+        throw InvalidInputException("%s", message.c_str());
     }
 
+    // Enable parser_override so qualified semantic SELECTs can omit the SEMANTIC prefix.
+    // FALLBACK mode lets ordinary DuckDB SQL continue through the native parser.
+    config.SetOptionByName("allow_parser_override_extension", Value("fallback"));
+
     // Register parser extension
-    SidemanticParserExtension parser;
-    config.parser_extensions.push_back(parser);
+    SidemanticParserExtension parser(db_path, context_key);
+    ParserExtension::Register(config, parser);
 
     // Register operator extension
-    config.operator_extensions.push_back(make_uniq<SidemanticOperatorExtension>());
+    OperatorExtension::Register(config, make_shared_ptr<SidemanticOperatorExtension>());
 
     // Register table functions
     TableFunction load_func("sidemantic_load", {LogicalType::VARCHAR},

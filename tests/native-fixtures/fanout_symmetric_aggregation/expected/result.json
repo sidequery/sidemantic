@@ -1,0 +1,10 @@
+[
+  {
+    "status": "paid",
+    "total_credit_limit": 1500
+  },
+  {
+    "status": "pending",
+    "total_credit_limit": 1000
+  }
+]

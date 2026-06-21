@@ -1,0 +1,6 @@
+metrics:
+  - customers.customer_count
+dimensions:
+  - orders.status
+order_by:
+  - orders.status

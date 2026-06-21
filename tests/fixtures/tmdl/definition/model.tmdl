@@ -1,0 +1,5 @@
+model 'Sales Model'
+    ref table 'Sales'
+    ref table 'Products'
+    ref relationship 'Sales-Products'
+    expression Server = "localhost" meta [IsParameterQuery=true, Type="Text"]

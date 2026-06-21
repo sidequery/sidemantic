@@ -24,8 +24,88 @@ class MalloyParserVisitor(ParseTreeVisitor):
         return self.visitChildren(ctx)
 
 
+    # Visit a parse tree produced by MalloyParser#defineUserTypeStatement.
+    def visitDefineUserTypeStatement(self, ctx:MalloyParser.DefineUserTypeStatementContext):
+        return self.visitChildren(ctx)
+
+
+    # Visit a parse tree produced by MalloyParser#userTypePropertyList.
+    def visitUserTypePropertyList(self, ctx:MalloyParser.UserTypePropertyListContext):
+        return self.visitChildren(ctx)
+
+
+    # Visit a parse tree produced by MalloyParser#userTypeDefinition.
+    def visitUserTypeDefinition(self, ctx:MalloyParser.UserTypeDefinitionContext):
+        return self.visitChildren(ctx)
+
+
+    # Visit a parse tree produced by MalloyParser#userTypeNameDef.
+    def visitUserTypeNameDef(self, ctx:MalloyParser.UserTypeNameDefContext):
+        return self.visitChildren(ctx)
+
+
+    # Visit a parse tree produced by MalloyParser#userTypeRef.
+    def visitUserTypeRef(self, ctx:MalloyParser.UserTypeRefContext):
+        return self.visitChildren(ctx)
+
+
+    # Visit a parse tree produced by MalloyParser#userTypeInline.
+    def visitUserTypeInline(self, ctx:MalloyParser.UserTypeInlineContext):
+        return self.visitChildren(ctx)
+
+
+    # Visit a parse tree produced by MalloyParser#userTypeExtend.
+    def visitUserTypeExtend(self, ctx:MalloyParser.UserTypeExtendContext):
+        return self.visitChildren(ctx)
+
+
+    # Visit a parse tree produced by MalloyParser#userTypeShape.
+    def visitUserTypeShape(self, ctx:MalloyParser.UserTypeShapeContext):
+        return self.visitChildren(ctx)
+
+
+    # Visit a parse tree produced by MalloyParser#userTypeField.
+    def visitUserTypeField(self, ctx:MalloyParser.UserTypeFieldContext):
+        return self.visitChildren(ctx)
+
+
+    # Visit a parse tree produced by MalloyParser#userTypeFieldType.
+    def visitUserTypeFieldType(self, ctx:MalloyParser.UserTypeFieldTypeContext):
+        return self.visitChildren(ctx)
+
+
     # Visit a parse tree produced by MalloyParser#use_top_level_query_defs.
     def visitUse_top_level_query_defs(self, ctx:MalloyParser.Use_top_level_query_defsContext):
+        return self.visitChildren(ctx)
+
+
+    # Visit a parse tree produced by MalloyParser#defineGivenStatement.
+    def visitDefineGivenStatement(self, ctx:MalloyParser.DefineGivenStatementContext):
+        return self.visitChildren(ctx)
+
+
+    # Visit a parse tree produced by MalloyParser#givenDefList.
+    def visitGivenDefList(self, ctx:MalloyParser.GivenDefListContext):
+        return self.visitChildren(ctx)
+
+
+    # Visit a parse tree produced by MalloyParser#givenDef.
+    def visitGivenDef(self, ctx:MalloyParser.GivenDefContext):
+        return self.visitChildren(ctx)
+
+
+    # Visit a parse tree produced by MalloyParser#givenModifier.
+    def visitGivenModifier(self, ctx:MalloyParser.GivenModifierContext):
+        return self.visitChildren(ctx)
+
+
+    # Visit a parse tree produced by MalloyParser#givenNameDef.
+    def visitGivenNameDef(self, ctx:MalloyParser.GivenNameDefContext):
+        return self.visitChildren(ctx)
+
+
+    # Visit a parse tree produced by MalloyParser#givenType.
+    def visitGivenType(self, ctx:MalloyParser.GivenTypeContext):
         return self.visitChildren(ctx)
 
 
@@ -34,8 +114,28 @@ class MalloyParserVisitor(ParseTreeVisitor):
         return self.visitChildren(ctx)
 
 
+    # Visit a parse tree produced by MalloyParser#annotation.
+    def visitAnnotation(self, ctx:MalloyParser.AnnotationContext):
+        return self.visitChildren(ctx)
+
+
     # Visit a parse tree produced by MalloyParser#tags.
     def visitTags(self, ctx:MalloyParser.TagsContext):
+        return self.visitChildren(ctx)
+
+
+    # Visit a parse tree produced by MalloyParser#blockAnnotation.
+    def visitBlockAnnotation(self, ctx:MalloyParser.BlockAnnotationContext):
+        return self.visitChildren(ctx)
+
+
+    # Visit a parse tree produced by MalloyParser#docAnnotation.
+    def visitDocAnnotation(self, ctx:MalloyParser.DocAnnotationContext):
+        return self.visitChildren(ctx)
+
+
+    # Visit a parse tree produced by MalloyParser#docBlockAnnotation.
+    def visitDocBlockAnnotation(self, ctx:MalloyParser.DocBlockAnnotationContext):
         return self.visitChildren(ctx)
 
 
@@ -76,6 +176,16 @@ class MalloyParserVisitor(ParseTreeVisitor):
 
     # Visit a parse tree produced by MalloyParser#importURL.
     def visitImportURL(self, ctx:MalloyParser.ImportURLContext):
+        return self.visitChildren(ctx)
+
+
+    # Visit a parse tree produced by MalloyParser#exportStatement.
+    def visitExportStatement(self, ctx:MalloyParser.ExportStatementContext):
+        return self.visitChildren(ctx)
+
+
+    # Visit a parse tree produced by MalloyParser#exportItem.
+    def visitExportItem(self, ctx:MalloyParser.ExportItemContext):
         return self.visitChildren(ctx)
 
 
@@ -121,6 +231,11 @@ class MalloyParserVisitor(ParseTreeVisitor):
 
     # Visit a parse tree produced by MalloyParser#exploreTable.
     def visitExploreTable(self, ctx:MalloyParser.ExploreTableContext):
+        return self.visitChildren(ctx)
+
+
+    # Visit a parse tree produced by MalloyParser#virtualSource.
+    def visitVirtualSource(self, ctx:MalloyParser.VirtualSourceContext):
         return self.visitChildren(ctx)
 
 
@@ -349,6 +464,11 @@ class MalloyParserVisitor(ParseTreeVisitor):
         return self.visitChildren(ctx)
 
 
+    # Visit a parse tree produced by MalloyParser#SQTypedSource.
+    def visitSQTypedSource(self, ctx:MalloyParser.SQTypedSourceContext):
+        return self.visitChildren(ctx)
+
+
     # Visit a parse tree produced by MalloyParser#SQCompose.
     def visitSQCompose(self, ctx:MalloyParser.SQComposeContext):
         return self.visitChildren(ctx)
@@ -374,8 +494,23 @@ class MalloyParserVisitor(ParseTreeVisitor):
         return self.visitChildren(ctx)
 
 
+    # Visit a parse tree produced by MalloyParser#SQVirtual.
+    def visitSQVirtual(self, ctx:MalloyParser.SQVirtualContext):
+        return self.visitChildren(ctx)
+
+
     # Visit a parse tree produced by MalloyParser#SQID.
     def visitSQID(self, ctx:MalloyParser.SQIDContext):
+        return self.visitChildren(ctx)
+
+
+    # Visit a parse tree produced by MalloyParser#sourceTypeConstraints.
+    def visitSourceTypeConstraints(self, ctx:MalloyParser.SourceTypeConstraintsContext):
+        return self.visitChildren(ctx)
+
+
+    # Visit a parse tree produced by MalloyParser#userTypeName.
+    def visitUserTypeName(self, ctx:MalloyParser.UserTypeNameContext):
         return self.visitChildren(ctx)
 
 
@@ -709,6 +844,21 @@ class MalloyParserVisitor(ParseTreeVisitor):
         return self.visitChildren(ctx)
 
 
+    # Visit a parse tree produced by MalloyParser#malloyBasicType.
+    def visitMalloyBasicType(self, ctx:MalloyParser.MalloyBasicTypeContext):
+        return self.visitChildren(ctx)
+
+
+    # Visit a parse tree produced by MalloyParser#malloyRecordType.
+    def visitMalloyRecordType(self, ctx:MalloyParser.MalloyRecordTypeContext):
+        return self.visitChildren(ctx)
+
+
+    # Visit a parse tree produced by MalloyParser#malloyRecordField.
+    def visitMalloyRecordField(self, ctx:MalloyParser.MalloyRecordFieldContext):
+        return self.visitChildren(ctx)
+
+
     # Visit a parse tree produced by MalloyParser#compareOp.
     def visitCompareOp(self, ctx:MalloyParser.CompareOpContext):
         return self.visitChildren(ctx)
@@ -899,6 +1049,11 @@ class MalloyParserVisitor(ParseTreeVisitor):
         return self.visitChildren(ctx)
 
 
+    # Visit a parse tree produced by MalloyParser#exprGivenRef.
+    def visitExprGivenRef(self, ctx:MalloyParser.ExprGivenRefContext):
+        return self.visitChildren(ctx)
+
+
     # Visit a parse tree produced by MalloyParser#exprFunc.
     def visitExprFunc(self, ctx:MalloyParser.ExprFuncContext):
         return self.visitChildren(ctx)
@@ -991,6 +1146,11 @@ class MalloyParserVisitor(ParseTreeVisitor):
 
     # Visit a parse tree produced by MalloyParser#exprLiteralRecord.
     def visitExprLiteralRecord(self, ctx:MalloyParser.ExprLiteralRecordContext):
+        return self.visitChildren(ctx)
+
+
+    # Visit a parse tree produced by MalloyParser#exprInGiven.
+    def visitExprInGiven(self, ctx:MalloyParser.ExprInGivenContext):
         return self.visitChildren(ctx)
 
 

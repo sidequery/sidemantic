@@ -1,0 +1,10 @@
+[
+  {
+    "created_at__month": "2026-01-01",
+    "total_revenue": 250
+  },
+  {
+    "created_at__month": "2026-02-01",
+    "total_revenue": 200
+  }
+]

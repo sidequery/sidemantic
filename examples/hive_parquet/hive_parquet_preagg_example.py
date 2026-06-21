@@ -1,14 +1,14 @@
 """Example: DuckDB pre-aggregation layer on top of Hive-partitioned parquet.
 
 This builds on the basic hive_parquet_example.py by adding a pre-aggregation
-layer that materializes rollup tables in DuckDB. Queries are automatically
-routed to the pre-aggregated tables when they match.
+layer that materializes rollup tables in DuckDB. Queries route to the
+pre-aggregated tables when pre-aggregation routing is enabled and they match.
 
 The flow:
 1. Create Hive-partitioned parquet data (raw event logs)
 2. Define a semantic model with pre-aggregation definitions
 3. Materialize the pre-aggregations into DuckDB tables
-4. Query -- Sidemantic automatically routes to preagg tables when possible
+4. Query with pre-aggregation routing enabled
 
 This pattern is useful for:
 - Large parquet lakes where full scans are expensive
@@ -172,7 +172,7 @@ def main():
 
     # Step 4: Query WITH pre-aggregation routing
     print("=" * 70)
-    print("Step 4: Query with automatic preagg routing")
+    print("Step 4: Query with explicit preagg routing")
     print("=" * 70)
     print()
 

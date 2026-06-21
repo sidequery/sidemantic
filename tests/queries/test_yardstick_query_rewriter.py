@@ -733,9 +733,83 @@ FROM sales_v
     }
 
 
-def test_yardstick_aggregate_without_at_requires_semantic(yardstick_layer):
-    with pytest.raises(ValueError, match="requires the SEMANTIC prefix"):
-        yardstick_layer.sql("SELECT AGGREGATE(revenue) AS revenue FROM sales_v")
+def test_yardstick_aggregate_without_semantic_prefix(yardstick_layer):
+    result = yardstick_layer.sql(
+        """
+SELECT
+    year,
+    region,
+    AGGREGATE(revenue) AS revenue
+FROM sales_v
+ORDER BY year, region
+"""
+    )
+    rows = fetch_dicts(result)
+    assert [(row["year"], row["region"], float(row["revenue"])) for row in rows] == [
+        (2022, "EU", 50.0),
+        (2022, "US", 100.0),
+        (2023, "EU", 75.0),
+        (2023, "US", 150.0),
+    ]
+
+
+def test_yardstick_order_by_expression_can_reference_subquery_aliases(yardstick_layer):
+    rows = fetch_dicts(
+        yardstick_layer.sql(
+            """
+SEMANTIC SELECT
+    year,
+    region,
+    AGGREGATE(revenue) AS revenue,
+    AGGREGATE(revenue) AT (ALL region) AS year_total
+FROM sales_v
+ORDER BY revenue / year_total, year, region
+"""
+        )
+    )
+    assert [(row["year"], row["region"], float(row["revenue"]), float(row["year_total"])) for row in rows] == [
+        (2022, "EU", 50.0, 150.0),
+        (2023, "EU", 75.0, 225.0),
+        (2022, "US", 100.0, 150.0),
+        (2023, "US", 150.0, 225.0),
+    ]
+
+
+def test_yardstick_ctas_and_insert_select_with_aggregate(yardstick_layer):
+    yardstick_layer.sql(
+        """
+CREATE TABLE ctas_result AS
+SELECT year, region, AGGREGATE(revenue) AS revenue
+FROM sales_v
+"""
+    )
+    ctas_rows = fetch_dicts(yardstick_layer.adapter.execute("SELECT * FROM ctas_result ORDER BY year, region"))
+    assert [(row["year"], row["region"], float(row["revenue"])) for row in ctas_rows] == [
+        (2022, "EU", 50.0),
+        (2022, "US", 100.0),
+        (2023, "EU", 75.0),
+        (2023, "US", 150.0),
+    ]
+
+    yardstick_layer.adapter.execute("CREATE TABLE insert_target (year INT, region TEXT, revenue DOUBLE)")
+    yardstick_layer.sql(
+        """
+INSERT INTO insert_target
+SELECT year, region, AGGREGATE(revenue)
+FROM sales_v
+"""
+    )
+    inserted_rows = fetch_dicts(yardstick_layer.adapter.execute("SELECT * FROM insert_target ORDER BY year, region"))
+    assert [(row["year"], row["region"], float(row["revenue"])) for row in inserted_rows] == [
+        (2022, "EU", 50.0),
+        (2022, "US", 100.0),
+        (2023, "EU", 75.0),
+        (2023, "US", 150.0),
+    ]
+
+
+def test_yardstick_builtin_duckdb_aggregate_function_falls_through(yardstick_layer):
+    assert yardstick_layer.sql("SELECT aggregate([1, 2, 3], 'sum')").fetchall() == [(6,)]
 
 
 def test_yardstick_scalar_aggregate_without_group_by(yardstick_layer):

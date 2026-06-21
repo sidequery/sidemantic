@@ -3,6 +3,19 @@
     "Dimension": {
       "description": "Dimension (attribute) definition.\n\nDimensions are used for grouping and filtering in queries.",
       "properties": {
+        "dax": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "DAX expression source text",
+          "title": "Dax"
+        },
         "description": {
           "anyOf": [
             {
@@ -15,6 +28,23 @@
           "default": null,
           "description": "Human-readable description",
           "title": "Description"
+        },
+        "expression_language": {
+          "anyOf": [
+            {
+              "enum": [
+                "sql",
+                "dax"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Expression language for sql/expr/dax authoring",
+          "title": "Expression Language"
         },
         "format": {
           "anyOf": [
@@ -189,6 +219,54 @@
         "type"
       ],
       "title": "Dimension",
+      "type": "object"
+    },
+    "Freshness": {
+      "additionalProperties": false,
+      "description": "Model-level freshness policy for live chart/runtime responses.\n\nPrefer ``watermark`` for normal semantic-model usage. ``sql`` is retained as\nan advanced escape hatch when the source freshness marker cannot be expressed\nas a model dimension or physical column.",
+      "properties": {
+        "sql": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Advanced SQL query returning one scalar freshness marker",
+          "title": "Sql"
+        },
+        "ttl_seconds": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Maximum allowed age in seconds before data is considered stale",
+          "title": "Ttl Seconds"
+        },
+        "watermark": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Dimension or source column whose MAX value represents source freshness",
+          "title": "Watermark"
+        }
+      },
+      "title": "Freshness",
       "type": "object"
     },
     "Index": {
@@ -371,6 +449,19 @@
           "description": "Conversion time window",
           "title": "Conversion Window"
         },
+        "dax": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "DAX expression source text",
+          "title": "Dax"
+        },
         "denominator": {
           "anyOf": [
             {
@@ -441,6 +532,23 @@
           "default": null,
           "description": "Dimensions to carry through from inner to outer aggregation in cohort metrics",
           "title": "Entity Dimensions"
+        },
+        "expression_language": {
+          "anyOf": [
+            {
+              "enum": [
+                "sql",
+                "dax"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Expression language for sql/expr/dax authoring",
+          "title": "Expression Language"
         },
         "extends": {
           "anyOf": [
@@ -687,6 +795,12 @@
           "default": null,
           "description": "SQL expression or formula (accepts 'expr' as alias)",
           "title": "Sql"
+        },
+        "sql_is_complete": {
+          "default": false,
+          "description": "When True, treat sql as a complete, opaque expression and skip auto-extraction of aggregations. Used for imported measures (e.g. Cube/Tesseract number_agg/time/string/boolean) whose sql is already the full aggregate expression and must be preserved verbatim with agg=None.",
+          "title": "Sql Is Complete",
+          "type": "boolean"
         },
         "steps": {
           "anyOf": [
@@ -988,6 +1102,20 @@
           "description": "Measures to pre-aggregate (e.g., ['count', 'revenue'])",
           "title": "Measures"
         },
+        "meta": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Adapter-specific metadata payload",
+          "title": "Meta"
+        },
         "name": {
           "description": "Unique pre-aggregation name",
           "title": "Name",
@@ -1030,6 +1158,19 @@
           "description": "Whether to enable scheduled refresh",
           "title": "Scheduled Refresh",
           "type": "boolean"
+        },
+        "sql": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "SQL for original_sql or custom pre-aggregation definitions",
+          "title": "Sql"
         },
         "time_dimension": {
           "anyOf": [
@@ -1116,8 +1257,14 @@
       "type": "object"
     },
     "Relationship": {
-      "description": "Represents a relationship between models.\n\nRelationship types:\n- many_to_one: This model has a foreign key to another\n- one_to_one: This model is referenced by another with unique constraint\n- one_to_many: This model is referenced by another\n- many_to_many: This model relates to another through a junction table",
+      "description": "Represents a relationship between models.\n\nRelationship types:\n- many_to_one: This model has a foreign key to another\n- one_to_one: This model is referenced by another with unique constraint\n- one_to_many: This model is referenced by another\n- many_to_many: This model relates to another through a junction table\n- cross: This model should be cross joined to another",
       "properties": {
+        "active": {
+          "default": true,
+          "description": "Whether the relationship is active by default",
+          "title": "Active",
+          "type": "boolean"
+        },
         "foreign_key": {
           "anyOf": [
             {
@@ -1136,6 +1283,25 @@
           "default": null,
           "description": "Foreign key column(s) (defaults to {name}_id for many_to_one)",
           "title": "Foreign Key"
+        },
+        "foreign_key_columns": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Explicit source-column list (alias for foreign_key)",
+          "title": "Foreign Key Columns"
         },
         "metadata": {
           "anyOf": [
@@ -1172,8 +1338,27 @@
             }
           ],
           "default": null,
-          "description": "Primary key column(s) in related model (defaults to id)",
+          "description": "Primary/unique key column(s): related model key for many_to_one, local model key for one_to_many",
           "title": "Primary Key"
+        },
+        "primary_key_columns": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Explicit target-column list (alias for primary_key)",
+          "title": "Primary Key Columns"
         },
         "related_foreign_key": {
           "anyOf": [
@@ -1187,6 +1372,35 @@
           "default": null,
           "description": "Foreign key in junction model pointing to related model",
           "title": "Related Foreign Key"
+        },
+        "related_foreign_key_columns": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Foreign key columns in junction model pointing to related model",
+          "title": "Related Foreign Key Columns"
+        },
+        "sql": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Custom join SQL using {from} and {to} runtime placeholders",
+          "title": "Sql"
         },
         "through": {
           "anyOf": [
@@ -1214,13 +1428,30 @@
           "description": "Foreign key in junction model pointing to this model",
           "title": "Through Foreign Key"
         },
+        "through_foreign_key_columns": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Foreign key columns in junction model pointing to this model",
+          "title": "Through Foreign Key Columns"
+        },
         "type": {
           "description": "Type of relationship",
           "enum": [
             "many_to_one",
             "one_to_one",
             "one_to_many",
-            "many_to_many"
+            "many_to_many",
+            "cross"
           ],
           "title": "Type",
           "type": "string"
@@ -1425,6 +1656,19 @@
             "description": "Conversion time window",
             "title": "Conversion Window"
           },
+          "dax": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "DAX expression source text",
+            "title": "Dax"
+          },
           "denominator": {
             "anyOf": [
               {
@@ -1495,6 +1739,23 @@
             "default": null,
             "description": "Dimensions to carry through from inner to outer aggregation in cohort metrics",
             "title": "Entity Dimensions"
+          },
+          "expression_language": {
+            "anyOf": [
+              {
+                "enum": [
+                  "sql",
+                  "dax"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Expression language for sql/expr/dax authoring",
+            "title": "Expression Language"
           },
           "extends": {
             "anyOf": [
@@ -1742,6 +2003,12 @@
             "description": "SQL expression or formula (accepts 'expr' as alias)",
             "title": "Sql"
           },
+          "sql_is_complete": {
+            "default": false,
+            "description": "When True, treat sql as a complete, opaque expression and skip auto-extraction of aggregations. Used for imported measures (e.g. Cube/Tesseract number_agg/time/string/boolean) whose sql is already the full aggregate expression and must be preserved verbatim with agg=None.",
+            "title": "Sql Is Complete",
+            "type": "boolean"
+          },
           "steps": {
             "anyOf": [
               {
@@ -1874,6 +2141,19 @@
           "Dimension": {
             "description": "Dimension (attribute) definition.\n\nDimensions are used for grouping and filtering in queries.",
             "properties": {
+              "dax": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "DAX expression source text",
+                "title": "Dax"
+              },
               "description": {
                 "anyOf": [
                   {
@@ -1886,6 +2166,23 @@
                 "default": null,
                 "description": "Human-readable description",
                 "title": "Description"
+              },
+              "expression_language": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "sql",
+                      "dax"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Expression language for sql/expr/dax authoring",
+                "title": "Expression Language"
               },
               "format": {
                 "anyOf": [
@@ -2060,6 +2357,54 @@
               "type"
             ],
             "title": "Dimension",
+            "type": "object"
+          },
+          "Freshness": {
+            "additionalProperties": false,
+            "description": "Model-level freshness policy for live chart/runtime responses.\n\nPrefer ``watermark`` for normal semantic-model usage. ``sql`` is retained as\nan advanced escape hatch when the source freshness marker cannot be expressed\nas a model dimension or physical column.",
+            "properties": {
+              "sql": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Advanced SQL query returning one scalar freshness marker",
+                "title": "Sql"
+              },
+              "ttl_seconds": {
+                "anyOf": [
+                  {
+                    "exclusiveMinimum": 0,
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Maximum allowed age in seconds before data is considered stale",
+                "title": "Ttl Seconds"
+              },
+              "watermark": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Dimension or source column whose MAX value represents source freshness",
+                "title": "Watermark"
+              }
+            },
+            "title": "Freshness",
             "type": "object"
           },
           "Index": {
@@ -2242,6 +2587,19 @@
                 "description": "Conversion time window",
                 "title": "Conversion Window"
               },
+              "dax": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "DAX expression source text",
+                "title": "Dax"
+              },
               "denominator": {
                 "anyOf": [
                   {
@@ -2312,6 +2670,23 @@
                 "default": null,
                 "description": "Dimensions to carry through from inner to outer aggregation in cohort metrics",
                 "title": "Entity Dimensions"
+              },
+              "expression_language": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "sql",
+                      "dax"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Expression language for sql/expr/dax authoring",
+                "title": "Expression Language"
               },
               "extends": {
                 "anyOf": [
@@ -2559,6 +2934,12 @@
                 "description": "SQL expression or formula (accepts 'expr' as alias)",
                 "title": "Sql"
               },
+              "sql_is_complete": {
+                "default": false,
+                "description": "When True, treat sql as a complete, opaque expression and skip auto-extraction of aggregations. Used for imported measures (e.g. Cube/Tesseract number_agg/time/string/boolean) whose sql is already the full aggregate expression and must be preserved verbatim with agg=None.",
+                "title": "Sql Is Complete",
+                "type": "boolean"
+              },
               "steps": {
                 "anyOf": [
                   {
@@ -2780,6 +3161,20 @@
                 "description": "Measures to pre-aggregate (e.g., ['count', 'revenue'])",
                 "title": "Measures"
               },
+              "meta": {
+                "anyOf": [
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Adapter-specific metadata payload",
+                "title": "Meta"
+              },
               "name": {
                 "description": "Unique pre-aggregation name",
                 "title": "Name",
@@ -2822,6 +3217,19 @@
                 "description": "Whether to enable scheduled refresh",
                 "title": "Scheduled Refresh",
                 "type": "boolean"
+              },
+              "sql": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "SQL for original_sql or custom pre-aggregation definitions",
+                "title": "Sql"
               },
               "time_dimension": {
                 "anyOf": [
@@ -2908,8 +3316,14 @@
             "type": "object"
           },
           "Relationship": {
-            "description": "Represents a relationship between models.\n\nRelationship types:\n- many_to_one: This model has a foreign key to another\n- one_to_one: This model is referenced by another with unique constraint\n- one_to_many: This model is referenced by another\n- many_to_many: This model relates to another through a junction table",
+            "description": "Represents a relationship between models.\n\nRelationship types:\n- many_to_one: This model has a foreign key to another\n- one_to_one: This model is referenced by another with unique constraint\n- one_to_many: This model is referenced by another\n- many_to_many: This model relates to another through a junction table\n- cross: This model should be cross joined to another",
             "properties": {
+              "active": {
+                "default": true,
+                "description": "Whether the relationship is active by default",
+                "title": "Active",
+                "type": "boolean"
+              },
               "foreign_key": {
                 "anyOf": [
                   {
@@ -2928,6 +3342,25 @@
                 "default": null,
                 "description": "Foreign key column(s) (defaults to {name}_id for many_to_one)",
                 "title": "Foreign Key"
+              },
+              "foreign_key_columns": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Explicit source-column list (alias for foreign_key)",
+                "title": "Foreign Key Columns"
               },
               "metadata": {
                 "anyOf": [
@@ -2964,8 +3397,27 @@
                   }
                 ],
                 "default": null,
-                "description": "Primary key column(s) in related model (defaults to id)",
+                "description": "Primary/unique key column(s): related model key for many_to_one, local model key for one_to_many",
                 "title": "Primary Key"
+              },
+              "primary_key_columns": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Explicit target-column list (alias for primary_key)",
+                "title": "Primary Key Columns"
               },
               "related_foreign_key": {
                 "anyOf": [
@@ -2979,6 +3431,35 @@
                 "default": null,
                 "description": "Foreign key in junction model pointing to related model",
                 "title": "Related Foreign Key"
+              },
+              "related_foreign_key_columns": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Foreign key columns in junction model pointing to related model",
+                "title": "Related Foreign Key Columns"
+              },
+              "sql": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Custom join SQL using {from} and {to} runtime placeholders",
+                "title": "Sql"
               },
               "through": {
                 "anyOf": [
@@ -3006,13 +3487,30 @@
                 "description": "Foreign key in junction model pointing to this model",
                 "title": "Through Foreign Key"
               },
+              "through_foreign_key_columns": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Foreign key columns in junction model pointing to this model",
+                "title": "Through Foreign Key Columns"
+              },
               "type": {
                 "description": "Type of relationship",
                 "enum": [
                   "many_to_one",
                   "one_to_one",
                   "one_to_many",
-                  "many_to_many"
+                  "many_to_many",
+                  "cross"
                 ],
                 "title": "Type",
                 "type": "string"
@@ -3074,6 +3572,19 @@
             "title": "Auto Dimensions",
             "type": "boolean"
           },
+          "dax": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "DAX table expression source text",
+            "title": "Dax"
+          },
           "default_grain": {
             "anyOf": [
               {
@@ -3131,6 +3642,23 @@
             "title": "Dimensions",
             "type": "array"
           },
+          "expression_language": {
+            "anyOf": [
+              {
+                "enum": [
+                  "sql",
+                  "dax"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Expression language for sql/dax derived table authoring",
+            "title": "Expression Language"
+          },
           "extends": {
             "anyOf": [
               {
@@ -3143,6 +3671,18 @@
             "default": null,
             "description": "Parent model to inherit from",
             "title": "Extends"
+          },
+          "freshness": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Freshness"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Model-level source freshness policy inherited by live chart runtimes"
           },
           "meta": {
             "anyOf": [

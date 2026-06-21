@@ -1,0 +1,19 @@
+guid: "model-single-table-alias"
+export_schema_version: "2"
+model:
+  name: orders_model
+  description: Single aliased table (orders AS o) with no joins
+  model_tables:
+    - name: orders
+      alias: o
+      fqn: ANALYTICS.PUBLIC.orders
+  columns:
+    - name: order_id
+      column_id: o::id
+      properties:
+        column_type: ATTRIBUTE
+    - name: amount
+      column_id: o::amount
+      properties:
+        column_type: MEASURE
+        aggregation: SUM

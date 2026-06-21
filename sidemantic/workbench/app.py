@@ -12,14 +12,7 @@ from textual.widgets import Tree as TreeWidget
 from textual_plotext import PlotextPlot
 
 from sidemantic import SemanticLayer, load_from_directory
-
-# Example queries
-EXAMPLE_QUERIES = {
-    "Timeseries": "-- Timeseries revenue by month and region\nSELECT \n  orders.created_month,\n  customers.region,\n  orders.total_revenue,\n  orders.order_count\nFROM orders\nORDER BY created_month DESC, region",
-    "Top Customers": "-- Top customers by revenue\nSELECT \n  customers.name,\n  customers.region,\n  orders.total_revenue,\n  orders.order_count\nFROM orders\nORDER BY orders.total_revenue DESC\nLIMIT 10",
-    "Aggregates": "-- Revenue metrics by region\nSELECT \n  customers.region,\n  orders.total_revenue,\n  orders.avg_order_value,\n  orders.order_count\nFROM orders\nGROUP BY customers.region\nORDER BY orders.total_revenue DESC",
-    "Custom": "-- Write your custom query here\nSELECT \n  \nFROM ",
-}
+from sidemantic.workbench.examples import EXAMPLE_QUERIES
 
 
 class SidequeryWorkbench(App):

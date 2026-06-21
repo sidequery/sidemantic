@@ -1,0 +1,41 @@
+guid: "model-role-playing"
+export_schema_version: "2"
+model:
+  name: shipments_model
+  description: Role-playing model with two aliases backed by the same table
+  model_tables:
+    - name: orders
+      fqn: ANALYTICS.PUBLIC.orders
+      joins:
+        - with: ship_country
+          on: "[orders::ship_country_id] = [ship_country::id]"
+          type: LEFT_OUTER
+          cardinality: MANY_TO_ONE
+        - with: bill_country
+          on: "[orders::bill_country_id] = [bill_country::id]"
+          type: LEFT_OUTER
+          cardinality: MANY_TO_ONE
+    - name: countries
+      fqn: ANALYTICS.PUBLIC.countries
+      alias: ship_country
+    - name: countries
+      fqn: ANALYTICS.PUBLIC.countries
+      alias: bill_country
+  columns:
+    - name: order_id
+      column_id: orders::id
+      properties:
+        column_type: ATTRIBUTE
+    - name: ship_country_name
+      column_id: ship_country::name
+      properties:
+        column_type: ATTRIBUTE
+    - name: bill_country_name
+      column_id: bill_country::name
+      properties:
+        column_type: ATTRIBUTE
+    - name: amount
+      column_id: orders::amount
+      properties:
+        column_type: MEASURE
+        aggregation: SUM

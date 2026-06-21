@@ -1,0 +1,15 @@
+table Sales
+    column SalesKey
+        dataType: int64
+        isKey
+        sourceColumn: SalesKey
+    column Category
+        dataType: string
+        sourceColumn: Category
+    column Amount
+        dataType: decimal
+        sourceColumn: Amount
+    calculatedColumn 'Bad Column' = UNKNOWNFUNC(Sales[Amount])
+        dataType: decimal
+    measure Revenue = SUM(Sales[Amount])
+    measure 'Bad Measure' = UNKNOWNFUNC(Sales[Amount])

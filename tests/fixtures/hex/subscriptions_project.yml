@@ -1,0 +1,85 @@
+# Current Hex Semantic Authoring YAML: a typed, multi-document file.
+# Two resources separated by `---`: a `model` and a `view` layered on it.
+id: subscriptions
+type: model
+name: Subscriptions
+base_sql_table: analytics.subscriptions
+description: Subscription facts with current Hex typed schema
+visibility: public
+
+dimensions:
+  - id: id
+    type: number
+    unique: true
+
+  - id: customer_id
+    name: Customer
+    type: number
+
+  - id: plan
+    name: Plan Tier
+    type: string
+    description: Plan tier (free, pro, enterprise)
+
+  - id: mrr
+    type: number
+
+  - id: internal_notes
+    type: string
+    visibility: internal
+    description: Internal-only annotation
+
+  - id: secret_token
+    type: string
+    visibility: private
+
+  - id: snapshot_date
+    type: date
+    description: Daily snapshot date
+
+measures:
+  - id: subscription_count
+    name: Subscriptions
+    func: count
+    description: Number of subscriptions
+
+  - id: total_mrr
+    name: Total MRR
+    func: sum
+    of: mrr
+    description: Sum of monthly recurring revenue
+
+  - id: current_mrr
+    name: Current MRR
+    func: sum
+    of: mrr
+    semi_additive:
+      over:
+        - dimension: snapshot_date
+          pick: max
+    description: MRR as of the latest snapshot (semi-additive)
+
+  - id: internal_mrr
+    func: sum
+    of: mrr
+    visibility: internal
+
+relations:
+  - id: customers
+    type: many_to_one
+    join_sql: customer_id = ${customers}.id
+
+---
+id: revenue_overview
+type: view
+name: Revenue Overview
+base: subscriptions
+description: Curated revenue entrypoint
+contents:
+  - name: Revenue
+    dimensions:
+      - plan
+      - snapshot_date
+    measures:
+      - total_mrr
+      - current_mrr

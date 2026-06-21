@@ -4,7 +4,7 @@ import pytest
 
 pytest.importorskip("mcp")  # Skip if mcp extra not installed
 
-from sidemantic.apps import _get_widget_template
+from sidemantic.apps import _get_widget_template, build_chart_html
 from sidemantic.mcp_server import create_chart, initialize_layer
 
 
@@ -46,6 +46,23 @@ def test_widget_template_loads():
     assert len(html) > 1000  # Built file is ~960KB
     assert "<!DOCTYPE html>" in html
     assert "sidemantic-chart" in html
+
+
+def test_build_chart_html():
+    """Test that build_chart_html embeds the Vega spec."""
+    spec = {"$schema": "https://vega.github.io/schema/vega-lite/v5.json", "mark": "bar"}
+    html = build_chart_html(spec)
+
+    assert "{{VEGA_SPEC}}" not in html
+    assert '"$schema"' in html
+    assert '"mark"' in html
+    assert "vega-embed" in html
+    assert 'data-sidemantic-vendor="vega"' in html
+    assert 'data-sidemantic-vendor="vega_lite"' in html
+    assert 'data-sidemantic-vendor="vega_embed"' in html
+    assert 'type="module"' not in html
+    assert "esm.sh" not in html
+    assert "<script src=" not in html
 
 
 def test_widget_uses_vega_interpreter():

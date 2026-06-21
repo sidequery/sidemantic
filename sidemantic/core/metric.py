@@ -50,6 +50,19 @@ class Metric(BaseModel):
         | None
     ) = Field(None, description="Aggregation function (for simple measures)")
     sql: str | None = Field(None, description="SQL expression or formula (accepts 'expr' as alias)")
+    dax: str | None = Field(None, description="DAX expression source text")
+    expression_language: Literal["sql", "dax"] | None = Field(
+        None, description="Expression language for sql/expr/dax authoring"
+    )
+    sql_is_complete: bool = Field(
+        False,
+        description=(
+            "When True, treat sql as a complete, opaque expression and skip "
+            "auto-extraction of aggregations. Used for imported measures (e.g. "
+            "Cube/Tesseract number_agg/time/string/boolean) whose sql is already "
+            "the full aggregate expression and must be preserved verbatim with agg=None."
+        ),
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -83,10 +96,20 @@ class Metric(BaseModel):
             # Step 2: Parse aggregation from SQL if needed
             agg_val = data.get("agg")
             type_val = data.get("type")
+            language_val = data.get("expression_language")
 
             # Parse if sql is provided and agg is not set
             # Allow parsing for simple metrics (no type) OR cumulative metrics (to support AVG/COUNT windows)
-            if sql_val and not agg_val and (not type_val or type_val == "cumulative"):
+            # Skip entirely when sql_is_complete: the sql is an opaque, complete expression
+            # (e.g. imported Cube/Tesseract aggregate measures) that must be preserved verbatim.
+            sql_is_complete = data.get("sql_is_complete", False)
+            if (
+                sql_val
+                and not sql_is_complete
+                and language_val != "dax"
+                and not agg_val
+                and (not type_val or type_val == "cumulative")
+            ):
                 try:
                     import sqlglot
                     from sqlglot import expressions as exp
@@ -102,6 +125,15 @@ class Metric(BaseModel):
                         exp.Max: "max",
                         exp.Median: "median",
                     }
+                    for agg_class_name, agg_name in {
+                        "Stddev": "stddev",
+                        "StddevPop": "stddev_pop",
+                        "Variance": "variance",
+                        "VariancePop": "variance_pop",
+                    }.items():
+                        agg_class = getattr(exp, agg_class_name, None)
+                        if agg_class is not None:
+                            agg_map[agg_class] = agg_name
 
                     agg_func = None
                     inner_expr = None
@@ -143,6 +175,11 @@ class Metric(BaseModel):
                             "min": "min",
                             "max": "max",
                             "median": "median",
+                            "stddev": "stddev",
+                            "stddev_pop": "stddev_pop",
+                            "variance": "variance",
+                            "variance_pop": "variance_pop",
+                            "var_pop": "variance_pop",
                             "count": "count",
                         }
                         if func_name in func_map:
@@ -193,7 +230,7 @@ class Metric(BaseModel):
                 raise ValueError("ratio metric requires 'numerator' field")
             if not self.denominator:
                 raise ValueError("ratio metric requires 'denominator' field")
-        if self.type == "derived" and not self.sql:
+        if self.type == "derived" and not self.sql and not self.has_untranslated_dax:
             raise ValueError("derived metric requires 'sql' field")
         if self.type == "cumulative" and not self.sql and not self.window_expression:
             raise ValueError("cumulative metric requires 'sql' or 'window_expression' field")
@@ -342,6 +379,11 @@ class Metric(BaseModel):
         return self.sql or self.name
 
     @property
+    def has_untranslated_dax(self) -> bool:
+        """Whether this metric preserves DAX source without a SQL translation."""
+        return self.expression_language == "dax" and bool(self.dax) and not self.sql and not self.agg
+
+    @property
     def is_simple_aggregation(self) -> bool:
         """Check if this is a simple aggregation (not a complex metric)."""
         return self.agg is not None and self.type is None
@@ -355,7 +397,7 @@ class Metric(BaseModel):
         if not self.agg:
             raise ValueError(f"Cannot convert complex metric '{self.name}' to SQL - use type-specific logic")
 
-        agg_func = self.agg.upper()
+        agg_func = {"variance_pop": "VAR_POP"}.get(self.agg, self.agg.upper())
         if agg_func == "COUNT_DISTINCT":
             agg_func = "COUNT(DISTINCT"
             return f"{agg_func} {self.sql_expr})"

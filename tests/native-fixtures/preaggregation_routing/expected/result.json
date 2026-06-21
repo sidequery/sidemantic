@@ -1,0 +1,17 @@
+[
+  {
+    "created_at__month": "2024-01-01",
+    "status": "paid",
+    "total_revenue": 250
+  },
+  {
+    "created_at__month": "2024-02-01",
+    "status": "paid",
+    "total_revenue": 200
+  },
+  {
+    "created_at__month": "2024-02-01",
+    "status": "refunded",
+    "total_revenue": 50
+  }
+]

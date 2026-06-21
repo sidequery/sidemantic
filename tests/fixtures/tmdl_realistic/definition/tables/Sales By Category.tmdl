@@ -1,0 +1,9 @@
+calculatedTable 'Sales By Category' = SUMMARIZECOLUMNS(Products[Category], "Revenue", SUM(Sales[Amount]))
+    annotation CalculationTag
+        value: "category_rollup"
+    column Category
+        dataType: string
+        sourceColumn: Category
+    column Revenue
+        dataType: decimal
+        sourceColumn: Revenue

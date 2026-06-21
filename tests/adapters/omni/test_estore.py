@@ -1,10 +1,13 @@
 """Tests for estore-analytics Omni fixtures.
 
 Fixtures sourced from vbalalian/estore-analytics (MIT license).
-Tests parsing of real-world Omni views with advanced features:
-bin_boundaries, all_values, sample_values, format, filtered measures,
-computed measures, synonyms, custom SQL dims, funnel measures, ratio measures,
-hierarchical categories, RFM scores, and SCD Type 2 snapshots.
+Tests parsing of a real-world Omni export with advanced features:
+- a global ``relationships.yaml`` file (bare top-level list of joins),
+- ``*.topic.yaml`` topic files (base view + nested joins),
+- ``*.view.yaml`` views named by Omni's ``{schema}__{table_name}`` convention,
+- dimension/measure metadata: bin_boundaries, all_values, sample_values, format,
+  synonyms, filtered measures, computed measures, custom SQL dims, funnel
+  measures, ratio measures, hierarchical categories, and RFM scores.
 """
 
 from pathlib import Path
@@ -32,21 +35,22 @@ def test_estore_loads_all_views(estore_graph):
     """All 6 estore view files parse into models."""
     model_names = sorted(estore_graph.models.keys())
     assert len(model_names) == 6
-    # Names come from file stems (dim_users.view.yaml -> dim_users.view)
+    # Views are named by Omni's reference convention {schema}__{table_name}
+    # (e.g. dim_users.view.yaml in schema omni_dbt_marts -> omni_dbt_marts__dim_users).
     for expected in [
-        "dim_categories.view",
-        "dim_products.view",
-        "dim_user_rfm.view",
-        "dim_users.view",
-        "fct_events.view",
-        "fct_sessions.view",
+        "omni_dbt_marts__dim_categories",
+        "omni_dbt_marts__dim_products",
+        "omni_dbt_marts__dim_user_rfm",
+        "omni_dbt_marts__dim_users",
+        "omni_dbt_marts__fct_events",
+        "omni_dbt_marts__fct_sessions",
     ]:
         assert expected in model_names, f"Missing model: {expected}"
 
 
 def test_estore_dim_users_dimensions(estore_graph):
     """dim_users has 24 dimensions including custom SQL and bin_boundaries."""
-    model = estore_graph.models["dim_users.view"]
+    model = estore_graph.models["omni_dbt_marts__dim_users"]
     dim_names = [d.name for d in model.dimensions]
 
     # Basic dims
@@ -70,7 +74,7 @@ def test_estore_dim_users_dimensions(estore_graph):
 
 def test_estore_dim_users_measures(estore_graph):
     """dim_users has 16 measures including filtered and computed."""
-    model = estore_graph.models["dim_users.view"]
+    model = estore_graph.models["omni_dbt_marts__dim_users"]
     metric_names = [m.name for m in model.metrics]
 
     # Standard aggregates
@@ -93,7 +97,7 @@ def test_estore_dim_users_measures(estore_graph):
 
 def test_estore_fct_events_dimensions(estore_graph):
     """fct_events has 16 dimensions including event metadata."""
-    model = estore_graph.models["fct_events.view"]
+    model = estore_graph.models["omni_dbt_marts__fct_events"]
     dim_names = [d.name for d in model.dimensions]
 
     assert "event_id" in dim_names
@@ -114,7 +118,7 @@ def test_estore_fct_events_dimensions(estore_graph):
 
 def test_estore_fct_events_measures(estore_graph):
     """fct_events has 13 measures including count_distinct and filtered."""
-    model = estore_graph.models["fct_events.view"]
+    model = estore_graph.models["omni_dbt_marts__fct_events"]
     metric_names = [m.name for m in model.metrics]
 
     # count_distinct measures
@@ -136,7 +140,7 @@ def test_estore_fct_events_measures(estore_graph):
 
 def test_estore_fct_sessions_dimensions(estore_graph):
     """fct_sessions has 19 dimensions including custom SQL dims."""
-    model = estore_graph.models["fct_sessions.view"]
+    model = estore_graph.models["omni_dbt_marts__fct_sessions"]
     dim_names = [d.name for d in model.dimensions]
 
     # Funnel dim
@@ -152,7 +156,7 @@ def test_estore_fct_sessions_dimensions(estore_graph):
 
 def test_estore_fct_sessions_measures(estore_graph):
     """fct_sessions has 10 measures including funnel and ratio measures."""
-    model = estore_graph.models["fct_sessions.view"]
+    model = estore_graph.models["omni_dbt_marts__fct_sessions"]
     metric_names = [m.name for m in model.metrics]
 
     # Funnel measures
@@ -172,7 +176,7 @@ def test_estore_fct_sessions_measures(estore_graph):
 
 def test_estore_dim_products(estore_graph):
     """dim_products has brand/category dims and a count measure."""
-    model = estore_graph.models["dim_products.view"]
+    model = estore_graph.models["omni_dbt_marts__dim_products"]
     dim_names = [d.name for d in model.dimensions]
 
     assert "brand" in dim_names
@@ -186,7 +190,7 @@ def test_estore_dim_products(estore_graph):
 
 def test_estore_dim_categories(estore_graph):
     """dim_categories has hierarchical category levels."""
-    model = estore_graph.models["dim_categories.view"]
+    model = estore_graph.models["omni_dbt_marts__dim_categories"]
     dim_names = [d.name for d in model.dimensions]
 
     assert "category_lvl_1" in dim_names
@@ -200,7 +204,7 @@ def test_estore_dim_categories(estore_graph):
 
 def test_estore_dim_user_rfm(estore_graph):
     """dim_user_rfm has RFM score dimensions."""
-    model = estore_graph.models["dim_user_rfm.view"]
+    model = estore_graph.models["omni_dbt_marts__dim_user_rfm"]
     dim_names = [d.name for d in model.dimensions]
 
     assert "recency_score" in dim_names
@@ -221,12 +225,12 @@ def test_estore_dim_user_rfm(estore_graph):
 def test_estore_table_references(estore_graph):
     """All estore views have schema.table_name format."""
     expected_tables = {
-        "dim_users.view": "omni_dbt_marts.dim_users",
-        "fct_events.view": "omni_dbt_marts.fct_events",
-        "fct_sessions.view": "omni_dbt_marts.fct_sessions",
-        "dim_products.view": "omni_dbt_marts.dim_products",
-        "dim_categories.view": "omni_dbt_marts.dim_categories",
-        "dim_user_rfm.view": "omni_dbt_marts.dim_user_rfm",
+        "omni_dbt_marts__dim_users": "omni_dbt_marts.dim_users",
+        "omni_dbt_marts__fct_events": "omni_dbt_marts.fct_events",
+        "omni_dbt_marts__fct_sessions": "omni_dbt_marts.fct_sessions",
+        "omni_dbt_marts__dim_products": "omni_dbt_marts.dim_products",
+        "omni_dbt_marts__dim_categories": "omni_dbt_marts.dim_categories",
+        "omni_dbt_marts__dim_user_rfm": "omni_dbt_marts.dim_user_rfm",
     }
     for model_name, expected_table in expected_tables.items():
         model = estore_graph.models[model_name]
@@ -241,15 +245,15 @@ def test_estore_table_references(estore_graph):
 def test_estore_primary_keys(estore_graph):
     """Views with primary_key: true are detected."""
     # fct_events has event_id as primary key
-    events = estore_graph.models["fct_events.view"]
+    events = estore_graph.models["omni_dbt_marts__fct_events"]
     assert events.primary_key == "event_id"
 
     # dim_products has product_id as primary key
-    products = estore_graph.models["dim_products.view"]
+    products = estore_graph.models["omni_dbt_marts__dim_products"]
     assert products.primary_key == "product_id"
 
     # dim_categories has raw_category_id as primary key
-    categories = estore_graph.models["dim_categories.view"]
+    categories = estore_graph.models["omni_dbt_marts__dim_categories"]
     assert categories.primary_key == "raw_category_id"
 
 
@@ -260,7 +264,7 @@ def test_estore_primary_keys(estore_graph):
 
 def test_estore_count_distinct_measures(estore_graph):
     """count_distinct aggregation is correctly parsed."""
-    events = estore_graph.models["fct_events.view"]
+    events = estore_graph.models["omni_dbt_marts__fct_events"]
 
     unique_users = events.get_metric("unique_users")
     assert unique_users.agg == "count_distinct"
@@ -275,7 +279,7 @@ def test_estore_count_distinct_measures(estore_graph):
 
 def test_estore_filtered_measures(estore_graph):
     """Filtered measures parse the filter conditions."""
-    events = estore_graph.models["fct_events.view"]
+    events = estore_graph.models["omni_dbt_marts__fct_events"]
 
     purchase_count = events.get_metric("purchase_count")
     assert purchase_count.agg == "count"
@@ -293,7 +297,7 @@ def test_estore_filtered_measures(estore_graph):
 
 def test_estore_dim_users_filtered_measures(estore_graph):
     """dim_users filtered measures (churned_user_count, purchaser_count)."""
-    users = estore_graph.models["dim_users.view"]
+    users = estore_graph.models["omni_dbt_marts__dim_users"]
 
     churned = users.get_metric("churned_user_count")
     assert churned.agg == "count"
@@ -311,13 +315,13 @@ def test_estore_dim_users_filtered_measures(estore_graph):
 
 def test_estore_derived_measures(estore_graph):
     """Computed measures without aggregate_type parse as derived."""
-    events = estore_graph.models["fct_events.view"]
+    events = estore_graph.models["omni_dbt_marts__fct_events"]
 
     purchase_rate = events.get_metric("purchase_rate")
     assert purchase_rate.sql is not None
     assert "is_purchase" in purchase_rate.sql
 
-    users = estore_graph.models["dim_users.view"]
+    users = estore_graph.models["omni_dbt_marts__dim_users"]
 
     churn_rate = users.get_metric("churn_rate")
     assert churn_rate.sql is not None
@@ -325,7 +329,7 @@ def test_estore_derived_measures(estore_graph):
 
 def test_estore_sessions_ratio_measures(estore_graph):
     """fct_sessions ratio measures have SQL expressions."""
-    sessions = estore_graph.models["fct_sessions.view"]
+    sessions = estore_graph.models["omni_dbt_marts__fct_sessions"]
 
     conversion_rate = sessions.get_metric("conversion_rate")
     assert conversion_rate.sql is not None
@@ -345,7 +349,7 @@ def test_estore_sessions_ratio_measures(estore_graph):
 
 def test_estore_sql_references_cleaned(estore_graph):
     """${view.field} references are cleaned to just field names."""
-    events = estore_graph.models["fct_events.view"]
+    events = estore_graph.models["omni_dbt_marts__fct_events"]
 
     sum_revenue = events.get_metric("sum_revenue")
     # ${omni_dbt_marts__fct_events.revenue} should become just "revenue"
@@ -355,7 +359,7 @@ def test_estore_sql_references_cleaned(estore_graph):
 
 def test_estore_custom_sql_dims_cleaned(estore_graph):
     """Custom SQL dimensions have ${view.field} references cleaned."""
-    sessions = estore_graph.models["fct_sessions.view"]
+    sessions = estore_graph.models["omni_dbt_marts__fct_sessions"]
 
     converting = sessions.get_dimension("is_converting_session")
     assert converting.sql is not None
@@ -370,18 +374,18 @@ def test_estore_custom_sql_dims_cleaned(estore_graph):
 
 def test_estore_model_descriptions(estore_graph):
     """Models pick up description from view YAML."""
-    events = estore_graph.models["fct_events.view"]
+    events = estore_graph.models["omni_dbt_marts__fct_events"]
     assert events.description is not None
     assert "events" in events.description.lower()
 
-    sessions = estore_graph.models["fct_sessions.view"]
+    sessions = estore_graph.models["omni_dbt_marts__fct_sessions"]
     assert sessions.description is not None
     assert "session" in sessions.description.lower()
 
 
 def test_estore_dimension_descriptions(estore_graph):
     """Dimensions carry their descriptions through."""
-    events = estore_graph.models["fct_events.view"]
+    events = estore_graph.models["omni_dbt_marts__fct_events"]
     event_type = events.get_dimension("event_type")
     assert event_type.description is not None
     assert "event" in event_type.description.lower()
@@ -389,13 +393,169 @@ def test_estore_dimension_descriptions(estore_graph):
 
 def test_estore_metric_labels(estore_graph):
     """Metric labels are preserved."""
-    events = estore_graph.models["fct_events.view"]
+    events = estore_graph.models["omni_dbt_marts__fct_events"]
 
     sum_rev = events.get_metric("sum_revenue")
     assert sum_rev.label == "Total Revenue"
 
     unique_users = events.get_metric("unique_users")
     assert unique_users.label == "Unique Users"
+
+
+# =============================================================================
+# RELATIONSHIPS (global relationships.yaml — bare top-level list of joins)
+# =============================================================================
+
+
+def test_estore_relationships_parsed(estore_graph):
+    """The global relationships.yaml is parsed into model relationships.
+
+    Before this fix the estore export yielded 6 models but 0 relationships
+    because the adapter only read a nested ``relationships:`` key inside
+    model.yaml. Omni now ships a bare top-level list in relationships.yaml.
+    """
+    all_rels = []
+    for model in estore_graph.models.values():
+        for rel in model.relationships:
+            all_rels.append((model.name, rel.name, rel.type))
+
+    # 4 joins defined in relationships.yaml
+    assert ("omni_dbt_marts__fct_events", "omni_dbt_marts__dim_products", "many_to_one") in all_rels
+    assert ("omni_dbt_marts__fct_events", "omni_dbt_marts__dim_users", "many_to_one") in all_rels
+    assert ("omni_dbt_marts__dim_users", "omni_dbt_marts__dim_user_rfm", "one_to_one") in all_rels
+    assert ("omni_dbt_marts__fct_sessions", "omni_dbt_marts__dim_users", "many_to_one") in all_rels
+
+
+def test_estore_relationship_keys_from_on_sql(estore_graph):
+    """Foreign and primary keys are extracted from on_sql."""
+    events = estore_graph.models["omni_dbt_marts__fct_events"]
+
+    to_products = next(r for r in events.relationships if r.name == "omni_dbt_marts__dim_products")
+    assert to_products.foreign_key == "product_id"
+    assert to_products.primary_key == "product_id"
+
+    to_users = next(r for r in events.relationships if r.name == "omni_dbt_marts__dim_users")
+    assert to_users.foreign_key == "user_id"
+    assert to_users.primary_key == "user_id"
+
+
+def test_estore_relationship_metadata(estore_graph):
+    """join_type / reversible metadata is preserved on relationships."""
+    events = estore_graph.models["omni_dbt_marts__fct_events"]
+    to_products = next(r for r in events.relationships if r.name == "omni_dbt_marts__dim_products")
+    assert to_products.metadata is not None
+    assert to_products.metadata["join_type"] == "always_left"
+    assert to_products.metadata["reversible"] is False
+
+
+def test_estore_one_to_one_relationship(estore_graph):
+    """dim_users -> dim_user_rfm is a one_to_one relationship."""
+    users = estore_graph.models["omni_dbt_marts__dim_users"]
+    rfm = next(r for r in users.relationships if r.name == "omni_dbt_marts__dim_user_rfm")
+    assert rfm.type == "one_to_one"
+
+
+# =============================================================================
+# TOPICS (*.topic.yaml — base view + nested joins)
+# =============================================================================
+
+
+def test_estore_topics_parsed(estore_graph):
+    """All three topic files are recorded on graph.topics.
+
+    Before this fix topics were never read (parse only globbed views/*.yaml).
+    """
+    topics = {t["name"]: t for t in estore_graph.topics}
+    assert set(topics) == {"events", "customers", "sessions"}
+
+
+def test_estore_topic_base_views_and_labels(estore_graph):
+    """Topics expose base_view and label."""
+    topics = {t["name"]: t for t in estore_graph.topics}
+
+    assert topics["events"]["base_view"] == "omni_dbt_marts__fct_events"
+    assert topics["events"]["label"] == "Events"
+
+    assert topics["customers"]["base_view"] == "omni_dbt_marts__dim_users"
+    assert topics["customers"]["label"] == "Customers"
+
+    assert topics["sessions"]["base_view"] == "omni_dbt_marts__fct_sessions"
+    assert topics["sessions"]["label"] == "Sessions"
+
+
+def test_estore_topic_nested_joins_flattened(estore_graph):
+    """Nested joins in a topic are flattened into the joined_views list."""
+    topics = {t["name"]: t for t in estore_graph.topics}
+
+    # Events topic: dim_users -> dim_user_rfm (nested), dim_products
+    events_joins = set(topics["events"]["joined_views"])
+    assert "omni_dbt_marts__dim_users" in events_joins
+    assert "omni_dbt_marts__dim_user_rfm" in events_joins  # nested under dim_users
+    assert "omni_dbt_marts__dim_products" in events_joins
+
+    # Sessions topic: dim_users -> dim_user_rfm (nested)
+    sessions_joins = set(topics["sessions"]["joined_views"])
+    assert "omni_dbt_marts__dim_users" in sessions_joins
+    assert "omni_dbt_marts__dim_user_rfm" in sessions_joins
+
+
+# =============================================================================
+# DIMENSION / MEASURE METADATA
+# =============================================================================
+
+
+def test_estore_dimension_format(estore_graph):
+    """Dimension format is captured."""
+    users = estore_graph.models["omni_dbt_marts__dim_users"]
+    assert users.get_dimension("total_revenue").format == "currency"
+    assert users.get_dimension("user_id").format == "ID"
+
+
+def test_estore_dimension_bin_boundaries(estore_graph):
+    """bin_boundaries are preserved in dimension metadata."""
+    users = estore_graph.models["omni_dbt_marts__dim_users"]
+    aov_bin = users.get_dimension("avg_order_value_bin")
+    assert aov_bin.metadata is not None
+    assert aov_bin.metadata["bin_boundaries"] == [50, 100, 200, 400]
+
+
+def test_estore_dimension_all_values(estore_graph):
+    """all_values are preserved in dimension metadata."""
+    users = estore_graph.models["omni_dbt_marts__dim_users"]
+    status = users.get_dimension("activity_status")
+    assert status.metadata is not None
+    assert status.metadata["all_values"] == ["active", "declining", "at_risk", "churned", "prospect"]
+
+
+def test_estore_dimension_sample_values(estore_graph):
+    """sample_values are preserved in dimension metadata."""
+    users = estore_graph.models["omni_dbt_marts__dim_users"]
+    flag = users.get_dimension("data_quality_flag")
+    assert flag.metadata is not None
+    assert flag.metadata["sample_values"] == ["missing_sessions", "anomalous_session_ratio"]
+
+
+def test_estore_measure_format_and_synonyms(estore_graph):
+    """Measure format and synonyms are captured."""
+    events = estore_graph.models["omni_dbt_marts__fct_events"]
+    sum_revenue = events.get_metric("sum_revenue")
+    assert sum_revenue.format == "BIGUSDCURRENCY_2"
+    assert sum_revenue.metadata is not None
+    assert sum_revenue.metadata["synonyms"] == ["sales"]
+    assert sum_revenue.metadata["aggregate_type"] == "sum"
+
+
+def test_estore_average_aggregate_mapped(estore_graph):
+    """Omni 'average' aggregate_type maps to avg."""
+    users = estore_graph.models["omni_dbt_marts__dim_users"]
+    assert users.get_metric("avg_revenue_per_user").agg == "avg"
+
+
+def test_estore_boolean_filter_value(estore_graph):
+    """A measure filter on a boolean field renders TRUE/FALSE, not quoted."""
+    users = estore_graph.models["omni_dbt_marts__dim_users"]
+    purchasers = users.get_metric("purchaser_count")
+    assert purchasers.filters == ["has_purchase_history = TRUE"]
 
 
 if __name__ == "__main__":

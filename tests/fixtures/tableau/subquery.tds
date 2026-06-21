@@ -1,0 +1,15 @@
+<?xml version='1.0' encoding='utf-8' ?>
+<datasource formatted-name='active_users' inline='true' version='18.1'>
+  <connection class='postgres' dbname='analytics' server='localhost'>
+    <relation name='Active Users' type='subquery'>SELECT * FROM users WHERE active = true</relation>
+    <metadata-records>
+      <metadata-record class='column'>
+        <local-name>[User ID]</local-name>
+        <parent-name>[Active Users]</parent-name>
+        <remote-alias>user_id</remote-alias>
+        <local-type>integer</local-type>
+      </metadata-record>
+    </metadata-records>
+  </connection>
+  <column caption='User ID' datatype='integer' name='[user_id]' role='dimension' type='ordinal' />
+</datasource>

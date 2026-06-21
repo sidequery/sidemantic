@@ -3,7 +3,7 @@
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
-from sidemantic.db.base import BaseDatabaseAdapter
+from sidemantic.db.base import BaseDatabaseAdapter, validate_query_history_params
 
 
 class ClickHouseResult:
@@ -223,6 +223,7 @@ class ClickHouseAdapter(BaseDatabaseAdapter):
         Returns:
             List of SQL query strings containing '-- sidemantic:' comments
         """
+        days_back, limit = validate_query_history_params(days_back, limit)
         sql = f"""
         SELECT query
         FROM system.query_log

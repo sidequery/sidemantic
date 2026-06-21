@@ -2,14 +2,14 @@
 
 The universal metrics layer for consistent metrics across your data stack. Compatible with 15+ semantic model formats.
 
-- **Supported Formats:** Sidemantic (YAML, Python or SQL), Cube, dbt MetricFlow, LookML, Hex, Rill, Superset, Omni, BSL, GoodData LDM, Snowflake Cortex, Malloy, OSI, AtScale SML, ThoughtSpot TML
+- **Supported Formats:** Sidemantic (YAML, Python or SQL), Power BI TMDL, Cube, dbt MetricFlow, LookML, Hex, Rill, Superset, Omni, BSL, GoodData LDM, Snowflake Cortex, Malloy, OSI, AtScale SML, ThoughtSpot TML
 - **Databases:** DuckDB, MotherDuck, PostgreSQL, BigQuery, Snowflake, ClickHouse, Databricks, Spark SQL (also via ADBC)
 
 [Documentation](https://sidemantic.com) | [GitHub](https://github.com/sidequery/sidemantic) | [Docker Hub](https://hub.docker.com/repository/docker/sidequery/sidemantic) | [Discord](https://discord.com/invite/7MZ4UgSVvF) | [Demo](https://sidemantic.com/demo) (50+ MB data download, runs in your browser with Pyodide + DuckDB)
 
 ![Jupyter Widget Preview](preview.png)
 
-The installer downloads the skill to `~/.agents/skills/sidemantic-modeler` and symlinks it into `~/.claude/skills/`.
+Sidemantic ships Claude Code and Codex plugin metadata for two skills (`modeler` and `webapp-builder`). See [Agent Plugin](#agent-plugin) below to install.
 
 ## Quickstart
 
@@ -21,6 +21,11 @@ uv add sidemantic
 Malloy support (uv):
 ```bash
 uv add "sidemantic[malloy]"
+```
+
+DAX and Power BI TMDL support (uv):
+```bash
+uv add "sidemantic[dax]"
 ```
 
 HTTP API server (uv):
@@ -122,6 +127,48 @@ load_from_directory(layer, "models/")
 result = layer.sql("SELECT revenue, status FROM orders")
 ```
 
+## DAX And TMDL
+
+DAX/TMDL support lives behind the `dax` extra because it includes a native Rust parser:
+
+```bash
+uv add "sidemantic[dax]"
+```
+
+Native Sidemantic YAML can preserve DAX expression source text for Power BI interoperability:
+
+```yaml
+models:
+  - name: sales
+    table: sales
+    primary_key: id
+    dimensions:
+      - name: doubled_amount
+        type: numeric
+        dax: "'sales'[amount] * 2"
+    metrics:
+      - name: revenue
+        dax: "SUM('sales'[amount])"
+```
+
+Power BI TMDL projects can be loaded from a project root or `definition/` folder. Embedded DAX measures, calculated columns, calculated tables, relationships, and TMDL passthrough metadata are parsed and preserved in model metadata:
+
+```python
+from sidemantic import SemanticLayer, load_from_directory
+
+layer = SemanticLayer(connection="duckdb:///warehouse.duckdb")
+load_from_directory(layer, "powerbi_project/")
+print(layer.describe_models(["Sales"]))
+```
+
+TMDL can also round-trip back to disk:
+
+```python
+from sidemantic.adapters.tmdl import TMDLAdapter
+
+TMDLAdapter().export(layer.graph, "exported_tmdl/")
+```
+
 ## CLI
 
 ```bash
@@ -129,13 +176,13 @@ result = layer.sql("SELECT revenue, status FROM orders")
 sidemantic query "SELECT revenue FROM orders" --db data.duckdb
 
 # Interactive workbench (TUI with SQL editor + charts)
-sidemantic workbench models/ --db data.duckdb
+uvx --from "sidemantic[workbench]" sidemantic workbench models/ --db data.duckdb
 
 # PostgreSQL server (connect Tableau, DBeaver, etc.)
-sidemantic serve models/ --port 5433
+uvx --from "sidemantic[serve]" sidemantic serve models/ --port 5433
 
 # HTTP API server (JSON or Arrow)
-sidemantic api-serve models/ --port 4400 --auth-token secret
+uvx --from "sidemantic[api]" sidemantic api-serve models/ --port 4400 --auth-token secret
 
 # Validate definitions
 sidemantic validate models/
@@ -154,12 +201,12 @@ sidemantic migrator --queries legacy/ --generate-models output/
 
 **Workbench** (TUI with SQL editor + charts):
 ```bash
-uvx sidemantic workbench --demo
+uvx --from "sidemantic[workbench]" sidemantic workbench --demo
 ```
 
 **PostgreSQL server** (connect Tableau, DBeaver, etc.):
 ```bash
-uvx sidemantic serve --demo --port 5433
+uvx --from "sidemantic[serve]" sidemantic serve --demo --port 5433
 ```
 
 **HTTP API server** (JSON or Arrow):
@@ -224,10 +271,10 @@ See `examples/` for more.
 
 - SQL query interface with automatic rewriting
 - Automatic joins across models
-- Multi-format adapters (Cube, MetricFlow, LookML, Hex, Rill, Superset, Omni, BSL, GoodData LDM, OSI, AtScale SML, ThoughtSpot TML)
+- Multi-format adapters (Cube, MetricFlow, LookML, Hex, Rill, Superset, Omni, BSL, GoodData LDM, OSI, AtScale SML, ThoughtSpot TML, Graphene GSQL)
 - SQLGlot-based SQL generation and transpilation
 - Pydantic validation and type safety
-- Pre-aggregations with automatic routing
+- Pre-aggregations with explicit routing
 - Predicate pushdown for faster queries
 - Segments and metric-level filters
 - Jinja2 templating for dynamic SQL
@@ -236,7 +283,7 @@ See `examples/` for more.
 
 ## Multi-Format Support
 
-Auto-detects: Sidemantic (SQL/YAML), Cube, MetricFlow (dbt), LookML, Hex, Rill, Superset, Omni, BSL, GoodData LDM, OSI, AtScale SML, ThoughtSpot TML
+Auto-detects: Sidemantic (SQL/YAML), Power BI TMDL, Cube, MetricFlow (dbt), LookML, Hex, Rill, Superset, Omni, BSL, GoodData LDM, OSI, AtScale SML, ThoughtSpot TML, Graphene GSQL
 
 ```bash
 sidemantic query "SELECT revenue FROM orders" --models ./my_models
@@ -285,7 +332,7 @@ For Cloudflare Worker + Container deployment, see [`examples/cloudflare_containe
 Start the API server:
 
 ```bash
-sidemantic api-serve models/ --db data.duckdb --port 4400 --auth-token secret
+uvx --from "sidemantic[api]" sidemantic api-serve models/ --db data.duckdb --port 4400 --auth-token secret
 ```
 
 Compile a structured semantic query:
@@ -326,23 +373,37 @@ curl -s http://localhost:4400/sql \
   -d '{"query":"SELECT status, total_amount FROM orders ORDER BY status"}'
 ```
 
-## Agent Skill
+## Agent Plugin
 
-Sidemantic ships an [agent skill](skills/sidemantic-modeler/) that teaches Claude Code, Codex, and other `SKILL.md`-compatible agents to build, validate, and query semantic models.
+Sidemantic ships a [plugin bundle](plugins/sidemantic/) with Claude Code and Codex metadata for two skills:
 
-**One-liner install (no clone required):**
+- **`modeler`** — build, validate, and query semantic models
+- **`webapp-builder`** — generate analytics webapps from your models
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/sidequery/sidemantic/main/skills/install.sh | bash
-```
-
-**npx / bunx:**
+**Install in Claude Code:**
 
 ```bash
-npx skills add https://github.com/sidequery/sidemantic --skill sidemantic-modeler
-# or
-bunx skills add https://github.com/sidequery/sidemantic --skill sidemantic-modeler
+claude plugin marketplace add sidequery/sidemantic && claude plugin install sidemantic@sidequery
 ```
+
+**Install in Codex:**
+
+```bash
+codex plugin marketplace add sidequery/sidemantic && codex plugin add sidemantic@sidequery
+```
+
+**Use a local clone while developing:**
+
+```bash
+claude --plugin-dir ./plugins/sidemantic
+codex plugin marketplace add . && codex plugin add sidemantic@sidequery
+```
+
+The Claude Code plugin manifest lives at `plugins/sidemantic/.claude-plugin/plugin.json`, and its marketplace lives at `.claude-plugin/marketplace.json`.
+
+The Codex plugin manifest lives at `plugins/sidemantic/.codex-plugin/plugin.json`, and its repo-local marketplace lives at `.agents/plugins/marketplace.json`.
+
+The skills also work with other `SKILL.md`-compatible agents by pointing them at `plugins/sidemantic/skills/`.
 
 ## How mature is Sidemantic?
 
@@ -353,3 +414,5 @@ Sidemantic is an ambitious but young semantic layer project. You could encounter
 ```bash
 uv run pytest -v
 ```
+
+This prints line coverage for `sidemantic` with missing lines in the terminal.

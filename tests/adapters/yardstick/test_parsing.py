@@ -43,6 +43,28 @@ FROM sales;
     assert order_count.sql == "*"
 
 
+def test_import_yardstick_quoted_measure_alias(tmp_path):
+    sql_file = tmp_path / "sales.sql"
+    sql_file.write_text(
+        """
+CREATE VIEW sales_v AS
+SELECT
+    region,
+    SUM(amount) AS MEASURE "total revenue"
+FROM sales;
+"""
+    )
+
+    adapter = YardstickAdapter()
+    graph = adapter.parse(sql_file)
+
+    model = graph.models["sales_v"]
+    total_revenue = model.get_metric("total revenue")
+    assert total_revenue is not None
+    assert total_revenue.agg == "sum"
+    assert total_revenue.sql == "amount"
+
+
 def test_import_yardstick_derived_measure(tmp_path):
     sql_file = tmp_path / "financials.sql"
     sql_file.write_text(

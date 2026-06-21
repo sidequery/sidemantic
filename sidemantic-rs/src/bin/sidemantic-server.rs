@@ -20,6 +20,7 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map as JsonMap, Value as JsonValue};
 use sidemantic::runtime::interpolate_query_filters;
@@ -31,6 +32,38 @@ use sidemantic::{
 use sidemantic::{Metric, Model, Relationship, RelationshipType, SemanticQuery, SidemanticRuntime};
 #[cfg(feature = "runtime-server-adbc")]
 use tokio_stream::wrappers::ReceiverStream;
+
+/// The built web UI bundle, baked into the binary (synced from webapp/ by scripts/build_webapp.py).
+#[derive(RustEmbed)]
+#[folder = "ui/"]
+struct WebUi;
+
+/// Serve a UI asset by path, falling back to index.html for unknown paths (client-side routing).
+fn serve_ui_asset(path: &str) -> Response {
+    let path = if path.is_empty() { "index.html" } else { path };
+    if let Some(file) = WebUi::get(path) {
+        let mime = mime_guess::from_path(path).first_or_octet_stream();
+        return (
+            [(header::CONTENT_TYPE, mime.as_ref().to_string())],
+            file.data.into_owned(),
+        )
+            .into_response();
+    }
+    match WebUi::get("index.html") {
+        Some(index) => (
+            [(header::CONTENT_TYPE, "text/html".to_string())],
+            index.data.into_owned(),
+        )
+            .into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+/// Router fallback: serves the embedded UI for any path not matched by an API route. Public (it is
+/// added after the auth layer), so the static shell loads while data endpoints stay token-gated.
+async fn ui_fallback(request: Request) -> Response {
+    serve_ui_asset(request.uri().path().trim_start_matches('/'))
+}
 
 #[cfg(feature = "runtime-server-adbc")]
 type DatabaseOption = (OptionDatabase, OptionValue);
@@ -1483,7 +1516,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .layer(middleware::from_fn_with_state(
             controls,
             http_controls_middleware,
-        ));
+        ))
+        // Added after the auth layer so the embedded UI shell stays public.
+        .fallback(ui_fallback);
 
     eprintln!("sidemantic-server listening on {}", config.bind);
     let listener = tokio::net::TcpListener::bind(&config.bind).await?;

@@ -531,6 +531,69 @@ Dataset combined = base_ds.extend(finance_part)
     assert graph.models["combined"].get_metric("revenue").sql == "SUM(base_orders.amount)"
 
 
+def test_holistics_metric_reference_shorthand_does_not_clobber_root_metric(tmp_path):
+    """A dataset-local alias produced by the `metric name: standalone_metric`
+    shorthand must not occupy a same-named root standalone metric's graph key.
+    A finance PartialDataset that references `revenue` copies `finance.revenue`
+    renamed to the local alias `revenue`; registering that copy at graph scope
+    before the genuine root `Metric revenue` would let the alias claim
+    `graph.metrics["revenue"]` and silently drop the real root metric. The
+    bare graph key must still resolve to the root standalone metric, while the
+    extending dataset keeps the finance SQL on its own field."""
+    finance_dir = tmp_path / "modules" / "finance"
+    finance_dir.mkdir(parents=True)
+
+    (finance_dir / "rev.aml").write_text(
+        """
+Metric revenue {
+  label: 'Finance Revenue'
+  type: 'number'
+  definition: @aql sum(base_orders.amount) ;;
+}
+
+PartialDataset finance_part = PartialDataset {
+  metric revenue: revenue
+}
+"""
+    )
+
+    (tmp_path / "root.aml").write_text(
+        """
+use finance { finance_part }
+
+Model base_orders {
+  type: 'table'
+  table_name: 'orders'
+  dimension order_id { type: 'number' }
+  dimension amount { type: 'number' }
+}
+
+Metric revenue {
+  label: 'Root Revenue'
+  type: 'number'
+  definition: @aql count(base_orders.order_id) ;;
+}
+
+Dataset base_ds {
+  label: 'Base DS'
+  models: [base_orders]
+}
+
+Dataset combined = base_ds.extend(finance_part)
+"""
+    )
+
+    graph = HolisticsAdapter().parse(tmp_path)
+
+    # The bare graph key resolves to the genuine root standalone metric, not the
+    # finance-derived dataset alias copied onto `combined`.
+    assert graph.metrics["revenue"].sql == "COUNT(base_orders.order_id)"
+    # The module metric is still reachable under its qualified key.
+    assert graph.metrics["finance.revenue"].sql == "SUM(base_orders.amount)"
+    # The extending dataset keeps the local finance SQL on its own field.
+    assert graph.models["combined"].get_metric("revenue").sql == "SUM(base_orders.amount)"
+
+
 def test_holistics_extend_partial_preserves_defining_context(tmp_path):
     """A Dataset that extends a PartialDataset declared in another module must
     resolve the partial's field definitions against the partial's own file. A

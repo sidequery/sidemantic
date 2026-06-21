@@ -268,6 +268,15 @@ class HolisticsAdapter(BaseAdapter):
         dataset_models, standalone_metrics, assignment_dataset_blocks = _resolve_dataset_artifacts(
             documents, constants, resolved_models
         )
+        # Register standalone metrics before dataset metrics so a genuine
+        # top-level Metric keeps its bare graph key. A dataset can carry a copy of
+        # a standalone metric renamed to a local alias (the
+        # `metric name: standalone_metric` shorthand); registering datasets first
+        # would let that alias occupy a root metric's key and silently drop the
+        # real standalone metric via the `not in graph.metrics` guard below.
+        for metric in standalone_metrics.values():
+            if metric.name not in graph.metrics:
+                graph.add_metric(metric)
         for model in dataset_models.values():
             if model.name not in graph.models:
                 graph.add_model(model)
@@ -277,9 +286,6 @@ class HolisticsAdapter(BaseAdapter):
                 for metric in model.metrics:
                     if metric.name not in graph.metrics:
                         graph.add_metric(metric)
-        for metric in standalone_metrics.values():
-            if metric.name not in graph.metrics:
-                graph.add_metric(metric)
 
         pending_relationships: list[_AmlRelationship] = []
         pending_relationship_refs: list[_RelationshipRef] = []

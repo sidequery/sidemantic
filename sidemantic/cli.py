@@ -135,7 +135,7 @@ def _load_query_layer(
     else:
         layer = SemanticLayer(**layer_kwargs)
 
-    load_from_directory(layer, str(models))
+    load_from_directory(layer, str(models.parent if models.is_file() else models))
     if not layer.graph.models:
         raise ValueError("No models found")
     return layer

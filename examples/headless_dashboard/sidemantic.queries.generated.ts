@@ -9,3 +9,8 @@ export interface GeneratedQueries {
     params: {};
   };
 }
+
+export const queryParamTypes = {
+  "SELECT orders.region, orders.revenue FROM orders": {},
+  "SELECT orders.channel, orders.order_count FROM orders": {},
+} as const;

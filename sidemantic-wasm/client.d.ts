@@ -167,13 +167,24 @@ export interface QueryTypeDef {
   params: Record<string, unknown>;
 }
 
+export type ParamType = "string" | "number" | "date" | "yesno" | "unquoted";
+
 /** Map of exact semantic-SQL string -> its generated row/params types. */
 export type QueryMap = Record<string, QueryTypeDef>;
 
-export type SqlRunFn = (sql: string, params?: Record<string, unknown>) => Promise<Record<string, unknown>[]>;
+export type QueryParamTypes<G> = {
+  readonly [K in keyof G & string]?: Readonly<Record<string, ParamType>>;
+};
 
-export interface CreateSqlClientOptions {
+export type SqlRunFn = (
+  sql: string,
+  params?: Record<string, unknown>,
+  paramTypes?: Readonly<Record<string, ParamType>>,
+) => Promise<Record<string, unknown>[]>;
+
+export interface CreateSqlClientOptions<G = unknown> {
   run: SqlRunFn;
+  paramTypes?: QueryParamTypes<G>;
 }
 
 type RowOf<T> = T extends { row: infer R } ? R : never;
@@ -191,4 +202,4 @@ export interface SidemanticSqlClient<G> {
   query<K extends keyof G & string>(sql: K, ...args: ParamsArg<ParamsOf<G[K]>>): Promise<Array<RowOf<G[K]>>>;
 }
 
-export function createSqlClient<G>(options: CreateSqlClientOptions): SidemanticSqlClient<G>;
+export function createSqlClient<G>(options: CreateSqlClientOptions<G>): SidemanticSqlClient<G>;

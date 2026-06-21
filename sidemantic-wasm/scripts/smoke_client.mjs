@@ -64,11 +64,16 @@ assert(rejectedDim, "grain outside the declared set is rejected");
 // createSqlClient: forwards sql + params to the executor.
 let capturedSql = null;
 let capturedParams = null;
+let capturedParamTypes = null;
 const sqlClient = createSqlClient({
-  run: async (sql, params) => {
+  run: async (sql, params, paramTypes) => {
     capturedSql = sql;
     capturedParams = params;
+    capturedParamTypes = paramTypes;
     return [{ status: "completed", revenue: 5 }];
+  },
+  paramTypes: {
+    "SELECT orders.status, orders.revenue FROM orders WHERE orders.region = {{ region }}": { region: "unquoted" },
   },
 });
 const sqlRows = await sqlClient.query("SELECT orders.status, orders.revenue FROM orders WHERE orders.region = {{ region }}", {
@@ -77,6 +82,7 @@ const sqlRows = await sqlClient.query("SELECT orders.status, orders.revenue FROM
 assert(sqlRows.length === 1, "sqlClient.query returns executor rows");
 assert(/FROM orders/.test(capturedSql), "sqlClient forwards the SQL");
 assert(capturedParams.region === "us", "sqlClient forwards params");
+assert(capturedParamTypes.region === "unquoted", "sqlClient forwards generated param type metadata");
 
 // serve transport: builds a semantic SELECT and interpolates {{params}}.
 const seen = [];
@@ -96,5 +102,6 @@ assert(/>= '2024-01-01'/.test(seen[1]), `serve.runSql interpolates params, got: 
 assert(interpolateParams("a = {{ n }}", { n: 3 }) === "a = 3", "numbers interpolate unquoted");
 assert(interpolateParams("a = {{ b }}", { b: true }) === "a = TRUE", "booleans interpolate as TRUE/FALSE");
 assert(interpolateParams("a = {{ s }}", { s: "x'y" }) === "a = 'x''y'", "strings are escaped");
+assert(interpolateParams("a = {{ ident }}", { ident: "orders.status" }, { ident: "unquoted" }) === "a = orders.status", "unquoted params interpolate raw identifiers");
 
 console.log("SMOKE_CLIENT_OK");

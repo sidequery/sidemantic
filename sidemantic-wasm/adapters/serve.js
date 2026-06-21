@@ -43,8 +43,8 @@ export function createServeTransport({ query } = {}) {
     async run(structuredQuery) {
       return query(buildSemanticSql(structuredQuery));
     },
-    async runSql(sql, params) {
-      return query(params ? interpolateParams(sql, params) : sql);
+    async runSql(sql, params, paramTypes) {
+      return query(params ? interpolateParams(sql, params, paramTypes) : sql);
     },
   };
 }

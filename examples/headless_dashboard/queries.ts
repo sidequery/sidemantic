@@ -9,10 +9,15 @@
 
 import { createClient, createSqlClient } from "sidemantic-wasm/client";
 import { schema } from "./sidemantic.client.generated";
+import { queryParamTypes } from "./sidemantic.queries.generated";
 import type { GeneratedQueries } from "./sidemantic.queries.generated";
 
 type Run = (query: unknown) => Promise<Record<string, unknown>[]>;
-type SqlRun = (sql: string, params?: Record<string, unknown>) => Promise<Record<string, unknown>[]>;
+type SqlRun = (
+  sql: string,
+  params?: Record<string, unknown>,
+  paramTypes?: Record<string, "string" | "number" | "date" | "yesno" | "unquoted">,
+) => Promise<Record<string, unknown>[]>;
 
 // --- structured client ---
 export function makeClient(run: Run) {
@@ -27,7 +32,7 @@ export async function revenueByRegionStructured(run: Run) {
 
 // --- sqlx-style SQL client ---
 export function makeSqlClient(run: SqlRun) {
-  return createSqlClient<GeneratedQueries>({ run });
+  return createSqlClient<GeneratedQueries>({ run, paramTypes: queryParamTypes });
 }
 
 export async function revenueByRegion(db: ReturnType<typeof makeSqlClient>) {

@@ -28,8 +28,8 @@ export async function createWasmTransport({ models, execute, wasmUrl } = {}) {
     async run(query) {
       return execute(runtime.compile(models, query));
     },
-    async runSql(sql, params) {
-      const text = params ? interpolateParams(sql, params) : sql;
+    async runSql(sql, params, paramTypes) {
+      const text = params ? interpolateParams(sql, params, paramTypes) : sql;
       return execute(runtime.rewrite(models, text));
     },
   };

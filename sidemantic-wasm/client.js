@@ -82,16 +82,17 @@ export function createClient(schema, options) {
  * Create a typed semantic-SQL client. Types come from a generated `QueryMap`
  * passed as the type argument; at runtime this just forwards to the executor.
  *
- * @param {{ run: Function }} options  SQL executor: (sql, params?) => Promise<rows>.
+ * @param {{ run: Function, paramTypes?: object }} options  SQL executor: (sql, params?, paramTypes?) => Promise<rows>.
  */
 export function createSqlClient(options) {
   if (!options || typeof options.run !== "function") {
     throw new Error("createSqlClient requires an executor: createSqlClient({ run })");
   }
   const run = options.run;
+  const paramTypes = options.paramTypes || {};
   return {
     query(sql, params) {
-      return run(sql, params);
+      return run(sql, params, paramTypes[sql]);
     },
   };
 }

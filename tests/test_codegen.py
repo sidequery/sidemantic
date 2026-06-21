@@ -4,7 +4,7 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from sidemantic import Dimension, Metric, Model, SemanticLayer, load_from_directory
+from sidemantic import Dimension, Metric, Model, Parameter, SemanticLayer, load_from_directory
 from sidemantic.cli import app
 from sidemantic.codegen import (
     _output_columns,
@@ -56,6 +56,25 @@ def _orders_layer() -> SemanticLayer:
                 Metric(name="revenue", agg="sum", sql="amount"),
                 Metric(name="order_count", agg="count", sql="id"),
             ],
+        )
+    )
+    return layer
+
+
+def _orders_default_time_layer() -> SemanticLayer:
+    layer = SemanticLayer(connection="duckdb:///:memory:", auto_register=False)
+    layer.add_model(
+        Model(
+            name="orders",
+            table="orders",
+            primary_key="id",
+            default_time_dimension="created_at",
+            default_grain="month",
+            dimensions=[
+                Dimension(name="status", type="categorical"),
+                Dimension(name="created_at", type="time", granularity="day"),
+            ],
+            metrics=[Metric(name="revenue", agg="sum", sql="amount")],
         )
     )
     return layer
@@ -145,6 +164,13 @@ def test_gen_types_cli_no_yaml(tmp_path):
     assert "SCHEMA_YAML" not in result.output
 
 
+def test_gen_types_cli_accepts_model_file(tmp_path):
+    models_file = _write_models(tmp_path) / "models.yml"
+    result = runner.invoke(app, ["gen", "types", "-m", str(models_file), "--no-yaml"])
+    assert result.exit_code == 0, result.output
+    assert "export const schema" in result.output
+
+
 # --- gen sql (sqlx-style typed semantic SQL) ---
 
 
@@ -179,6 +205,21 @@ def test_generate_sql_types_ts_shapes_interface():
     assert "export interface GeneratedQueries" in ts
     assert '"status": string' in ts
     assert '"revenue": number' in ts
+    assert "export const queryParamTypes" in ts
+
+
+def test_generate_sql_types_ts_includes_default_time_dimension():
+    ts = generate_sql_types_ts(_orders_default_time_layer(), ["SELECT orders.revenue FROM orders"])
+    assert '"created_at__month": string' in ts
+    assert '"revenue": number' in ts
+
+
+def test_generate_sql_types_ts_emits_unquoted_param_metadata():
+    layer = _orders_layer()
+    layer.graph.add_parameter(Parameter(name="table_name", type="unquoted"))
+    ts = generate_sql_types_ts(layer, ["SELECT orders.revenue FROM orders WHERE orders.status = {{ table_name }}"])
+    assert '"table_name": string' in ts
+    assert '"table_name": "unquoted"' in ts
 
 
 def test_output_columns_renames_leaf_collisions():
@@ -204,6 +245,15 @@ def test_gen_sql_cli_writes_typed_bindings(tmp_path):
     assert "export interface GeneratedQueries" in text
     assert '"status": string' in text
     assert '"revenue": number' in text
+
+
+def test_gen_sql_cli_accepts_model_file(tmp_path):
+    models_file = _write_models(tmp_path) / "models.yml"
+    src = tmp_path / "queries.ts"
+    src.write_text('db.query("SELECT orders.status FROM orders");')
+    result = runner.invoke(app, ["gen", "sql", "-m", str(models_file), str(src)])
+    assert result.exit_code == 0, result.output
+    assert '"status": string' in result.output
 
 
 def test_gen_sql_cli_preserves_explicit_alias(tmp_path):

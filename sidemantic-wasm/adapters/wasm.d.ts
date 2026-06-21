@@ -1,4 +1,5 @@
 import type { QueryPayload } from "../client";
+import type { ParamType } from "./params";
 
 export interface WasmTransportOptions {
   /** Sidemantic YAML model definitions (the generated `SCHEMA_YAML`). */
@@ -14,9 +15,17 @@ export interface WasmTransport {
   /** Structured-query executor for `createClient({ run })`. */
   run: (query: QueryPayload) => Promise<Record<string, unknown>[]>;
   /** Semantic-SQL executor for `createSqlClient({ run })`. */
-  runSql: (sql: string, params?: Record<string, unknown>) => Promise<Record<string, unknown>[]>;
+  runSql: (
+    sql: string,
+    params?: Record<string, unknown>,
+    paramTypes?: Record<string, ParamType>,
+  ) => Promise<Record<string, unknown>[]>;
 }
 
 export function createWasmTransport(options: WasmTransportOptions): Promise<WasmTransport>;
 
-export function interpolateParams(sql: string, params: Record<string, unknown>): string;
+export function interpolateParams(
+  sql: string,
+  params: Record<string, unknown>,
+  paramTypes?: Record<string, ParamType>,
+): string;

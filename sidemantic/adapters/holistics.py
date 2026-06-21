@@ -268,6 +268,15 @@ class HolisticsAdapter(BaseAdapter):
         dataset_models, standalone_metrics, assignment_dataset_blocks = _resolve_dataset_artifacts(
             documents, constants, resolved_models
         )
+        # Register standalone metrics before dataset metrics so a genuine
+        # top-level Metric keeps its bare graph key. A dataset can carry a copy of
+        # a standalone metric renamed to a local alias (the
+        # `metric name: standalone_metric` shorthand); registering datasets first
+        # would let that alias occupy a root metric's key and silently drop the
+        # real standalone metric via the `not in graph.metrics` guard below.
+        for metric in standalone_metrics.values():
+            if metric.name not in graph.metrics:
+                graph.add_metric(metric)
         for model in dataset_models.values():
             if model.name not in graph.models:
                 graph.add_model(model)
@@ -277,9 +286,6 @@ class HolisticsAdapter(BaseAdapter):
                 for metric in model.metrics:
                     if metric.name not in graph.metrics:
                         graph.add_metric(metric)
-        for metric in standalone_metrics.values():
-            if metric.name not in graph.metrics:
-                graph.add_metric(metric)
 
         pending_relationships: list[_AmlRelationship] = []
         pending_relationship_refs: list[_RelationshipRef] = []
@@ -676,41 +682,98 @@ def _stamp_block_context(block: AmlBlock, context: _FileContext) -> AmlBlock:
     return AmlBlock(kind=block.kind, name=block.name, items=stamped_items, context=block.context or context)
 
 
+_FIELD_KEYWORDS = {"metric", "measure", "dimension"}
+_METRIC_MARKER_KEYWORDS = {"metric", "measure"}
+
+
+def _is_metric_marker(item: AmlItem | None) -> bool:
+    """True if `item` is the bare `metric`/`measure` keyword that the grammar emits
+    just before a reusable-reference shorthand property (`metric name: ref`)."""
+    return (
+        isinstance(item, ExpressionStatement)
+        and isinstance(item.value, Identifier)
+        and item.value.name in _METRIC_MARKER_KEYWORDS
+    )
+
+
+def _field_units(items: list[AmlItem]) -> list[tuple[tuple[str, str] | None, list[AmlItem]]]:
+    """Group items into mergeable field units.
+
+    A field unit is `(field_key, [items])`. Named `metric`/`measure`/`dimension`
+    blocks and the reusable-reference shorthand (`metric name: ref`, which the
+    grammar emits as a bare `metric` keyword ExpressionStatement immediately
+    followed by an `AmlProperty(name, ref)`) both map to the same
+    `(keyword, name)` field key, so an override authored in either form replaces
+    the base field instead of producing a duplicate. Every other item gets a
+    `None` key and is carried through unchanged.
+    """
+    units: list[tuple[tuple[str, str] | None, list[AmlItem]]] = []
+    idx = 0
+    n = len(items)
+    while idx < n:
+        item = items[idx]
+        if (
+            isinstance(item, ExpressionStatement)
+            and isinstance(item.value, Identifier)
+            and item.value.name in _FIELD_KEYWORDS
+            and idx + 1 < n
+            and isinstance(items[idx + 1], AmlProperty)
+        ):
+            # Reference shorthand: keyword marker + `name: ref` property.
+            prop = items[idx + 1]
+            units.append(((item.value.name, prop.key), [item, items[idx + 1]]))
+            idx += 2
+            continue
+        if isinstance(item, AmlBlock) and item.kind in _FIELD_KEYWORDS and item.name is not None:
+            units.append(((item.kind, item.name), [item]))
+            idx += 1
+            continue
+        units.append((None, [item]))
+        idx += 1
+    return units
+
+
 def _merge_blocks(base: AmlBlock, extension: AmlBlock) -> AmlBlock:
-    merged_items = list(base.items)
+    merged_units = _field_units(base.items)
     prop_index: dict[str, int] = {}
-    block_index: dict[tuple[str, str | None], int] = {}
+    field_index: dict[tuple[str, str], int] = {}
 
-    for idx, item in enumerate(merged_items):
-        if isinstance(item, AmlProperty):
-            prop_index[item.key] = idx
-        elif isinstance(item, AmlBlock):
-            key = (item.kind, item.name)
-            block_index[key] = idx
+    for unit_idx, (field_key, unit_items) in enumerate(merged_units):
+        if field_key is not None:
+            field_index[field_key] = unit_idx
+        elif len(unit_items) == 1 and isinstance(unit_items[0], AmlProperty):
+            prop_index[unit_items[0].key] = unit_idx
 
-    for item in extension.items:
+    for field_key, unit_items in _field_units(extension.items):
+        if field_key is not None:
+            if field_key in field_index:
+                base_unit = merged_units[field_index[field_key]][1]
+                # Two named blocks deep-merge their child fields; any pairing that
+                # involves the shorthand reference form replaces wholesale (a
+                # reference has no inner fields to merge into).
+                if len(base_unit) == 1 and isinstance(base_unit[0], AmlBlock) and isinstance(unit_items[0], AmlBlock):
+                    merged_units[field_index[field_key]] = (field_key, [_merge_blocks(base_unit[0], unit_items[0])])
+                else:
+                    merged_units[field_index[field_key]] = (field_key, unit_items)
+            else:
+                field_index[field_key] = len(merged_units)
+                merged_units.append((field_key, unit_items))
+            continue
+
+        item = unit_items[0]
         if isinstance(item, AmlProperty):
             if item.key in prop_index:
-                merged_items[prop_index[item.key]] = item
+                merged_units[prop_index[item.key]] = (None, [item])
             else:
-                prop_index[item.key] = len(merged_items)
-                merged_items.append(item)
+                prop_index[item.key] = len(merged_units)
+                merged_units.append((None, [item]))
             continue
 
-        if isinstance(item, AmlBlock):
-            key = (item.kind, item.name)
-            if item.name is not None and key in block_index:
-                base_item = merged_items[block_index[key]]
-                if isinstance(base_item, AmlBlock):
-                    merged_items[block_index[key]] = _merge_blocks(base_item, item)
-                else:
-                    merged_items[block_index[key]] = item
-            else:
-                block_index[key] = len(merged_items)
-                merged_items.append(item)
-            continue
+        merged_units.append((None, [item]))
 
-        merged_items.append(item)
+    merged_items: list[AmlItem] = []
+    for _, unit_items in merged_units:
+        merged_items.extend(unit_items)
 
     # Preserve the defining context so child fields composed across modules keep
     # resolving constants/`use` aliases against their authoring file. The
@@ -1313,10 +1376,21 @@ def _resolve_dataset_artifacts(
                 return resolved_blocks[name]
         return None
 
+    # Standalone Metric blocks become graph-level metrics. Resolved before
+    # datasets so a dataset/partial that references one via the reusable
+    # "metric name: standalone_metric" shorthand can pull it onto the dataset.
+    standalone_metrics: dict[str, Metric] = {}
+    for name, (block, context) in metric_blocks.items():
+        metric_block = AmlBlock(kind="metric", name=block.name, items=block.items)
+        metric = _parse_measure_block(metric_block, constants, context)
+        if metric:
+            metric.name = name
+            standalone_metrics[name] = metric
+
     dataset_models: dict[str, Model] = {}
 
     for name, (block, context) in dataset_blocks.items():
-        model = _parse_dataset_block(block, constants, context)
+        model = _parse_dataset_block(block, constants, context, standalone_metrics)
         if model and model.name not in existing_models:
             dataset_models[model.name] = model
 
@@ -1335,31 +1409,72 @@ def _resolve_dataset_artifacts(
             continue
         block_with_name = AmlBlock(kind="Dataset", name=name, items=block.items)
         assignment_dataset_blocks.append((block_with_name, context))
-        model = _parse_dataset_block(block_with_name, constants, context)
+        model = _parse_dataset_block(block_with_name, constants, context, standalone_metrics)
         if model and model.name not in existing_models:
             dataset_models[model.name] = model
-
-    # Standalone Metric blocks become graph-level metrics.
-    standalone_metrics: dict[str, Metric] = {}
-    for name, (block, context) in metric_blocks.items():
-        metric_block = AmlBlock(kind="metric", name=block.name, items=block.items)
-        metric = _parse_measure_block(metric_block, constants, context)
-        if metric:
-            metric.name = name
-            standalone_metrics[name] = metric
 
     return dataset_models, standalone_metrics, assignment_dataset_blocks
 
 
-def _parse_dataset_block(block: AmlBlock, constants: dict[str, AmlValue], context: _FileContext) -> Model | None:
+def _resolve_standalone_metric_reference(
+    item: AmlProperty,
+    standalone_metrics: dict[str, Metric],
+    context: _FileContext,
+) -> Metric | None:
+    """Resolve a `metric name: standalone_metric` shorthand reference.
+
+    The reusable-metric-store shorthand parses to a property whose value is a
+    bare identifier/reference naming a top-level Metric. When it resolves to a
+    known standalone metric, return a copy renamed to the property key (the
+    dataset-local name); otherwise return None so genuine properties such as
+    `label`/`description`/`models` are left untouched.
+    """
+    if not standalone_metrics:
+        return None
+
+    value = item.value
+    if isinstance(value, Identifier):
+        name = value.name
+    elif isinstance(value, Reference):
+        name = ".".join(value.parts)
+    else:
+        return None
+
+    # Prefer the name qualified against the referencing file's module prefix /
+    # `use` aliases before the bare name, matching how standalone metrics are
+    # keyed and how other resolver paths qualify in context first. This lets a
+    # local same-named metric (e.g. finance.revenue) win over a root metric of
+    # the same name instead of silently resolving to the global one.
+    candidates = [_qualify_name(name, context), name]
+    for candidate in candidates:
+        referenced = standalone_metrics.get(candidate)
+        if referenced is not None:
+            resolved = referenced.model_copy(deep=True)
+            resolved.name = item.key
+            return resolved
+    return None
+
+
+def _parse_dataset_block(
+    block: AmlBlock,
+    constants: dict[str, AmlValue],
+    context: _FileContext,
+    standalone_metrics: dict[str, Metric] | None = None,
+) -> Model | None:
     """Parse a Dataset block's dataset-level dimension/metric blocks into a Model.
 
     Dataset dimensions and metrics use cross-model AQL definitions (the only
     style Holistics allows in datasets). They are surfaced on a synthetic model
     named after the dataset so they are not silently dropped.
+
+    `standalone_metrics` lets the reusable-metric-store shorthand
+    (`metric name: standalone_metric`) resolve the referenced top-level Metric
+    onto the dataset instead of dropping the reference.
     """
     if not block.name:
         return None
+
+    standalone_metrics = standalone_metrics or {}
 
     properties = _properties_from_items(block.items)
     label = _value_as_string(properties.get("label"), constants, context)
@@ -1368,9 +1483,26 @@ def _parse_dataset_block(block: AmlBlock, constants: dict[str, AmlValue], contex
     dimensions: list[Dimension] = []
     metrics: list[Metric] = []
 
+    prev_item: AmlItem | None = None
     for item in block.items:
-        if not isinstance(item, AmlBlock):
+        # Reusable-metric-store shorthand: `metric name: standalone_metric`
+        # parses to a bare `metric` keyword marker (an ExpressionStatement)
+        # immediately followed by a property naming a top-level Metric. Resolve the
+        # referenced standalone metric onto the dataset (renamed to the local key)
+        # only when that marker is present, so an ordinary metadata property such
+        # as `label: some_identifier` is never misread as a metric reference even
+        # if its value coincidentally matches a standalone metric name.
+        if isinstance(item, AmlProperty):
+            if _is_metric_marker(prev_item):
+                referenced = _resolve_standalone_metric_reference(item, standalone_metrics, item.context or context)
+                if referenced is not None:
+                    metrics.append(referenced)
+            prev_item = item
             continue
+        if not isinstance(item, AmlBlock):
+            prev_item = item
+            continue
+        prev_item = item
         # A child field carries its own defining context when the dataset was
         # composed across modules (Dataset extending a PartialDataset from another
         # file); resolve its constants/`use` aliases against that file.

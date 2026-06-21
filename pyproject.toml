@@ -178,7 +178,6 @@ packages = ["sidemantic"]
 "examples/multi_format_demo/demo_data.py" = "sidemantic/examples/multi_format_demo/demo_data.py"
 "sidemantic/widget/static/widget.js" = "sidemantic/widget/static/widget.js"
 "sidemantic/widget/static/widget.css" = "sidemantic/widget/static/widget.css"
-"sidemantic/ui/static" = "sidemantic/ui/static"
 
 [tool.ruff]
 line-length = 120

@@ -2,7 +2,7 @@
 
 import json
 import sys
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Literal
@@ -784,6 +784,22 @@ def _escape_sql_literal(value: str) -> str:
     return value.replace("'", "''")
 
 
+def _format_dimension_literal(value) -> str:
+    """Format a filter value as a typed SQL literal.
+
+    Booleans render as ``true``/``false`` and numerics render unquoted so that
+    boolean/numeric dimensions compare correctly on stricter dialects (e.g.
+    Postgres), where a quoted ``'True'`` would fail or misfilter. Everything
+    else is treated as a quoted, escaped string literal.
+    """
+    # bool must be checked before int (bool is a subclass of int)
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return repr(value)
+    return f"'{_escape_sql_literal(str(value))}'"
+
+
 def _build_explorer_filters(state: dict, *, exclude_dimension: str | None = None) -> list[str]:
     """Build SQL filter expressions from explorer state.
 
@@ -801,8 +817,10 @@ def _build_explorer_filters(state: dict, *, exclude_dimension: str | None = None
         start_str = str(date_range[0])
         end_str = str(date_range[1])
         start_literal = _format_date_literal(start_str)
-        end_literal = _format_date_literal(end_str)
-        filter_exprs.append(f"{model_name}.{time_dim} >= {start_literal} AND {model_name}.{time_dim} <= {end_literal}")
+        end_op, end_literal = _format_date_end_bound(end_str)
+        filter_exprs.append(
+            f"{model_name}.{time_dim} >= {start_literal} AND {model_name}.{time_dim} {end_op} {end_literal}"
+        )
 
     # Dimension filters
     for dim_key, values in state.get("filters", {}).items():
@@ -814,27 +832,50 @@ def _build_explorer_filters(state: dict, *, exclude_dimension: str | None = None
             if values[0] is None:
                 filter_exprs.append(f"{model_name}.{dim_key} IS NULL")
             else:
-                safe = _escape_sql_literal(str(values[0]))
-                filter_exprs.append(f"{model_name}.{dim_key} = '{safe}'")
+                literal = _format_dimension_literal(values[0])
+                filter_exprs.append(f"{model_name}.{dim_key} = {literal}")
         else:
             clauses: list[str] = []
             for v in values:
                 if v is None:
                     clauses.append(f"{model_name}.{dim_key} IS NULL")
                 else:
-                    safe = _escape_sql_literal(str(v))
-                    clauses.append(f"{model_name}.{dim_key} = '{safe}'")
+                    literal = _format_dimension_literal(v)
+                    clauses.append(f"{model_name}.{dim_key} = {literal}")
             filter_exprs.append(f"({' OR '.join(clauses)})")
 
     return filter_exprs
 
 
+def _is_date_only(value: str) -> bool:
+    """Return True for a bare ``YYYY-MM-DD`` string (no time component)."""
+    return len(value) == 10 and value[4] == "-" and value[7] == "-"
+
+
 def _format_date_literal(value: str) -> str:
     """Format a date/datetime string as a SQL CAST expression."""
-    # Date-only: exactly 10 chars like "2024-01-01"
-    if len(value) == 10 and value[4] == "-" and value[7] == "-":
+    if _is_date_only(value):
         return f"CAST('{value}' AS DATE)"
     return f"CAST('{value}' AS TIMESTAMP)"
+
+
+def _format_date_end_bound(value: str) -> tuple[str, str]:
+    """Return the (operator, literal) for an inclusive upper date-range bound.
+
+    A date-only end like ``2024-01-31`` should include the entire day. For
+    timestamp time dimensions, ``<= CAST('2024-01-31' AS DATE)`` only matches
+    midnight, dropping the rest of the day and undercounting totals. Use an
+    exclusive next-day bound (``< 2024-02-01``) instead, which is equivalent to
+    ``<= 2024-01-31`` for pure DATE dimensions while staying correct for
+    timestamps. Values that already carry a time component keep ``<=``.
+    """
+    if _is_date_only(value):
+        try:
+            next_day = (date.fromisoformat(value) + timedelta(days=1)).isoformat()
+            return "<", f"CAST('{next_day}' AS DATE)"
+        except ValueError:
+            pass
+    return "<=", _format_date_literal(value)
 
 
 def _merge_metric_tables(tables: list, time_column: str) -> str:
@@ -1174,7 +1215,13 @@ def widget_query(
         if not dc:
             return {"status": "error", "error": f"Unknown dimension: {dimension_key}"}
 
-        selected_metric_ref = f"{model_name}.{selected_metric}" if selected_metric else ""
+        # Resolve the selected metric to its configured ref (which may live on a
+        # related model) rather than blindly reconstructing model_name.key, which
+        # would reject metrics whose ref is not exactly model_name.selected_metric.
+        selected_metric_ref = ""
+        if selected_metric:
+            selected_mc = next((m for m in metrics_config if m["key"] == selected_metric), None)
+            selected_metric_ref = selected_mc["ref"] if selected_mc else f"{model_name}.{selected_metric}"
         dim_filters = _build_explorer_filters(state, exclude_dimension=dimension_key)
         result = {"dimension_key": dimension_key}
 

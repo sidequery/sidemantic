@@ -11,6 +11,7 @@ type DescribeDimension = {
   label?: string;
   format?: string;
   description?: string;
+  public?: boolean;
 };
 
 type DescribeMetric = {
@@ -20,7 +21,11 @@ type DescribeMetric = {
   label?: string;
   format?: string;
   description?: string;
+  public?: boolean;
 };
+
+// Fields marked `public: false` (e.g. imported from Cube/LookML/TMDL) are hidden from the UI.
+const isPublic = (field: { public?: boolean }) => field.public !== false;
 
 type DescribeModel = {
   name: string;
@@ -56,7 +61,7 @@ function pickTimeDimension(dims: CatalogDimension[], defaultName?: string): Cata
 
 export function buildCatalogFromDescribe(payload: DescribeResponse): Catalog {
   const models: CatalogModel[] = (payload.models ?? []).map((model) => {
-    const dimensions: CatalogDimension[] = (model.dimensions ?? []).map((dim) => ({
+    const dimensions: CatalogDimension[] = (model.dimensions ?? []).filter(isPublic).map((dim) => ({
       ref: `${model.name}.${dim.name}`,
       name: dim.name,
       model: model.name,
@@ -67,7 +72,7 @@ export function buildCatalogFromDescribe(payload: DescribeResponse): Catalog {
       supportedGranularities: dim.supported_granularities,
       format: dim.format,
     }));
-    const metrics: CatalogMetric[] = (model.metrics ?? []).map((metric) => ({
+    const metrics: CatalogMetric[] = (model.metrics ?? []).filter(isPublic).map((metric) => ({
       ref: `${model.name}.${metric.name}`,
       name: metric.name,
       model: model.name,
@@ -90,7 +95,7 @@ export function buildCatalogFromDescribe(payload: DescribeResponse): Catalog {
     };
   });
 
-  const graphMetrics: CatalogMetric[] = (payload.metrics ?? []).map((metric) => ({
+  const graphMetrics: CatalogMetric[] = (payload.metrics ?? []).filter(isPublic).map((metric) => ({
     ref: metric.name,
     name: metric.name,
     label: metric.label || labelize(metric.name),

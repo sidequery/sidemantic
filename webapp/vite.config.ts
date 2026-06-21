@@ -3,7 +3,7 @@ import react from "@vitejs/plugin-react";
 
 // The semantic-layer HTTP endpoints both backends expose identically.
 // In dev we proxy them to a running backend so the SPA is same-origin (no CORS) with HMR.
-const API_PATHS = ["/query", "/compile", "/models", "/graph", "/health", "/readyz", "/sql", "/raw"];
+const API_PATHS = ["/query", "/compile", "/describe", "/models", "/graph", "/health", "/readyz", "/sql", "/raw"];
 
 // Target a locally running `sidemantic api-serve` (Python, default :4400) or the Rust
 // `sidemantic-server`. Override with SIDEMANTIC_API=http://host:port.

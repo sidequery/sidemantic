@@ -459,3 +459,121 @@ def test_leaderboard_components_support_negative_values() -> None:
     assert 'const tone = metricValue < 0 ? "negative" : "positive";' in react_source
     assert "data-tone={tone}" in react_source
     assert "selectedValues?: string[]" in react_source
+
+
+def _components_root() -> Path:
+    return (
+        Path(__file__).resolve().parents[1]
+        / "plugins"
+        / "sidemantic"
+        / "skills"
+        / "webapp-builder"
+        / "assets"
+        / "components"
+    )
+
+
+def test_line_chart_exists_in_both_implementations() -> None:
+    root = _components_root()
+    react = (root / "react-tailwind" / "line-chart.tsx").read_text(encoding="utf-8")
+    static = (root / "static" / "sidemantic-components.js").read_text(encoding="utf-8")
+    css = (root / "static" / "sidemantic-components.css").read_text(encoding="utf-8")
+    index = (root / "react-tailwind" / "index.ts").read_text(encoding="utf-8")
+
+    assert "export function LineChart(" in react
+    assert "export function renderLineChart(" in static
+    assert ".sdm-line-chart__line" in css
+    assert "./line-chart" in index
+
+
+def test_value_formatting_parity() -> None:
+    root = _components_root()
+    react = (root / "react-tailwind" / "types.ts").read_text(encoding="utf-8")
+    static = (root / "static" / "sidemantic-components.js").read_text(encoding="utf-8")
+
+    for source in (react, static):
+        assert "metricValueFormat" in source
+        assert "style: options.style" in source
+        assert 'style: "currency"' in source
+
+
+def test_query_debug_highlighting_parity() -> None:
+    root = _components_root()
+    react = (root / "react-tailwind" / "query-debug-panel.tsx").read_text(encoding="utf-8")
+    static = (root / "static" / "sidemantic-components.js").read_text(encoding="utf-8")
+
+    assert "SQL_KEYWORDS" in react
+    assert "date_trunc" in react
+    assert "renderHighlightedQueryDebug" in static
+    assert "SQL_KEYWORDS" in static
+
+
+def test_preview_pagination_parity() -> None:
+    root = _components_root()
+    react = (root / "react-tailwind" / "data-preview-table.tsx").read_text(encoding="utf-8")
+    static = (root / "static" / "sidemantic-components.js").read_text(encoding="utf-8")
+    css = (root / "static" / "sidemantic-components.css").read_text(encoding="utf-8")
+
+    assert "pageSize" in react
+    assert 'data-testid="data-preview-pager"' in react
+    assert "pageSize" in static
+    assert "sdm-data-preview__pager" in static
+    assert ".sdm-data-preview__pager" in css
+
+
+def test_leaderboard_expand_parity() -> None:
+    root = _components_root()
+    react = (root / "react-tailwind" / "leaderboard.tsx").read_text(encoding="utf-8")
+    static = (root / "static" / "sidemantic-components.js").read_text(encoding="utf-8")
+
+    for source in (react, static):
+        assert "leaderboard-expand" in source
+        assert "leaderboard-back" in source
+        assert "extraColumns" in source
+
+
+def test_state_trio_parity() -> None:
+    root = _components_root()
+    react = (root / "react-tailwind" / "states.tsx").read_text(encoding="utf-8")
+    static = (root / "static" / "sidemantic-components.js").read_text(encoding="utf-8")
+
+    assert "LoadingState" in react and "EmptyState" in react and "ErrorState" in react
+    assert 'state.kind === "loading"' in static
+    assert "sdm-loading-state" in static
+
+
+def test_chart_axes_and_tooltips_parity() -> None:
+    root = _components_root()
+    react_line = (root / "react-tailwind" / "line-chart.tsx").read_text(encoding="utf-8")
+    react_col = (root / "react-tailwind" / "column-chart.tsx").read_text(encoding="utf-8")
+    static = (root / "static" / "sidemantic-components.js").read_text(encoding="utf-8")
+    css = (root / "static" / "sidemantic-components.css").read_text(encoding="utf-8")
+
+    for source in (react_line, react_col):
+        assert "axisTicks" in source
+        assert "formatCompact" in source
+        assert "ResizeObserver" in source
+        assert 'role="img"' in source
+        assert "useChartTooltip" in source
+
+    assert "renderLineChart" in static and "renderColumnChart" in static
+    assert "export function axisTicks(" in static
+    assert "ResizeObserver" in static
+    assert "bindChartTooltip" in static
+    assert 'svg.setAttribute("role", "img")' in static
+    assert ".sdm-chart-tooltip" in css
+    assert ".sdm-chart__grid" in css
+
+
+def test_sparkline_area_and_a11y_parity() -> None:
+    root = _components_root()
+    react = (root / "react-tailwind" / "sparkline.tsx").read_text(encoding="utf-8")
+    static = (root / "static" / "sidemantic-components.js").read_text(encoding="utf-8")
+    css = (root / "static" / "sidemantic-components.css").read_text(encoding="utf-8")
+
+    assert "fill-slate-500/10" in react
+    assert 'role="img"' in react
+    assert "useChartTooltip" in react
+    assert "sdm-sparkline__area" in static
+    assert "sdm-sparkline__dot" in css
+    assert 'svg.setAttribute("role", "img")' in static

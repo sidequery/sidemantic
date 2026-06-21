@@ -1,3 +1,7 @@
+import { useEffect, useRef, useState } from "react";
+import { ChartTooltip, useChartTooltip } from "./chart-tooltip";
+import { axisTicks, formatCompact, formatValue } from "./types";
+
 type ColumnChartDatum = {
   label: string;
   value: number;
@@ -5,61 +9,86 @@ type ColumnChartDatum = {
 
 type ColumnChartProps = {
   data: ColumnChartDatum[];
-  width?: number;
   height?: number;
+  ariaLabel?: string;
 };
 
-export function ColumnChart({ data, width = 320, height = 160 }: ColumnChartProps) {
-  const padX = 16;
-  const padTop = 10;
-  const padBottom = 28;
+const MARGIN = { top: 12, right: 14, bottom: 26, left: 44 };
+
+// Categorical bars with a zero baseline, responsive width (no aspect distortion), y-axis gridlines +
+// compact labels, per-bar x labels and hover tooltips, and an a11y summary. Negatives draw below the
+// baseline in red.
+export function ColumnChart({ data, height = 200, ariaLabel }: ColumnChartProps) {
+  const ref = useRef<SVGSVGElement>(null);
+  const [width, setWidth] = useState(640);
+  const { tip, handlers } = useChartTooltip();
+
+  useEffect(() => {
+    const node = ref.current;
+    if (!node || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) setWidth(Math.max(160, entry.contentRect.width));
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
+
   const values = data.map((item) => (Number.isFinite(item.value) ? item.value : 0));
   const min = Math.min(0, ...values);
   const max = Math.max(0, ...values);
   const span = max - min || 1;
-  const plotHeight = height - padTop - padBottom;
-  const yForValue = (value: number) => padTop + (1 - (value - min) / span) * plotHeight;
+  const plotW = width - MARGIN.left - MARGIN.right;
+  const plotH = height - MARGIN.top - MARGIN.bottom;
+  const yForValue = (value: number) => MARGIN.top + (1 - (value - min) / span) * plotH;
   const baselineY = yForValue(0);
-  const slot = (width - padX * 2) / Math.max(data.length, 1);
-  const barWidth = Math.max(10, Math.min(42, slot * 0.56));
+  const slot = plotW / Math.max(data.length, 1);
+  const barWidth = Math.max(8, Math.min(48, slot * 0.62));
+  const ticks = axisTicks(min, max, 4);
+  const summary = ariaLabel || `Bar chart, ${data.length} categories, up to ${formatCompact(max)}`;
 
   return (
-    <svg aria-hidden="true" className="h-40 w-full overflow-hidden" viewBox={`0 0 ${width} ${height}`}>
-      {min < 0 ? (
-        <line
-          x1={padX}
-          x2={width - padX}
-          y1={baselineY}
-          y2={baselineY}
-          className="stroke-slate-200 [vector-effect:non-scaling-stroke]"
-        />
-      ) : null}
-      {data.map((item, index) => {
-        const value = values[index] ?? 0;
-        const valueY = yForValue(value);
-        const barHeight = Math.abs(valueY - baselineY);
-        const x = padX + slot * index + (slot - barWidth) / 2;
-        const y = Math.min(valueY, baselineY);
-
-        return (
-          <g key={item.label}>
-            <rect
-              x={x}
-              y={y}
-              width={barWidth}
-              height={barHeight}
-              rx="3"
-              data-label={item.label}
-              data-value={value}
-              data-tone={value < 0 ? "negative" : "positive"}
-              className={value < 0 ? "fill-red-700" : "fill-indigo-600"}
-            />
-            <text x={x + barWidth / 2} y={height - 8} textAnchor="middle" className="fill-slate-500 text-[10px]">
-              {item.label.slice(0, 8)}
-            </text>
-          </g>
-        );
-      })}
-    </svg>
+    <>
+      <svg ref={ref} role="img" aria-label={summary} className="h-[200px] w-full overflow-hidden" viewBox={`0 0 ${width} ${height}`}>
+        {ticks.map((tick, index) => {
+          const y = yForValue(tick);
+          return (
+            <g key={index}>
+              <line x1={MARGIN.left} x2={width - MARGIN.right} y1={y} y2={y} className="stroke-slate-100" />
+              <text x={MARGIN.left - 6} y={y + 3} textAnchor="end" className="fill-slate-400 text-[10px]">
+                {formatCompact(tick)}
+              </text>
+            </g>
+          );
+        })}
+        <line x1={MARGIN.left} x2={width - MARGIN.right} y1={baselineY} y2={baselineY} className="stroke-slate-300" />
+        {data.map((item, index) => {
+          const value = values[index] ?? 0;
+          const valueY = yForValue(value);
+          const barHeight = Math.abs(valueY - baselineY);
+          const x = MARGIN.left + slot * index + (slot - barWidth) / 2;
+          const y = Math.min(valueY, baselineY);
+          return (
+            <g key={item.label}>
+              <rect
+                x={x}
+                y={y}
+                width={barWidth}
+                height={barHeight}
+                rx="3"
+                data-label={item.label}
+                data-value={value}
+                data-tone={value < 0 ? "negative" : "positive"}
+                className={value < 0 ? "fill-[#b91c1c]" : "fill-[#6b7cff]"}
+                {...handlers(`${item.label}: ${formatValue(value)}`)}
+              />
+              <text x={x + barWidth / 2} y={height - 8} textAnchor="middle" className="fill-slate-500 text-[10px]">
+                {item.label.slice(0, 8)}
+              </text>
+            </g>
+          );
+        })}
+      </svg>
+      <ChartTooltip tip={tip} />
+    </>
   );
 }

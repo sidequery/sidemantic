@@ -24,7 +24,7 @@ const schema = {
       metrics: { revenue: { agg: "sum", ts: "number" }, order_count: { agg: "count", ts: "number" } },
     },
   },
-  topMetrics: [],
+  topMetrics: ["finance.revenue_per_order"],
 };
 
 // createClient: payload shaping + ref validation against the schema.
@@ -44,6 +44,12 @@ const rows = await client.query({
 assert(rows.length === 1, "client.query returns executor rows");
 assert(captured.metrics.length === 2 && captured.dimensions.length === 2, "payload carries metrics + dimensions");
 assert(captured.limit === 10, "payload carries limit");
+
+await client.query({
+  metrics: ["finance.revenue_per_order"],
+  dimensions: ["orders.status"],
+});
+assert(captured.metrics[0] === "finance.revenue_per_order", "top-level dotted metric is accepted");
 
 let rejectedMetric = false;
 try {
@@ -95,6 +101,35 @@ const serve = createServeTransport({
 await serve.run({ metrics: ["orders.revenue"], dimensions: ["orders.status"], filters: ["orders.status = 'completed'"], limit: 5 });
 assert(/^SELECT orders\.status, orders\.revenue FROM orders/.test(seen[0]), `serve.run builds semantic SQL, got: ${seen[0]}`);
 assert(/WHERE orders\.status = 'completed'/.test(seen[0]) && /LIMIT 5/.test(seen[0]), "serve.run adds WHERE + LIMIT");
+
+let rejectedSkipDefaultTime = false;
+try {
+  await serve.run({ metrics: ["orders.revenue"], skip_default_time_dimensions: true });
+} catch (error) {
+  rejectedSkipDefaultTime = /skip_default_time_dimensions/.test(error.message);
+}
+assert(rejectedSkipDefaultTime, "serve.run rejects skip_default_time_dimensions because SQL cannot carry it");
+
+const seenWithSchema = [];
+const serveWithSchema = createServeTransport({
+  schema,
+  query: async (sql) => {
+    seenWithSchema.push(sql);
+    return [];
+  },
+});
+let rejectedTopMetricFrom = false;
+try {
+  await serveWithSchema.run({ metrics: ["finance.revenue_per_order"] });
+} catch (error) {
+  rejectedTopMetricFrom = /model-qualified field/.test(error.message);
+}
+assert(rejectedTopMetricFrom, "serve.run does not infer FROM from a top-level dotted metric");
+await serveWithSchema.run({ metrics: ["finance.revenue_per_order"], dimensions: ["orders.status"] });
+assert(
+  /^SELECT orders\.status, finance\.revenue_per_order FROM orders/.test(seenWithSchema[0]),
+  `serve.run uses a real model field to infer FROM, got: ${seenWithSchema[0]}`,
+);
 
 await serve.runSql("SELECT orders.revenue FROM orders WHERE orders.created_at >= {{ start }}", { start: "2024-01-01" });
 assert(/>= '2024-01-01'/.test(seen[1]), `serve.runSql interpolates params, got: ${seen[1]}`);

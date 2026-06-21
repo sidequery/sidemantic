@@ -16,24 +16,25 @@ function collectRefs(schema) {
   return { metrics, dimensions };
 }
 
-function leafName(ref) {
+function outputName(ref, schema) {
+  if ((schema.topMetrics || []).includes(ref)) return ref;
   const dot = ref.indexOf(".");
   return dot === -1 ? ref : ref.slice(dot + 1);
 }
 
-function assertNoOutputLeafCollisions(metrics, dimensions) {
-  const refsByLeaf = new Map();
+function assertNoOutputLeafCollisions(metrics, dimensions, schema) {
+  const refsByOutput = new Map();
   for (const ref of [...dimensions, ...metrics]) {
-    const leaf = leafName(ref);
-    const refs = refsByLeaf.get(leaf) || [];
+    const key = outputName(ref, schema);
+    const refs = refsByOutput.get(key) || [];
     refs.push(ref);
-    refsByLeaf.set(leaf, refs);
+    refsByOutput.set(key, refs);
   }
 
-  const collisions = [...refsByLeaf.entries()].filter(([, refs]) => refs.length > 1);
+  const collisions = [...refsByOutput.entries()].filter(([, refs]) => refs.length > 1);
   if (!collisions.length) return;
 
-  const details = collisions.map(([leaf, refs]) => `${leaf} (${refs.join(", ")})`).join("; ");
+  const details = collisions.map(([key, refs]) => `${key} (${refs.join(", ")})`).join("; ");
   throw new Error(
     `Structured typed queries cannot select refs with the same output name. ` +
       `Use semantic SQL with explicit aliases for these selections: ${details}`,
@@ -66,7 +67,7 @@ export function createClient(schema, options) {
           if (!refs.dimensions.has(dimension)) throw new Error(`Unknown dimension: ${dimension}`);
         }
       }
-      assertNoOutputLeafCollisions(metrics, dimensions);
+      assertNoOutputLeafCollisions(metrics, dimensions, schema);
       const payload = { metrics, skip_default_time_dimensions: true };
       if (dimensions.length) payload.dimensions = dimensions;
       if (query.filters && query.filters.length) payload.filters = query.filters;

@@ -61,6 +61,19 @@ def _orders_layer() -> SemanticLayer:
     return layer
 
 
+def _orders_layer_with_top_metric() -> SemanticLayer:
+    layer = _orders_layer()
+    layer.add_metric(
+        Metric(
+            name="finance.revenue_per_order",
+            type="ratio",
+            numerator="orders.revenue",
+            denominator="orders.order_count",
+        )
+    )
+    return layer
+
+
 def _orders_default_time_layer() -> SemanticLayer:
     layer = SemanticLayer(connection="duckdb:///:memory:", auto_register=False)
     layer.add_model(
@@ -132,6 +145,11 @@ def test_build_client_schema_resolves_field_types():
     assert orders["dimensions"]["created_at"]["ts"] == "string"
     assert "month" in orders["dimensions"]["created_at"]["grains"]
     assert schema["topMetrics"] == []
+
+
+def test_build_client_schema_preserves_top_metric_names():
+    schema = build_client_schema(_orders_layer_with_top_metric())
+    assert schema["topMetrics"] == ["finance.revenue_per_order"]
 
 
 def test_generate_client_schema_ts_emits_as_const():
@@ -212,6 +230,12 @@ def test_generate_sql_types_ts_includes_default_time_dimension():
     ts = generate_sql_types_ts(_orders_default_time_layer(), ["SELECT orders.revenue FROM orders"])
     assert '"created_at__month": string' in ts
     assert '"revenue": number' in ts
+
+
+def test_generate_sql_types_ts_preserves_top_level_dotted_metric_alias():
+    ts = generate_sql_types_ts(_orders_layer_with_top_metric(), ["SELECT finance.revenue_per_order FROM orders"])
+    assert '"finance.revenue_per_order": number' in ts
+    assert '"revenue_per_order": number' not in ts
 
 
 def test_generate_sql_types_ts_emits_unquoted_param_metadata():

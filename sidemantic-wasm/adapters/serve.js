@@ -8,18 +8,38 @@
 //   const pool = new Pool({ connectionString: "postgres://localhost:5433/sidemantic" });
 //   const t = createServeTransport({ query: (sql) => pool.query(sql).then((r) => r.rows) });
 //   const sqlClient = createSqlClient({ run: t.runSql });
-//   const client = createClient(schema, { run: t.run });
+//
+// The typed structured client sends skip_default_time_dimensions, but semantic
+// SQL cannot carry that flag to `sidemantic serve`. Use createSqlClient for
+// generated SQL types, or a native/wasm transport that accepts structured
+// payloads for createClient.
 
 import { interpolateParams } from "./params.js";
 
 export { interpolateParams };
 
-function buildSemanticSql(query) {
+function isModelQualifiedRef(ref, schema) {
+  if (!ref.includes(".")) return false;
+  if (!schema) return true;
+  const dot = ref.indexOf(".");
+  const modelName = ref.slice(0, dot);
+  const model = schema.models?.[modelName];
+  if (!model) return false;
+  const fieldName = ref.slice(dot + 1).split("__", 1)[0];
+  return Boolean(model.metrics?.[fieldName] || model.dimensions?.[fieldName]);
+}
+
+function buildSemanticSql(query, schema) {
+  if (query.skip_default_time_dimensions) {
+    throw new Error(
+      "serve transport cannot honor skip_default_time_dimensions over SQL; use semantic SQL with explicit row types or a transport that accepts structured payloads",
+    );
+  }
   const dimensions = query.dimensions || [];
   const metrics = query.metrics || [];
   const refs = [...dimensions, ...metrics];
   if (!refs.length) throw new Error("query requires at least one metric or dimension");
-  const qualified = refs.find((ref) => ref.includes("."));
+  const qualified = refs.find((ref) => isModelQualifiedRef(ref, schema));
   if (!qualified) {
     throw new Error("serve transport needs a model-qualified field (e.g. orders.revenue) to infer FROM");
   }
@@ -34,14 +54,16 @@ function buildSemanticSql(query) {
 /**
  * @param {object} opts
  * @param {(sql: string) => Promise<Record<string, unknown>[]>} opts.query  Sends SQL to the server, returns rows.
+ * @param {object} [opts.schema] Generated typed-client schema. When provided,
+ * top-level dotted metric names are not mistaken for model-qualified fields.
  */
-export function createServeTransport({ query } = {}) {
+export function createServeTransport({ query, schema } = {}) {
   if (typeof query !== "function") {
     throw new Error("createServeTransport requires { query } as (sql) => Promise<rows>");
   }
   return {
     async run(structuredQuery) {
-      return query(buildSemanticSql(structuredQuery));
+      return query(buildSemanticSql(structuredQuery, schema));
     },
     async runSql(sql, params, paramTypes) {
       return query(params ? interpolateParams(sql, params, paramTypes) : sql);

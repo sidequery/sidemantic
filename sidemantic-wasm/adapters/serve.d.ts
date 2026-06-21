@@ -1,9 +1,12 @@
 import type { QueryPayload } from "../client";
+import type { SchemaShape } from "../client";
 import type { ParamType } from "./params";
 
 export interface ServeTransportOptions {
   /** Sends SQL to a running `sidemantic serve` instance and resolves to rows. */
   query: (sql: string) => Promise<Record<string, unknown>[]>;
+  /** Generated typed-client schema, used to distinguish top-level dotted metrics from model refs. */
+  schema?: SchemaShape;
 }
 
 export interface ServeTransport {

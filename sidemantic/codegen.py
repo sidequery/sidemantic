@@ -169,6 +169,9 @@ def _stub_params(sql: str, layer) -> str:
 
 def _ref_ts_type(graph, ref: str) -> str:
     """Resolve a projected ref (``model.field``, ``model.field__grain``, or bare metric) to a TS type."""
+    graph_metric = getattr(graph, "metrics", {}).get(ref)
+    if graph_metric is not None:
+        return _pg_to_ts(get_postgres_type_for_metric(getattr(graph_metric, "agg", None)))
     if "." not in ref:
         metric = getattr(graph, "metrics", {}).get(ref)
         if metric is not None:
@@ -226,9 +229,11 @@ def _apply_default_time_dimensions(graph, metrics: list[str], dimensions: list[s
     return result
 
 
-def _ref_alias(ref: str, explicit: dict[str, str]) -> str:
+def _ref_alias(graph, ref: str, explicit: dict[str, str]) -> str:
     if ref in explicit:
         return explicit[ref]
+    if ref in getattr(graph, "metrics", {}):
+        return ref
     if "." not in ref:
         return ref
     return ref.split(".", 1)[1]
@@ -240,7 +245,7 @@ def _output_columns(graph, explanation) -> list[tuple[str, str]]:
     dimensions = _apply_default_time_dimensions(graph, metrics, list(explanation.dimensions))
     refs = dimensions + metrics
     explicit = explanation.aliases or {}
-    base_aliases = [_ref_alias(ref, explicit) for ref in refs]
+    base_aliases = [_ref_alias(graph, ref, explicit) for ref in refs]
     counts = Counter(base_aliases)
     columns: list[tuple[str, str]] = []
     for ref, alias in zip(refs, base_aliases):

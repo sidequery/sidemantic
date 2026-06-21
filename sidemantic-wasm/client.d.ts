@@ -95,6 +95,7 @@ export interface SidemanticQueryShape<S extends SchemaShape> {
 }
 
 type Leaf<R extends string> = R extends `${string}.${infer Rest}` ? Rest : R;
+type OutputKey<S extends SchemaShape, R extends string> = R extends S["topMetrics"][number] ? R : Leaf<R>;
 
 type DimCell<S extends SchemaShape, M extends string, D extends string> = M extends ModelName<S>
   ? D extends keyof S["models"][M]["dimensions"]
@@ -102,7 +103,9 @@ type DimCell<S extends SchemaShape, M extends string, D extends string> = M exte
     : never
   : never;
 
-type CellOf<S extends SchemaShape, R extends string> = R extends `${infer M}.${infer D}__${string}`
+type CellOf<S extends SchemaShape, R extends string> = R extends S["topMetrics"][number]
+  ? number
+  : R extends `${infer M}.${infer D}__${string}`
   ? DimCell<S, M, D>
   : R extends `${infer M}.${infer N}`
     ? M extends ModelName<S>
@@ -115,11 +118,13 @@ type CellOf<S extends SchemaShape, R extends string> = R extends `${infer M}.${i
     : number;
 
 /**
- * Row shape inferred from a query: output columns are aliased to the bare last
- * segment (`orders.total_revenue` -> `total_revenue`). The typed client rejects
- * structured queries that select multiple refs with the same output leaf name;
- * use semantic SQL with explicit aliases for those selections. It also skips
- * model default time dimensions so rows only contain explicitly selected fields.
+ * Row shape inferred from a query: model fields are aliased to the bare last
+ * segment (`orders.total_revenue` -> `total_revenue`), while top-level metrics
+ * keep their full generated output key (`finance.revenue_per_order`). The typed
+ * client rejects structured queries that select multiple refs with the same
+ * output leaf name; use semantic SQL with explicit aliases for those selections.
+ * It also skips model default time dimensions so rows only contain explicitly
+ * selected fields.
  */
 // Extract the selected dimension union only when `dimensions` is present, so a metrics-only
 // query (with no `dimensions` key) still types its metric columns instead of collapsing.
@@ -127,7 +132,7 @@ type SelectedDimensions<Q> = Q extends { dimensions: readonly (infer D)[] } ? D 
 type SelectedMetrics<Q> = Q extends { metrics: readonly (infer M)[] } ? M : never;
 
 export type Row<S extends SchemaShape, Q extends SidemanticQuery<S>> = {
-  [R in (SelectedMetrics<Q> | SelectedDimensions<Q>) as Leaf<R & string>]: CellOf<S, R & string>;
+  [R in (SelectedMetrics<Q> | SelectedDimensions<Q>) as OutputKey<S, R & string>]: CellOf<S, R & string>;
 };
 
 /** Plain query payload handed to a transport's `run`. */

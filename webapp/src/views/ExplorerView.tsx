@@ -8,7 +8,7 @@ import { EmptyState, ErrorState } from "../components/States";
 import type { BrushRange } from "../components/TimeSeriesChart";
 import { formatDelta, formatValue } from "../lib/format";
 import { composeFilters, dimTypes, metricSeries, metricTotals } from "../lib/queries";
-import { endOfBucket, previousRange } from "../lib/time";
+import { dateOnly, endOfBucket, previousRange } from "../lib/time";
 import { useExplorer } from "../state/ExplorerContext";
 import { useQueryResult } from "../state/useQueryResult";
 
@@ -86,7 +86,8 @@ export function ExplorerView() {
 
   function onBrush(range: BrushRange | null) {
     if (!range) dispatch({ type: "setDateRange", range: undefined });
-    else dispatch({ type: "setDateRange", range: { from: range.from, to: endOfBucket(range.to, state.grain) } });
+    // Bucket labels can be timestamps (hour grain); store a clean date-only range.
+    else dispatch({ type: "setDateRange", range: { from: dateOnly(range.from), to: endOfBucket(range.to, state.grain) } });
   }
 
   return (

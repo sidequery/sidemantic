@@ -19,8 +19,14 @@ function isoDate(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
 
+/** Date-only portion of a date or timestamp bucket label (hour grain yields "2024-01-02T03:00:00"). */
+export function dateOnly(value: string): string {
+  return value.slice(0, 10);
+}
+
 function parseISO(value: string): Date {
-  return new Date(`${value}T00:00:00Z`);
+  // Tolerate timestamp bucket labels by keeping only the date part.
+  return new Date(`${dateOnly(value)}T00:00:00Z`);
 }
 
 export function addDays(value: string, days: number): string {
@@ -70,7 +76,7 @@ export function endOfBucket(start: string, grain: Grain): string {
   switch (grain) {
     case "hour":
     case "day":
-      return start;
+      return dateOnly(start);
     case "week":
       return addDays(start, 6);
     case "month":

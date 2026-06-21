@@ -1,4 +1,11 @@
+import { NULL_TOKEN } from "../data/types";
+
 export type Tone = "positive" | "negative" | "neutral";
+
+/** Human display for a crossfilter dimension value (NULL/empty render as an em dash). */
+export function displayDimValue(value: string): string {
+  return value === NULL_TOKEN || value === "" ? "—" : value;
+}
 
 /** "order_count" -> "Order Count", "orders.revenue" -> "Orders Revenue". */
 export function labelize(value?: string | null): string {

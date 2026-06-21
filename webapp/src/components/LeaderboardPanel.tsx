@@ -1,7 +1,7 @@
 import { useMemo } from "react";
-import { aliasOf, type CatalogDimension, type CatalogMetric, type CatalogModel } from "../data/types";
+import { aliasOf, NULL_TOKEN, type CatalogDimension, type CatalogMetric, type CatalogModel } from "../data/types";
 import { formatCompact } from "../lib/format";
-import { composeFilters, dimensionLeaderboard } from "../lib/queries";
+import { composeFilters, dimTypes, dimensionLeaderboard } from "../lib/queries";
 import { useExplorer } from "../state/ExplorerContext";
 import { useQueryResult } from "../state/useQueryResult";
 import { Leaderboard, type LeaderboardRow } from "./Leaderboard";
@@ -22,10 +22,11 @@ export function LeaderboardPanel({
 }) {
   const { state, dispatch, backend } = useExplorer();
   const timeRef = model.timeDimension?.ref;
+  const types = useMemo(() => dimTypes(model.dimensions), [model]);
   const filters = useMemo(
     // Exclude this dimension's own filter so its leaderboard keeps showing every value.
-    () => composeFilters(state.filters, { timeRef, range: state.dateRange, excludeDim: dim.ref }),
-    [state.filters, timeRef, state.dateRange, dim.ref],
+    () => composeFilters(state.filters, { timeRef, range: state.dateRange, excludeDim: dim.ref, types }),
+    [state.filters, timeRef, state.dateRange, dim.ref, types],
   );
   const { result, loading, error } = useQueryResult(
     backend,
@@ -40,7 +41,11 @@ export function LeaderboardPanel({
   const stale = !!result && result.rows.length > 0 && !result.columns.includes(metricAlias);
   const rows: LeaderboardRow[] =
     result && !stale
-      ? result.rows.map((row) => ({ value: String(row[dimAlias] ?? ""), metric: Number(row[metricAlias] ?? 0) }))
+      ? result.rows.map((row) => {
+          const raw = row[dimAlias];
+          // Preserve NULL distinctly so the filter builder can emit `IS NULL`, not `= ''`.
+          return { value: raw === null || raw === undefined ? NULL_TOKEN : String(raw), metric: Number(row[metricAlias] ?? 0) };
+        })
       : [];
 
   if (error) return <ErrorState title={dim.label} message={error} />;

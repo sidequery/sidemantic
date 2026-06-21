@@ -1,3 +1,5 @@
+import { displayDimValue } from "../lib/format";
+
 export type LeaderboardRow = { value: string; metric: number };
 
 type LeaderboardProps = {
@@ -60,7 +62,7 @@ export function Leaderboard({
                   className={`absolute inset-y-0 left-0 ${tone === "negative" ? "bg-danger-soft" : "bg-accent-soft"}`}
                   style={{ width }}
                 />
-                <span className="relative min-w-0 truncate text-muted">{row.value || "—"}</span>
+                <span className="relative min-w-0 truncate text-muted">{displayDimValue(row.value)}</span>
                 <strong className="relative font-mono tnum font-medium text-ink">{formatMetric(row.metric)}</strong>
               </button>
             );

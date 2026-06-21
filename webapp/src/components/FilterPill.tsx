@@ -1,4 +1,4 @@
-import { labelize } from "../lib/format";
+import { displayDimValue, labelize } from "../lib/format";
 
 type FilterPillProps = {
   dimension: string; // ref
@@ -15,7 +15,7 @@ export function FilterPill({ dimension, dimensionLabel, value, onRemove }: Filte
       className="inline-flex max-w-full items-center gap-1.5 border border-line bg-surface px-2 py-0.5 text-2xs text-muted"
     >
       <span className="truncate">
-        <span className="text-faint">{dimensionLabel ?? labelize(dimension)}:</span> {value}
+        <span className="text-faint">{dimensionLabel ?? labelize(dimension)}:</span> {displayDimValue(value)}
       </span>
       {onRemove ? (
         <button

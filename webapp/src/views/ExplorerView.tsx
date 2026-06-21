@@ -7,7 +7,7 @@ import { QueryDebugPanel } from "../components/QueryDebugPanel";
 import { EmptyState, ErrorState } from "../components/States";
 import type { BrushRange } from "../components/TimeSeriesChart";
 import { formatDelta, formatValue } from "../lib/format";
-import { composeFilters, metricSeries, metricTotals } from "../lib/queries";
+import { composeFilters, dimTypes, metricSeries, metricTotals } from "../lib/queries";
 import { endOfBucket, previousRange } from "../lib/time";
 import { useExplorer } from "../state/ExplorerContext";
 import { useQueryResult } from "../state/useQueryResult";
@@ -37,14 +37,15 @@ export function ExplorerView() {
     return rankMetric && !focusedInStrip ? [...refs, rankMetric.ref] : refs;
   }, [metrics, rankMetric, focusedInStrip]);
 
+  const types = useMemo(() => dimTypes(model?.dimensions ?? []), [model]);
   const baseFilters = useMemo(
-    () => composeFilters(state.filters, { timeRef, range: state.dateRange }),
-    [state.filters, timeRef, state.dateRange],
+    () => composeFilters(state.filters, { timeRef, range: state.dateRange, types }),
+    [state.filters, timeRef, state.dateRange, types],
   );
   const prevRange = state.dateRange ? previousRange(state.dateRange) : null;
   const prevFilters = useMemo(
-    () => (prevRange && timeRef ? composeFilters(state.filters, { timeRef, range: prevRange }) : null),
-    [state.filters, timeRef, prevRange],
+    () => (prevRange && timeRef ? composeFilters(state.filters, { timeRef, range: prevRange, types }) : null),
+    [state.filters, timeRef, prevRange, types],
   );
 
   // Strip queries — one aggregate per shape, covering every metric at once.

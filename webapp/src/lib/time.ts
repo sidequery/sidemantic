@@ -56,9 +56,11 @@ export function presetRange(days: number, today: Date = new Date()): DateRange {
   return { from: addDays(to, -(days - 1)), to };
 }
 
-/** SQL filter expressions bounding a time dimension ref to an inclusive date range. */
+/** SQL filter expressions bounding a time dimension ref to a date range. The upper bound is
+ *  exclusive (`< day after to`) so a timestamp column still includes the whole final day rather
+ *  than truncating to its midnight. */
 export function timeFilters(ref: string, range: DateRange): string[] {
-  return [`${ref} >= cast('${range.from}' as date)`, `${ref} <= cast('${range.to}' as date)`];
+  return [`${ref} >= cast('${range.from}' as date)`, `${ref} < cast('${addDays(range.to, 1)}' as date)`];
 }
 
 /** Inclusive last calendar day of the bucket that starts at `start` for a given grain.

@@ -4,7 +4,7 @@ import { DataTable, type Column } from "../components/DataTable";
 import { QueryDebugPanel } from "../components/QueryDebugPanel";
 import { EmptyState, ErrorState } from "../components/States";
 import { formatValue, labelize } from "../lib/format";
-import { composeFilters, pivotGroup, previewRows } from "../lib/queries";
+import { composeFilters, dimTypes, pivotGroup, previewRows } from "../lib/queries";
 import { useExplorer } from "../state/ExplorerContext";
 import { useQueryResult } from "../state/useQueryResult";
 
@@ -47,9 +47,10 @@ export function PivotView() {
   const [ungrouped, setUngrouped] = useState(false);
   const [sort, setSort] = useState<{ ref: string; dir: "asc" | "desc" } | null>(null);
 
+  const types = useMemo(() => dimTypes(dims), [dims]);
   const baseFilters = useMemo(
-    () => composeFilters(state.filters, { timeRef, range: state.dateRange }),
-    [state.filters, timeRef, state.dateRange],
+    () => composeFilters(state.filters, { timeRef, range: state.dateRange, types }),
+    [state.filters, timeRef, state.dateRange, types],
   );
 
   const effectiveSort = sort ?? (pivotMetrics[0] ? { ref: pivotMetrics[0], dir: "desc" as const } : null);

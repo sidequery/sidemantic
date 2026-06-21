@@ -7,7 +7,7 @@ Use this reference when implementing the concrete UI/data layer after the skill 
 Default to copied component source instead of regenerating dashboard primitives. Copy from the skill, then edit the copied files inside the target project:
 
 ```bash
-uv run ${CLAUDE_PLUGIN_ROOT}/skills/webapp-builder/scripts/copy_components.py \
+uv run ${SIDEMANTIC_PLUGIN_ROOT}/skills/webapp-builder/scripts/copy_components.py \
   --kind react-tailwind \
   --target src/components/sidemantic
 ```
@@ -15,7 +15,7 @@ uv run ${CLAUDE_PLUGIN_ROOT}/skills/webapp-builder/scripts/copy_components.py \
 For static or no-build demos:
 
 ```bash
-uv run ${CLAUDE_PLUGIN_ROOT}/skills/webapp-builder/scripts/copy_components.py \
+uv run ${SIDEMANTIC_PLUGIN_ROOT}/skills/webapp-builder/scripts/copy_components.py \
   --kind static \
   --target dist/sidemantic-dashboard
 ```
@@ -182,7 +182,7 @@ CLI path:
 
 ```bash
 uv run sidemantic info models
-uv run ${CLAUDE_PLUGIN_ROOT}/skills/webapp-builder/scripts/inspect_layer.py models --db data.duckdb --require-execute
+uv run ${SIDEMANTIC_PLUGIN_ROOT}/skills/webapp-builder/scripts/inspect_layer.py models --db data.duckdb --require-execute
 uv run sidemantic query "SELECT revenue, status FROM orders" --models models --db data.duckdb
 ```
 
@@ -206,7 +206,7 @@ For static apps that follow the bundled component contracts, run:
 
 ```bash
 bunx --bun -p playwright playwright install chromium  # first run only, if needed
-bunx --bun -p playwright node ${CLAUDE_PLUGIN_ROOT}/skills/webapp-builder/scripts/verify_static_interactions.mjs \
+bunx --bun -p playwright node ${SIDEMANTIC_PLUGIN_ROOT}/skills/webapp-builder/scripts/verify_static_interactions.mjs \
   --url http://127.0.0.1:4519/
 ```
 
@@ -224,10 +224,10 @@ Fallback when browser tooling is unavailable:
 For a quick working artifact from an executed spec:
 
 ```bash
-uv run ${CLAUDE_PLUGIN_ROOT}/skills/webapp-builder/scripts/scaffold_static_app.py docs/sidemantic-app-spec.json \
+uv run ${SIDEMANTIC_PLUGIN_ROOT}/skills/webapp-builder/scripts/scaffold_static_app.py docs/sidemantic-app-spec.json \
   --output dist/sidemantic-dashboard \
   --title "Metrics Dashboard"
-uv run ${CLAUDE_PLUGIN_ROOT}/skills/webapp-builder/scripts/verify_static_app.py dist/sidemantic-dashboard
+uv run ${SIDEMANTIC_PLUGIN_ROOT}/skills/webapp-builder/scripts/verify_static_app.py dist/sidemantic-dashboard
 ```
 
 The scaffold intentionally stays plain HTML/CSS/JS and consumes copied files from `assets/templates/static-dashboard/` plus the static component files. Use it as a proof point, demo baseline, or fixture before adapting the same query contract into an existing product app.

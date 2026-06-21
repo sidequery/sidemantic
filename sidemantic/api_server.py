@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+from pathlib import Path
 from typing import Any, Literal
 
 try:
@@ -110,6 +111,7 @@ def start_api_server(
     auth_token: str | None = None,
     cors_origins: list[str] | None = None,
     max_request_body_bytes: int = 1024 * 1024,
+    serve_ui: bool = True,
 ) -> None:
     """Start the HTTP API server."""
     try:
@@ -122,8 +124,14 @@ def start_api_server(
         auth_token=auth_token,
         cors_origins=cors_origins,
         max_request_body_bytes=max_request_body_bytes,
+        serve_ui=serve_ui,
     )
     uvicorn.run(app, host=host, port=port, log_level="info")
+
+
+def ui_static_dir() -> Path:
+    """Directory of the embedded web UI bundle (present when built/committed)."""
+    return Path(__file__).parent / "ui" / "static"
 
 
 def create_app(
@@ -131,6 +139,7 @@ def create_app(
     auth_token: str | None = None,
     cors_origins: list[str] | None = None,
     max_request_body_bytes: int = 1024 * 1024,
+    serve_ui: bool = False,
 ) -> FastAPI:
     """Create a FastAPI app for a loaded semantic layer."""
     app = FastAPI(title="Sidemantic API", version=__version__)
@@ -344,6 +353,31 @@ def create_app(
                 sql=query,
                 format_override=format,
             )
+
+    if serve_ui:
+        ui_dir = ui_static_dir()
+        index_file = ui_dir / "index.html"
+        if index_file.exists():
+            from fastapi.responses import FileResponse
+            from fastapi.staticfiles import StaticFiles
+
+            assets_dir = ui_dir / "assets"
+            if assets_dir.is_dir():
+                app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="ui-assets")
+
+            # UI routes are intentionally public (no auth) so the static shell loads; the data
+            # endpoints above stay token-gated and the SPA sends the token on its own requests.
+            # Registered last so the API routes take precedence.
+            @app.get("/", include_in_schema=False)
+            def _ui_root():
+                return FileResponse(index_file)
+
+            @app.get("/{spa_path:path}", include_in_schema=False)
+            def _ui_spa(spa_path: str):
+                candidate = ui_dir / spa_path
+                if candidate.is_file() and candidate.resolve().is_relative_to(ui_dir.resolve()):
+                    return FileResponse(candidate)
+                return FileResponse(index_file)
 
     return app
 

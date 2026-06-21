@@ -49,7 +49,9 @@ models:
     )
 
 
-def _build_test_client(tmp_path: Path, auth_token: str | None = "secret", max_body_bytes: int = 1024 * 1024):
+def _build_test_client(
+    tmp_path: Path, auth_token: str | None = "secret", max_body_bytes: int = 1024 * 1024, serve_ui: bool = False
+):
     models_dir = tmp_path / "models"
     _write_models(models_dir)
 
@@ -77,7 +79,7 @@ def _build_test_client(tmp_path: Path, auth_token: str | None = "secret", max_bo
 
     layer = SemanticLayer(connection=f"duckdb:///{db_path}", auto_register=False)
     load_from_directory(layer, str(models_dir))
-    app = create_app(layer, auth_token=auth_token, max_request_body_bytes=max_body_bytes)
+    app = create_app(layer, auth_token=auth_token, max_request_body_bytes=max_body_bytes, serve_ui=serve_ui)
     return TestClient(app)
 
 
@@ -136,6 +138,28 @@ def test_describe_endpoint(tmp_path):
     assert dimensions["status"]["type"] == "categorical"
     metric_names = {metric["name"] for metric in orders["metrics"]}
     assert {"order_count", "total_amount"} <= metric_names
+
+
+def test_serve_ui_serves_spa_and_keeps_api_gated(tmp_path):
+    from sidemantic.api_server import ui_static_dir
+
+    if not ui_static_dir().joinpath("index.html").exists():
+        import pytest
+
+        pytest.skip("web UI bundle not built (run scripts/build_webapp.py)")
+
+    client = _build_test_client(tmp_path, serve_ui=True)
+
+    # SPA shell is public (no auth) at the root and as a fallback for unknown paths.
+    root = client.get("/")
+    assert root.status_code == 200
+    assert "text/html" in root.headers["content-type"]
+    assert client.get("/some/deep/link").status_code == 200
+
+    # API routes still resolve and stay auth-gated.
+    assert client.get("/health").status_code == 401
+    assert client.get("/health", headers=_auth_headers()).status_code == 200
+    assert client.get("/describe", headers=_auth_headers()).status_code == 200
 
 
 def test_compile_and_query_json_endpoints(tmp_path):

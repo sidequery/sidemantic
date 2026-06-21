@@ -708,6 +708,59 @@ Dataset combined = base_part.extend(override)
     assert graph.models["combined"].get_metric("revenue").sql == "SUM(base_orders.amount)"
 
 
+def test_holistics_extend_override_across_block_and_reference_forms(tmp_path):
+    """An override authored with the reusable-reference shorthand
+    (`metric revenue: some_metric`) must replace a base `metric revenue { ... }`
+    block of the same name, not be appended as a duplicate. The grammar emits the
+    shorthand as a bare `metric` keyword followed by a property, which is keyed
+    differently from a named block; without merging them under a shared field key
+    the composed model ends up with two `revenue` metrics and `Model.get_metric`
+    returns the first (base) one, so the override silently loses."""
+    (tmp_path / "root.aml").write_text(
+        """
+Model base_orders {
+  type: 'table'
+  table_name: 'orders'
+  dimension order_id { type: 'number' }
+  dimension amount { type: 'number' }
+}
+
+Metric ext_revenue {
+  label: 'External Revenue'
+  type: 'number'
+  definition: @aql sum(base_orders.amount) ;;
+}
+
+Dataset base_ds {
+  label: 'Base DS'
+  models: [base_orders]
+}
+
+PartialDataset base_part = PartialDataset {
+  metric revenue {
+    type: 'number'
+    definition: @aql count(base_orders.order_id) ;;
+  }
+}
+
+PartialDataset override_part = PartialDataset {
+  metric revenue: ext_revenue
+}
+
+Dataset combined = base_ds.extend(base_part).extend(override_part)
+"""
+    )
+
+    graph = HolisticsAdapter().parse(tmp_path)
+
+    combined = graph.models["combined"]
+    # The override replaces the base field instead of duplicating it.
+    revenue_metrics = [m for m in combined.metrics if m.name == "revenue"]
+    assert len(revenue_metrics) == 1
+    # The shorthand override wins over the base block.
+    assert combined.get_metric("revenue").sql == "SUM(base_orders.amount)"
+
+
 def test_holistics_merge_preserves_per_property_context(tmp_path):
     """When a partial from another module defines a field whose `definition`
     references a const from that module, and a consuming partial overrides only a

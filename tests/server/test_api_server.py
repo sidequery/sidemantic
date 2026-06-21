@@ -119,6 +119,25 @@ def test_health_and_models_endpoints(tmp_path):
     assert graph_response.json()["models"][0]["name"] == "orders"
 
 
+def test_describe_endpoint(tmp_path):
+    client = _build_test_client(tmp_path)
+
+    assert client.get("/describe").status_code == 401
+
+    response = client.get("/describe", headers=_auth_headers())
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["dialect"] == "duckdb"
+
+    orders = next(model for model in payload["models"] if model["name"] == "orders")
+    dimensions = {dimension["name"]: dimension for dimension in orders["dimensions"]}
+    assert dimensions["created_at"]["type"] == "time"
+    assert dimensions["created_at"]["granularity"] == "day"
+    assert dimensions["status"]["type"] == "categorical"
+    metric_names = {metric["name"] for metric in orders["metrics"]}
+    assert {"order_count", "total_amount"} <= metric_names
+
+
 def test_compile_and_query_json_endpoints(tmp_path):
     client = _build_test_client(tmp_path)
 

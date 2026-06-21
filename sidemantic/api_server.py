@@ -241,6 +241,15 @@ def create_app(
                 payload["graph_metrics"] = graph_metrics
             return payload
 
+    @app.get("/describe", dependencies=[Depends(require_auth)])
+    def describe() -> dict[str, Any]:
+        """Rich UI/FFI model metadata (dimension types, granularities, labels, formats)."""
+        with app.state.lock:
+            current_layer = app.state.layer
+            payload = current_layer.describe_models()
+            payload["dialect"] = current_layer.dialect
+            return payload
+
     @app.post("/compile", dependencies=[Depends(require_auth)])
     def compile_query(payload: StructuredQueryRequest) -> dict[str, str]:
         with app.state.lock:

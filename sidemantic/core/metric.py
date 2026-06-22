@@ -38,6 +38,7 @@ class Metric(BaseModel):
             "sum",
             "count",
             "count_distinct",
+            "approx_count_distinct",
             "avg",
             "min",
             "max",

@@ -15,7 +15,7 @@ from typing import Literal
 def build_symmetric_aggregate_sql(
     measure_expr: str,
     primary_key: str,
-    agg_type: Literal["sum", "avg", "count", "count_distinct", "min", "max", "median"],
+    agg_type: Literal["sum", "avg", "count", "count_distinct", "approx_count_distinct", "min", "max", "median"],
     model_alias: str | None = None,
     dialect: str = "duckdb",
 ) -> str:
@@ -106,6 +106,10 @@ def build_symmetric_aggregate_sql(
     elif agg_type == "count_distinct":
         # Count distinct on the measure itself - no symmetric aggregate needed
         return f"COUNT(DISTINCT {measure_col})"
+
+    elif agg_type == "approx_count_distinct":
+        # Approximate distinct dedupes inherently, so fan-out duplicate rows are safe
+        return f"APPROX_COUNT_DISTINCT({measure_col})"
 
     elif agg_type in ("min", "max"):
         # MIN/MAX are idempotent to fan-out: duplicated rows don't change the result

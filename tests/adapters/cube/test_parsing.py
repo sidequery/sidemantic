@@ -400,7 +400,8 @@ def test_cube_financial_analytics():
 
     is_recurring_dim = transactions.get_dimension("is_recurring")
     assert is_recurring_dim is not None
-    assert is_recurring_dim.type == "categorical"
+    # Cube boolean now maps to sidemantic boolean (round-trips back to Cube boolean)
+    assert is_recurring_dim.type == "boolean"
 
     # Check transaction measures with filters
     credit_amount = transactions.get_metric("credit_amount")

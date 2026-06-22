@@ -81,7 +81,11 @@ class SQLGenerator:
     @staticmethod
     def _agg_sql_name(agg: str) -> str:
         """Return the SQL function name for a normalized metric aggregation."""
-        return {"variance_pop": "VAR_POP", "var_pop": "VAR_POP"}.get(agg, agg.upper())
+        return {
+            "variance_pop": "VAR_POP",
+            "var_pop": "VAR_POP",
+            "approx_count_distinct": "APPROX_COUNT_DISTINCT",
+        }.get(agg, agg.upper())
 
     @staticmethod
     def _model_from_clause(model) -> str:
@@ -1692,7 +1696,7 @@ class SQLGenerator:
                 # Build the base SQL expression for the measure
                 if measure.agg == "count" and (not measure.sql or measure.sql == "*"):
                     base_sql = "1"
-                elif measure.agg == "count_distinct" and not measure.sql:
+                elif measure.agg in ("count_distinct", "approx_count_distinct") and not measure.sql:
                     pk_cols = model.primary_key_columns
                     if len(pk_cols) == 1:
                         base_sql = self._quote_identifier(pk_cols[0])
@@ -2930,7 +2934,7 @@ class SQLGenerator:
         agg_func = measure.agg.upper()
         raw_col = self._cte_ref(model_name, f"{measure.name}_raw")
 
-        if agg_func == "COUNT_DISTINCT":
+        if agg_func in ("COUNT_DISTINCT", "APPROX_COUNT_DISTINCT"):
             return self._build_bsl_count_distinct_total_sql(model_name, measure)
         if agg_func == "COUNT":
             return f"SUM(COUNT({raw_col})) OVER ()"
@@ -2953,6 +2957,8 @@ class SQLGenerator:
 
         if agg_func == "COUNT_DISTINCT":
             expr = f"COUNT(DISTINCT {raw_col})"
+        elif agg_func == "APPROX_COUNT_DISTINCT":
+            expr = f"APPROX_COUNT_DISTINCT({raw_col})"
         else:
             expr = self._build_measure_aggregation_sql(model_name, measure)
             expr = expr.replace(self._cte_ref(model_name, f"{measure.name}_raw"), raw_col)
@@ -2974,9 +2980,13 @@ class SQLGenerator:
         if model_name not in query_model_names:
             return self._build_measure_total_subquery_sql(model_name, measure)
 
-        query = select(f"COUNT(DISTINCT {self._cte_ref(model_name, f'{measure.name}_raw')})").from_(
-            self._quote_identifier(self._cte_name(base_model_name))
+        raw_ref = self._cte_ref(model_name, f"{measure.name}_raw")
+        distinct_expr = (
+            f"APPROX_COUNT_DISTINCT({raw_ref})"
+            if measure.agg == "approx_count_distinct"
+            else f"COUNT(DISTINCT {raw_ref})"
         )
+        query = select(distinct_expr).from_(self._quote_identifier(self._cte_name(base_model_name)))
         query = self._add_join_paths_to_query(query, base_model_name, other_models, models_with_filters)
         where_filters, _ = self._split_where_having_filters(filters, query_model_names)
         query = self._add_where_filters_to_query(query, where_filters, query_model_names)

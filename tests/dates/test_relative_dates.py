@@ -122,3 +122,28 @@ def test_bigquery_to_range():
     result = RelativeDateRange.to_range("this month", "order_date", dialect="bigquery")
     assert "DATE_TRUNC(CURRENT_DATE, MONTH)" in result
     assert "DATE_TRUNC('month'" not in result
+
+
+def test_next_n_days_weeks():
+    """Forward simple offsets: next N days/weeks."""
+    assert RelativeDateRange.parse("next 7 days") == "CURRENT_DATE + 7"
+    assert RelativeDateRange.parse("next 1 day") == "CURRENT_DATE + 1"
+    assert RelativeDateRange.parse("next 2 weeks") == "CURRENT_DATE + 14"
+    assert RelativeDateRange.is_relative_date("next 7 days")
+
+
+def test_last_n_quarters():
+    """last N quarters parses analogously to last N months/years."""
+    assert RelativeDateRange.parse("last 3 quarters") == "DATE_TRUNC('quarter', CURRENT_DATE) - INTERVAL '9 months'"
+    assert RelativeDateRange.is_relative_date("last 3 quarters")
+
+
+def test_to_range_new_forms():
+    """to_range() produces correct windows for the new forms (not silently-wrong ranges)."""
+    # next N days -> forward window from today
+    assert RelativeDateRange.to_range("next 7 days", "d") == "d >= CURRENT_DATE AND d <= CURRENT_DATE + 7"
+    # last N quarters spans N quarters (9 months), not a single quarter
+    r = RelativeDateRange.to_range("last 3 quarters", "d")
+    assert r is not None and "INTERVAL '9 months'" in r and r.startswith("d >=")
+    # N-aware width also fixes the pre-existing last-N-months single-window bug
+    assert "INTERVAL '3 months'" in RelativeDateRange.to_range("last 3 months", "d")

@@ -397,8 +397,11 @@ class Migrator:
                         "variance": "variance",
                         "variancepop": "var_pop",
                         "median": "median",
-                        "approxdistinct": "approx_distinct",
-                        "approxquantile": "approx_quantile",
+                        "approxdistinct": "approx_count_distinct",
+                        # approx_quantile takes a percentile arg sidemantic can't model as a
+                        # bare agg; fall back to median (the 0.5 quantile). NOTE: a non-0.5
+                        # percentile (e.g. p90) is silently downgraded to the median here.
+                        "approxquantile": "median",
                     }
 
                     agg_name = agg_name_map.get(agg_type_name, agg_type_name)

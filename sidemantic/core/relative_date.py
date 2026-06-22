@@ -30,12 +30,15 @@ class RelativeDateRange:
         r"^tomorrow$": lambda: "CURRENT_DATE + 1",
         r"^last (\d+) day(?:s)?$": lambda n: f"CURRENT_DATE - {n}",
         r"^last (\d+) week(?:s)?$": lambda n: f"CURRENT_DATE - {int(n) * 7}",
+        r"^next (\d+) day(?:s)?$": lambda n: f"CURRENT_DATE + {n}",
+        r"^next (\d+) week(?:s)?$": lambda n: f"CURRENT_DATE + {int(n) * 7}",
     }
 
     # Patterns that need DATE_TRUNC - return (granularity, template) tuples
     # Template uses {trunc} as placeholder for the DATE_TRUNC expression
     TRUNC_PATTERNS = {
         r"^last (\d+) month(?:s)?$": ("month", lambda n: "{trunc} - INTERVAL '" + n + " months'"),
+        r"^last (\d+) quarter(?:s)?$": ("quarter", lambda n: "{trunc} - INTERVAL '" + str(int(n) * 3) + " months'"),
         r"^last (\d+) year(?:s)?$": ("year", lambda n: "{trunc} - INTERVAL '" + n + " years'"),
         r"^this week$": ("week", lambda: "{trunc}"),
         r"^last week$": ("week", lambda: "{trunc} - INTERVAL '1 week'"),
@@ -112,29 +115,32 @@ class RelativeDateRange:
         """
         expr = expr.lower().strip()
 
-        # For "last N days/weeks" - use >= comparison
+        # "last N days/weeks" - open-ended lower bound (>= now - N)
         if expr.startswith("last ") and any(unit in expr for unit in ["day", "week"]):
             sql_expr = cls.parse(expr, dialect)
             if sql_expr:
                 return f"{column} >= {sql_expr}"
 
-        # For "this/last month/quarter/year" - use range
-        if any(word in expr for word in ["month", "quarter", "year"]) and expr.startswith(("this ", "last ", "next ")):
+        # "next N days/weeks" - forward window from today (now .. now + N)
+        if expr.startswith("next ") and any(unit in expr for unit in ["day", "week"]):
+            sql_expr = cls.parse(expr, dialect)
+            if sql_expr:
+                return f"{column} >= CURRENT_DATE AND {column} <= {sql_expr}"
+
+        # "this/last/next [N] month/quarter/year" - bounded range spanning N periods.
+        # The window width is N units (so "last 3 months" covers 3 months, not 1).
+        period_match = re.match(r"^(?:this|last|next)\s+(?:(\d+)\s+)?(month|quarter|year)s?$", expr)
+        if period_match:
             start_sql = cls.parse(expr, dialect)
             if start_sql:
-                # Determine the interval to add for end date
-                if "month" in expr:
-                    interval = "1 month"
-                elif "quarter" in expr:
-                    interval = "3 months"
-                elif "year" in expr:
-                    interval = "1 year"
-                elif "week" in expr:
-                    interval = "1 week"
+                count = int(period_match.group(1)) if period_match.group(1) else 1
+                unit = period_match.group(2)
+                if unit == "year":
+                    width = f"{count} year" + ("s" if count != 1 else "")
                 else:
-                    interval = "1 day"
-
-                return f"{column} >= {start_sql} AND {column} < {start_sql} + INTERVAL '{interval}'"
+                    months = count if unit == "month" else count * 3
+                    width = f"{months} month" + ("s" if months != 1 else "")
+                return f"{column} >= {start_sql} AND {column} < {start_sql} + INTERVAL '{width}'"
 
         # For single day expressions
         if expr in ["today", "yesterday", "tomorrow"]:

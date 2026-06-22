@@ -3,7 +3,9 @@
  * contract (snake_case), so the object is serialized and passed through as-is.
  */
 export interface SidemanticQuery {
-  metrics: string[];
+  /** Optional: the Rust payload defaults missing metrics to `[]`, so a dimension-only
+   *  query (e.g. a filter-value / DISTINCT-list request) is valid. */
+  metrics?: string[];
   dimensions?: string[];
   /** SQL filter expressions, e.g. `"orders.status = 'completed'"`. */
   filters?: string[];

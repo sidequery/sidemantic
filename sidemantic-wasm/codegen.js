@@ -300,10 +300,11 @@ function parseProjections(sql, index) {
     // Star projection: `*` or `model.*`.
     const star = /^(?:([A-Za-z_]\w*)\s*\.\s*)?\*$/.exec(projection.trim());
     if (star) return expandStar(star[1], from, index, sql);
-    // Explicit `expr AS alias`.
-    const asMatch = /\s+as\s+([A-Za-z_]\w*)\s*$/i.exec(projection);
+    // Explicit `expr AS alias` — alias may be a quoted identifier (`"total sales"`) for spaces /
+    // reserved words, which becomes a string-literal key in the generated row type.
+    const asMatch = /\s+as\s+(?:"([^"]*)"|`([^`]*)`|([A-Za-z_]\w*))\s*$/i.exec(projection);
     let rawRef = (asMatch ? projection.slice(0, asMatch.index) : projection).trim();
-    let alias = asMatch ? asMatch[1] : null;
+    let alias = asMatch ? (asMatch[1] ?? asMatch[2] ?? asMatch[3]) : null;
     let resolved = resolveRef(rawRef, from, index);
     // Implicit trailing alias `expr alias` (no AS), e.g. `orders.revenue sales`. Only split when
     // the leading part resolves on its own, so a single ref is never mistaken for ref+alias. The
@@ -331,6 +332,13 @@ function stubParams(sql, index) {
 // part of the first projection. The original SQL (with the modifier) stays the generated type key.
 function stripSelectModifiers(sql) {
   return sql.replace(/(\bselect\s+)(?:distinct|all)\b\s*/i, "$1");
+}
+
+// Remove `AS "quoted"` / `` AS `quoted` `` identifier aliases for the rewrite check — the wasm
+// rewriter rejects quoted aliases. They do not affect validity or column types (codegen parses the
+// alias itself from the original SQL).
+function stripQuotedAliases(sql) {
+  return sql.replace(/\s+as\s+(?:"[^"]*"|`[^`]*`)/gi, "");
 }
 
 // True when the outer SELECT projects a star (`*` / `model.*`). The wasm rewriter rejects star
@@ -372,7 +380,7 @@ export async function generateSqlTypes(models, queries, { wasmUrl } = {}) {
     // malformed SQL), then validate + type the projection below. Param placeholders are
     // stubbed so the SQL parses. (The wasm rewriter is more lenient on subtle syntax than
     // the Python `gen sql` path, which parses with sqlglot.)
-    if (!isStarQuery(analyzed)) runtime.rewrite(models, stubParams(analyzed, index));
+    if (!isStarQuery(analyzed)) runtime.rewrite(models, stubParams(stripQuotedAliases(analyzed), index));
     const projections = parseProjections(analyzed, index);
     const metrics = projections.filter((projection) => projection.kind === "metric");
     const dimensions = projections.filter((projection) => projection.kind === "dimension");

@@ -156,6 +156,10 @@ const starTypes = await generateSqlTypes(models, ["SELECT * FROM orders"], { was
 assert(/"created_at": string;[\s\S]*"region": string;[\s\S]*"revenue": number/.test(starTypes), `star not expanded in order: ${starTypes}`);
 assert(starTypes.includes('"order_count": number'), `star missing a metric: ${starTypes}`);
 
+// 8f. A quoted alias (for spaces / reserved words) becomes a string-literal key, like Python/sqlglot.
+const quotedAlias = await generateSqlTypes(models, ['SELECT orders.revenue AS "total sales" FROM orders'], { wasmUrl: wasmBytes });
+assert(quotedAlias.includes('"total sales": number'), `quoted alias not typed: ${quotedAlias}`);
+
 // 9. A top-level metric whose owner model has a default time dimension: the engine inserts that
 // dimension into the output, so an explicit `AS` alias must stay on the metric (not slide onto the
 // inserted time column). Regression for the positional-overlay misalignment.

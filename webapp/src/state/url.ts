@@ -1,11 +1,12 @@
 import type { FilterState } from "../lib/queries";
-import type { DateRange } from "../lib/time";
+import { ALL_GRAINS, type DateRange } from "../lib/time";
 import type { ExplorerState, ViewKind } from "./explorerState";
 
 // Only selections + filters live in the URL — never result rows. This keeps shared links small
 // and reproducible (the approved state contract).
 
 const VIEWS: ViewKind[] = ["explore", "pivot"];
+const GRAINS = new Set<string>(ALL_GRAINS);
 
 function parseJson(value: string | null): unknown {
   if (!value) return undefined;
@@ -55,7 +56,7 @@ export function decodeState(search: string, base: ExplorerState): ExplorerState 
   const metric = params.get("metric");
   if (metric) next.selectedMetric = metric;
   const grain = params.get("grain");
-  if (grain) next.grain = grain as ExplorerState["grain"];
+  if (grain && GRAINS.has(grain)) next.grain = grain as ExplorerState["grain"];
 
   const from = params.get("from");
   const to = params.get("to");

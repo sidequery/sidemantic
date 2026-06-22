@@ -1154,6 +1154,10 @@ def _merge_graph_passthrough_metadata(target_graph: object, source_graph: object
             for item in value:
                 if item not in existing:
                     existing.append(copy.deepcopy(item))
+        elif isinstance(existing, dict) and isinstance(value, dict):
+            # Dict-valued attrs (module_custom_instructions) must accumulate keys
+            # across split files, not get overwritten by the last file.
+            _deep_merge_metadata(existing, value)
         else:
             setattr(target_graph, attr, copy.deepcopy(value))
 

@@ -261,6 +261,7 @@ fn parse_sql_content(content: &str) -> Result<ParsedConfig> {
     let mut models: Vec<Model> = Vec::new();
     let mut top_level_metrics: Vec<Metric> = Vec::new();
     let mut top_level_parameters: Vec<Parameter> = Vec::new();
+    let mut graph_metadata: Option<serde_json::Value> = None;
 
     match parse_sql_models(content) {
         Ok(parsed_models) => {
@@ -316,11 +317,27 @@ fn parse_sql_content(content: &str) -> Result<ParsedConfig> {
             top_level_parameters.extend(sql_parameters);
 
             if let Some(frontmatter) = frontmatter {
-                let mut model = model_from_sql_frontmatter(frontmatter)?;
-                model.metrics.extend(sql_metrics);
-                model.segments.extend(sql_segments);
-                model.pre_aggregations.extend(sql_preaggs);
-                models.push(model);
+                if frontmatter.contains_key("name") {
+                    let mut model = model_from_sql_frontmatter(frontmatter)?;
+                    model.metrics.extend(sql_metrics);
+                    model.segments.extend(sql_segments);
+                    model.pre_aggregations.extend(sql_preaggs);
+                    models.push(model);
+                } else {
+                    // Graph-level frontmatter (e.g. version/metadata with no model
+                    // name): preserve any metadata and load the SQL METRIC/PARAMETER
+                    // definitions as graph-level instead of failing
+                    // model_from_sql_frontmatter for a missing name -- mirrors the
+                    // YAML and Python SQL paths.
+                    if let Some(metadata_value) = frontmatter.get("metadata") {
+                        graph_metadata = Some(serde_json::to_value(metadata_value).map_err(|e| {
+                            SidemanticError::Validation(format!(
+                                "failed to parse SQL frontmatter metadata: {e}"
+                            ))
+                        })?);
+                    }
+                    top_level_metrics.extend(sql_metrics);
+                }
             } else {
                 top_level_metrics.extend(sql_metrics);
             }
@@ -332,6 +349,7 @@ fn parse_sql_content(content: &str) -> Result<ParsedConfig> {
         extends_map: HashMap::new(),
         top_level_metrics,
         top_level_parameters,
+        graph_metadata,
         ..Default::default()
     })
 }
@@ -344,6 +362,7 @@ pub fn load_from_sql_string_with_metadata(content: &str) -> Result<LoadedGraphMe
         extends_map,
         top_level_metrics,
         top_level_parameters,
+        graph_metadata,
         ..
     } = parsed;
     let model_order: Vec<String> = models.iter().map(|model| model.name.clone()).collect();
@@ -376,6 +395,9 @@ pub fn load_from_sql_string_with_metadata(content: &str) -> Result<LoadedGraphMe
     }
     for parameter in top_level_parameters {
         graph.add_parameter(parameter)?;
+    }
+    if let Some(metadata) = graph_metadata {
+        graph.set_metadata(metadata);
     }
 
     let model_sources = model_order
@@ -1522,6 +1544,30 @@ METRIC (
         let loaded = load_from_sql_string_with_metadata(sql).unwrap();
         let orders = loaded.graph.get_model("orders").unwrap();
         assert!(orders.get_metric("order_count").is_some());
+    }
+
+    #[test]
+    fn test_load_from_sql_string_metadata_only_frontmatter_loads_graph_defs() {
+        // Frontmatter with only version/metadata (no model name) must preserve the
+        // metadata and load the SQL METRIC as a graph-level metric, not fail for a
+        // missing model name -- parity with the YAML and Python SQL paths.
+        let sql = r#"
+---
+version: 1
+metadata:
+  owner: data-team
+---
+
+METRIC (
+  name total_orders,
+  agg count
+);
+"#;
+
+        let loaded = load_from_sql_string_with_metadata(sql).unwrap();
+        assert!(loaded.graph.get_metric("total_orders").is_some());
+        let metadata = loaded.graph.metadata().expect("graph metadata preserved");
+        assert_eq!(metadata["owner"], "data-team");
     }
 
     #[test]

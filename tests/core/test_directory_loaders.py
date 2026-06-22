@@ -1432,6 +1432,61 @@ verified_queries:
     assert len(getattr(graph, "verified_queries", [])) == 2
 
 
+def test_load_from_directory_merges_module_custom_instructions_across_files(tmp_path):
+    """Split Cortex files with different module_custom_instructions keys must
+    deep-merge (accumulate), not overwrite to the last file's value."""
+    (tmp_path / "a.yaml").write_text(
+        """
+name: a
+tables:
+  - name: orders
+    base_table:
+      database: db
+      schema: s
+      table: orders
+    primary_key:
+      columns: [id]
+    dimensions:
+      - name: id
+        expr: id
+        data_type: number
+module_custom_instructions:
+  sql_generation: Use explicit columns.
+"""
+    )
+    (tmp_path / "b.yaml").write_text(
+        """
+name: b
+tables:
+  - name: customers
+    base_table:
+      database: db
+      schema: s
+      table: customers
+    primary_key:
+      columns: [cid]
+    dimensions:
+      - name: cid
+        expr: cid
+        data_type: number
+module_custom_instructions:
+  question_generation: Prefer revenue.
+"""
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+    graph = layer.graph
+
+    mci = getattr(graph, "module_custom_instructions", {}) or {}
+    assert mci.get("sql_generation") == "Use explicit columns."
+    assert mci.get("question_generation") == "Prefer revenue."
+    # The deep-merged metadata carries both too, so export round-trips them.
+    merged_meta = graph.metadata["snowflake"]["module_custom_instructions"]
+    assert merged_meta.get("sql_generation") == "Use explicit columns."
+    assert merged_meta.get("question_generation") == "Prefer revenue."
+
+
 def test_load_from_directory_preserves_snowflake_top_level_sections(tmp_path):
     """CLI-first load -> export-native must round-trip Snowflake Cortex top-level sections."""
     import yaml

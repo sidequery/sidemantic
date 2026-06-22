@@ -656,6 +656,12 @@ class SemanticLayer:
         # Determine if pre-aggregations should be used
         use_preaggs = use_preaggregations if use_preaggregations is not None else self.use_preaggregations
 
+        # Pre-aggregations are materialized with UTC time buckets, so a timezone-bucketed
+        # query cannot be served from a rollup without silently returning UTC buckets. Force
+        # a live (non-pre-agg) query whenever a timezone is requested.
+        if timezone:
+            use_preaggs = False
+
         inner_sql = None
         # The Rust generator does not implement query-timezone bucketing; use Python for it.
         if self._use_rust_sql_generator and not timezone:

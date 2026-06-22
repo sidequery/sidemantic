@@ -58,3 +58,36 @@ def test_timezone_dialect_specific_sql():
     )
     with pytest.raises(ValueError, match="not supported"):
         SQLGenerator(g, dialect="mysql", timezone="UTC")._date_trunc("day", "ts")
+
+
+def test_timezone_bypasses_preaggregation():
+    """Pre-aggs are materialized in UTC, so a timezone query must not route to them."""
+    from sidemantic.core.pre_aggregation import PreAggregation
+
+    conn = duckdb.connect(":memory:")
+    conn.execute("create table ev as select 1 as id, TIMESTAMP '2024-01-02 02:00:00' as ts, 5 as amt")
+    layer = SemanticLayer()
+    layer.conn = conn
+    layer.add_model(
+        Model(
+            name="ev",
+            table="ev",
+            primary_key="id",
+            dimensions=[Dimension(name="ts", type="time", sql="ts", granularity="day")],
+            metrics=[Metric(name="total", agg="sum", sql="amt")],
+            pre_aggregations=[
+                PreAggregation(name="daily", measures=["total"], dimensions=[], time_dimension="ts", granularity="day")
+            ],
+        )
+    )
+    # Without a timezone, an exact-grain query routes to the (UTC-bucketed) rollup table.
+    routed = layer.compile(metrics=["ev.total"], dimensions=["ev.ts__day"], use_preaggregations=True)
+    assert "preagg" in routed.lower()
+
+    # With a timezone, it must bypass the UTC rollup and bucket live in the requested zone,
+    # otherwise it would silently return UTC day buckets (the P1 the reviewer flagged).
+    tz = layer.compile(
+        metrics=["ev.total"], dimensions=["ev.ts__day"], use_preaggregations=True, timezone="America/New_York"
+    )
+    assert "preagg" not in tz.lower()
+    assert "AT TIME ZONE" in tz

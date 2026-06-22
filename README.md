@@ -9,7 +9,7 @@ The universal metrics layer for consistent metrics across your data stack. Compa
 
 ![Jupyter Widget Preview](preview.png)
 
-The installer downloads the skill to `~/.agents/skills/sidemantic-modeler` and symlinks it into `~/.claude/skills/`.
+Sidemantic ships Claude Code and Codex plugin metadata for two skills (`modeler` and `webapp-builder`). See [Agent Plugin](#agent-plugin) below to install.
 
 ## Quickstart
 
@@ -373,23 +373,37 @@ curl -s http://localhost:4400/sql \
   -d '{"query":"SELECT status, total_amount FROM orders ORDER BY status"}'
 ```
 
-## Agent Skill
+## Agent Plugin
 
-Sidemantic ships an [agent skill](skills/sidemantic-modeler/) that teaches Claude Code, Codex, and other `SKILL.md`-compatible agents to build, validate, and query semantic models.
+Sidemantic ships a [plugin bundle](plugins/sidemantic/) with Claude Code and Codex metadata for two skills:
 
-**One-liner install (no clone required):**
+- **`modeler`** — build, validate, and query semantic models
+- **`webapp-builder`** — generate analytics webapps from your models
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/sidequery/sidemantic/main/skills/install.sh | bash
-```
-
-**npx / bunx:**
+**Install in Claude Code:**
 
 ```bash
-npx skills add https://github.com/sidequery/sidemantic --skill sidemantic-modeler
-# or
-bunx skills add https://github.com/sidequery/sidemantic --skill sidemantic-modeler
+claude plugin marketplace add sidequery/sidemantic && claude plugin install sidemantic@sidequery
 ```
+
+**Install in Codex:**
+
+```bash
+codex plugin marketplace add sidequery/sidemantic && codex plugin add sidemantic@sidequery
+```
+
+**Use a local clone while developing:**
+
+```bash
+claude --plugin-dir ./plugins/sidemantic
+codex plugin marketplace add . && codex plugin add sidemantic@sidequery
+```
+
+The Claude Code plugin manifest lives at `plugins/sidemantic/.claude-plugin/plugin.json`, and its marketplace lives at `.claude-plugin/marketplace.json`.
+
+The Codex plugin manifest lives at `plugins/sidemantic/.codex-plugin/plugin.json`, and its repo-local marketplace lives at `.agents/plugins/marketplace.json`.
+
+The skills also work with other `SKILL.md`-compatible agents by pointing them at `plugins/sidemantic/skills/`.
 
 ## How mature is Sidemantic?
 

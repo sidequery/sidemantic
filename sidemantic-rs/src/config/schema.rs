@@ -561,6 +561,31 @@ impl ModelConfig {
     }
 }
 
+/// Fold enrichment fields that have no first-class core slot (Cortex/native
+/// synonyms, sample values, search service) into the ``metadata`` JSON object so
+/// they survive the Rust load path (graph/catalog payload) instead of being
+/// silently dropped by ``into_dimension``/``into_metric``. Existing metadata keys
+/// are never overwritten.
+fn merge_metadata_extras(
+    base: Option<serde_json::Value>,
+    extras: Vec<(&str, serde_json::Value)>,
+) -> Option<serde_json::Value> {
+    if extras.is_empty() {
+        return base;
+    }
+    let mut map = match base {
+        Some(serde_json::Value::Object(map)) => map,
+        None => serde_json::Map::new(),
+        // Non-object metadata is unexpected for native files; leave it untouched
+        // rather than risk losing it.
+        Some(other) => return Some(other),
+    };
+    for (key, value) in extras {
+        map.entry(key.to_string()).or_insert(value);
+    }
+    Some(serde_json::Value::Object(map))
+}
+
 impl DimensionConfig {
     fn into_dimension(self) -> Dimension {
         let dim_type = match self
@@ -575,6 +600,21 @@ impl DimensionConfig {
             _ => DimensionType::Categorical,
         };
 
+        let metadata = merge_metadata_extras(
+            self.metadata,
+            [
+                self.synonyms
+                    .map(|v| ("synonyms", serde_json::Value::from(v))),
+                self.sample_values
+                    .map(|v| ("sample_values", serde_json::Value::from(v))),
+                self.cortex_search_service_name
+                    .map(|v| ("cortex_search_service_name", serde_json::Value::from(v))),
+            ]
+            .into_iter()
+            .flatten()
+            .collect(),
+        );
+
         Dimension {
             name: self.name,
             r#type: dim_type,
@@ -583,7 +623,7 @@ impl DimensionConfig {
             supported_granularities: self.supported_granularities,
             label: self.label,
             description: self.description,
-            metadata: self.metadata,
+            metadata,
             meta: self.meta,
             format: self.format,
             value_format_name: self.value_format_name,
@@ -654,6 +694,14 @@ impl MetricConfig {
                 .collect()
         });
 
+        let metadata = merge_metadata_extras(
+            self.metadata,
+            self.synonyms
+                .map(|v| ("synonyms", serde_json::Value::from(v)))
+                .into_iter()
+                .collect(),
+        );
+
         Metric {
             name: self.name,
             extends: self.extends,
@@ -666,7 +714,7 @@ impl MetricConfig {
             filters: self.filters,
             label: self.label,
             description: self.description,
-            metadata: self.metadata,
+            metadata,
             meta: self.meta,
             window: self.window,
             grain_to_date,
@@ -1556,8 +1604,30 @@ models:
             Some(&["total revenue".to_string()][..])
         );
 
-        // The config must still convert into the internal model without error.
-        config.into_parts().unwrap();
+        // The config must convert into the internal model, and the enrichment
+        // fields (which have no first-class core slot) must survive under the core
+        // `metadata` instead of being dropped by into_dimension/into_metric.
+        let (models, _, _) = config.into_parts().unwrap();
+        let orders = models.iter().find(|m| m.name == "orders").unwrap();
+        let status = orders
+            .dimensions
+            .iter()
+            .find(|d| d.name == "status")
+            .unwrap();
+        let status_meta = status
+            .metadata
+            .as_ref()
+            .expect("dimension metadata preserved");
+        assert_eq!(status_meta["synonyms"][0], "state");
+        assert_eq!(status_meta["sample_values"][0], "1001");
+        assert_eq!(status_meta["sample_values"][1], "1002");
+        assert_eq!(status_meta["cortex_search_service_name"], "status_search");
+        let revenue = orders.metrics.iter().find(|m| m.name == "revenue").unwrap();
+        let revenue_meta = revenue
+            .metadata
+            .as_ref()
+            .expect("metric metadata preserved");
+        assert_eq!(revenue_meta["synonyms"][0], "total revenue");
     }
 
     #[test]

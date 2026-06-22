@@ -42,12 +42,13 @@ function byName(a, b) {
 /** Build the `schema` payload from a parsed wasm graph (matches build_client_schema in Python). */
 export function buildClientSchema(graph) {
   const modelList = [...(graph.models || [])].sort(byName);
-  // The wasm runtime assigns every top-level metric to its owner model (for compilation) and
-  // lists it in top_level_metrics; the Python graph keeps them graph-level only. Drop those from
-  // per-model metrics so the schema matches the Python generator (and so a namespaced top metric
-  // like `finance.x` is not exposed as the invalid `orders.finance.x`); they stay queryable as a
-  // bare ref via topMetrics below.
-  const topMetricNames = new Set((graph.top_level_metrics || []).map((metric) => metric.name));
+  // The wasm runtime copies each top-level metric onto its owner model (for compilation) and
+  // lists it in top_level_metrics; the Python graph keeps them graph-level only. Identify the
+  // owner-assigned copies by value (they are byte-identical to the top_level_metrics entry) so we
+  // can drop just those from per-model metrics — keeping a genuine model metric that merely shares
+  // a name with a different top-level metric, and avoiding an invalid `orders.finance.x` for a
+  // namespaced top metric. They stay queryable as a bare ref via topMetrics below.
+  const topMetricByName = new Map((graph.top_level_metrics || []).map((metric) => [metric.name, JSON.stringify(metric)]));
 
   const models = {};
   for (const model of modelList) {
@@ -62,7 +63,8 @@ export function buildClientSchema(graph) {
     }
     const metrics = {};
     for (const metric of [...(model.metrics || [])].sort(byName)) {
-      if (topMetricNames.has(metric.name)) continue; // top-level metric, not an owned model metric
+      // Skip only an owner-assigned copy of a top-level metric (identical to the top-level entry).
+      if (topMetricByName.get(metric.name) === JSON.stringify(metric)) continue;
       metrics[metric.name] = { agg: metric.agg ?? null, ts: pgToTs(pgForMetric(metric.agg)) };
     }
     models[model.name] = { dimensions, metrics };
@@ -70,7 +72,7 @@ export function buildClientSchema(graph) {
 
   // List every top-level metric as a bare ref, even one whose leaf name also exists as a model
   // metric — the runtime resolves both the bare and model-qualified forms.
-  const topMetrics = [...topMetricNames].sort();
+  const topMetrics = [...topMetricByName.keys()].sort();
 
   return { models, topMetrics };
 }

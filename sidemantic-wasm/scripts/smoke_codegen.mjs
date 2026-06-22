@@ -203,4 +203,26 @@ const topSchema = await generateClientSchema(topMetricModels, { includeYaml: fal
 assert(topSchema.includes('"revenue_per_order"'), `top-level metric missing from schema: ${topSchema}`);
 assert(!topSchema.includes('"revenue_per_order": {'), `top-level metric must not be an owned model metric: ${topSchema}`);
 
+// 11. A genuine model metric that shares a name with a different top-level metric must be kept in
+// model.metrics (only an owner-assigned *copy* of a top-level metric is dropped). Here `aov` is a
+// real model metric (avg) AND a top-level metric (ratio); the model `aov` stays, `revenue_per_order`
+// (a pure top-level metric copied onto orders) does not.
+const collisionModels = `
+models:
+  - name: orders
+    table: orders
+    primary_key: id
+    metrics:
+      - {name: revenue, agg: sum, sql: amount}
+      - {name: cnt, agg: count, sql: id}
+      - {name: aov, agg: avg, sql: amount}
+metrics:
+  - {name: revenue_per_order, type: ratio, numerator: orders.revenue, denominator: orders.cnt}
+  - {name: aov, type: ratio, numerator: orders.revenue, denominator: orders.cnt}
+`;
+const collisionSchema = await generateClientSchema(collisionModels, { includeYaml: false, wasmUrl: wasmBytes });
+assert(/"aov": \{\s*"agg": "avg"/.test(collisionSchema), `genuine model metric aov must be kept: ${collisionSchema}`);
+assert(!collisionSchema.includes('"revenue_per_order": {'), `assigned top-level copy must be dropped from model metrics: ${collisionSchema}`);
+assert(/"topMetrics": \[\s*"aov",\s*"revenue_per_order"\s*\]/.test(collisionSchema), `both top metrics expected: ${collisionSchema}`);
+
 console.log("SMOKE_CODEGEN_OK");

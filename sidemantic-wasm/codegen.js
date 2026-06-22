@@ -311,6 +311,13 @@ function stubParams(sql, index) {
   return sql.replace(/\{\{\s*(\w+)\s*\}\}/g, (_match, name) => PARAM_STUB[index.paramType.get(name)] || "'x'");
 }
 
+// Drop a leading DISTINCT/ALL modifier from the SELECT used for analysis. It does not change the
+// result column types, but the wasm rewriter rejects it and it would otherwise reach resolveRef as
+// part of the first projection. The original SQL (with the modifier) stays the generated type key.
+function stripSelectModifiers(sql) {
+  return sql.replace(/(\bselect\s+)(?:distinct|all)\b\s*/i, "$1");
+}
+
 function tsObject(pairs) {
   if (!pairs.length) return "{}";
   return "{ " + pairs.map(([name, ts]) => `${JSON.stringify(name)}: ${ts}`).join("; ") + " }";
@@ -332,12 +339,15 @@ export async function generateSqlTypes(models, queries, { wasmUrl } = {}) {
   const index = indexGraph(runtime.loadGraph(models));
 
   const entries = queries.map((sql) => {
+    // Analyze a copy with SELECT modifiers (DISTINCT/ALL) removed — they do not affect column
+    // types but the wasm rewriter rejects them; the original `sql` stays the generated type key.
+    const analyzed = stripSelectModifiers(sql);
     // Best-effort full-query validation: run the whole query through the engine (rejects
     // malformed SQL), then validate + type the projection below. Param placeholders are
     // stubbed so the SQL parses. (The wasm rewriter is more lenient on subtle syntax than
     // the Python `gen sql` path, which parses with sqlglot.)
-    runtime.rewrite(models, stubParams(sql, index));
-    const projections = parseProjections(sql, index);
+    runtime.rewrite(models, stubParams(analyzed, index));
+    const projections = parseProjections(analyzed, index);
     const metrics = projections.filter((projection) => projection.kind === "metric");
     const dimensions = projections.filter((projection) => projection.kind === "dimension");
     const queryRefs = { metrics: metrics.map((p) => p.ref), dimensions: dimensions.map((p) => p.ref) };

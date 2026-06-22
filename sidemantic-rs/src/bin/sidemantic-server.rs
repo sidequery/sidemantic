@@ -1404,6 +1404,12 @@ fn metric_json(metric: &Metric) -> JsonValue {
     if let Some(name) = enum_json_name(&metric.r#type) {
         entry.insert("type".to_string(), json!(name));
     }
+    if let Some(label) = &metric.label {
+        entry.insert("label".to_string(), json!(label));
+    }
+    if let Some(format) = &metric.format {
+        entry.insert("format".to_string(), json!(format));
+    }
     if let Some(description) = &metric.description {
         entry.insert("description".to_string(), json!(description));
     }

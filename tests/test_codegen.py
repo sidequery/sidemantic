@@ -320,3 +320,30 @@ def test_committed_headless_dashboard_codegen_in_sync():
     literals = extract_sql_literals(expand_sources([EXAMPLE_DIR / "queries.ts"]))
     queries_generated = (EXAMPLE_DIR / "sidemantic.queries.generated.ts").read_text()
     assert queries_generated == generate_sql_types_ts(layer, literals)
+
+
+def test_apply_default_time_dimensions_resolves_graph_metric_owner():
+    from sidemantic.codegen import _apply_default_time_dimensions, _metric_owner_models
+
+    layer = SemanticLayer(connection="duckdb:///:memory:", auto_register=False)
+    layer.add_model(
+        Model(
+            name="orders",
+            table="orders",
+            primary_key="id",
+            default_time_dimension="created_at",
+            default_grain="month",
+            dimensions=[Dimension(name="created_at", type="time", granularity="day")],
+            metrics=[Metric(name="revenue", agg="sum", sql="amount"), Metric(name="cnt", agg="count", sql="id")],
+        )
+    )
+    # Namespaced top-level metric whose namespace ("finance") is not a model.
+    layer.graph.add_metric(
+        Metric(name="finance.revenue_per_order", type="ratio", numerator="orders.revenue", denominator="orders.cnt")
+    )
+    graph = layer.graph
+
+    assert _metric_owner_models(graph, "finance.revenue_per_order") == {"orders"}
+    # The owner model's default time dimension is pulled in (previously skipped because the
+    # namespace was mistaken for a model).
+    assert _apply_default_time_dimensions(graph, ["finance.revenue_per_order"], []) == ["orders.created_at__month"]

@@ -205,27 +205,57 @@ def _has_time_dimension(graph, dim_ref: str) -> bool:
     return dimension is not None and dimension.type == "time"
 
 
+def _metric_owner_models(graph, metric_ref: str, _visiting: set[str] | None = None) -> set[str]:
+    """Models whose default time dimension applies to a metric ref.
+
+    Mirrors the engine: a graph (top-level) metric — possibly namespaced like
+    ``finance.revenue_per_order`` — resolves to its owning model(s) via its dependencies,
+    rather than treating the namespace as a model.
+    """
+    if _visiting is None:
+        _visiting = set()
+    if metric_ref in _visiting:
+        return set()
+    _visiting.add(metric_ref)
+    metrics_by_name = getattr(graph, "metrics", {})
+    graph_metric = metrics_by_name.get(metric_ref)
+    if graph_metric is not None:
+        owners: set[str] = set()
+        for dependency in graph_metric.get_dependencies(graph):
+            if "." in dependency:
+                owners.add(dependency.split(".", 1)[0])
+            elif dependency in metrics_by_name:
+                owners |= _metric_owner_models(graph, dependency, _visiting)
+            else:
+                owners |= {
+                    name for name, model in graph.models.items() if any(m.name == dependency for m in model.metrics)
+                }
+        return owners
+    if "." in metric_ref:
+        model_name = metric_ref.split(".", 1)[0]
+        return {model_name} if model_name in graph.models else set()
+    return {name for name, model in graph.models.items() if any(m.name == metric_ref for m in model.metrics)}
+
+
 def _apply_default_time_dimensions(graph, metrics: list[str], dimensions: list[str]) -> list[str]:
     result = list(dimensions)
     models_with_time_dims = {dim_ref.split(".", 1)[0] for dim_ref in dimensions if _has_time_dimension(graph, dim_ref)}
     seen_models: set[str] = set()
     for metric_ref in metrics:
-        if "." not in metric_ref:
-            continue
-        model_name, _ = metric_ref.split(".", 1)
-        if model_name in seen_models or model_name in models_with_time_dims:
-            continue
-        seen_models.add(model_name)
-        model = graph.models.get(model_name)
-        default_time_dimension = getattr(model, "default_time_dimension", None) if model is not None else None
-        if not default_time_dimension:
-            continue
-        dim_ref = f"{model_name}.{default_time_dimension}"
-        if getattr(model, "default_grain", None):
-            dim_ref = f"{dim_ref}__{model.default_grain}"
-        if dim_ref not in result:
-            result.append(dim_ref)
-        models_with_time_dims.add(model_name)
+        for model_name in sorted(_metric_owner_models(graph, metric_ref)):
+            if model_name in seen_models or model_name in models_with_time_dims:
+                continue
+            seen_models.add(model_name)
+            model = graph.models.get(model_name)
+            default_time_dimension = getattr(model, "default_time_dimension", None) if model is not None else None
+            if not default_time_dimension:
+                continue
+            dim_ref = f"{model_name}.{default_time_dimension}"
+            if getattr(model, "default_grain", None):
+                dim_ref = f"{dim_ref}__{model.default_grain}"
+            if dim_ref not in result:
+                result.append(dim_ref)
+            models_with_time_dims.add(model_name)
     return result
 
 

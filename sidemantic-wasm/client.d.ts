@@ -59,7 +59,13 @@ interface SidemanticQueryOptions {
   readonly filters?: readonly string[];
   readonly order_by?: readonly string[];
   readonly limit?: number;
-  readonly ungrouped?: boolean;
+  /**
+   * Not allowed in the typed client: an ungrouped query selects raw metric source columns
+   * instead of aggregate outputs, so a cell typed `number` via `MetricDef.ts` can hold raw
+   * values (e.g. a string `user_id` under a `count_distinct` metric), making `Row<S, Q>`
+   * unsound. Use an untyped transport call if you need ungrouped rows.
+   */
+  readonly ungrouped?: false;
   /**
    * Typed structured queries always skip implicit model default time dimensions
    * so `Row<S, Q>` only includes explicitly selected fields.

@@ -32,6 +32,15 @@ function isModelQualifiedRef(ref, schema) {
 function buildSemanticSql(query, schema) {
   // `skip_default_time_dimensions` is a structured-compile flag with no semantic-SQL
   // equivalent, so it is ignored here (see the best-effort note at the top of the file).
+  // `ungrouped` DOES change row cardinality (raw rows vs grouped aggregate) and cannot be
+  // expressed in semantic SQL, so fail fast rather than silently return grouped results.
+  if (query.ungrouped) {
+    throw new Error(
+      "serve transport cannot execute ungrouped queries: semantic SQL always groups aggregates, " +
+        "so the server would return different rows than requested. Use the wasm transport or " +
+        "createSqlClient for ungrouped results.",
+    );
+  }
   const dimensions = query.dimensions || [];
   const metrics = query.metrics || [];
   const refs = [...dimensions, ...metrics];

@@ -13,7 +13,8 @@ export interface ServeTransport {
   /**
    * Best-effort structured-query executor for `createClient({ run })`: builds a semantic SELECT.
    * `skip_default_time_dimensions` has no semantic-SQL equivalent, so a model with a default time
-   * dimension may have it added by the server — use the wasm transport for exact row semantics.
+   * dimension may have it added by the server. `ungrouped` queries throw (semantic SQL cannot
+   * return raw un-aggregated rows). Use the wasm transport for exact row semantics.
    */
   run: (query: QueryPayload) => Promise<Record<string, unknown>[]>;
   /** Semantic-SQL executor for `createSqlClient({ run })`. Sends SQL through unchanged. */

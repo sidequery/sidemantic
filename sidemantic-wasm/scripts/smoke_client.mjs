@@ -110,6 +110,15 @@ assert(
   `serve.run should ignore skip_default_time_dimensions and still build SQL, got: ${seen[1]}`,
 );
 
+// serve.run fails fast on ungrouped — it would otherwise silently return grouped rows.
+let rejectedUngrouped = false;
+try {
+  await serve.run({ metrics: ["orders.revenue"], dimensions: ["orders.status"], ungrouped: true });
+} catch (error) {
+  rejectedUngrouped = /ungrouped/.test(error.message);
+}
+assert(rejectedUngrouped, "serve.run should reject ungrouped queries instead of regrouping");
+
 const seenWithSchema = [];
 const serveWithSchema = createServeTransport({
   schema,

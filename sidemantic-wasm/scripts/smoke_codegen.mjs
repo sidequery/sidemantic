@@ -150,6 +150,12 @@ const distinctTypes = await generateSqlTypes(models, ["SELECT DISTINCT orders.re
 assert(distinctTypes.includes('"SELECT DISTINCT orders.region, orders.revenue FROM orders"'), `DISTINCT query key missing: ${distinctTypes}`);
 assert(distinctTypes.includes('"region": string') && distinctTypes.includes('"revenue": number'), `DISTINCT projections not typed: ${distinctTypes}`);
 
+// 8e. `SELECT *` expands to the model's dimensions then metrics (definition order), matching the
+// rewriter + Python `gen sql` — the wasm rewriter rejects `*`, so codegen expands it itself.
+const starTypes = await generateSqlTypes(models, ["SELECT * FROM orders"], { wasmUrl: wasmBytes });
+assert(/"created_at": string;[\s\S]*"region": string;[\s\S]*"revenue": number/.test(starTypes), `star not expanded in order: ${starTypes}`);
+assert(starTypes.includes('"order_count": number'), `star missing a metric: ${starTypes}`);
+
 // 9. A top-level metric whose owner model has a default time dimension: the engine inserts that
 // dimension into the output, so an explicit `AS` alias must stay on the metric (not slide onto the
 // inserted time column). Regression for the positional-overlay misalignment.

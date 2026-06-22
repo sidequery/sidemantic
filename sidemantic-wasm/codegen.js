@@ -281,10 +281,25 @@ function resolveRef(rawRef, from, index) {
   return null;
 }
 
+// Expand `*` / `model.*` to the model's dimensions then metrics in definition order, matching the
+// rewriter + Python `gen sql`. A bare `*` uses the FROM (default) model.
+function expandStar(tableRef, from, index, sql) {
+  const modelName = tableRef ? from.aliases.get(tableRef) || tableRef : from.defaultModel;
+  const model = modelName && index.models.get(modelName);
+  if (!model) throw new Error(`Cannot expand '*' for unknown model '${modelName || tableRef}' in: ${sql}`);
+  return [
+    ...(model.dimensions || []).map((dimension) => ({ ref: `${modelName}.${dimension.name}`, alias: null, kind: "dimension" })),
+    ...(model.metrics || []).map((metric) => ({ ref: `${modelName}.${metric.name}`, alias: null, kind: "metric" })),
+  ];
+}
+
 function parseProjections(sql, index) {
   const statement = outerStatement(sql);
   const from = parseFromAliases(statement);
-  return splitProjections(selectList(statement)).map((projection) => {
+  return splitProjections(selectList(statement)).flatMap((projection) => {
+    // Star projection: `*` or `model.*`.
+    const star = /^(?:([A-Za-z_]\w*)\s*\.\s*)?\*$/.exec(projection.trim());
+    if (star) return expandStar(star[1], from, index, sql);
     // Explicit `expr AS alias`.
     const asMatch = /\s+as\s+([A-Za-z_]\w*)\s*$/i.exec(projection);
     let rawRef = (asMatch ? projection.slice(0, asMatch.index) : projection).trim();
@@ -303,7 +318,7 @@ function parseProjections(sql, index) {
       }
     }
     if (!resolved) throw new Error(`Unknown or unsupported reference '${rawRef}' in: ${sql}`);
-    return { ref: resolved.ref, alias, kind: resolved.kind };
+    return [{ ref: resolved.ref, alias, kind: resolved.kind }];
   });
 }
 
@@ -316,6 +331,17 @@ function stubParams(sql, index) {
 // part of the first projection. The original SQL (with the modifier) stays the generated type key.
 function stripSelectModifiers(sql) {
   return sql.replace(/(\bselect\s+)(?:distinct|all)\b\s*/i, "$1");
+}
+
+// True when the outer SELECT projects a star (`*` / `model.*`). The wasm rewriter rejects star
+// queries, so codegen skips the full-query rewrite check and expands the star from validated model
+// fields (parseProjections) instead — matching the Python `gen sql` path, which expands `*` too.
+function isStarQuery(sql) {
+  try {
+    return splitProjections(selectList(outerStatement(sql))).some((part) => /^(?:[A-Za-z_]\w*\s*\.\s*)?\*$/.test(part.trim()));
+  } catch {
+    return false;
+  }
 }
 
 function tsObject(pairs) {
@@ -346,7 +372,7 @@ export async function generateSqlTypes(models, queries, { wasmUrl } = {}) {
     // malformed SQL), then validate + type the projection below. Param placeholders are
     // stubbed so the SQL parses. (The wasm rewriter is more lenient on subtle syntax than
     // the Python `gen sql` path, which parses with sqlglot.)
-    runtime.rewrite(models, stubParams(analyzed, index));
+    if (!isStarQuery(analyzed)) runtime.rewrite(models, stubParams(analyzed, index));
     const projections = parseProjections(analyzed, index);
     const metrics = projections.filter((projection) => projection.kind === "metric");
     const dimensions = projections.filter((projection) => projection.kind === "dimension");

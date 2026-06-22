@@ -10,9 +10,9 @@ const API_PATHS = ["/query", "/compile", "/describe", "/models", "/graph", "/hea
 const apiTarget = process.env.SIDEMANTIC_API ?? "http://127.0.0.1:4400";
 
 export default defineConfig({
-  // Relative base is REQUIRED so the built bundle works when embedded under any sub-path
-  // (e.g. served at "/" or "/ui" by either backend).
-  base: "./",
+  // Keep generated asset URLs rooted at /assets so refreshed deep links served by the SPA
+  // fallback don't look for bundles under the deep route.
+  base: "/",
   plugins: [react()],
   server: {
     port: 4321,

@@ -24,6 +24,13 @@ export function dateOnly(value: string): string {
   return value.slice(0, 10);
 }
 
+function normalizeBucketLabel(value: string): string {
+  const trimmed = value.trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return `${trimmed}T00:00:00Z`;
+  if (/[zZ]|[+-]\d{2}:?\d{2}$/.test(trimmed)) return trimmed;
+  return `${trimmed.replace(" ", "T")}Z`;
+}
+
 function parseISO(value: string): Date {
   // Tolerate timestamp bucket labels by keeping only the date part.
   return new Date(`${dateOnly(value)}T00:00:00Z`);
@@ -74,7 +81,7 @@ export function timeFilters(ref: string, range: DateRange): string[] {
  *  buckets in either period don't shift the overlay. */
 export function bucketOffset(first: string, label: string, grain: Grain): number {
   if (grain === "hour") {
-    return Math.round((Date.parse(label) - Date.parse(first)) / 3_600_000);
+    return Math.round((Date.parse(normalizeBucketLabel(label)) - Date.parse(normalizeBucketLabel(first))) / 3_600_000);
   }
   const a = parseISO(first);
   const b = parseISO(label);
@@ -96,11 +103,12 @@ export function bucketOffset(first: string, label: string, grain: Grain): number
 /** Inclusive last calendar day of the bucket that starts at `start` for a given grain.
  *  Used to turn a brushed bucket range into a precise date filter. */
 export function endOfBucket(start: string, grain: Grain): string {
-  const date = parseISO(start);
+  const normalizedStart = dateOnly(start);
+  const date = parseISO(normalizedStart);
   switch (grain) {
     case "hour":
     case "day":
-      return dateOnly(start);
+      return normalizedStart;
     case "week":
       return addDays(start, 6);
     case "month":

@@ -791,6 +791,36 @@ async fn graph(State(state): State<Arc<AppState>>) -> Json<JsonValue> {
     Json(graph_payload(&state.runtime))
 }
 
+fn describe_payload(runtime: &SidemanticRuntime) -> JsonValue {
+    let payload = runtime.loaded_graph_payload();
+    let model_map: HashMap<&str, &Model> = payload
+        .models
+        .iter()
+        .map(|model| (model.name.as_str(), model))
+        .collect();
+    let models = payload
+        .models
+        .iter()
+        .map(|model| model_detail_json(model, &model_map))
+        .collect::<Vec<_>>();
+    let metrics = payload
+        .top_level_metrics
+        .iter()
+        .map(metric_json)
+        .collect::<Vec<_>>();
+
+    json!({
+        "models": models,
+        "metrics": metrics,
+        "dialect": "generic",
+        "import_warnings": []
+    })
+}
+
+async fn describe(State(state): State<Arc<AppState>>) -> Json<JsonValue> {
+    Json(describe_payload(&state.runtime))
+}
+
 async fn compile_query(
     State(state): State<Arc<AppState>>,
     Json(request): Json<QueryRequest>,
@@ -1505,6 +1535,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = Router::new()
         .route("/readyz", get(readyz))
         .route("/health", get(health))
+        .route("/describe", get(describe))
         .route("/graph", get(graph))
         .route("/models", get(list_models).post(get_models))
         .route("/models/{model}", get(get_model))

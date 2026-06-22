@@ -608,6 +608,7 @@ fn dimension_json(dimension: &sidemantic::Dimension) -> JsonValue {
         json!(enum_json_name(&dimension.r#type).unwrap_or_else(|| "categorical".to_string())),
     );
     entry.insert("sql".to_string(), json!(dimension.sql));
+    entry.insert("public".to_string(), json!(dimension.public));
     if let Some(description) = &dimension.description {
         entry.insert("description".to_string(), json!(description));
     }
@@ -1394,6 +1395,7 @@ fn metric_json(metric: &Metric) -> JsonValue {
     let mut entry = JsonMap::new();
     entry.insert("name".to_string(), json!(metric.name));
     entry.insert("sql".to_string(), json!(metric.sql));
+    entry.insert("public".to_string(), json!(metric.public));
     if let Some(agg) = &metric.agg {
         if let Some(name) = enum_json_name(agg) {
             entry.insert("agg".to_string(), json!(name));

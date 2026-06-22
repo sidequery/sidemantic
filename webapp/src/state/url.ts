@@ -21,6 +21,12 @@ function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === "string");
 }
 
+// Accept only YYYY-MM-DD calendar dates, so a hand-edited ?from/&to can't seed the date helpers
+// with values that parse to NaN and break series/leaderboard queries.
+function isIsoDate(value: string | null): value is string {
+  return value != null && /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(value));
+}
+
 // Reject hand-edited/malformed URLs (e.g. {"orders.status":"CA"}) so the dashboard hydrates with a
 // valid filter map instead of crashing downstream on `values.map(...)`.
 function isFilterState(value: unknown): value is FilterState {
@@ -60,7 +66,7 @@ export function decodeState(search: string, base: ExplorerState): ExplorerState 
 
   const from = params.get("from");
   const to = params.get("to");
-  if (from && to) next.dateRange = { from, to } satisfies DateRange;
+  if (isIsoDate(from) && isIsoDate(to) && from <= to) next.dateRange = { from, to } satisfies DateRange;
 
   const filters = parseJson(params.get("filters"));
   if (isFilterState(filters)) next.filters = filters;

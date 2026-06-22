@@ -614,13 +614,14 @@ def test_api_serve_calls_start_server(monkeypatch, tmp_path):
     pytest.importorskip("fastapi")
     called = {}
 
-    def fake_start_api_server(layer, host, port, auth_token, cors_origins, max_request_body_bytes):
+    def fake_start_api_server(layer, host, port, auth_token, cors_origins, max_request_body_bytes, serve_ui=True):
         called["layer"] = layer
         called["host"] = host
         called["port"] = port
         called["auth_token"] = auth_token
         called["cors_origins"] = cors_origins
         called["max_request_body_bytes"] = max_request_body_bytes
+        called["serve_ui"] = serve_ui
 
     monkeypatch.setattr("sidemantic.api_server.start_api_server", fake_start_api_server)
 

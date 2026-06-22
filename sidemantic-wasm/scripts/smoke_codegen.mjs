@@ -146,9 +146,9 @@ assert(!scanned.some((s) => s.includes("revnue") || s.includes("bogus")), `comme
 
 // 8d. `SELECT DISTINCT` is accepted: the modifier is stripped for analysis (it does not change
 // column types), and the original query string stays the generated type key.
-const distinctTypes = await generateSqlTypes(models, ["SELECT DISTINCT orders.status, orders.revenue FROM orders"], { wasmUrl: wasmBytes });
-assert(distinctTypes.includes('"SELECT DISTINCT orders.status, orders.revenue FROM orders"'), `DISTINCT query key missing: ${distinctTypes}`);
-assert(distinctTypes.includes('"status": string') && distinctTypes.includes('"revenue": number'), `DISTINCT projections not typed: ${distinctTypes}`);
+const distinctTypes = await generateSqlTypes(models, ["SELECT DISTINCT orders.region, orders.revenue FROM orders"], { wasmUrl: wasmBytes });
+assert(distinctTypes.includes('"SELECT DISTINCT orders.region, orders.revenue FROM orders"'), `DISTINCT query key missing: ${distinctTypes}`);
+assert(distinctTypes.includes('"region": string') && distinctTypes.includes('"revenue": number'), `DISTINCT projections not typed: ${distinctTypes}`);
 
 // 9. A top-level metric whose owner model has a default time dimension: the engine inserts that
 // dimension into the output, so an explicit `AS` alias must stay on the metric (not slide onto the

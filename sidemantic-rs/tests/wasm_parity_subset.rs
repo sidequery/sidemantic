@@ -318,6 +318,13 @@ models:
         "metrics: [orders.revenue]\ndimensions: [widgets.color]\n"
     )
     .is_err());
+    // A filter referencing an unjoinable model is rejected too (filters feed required-model
+    // validation, matching compile()), not silently ignored.
+    assert!(result_schema_with_yaml_query(
+        yaml,
+        "metrics: [orders.revenue]\ndimensions: [orders.region]\nfilters: [\"widgets.color = 'red'\"]\n"
+    )
+    .is_err());
 }
 
 #[test]

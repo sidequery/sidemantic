@@ -178,4 +178,29 @@ assert(/"r": number/.test(topMetricRow), `alias must stay on the metric (number)
 assert(/"created_at__month": string/.test(topMetricRow), `engine-inserted default time dim must keep its name + type, got: ${topMetricRow}`);
 assert(!/"r": string/.test(topMetricRow), `alias must not slide onto the inserted time column, got: ${topMetricRow}`);
 
+// 10. Top-level metrics survive in the generated client schema. The wasm runtime assigns each
+// to its owner model too, but they must appear under topMetrics by their real ref (matching the
+// Python generator), not as owner-qualified model metrics.
+const topMetricModels = `
+models:
+  - name: orders
+    table: orders
+    primary_key: id
+    metrics:
+      - name: revenue
+        agg: sum
+        sql: amount
+      - name: cnt
+        agg: count
+        sql: id
+metrics:
+  - name: revenue_per_order
+    type: ratio
+    numerator: orders.revenue
+    denominator: orders.cnt
+`;
+const topSchema = await generateClientSchema(topMetricModels, { includeYaml: false, wasmUrl: wasmBytes });
+assert(topSchema.includes('"revenue_per_order"'), `top-level metric missing from schema: ${topSchema}`);
+assert(!topSchema.includes('"revenue_per_order": {'), `top-level metric must not be an owned model metric: ${topSchema}`);
+
 console.log("SMOKE_CODEGEN_OK");

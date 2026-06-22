@@ -1069,9 +1069,18 @@ pub fn result_schema_with_yaml_query(yaml: &str, query_yaml: &str) -> Result<Str
         .map_err(|e| SidemanticError::Validation(format!("failed to load YAML models: {e}")))?;
     let payload: RuntimeQueryPayload = serde_yaml::from_str(query_yaml)
         .map_err(|e| SidemanticError::Validation(format!("failed to parse query payload: {e}")))?;
+    // Carry filters/segments (with parameter interpolation) through so joinability validation
+    // sees the models they reference — a filter on an unjoinable model must fail here too.
+    let filters =
+        interpolate_query_filters(runtime.graph(), payload.filters, &payload.parameter_values)
+            .map_err(|e| {
+                SidemanticError::Validation(format!("failed to interpolate query parameters: {e}"))
+            })?;
     let query = SemanticQuery::new()
         .with_metrics(payload.metrics)
         .with_dimensions(payload.dimensions)
+        .with_filters(filters)
+        .with_segments(payload.segments)
         .with_skip_default_time_dimensions(payload.skip_default_time_dimensions);
     let columns = SqlGenerator::new(runtime.graph())
         .result_schema(&query)

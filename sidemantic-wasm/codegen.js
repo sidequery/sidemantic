@@ -42,8 +42,17 @@ function byName(a, b) {
 /** Build the `schema` payload from a parsed wasm graph (matches build_client_schema in Python). */
 export function buildClientSchema(graph) {
   const modelList = [...(graph.models || [])].sort(byName);
-  const modelMetricNames = new Set();
-  for (const model of modelList) for (const metric of model.metrics || []) modelMetricNames.add(metric.name);
+  // The wasm runtime assigns every top-level metric to its owner model (for compilation) AND
+  // lists it in top_level_metrics; the Python graph keeps them graph-level only. Treat the
+  // top_level_metrics names as top-level: exclude them from per-model metrics and surface them
+  // under topMetrics by their real (bare/namespaced) ref, so both generators emit the same schema.
+  const topMetricNames = new Set((graph.top_level_metrics || []).map((metric) => metric.name));
+  const ownedMetricNames = new Set();
+  for (const model of modelList) {
+    for (const metric of model.metrics || []) {
+      if (!topMetricNames.has(metric.name)) ownedMetricNames.add(metric.name);
+    }
+  }
 
   const models = {};
   for (const model of modelList) {
@@ -58,14 +67,13 @@ export function buildClientSchema(graph) {
     }
     const metrics = {};
     for (const metric of [...(model.metrics || [])].sort(byName)) {
+      if (topMetricNames.has(metric.name)) continue; // top-level metric, not an owned model metric
       metrics[metric.name] = { agg: metric.agg ?? null, ts: pgToTs(pgForMetric(metric.agg)) };
     }
     models[model.name] = { dimensions, metrics };
   }
 
-  const topMetrics = [
-    ...new Set((graph.top_level_metrics || []).map((metric) => metric.name).filter((name) => !modelMetricNames.has(name))),
-  ].sort();
+  const topMetrics = [...topMetricNames].filter((name) => !ownedMetricNames.has(name)).sort();
 
   return { models, topMetrics };
 }

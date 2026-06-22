@@ -54,6 +54,11 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path, *, strict
     all_models = {}
     all_metrics = {}
     all_parameters = {}
+    # Snowflake table-scoped metrics whose table lives in another file, held as
+    # (table_name, Metric) pairs so same-named scoped metrics never collide.
+    all_pending_table_metrics: list = []
+    # Snowflake relationship definitions whose tables live in other files.
+    all_pending_relationships: list = []
     import_warnings: list[dict[str, object]] = []
 
     # Check for SML repository (catalog.yml/atscale.yml or object_type files)
@@ -208,6 +213,17 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path, *, strict
                 adapter = SidemanticAdapter()
             elif _looks_like_native_sidemantic_yaml(yaml_data):
                 adapter = SidemanticAdapter()
+            elif _yaml_has_top_level_key(yaml_data, "tables") and _contains_yaml_key(yaml_data, "base_table"):
+                # Snowflake Cortex Semantic Model format. Checked before the generic
+                # MetricFlow `metrics:` + `type:` heuristic because a Cortex file may
+                # carry top-level `metrics:` and `data_type:` while `base_table` is a
+                # Snowflake-only signal MetricFlow never has.
+                adapter = SnowflakeAdapter()
+            elif _looks_like_snowflake_metrics_file(yaml_data):
+                # Cortex top-level metrics split into their own file (table + expr,
+                # no tables section). Route to Snowflake so the metrics defer and
+                # attach to tables defined in sibling files.
+                adapter = SnowflakeAdapter()
             elif _yaml_has_top_level_key(yaml_data, "metrics") and "type: " in content:
                 adapter = MetricFlowAdapter()
             elif _is_hex_resource_mapping(yaml_data):
@@ -229,9 +245,6 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path, *, strict
             ):
                 # ThoughtSpot TML Model object (export_schema_version v2)
                 adapter = ThoughtSpotAdapter()
-            elif _yaml_has_top_level_key(yaml_data, "tables") and _contains_yaml_key(yaml_data, "base_table"):
-                # Snowflake Cortex Semantic Model format
-                adapter = SnowflakeAdapter()
             elif _looks_like_bsl_yaml(yaml_data):
                 # BSL format uses _.column syntax for expressions
                 adapter = BSLAdapter()
@@ -274,6 +287,8 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path, *, strict
                 all_models.update(graph.models)
                 all_metrics.update(graph.metrics)
                 all_parameters.update(graph.parameters)
+                all_pending_table_metrics.extend(getattr(graph, "_pending_table_metrics", []))
+                all_pending_relationships.extend(getattr(graph, "_pending_relationships", []))
             except Exception as e:
                 _append_import_warning(
                     import_warnings,
@@ -291,6 +306,16 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path, *, strict
     # aliases after all files have been loaded so aliases can target models
     # declared in separate files.
     _finalize_bsl_join_aliases(all_models)
+
+    # Attach Snowflake top-level metrics whose referenced table was defined in a
+    # different file (each Snowflake file is parsed separately, so the table may
+    # not have been known when the metric file was parsed).
+    _resolve_snowflake_pending_table_metrics(all_models, all_metrics, all_pending_table_metrics)
+
+    # Apply Snowflake relationships declared in a separate file before FK inference
+    # so an explicit Cortex join takes precedence over a guessed one for the same
+    # table pair.
+    _apply_snowflake_pending_relationships(all_models, all_pending_relationships)
 
     # Infer cross-model relationships based on naming conventions
     _infer_relationships(all_models)
@@ -579,6 +604,16 @@ def _looks_like_native_sidemantic_yaml(data: dict) -> bool:
 
     if not isinstance(data, dict):
         return False
+    # A native file may carry only passthrough ``metadata`` (no metrics/parameters/
+    # SQL) -- e.g. a CLI-first project that splits graph-level metadata into its own
+    # sidecar. Recognize it as native when it declares the native ``version`` plus a
+    # ``metadata`` block so the directory loader routes (not silently drops) it.
+    if (
+        data.get("version") == NATIVE_FORMAT_VERSION
+        and isinstance(data.get("metadata"), dict)
+        and set(data) <= ROOT_FIELDS
+    ):
+        return True
     if not any(_yaml_has_top_level_key(data, key) for key in ("metrics", "parameters", "sql_metrics", "sql_segments")):
         return False
     if data.get("version") == NATIVE_FORMAT_VERSION:
@@ -600,6 +635,90 @@ def _looks_like_native_sidemantic_yaml(data: dict) -> bool:
 def _yaml_has_top_level_key(data: dict, key: str) -> bool:
     """Return True when a YAML mapping has an exact top-level key."""
     return isinstance(data, dict) and key in data
+
+
+_SNOWFLAKE_TOP_LEVEL_SECTIONS = ("verified_queries", "custom_instructions", "module_custom_instructions")
+# Per-metric keys that only Snowflake Cortex uses (not in the native METRIC_FIELDS).
+_SNOWFLAKE_METRIC_KEYS = (
+    "table",
+    "access_modifier",
+    "labels",
+    "tags",
+    "non_additive_dimensions",
+    "using_relationships",
+)
+
+
+def _looks_like_snowflake_relationships(data: dict) -> bool:
+    """Return True when a file's top-level ``relationships`` are Snowflake-shaped."""
+    relationships = data.get("relationships")
+    if not isinstance(relationships, list) or not relationships:
+        return False
+    return all(
+        isinstance(rel, dict) and "left_table" in rel and "right_table" in rel and "relationship_columns" in rel
+        for rel in relationships
+    )
+
+
+def _looks_like_snowflake_metrics_file(data: dict) -> bool:
+    """Detect a split Snowflake Cortex sidecar without a ``tables`` section.
+
+    Cortex projects may split top-level ``metrics:``, ``relationships:`` and/or the
+    Snowflake-only sections (verified_queries / custom instructions) into their own
+    file. Route such a file to the Snowflake adapter when it carries a Cortex-only
+    signal:
+
+    - a Snowflake-only top-level section (verified_queries / custom instructions),
+      even when no ``metrics`` are present (instruction-only sidecar),
+    - Snowflake-shaped top-level ``relationships`` (relationship-only sidecar), or
+    - top-level ``metrics`` carrying a Snowflake-only metric key (``table`` or per-
+      metric ``access_modifier``/``labels``/``tags``/``non_additive_dimensions``/
+      ``using_relationships``), or
+    - a root ``name`` alongside Cortex-shaped ``metrics`` -- a tableless view-metric
+      sidecar whose only Cortex signal is the root ``name`` the native format rejects.
+
+    Any present metrics must be Cortex-shaped (``expr`` with no MetricFlow
+    ``type_params``/``measure`` markers). A tableless metrics file with no root
+    ``name`` and none of these signals is left to native detection.
+    """
+    if not isinstance(data, dict) or "tables" in data:
+        return False
+
+    metrics = data.get("metrics")
+    has_snowflake_metric_key = False
+    has_cortex_metrics = False
+    if metrics is not None:
+        if not isinstance(metrics, list):
+            return False
+        # An empty ``metrics: []`` placeholder means "no metrics", not a
+        # disqualifier: the sidecar may still carry a Snowflake section or
+        # relationships signal below. Only validate Cortex shape when metrics
+        # are actually present.
+        if metrics:
+            for metric in metrics:
+                if not isinstance(metric, dict):
+                    return False
+                if "expr" not in metric:
+                    return False
+                if "type_params" in metric or "measure" in metric:
+                    return False
+                if any(key in metric for key in _SNOWFLAKE_METRIC_KEYS):
+                    has_snowflake_metric_key = True
+            has_cortex_metrics = True
+
+    has_snowflake_section = any(section in data for section in _SNOWFLAKE_TOP_LEVEL_SECTIONS)
+    # A tableless Cortex sidecar may carry only a root ``name`` plus view-level
+    # metrics (no per-metric Snowflake key, no Snowflake sections). The root
+    # ``name`` is a Cortex semantic-model field the native format rejects, so its
+    # presence alongside Cortex-shaped metrics is a reliable Snowflake signal --
+    # without it the file is dropped by both native and Snowflake detection.
+    has_snowflake_root_name = has_cortex_metrics and isinstance(data.get("name"), str)
+    return (
+        has_snowflake_metric_key
+        or has_snowflake_section
+        or has_snowflake_root_name
+        or _looks_like_snowflake_relationships(data)
+    )
 
 
 def _contains_yaml_key(value: object, key: str) -> bool:
@@ -963,11 +1082,84 @@ def _merge_import_warnings(graph: object, warnings: list[dict[str, object]]) -> 
     graph.import_warnings = merged
 
 
+def _resolve_snowflake_pending_table_metrics(all_models: dict, all_metrics: dict, pending: list) -> None:
+    """Re-attach Snowflake top-level metrics to tables defined in other files."""
+    if not pending:
+        return
+    from sidemantic.adapters.snowflake import SnowflakeAdapter
+
+    SnowflakeAdapter.resolve_pending_table_metrics(all_models, pending)
+    # Any metric whose table is still unknown falls back to a graph-level metric
+    # so it is not silently dropped.
+    for _table_name, metric in pending:
+        all_metrics.setdefault(metric.name, metric)
+    pending.clear()
+
+
+def _apply_snowflake_pending_relationships(all_models: dict, pending: list) -> None:
+    """Apply Snowflake relationship definitions whose tables live in other files."""
+    if not pending:
+        return
+    from sidemantic.adapters.snowflake import SnowflakeAdapter
+
+    SnowflakeAdapter().apply_pending_relationships(pending, all_models)
+    pending.clear()
+
+
+def _deep_merge_metadata(target: dict, source: dict) -> None:
+    """Recursively merge ``source`` into ``target``.
+
+    Nested dicts are merged, list values are appended (deduplicated by value),
+    and scalars from ``source`` overwrite. This keeps multi-file payloads such as
+    Snowflake Cortex ``verified_queries`` from clobbering one another when several
+    files are loaded from a directory.
+    """
+    for key, value in source.items():
+        existing = target.get(key)
+        if isinstance(existing, dict) and isinstance(value, dict):
+            _deep_merge_metadata(existing, value)
+        elif isinstance(existing, list) and isinstance(value, list):
+            for item in value:
+                if item not in existing:
+                    existing.append(copy.deepcopy(item))
+        else:
+            target[key] = copy.deepcopy(value)
+
+
 def _merge_graph_passthrough_metadata(target_graph: object, source_graph: object) -> None:
     for name, value in vars(source_graph).items():
         if not name.startswith("_tmdl_"):
             continue
         setattr(target_graph, name, copy.deepcopy(value))
+
+    # Merge graph-level metadata (e.g. Snowflake Cortex top-level sections) so the
+    # CLI-first load -> export-native path round-trips them. Deep-merge so multiple
+    # files in a directory each contribute their sections instead of overwriting.
+    source_metadata = getattr(source_graph, "metadata", None)
+    if isinstance(source_metadata, dict) and source_metadata:
+        target_metadata = getattr(target_graph, "metadata", None)
+        if not isinstance(target_metadata, dict):
+            target_metadata = {}
+            target_graph.metadata = target_metadata
+        _deep_merge_metadata(target_metadata, source_metadata)
+
+    # Carry over Snowflake dynamic top-level attributes set by the adapter. Lists
+    # (verified_queries) accumulate across files; scalars take the latest value.
+    for attr in ("verified_queries", "custom_instructions", "module_custom_instructions"):
+        value = getattr(source_graph, attr, None)
+        if not value:
+            continue
+        existing = getattr(target_graph, attr, None)
+        if isinstance(existing, list) and isinstance(value, list):
+            for item in value:
+                if item not in existing:
+                    existing.append(copy.deepcopy(item))
+        elif isinstance(existing, dict) and isinstance(value, dict):
+            # Dict-valued attrs (module_custom_instructions) must accumulate keys
+            # across split files, not get overwritten by the last file.
+            _deep_merge_metadata(existing, value)
+        else:
+            setattr(target_graph, attr, copy.deepcopy(value))
 
 
 def _infer_relationships(models: dict) -> None:

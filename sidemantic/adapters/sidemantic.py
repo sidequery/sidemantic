@@ -29,6 +29,7 @@ ROOT_FIELDS = {
     "models",
     "metrics",
     "parameters",
+    "metadata",
     "sql_metrics",
     "sql_segments",
 }
@@ -79,6 +80,9 @@ DIMENSION_FIELDS = {
     "label",
     "metadata",
     "meta",
+    "synonyms",
+    "sample_values",
+    "cortex_search_service_name",
     "format",
     "value_format_name",
     "parent",
@@ -118,6 +122,7 @@ METRIC_FIELDS = {
     "periods",
     "retention_granularity",
     "granularity",
+    "synonyms",
     "inner_metrics",
     "entity_dimensions",
     "having",
@@ -281,6 +286,10 @@ def normalize_sql_frontmatter(frontmatter: dict) -> dict:
     normalized.pop("connection", None)
     normalized.pop("models", None)
     normalized.pop("parameters", None)
+    # ``metadata`` is a root-only native field (graph-level), so it must not by
+    # itself make the frontmatter look like a model definition. Graph metadata is
+    # extracted separately by the caller before this decision.
+    normalized.pop("metadata", None)
     return normalized
 
 
@@ -351,9 +360,13 @@ class SidemanticAdapter(BaseAdapter):
                     raise ValueError(f"{source_path}: invalid SQL definitions: {exc}") from exc
 
                 # Parse frontmatter as a model only when it still contains model fields
-                # after native contract metadata such as `version` is removed.
+                # after native contract metadata such as `version`/`metadata` is removed.
                 normalized_frontmatter = normalize_sql_frontmatter(frontmatter) if frontmatter else {}
                 if normalized_frontmatter:
+                    # ``metadata`` is a valid model field, so re-attach it when the
+                    # frontmatter is a model so the model keeps its own metadata.
+                    if frontmatter.get("metadata") is not None:
+                        normalized_frontmatter["metadata"] = frontmatter["metadata"]
                     model = self._parse_model(normalized_frontmatter, source_path=source_path)
                     if model:
                         # Add SQL-defined metrics/segments to the model
@@ -363,7 +376,12 @@ class SidemanticAdapter(BaseAdapter):
                             model.pre_aggregations.extend(sql_preaggs)
                         graph.add_model(model)
                 else:
-                    # No frontmatter - treat as graph-level metrics/segments
+                    # No model frontmatter - treat as graph-level metrics/segments.
+                    # Root-only ``metadata`` (e.g. Snowflake Cortex top-level
+                    # sections) is preserved on the graph here.
+                    graph_metadata = frontmatter.get("metadata") if frontmatter else None
+                    if isinstance(graph_metadata, dict):
+                        graph.metadata.update(graph_metadata)
                     for metric in sql_metrics:
                         graph.add_metric(metric)
                     for param in sql_parameters:
@@ -386,6 +404,11 @@ class SidemanticAdapter(BaseAdapter):
 
         validate_native_format_version(data)
         reject_unknown_fields(data, ROOT_FIELDS, "root", source_path=source_path)
+
+        # Preserve graph-level metadata (e.g. Snowflake Cortex top-level sections).
+        graph_metadata = data.get("metadata")
+        if isinstance(graph_metadata, dict):
+            graph.metadata.update(graph_metadata)
 
         # Parse models
         for model_def in data.get("models") or []:
@@ -484,6 +507,9 @@ class SidemanticAdapter(BaseAdapter):
         if graph.parameters:
             data["parameters"] = [self._export_parameter(parameter) for parameter in graph.parameters.values()]
 
+        if graph.metadata:
+            data["metadata"] = graph.metadata
+
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         with open(output_path, "w") as f:
@@ -561,6 +587,9 @@ class SidemanticAdapter(BaseAdapter):
                 parent=dim_def.get("parent"),
                 metadata=dim_def.get("metadata"),
                 meta=dim_def.get("meta"),
+                synonyms=dim_def.get("synonyms"),
+                sample_values=dim_def.get("sample_values"),
+                cortex_search_service_name=dim_def.get("cortex_search_service_name"),
                 window=dim_def.get("window"),
             )
             dimensions.append(dimension)
@@ -781,6 +810,7 @@ class SidemanticAdapter(BaseAdapter):
             "value_format_name",
             "drill_fields",
             "non_additive_dimension",
+            "synonyms",
             "meta",
             "public",
         ]:
@@ -928,6 +958,12 @@ class SidemanticAdapter(BaseAdapter):
                     dim_def["metadata"] = dim.metadata
                 if dim.meta:
                     dim_def["meta"] = dim.meta
+                if dim.synonyms:
+                    dim_def["synonyms"] = dim.synonyms
+                if dim.sample_values:
+                    dim_def["sample_values"] = dim.sample_values
+                if dim.cortex_search_service_name:
+                    dim_def["cortex_search_service_name"] = dim.cortex_search_service_name
                 if dim.format:
                     dim_def["format"] = dim.format
                 if dim.value_format_name:
@@ -966,6 +1002,8 @@ class SidemanticAdapter(BaseAdapter):
                     measure_def["metadata"] = measure.metadata
                 if measure.meta:
                     measure_def["meta"] = measure.meta
+                if measure.synonyms:
+                    measure_def["synonyms"] = measure.synonyms
                 if not measure.public:
                     measure_def["public"] = measure.public
                 if measure.format:
@@ -1089,6 +1127,8 @@ class SidemanticAdapter(BaseAdapter):
             result["metadata"] = measure.metadata
         if measure.meta:
             result["meta"] = measure.meta
+        if measure.synonyms:
+            result["synonyms"] = measure.synonyms
         if not measure.public:
             result["public"] = measure.public
 

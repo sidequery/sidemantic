@@ -889,6 +889,65 @@ tables:
     assert "module_custom_instructions" in snowflake_meta
 
 
+def test_load_from_directory_detects_snowflake_section_sidecar_with_empty_metrics(tmp_path):
+    """A Cortex sidecar with a Snowflake section plus an empty ``metrics: []``
+    placeholder still routes to Snowflake (empty metrics is "no metrics", not a
+    disqualifier), so its top-level sections are not silently dropped."""
+    (tmp_path / "a_sidecar.yaml").write_text(
+        """
+metrics: []
+verified_queries:
+  - name: total revenue
+    sql: SELECT SUM(amount) FROM orders
+custom_instructions: Prefer revenue.
+"""
+    )
+    (tmp_path / "z_tables.yaml").write_text(
+        """
+name: tm
+tables:
+  - name: orders
+    base_table:
+      database: db
+      schema: s
+      table: orders
+    primary_key:
+      columns: [order_id]
+    dimensions:
+      - name: order_id
+        expr: order_id
+        data_type: number
+"""
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+    snowflake_meta = layer.graph.metadata.get("snowflake", {})
+
+    assert snowflake_meta.get("custom_instructions") == "Prefer revenue."
+    assert snowflake_meta.get("verified_queries")
+
+
+def test_load_from_directory_detects_metadata_only_native_sidecar(tmp_path):
+    """A native sidecar carrying only ``version`` + ``metadata`` (no metrics/models/
+    parameters) is routed to the native adapter, not silently skipped, so its
+    passthrough metadata reaches the graph."""
+    (tmp_path / "meta.yml").write_text(
+        """
+version: 1
+metadata:
+  owner: data-team
+  domain: sales
+"""
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+
+    assert layer.graph.metadata.get("owner") == "data-team"
+    assert layer.graph.metadata.get("domain") == "sales"
+
+
 def test_load_from_directory_detects_metric_only_snowflake_file(tmp_path):
     """A Cortex file with only top-level metrics (table + expr) is routed to Snowflake."""
     # Metric-only file (no tables section) parsed before the table file.

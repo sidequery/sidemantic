@@ -604,6 +604,16 @@ def _looks_like_native_sidemantic_yaml(data: dict) -> bool:
 
     if not isinstance(data, dict):
         return False
+    # A native file may carry only passthrough ``metadata`` (no metrics/parameters/
+    # SQL) -- e.g. a CLI-first project that splits graph-level metadata into its own
+    # sidecar. Recognize it as native when it declares the native ``version`` plus a
+    # ``metadata`` block so the directory loader routes (not silently drops) it.
+    if (
+        data.get("version") == NATIVE_FORMAT_VERSION
+        and isinstance(data.get("metadata"), dict)
+        and set(data) <= ROOT_FIELDS
+    ):
+        return True
     if not any(_yaml_has_top_level_key(data, key) for key in ("metrics", "parameters", "sql_metrics", "sql_segments")):
         return False
     if data.get("version") == NATIVE_FORMAT_VERSION:
@@ -678,18 +688,23 @@ def _looks_like_snowflake_metrics_file(data: dict) -> bool:
     has_snowflake_metric_key = False
     has_cortex_metrics = False
     if metrics is not None:
-        if not isinstance(metrics, list) or not metrics:
+        if not isinstance(metrics, list):
             return False
-        for metric in metrics:
-            if not isinstance(metric, dict):
-                return False
-            if "expr" not in metric:
-                return False
-            if "type_params" in metric or "measure" in metric:
-                return False
-            if any(key in metric for key in _SNOWFLAKE_METRIC_KEYS):
-                has_snowflake_metric_key = True
-        has_cortex_metrics = True
+        # An empty ``metrics: []`` placeholder means "no metrics", not a
+        # disqualifier: the sidecar may still carry a Snowflake section or
+        # relationships signal below. Only validate Cortex shape when metrics
+        # are actually present.
+        if metrics:
+            for metric in metrics:
+                if not isinstance(metric, dict):
+                    return False
+                if "expr" not in metric:
+                    return False
+                if "type_params" in metric or "measure" in metric:
+                    return False
+                if any(key in metric for key in _SNOWFLAKE_METRIC_KEYS):
+                    has_snowflake_metric_key = True
+            has_cortex_metrics = True
 
     has_snowflake_section = any(section in data for section in _SNOWFLAKE_TOP_LEVEL_SECTIONS)
     # A tableless Cortex sidecar may carry only a root ``name`` plus view-level

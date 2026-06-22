@@ -1019,9 +1019,12 @@ class SnowflakeAdapter(BaseAdapter):
         for key, value in snowflake_meta.items():
             dim_def.setdefault(key, value)
         if not dim.public:
-            # Override any stale ``public_access`` carried over in metadata so the
-            # Sidemantic visibility flag wins.
+            # The Sidemantic ``public`` flag is authoritative: hide private fields.
             dim_def["access_modifier"] = "private_access"
+        elif dim_def.get("access_modifier") == "private_access":
+            # Drop a stale ``private_access`` carried over in metadata so flipping
+            # ``public`` back to true actually unhides the field on export.
+            del dim_def["access_modifier"]
 
     def _export_fact(self, metric: Metric) -> dict:
         """Export metric as Snowflake fact.
@@ -1060,9 +1063,12 @@ class SnowflakeAdapter(BaseAdapter):
         for key, value in snowflake_meta.items():
             fact.setdefault(key, value)
         if not metric.public:
-            # Override any stale ``public_access`` carried over in metadata so the
-            # Sidemantic visibility flag wins.
+            # The Sidemantic ``public`` flag is authoritative: hide private fields.
             fact["access_modifier"] = "private_access"
+        elif fact.get("access_modifier") == "private_access":
+            # Drop a stale ``private_access`` carried over in metadata so flipping
+            # ``public`` back to true actually unhides the field on export.
+            del fact["access_modifier"]
 
         return fact
 
@@ -1128,9 +1134,12 @@ class SnowflakeAdapter(BaseAdapter):
         for key, value in snowflake_meta.items():
             metric_def.setdefault(key, value)
         if not metric.public:
-            # Override any stale ``public_access`` carried over in metadata so the
-            # Sidemantic visibility flag wins.
+            # The Sidemantic ``public`` flag is authoritative: hide private fields.
             metric_def["access_modifier"] = "private_access"
+        elif metric_def.get("access_modifier") == "private_access":
+            # Drop a stale ``private_access`` carried over in metadata so flipping
+            # ``public`` back to true actually unhides the field on export.
+            del metric_def["access_modifier"]
 
         return metric_def
 

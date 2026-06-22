@@ -709,6 +709,70 @@ tables:
         assert orders2.get_metric("amount").public is False
         assert orders2.get_metric("total").public is False
 
+    def test_public_true_drops_stale_private_access_metadata(self, adapter, tmp_path):
+        """public=True must win over a stale private_access modifier in metadata.
+
+        A field imported as private (access_modifier: private_access) keeps that in
+        metadata. If a user flips public back to True and exports, the stale
+        private_access must be dropped so the native visibility flag unhides it.
+        """
+        source = tmp_path / "priv.yaml"
+        source.write_text(
+            """
+name: priv_test
+tables:
+  - name: orders
+    base_table: {database: db, schema: s, table: orders}
+    primary_key: {columns: [id]}
+    dimensions:
+      - name: ssn
+        expr: ssn
+        data_type: text
+        access_modifier: private_access
+    facts:
+      - name: amount
+        expr: amount
+        data_type: number
+        access_modifier: private_access
+    metrics:
+      - name: total
+        expr: SUM(amount)
+        access_modifier: private_access
+        non_additive_dimensions:
+          - {table: orders, dimension: snapshot_date}
+"""
+        )
+
+        graph = adapter.parse(source)
+        orders = graph.models["orders"]
+        # Imported as private.
+        assert orders.get_dimension("ssn").public is False
+        assert orders.get_dimension("ssn").metadata["snowflake"]["access_modifier"] == "private_access"
+
+        # User unhides via the native API.
+        orders.get_dimension("ssn").public = True
+        orders.get_metric("amount").public = True
+        orders.get_metric("total").public = True
+
+        output_file = tmp_path / "out.yaml"
+        adapter.export(graph, output_file)
+        data = yaml.safe_load(output_file.read_text())
+        table = data["tables"][0]
+        exported_dim = next(d for d in table["dimensions"] if d["name"] == "ssn")
+        exported_fact = next(f for f in table["facts"] if f["name"] == "amount")
+        exported_metric = next(m for m in table["metrics"] if m["name"] == "total")
+        # Stale private_access is dropped (default public), not re-emitted.
+        assert exported_dim.get("access_modifier") != "private_access"
+        assert exported_fact.get("access_modifier") != "private_access"
+        assert exported_metric.get("access_modifier") != "private_access"
+
+        # Re-parsing keeps them public.
+        graph2 = adapter.parse(output_file)
+        orders2 = graph2.models["orders"]
+        assert orders2.get_dimension("ssn").public is True
+        assert orders2.get_metric("amount").public is True
+        assert orders2.get_metric("total").public is True
+
     def test_export_strips_model_placeholder_from_table_scoped_metric(self, adapter, tmp_path):
         """Table-scoped derived metrics must not leak {model} placeholders into Snowflake."""
         source = tmp_path / "ph.yaml"

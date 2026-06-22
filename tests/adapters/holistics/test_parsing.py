@@ -417,6 +417,222 @@ Dataset combined = base_ds.extend(reusable)
         temp_path.unlink()
 
 
+def test_holistics_partial_dataset_metric_reference_shorthand():
+    """The reusable-metric-store shorthand `metric name: standalone_metric`
+    references a top-level Metric by name rather than redefining it inline. The
+    parser represents that reference as a property (not a block), so a Dataset
+    that extends a PartialDataset whose only contribution is such a reference
+    must still surface as a model carrying the resolved standalone metric,
+    instead of producing no model at all."""
+    aml_content = """
+Model base_orders {
+  type: 'table'
+  table_name: 'orders'
+  dimension order_id { type: 'number' }
+  measure order_count { type: 'number' aggregation_type: 'count' }
+}
+
+Metric total_orders {
+  label: 'Total Orders'
+  type: 'number'
+  definition: @aql count(base_orders.order_id) ;;
+}
+
+PartialDataset partial_metrics = PartialDataset {
+  metric total_orders: total_orders
+}
+
+Dataset base_ds {
+  label: 'Base DS'
+  models: [base_orders]
+}
+
+Dataset d = base_ds.extend(partial_metrics)
+"""
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".aml", delete=False) as f:
+        f.write(aml_content)
+        temp_path = Path(f.name)
+
+    try:
+        graph = HolisticsAdapter().parse(temp_path)
+
+        # The standalone metric registers at graph scope.
+        assert "total_orders" in graph.metrics
+
+        # The extending dataset must surface as a model even though its only
+        # field is a reference to a standalone metric.
+        assert "d" in graph.models
+        d_model = graph.models["d"]
+        # The referenced standalone metric is resolved onto the dataset.
+        assert d_model.get_metric("total_orders").sql == "COUNT(base_orders.order_id)"
+    finally:
+        temp_path.unlink()
+
+
+def test_holistics_metadata_property_matching_metric_name_is_not_a_reference(tmp_path):
+    """An ordinary dataset property whose value is a bare identifier that happens to
+    match a standalone metric name (e.g. `label: revenue`) must NOT be treated as
+    the `metric name: standalone_metric` shorthand. The shorthand is only the
+    bare `metric` keyword marker followed by a property; without gating on that
+    marker, a metadata-only dataset would gain a bogus metric (named after the
+    property key) and wrongly surface as a model."""
+    (tmp_path / "root.aml").write_text(
+        """
+Model base_orders {
+  type: 'table'
+  table_name: 'orders'
+  dimension order_id { type: 'number' }
+  dimension amount { type: 'number' }
+}
+
+Metric revenue {
+  label: 'Revenue'
+  type: 'number'
+  definition: @aql sum(base_orders.amount) ;;
+}
+
+Dataset meta_only {
+  label: revenue
+  models: [base_orders]
+}
+"""
+    )
+
+    graph = HolisticsAdapter().parse(tmp_path)
+
+    # The standalone metric still registers at graph scope.
+    assert "revenue" in graph.metrics
+    # The metadata-only dataset has no dataset-level fields, so it does not surface
+    # as a model and never gains a bogus `label` metric.
+    if "meta_only" in graph.models:
+        assert "label" not in {m.name for m in graph.models["meta_only"].metrics}
+
+
+def test_holistics_metric_reference_shorthand_prefers_local_metric(tmp_path):
+    """The reusable-metric-store shorthand `metric name: standalone_metric` must
+    resolve the reference against the referencing file's module context before
+    falling back to a bare global name. When both a root `Metric revenue` and a
+    `modules/finance` `Metric revenue` exist, a finance PartialDataset that
+    references `revenue` must pull in the local `finance.revenue`, not the
+    same-named root metric."""
+    finance_dir = tmp_path / "modules" / "finance"
+    finance_dir.mkdir(parents=True)
+
+    # Both modules define a standalone `revenue` metric with different SQL, and the
+    # finance partial references the bare name `revenue` via the shorthand.
+    (finance_dir / "rev.aml").write_text(
+        """
+Metric revenue {
+  label: 'Finance Revenue'
+  type: 'number'
+  definition: @aql sum(base_orders.amount) ;;
+}
+
+PartialDataset finance_part = PartialDataset {
+  metric revenue: revenue
+}
+"""
+    )
+
+    # The root file declares its own same-named standalone `revenue` and builds
+    # the consuming dataset by extending the finance partial.
+    (tmp_path / "root.aml").write_text(
+        """
+use finance { finance_part }
+
+Model base_orders {
+  type: 'table'
+  table_name: 'orders'
+  dimension order_id { type: 'number' }
+  dimension amount { type: 'number' }
+}
+
+Metric revenue {
+  label: 'Root Revenue'
+  type: 'number'
+  definition: @aql count(base_orders.order_id) ;;
+}
+
+Dataset base_ds {
+  label: 'Base DS'
+  models: [base_orders]
+}
+
+Dataset combined = base_ds.extend(finance_part)
+"""
+    )
+
+    graph = HolisticsAdapter().parse(tmp_path)
+
+    assert "combined" in graph.models
+    # The local finance metric wins over the root metric of the same name.
+    assert graph.models["combined"].get_metric("revenue").sql == "SUM(base_orders.amount)"
+
+
+def test_holistics_metric_reference_shorthand_does_not_clobber_root_metric(tmp_path):
+    """A dataset-local alias produced by the `metric name: standalone_metric`
+    shorthand must not occupy a same-named root standalone metric's graph key.
+    A finance PartialDataset that references `revenue` copies `finance.revenue`
+    renamed to the local alias `revenue`; registering that copy at graph scope
+    before the genuine root `Metric revenue` would let the alias claim
+    `graph.metrics["revenue"]` and silently drop the real root metric. The
+    bare graph key must still resolve to the root standalone metric, while the
+    extending dataset keeps the finance SQL on its own field."""
+    finance_dir = tmp_path / "modules" / "finance"
+    finance_dir.mkdir(parents=True)
+
+    (finance_dir / "rev.aml").write_text(
+        """
+Metric revenue {
+  label: 'Finance Revenue'
+  type: 'number'
+  definition: @aql sum(base_orders.amount) ;;
+}
+
+PartialDataset finance_part = PartialDataset {
+  metric revenue: revenue
+}
+"""
+    )
+
+    (tmp_path / "root.aml").write_text(
+        """
+use finance { finance_part }
+
+Model base_orders {
+  type: 'table'
+  table_name: 'orders'
+  dimension order_id { type: 'number' }
+  dimension amount { type: 'number' }
+}
+
+Metric revenue {
+  label: 'Root Revenue'
+  type: 'number'
+  definition: @aql count(base_orders.order_id) ;;
+}
+
+Dataset base_ds {
+  label: 'Base DS'
+  models: [base_orders]
+}
+
+Dataset combined = base_ds.extend(finance_part)
+"""
+    )
+
+    graph = HolisticsAdapter().parse(tmp_path)
+
+    # The bare graph key resolves to the genuine root standalone metric, not the
+    # finance-derived dataset alias copied onto `combined`.
+    assert graph.metrics["revenue"].sql == "COUNT(base_orders.order_id)"
+    # The module metric is still reachable under its qualified key.
+    assert graph.metrics["finance.revenue"].sql == "SUM(base_orders.amount)"
+    # The extending dataset keeps the local finance SQL on its own field.
+    assert graph.models["combined"].get_metric("revenue").sql == "SUM(base_orders.amount)"
+
+
 def test_holistics_extend_partial_preserves_defining_context(tmp_path):
     """A Dataset that extends a PartialDataset declared in another module must
     resolve the partial's field definitions against the partial's own file. A
@@ -529,6 +745,59 @@ Dataset combined = base_part.extend(override)
     # rather than falling back to the consuming file and importing as a literal.
     assert graph.metrics["revenue"].sql == "SUM(base_orders.amount)"
     assert graph.models["combined"].get_metric("revenue").sql == "SUM(base_orders.amount)"
+
+
+def test_holistics_extend_override_across_block_and_reference_forms(tmp_path):
+    """An override authored with the reusable-reference shorthand
+    (`metric revenue: some_metric`) must replace a base `metric revenue { ... }`
+    block of the same name, not be appended as a duplicate. The grammar emits the
+    shorthand as a bare `metric` keyword followed by a property, which is keyed
+    differently from a named block; without merging them under a shared field key
+    the composed model ends up with two `revenue` metrics and `Model.get_metric`
+    returns the first (base) one, so the override silently loses."""
+    (tmp_path / "root.aml").write_text(
+        """
+Model base_orders {
+  type: 'table'
+  table_name: 'orders'
+  dimension order_id { type: 'number' }
+  dimension amount { type: 'number' }
+}
+
+Metric ext_revenue {
+  label: 'External Revenue'
+  type: 'number'
+  definition: @aql sum(base_orders.amount) ;;
+}
+
+Dataset base_ds {
+  label: 'Base DS'
+  models: [base_orders]
+}
+
+PartialDataset base_part = PartialDataset {
+  metric revenue {
+    type: 'number'
+    definition: @aql count(base_orders.order_id) ;;
+  }
+}
+
+PartialDataset override_part = PartialDataset {
+  metric revenue: ext_revenue
+}
+
+Dataset combined = base_ds.extend(base_part).extend(override_part)
+"""
+    )
+
+    graph = HolisticsAdapter().parse(tmp_path)
+
+    combined = graph.models["combined"]
+    # The override replaces the base field instead of duplicating it.
+    revenue_metrics = [m for m in combined.metrics if m.name == "revenue"]
+    assert len(revenue_metrics) == 1
+    # The shorthand override wins over the base block.
+    assert combined.get_metric("revenue").sql == "SUM(base_orders.amount)"
 
 
 def test_holistics_merge_preserves_per_property_context(tmp_path):

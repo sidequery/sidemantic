@@ -1150,6 +1150,7 @@ def api_serve(
     max_request_body_bytes: int = typer.Option(
         None, "--max-request-body-bytes", help="Maximum request body size in bytes"
     ),
+    ui: bool = typer.Option(True, "--ui/--no-ui", help="Serve the embedded web UI at the root path"),
 ):
     """
     Start an HTTP API server for the semantic layer.
@@ -1164,7 +1165,7 @@ def api_serve(
       sidemantic api-serve --demo
     """
     try:
-        from sidemantic.api_server import start_api_server
+        from sidemantic.api_server import start_api_server, ui_static_dir
     except ImportError as e:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(1)
@@ -1261,8 +1262,14 @@ def api_serve(
                 placeholders = ", ".join(["?" for _ in columns])
                 layer.adapter.executemany(f"INSERT INTO {table} VALUES ({placeholders})", rows)
 
+    serve_ui = ui and ui_static_dir().joinpath("index.html").exists()
+
     typer.echo(f"Starting HTTP API server for: {directory}", err=True)
     typer.echo(f"Listening on http://{host_resolved}:{port_resolved}", err=True)
+    if serve_ui:
+        typer.echo(f"Web UI: http://{host_resolved}:{port_resolved}/", err=True)
+    elif ui:
+        typer.echo("Web UI: not built (run scripts/build_webapp.py)", err=True)
     if auth_token_resolved:
         typer.echo("Authentication: bearer token required", err=True)
     else:
@@ -1275,6 +1282,7 @@ def api_serve(
         auth_token=auth_token_resolved,
         cors_origins=cors_origins_resolved,
         max_request_body_bytes=max_body_bytes_resolved,
+        serve_ui=serve_ui,
     )
 
 

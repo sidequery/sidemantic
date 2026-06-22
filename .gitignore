@@ -48,3 +48,4 @@ bun.lockb
 package.json
 !js/package.json
 !js/bun.lock
+!webapp/package.json

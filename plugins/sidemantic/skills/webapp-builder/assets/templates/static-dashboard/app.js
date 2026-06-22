@@ -147,11 +147,13 @@ function render() {
     titleEl: leaderboardTitleEl,
     subtitleEl: leaderboardSubtitleEl,
     interactive: true,
+    expandable: true,
+    limit: 6,
     metricRef: leaderboardMetric,
     selectedValues: selectedLeaderboardValues(queries.dimension_leaderboard),
     onSelect: setFilter,
   });
-  renderDataPreview(previewEl, filterPreviewResult(previewQuery));
+  renderDataPreview(previewEl, filterPreviewResult(previewQuery), { pageSize: 10 });
   renderHighlightedQueryDebug(debugEl, {
     metric_totals: queries.metric_totals,
     dimension_leaderboard: queries.dimension_leaderboard,

@@ -481,17 +481,38 @@ _OSI_TREE_DIR = "OSI"
 def _is_under_osi_tree(file_path: "Path", directory: "Path") -> bool:
     """Return True when ``file_path`` lives under the project-root ``OSI/`` tree.
 
-    The OSI directory must be a top-level child of the loaded project root, so
-    only the first relative path component is checked (case-insensitively, to
-    match dbt accepting ``OSI`` regardless of filesystem case-folding). A JSON
-    file sitting directly at the project root or under any non-``OSI/`` folder is
-    rejected even when it is OSI-shaped.
+    Two layouts count as "inside the OSI tree":
+
+    * A top-level ``OSI/`` child of the loaded project root (``validate .`` from
+      the project root). Only the first relative path component is checked
+      (case-insensitively, to match dbt accepting ``OSI`` regardless of
+      filesystem case-folding).
+    * The loaded ``directory`` *itself* being the ``OSI/`` directory (``validate
+      OSI/`` pointed straight at the folder dbt users are told to drop these
+      files in). The whole loaded tree is then the OSI tree, so any descendant at
+      any depth counts -- matching how ``validate <project>`` (which rglobs and
+      only checks the leading ``OSI/`` component) loads the same files.
+
+    A JSON file sitting directly at a non-``OSI/`` project root or under any
+    non-``OSI/`` subfolder is rejected even when it is OSI-shaped.
     """
     try:
         relative_parts = file_path.relative_to(directory).parts
     except ValueError:
         return False
-    # Need at least one directory component plus the file name.
+    # ``validate OSI/`` points the loader root straight at the OSI directory. The
+    # whole loaded tree is then the OSI tree, so accept every descendant at any
+    # depth (a file directly in it, or under a subfolder of it). This keeps the
+    # two documented entrypoints in agreement: loading the parent project accepts
+    # the same files by their leading ``OSI/`` component.
+    #
+    # Resolve the loader root before reading its name so the OSI directory is
+    # recognized even when it is the current working directory: ``cd OSI &&
+    # sidemantic validate`` (or ``load_from_directory(layer, ".")`` after
+    # ``chdir``) passes ``Path(".")``, whose raw ``.name`` is empty.
+    if directory.resolve().name.casefold() == _OSI_TREE_DIR.casefold():
+        return True
+    # Otherwise require a top-level ``OSI/`` directory plus the file name.
     if len(relative_parts) < 2:
         return False
     return relative_parts[0].casefold() == _OSI_TREE_DIR.casefold()

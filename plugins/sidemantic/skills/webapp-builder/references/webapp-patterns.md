@@ -2,6 +2,15 @@
 
 Use this reference when implementing the concrete UI/data layer after the skill workflow has selected an app shape.
 
+## Why two component implementations
+
+There are two parallel component sets and they cannot share code:
+
+- `assets/components/react-tailwind/` (`.tsx`) targets app shape 1 — a real product webapp with a build step (React/Vite/Next). It is declarative components.
+- `assets/components/static/` (`.js` + `.css`) targets app shape 2 — a backendless browser demo (Pyodide / DuckDB-WASM) with no build step. It is plain ESM `render*` functions that mutate the DOM directly, runnable from a `<script type="module">`.
+
+Pick the set that matches the chosen app shape; do not import one from the other. They are kept at feature + data-contract parity (same `data-*` / `data-testid` hooks, same formatting, highlighting, charts, pagination, and leaderboard expand), but their APIs differ by necessity: React uses props + parent-owned state, static uses imperative renderers with container-held state. When you add or change a primitive in one set, mirror it in the other. `tests/test_sidemantic_webapp_builder_scripts.py` enforces parity for the high-value contracts. `docs/component-gallery.html` renders every component and its variations on one page.
+
 ## Copyable Components
 
 Default to copied component source instead of regenerating dashboard primitives. Copy from the skill, then edit the copied files inside the target project:
@@ -26,8 +35,13 @@ The React components are intentionally style-light and contract-heavy. Keep thes
 - `data-dimension` and `data-value` on leaderboard rows and filter pills.
 - `data-testid="metric-totals"` around aggregate cards.
 - `data-testid="dimension-leaderboard"` and `data-testid="leaderboard-rows"` around ranked dimensions.
-- `data-testid="query-debug"` for generated SQL/debug output.
-- Use `Sparkline` for compact time trends and `ColumnChart` for categorical metric comparisons.
+- `data-testid="query-debug"` for generated SQL/debug output (highlighted in both sets).
+- `data-testid="data-preview-pager"` and `data-action="prev-page"`/`"next-page"` for the preview table pager.
+- `data-action="leaderboard-expand"`/`"leaderboard-back"` for the leaderboard expand → full-view → back flow.
+- Use `Sparkline` for compact time trends, `LineChart` for full-size time series (the `metricSeries` shape), and `ColumnChart` for categorical metric comparisons.
+- Format values through `formatValue` / `metricValueFormat` (currency, percent, number) rather than hand-rolling `toLocaleString`.
+- Leaderboards are dense by default: top-`limit` rows collapsed, all rows + per-column bars when expanded. The parent owns `expanded`, so pass a compact `extraColumns` set (e.g. delta, delta%) when collapsed and a richer one (every metric, bar-backed) when expanded.
+- Charts (`LineChart`, `ColumnChart`) carry y-axis gridlines + compact labels, per-point/bar hover tooltips, `role="img"` summaries, and responsive width (ResizeObserver, no aspect distortion). `Sparkline` stays compact (no axes) but has an endpoint marker, tooltip, and a11y label.
 
 Prefer copying all primitives first for a new dashboard, then deleting unused files after the app shape is clear. Copy a subset only when fitting into an established component system.
 
@@ -35,8 +49,9 @@ The static component file exports both low-level renderers and generic app helpe
 
 - `toComponentResult` and `toComponentQuery` normalize executed query results into the component contract.
 - `renderMetricSummaryCards` handles metric cards plus optional sparklines for any UI with metric totals and a series result.
-- `renderDimensionLeaderboardCards` renders repeated dimension cards and filters zero-valued metric rows instead of showing fake rows.
-- `renderSelectOptions`, `renderFilterPills`, `renderValidationState`, `renderHighlightedQueryDebug`, and `renderDataPreview` cover common dashboard controls and debug panes.
+- `renderDimensionLeaderboardCards` renders repeated dimension cards, filters zero-valued metric rows, and supports `expandable` (top-`limit` collapsed → blow up one card full width, hide the rest, back link) plus `extraColumns` (delta/delta%, per-column bars).
+- `renderLineChart` draws a full-size time-series line (the `metricSeries` shape); `renderSparkline` stays the compact variant.
+- `renderSelectOptions`, `renderFilterPills`, `renderValidationState`, `renderHighlightedQueryDebug`, and `renderDataPreview` (pass `{ pageSize }` for pagination) cover common dashboard controls and debug panes.
 - `normalizeFilterValue`, `toggleFilterValue`, `removeFilterValue`, `removeFilterDimension`, `setControlsDisabled`, and `syncScrollPosition` cover interaction plumbing without binding the app to a specific runtime.
 
 These helpers are not limited to metric explorers. Use the low-level renderers for custom workflows, and use the higher-level helpers only when the app shape matches.

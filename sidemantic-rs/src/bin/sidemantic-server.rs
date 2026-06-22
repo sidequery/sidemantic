@@ -20,6 +20,7 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map as JsonMap, Value as JsonValue};
 use sidemantic::runtime::interpolate_query_filters;
@@ -31,6 +32,38 @@ use sidemantic::{
 use sidemantic::{Metric, Model, Relationship, RelationshipType, SemanticQuery, SidemanticRuntime};
 #[cfg(feature = "runtime-server-adbc")]
 use tokio_stream::wrappers::ReceiverStream;
+
+/// The built web UI bundle, baked into the binary (synced from webapp/ by scripts/build_webapp.py).
+#[derive(RustEmbed)]
+#[folder = "ui/"]
+struct WebUi;
+
+/// Serve a UI asset by path, falling back to index.html for unknown paths (client-side routing).
+fn serve_ui_asset(path: &str) -> Response {
+    let path = if path.is_empty() { "index.html" } else { path };
+    if let Some(file) = WebUi::get(path) {
+        let mime = mime_guess::from_path(path).first_or_octet_stream();
+        return (
+            [(header::CONTENT_TYPE, mime.as_ref().to_string())],
+            file.data.into_owned(),
+        )
+            .into_response();
+    }
+    match WebUi::get("index.html") {
+        Some(index) => (
+            [(header::CONTENT_TYPE, "text/html".to_string())],
+            index.data.into_owned(),
+        )
+            .into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+/// Router fallback: serves the embedded UI for any path not matched by an API route. Public (it is
+/// added after the auth layer), so the static shell loads while data endpoints stay token-gated.
+async fn ui_fallback(request: Request) -> Response {
+    serve_ui_asset(request.uri().path().trim_start_matches('/'))
+}
 
 #[cfg(feature = "runtime-server-adbc")]
 type DatabaseOption = (OptionDatabase, OptionValue);
@@ -575,6 +608,7 @@ fn dimension_json(dimension: &sidemantic::Dimension) -> JsonValue {
         json!(enum_json_name(&dimension.r#type).unwrap_or_else(|| "categorical".to_string())),
     );
     entry.insert("sql".to_string(), json!(dimension.sql));
+    entry.insert("public".to_string(), json!(dimension.public));
     if let Some(description) = &dimension.description {
         entry.insert("description".to_string(), json!(description));
     }
@@ -756,6 +790,36 @@ fn graph_payload(runtime: &SidemanticRuntime) -> JsonValue {
 
 async fn graph(State(state): State<Arc<AppState>>) -> Json<JsonValue> {
     Json(graph_payload(&state.runtime))
+}
+
+fn describe_payload(runtime: &SidemanticRuntime) -> JsonValue {
+    let payload = runtime.loaded_graph_payload();
+    let model_map: HashMap<&str, &Model> = payload
+        .models
+        .iter()
+        .map(|model| (model.name.as_str(), model))
+        .collect();
+    let models = payload
+        .models
+        .iter()
+        .map(|model| model_detail_json(model, &model_map))
+        .collect::<Vec<_>>();
+    let metrics = payload
+        .top_level_metrics
+        .iter()
+        .map(metric_json)
+        .collect::<Vec<_>>();
+
+    json!({
+        "models": models,
+        "metrics": metrics,
+        "dialect": "generic",
+        "import_warnings": []
+    })
+}
+
+async fn describe(State(state): State<Arc<AppState>>) -> Json<JsonValue> {
+    Json(describe_payload(&state.runtime))
 }
 
 async fn compile_query(
@@ -1331,6 +1395,7 @@ fn metric_json(metric: &Metric) -> JsonValue {
     let mut entry = JsonMap::new();
     entry.insert("name".to_string(), json!(metric.name));
     entry.insert("sql".to_string(), json!(metric.sql));
+    entry.insert("public".to_string(), json!(metric.public));
     if let Some(agg) = &metric.agg {
         if let Some(name) = enum_json_name(agg) {
             entry.insert("agg".to_string(), json!(name));
@@ -1339,8 +1404,17 @@ fn metric_json(metric: &Metric) -> JsonValue {
     if let Some(name) = enum_json_name(&metric.r#type) {
         entry.insert("type".to_string(), json!(name));
     }
+    if let Some(label) = &metric.label {
+        entry.insert("label".to_string(), json!(label));
+    }
+    if let Some(format) = &metric.format {
+        entry.insert("format".to_string(), json!(format));
+    }
     if let Some(description) = &metric.description {
         entry.insert("description".to_string(), json!(description));
+    }
+    if let Some(base_metric) = &metric.base_metric {
+        entry.insert("base_metric".to_string(), json!(base_metric));
     }
     if !metric.filters.is_empty() {
         entry.insert("filters".to_string(), json!(metric.filters));
@@ -1469,6 +1543,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = Router::new()
         .route("/readyz", get(readyz))
         .route("/health", get(health))
+        .route("/describe", get(describe))
         .route("/graph", get(graph))
         .route("/models", get(list_models).post(get_models))
         .route("/models/{model}", get(get_model))
@@ -1483,7 +1558,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .layer(middleware::from_fn_with_state(
             controls,
             http_controls_middleware,
-        ));
+        ))
+        // Added after the auth layer so the embedded UI shell stays public.
+        .fallback(ui_fallback);
 
     eprintln!("sidemantic-server listening on {}", config.bind);
     let listener = tokio::net::TcpListener::bind(&config.bind).await?;

@@ -607,7 +607,13 @@ class SnowflakeAdapter(BaseAdapter):
             graph.custom_instructions = None
 
         if module_custom_instructions is not None:
-            graph.module_custom_instructions = module_custom_instructions
+            existing_mci = getattr(graph, "module_custom_instructions", None)
+            if isinstance(existing_mci, dict) and isinstance(module_custom_instructions, dict):
+                # Accumulate module instruction keys across files in a directory
+                # parse instead of overwriting with the last file's value.
+                graph.module_custom_instructions = {**existing_mci, **module_custom_instructions}
+            else:
+                graph.module_custom_instructions = module_custom_instructions
         elif not hasattr(graph, "module_custom_instructions"):
             graph.module_custom_instructions = None
 

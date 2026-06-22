@@ -773,6 +773,49 @@ tables:
         assert orders2.get_metric("amount").public is True
         assert orders2.get_metric("total").public is True
 
+    def test_parse_directory_merges_module_custom_instructions(self, adapter, tmp_path):
+        """Parsing a directory of split Cortex files directly with SnowflakeAdapter
+        must accumulate module_custom_instructions keys, not overwrite to the last."""
+        (tmp_path / "a.yaml").write_text(
+            """
+name: a
+tables:
+  - name: orders
+    base_table: {database: db, schema: s, table: orders}
+    primary_key: {columns: [id]}
+    dimensions:
+      - name: id
+        expr: id
+        data_type: number
+module_custom_instructions:
+  sql_generation: Use explicit columns.
+"""
+        )
+        (tmp_path / "b.yaml").write_text(
+            """
+name: b
+tables:
+  - name: customers
+    base_table: {database: db, schema: s, table: customers}
+    primary_key: {columns: [cid]}
+    dimensions:
+      - name: cid
+        expr: cid
+        data_type: number
+module_custom_instructions:
+  question_generation: Prefer revenue.
+"""
+        )
+
+        graph = adapter.parse(tmp_path)
+        mci = graph.module_custom_instructions
+        assert mci["sql_generation"] == "Use explicit columns."
+        assert mci["question_generation"] == "Prefer revenue."
+        # And the deep-merged metadata block carries both for export.
+        meta_mci = graph.metadata["snowflake"]["module_custom_instructions"]
+        assert meta_mci["sql_generation"] == "Use explicit columns."
+        assert meta_mci["question_generation"] == "Prefer revenue."
+
     def test_export_strips_model_placeholder_from_table_scoped_metric(self, adapter, tmp_path):
         """Table-scoped derived metrics must not leak {model} placeholders into Snowflake."""
         source = tmp_path / "ph.yaml"

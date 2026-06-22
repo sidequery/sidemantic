@@ -330,11 +330,12 @@ fn parse_sql_content(content: &str) -> Result<ParsedConfig> {
                     // model_from_sql_frontmatter for a missing name -- mirrors the
                     // YAML and Python SQL paths.
                     if let Some(metadata_value) = frontmatter.get("metadata") {
-                        graph_metadata = Some(serde_json::to_value(metadata_value).map_err(|e| {
-                            SidemanticError::Validation(format!(
-                                "failed to parse SQL frontmatter metadata: {e}"
-                            ))
-                        })?);
+                        graph_metadata =
+                            Some(serde_json::to_value(metadata_value).map_err(|e| {
+                                SidemanticError::Validation(format!(
+                                    "failed to parse SQL frontmatter metadata: {e}"
+                                ))
+                            })?);
                     }
                     top_level_metrics.extend(sql_metrics);
                 }
@@ -532,6 +533,7 @@ pub fn load_from_directory_with_metadata(dir: impl AsRef<Path>) -> Result<Loaded
                     extends_map,
                     top_level_metrics,
                     top_level_parameters,
+                    graph_metadata,
                     ..
                 } = parsed;
 
@@ -555,6 +557,7 @@ pub fn load_from_directory_with_metadata(dir: impl AsRef<Path>) -> Result<Loaded
                 all_extends_map.extend(extends_map);
                 all_top_level_metrics.extend(top_level_metrics);
                 all_top_level_parameters.extend(top_level_parameters);
+                merge_graph_metadata(&mut merged_graph_metadata, graph_metadata);
             }
             _ => {}
         }
@@ -1976,6 +1979,34 @@ metadata:
             .collect();
         assert!(names.contains(&"q1"));
         assert!(names.contains(&"q2"));
+    }
+
+    #[test]
+    fn test_load_from_directory_preserves_sql_frontmatter_metadata() {
+        // A .sql file with only version/metadata frontmatter must keep its metadata
+        // when loaded from a directory, not just as a single file (parity with the
+        // YAML branch which already merges graph metadata).
+        let dir = std::env::temp_dir().join(format!(
+            "sidemantic-rs-loader-sqlmeta-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("metrics.sql"),
+            "---\nversion: 1\nmetadata:\n  owner: data-team\n---\n\nMETRIC (\n  name total_orders,\n  agg count\n);\n",
+        )
+        .unwrap();
+
+        let loaded = load_from_directory_with_metadata(&dir).unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+
+        assert!(loaded.graph.get_metric("total_orders").is_some());
+        let metadata = loaded.graph.metadata().expect("graph metadata preserved");
+        assert_eq!(metadata["owner"], "data-team");
     }
 
     #[test]

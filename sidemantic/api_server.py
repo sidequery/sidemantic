@@ -233,6 +233,8 @@ def create_app(
                     metric_info["type"] = metric.type
                 if metric.description:
                     metric_info["description"] = metric.description
+                if metric.base_metric:
+                    metric_info["base_metric"] = metric.base_metric
                 graph_metrics.append(metric_info)
 
             joinable_pairs = []

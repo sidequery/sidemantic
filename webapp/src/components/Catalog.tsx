@@ -1,4 +1,5 @@
 import type { CatalogMetric } from "../data/types";
+import { graphMetricsForModel } from "../lib/catalog";
 import { useExplorer } from "../state/ExplorerContext";
 
 function MetricRow({ metric, selected, onSelect }: { metric: CatalogMetric; selected: boolean; onSelect: () => void }) {
@@ -21,6 +22,7 @@ function MetricRow({ metric, selected, onSelect }: { metric: CatalogMetric; sele
 export function Catalog() {
   const { state, dispatch, catalog } = useExplorer();
   const model = catalog.models.find((m) => m.name === state.model);
+  const graphMetrics = graphMetricsForModel(catalog, state.model);
 
   return (
     <nav className="flex flex-col gap-4 py-3 text-sm">
@@ -31,7 +33,7 @@ export function Catalog() {
           value={state.model}
           onChange={(event) => {
             const next = catalog.models.find((m) => m.name === event.target.value);
-            const metric = next?.metrics[0]?.ref ?? catalog.graphMetrics[0]?.ref ?? "";
+            const metric = next?.metrics[0]?.ref ?? graphMetricsForModel(catalog, event.target.value)[0]?.ref ?? "";
             dispatch({ type: "setModel", model: event.target.value, metric, grain: (next?.defaultGrain as never) ?? "month" });
           }}
           className="w-full border border-line bg-surface px-2 py-1 text-xs text-ink"
@@ -56,11 +58,11 @@ export function Catalog() {
             />
           ))}
         </div>
-        {catalog.graphMetrics.length ? (
+        {graphMetrics.length ? (
           <>
             <h3 className="mb-1 mt-3 px-3 text-2xs font-semibold uppercase tracking-wide text-faint">Shared metrics</h3>
             <div>
-              {catalog.graphMetrics.map((metric) => (
+              {graphMetrics.map((metric) => (
                 <MetricRow
                   key={metric.ref}
                   metric={metric}

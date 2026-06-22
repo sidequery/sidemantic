@@ -1,4 +1,4 @@
-import { buildCatalogFromDescribe, buildCatalogFromGraph } from "../lib/catalog";
+import { buildCatalogFromDescribe, buildCatalogFromGraph, withJoinablePairs } from "../lib/catalog";
 import type { SidemanticBackend } from "./backend";
 import { decodeArrow } from "./arrow";
 import type { Catalog, QueryResult, ResultRow, StructuredQuery } from "./types";
@@ -117,7 +117,14 @@ export class HttpBackend implements SidemanticBackend {
     // still works against a backend that hasn't exposed /describe yet.
     try {
       const res = await fetch(this.url("/describe"), { headers: this.headers() });
-      if (res.ok) return buildCatalogFromDescribe(await res.json());
+      if (res.ok) {
+        const catalog = buildCatalogFromDescribe(await res.json());
+        try {
+          return withJoinablePairs(catalog, await this.getJson<unknown>("/graph"));
+        } catch {
+          return catalog;
+        }
+      }
     } catch {
       // fall through to /graph
     }

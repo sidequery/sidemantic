@@ -4,6 +4,7 @@ import { DataTable, type Column } from "../components/DataTable";
 import { QueryDebugPanel } from "../components/QueryDebugPanel";
 import { EmptyState, ErrorState } from "../components/States";
 import { formatValue, labelize } from "../lib/format";
+import { graphMetricsForModel } from "../lib/catalog";
 import { composeFilters, dimTypes, pivotGroup, previewRows } from "../lib/queries";
 import { useExplorer } from "../state/ExplorerContext";
 import { useQueryResult } from "../state/useQueryResult";
@@ -29,9 +30,10 @@ export function PivotView() {
   const { state, dispatch, catalog, backend } = useExplorer();
   const model = catalog.models.find((m) => m.name === state.model);
   const dims = model?.dimensions ?? [];
+  const graphMetrics = graphMetricsForModel(catalog, state.model);
   const allMetrics: CatalogMetric[] = useMemo(
-    () => [...(model?.metrics ?? []), ...catalog.graphMetrics],
-    [model, catalog.graphMetrics],
+    () => [...(model?.metrics ?? []), ...graphMetrics],
+    [model, graphMetrics],
   );
   const timeRef = model?.timeDimension?.ref;
 

@@ -3,7 +3,10 @@ import type { ResultRow } from "./types";
 
 function normalize(value: unknown): string | number | boolean | null {
   if (value === null || value === undefined) return null;
-  if (typeof value === "bigint") return Number(value);
+  if (typeof value === "bigint") {
+    const asNumber = Number(value);
+    return Number.isSafeInteger(asNumber) ? asNumber : value.toString();
+  }
   if (value instanceof Date) {
     // Date-only columns (grain buckets) read better as ISO dates.
     const iso = value.toISOString();

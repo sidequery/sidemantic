@@ -1,4 +1,5 @@
 import type { Catalog, CatalogModel, Grain } from "../data/types";
+import { graphMetricsForModel } from "../lib/catalog";
 import type { FilterState } from "../lib/queries";
 import type { DateRange } from "../lib/time";
 
@@ -97,7 +98,7 @@ export function primaryModel(catalog: Catalog): CatalogModel | undefined {
 
 /** Default ranking metric for a model: its first metric, else the first graph metric. */
 export function defaultMetric(model: CatalogModel | undefined, catalog: Catalog): string {
-  return model?.metrics[0]?.ref ?? catalog.graphMetrics[0]?.ref ?? "";
+  return model?.metrics[0]?.ref ?? (model ? graphMetricsForModel(catalog, model.name)[0]?.ref : undefined) ?? "";
 }
 
 /** Derive a fresh initial state from the loaded catalog. */

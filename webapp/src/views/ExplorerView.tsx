@@ -7,6 +7,7 @@ import { QueryDebugPanel } from "../components/QueryDebugPanel";
 import { EmptyState, ErrorState } from "../components/States";
 import type { BrushRange } from "../components/TimeSeriesChart";
 import { formatDelta, formatValue } from "../lib/format";
+import { graphMetricsForModel } from "../lib/catalog";
 import { composeFilters, dimTypes, metricSeries, metricTotals } from "../lib/queries";
 import { bucketOffset, dateOnly, endOfBucket, previousRange } from "../lib/time";
 import { useExplorer } from "../state/ExplorerContext";
@@ -21,13 +22,14 @@ export function ExplorerView() {
   const model = catalog.models.find((m) => m.name === state.model);
 
   const metrics = model?.metrics ?? [];
+  const graphMetrics = graphMetricsForModel(catalog, state.model);
   const timeRef = model?.timeDimension?.ref;
 
   // Focused metric drives the chart + leaderboard ranking. It may be a graph-level metric that
   // isn't one of the model's strip metrics.
   const rankMetric =
     metrics.find((m) => m.ref === state.selectedMetric) ??
-    catalog.graphMetrics.find((m) => m.ref === state.selectedMetric) ??
+    graphMetrics.find((m) => m.ref === state.selectedMetric) ??
     metrics[0];
   const focusedInStrip = !!rankMetric && metrics.some((m) => m.ref === rankMetric.ref);
   // Make sure the focused metric is a column in the strip queries so the chart can reuse those

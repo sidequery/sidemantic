@@ -10,6 +10,8 @@ type TimeSeriesChartProps = {
   formatValue: (value: number) => string;
   formatAxis?: (value: number) => string;
   comparisonLabel?: string;
+  /** Accessible summary for screen readers — the SVG is otherwise opaque to assistive tech. */
+  ariaLabel?: string;
   /** Brush-to-zoom: bucket-start strings for the selected range, or null to clear. */
   onBrush?: (range: BrushRange | null) => void;
 };
@@ -29,6 +31,7 @@ export function TimeSeriesChart({
   formatValue,
   formatAxis = formatValue,
   comparisonLabel = "Previous",
+  ariaLabel,
   onBrush,
 }: TimeSeriesChartProps) {
   const container = useRef<HTMLDivElement>(null);
@@ -84,11 +87,11 @@ export function TimeSeriesChart({
   const line = pathFor(points);
   const area = empty ? "" : `M ${xAt(0).toFixed(1)},${yAt(min).toFixed(1)} L ${line} L ${xAt(count - 1).toFixed(1)},${yAt(min).toFixed(1)} Z`;
 
-  function pxFromEvent(event: React.MouseEvent): number {
+  function pxFromEvent(event: React.PointerEvent): number {
     const rect = svgRef.current?.getBoundingClientRect();
     return rect ? event.clientX - rect.left : 0;
   }
-  function onMove(event: React.MouseEvent) {
+  function onMove(event: React.PointerEvent) {
     if (empty) return;
     const px = pxFromEvent(event);
     setHover(indexAtX(px));
@@ -97,14 +100,20 @@ export function TimeSeriesChart({
       setBrush({ ...brushRef.current });
     }
   }
-  function onDown(event: React.MouseEvent) {
+  function onDown(event: React.PointerEvent) {
     if (empty || !onBrush) return;
+    // Capture the pointer so a brush drag keeps tracking through fast moves and past the SVG edge —
+    // and so a touch drag brushes the chart instead of scrolling the page (paired with `touch-none`).
+    event.currentTarget.setPointerCapture(event.pointerId);
     dragging.current = true;
     const px = pxFromEvent(event);
     brushRef.current = { a: px, b: px };
     setBrush({ ...brushRef.current });
   }
-  function onUp() {
+  function onUp(event: React.PointerEvent) {
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
     const drag = brushRef.current;
     if (dragging.current && drag && onBrush) {
       const i0 = indexAtX(Math.min(drag.a, drag.b));
@@ -133,6 +142,12 @@ export function TimeSeriesChart({
   const delta =
     hoverCur && hoverPrev && hoverPrev.y !== 0 ? ((hoverCur.y - hoverPrev.y) / Math.abs(hoverPrev.y)) * 100 : null;
 
+  const summary =
+    ariaLabel ??
+    (empty
+      ? "Time series chart: not enough data to plot."
+      : `Time series chart, ${count} points from ${points[0].x} to ${points[count - 1].x}.`);
+
   return (
     <div className="relative border border-line bg-surface text-accent">
       {/* legend */}
@@ -155,11 +170,14 @@ export function TimeSeriesChart({
             ref={svgRef}
             width={width}
             height={HEIGHT}
-            className="block select-none"
-            onMouseMove={onMove}
-            onMouseDown={onDown}
-            onMouseUp={onUp}
-            onMouseLeave={onLeave}
+            role="img"
+            aria-label={summary}
+            className="block touch-none select-none"
+            onPointerMove={onMove}
+            onPointerDown={onDown}
+            onPointerUp={onUp}
+            onPointerLeave={onLeave}
+            onPointerCancel={onLeave}
             onDoubleClick={() => onBrush?.(null)}
           >
             <defs>

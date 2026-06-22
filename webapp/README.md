@@ -67,7 +67,7 @@ uv run scripts/build_webapp.py     # -> sidemantic/ui/static and sidemantic-rs/u
   formatting, time/grain helpers.
 - `src/state/` — small serializable explorer state + URL (de)serialization + the async query hook
   (stale-response-guarded).
-- `src/components/`, `src/views/` — presentational components and the three views.
+- `src/components/`, `src/views/` — presentational components and the two views (Explore, Pivot).
 
 ## Embedding
 
@@ -80,5 +80,5 @@ The built bundle is served by either backend from a single process:
   binary via `rust-embed` and serves it from a router fallback registered after the auth layer.
 
 Both copies are committed (synced by `scripts/build_webapp.py`), so neither backend build needs a JS
-toolchain. The Rust server has no `/describe` yet, so the UI runs on its names-only `/graph` catalog
-there until that endpoint lands.
+toolchain. Both backends serve `/describe`, so the UI gets the rich (typed) catalog on either — it
+only falls back to the names-only `/graph` catalog against a backend that doesn't expose `/describe`.

@@ -44,6 +44,9 @@ models:
         type: time
         granularity: day
         sql: created_at
+      - name: customer_id
+        type: numeric
+        sql: customer_id
     metrics:
       - name: revenue
         agg: sum
@@ -51,6 +54,10 @@ models:
       - name: order_count
         agg: count
         sql: id
+    relationships:
+      - name: customers
+        type: many_to_one
+        foreign_key: customer_id
   - name: customers
     table: customers
     primary_key: id
@@ -125,6 +132,17 @@ assert(tableAlias.includes('"revenue": number') && tableAlias.includes('"region"
 // 8b. Implicit (no `AS`) projection aliases resolve like the engine + Python `gen sql`.
 const implicitAlias = await generateSqlTypes(models, ["SELECT orders.revenue sales, orders.region FROM orders"], { wasmUrl: wasmBytes });
 assert(implicitAlias.includes('"sales": number') && implicitAlias.includes('"region": string'), `implicit alias not parsed: ${implicitAlias}`);
+
+// 8c. extractSqlLiterals ignores commented-out calls but keeps `//` inside SQL strings.
+const scanned = extractSqlLiterals([
+  "const a = query(`SELECT orders.revenue FROM orders`);\n" +
+    '// const dead = query("SELECT orders.revnue FROM orders");\n' +
+    '/* query("SELECT bogus FROM nope") */\n' +
+    "const b = query(\"SELECT orders.region FROM orders WHERE url LIKE 'http://x'\");\n",
+]);
+assert(scanned.includes("SELECT orders.revenue FROM orders"), `real call missing: ${JSON.stringify(scanned)}`);
+assert(scanned.some((s) => s.includes("http://x")), `// inside SQL string must survive: ${JSON.stringify(scanned)}`);
+assert(!scanned.some((s) => s.includes("revnue") || s.includes("bogus")), `commented-out calls scanned: ${JSON.stringify(scanned)}`);
 
 // 9. A top-level metric whose owner model has a default time dimension: the engine inserts that
 // dimension into the output, so an explicit `AS` alias must stay on the metric (not slide onto the

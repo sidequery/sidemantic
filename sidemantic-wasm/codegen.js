@@ -105,11 +105,52 @@ const PARAM_STUB = { string: "'x'", number: "0", date: "'2000-01-01'", yesno: "T
 const PARAM_RE = /\{\{\s*(\w+)\s*\}\}/g;
 const CALL_LITERAL_RE = /(`[^`]*`|"[^"]*"|'[^']*')/;
 
-/** Extract `<call>(...)` semantic-SQL literals from TypeScript source (skips ${} / escapes). */
+// Blank out `//` and `/* */` comments while leaving string/template literals intact, so a
+// commented-out `// query("...")` is not scanned and `//` inside a quoted SQL string (e.g.
+// `'http://%'`) is not mistaken for a comment. A scanner, not a regex, for that reason.
+function stripTsComments(text) {
+  let out = "";
+  let quote = null;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (quote !== null) {
+      out += ch;
+      if (ch === "\\" && i + 1 < text.length) {
+        out += text[i + 1];
+        i += 1;
+      } else if (ch === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === "`") {
+      quote = ch;
+      out += ch;
+      continue;
+    }
+    if (ch === "/" && text[i + 1] === "/") {
+      const newline = text.indexOf("\n", i);
+      if (newline === -1) break;
+      i = newline - 1; // loop's i += 1 lands on the newline, which we keep
+      continue;
+    }
+    if (ch === "/" && text[i + 1] === "*") {
+      const end = text.indexOf("*/", i + 2);
+      i = end === -1 ? text.length : end + 1;
+      out += " ";
+      continue;
+    }
+    out += ch;
+  }
+  return out;
+}
+
+/** Extract `<call>(...)` semantic-SQL literals from TypeScript source (strips comments, skips ${} / escapes). */
 export function extractSqlLiterals(sources, { call = "query" } = {}) {
   const pattern = new RegExp(`\\b${call}\\s*\\(\\s*` + CALL_LITERAL_RE.source, "gs");
   const literals = [];
-  for (const text of sources) {
+  for (const rawText of sources) {
+    const text = stripTsComments(rawText);
     for (const match of text.matchAll(pattern)) {
       const content = match[1].slice(1, -1);
       if (!content || content.includes("${") || content.includes("\\")) continue;

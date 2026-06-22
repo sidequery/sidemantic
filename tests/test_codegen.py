@@ -204,6 +204,22 @@ def test_gen_types_cli_model_file_ignores_siblings(tmp_path):
     assert "customers" not in result.output
 
 
+def test_gen_types_cli_python_model_file_keeps_parent_context(tmp_path):
+    # A single Python semantic file is loaded in place (its real parent on sys.path), so a
+    # sibling import still resolves — loading it via a temp-dir copy would break that import.
+    (tmp_path / "helper.py").write_text("TABLE = 'orders'\n")
+    (tmp_path / "sidemantic.py").write_text(
+        "from helper import TABLE\n"
+        "from sidemantic import Dimension, Metric, Model\n"
+        "orders = Model(name='orders', table=TABLE, primary_key='id',\n"
+        "  dimensions=[Dimension(name='region', type='categorical', sql='region')],\n"
+        "  metrics=[Metric(name='revenue', agg='sum', sql='amount')])\n"
+    )
+    result = runner.invoke(app, ["gen", "types", "-m", str(tmp_path / "sidemantic.py"), "--no-yaml"])
+    assert result.exit_code == 0, result.output
+    assert '"orders"' in result.output
+
+
 # --- gen sql (sqlx-style typed semantic SQL) ---
 
 
@@ -220,6 +236,23 @@ def test_extract_sql_literals_skips_dynamic_and_object_args(tmp_path):
     assert "SELECT orders.revenue FROM orders" in literals
     assert all("${" not in literal for literal in literals)
     assert len(literals) == 2
+
+
+def test_extract_sql_literals_ignores_commented_out_calls(tmp_path):
+    src = tmp_path / "q.ts"
+    src.write_text(
+        "db.query(`SELECT orders.status FROM orders`);\n"
+        '// db.query("SELECT orders.revnue FROM orders");\n'
+        '/* db.query("SELECT bogus FROM nope") */\n'
+        "db.query(\"SELECT orders.region FROM orders WHERE url LIKE 'http://x'\");\n"
+    )
+    literals = extract_sql_literals(expand_sources([src]))
+    assert "SELECT orders.status FROM orders" in literals
+    # `//` inside a quoted SQL string is not treated as a comment.
+    assert "SELECT orders.region FROM orders WHERE url LIKE 'http://x'" in literals
+    # Commented-out calls (line + block) are not scanned.
+    assert not any("revnue" in literal for literal in literals)
+    assert not any("bogus" in literal for literal in literals)
 
 
 def test_analyze_sql_types_rows_and_params():

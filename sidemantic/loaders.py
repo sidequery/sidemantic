@@ -13,7 +13,13 @@ if TYPE_CHECKING:
     from sidemantic.core.semantic_layer import SemanticLayer
 
 
-def load_from_directory(layer: "SemanticLayer", directory: str | Path, *, strict: bool = True) -> None:
+def load_from_directory(
+    layer: "SemanticLayer",
+    directory: str | Path,
+    *,
+    strict: bool = True,
+    only_file: "Path | None" = None,
+) -> None:
     """Load all semantic layer definitions from a directory.
 
     Automatically detects and parses Cube, Hex, LookML, and other formats.
@@ -24,6 +30,10 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path, *, strict
         directory: Directory containing semantic layer files
         strict: If True, fail on parse errors in detected semantic files. If
             False, log parse errors and continue loading other files.
+        only_file: If set, parse just this one file (which must live under
+            ``directory``) instead of scanning the whole tree, while still using
+            ``directory`` as the discovery root so Python files keep their parent
+            context. See :func:`load_from_file`.
 
     Example:
         >>> layer = SemanticLayer()
@@ -56,18 +66,20 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path, *, strict
     all_parameters = {}
     import_warnings: list[dict[str, object]] = []
 
-    # Check for SML repository (catalog.yml/atscale.yml or object_type files)
-    if _try_load_sml(layer, directory, all_models):
+    # Project-level formats (SML/TMDL/Graphene) are directory-based; in single-file
+    # mode (only_file set) skip their whole-directory scans and parse just that file.
+    if only_file is None and _try_load_sml(layer, directory, all_models):
         return
 
     # TMDL projects are folder-based. Parse a project root once instead of
     # treating each .tmdl file as an independent model.
     tmdl_root = None
-    definition_dir = directory / "definition"
-    if definition_dir.is_dir() and list(definition_dir.rglob("*.tmdl")):
-        tmdl_root = definition_dir
-    elif list(directory.rglob("*.tmdl")):
-        tmdl_root = directory
+    if only_file is None:
+        definition_dir = directory / "definition"
+        if definition_dir.is_dir() and list(definition_dir.rglob("*.tmdl")):
+            tmdl_root = definition_dir
+        elif list(directory.rglob("*.tmdl")):
+            tmdl_root = directory
 
     if tmdl_root:
         try:
@@ -93,10 +105,12 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path, *, strict
             _handle_parse_error(tmdl_root, e, strict=strict)
             logging.warning("Could not parse TMDL models in %s: %s", tmdl_root, e)
 
-    _load_graphene_project(directory, all_models, all_metrics, all_parameters, strict=strict)
+    if only_file is None:
+        _load_graphene_project(directory, all_models, all_metrics, all_parameters, strict=strict)
 
-    # Find and parse all files
-    for file_path in directory.rglob("*"):
+    # Find and parse all files (just the requested one in single-file mode).
+    scan_files = [only_file] if only_file is not None else directory.rglob("*")
+    for file_path in scan_files:
         if not file_path.is_file():
             continue
 
@@ -318,26 +332,22 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path, *, strict
 def load_from_file(layer: "SemanticLayer", file: str | Path, *, strict: bool = True) -> None:
     """Load semantic definitions from a single file, ignoring sibling files.
 
-    Reuses :func:`load_from_directory`'s format auto-detection by parsing the file
-    in isolation (a temp directory holding only a copy of it), so an unrelated
-    broken file beside it cannot fail the load and sibling models are not pulled
-    in. Multi-file projects (TMDL/SML/Graphene) need their directory layout —
-    pass the project directory to :func:`load_from_directory` for those.
+    Parses only ``file`` (so an unrelated broken file beside it cannot fail the
+    load and sibling models are not pulled in), but keeps the file's real parent
+    directory as the discovery root so a Python semantic file can still import
+    sibling helpers and resolve paths relative to its own location. Multi-file
+    projects (TMDL/SML/Graphene) need their directory layout — pass the project
+    directory to :func:`load_from_directory` for those.
 
     Args:
         layer: SemanticLayer to add models to
         file: Path to a single semantic-layer definition file
         strict: If True, fail on parse errors. If False, log and continue.
     """
-    import shutil
-    import tempfile
-
     file = Path(file)
     if not file.is_file():
         raise ValueError(f"File {file} does not exist")
-    with tempfile.TemporaryDirectory() as tmp:
-        shutil.copy2(file, Path(tmp) / file.name)
-        load_from_directory(layer, tmp, strict=strict)
+    load_from_directory(layer, file.parent, strict=strict, only_file=file)
 
 
 def _load_graphene_project(

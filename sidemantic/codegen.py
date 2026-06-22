@@ -130,16 +130,60 @@ def expand_sources(patterns) -> list[Path]:
     return files
 
 
+def _strip_ts_comments(text: str) -> str:
+    """Blank out ``//`` and ``/* */`` comments while leaving string/template literals intact.
+
+    A scanner (not a regex) so that ``//`` or ``/*`` inside a quoted SQL string — e.g.
+    ``query("... WHERE url LIKE 'http://%'")`` — is not mistaken for a comment, and a
+    commented-out ``// query("...")`` is not scanned as a real call.
+    """
+    out: list[str] = []
+    quote: str | None = None
+    index, length = 0, len(text)
+    while index < length:
+        char = text[index]
+        if quote is not None:
+            out.append(char)
+            if char == "\\" and index + 1 < length:
+                out.append(text[index + 1])
+                index += 2
+                continue
+            if char == quote:
+                quote = None
+            index += 1
+            continue
+        if char in "\"'`":
+            quote = char
+            out.append(char)
+            index += 1
+            continue
+        if char == "/" and index + 1 < length and text[index + 1] == "/":
+            newline = text.find("\n", index)
+            if newline == -1:
+                break
+            index = newline  # keep the newline itself
+            continue
+        if char == "/" and index + 1 < length and text[index + 1] == "*":
+            end = text.find("*/", index + 2)
+            index = end + 2 if end != -1 else length
+            out.append(" ")
+            continue
+        out.append(char)
+        index += 1
+    return "".join(out)
+
+
 def extract_sql_literals(files, *, call: str = "query") -> list[str]:
     """Extract semantic-SQL string/template literals passed to ``<call>(...)`` in TS sources.
 
-    Captures backtick, double-, and single-quoted first arguments. Skips literals with
-    JS interpolation (``${...}``) or backslash escapes — those are not statically typeable.
+    Captures backtick, double-, and single-quoted first arguments. Comments are stripped
+    first, so a commented-out ``// query("...")`` is ignored. Skips literals with JS
+    interpolation (``${...}``) or backslash escapes — those are not statically typeable.
     """
     pattern = re.compile(r"\b" + re.escape(call) + r"\s*\(\s*(`[^`]*`|\"[^\"]*\"|'[^']*')", re.DOTALL)
     literals: list[str] = []
     for file in files:
-        text = Path(file).read_text()
+        text = _strip_ts_comments(Path(file).read_text())
         for match in pattern.finditer(text):
             content = match.group(1)[1:-1]
             if not content or "${" in content or "\\" in content:

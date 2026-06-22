@@ -191,18 +191,39 @@ function stripComments(sql) {
   return sql.replace(/--[^\n]*/g, " ").replace(/\/\*[\s\S]*?\*\//g, " ");
 }
 
+// True when keyword `kw` sits at index `i` with SQL word boundaries (not inside an identifier).
+function keywordAt(lower, src, i, kw) {
+  if (!lower.startsWith(kw, i)) return false;
+  const before = i === 0 ? " " : src[i - 1];
+  const after = src[i + kw.length] ?? " ";
+  return /[\s(),]/.test(before) && /[\s(]/.test(after);
+}
+
 function selectList(sql) {
   const clean = stripComments(sql);
   const lower = clean.toLowerCase();
-  const start = lower.indexOf("select");
-  if (start < 0) throw new Error(`not a SELECT: ${sql}`);
+  // Outer SELECT = first `select` at paren depth 0, so a leading CTE body
+  // (`WITH x AS (SELECT ...) SELECT ...`) is skipped and the statement's actual output
+  // projection is typed (not the inner CTE projection).
   let depth = 0;
-  for (let i = start + 6; i < clean.length; i += 1) {
+  let start = -1;
+  for (let i = 0; i < clean.length; i += 1) {
     const ch = clean[i];
     if (ch === "(") depth += 1;
     else if (ch === ")") depth -= 1;
-    else if (depth === 0 && lower.startsWith("from", i) && /\s|\(/.test(clean[i - 1] || " ") && /\s/.test(clean[i + 4] || " ")) {
-      return clean.slice(start + 6, i);
+    else if (depth === 0 && keywordAt(lower, clean, i, "select")) {
+      start = i + 6;
+      break;
+    }
+  }
+  if (start < 0) throw new Error(`not a SELECT: ${sql}`);
+  depth = 0;
+  for (let i = start; i < clean.length; i += 1) {
+    const ch = clean[i];
+    if (ch === "(") depth += 1;
+    else if (ch === ")") depth -= 1;
+    else if (depth === 0 && keywordAt(lower, clean, i, "from")) {
+      return clean.slice(start, i);
     }
   }
   throw new Error(`SELECT without FROM is not supported: ${sql}`);

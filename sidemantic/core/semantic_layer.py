@@ -520,6 +520,7 @@ class SemanticLayer:
         parameters: dict[str, any] | None = None,
         use_preaggregations: bool | None = None,
         post_process: str | None = None,
+        timezone: str | None = None,
     ):
         """Execute a query against the semantic layer.
 
@@ -551,6 +552,7 @@ class SemanticLayer:
             parameters=parameters,
             use_preaggregations=use_preaggregations,
             post_process=post_process,
+            timezone=timezone,
         )
 
         return self.adapter.execute(sql)
@@ -615,6 +617,7 @@ class SemanticLayer:
         use_preaggregations: bool | None = None,
         aliases: dict[str, str] | None = None,
         post_process: str | None = None,
+        timezone: str | None = None,
     ) -> str:
         """Compile a query to SQL without executing.
 
@@ -654,7 +657,8 @@ class SemanticLayer:
         use_preaggs = use_preaggregations if use_preaggregations is not None else self.use_preaggregations
 
         inner_sql = None
-        if self._use_rust_sql_generator:
+        # The Rust generator does not implement query-timezone bucketing; use Python for it.
+        if self._use_rust_sql_generator and not timezone:
             inner_sql = self._compile_with_rust(
                 metrics=metrics,
                 dimensions=dimensions,
@@ -705,6 +709,7 @@ class SemanticLayer:
                 parameters=parameters,
                 use_preaggregations=use_preaggs,
                 aliases=aliases,
+                timezone=timezone,
             )
 
         return self._apply_post_process(inner_sql, post_process)
@@ -742,12 +747,14 @@ class SemanticLayer:
         parameters: dict[str, any] | None,
         use_preaggregations: bool,
         aliases: dict[str, str] | None,
+        timezone: str | None = None,
     ) -> str:
         generator = SQLGenerator(
             self.graph,
             dialect=dialect or self.dialect,
             preagg_database=self.preagg_database,
             preagg_schema=self.preagg_schema,
+            timezone=timezone,
         )
 
         return generator.generate(

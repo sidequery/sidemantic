@@ -61,6 +61,7 @@ class SQLGenerator:
         dialect: str = "duckdb",
         preagg_database: str | None = None,
         preagg_schema: str | None = None,
+        timezone: str | None = None,
     ):
         """Initialize SQL generator.
 
@@ -69,11 +70,14 @@ class SQLGenerator:
             dialect: SQL dialect for generation (default: duckdb)
             preagg_database: Optional database name for pre-aggregation tables
             preagg_schema: Optional schema name for pre-aggregation tables
+            timezone: Optional IANA timezone; when set, time dimensions are bucketed
+                in this timezone (UTC-stored timestamps converted before truncation)
         """
         self.graph = graph
         self.dialect = dialect
         self.preagg_database = preagg_database
         self.preagg_schema = preagg_schema
+        self.timezone = timezone
         self._dialect_instance = _cached_dialect(dialect)
         self._generate_cache: dict[tuple[object, ...], str] = {}
         self._generate_cache_limit = 256
@@ -170,6 +174,28 @@ class SQLGenerator:
         self._generate_cache[cache_key] = sql
         return sql
 
+    def _localize_to_timezone(self, column_expr: str) -> str:
+        """Convert a UTC-stored timestamp to wall-clock time in ``self.timezone``.
+
+        Returns the dialect-appropriate expression so that a subsequent DATE_TRUNC
+        buckets on local-time boundaries. Raises for dialects without timezone support.
+        """
+        tz = self.timezone
+        if self.dialect in {"duckdb", "postgres"}:
+            return f"((({column_expr}) AT TIME ZONE 'UTC') AT TIME ZONE '{tz}')"
+        if self.dialect == "snowflake":
+            return f"CONVERT_TIMEZONE('UTC', '{tz}', {column_expr})"
+        if self.dialect == "bigquery":
+            return f"DATETIME({column_expr}, '{tz}')"
+        if self.dialect in {"spark", "databricks"}:
+            return f"from_utc_timestamp({column_expr}, '{tz}')"
+        if self.dialect == "clickhouse":
+            return f"toTimeZone({column_expr}, '{tz}')"
+        raise ValueError(
+            f"Query timezone is not supported for dialect '{self.dialect}'. "
+            "Supported: duckdb, postgres, snowflake, bigquery, spark, databricks, clickhouse."
+        )
+
     def _date_trunc(self, granularity: str, column_expr: str) -> str:
         """Generate dialect-specific time truncation expression.
 
@@ -180,6 +206,9 @@ class SQLGenerator:
         Returns:
             Time truncation SQL expression appropriate for the dialect
         """
+        if self.timezone:
+            column_expr = self._localize_to_timezone(column_expr)
+
         if self.dialect == "bigquery":
             return f"DATE_TRUNC({column_expr}, {granularity.upper()})"
 

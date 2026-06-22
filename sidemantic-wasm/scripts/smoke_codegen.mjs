@@ -122,6 +122,10 @@ assert(bareRefs.includes('"revenue": number') && bareRefs.includes('"region": st
 const tableAlias = await generateSqlTypes(models, ["SELECT o.revenue, o.region FROM orders AS o"], { wasmUrl: wasmBytes });
 assert(tableAlias.includes('"revenue": number') && tableAlias.includes('"region": string'), `table alias not resolved: ${tableAlias}`);
 
+// 8b. Implicit (no `AS`) projection aliases resolve like the engine + Python `gen sql`.
+const implicitAlias = await generateSqlTypes(models, ["SELECT orders.revenue sales, orders.region FROM orders"], { wasmUrl: wasmBytes });
+assert(implicitAlias.includes('"sales": number') && implicitAlias.includes('"region": string'), `implicit alias not parsed: ${implicitAlias}`);
+
 // 9. A top-level metric whose owner model has a default time dimension: the engine inserts that
 // dimension into the output, so an explicit `AS` alias must stay on the metric (not slide onto the
 // inserted time column). Regression for the positional-overlay misalignment.

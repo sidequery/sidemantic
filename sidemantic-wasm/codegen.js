@@ -216,11 +216,25 @@ function resolveRef(rawRef, from, index) {
 function parseProjections(sql, index) {
   const from = parseFromAliases(sql);
   return splitProjections(selectList(sql)).map((projection) => {
+    // Explicit `expr AS alias`.
     const asMatch = /\s+as\s+([A-Za-z_]\w*)\s*$/i.exec(projection);
-    const rawRef = (asMatch ? projection.slice(0, asMatch.index) : projection).trim();
-    const resolved = resolveRef(rawRef, from, index);
+    let rawRef = (asMatch ? projection.slice(0, asMatch.index) : projection).trim();
+    let alias = asMatch ? asMatch[1] : null;
+    let resolved = resolveRef(rawRef, from, index);
+    // Implicit trailing alias `expr alias` (no AS), e.g. `orders.revenue sales`. Only split when
+    // the leading part resolves on its own, so a single ref is never mistaken for ref+alias. The
+    // engine + Python `gen sql` (via sqlglot) both treat the trailing token as the output alias.
+    if (!resolved && !asMatch) {
+      const implicit = /^(.*\S)\s+([A-Za-z_]\w*)\s*$/.exec(rawRef);
+      const head = implicit && resolveRef(implicit[1].trim(), from, index);
+      if (head) {
+        resolved = head;
+        rawRef = implicit[1].trim();
+        alias = implicit[2];
+      }
+    }
     if (!resolved) throw new Error(`Unknown or unsupported reference '${rawRef}' in: ${sql}`);
-    return { ref: resolved.ref, alias: asMatch ? asMatch[1] : null, kind: resolved.kind };
+    return { ref: resolved.ref, alias, kind: resolved.kind };
   });
 }
 

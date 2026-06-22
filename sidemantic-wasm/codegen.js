@@ -228,40 +228,6 @@ function stubParams(sql, index) {
   return sql.replace(/\{\{\s*(\w+)\s*\}\}/g, (_match, name) => PARAM_STUB[index.paramType.get(name)] || "'x'");
 }
 
-function hasTimeDimension(index, ref) {
-  const dot = ref.indexOf(".");
-  if (dot === -1) return false;
-  const model = index.models.get(ref.slice(0, dot));
-  if (!model) return false;
-  const name = ref.slice(dot + 1).split("__", 1)[0];
-  const dimension = (model.dimensions || []).find((item) => item.name === name);
-  return dimension?.type === "time";
-}
-
-function applyDefaultTimeDimensions(index, metrics, dimensions) {
-  const result = dimensions.slice();
-  const modelsWithTimeDims = new Set(
-    dimensions
-      .filter((dimension) => hasTimeDimension(index, dimension.ref))
-      .map((dimension) => dimension.ref.split(".", 1)[0]),
-  );
-  const seenModels = new Set();
-  for (const metric of metrics) {
-    const dot = metric.ref.indexOf(".");
-    if (dot === -1) continue;
-    const modelName = metric.ref.slice(0, dot);
-    if (seenModels.has(modelName) || modelsWithTimeDims.has(modelName)) continue;
-    seenModels.add(modelName);
-    const model = index.models.get(modelName);
-    if (!model?.default_time_dimension) continue;
-    let ref = `${modelName}.${model.default_time_dimension}`;
-    if (model.default_grain) ref += `__${model.default_grain}`;
-    if (!result.some((dimension) => dimension.ref === ref)) result.push({ ref, alias: null, kind: "dimension" });
-    modelsWithTimeDims.add(modelName);
-  }
-  return result;
-}
-
 function tsObject(pairs) {
   if (!pairs.length) return "{}";
   return "{ " + pairs.map(([name, ts]) => `${JSON.stringify(name)}: ${ts}`).join("; ") + " }";
@@ -289,20 +255,28 @@ export async function generateSqlTypes(models, queries, { wasmUrl } = {}) {
     // the Python `gen sql` path, which parses with sqlglot.)
     runtime.rewrite(models, stubParams(sql, index));
     const projections = parseProjections(sql, index);
-    const dimensions = applyDefaultTimeDimensions(
-      index,
-      projections.filter((projection) => projection.kind === "metric"),
-      projections.filter((projection) => projection.kind === "dimension"),
-    );
     const metrics = projections.filter((projection) => projection.kind === "metric");
-    // resultSchema returns columns in dimensions-then-metrics order, matching this concat;
-    // an explicit `AS` alias overrides the engine's bare-leaf output name.
+    const dimensions = projections.filter((projection) => projection.kind === "dimension");
+    const queryRefs = { metrics: metrics.map((p) => p.ref), dimensions: dimensions.map((p) => p.ref) };
+
+    // The authoritative output: includes any default time dimension the engine inserts for a
+    // metric's owner model (e.g. a top-level metric like `revenue_per_order` pulls in
+    // `orders.created_at__month`), so the row type matches what the query actually returns.
+    const columns = runtime.resultSchema(models, queryRefs);
+    // The same projections with engine-inserted defaults suppressed: aligned 1:1 (dims, then
+    // metrics) with `ordered`, so we can tell which `columns` are explicit projections (and
+    // carry an `AS` alias) vs. engine-inserted dimensions (keep their bare output name).
+    const explicitColumns = runtime.resultSchema(models, { ...queryRefs, skip_default_time_dimensions: true });
     const ordered = [...dimensions, ...metrics];
-    const columns = runtime.resultSchema(models, {
-      metrics: metrics.map((projection) => projection.ref),
-      dimensions: dimensions.map((projection) => projection.ref),
+    let explicitIndex = 0;
+    const rowPairs = columns.map((column) => {
+      if (explicitIndex < explicitColumns.length && column.name === explicitColumns[explicitIndex].name) {
+        const alias = ordered[explicitIndex]?.alias;
+        explicitIndex += 1;
+        return [alias || column.name, pgToTs(column.data_type)];
+      }
+      return [column.name, pgToTs(column.data_type)];
     });
-    const rowPairs = columns.map((column, position) => [ordered[position]?.alias || column.name, pgToTs(column.data_type)]);
     const params = [...new Set([...sql.matchAll(PARAM_RE)].map((match) => match[1]))];
     const paramPairs = params.map((name) => [name, PARAM_TS[index.paramType.get(name)] || "string"]);
     return `  ${JSON.stringify(sql)}: {\n    row: ${tsObject(rowPairs)};\n    params: ${tsObject(paramPairs)};\n  };`;

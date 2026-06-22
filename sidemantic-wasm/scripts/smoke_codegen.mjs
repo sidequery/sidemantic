@@ -122,4 +122,38 @@ assert(bareRefs.includes('"revenue": number') && bareRefs.includes('"region": st
 const tableAlias = await generateSqlTypes(models, ["SELECT o.revenue, o.region FROM orders AS o"], { wasmUrl: wasmBytes });
 assert(tableAlias.includes('"revenue": number') && tableAlias.includes('"region": string'), `table alias not resolved: ${tableAlias}`);
 
+// 9. A top-level metric whose owner model has a default time dimension: the engine inserts that
+// dimension into the output, so an explicit `AS` alias must stay on the metric (not slide onto the
+// inserted time column). Regression for the positional-overlay misalignment.
+const defaultTimeModels = `
+models:
+  - name: orders
+    table: orders
+    primary_key: id
+    default_time_dimension: created_at
+    default_grain: month
+    dimensions:
+      - name: created_at
+        type: time
+        granularity: day
+        sql: created_at
+    metrics:
+      - name: revenue
+        agg: sum
+        sql: amount
+      - name: cnt
+        agg: count
+        sql: id
+metrics:
+  - name: revenue_per_order
+    type: ratio
+    numerator: orders.revenue
+    denominator: orders.cnt
+`;
+const topMetricAliased = await generateSqlTypes(defaultTimeModels, ["SELECT revenue_per_order AS r FROM orders"], { wasmUrl: wasmBytes });
+const topMetricRow = topMetricAliased.split("\n").find((line) => line.includes("row:")) || "";
+assert(/"r": number/.test(topMetricRow), `alias must stay on the metric (number), got: ${topMetricRow}`);
+assert(/"created_at__month": string/.test(topMetricRow), `engine-inserted default time dim must keep its name + type, got: ${topMetricRow}`);
+assert(!/"r": string/.test(topMetricRow), `alias must not slide onto the inserted time column, got: ${topMetricRow}`);
+
 console.log("SMOKE_CODEGEN_OK");

@@ -57,11 +57,6 @@ def _pg_to_ts(pg_type: str) -> str:
 
 def build_client_schema(layer) -> dict[str, Any]:
     """Build the ``schema`` payload: per-field ``kind``/``ts`` (+ grains) keyed by model."""
-    # Graph-level (top-level) metrics can also be registered on their owner model (e.g.
-    # auto-registered complex metric types). Treat them as top-level only — matching the
-    # runtime, which resolves the bare ref — by excluding them from per-model metrics and
-    # surfacing them under topMetrics by their real ref, even if a leaf name collides.
-    top_metric_names = set(layer.graph.metrics)
     models: dict[str, Any] = {}
     for model_name, model in sorted(layer.graph.models.items()):
         dimensions: dict[str, Any] = {}
@@ -75,18 +70,16 @@ def build_client_schema(layer) -> dict[str, Any]:
                 entry["grains"] = list(dimension.supported_granularities or TIME_GRANULARITIES)
             dimensions[dimension.name] = entry
         for metric in sorted(model.metrics, key=lambda item: item.name):
-            if metric.name in top_metric_names:
-                continue  # top-level metric, not an owned model metric
             metrics[metric.name] = {
                 "agg": metric.agg,
                 "ts": _pg_to_ts(get_postgres_type_for_metric(metric.agg)),
             }
         models[model_name] = {"dimensions": dimensions, "metrics": metrics}
 
-    owned_metric_names = {
-        metric.name for model in layer.graph.models.values() for metric in model.metrics
-    } - top_metric_names
-    top_metrics = sorted(name for name in top_metric_names if name not in owned_metric_names)
+    # Every graph-level metric is queryable as a bare ref, so list them all under topMetrics —
+    # even one whose leaf name also exists as a model metric (it stays in that model's metrics
+    # too, so the disambiguating model-qualified form keeps working). The runtime resolves both.
+    top_metrics = sorted(layer.graph.metrics)
     return {"models": models, "topMetrics": top_metrics}
 
 

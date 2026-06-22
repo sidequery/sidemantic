@@ -42,17 +42,12 @@ function byName(a, b) {
 /** Build the `schema` payload from a parsed wasm graph (matches build_client_schema in Python). */
 export function buildClientSchema(graph) {
   const modelList = [...(graph.models || [])].sort(byName);
-  // The wasm runtime assigns every top-level metric to its owner model (for compilation) AND
-  // lists it in top_level_metrics; the Python graph keeps them graph-level only. Treat the
-  // top_level_metrics names as top-level: exclude them from per-model metrics and surface them
-  // under topMetrics by their real (bare/namespaced) ref, so both generators emit the same schema.
+  // The wasm runtime assigns every top-level metric to its owner model (for compilation) and
+  // lists it in top_level_metrics; the Python graph keeps them graph-level only. Drop those from
+  // per-model metrics so the schema matches the Python generator (and so a namespaced top metric
+  // like `finance.x` is not exposed as the invalid `orders.finance.x`); they stay queryable as a
+  // bare ref via topMetrics below.
   const topMetricNames = new Set((graph.top_level_metrics || []).map((metric) => metric.name));
-  const ownedMetricNames = new Set();
-  for (const model of modelList) {
-    for (const metric of model.metrics || []) {
-      if (!topMetricNames.has(metric.name)) ownedMetricNames.add(metric.name);
-    }
-  }
 
   const models = {};
   for (const model of modelList) {
@@ -73,7 +68,9 @@ export function buildClientSchema(graph) {
     models[model.name] = { dimensions, metrics };
   }
 
-  const topMetrics = [...topMetricNames].filter((name) => !ownedMetricNames.has(name)).sort();
+  // List every top-level metric as a bare ref, even one whose leaf name also exists as a model
+  // metric — the runtime resolves both the bare and model-qualified forms.
+  const topMetrics = [...topMetricNames].sort();
 
   return { models, topMetrics };
 }
@@ -199,34 +196,33 @@ function keywordAt(lower, src, i, kw) {
   return /[\s(),]/.test(before) && /[\s(]/.test(after);
 }
 
-function selectList(sql) {
+// The outer statement, starting at its top-level SELECT, skipping a leading CTE
+// (`WITH x AS (SELECT ...) SELECT ...`). Projection + FROM/alias inference run on this so a CTE
+// body's SELECT/FROM is never mistaken for the statement's output query.
+function outerStatement(sql) {
   const clean = stripComments(sql);
   const lower = clean.toLowerCase();
-  // Outer SELECT = first `select` at paren depth 0, so a leading CTE body
-  // (`WITH x AS (SELECT ...) SELECT ...`) is skipped and the statement's actual output
-  // projection is typed (not the inner CTE projection).
   let depth = 0;
-  let start = -1;
   for (let i = 0; i < clean.length; i += 1) {
     const ch = clean[i];
     if (ch === "(") depth += 1;
     else if (ch === ")") depth -= 1;
-    else if (depth === 0 && keywordAt(lower, clean, i, "select")) {
-      start = i + 6;
-      break;
-    }
+    else if (depth === 0 && keywordAt(lower, clean, i, "select")) return clean.slice(i);
   }
-  if (start < 0) throw new Error(`not a SELECT: ${sql}`);
-  depth = 0;
-  for (let i = start; i < clean.length; i += 1) {
-    const ch = clean[i];
+  throw new Error(`not a SELECT: ${sql}`);
+}
+
+// Projection list of a statement that begins with its (outer) SELECT.
+function selectList(statement) {
+  const lower = statement.toLowerCase();
+  let depth = 0;
+  for (let i = 6; i < statement.length; i += 1) {
+    const ch = statement[i];
     if (ch === "(") depth += 1;
     else if (ch === ")") depth -= 1;
-    else if (depth === 0 && keywordAt(lower, clean, i, "from")) {
-      return clean.slice(start, i);
-    }
+    else if (depth === 0 && keywordAt(lower, statement, i, "from")) return statement.slice(6, i);
   }
-  throw new Error(`SELECT without FROM is not supported: ${sql}`);
+  throw new Error(`SELECT without FROM is not supported: ${statement}`);
 }
 
 function splitProjections(list) {
@@ -284,8 +280,9 @@ function resolveRef(rawRef, from, index) {
 }
 
 function parseProjections(sql, index) {
-  const from = parseFromAliases(sql);
-  return splitProjections(selectList(sql)).map((projection) => {
+  const statement = outerStatement(sql);
+  const from = parseFromAliases(statement);
+  return splitProjections(selectList(statement)).map((projection) => {
     // Explicit `expr AS alias`.
     const asMatch = /\s+as\s+([A-Za-z_]\w*)\s*$/i.exec(projection);
     let rawRef = (asMatch ? projection.slice(0, asMatch.index) : projection).trim();

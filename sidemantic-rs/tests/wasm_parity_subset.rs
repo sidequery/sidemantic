@@ -227,6 +227,8 @@ models:
       - name: created_at
         type: time
         granularity: day
+      - name: customer_id
+        type: numeric
     metrics:
       - name: revenue
         agg: sum
@@ -234,6 +236,10 @@ models:
       - name: order_count
         agg: count
         sql: id
+    relationships:
+      - name: customers
+        type: many_to_one
+        foreign_key: customer_id
   - name: customers
     table: customers
     primary_key: id
@@ -274,6 +280,44 @@ models:
         .collect();
     assert!(names.contains(&"orders_region"));
     assert!(names.contains(&"customers_region"));
+}
+
+#[test]
+fn wasm_parity_subset_result_schema_rejects_unjoinable_models() {
+    // Two models with no relationship: result_schema must reject the query the same way
+    // compile()/generate() would (NoJoinPath), not return a schema for an impossible query.
+    let yaml = r#"
+models:
+  - name: orders
+    table: orders
+    primary_key: id
+    dimensions:
+      - name: region
+        type: categorical
+    metrics:
+      - name: revenue
+        agg: sum
+        sql: amount
+  - name: widgets
+    table: widgets
+    primary_key: id
+    dimensions:
+      - name: color
+        type: categorical
+    metrics: []
+"#;
+    // A single-model query still types fine.
+    assert!(result_schema_with_yaml_query(
+        yaml,
+        "metrics: [orders.revenue]\ndimensions: [orders.region]\n"
+    )
+    .is_ok());
+    // A cross-model query with no join path is rejected.
+    assert!(result_schema_with_yaml_query(
+        yaml,
+        "metrics: [orders.revenue]\ndimensions: [widgets.color]\n"
+    )
+    .is_err());
 }
 
 #[test]

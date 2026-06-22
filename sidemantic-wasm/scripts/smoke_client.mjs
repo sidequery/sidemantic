@@ -102,13 +102,13 @@ await serve.run({ metrics: ["orders.revenue"], dimensions: ["orders.status"], fi
 assert(/^SELECT orders\.status, orders\.revenue FROM orders/.test(seen[0]), `serve.run builds semantic SQL, got: ${seen[0]}`);
 assert(/WHERE orders\.status = 'completed'/.test(seen[0]) && /LIMIT 5/.test(seen[0]), "serve.run adds WHERE + LIMIT");
 
-let rejectedSkipDefaultTime = false;
-try {
-  await serve.run({ metrics: ["orders.revenue"], skip_default_time_dimensions: true });
-} catch (error) {
-  rejectedSkipDefaultTime = /skip_default_time_dimensions/.test(error.message);
-}
-assert(rejectedSkipDefaultTime, "serve.run rejects skip_default_time_dimensions because SQL cannot carry it");
+// serve.run is best-effort: the structured client always sets skip_default_time_dimensions,
+// which has no semantic-SQL equivalent, so serve ignores it rather than rejecting every query.
+await serve.run({ metrics: ["orders.revenue"], dimensions: ["orders.status"], skip_default_time_dimensions: true });
+assert(
+  /^SELECT orders\.status, orders\.revenue FROM orders/.test(seen[1]),
+  `serve.run should ignore skip_default_time_dimensions and still build SQL, got: ${seen[1]}`,
+);
 
 const seenWithSchema = [];
 const serveWithSchema = createServeTransport({
@@ -132,7 +132,7 @@ assert(
 );
 
 await serve.runSql("SELECT orders.revenue FROM orders WHERE orders.created_at >= {{ start }}", { start: "2024-01-01" });
-assert(/>= '2024-01-01'/.test(seen[1]), `serve.runSql interpolates params, got: ${seen[1]}`);
+assert(/>= '2024-01-01'/.test(seen.at(-1)), `serve.runSql interpolates params, got: ${seen.at(-1)}`);
 
 assert(interpolateParams("a = {{ n }}", { n: 3 }) === "a = 3", "numbers interpolate unquoted");
 assert(interpolateParams("a = {{ b }}", { b: true }) === "a = TRUE", "booleans interpolate as TRUE/FALSE");

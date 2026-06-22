@@ -9,10 +9,10 @@
 //   const t = createServeTransport({ query: (sql) => pool.query(sql).then((r) => r.rows) });
 //   const sqlClient = createSqlClient({ run: t.runSql });
 //
-// The typed structured client sends skip_default_time_dimensions, but semantic
-// SQL cannot carry that flag to `sidemantic serve`. Use createSqlClient for
-// generated SQL types, or a native/wasm transport that accepts structured
-// payloads for createClient.
+// `run` (structured) is best-effort: the typed client's skip_default_time_dimensions flag has
+// no semantic-SQL equivalent, so the server's own default-time-dimension behavior applies to
+// the result. For exact typed-row semantics use createSqlClient for generated SQL types, or the
+// wasm transport for createClient.
 
 import { interpolateParams } from "./params.js";
 
@@ -30,11 +30,8 @@ function isModelQualifiedRef(ref, schema) {
 }
 
 function buildSemanticSql(query, schema) {
-  if (query.skip_default_time_dimensions) {
-    throw new Error(
-      "serve transport cannot honor skip_default_time_dimensions over SQL; use semantic SQL with explicit row types or a transport that accepts structured payloads",
-    );
-  }
+  // `skip_default_time_dimensions` is a structured-compile flag with no semantic-SQL
+  // equivalent, so it is ignored here (see the best-effort note at the top of the file).
   const dimensions = query.dimensions || [];
   const metrics = query.metrics || [];
   const refs = [...dimensions, ...metrics];

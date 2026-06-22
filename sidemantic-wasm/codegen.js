@@ -177,16 +177,50 @@ function splitProjections(list) {
   return parts.map((part) => part.trim()).filter(Boolean);
 }
 
+const FROM_KEYWORDS = /^(on|where|group|order|limit|having|join|left|right|inner|outer|full|cross|using|as)$/i;
+
+// Map table aliases (and model names) to model names from FROM/JOIN clauses, plus the default
+// (first) model, so bare and aliased projections resolve like the engine's rewriter.
+function parseFromAliases(sql) {
+  const aliases = new Map();
+  let defaultModel = null;
+  const pattern = /\b(?:from|join)\s+([A-Za-z_]\w*)(?:\s+(?:as\s+)?([A-Za-z_]\w*))?/gi;
+  for (const match of stripComments(sql).matchAll(pattern)) {
+    const [, model, alias] = match;
+    if (defaultModel === null) defaultModel = model;
+    aliases.set(model, model);
+    if (alias && !FROM_KEYWORDS.test(alias)) aliases.set(alias, model);
+  }
+  return { aliases, defaultModel };
+}
+
+// Resolve a raw projection ref to a model-qualified ref: `o.revenue` -> `orders.revenue`
+// (table alias), `revenue` -> `orders.revenue` (bare, default model), or a bare top-level metric.
+function resolveRef(rawRef, from, index) {
+  const dot = rawRef.indexOf(".");
+  if (dot !== -1) {
+    const resolved = `${from.aliases.get(rawRef.slice(0, dot)) || rawRef.slice(0, dot)}.${rawRef.slice(dot + 1)}`;
+    if (index.metrics.has(resolved)) return { ref: resolved, kind: "metric" };
+    if (index.dimensions.has(resolved)) return { ref: resolved, kind: "dimension" };
+    return null;
+  }
+  if (from.defaultModel) {
+    const qualified = `${from.defaultModel}.${rawRef}`;
+    if (index.metrics.has(qualified)) return { ref: qualified, kind: "metric" };
+    if (index.dimensions.has(qualified)) return { ref: qualified, kind: "dimension" };
+  }
+  if (index.metrics.has(rawRef)) return { ref: rawRef, kind: "metric" };
+  return null;
+}
+
 function parseProjections(sql, index) {
+  const from = parseFromAliases(sql);
   return splitProjections(selectList(sql)).map((projection) => {
     const asMatch = /\s+as\s+([A-Za-z_]\w*)\s*$/i.exec(projection);
-    const ref = (asMatch ? projection.slice(0, asMatch.index) : projection).trim();
-    const alias = asMatch ? asMatch[1] : null;
-    let kind;
-    if (index.metrics.has(ref)) kind = "metric";
-    else if (index.dimensions.has(ref)) kind = "dimension";
-    else throw new Error(`Unknown or unsupported reference '${ref}' in: ${sql}`);
-    return { ref, alias, kind };
+    const rawRef = (asMatch ? projection.slice(0, asMatch.index) : projection).trim();
+    const resolved = resolveRef(rawRef, from, index);
+    if (!resolved) throw new Error(`Unknown or unsupported reference '${rawRef}' in: ${sql}`);
+    return { ref: resolved.ref, alias: asMatch ? asMatch[1] : null, kind: resolved.kind };
   });
 }
 

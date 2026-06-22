@@ -116,4 +116,10 @@ try {
 }
 assert(rejectedMalformed, "malformed SQL should be rejected at generation time");
 
+// 8. Bare refs and table aliases resolve to the FROM model (like the engine + Python generator).
+const bareRefs = await generateSqlTypes(models, ["SELECT revenue, region FROM orders"], { wasmUrl: wasmBytes });
+assert(bareRefs.includes('"revenue": number') && bareRefs.includes('"region": string'), `bare refs not resolved: ${bareRefs}`);
+const tableAlias = await generateSqlTypes(models, ["SELECT o.revenue, o.region FROM orders AS o"], { wasmUrl: wasmBytes });
+assert(tableAlias.includes('"revenue": number') && tableAlias.includes('"region": string'), `table alias not resolved: ${tableAlias}`);
+
 console.log("SMOKE_CODEGEN_OK");

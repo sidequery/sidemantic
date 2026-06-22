@@ -32,6 +32,9 @@ export function MetricTimeSeries({
 }: MetricTimeSeriesProps) {
   const hint = { format: metric.format, type: metric.type };
   const delta = prevTotal !== undefined ? formatDelta(total, prevTotal) : null;
+  const ariaSummary = `${metric.label} over time. Total ${formatValue(total, hint)}${
+    delta ? `, ${delta.label} versus the previous period` : ""
+}.`;
 
   return (
     <section className="flex flex-col gap-2">
@@ -50,6 +53,7 @@ export function MetricTimeSeries({
           formatValue={(value) => formatValue(value, hint)}
           formatAxis={(value) => formatCompact(value, hint)}
           comparisonLabel="Prev period"
+          ariaLabel={ariaSummary}
           onBrush={onBrush}
         />
       )}

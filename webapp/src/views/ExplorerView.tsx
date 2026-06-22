@@ -64,6 +64,10 @@ export function ExplorerView() {
     rankMetric && timeRef && prevFilters ? metricSeries([rankMetric.ref], timeRef, state.grain, prevFilters) : null,
   );
 
+  // Surface a failure from any strip query (totals/series/comparison/prev), not just totals, so a
+  // backend error on the chart queries isn't silently shown as an empty chart.
+  const queryError = totals.error ?? series.error ?? comparison.error ?? prevSeries.error;
+
   if (!model) return <div className="p-4"><EmptyState message="No model available in this semantic layer." /></div>;
 
   const leaderboardDims = model.dimensions.filter((dim) => dim.type !== "time");
@@ -109,7 +113,7 @@ export function ExplorerView() {
 
   return (
     <div className="flex flex-col gap-4 p-4">
-      {totals.error ? <ErrorState message={totals.error} /> : null}
+      {queryError ? <ErrorState message={queryError} /> : null}
 
       {/* KPI scorecard strip */}
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6" data-testid="metric-totals">

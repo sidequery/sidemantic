@@ -26,12 +26,12 @@ use crate::runtime::{
     relationship_foreign_key_columns_with_yaml, relationship_primary_key_columns_with_yaml,
     relationship_related_key_with_yaml, relationship_sql_expr_with_yaml, relative_date_to_range,
     render_sql_template, resolve_metric_inheritance, resolve_model_inheritance_with_yaml,
-    rewrite_with_yaml, segment_get_sql_with_yaml, summarize_preaggregation_patterns,
-    time_comparison_offset_interval, time_comparison_sql_offset, trailing_period_sql_interval,
-    validate_engine_refresh_sql_compatibility, validate_metric_payload, validate_model_payload,
-    validate_models_yaml, validate_parameter_payload, validate_query_references_with_yaml,
-    validate_query_with_yaml, validate_table_calculation_payload,
-    validate_table_formula_expression,
+    result_schema_with_yaml_query, rewrite_with_yaml, segment_get_sql_with_yaml,
+    summarize_preaggregation_patterns, time_comparison_offset_interval, time_comparison_sql_offset,
+    trailing_period_sql_interval, validate_engine_refresh_sql_compatibility,
+    validate_metric_payload, validate_model_payload, validate_models_yaml,
+    validate_parameter_payload, validate_query_references_with_yaml, validate_query_with_yaml,
+    validate_table_calculation_payload, validate_table_formula_expression,
 };
 
 fn wasm_error(err: impl std::fmt::Display) -> JsValue {
@@ -41,6 +41,11 @@ fn wasm_error(err: impl std::fmt::Display) -> JsValue {
 #[wasm_bindgen]
 pub fn wasm_compile_with_yaml_query(yaml: &str, query_yaml: &str) -> Result<String, JsValue> {
     compile_with_yaml_query(yaml, query_yaml).map_err(wasm_error)
+}
+
+#[wasm_bindgen]
+pub fn wasm_result_schema_with_yaml_query(yaml: &str, query: &str) -> Result<String, JsValue> {
+    result_schema_with_yaml_query(yaml, query).map_err(wasm_error)
 }
 
 #[wasm_bindgen]

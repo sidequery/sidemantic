@@ -7,6 +7,7 @@ import initWasm, {
   wasm_compile_with_yaml_query,
   wasm_generate_catalog_metadata_with_yaml,
   wasm_load_graph_with_yaml,
+  wasm_result_schema_with_yaml_query,
   wasm_rewrite_with_yaml,
   wasm_validate_query_with_yaml,
 } from "./wasm/sidemantic.js";
@@ -51,6 +52,9 @@ export async function createSidemanticRuntime(options = {}) {
     },
     rewrite(models, sql) {
       return wasm_rewrite_with_yaml(models, sql);
+    },
+    resultSchema(models, query) {
+      return JSON.parse(wasm_result_schema_with_yaml_query(models, toQueryYaml(query)));
     },
     loadGraph(models) {
       return JSON.parse(wasm_load_graph_with_yaml(models));

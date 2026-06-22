@@ -189,6 +189,21 @@ def test_gen_types_cli_accepts_model_file(tmp_path):
     assert "export const schema" in result.output
 
 
+def test_gen_types_cli_model_file_ignores_siblings(tmp_path):
+    # A single-file -m must load only that file: a sibling model is not pulled in,
+    # and an unrelated broken draft beside it does not fail the valid request.
+    models_dir = _write_models(tmp_path)
+    (models_dir / "customers.yml").write_text(
+        "models:\n  - name: customers\n    table: customers\n    primary_key: id\n"
+        "    dimensions: [{name: tier, type: categorical, sql: tier}]\n"
+    )
+    (models_dir / "broken.yml").write_text("models:\n  - name: oops\n    table: [unclosed\n")
+    result = runner.invoke(app, ["gen", "types", "-m", str(models_dir / "models.yml"), "--no-yaml"])
+    assert result.exit_code == 0, result.output
+    assert '"orders"' in result.output
+    assert "customers" not in result.output
+
+
 # --- gen sql (sqlx-style typed semantic SQL) ---
 
 

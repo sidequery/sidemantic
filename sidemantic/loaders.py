@@ -315,6 +315,31 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path, *, strict
     layer.graph.build_adjacency()
 
 
+def load_from_file(layer: "SemanticLayer", file: str | Path, *, strict: bool = True) -> None:
+    """Load semantic definitions from a single file, ignoring sibling files.
+
+    Reuses :func:`load_from_directory`'s format auto-detection by parsing the file
+    in isolation (a temp directory holding only a copy of it), so an unrelated
+    broken file beside it cannot fail the load and sibling models are not pulled
+    in. Multi-file projects (TMDL/SML/Graphene) need their directory layout —
+    pass the project directory to :func:`load_from_directory` for those.
+
+    Args:
+        layer: SemanticLayer to add models to
+        file: Path to a single semantic-layer definition file
+        strict: If True, fail on parse errors. If False, log and continue.
+    """
+    import shutil
+    import tempfile
+
+    file = Path(file)
+    if not file.is_file():
+        raise ValueError(f"File {file} does not exist")
+    with tempfile.TemporaryDirectory() as tmp:
+        shutil.copy2(file, Path(tmp) / file.name)
+        load_from_directory(layer, tmp, strict=strict)
+
+
 def _load_graphene_project(
     directory: Path,
     all_models: dict,

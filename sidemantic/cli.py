@@ -135,7 +135,14 @@ def _load_query_layer(
     else:
         layer = SemanticLayer(**layer_kwargs)
 
-    load_from_directory(layer, str(models.parent if models.is_file() else models))
+    if models.is_file():
+        # Load exactly the requested file, not its whole parent directory: a
+        # sibling model or an unrelated broken draft must not pollute or fail the load.
+        from sidemantic.loaders import load_from_file
+
+        load_from_file(layer, models)
+    else:
+        load_from_directory(layer, str(models))
     if not layer.graph.models:
         raise ValueError("No models found")
     return layer

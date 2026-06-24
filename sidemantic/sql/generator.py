@@ -586,6 +586,14 @@ class SQLGenerator:
         segments = segments or []
         parameters = parameters or {}
         aliases = aliases or {}
+
+        # Pre-aggregations are materialized with UTC time buckets, so a timezone-bucketed
+        # query cannot be served from a rollup without returning wrong (UTC) buckets. Force a
+        # live query whenever a timezone is set; this covers direct SQLGenerator use as well
+        # as the SemanticLayer.compile() path. (Computed before the cache key below.)
+        if self.timezone:
+            use_preaggregations = False
+
         cache_key = self._generate_cache_key(
             metrics,
             dimensions,

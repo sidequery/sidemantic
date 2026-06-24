@@ -91,3 +91,30 @@ def test_timezone_bypasses_preaggregation():
     )
     assert "preagg" not in tz.lower()
     assert "AT TIME ZONE" in tz
+
+
+def test_generator_timezone_bypasses_preagg_routing():
+    """The bypass is enforced in SQLGenerator itself, covering direct (non-compile) use."""
+    from sidemantic.core.pre_aggregation import PreAggregation
+
+    g = SemanticGraph()
+    g.add_model(
+        Model(
+            name="ev",
+            table="ev",
+            primary_key="id",
+            dimensions=[Dimension(name="ts", type="time", sql="ts", granularity="day")],
+            metrics=[Metric(name="total", agg="sum", sql="amt")],
+            pre_aggregations=[
+                PreAggregation(name="daily", measures=["total"], dimensions=[], time_dimension="ts", granularity="day")
+            ],
+        )
+    )
+    routed = SQLGenerator(g).generate(metrics=["ev.total"], dimensions=["ev.ts__day"], use_preaggregations=True)
+    assert "preagg" in routed.lower()
+
+    tz = SQLGenerator(g, timezone="America/New_York").generate(
+        metrics=["ev.total"], dimensions=["ev.ts__day"], use_preaggregations=True
+    )
+    assert "preagg" not in tz.lower()
+    assert "AT TIME ZONE" in tz

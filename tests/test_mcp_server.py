@@ -32,8 +32,6 @@ from sidemantic.mcp_server import (
 
 @pytest.fixture
 def stub_chart_rendering(monkeypatch):
-    import sidemantic.mcp_server as mcp_mod
-
     def fake_make_chart(data, chart_type="auto", title=None, width=600, height=400):
         return {
             "mark": "bar" if chart_type == "auto" else chart_type,
@@ -45,8 +43,6 @@ def stub_chart_rendering(monkeypatch):
 
     monkeypatch.setattr("sidemantic.charts.create_chart", fake_make_chart)
     monkeypatch.setattr("sidemantic.charts.chart_to_vega", lambda chart: chart)
-    monkeypatch.setattr("sidemantic.charts.chart_to_base64_png", lambda _chart: "data:image/png;base64,ZmFrZQ==")
-    monkeypatch.setattr(mcp_mod, "_apps_enabled", False)
 
 
 @pytest.fixture
@@ -299,7 +295,6 @@ def test_create_chart_basic(demo_layer, stub_chart_rendering):
     # Check all expected keys are present
     assert "sql" in result
     assert "vega_spec" in result
-    assert "png_base64" in result
     assert "row_count" in result
 
     # Verify SQL was generated
@@ -309,9 +304,6 @@ def test_create_chart_basic(demo_layer, stub_chart_rendering):
     # Verify vega spec is a dict
     assert isinstance(result["vega_spec"], dict)
     assert "data" in result["vega_spec"]
-
-    # Verify PNG is base64 encoded
-    assert result["png_base64"].startswith("data:image/png;base64,")
 
     # Verify row count
     assert result["row_count"] == 2  # Alice and Bob
@@ -804,27 +796,3 @@ models:
         import shutil
 
         shutil.rmtree(tmpdir)
-
-
-def test_create_chart_returns_ui_resource_when_apps_enabled(monkeypatch, demo_layer, stub_chart_rendering):
-    import sidemantic.mcp_server as mcp_mod
-
-    def fake_resource(spec):
-        return {"resource": spec["mark"]}
-
-    monkeypatch.setattr("sidemantic.apps.create_chart_resource", fake_resource)
-
-    old_value = mcp_mod._apps_enabled
-    mcp_mod._apps_enabled = True
-    try:
-        result = create_chart(
-            dimensions=["orders.customer_name"],
-            metrics=["orders.total_revenue"],
-            chart_type="bar",
-        )
-    finally:
-        mcp_mod._apps_enabled = old_value
-
-    assert isinstance(result, list)
-    assert result[0]["row_count"] == 2
-    assert result[1] == {"resource": "bar"}

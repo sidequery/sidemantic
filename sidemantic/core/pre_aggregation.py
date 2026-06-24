@@ -57,7 +57,7 @@ class PreAggregation(BaseModel):
     measures: list[str] | None = Field(None, description="Measures to pre-aggregate (e.g., ['count', 'revenue'])")
     dimensions: list[str] | None = Field(None, description="Dimensions to group by (e.g., ['status', 'region'])")
     time_dimension: str | None = Field(None, description="Time dimension for temporal grouping")
-    granularity: Literal["hour", "day", "week", "month", "quarter", "year"] | None = Field(
+    granularity: Literal["second", "minute", "hour", "day", "week", "month", "quarter", "year"] | None = Field(
         None, description="Time granularity for aggregation"
     )
 

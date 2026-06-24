@@ -1054,6 +1054,8 @@
           "anyOf": [
             {
               "enum": [
+                "second",
+                "minute",
                 "hour",
                 "day",
                 "week",
@@ -3115,6 +3117,8 @@
                 "anyOf": [
                   {
                     "enum": [
+                      "second",
+                      "minute",
                       "hour",
                       "day",
                       "week",

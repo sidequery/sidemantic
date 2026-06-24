@@ -147,3 +147,8 @@ def test_to_range_new_forms():
     assert r is not None and "INTERVAL '9 months'" in r and r.startswith("d >=")
     # N-aware width also fixes the pre-existing last-N-months single-window bug
     assert "INTERVAL '3 months'" in RelativeDateRange.to_range("last 3 months", "d")
+    # A bare "next week" is the whole next calendar week (bounded), not the rest of this week
+    nw = RelativeDateRange.to_range("next week", "d")
+    assert nw is not None and "DATE_TRUNC('week'" in nw and "+ INTERVAL '1 week'" in nw and " < " in nw
+    # ...and it is NOT the open-ended ">= today AND <= start_of_next_week" form
+    assert ">= CURRENT_DATE AND" not in nw

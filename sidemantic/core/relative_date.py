@@ -115,27 +115,31 @@ class RelativeDateRange:
         """
         expr = expr.lower().strip()
 
-        # "last N days/weeks" - open-ended lower bound (>= now - N)
-        if expr.startswith("last ") and any(unit in expr for unit in ["day", "week"]):
+        # "last N days/weeks" (numeric only) - open-ended lower bound (>= now - N)
+        if re.match(r"^last\s+\d+\s+(?:day|week)s?$", expr):
             sql_expr = cls.parse(expr, dialect)
             if sql_expr:
                 return f"{column} >= {sql_expr}"
 
-        # "next N days/weeks" - forward window from today (now .. now + N)
-        if expr.startswith("next ") and any(unit in expr for unit in ["day", "week"]):
+        # "next N days/weeks" (numeric only) - forward window from today (now .. now + N).
+        # Numeric-only so a bare "next week"/"next day" falls through to the bounded branch.
+        if re.match(r"^next\s+\d+\s+(?:day|week)s?$", expr):
             sql_expr = cls.parse(expr, dialect)
             if sql_expr:
                 return f"{column} >= CURRENT_DATE AND {column} <= {sql_expr}"
 
-        # "this/last/next [N] month/quarter/year" - bounded range spanning N periods.
-        # The window width is N units (so "last 3 months" covers 3 months, not 1).
-        period_match = re.match(r"^(?:this|last|next)\s+(?:(\d+)\s+)?(month|quarter|year)s?$", expr)
+        # "this/last/next [N] week/month/quarter/year" - bounded range spanning N periods.
+        # The window width is N units (so "last 3 months" covers 3 months, not 1; and a bare
+        # "next week" is the whole next calendar week, not the remainder of the current one).
+        period_match = re.match(r"^(?:this|last|next)\s+(?:(\d+)\s+)?(week|month|quarter|year)s?$", expr)
         if period_match:
             start_sql = cls.parse(expr, dialect)
             if start_sql:
                 count = int(period_match.group(1)) if period_match.group(1) else 1
                 unit = period_match.group(2)
-                if unit == "year":
+                if unit == "week":
+                    width = f"{count} week" + ("s" if count != 1 else "")
+                elif unit == "year":
                     width = f"{count} year" + ("s" if count != 1 else "")
                 else:
                     months = count if unit == "month" else count * 3

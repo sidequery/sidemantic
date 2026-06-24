@@ -21,9 +21,10 @@ _AGG_NAME_MAP = {
     "max": "max",
     "stddev": "stddev",
     "stddevpop": "stddev_pop",
-    "stddevsamp": "stddev_samp",
+    "stddevsamp": "stddev",  # sample stddev == the default STDDEV agg (no stddev_samp enum member)
     "variance": "variance",
-    "variancepop": "var_pop",
+    "variancepop": "variance_pop",
+    "variancesamp": "variance",  # sample variance == the default VARIANCE agg
     "median": "median",
     "approxdistinct": "approx_count_distinct",
     # approx_quantile takes a percentile arg sidemantic can't model as a bare agg;

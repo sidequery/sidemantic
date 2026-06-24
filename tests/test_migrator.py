@@ -293,6 +293,11 @@ def test_approx_count_distinct_normalizes_consistently_across_paths():
     node = sqlglot.parse_one("APPROX_COUNT_DISTINCT(x)").find(exp.AggFunc)
     assert _normalize_agg_name(node) == "approx_count_distinct"
 
+    # Variance/stddev sample variants must normalize to valid Metric.agg enum names
+    # (the enum has variance_pop, not var_pop, and no stddev_samp member).
+    assert _normalize_agg_name(sqlglot.parse_one("VAR_POP(x)").find(exp.AggFunc)) == "variance_pop"
+    assert _normalize_agg_name(sqlglot.parse_one("STDDEV_SAMP(x)").find(exp.AggFunc)) == "stddev"
+
     layer = SemanticLayer(auto_register=False)
     analyzer = Migrator(layer)
     report = analyzer.analyze_queries(

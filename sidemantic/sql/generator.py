@@ -77,6 +77,16 @@ class SQLGenerator:
         self.dialect = dialect
         self.preagg_database = preagg_database
         self.preagg_schema = preagg_schema
+        # The timezone is interpolated into SQL string literals (AT TIME ZONE '...', etc.),
+        # so it must not contain quote/escape characters. Restrict to IANA-name characters
+        # to prevent SQL injection from a request- or preference-supplied value; the database
+        # validates that the zone actually exists at execution time.
+        if timezone is not None and not all(c.isalnum() or c in "_+-/" for c in timezone):
+            raise ValueError(
+                f"Invalid timezone {timezone!r}: expected an IANA timezone name like "
+                "'America/New_York' (letters, digits, '_', '/', '+', '-'). The value is "
+                "embedded into generated SQL, so other characters are rejected."
+            )
         self.timezone = timezone
         self._dialect_instance = _cached_dialect(dialect)
         self._generate_cache: dict[tuple[object, ...], str] = {}

@@ -118,3 +118,20 @@ def test_generator_timezone_bypasses_preagg_routing():
     )
     assert "preagg" not in tz.lower()
     assert "AT TIME ZONE" in tz
+
+
+def test_timezone_value_is_validated_against_injection():
+    """The timezone is embedded into SQL literals, so non-IANA characters are rejected."""
+    g = SemanticGraph()
+    with pytest.raises(ValueError, match="Invalid timezone"):
+        SQLGenerator(g, timezone="UTC'; DROP TABLE x; --")
+    with pytest.raises(ValueError, match="Invalid timezone"):
+        SQLGenerator(g, timezone="America/New York")  # space is not allowed
+    # Valid IANA-style names (including multi-level and Etc/GMT offsets) are accepted.
+    SQLGenerator(g, timezone="America/Argentina/Buenos_Aires")
+    SQLGenerator(g, timezone="Etc/GMT+5")
+
+    # The public query API rejects it too (validated when the generator is built).
+    layer = _layer()
+    with pytest.raises(ValueError, match="Invalid timezone"):
+        layer.compile(metrics=["ev.total"], dimensions=["ev.ts__day"], timezone="x'; --")

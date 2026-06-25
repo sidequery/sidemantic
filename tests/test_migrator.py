@@ -278,3 +278,40 @@ def test_coverage_analyzer_with_execution():
     # Verify the rewrite is correct
     assert "orders.status" in analysis.suggested_rewrite
     assert "orders.total_revenue" in analysis.suggested_rewrite
+
+
+def test_approx_count_distinct_normalizes_consistently_across_paths():
+    """approx_count_distinct must normalize identically in the base, derived, and window
+    paths. Regression: a cross-model derived expression previously recorded the derived
+    part as the raw 'approxdistinct', which could not resolve against the generated
+    'approx_count_distinct' base metric (dangling reference in the rewritten query)."""
+    import sqlglot
+    from sqlglot import exp
+
+    from sidemantic.core.migrator import _normalize_agg_name
+
+    node = sqlglot.parse_one("APPROX_COUNT_DISTINCT(x)").find(exp.AggFunc)
+    assert _normalize_agg_name(node) == "approx_count_distinct"
+
+    # Variance/stddev sample variants must normalize to valid Metric.agg enum names
+    # (the enum has variance_pop, not var_pop, and no stddev_samp member).
+    assert _normalize_agg_name(sqlglot.parse_one("VAR_POP(x)").find(exp.AggFunc)) == "variance_pop"
+    assert _normalize_agg_name(sqlglot.parse_one("STDDEV_SAMP(x)").find(exp.AggFunc)) == "stddev"
+
+    layer = SemanticLayer(auto_register=False)
+    analyzer = Migrator(layer)
+    report = analyzer.analyze_queries(
+        [
+            "SELECT APPROX_COUNT_DISTINCT(o.user_id) / COUNT(DISTINCT c.id) AS ratio "
+            "FROM orders o JOIN customers c ON o.customer_id = c.customer_id"
+        ]
+    )
+    models = analyzer.generate_models(report)
+    graph_metrics = analyzer.generate_graph_metrics(report, models)
+    rewritten = analyzer.generate_rewritten_queries(report)
+
+    blob = (str(models) + str(graph_metrics) + str(rewritten)).lower()
+    # The un-normalized sqlglot class name must never leak into generated output.
+    assert "approxdistinct" not in blob
+    # The normalized agg name is present (the base metric was written).
+    assert "approx_count_distinct" in blob

@@ -61,6 +61,7 @@ class SQLGenerator:
         dialect: str = "duckdb",
         preagg_database: str | None = None,
         preagg_schema: str | None = None,
+        timezone: str | None = None,
     ):
         """Initialize SQL generator.
 
@@ -69,11 +70,24 @@ class SQLGenerator:
             dialect: SQL dialect for generation (default: duckdb)
             preagg_database: Optional database name for pre-aggregation tables
             preagg_schema: Optional schema name for pre-aggregation tables
+            timezone: Optional IANA timezone; when set, time dimensions are bucketed
+                in this timezone (UTC-stored timestamps converted before truncation)
         """
         self.graph = graph
         self.dialect = dialect
         self.preagg_database = preagg_database
         self.preagg_schema = preagg_schema
+        # The timezone is interpolated into SQL string literals (AT TIME ZONE '...', etc.),
+        # so it must not contain quote/escape characters. Restrict to IANA-name characters
+        # to prevent SQL injection from a request- or preference-supplied value; the database
+        # validates that the zone actually exists at execution time.
+        if timezone is not None and not all(c.isalnum() or c in "_+-/" for c in timezone):
+            raise ValueError(
+                f"Invalid timezone {timezone!r}: expected an IANA timezone name like "
+                "'America/New_York' (letters, digits, '_', '/', '+', '-'). The value is "
+                "embedded into generated SQL, so other characters are rejected."
+            )
+        self.timezone = timezone
         self._dialect_instance = _cached_dialect(dialect)
         self._generate_cache: dict[tuple[object, ...], str] = {}
         self._generate_cache_limit = 256
@@ -81,7 +95,11 @@ class SQLGenerator:
     @staticmethod
     def _agg_sql_name(agg: str) -> str:
         """Return the SQL function name for a normalized metric aggregation."""
-        return {"variance_pop": "VAR_POP", "var_pop": "VAR_POP"}.get(agg, agg.upper())
+        return {
+            "variance_pop": "VAR_POP",
+            "var_pop": "VAR_POP",
+            "approx_count_distinct": "APPROX_COUNT_DISTINCT",
+        }.get(agg, agg.upper())
 
     @staticmethod
     def _model_from_clause(model) -> str:
@@ -166,6 +184,28 @@ class SQLGenerator:
         self._generate_cache[cache_key] = sql
         return sql
 
+    def _localize_to_timezone(self, column_expr: str) -> str:
+        """Convert a UTC-stored timestamp to wall-clock time in ``self.timezone``.
+
+        Returns the dialect-appropriate expression so that a subsequent DATE_TRUNC
+        buckets on local-time boundaries. Raises for dialects without timezone support.
+        """
+        tz = self.timezone
+        if self.dialect in {"duckdb", "postgres"}:
+            return f"((({column_expr}) AT TIME ZONE 'UTC') AT TIME ZONE '{tz}')"
+        if self.dialect == "snowflake":
+            return f"CONVERT_TIMEZONE('UTC', '{tz}', {column_expr})"
+        if self.dialect == "bigquery":
+            return f"DATETIME({column_expr}, '{tz}')"
+        if self.dialect in {"spark", "databricks"}:
+            return f"from_utc_timestamp({column_expr}, '{tz}')"
+        if self.dialect == "clickhouse":
+            return f"toTimeZone({column_expr}, '{tz}')"
+        raise ValueError(
+            f"Query timezone is not supported for dialect '{self.dialect}'. "
+            "Supported: duckdb, postgres, snowflake, bigquery, spark, databricks, clickhouse."
+        )
+
     def _date_trunc(self, granularity: str, column_expr: str) -> str:
         """Generate dialect-specific time truncation expression.
 
@@ -176,6 +216,9 @@ class SQLGenerator:
         Returns:
             Time truncation SQL expression appropriate for the dialect
         """
+        if self.timezone:
+            column_expr = self._localize_to_timezone(column_expr)
+
         if self.dialect == "bigquery":
             return f"DATE_TRUNC({column_expr}, {granularity.upper()})"
 
@@ -553,6 +596,14 @@ class SQLGenerator:
         segments = segments or []
         parameters = parameters or {}
         aliases = aliases or {}
+
+        # Pre-aggregations are materialized with UTC time buckets, so a timezone-bucketed
+        # query cannot be served from a rollup without returning wrong (UTC) buckets. Force a
+        # live query whenever a timezone is set; this covers direct SQLGenerator use as well
+        # as the SemanticLayer.compile() path. (Computed before the cache key below.)
+        if self.timezone:
+            use_preaggregations = False
+
         cache_key = self._generate_cache_key(
             metrics,
             dimensions,
@@ -1692,7 +1743,7 @@ class SQLGenerator:
                 # Build the base SQL expression for the measure
                 if measure.agg == "count" and (not measure.sql or measure.sql == "*"):
                     base_sql = "1"
-                elif measure.agg == "count_distinct" and not measure.sql:
+                elif measure.agg in ("count_distinct", "approx_count_distinct") and not measure.sql:
                     pk_cols = model.primary_key_columns
                     if len(pk_cols) == 1:
                         base_sql = self._quote_identifier(pk_cols[0])
@@ -2930,7 +2981,7 @@ class SQLGenerator:
         agg_func = measure.agg.upper()
         raw_col = self._cte_ref(model_name, f"{measure.name}_raw")
 
-        if agg_func == "COUNT_DISTINCT":
+        if agg_func in ("COUNT_DISTINCT", "APPROX_COUNT_DISTINCT"):
             return self._build_bsl_count_distinct_total_sql(model_name, measure)
         if agg_func == "COUNT":
             return f"SUM(COUNT({raw_col})) OVER ()"
@@ -2953,6 +3004,8 @@ class SQLGenerator:
 
         if agg_func == "COUNT_DISTINCT":
             expr = f"COUNT(DISTINCT {raw_col})"
+        elif agg_func == "APPROX_COUNT_DISTINCT":
+            expr = f"APPROX_COUNT_DISTINCT({raw_col})"
         else:
             expr = self._build_measure_aggregation_sql(model_name, measure)
             expr = expr.replace(self._cte_ref(model_name, f"{measure.name}_raw"), raw_col)
@@ -2974,9 +3027,13 @@ class SQLGenerator:
         if model_name not in query_model_names:
             return self._build_measure_total_subquery_sql(model_name, measure)
 
-        query = select(f"COUNT(DISTINCT {self._cte_ref(model_name, f'{measure.name}_raw')})").from_(
-            self._quote_identifier(self._cte_name(base_model_name))
+        raw_ref = self._cte_ref(model_name, f"{measure.name}_raw")
+        distinct_expr = (
+            f"APPROX_COUNT_DISTINCT({raw_ref})"
+            if measure.agg == "approx_count_distinct"
+            else f"COUNT(DISTINCT {raw_ref})"
         )
+        query = select(distinct_expr).from_(self._quote_identifier(self._cte_name(base_model_name)))
         query = self._add_join_paths_to_query(query, base_model_name, other_models, models_with_filters)
         where_filters, _ = self._split_where_having_filters(filters, query_model_names)
         query = self._add_where_filters_to_query(query, where_filters, query_model_names)

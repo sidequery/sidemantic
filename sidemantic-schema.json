@@ -371,6 +371,7 @@
                 "sum",
                 "count",
                 "count_distinct",
+                "approx_count_distinct",
                 "avg",
                 "min",
                 "max",
@@ -1114,6 +1115,8 @@
           "anyOf": [
             {
               "enum": [
+                "second",
+                "minute",
                 "hour",
                 "day",
                 "week",
@@ -1594,6 +1597,7 @@
                   "sum",
                   "count",
                   "count_distinct",
+                  "approx_count_distinct",
                   "avg",
                   "min",
                   "max",
@@ -2586,6 +2590,7 @@
                       "sum",
                       "count",
                       "count_distinct",
+                      "approx_count_distinct",
                       "avg",
                       "min",
                       "max",
@@ -3250,6 +3255,8 @@
                 "anyOf": [
                   {
                     "enum": [
+                      "second",
+                      "minute",
                       "hour",
                       "day",
                       "week",

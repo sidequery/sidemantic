@@ -17,6 +17,8 @@ GRANULARITY_HIERARCHY = {
     "week": 4,
     "day": 5,
     "hour": 6,
+    "minute": 7,
+    "second": 8,
 }
 
 
@@ -128,7 +130,7 @@ class PreAggregationMatcher:
             if not metric:
                 return False
 
-            if metric.agg == "count_distinct":
+            if metric.agg in ("count_distinct", "approx_count_distinct"):
                 if metric.name not in (preagg.measures or []):
                     return False
                 if not self._is_exact_grain(preagg, query_dimensions, query_granularity):
@@ -242,9 +244,11 @@ class PreAggregationMatcher:
             count_measure = self._find_count_measure_for_avg(query_metric, preagg_measures)
             return count_measure is not None
 
-        if agg_type == "count_distinct":
-            # COUNT DISTINCT is NOT derivable from pre-aggregated data
-            # (would need HyperLogLog or storing exact values)
+        if agg_type in ("count_distinct", "approx_count_distinct"):
+            # COUNT DISTINCT is NOT derivable from re-aggregated pre-agg rows
+            # (would need HyperLogLog or storing exact values). approx_count_distinct
+            # would be additive if we stored HLL sketches, but sidemantic materializes a
+            # plain integer, so it is not safely rollup-derivable either.
             return False
 
         # Default: allow if present
@@ -466,15 +470,15 @@ class PreAggregationMatcher:
             if not metric:
                 measure_details.append(f"{metric_name} (not found)")
                 measures_ok = False
-            elif metric.agg == "count_distinct" and metric.name in (preagg.measures or []):
+            elif metric.agg in ("count_distinct", "approx_count_distinct") and metric.name in (preagg.measures or []):
                 if self._is_exact_grain(preagg, query_dimensions, query_granularity):
-                    measure_details.append(f"{metric_name} (count_distinct exact grain)")
+                    measure_details.append(f"{metric_name} ({metric.agg} exact grain)")
                 else:
                     measure_details.append(f"{metric_name} (count_distinct_not_rollup_safe)")
                     measures_ok = False
             elif not self._is_measure_derivable(metric, preagg):
                 agg = metric.agg or "complex"
-                if agg == "count_distinct":
+                if agg in ("count_distinct", "approx_count_distinct"):
                     measure_details.append(f"{metric_name} (count_distinct_not_rollup_safe)")
                 elif agg == "avg":
                     measure_details.append(f"{metric_name} (avg needs companion count measure)")

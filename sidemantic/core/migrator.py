@@ -9,6 +9,35 @@ from sqlglot import exp
 
 from sidemantic.core.semantic_layer import SemanticLayer
 
+# Single source of truth: maps a sqlglot AggFunc class name (lowercased) to the
+# sidemantic agg name. Used by every migration path (base, derived, window) so the
+# same aggregate normalizes identically everywhere and derived references resolve
+# against the generated base metrics.
+_AGG_NAME_MAP = {
+    "sum": "sum",
+    "avg": "avg",
+    "count": "count",
+    "min": "min",
+    "max": "max",
+    "stddev": "stddev",
+    "stddevpop": "stddev_pop",
+    "stddevsamp": "stddev",  # sample stddev == the default STDDEV agg (no stddev_samp enum member)
+    "variance": "variance",
+    "variancepop": "variance_pop",
+    "variancesamp": "variance",  # sample variance == the default VARIANCE agg
+    "median": "median",
+    "approxdistinct": "approx_count_distinct",
+    # approx_quantile takes a percentile arg sidemantic can't model as a bare agg;
+    # fall back to median (the 0.5 quantile). NOTE: a non-0.5 percentile (e.g. p90)
+    # is silently downgraded to the median here.
+    "approxquantile": "median",
+}
+
+
+def _normalize_agg_name(node) -> str:
+    """Normalize a sqlglot aggregate node's class name to a sidemantic agg name."""
+    return _AGG_NAME_MAP.get(type(node).__name__.lower(), type(node).__name__.lower())
+
 
 @dataclass
 class QueryAnalysis:
@@ -382,26 +411,7 @@ class Migrator:
 
                 # Handle aggregations (even if part of derived metrics - we need base metrics for model generation)
                 for agg in aggs:
-                    agg_type_name = type(agg).__name__.lower()
-
-                    # Map common aggregation class names to standard names
-                    agg_name_map = {
-                        "sum": "sum",
-                        "avg": "avg",
-                        "count": "count",
-                        "min": "min",
-                        "max": "max",
-                        "stddev": "stddev",
-                        "stddevpop": "stddev_pop",
-                        "stddevsamp": "stddev_samp",
-                        "variance": "variance",
-                        "variancepop": "var_pop",
-                        "median": "median",
-                        "approxdistinct": "approx_distinct",
-                        "approxquantile": "approx_quantile",
-                    }
-
-                    agg_name = agg_name_map.get(agg_type_name, agg_type_name)
+                    agg_name = _normalize_agg_name(agg)
                     col = agg.this
 
                     # Determine table
@@ -523,7 +533,7 @@ class Migrator:
                         elif isinstance(agg, exp.Max):
                             agg_type_name = "max"
                         else:
-                            agg_type_name = type(agg).__name__.lower()
+                            agg_type_name = _normalize_agg_name(agg)
 
                         agg_parts.append(
                             {
@@ -866,15 +876,7 @@ class Migrator:
                     continue
 
                 # Get aggregation type and column
-                agg_type_name = type(agg_func).__name__.lower()
-                agg_name_map = {
-                    "sum": "sum",
-                    "avg": "avg",
-                    "count": "count",
-                    "min": "min",
-                    "max": "max",
-                }
-                agg_type = agg_name_map.get(agg_type_name, agg_type_name)
+                agg_type = _normalize_agg_name(agg_func)
 
                 # Extract column from aggregation
                 col_expr = agg_func.this

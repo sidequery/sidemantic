@@ -61,12 +61,12 @@ class TestStripeSaaSMetrics:
         charges = graph.get_model("stripe_charges")
         captured = charges.get_dimension("captured")
         assert captured is not None
-        # boolean maps to categorical in sidemantic
-        assert captured.type == "categorical"
+        # Cube boolean maps to sidemantic boolean (round-trips back to Cube boolean)
+        assert captured.type == "boolean"
 
         paid = charges.get_dimension("paid")
         assert paid is not None
-        assert paid.type == "categorical"
+        assert paid.type == "boolean"
 
     def test_stripe_charges_join(self, graph):
         charges = graph.get_model("stripe_charges")

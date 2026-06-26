@@ -165,6 +165,36 @@ EXPECTED_GAPS = {
     "tests.optimizations.test_pre_aggregations::test_ratio_metric_preaggregation_rejects_count_distinct_leaf": (
         "Rust adapter does not yet support Python pre-aggregation routing"
     ),
+    "tests.optimizations.test_pre_aggregations::test_ungrouped_composite_pk_partial_rollup_falls_to_raw": (
+        "Rust adapter does not yet support Python pre-aggregation routing (ungrouped drill-to-detail)"
+    ),
+    "tests.optimizations.test_pre_aggregations::test_ungrouped_avg_metric_bails_to_raw": (
+        "Rust adapter does not yet support Python pre-aggregation routing (ungrouped drill-to-detail)"
+    ),
+    "tests.optimizations.test_pre_aggregations::test_ungrouped_strict_without_pk_rollup_raises": (
+        "Rust adapter does not yet support Python pre-aggregation routing (strict rollup-only mode)"
+    ),
+    "tests.optimizations.test_pre_aggregations::test_ungrouped_routes_to_pk_carrying_rollup": (
+        "Rust adapter does not yet support Python pre-aggregation routing (ungrouped drill-to-detail)"
+    ),
+    "tests.optimizations.test_pre_aggregations::test_ungrouped_preagg_sql_has_no_group_by": (
+        "Rust adapter does not yet support Python pre-aggregation routing (ungrouped drill-to-detail)"
+    ),
+    "tests.optimizations.test_pre_aggregations::test_ungrouped_explain_reports_pk_rollup_match": (
+        "Rust adapter does not yet support Python pre-aggregation routing (ungrouped drill-to-detail)"
+    ),
+    "tests.optimizations.test_pre_aggregations::test_ungrouped_rollup_without_pk_falls_to_raw": (
+        "Rust adapter does not yet support Python pre-aggregation routing (ungrouped drill-to-detail)"
+    ),
+    "tests.optimizations.test_pre_aggregations::test_lambda_preaggregation_unions_batch_rollup_with_fresh_source": (
+        "Rust adapter does not yet support Python pre-aggregation routing (lambda union)"
+    ),
+    "tests.optimizations.test_pre_aggregations::test_lambda_preaggregation_unions_with_granularity_rollup": (
+        "Rust adapter does not yet support Python pre-aggregation routing (lambda union)"
+    ),
+    "tests.optimizations.test_pre_aggregations::test_lambda_preaggregation_without_build_range_end_is_plain_rollup": (
+        "Rust adapter does not yet support Python pre-aggregation routing (lambda union)"
+    ),
     "tests.optimizations.test_preagg_recommender::test_query_instrumentation": (
         "Rust SQL generator does not yet emit Python query instrumentation contracts"
     ),

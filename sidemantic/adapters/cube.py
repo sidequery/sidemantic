@@ -545,6 +545,14 @@ class CubeAdapter(BaseAdapter):
         # verbatim (no auto-extraction of aggregations into agg=).
         sql_is_complete = False
 
+        # count_distinct_approx maps to exact count_distinct (Sidemantic has no
+        # HLL/sketch support). Record the original Cube type so the loss of
+        # additive approximate-distinct semantics stays visible to validation and
+        # round-trip export rather than vanishing silently.
+        if measure_type == "count_distinct_approx":
+            meta = meta.copy() if meta else {}
+            meta["cube_type"] = "count_distinct_approx"
+
         # Handle unknown measure types explicitly
         if agg_type is None and measure_type not in ("number",):
             if measure_type == "rank":
@@ -758,6 +766,17 @@ class CubeAdapter(BaseAdapter):
                 dim_name = dim_ref.replace("CUBE.", "").replace(f"{cube_name}.", "")
                 dimensions.append(dim_name)
 
+        # Extract rollups (rollupLambda/rollupJoin constituents) - strip CUBE prefix
+        rollups = []
+        for rollup_ref in preagg_def.get("rollups") or []:
+            if isinstance(rollup_ref, str):
+                rollups.append(rollup_ref.replace("CUBE.", "").replace(f"{cube_name}.", ""))
+
+        # Lambda union flag (Cube rollupLambda real-time union); accept snake/camel case.
+        union_with_source_data = bool(
+            preagg_def.get("union_with_source_data", preagg_def.get("unionWithSourceData", False))
+        )
+
         # Parse time dimension
         time_dimension = preagg_def.get("time_dimension")
         if time_dimension:
@@ -819,6 +838,8 @@ class CubeAdapter(BaseAdapter):
             indexes=indexes if indexes else None,
             build_range_start=build_range_start,
             build_range_end=build_range_end,
+            rollups=rollups if rollups else None,
+            union_with_source_data=union_with_source_data,
         )
 
     def _parse_view(self, view_def: dict, graph: SemanticGraph, parent_model: Model | None = None) -> Model | None:
@@ -1270,6 +1291,10 @@ class CubeAdapter(BaseAdapter):
                     preagg_def["build_range_start"] = {"sql": preagg.build_range_start}
                 if preagg.build_range_end:
                     preagg_def["build_range_end"] = {"sql": preagg.build_range_end}
+                if preagg.rollups:
+                    preagg_def["rollups"] = [f"CUBE.{r}" for r in preagg.rollups]
+                if preagg.union_with_source_data:
+                    preagg_def["union_with_source_data"] = True
                 cube["pre_aggregations"].append(preagg_def)
 
         return cube

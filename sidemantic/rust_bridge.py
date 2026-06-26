@@ -10,6 +10,16 @@ import yaml
 
 from sidemantic.core.semantic_graph import SemanticGraph
 
+# Lambda-only PreAggregation fields absent from the sidemantic-rs YAML schema
+# (which uses deny_unknown_fields). Exclude them when dumping a model so Rust
+# deserialization does not reject a model carrying a lambda pre-aggregation.
+_RUST_MODEL_DUMP_EXCLUDE = {"pre_aggregations": {"__all__": {"rollups", "union_with_source_data"}}}
+
+
+def _model_dump_for_rust(model_obj) -> dict:
+    """Dump a Model for the Rust bridge, dropping fields the Rust schema rejects."""
+    return model_obj.model_dump(exclude_none=True, exclude=_RUST_MODEL_DUMP_EXCLUDE)
+
 
 def get_rust_module() -> object:
     """Import and return sidemantic_rs extension module."""
@@ -1088,14 +1098,14 @@ def dimension_with_granularity_with_rust(dimension_obj, granularity: str) -> str
 def model_get_hierarchy_path_with_rust(model_obj, dimension_name: str) -> list[str]:
     """Get model hierarchy path via sidemantic-rs."""
     rust_module = get_rust_module()
-    model_yaml = yaml.safe_dump(model_obj.model_dump(exclude_none=True), sort_keys=False)
+    model_yaml = yaml.safe_dump(_model_dump_for_rust(model_obj), sort_keys=False)
     return [str(item) for item in rust_module.model_get_hierarchy_path(model_yaml, dimension_name)]
 
 
 def model_get_drill_down_with_rust(model_obj, dimension_name: str) -> str | None:
     """Get model drill-down target via sidemantic-rs."""
     rust_module = get_rust_module()
-    model_yaml = yaml.safe_dump(model_obj.model_dump(exclude_none=True), sort_keys=False)
+    model_yaml = yaml.safe_dump(_model_dump_for_rust(model_obj), sort_keys=False)
     result = rust_module.model_get_drill_down(model_yaml, dimension_name)
     return str(result) if result is not None else None
 
@@ -1103,7 +1113,7 @@ def model_get_drill_down_with_rust(model_obj, dimension_name: str) -> str | None
 def model_get_drill_up_with_rust(model_obj, dimension_name: str) -> str | None:
     """Get model drill-up target via sidemantic-rs."""
     rust_module = get_rust_module()
-    model_yaml = yaml.safe_dump(model_obj.model_dump(exclude_none=True), sort_keys=False)
+    model_yaml = yaml.safe_dump(_model_dump_for_rust(model_obj), sort_keys=False)
     result = rust_module.model_get_drill_up(model_yaml, dimension_name)
     return str(result) if result is not None else None
 
@@ -1111,7 +1121,7 @@ def model_get_drill_up_with_rust(model_obj, dimension_name: str) -> str | None:
 def model_find_dimension_index_with_rust(model_obj, name: str) -> int | None:
     """Find model dimension index by name via sidemantic-rs."""
     rust_module = get_rust_module()
-    model_yaml = yaml.safe_dump(model_obj.model_dump(exclude_none=True), sort_keys=False)
+    model_yaml = yaml.safe_dump(_model_dump_for_rust(model_obj), sort_keys=False)
     result = rust_module.model_find_dimension_index(model_yaml, name)
     return int(result) if result is not None else None
 
@@ -1119,7 +1129,7 @@ def model_find_dimension_index_with_rust(model_obj, name: str) -> int | None:
 def model_find_metric_index_with_rust(model_obj, name: str) -> int | None:
     """Find model metric index by name via sidemantic-rs."""
     rust_module = get_rust_module()
-    model_yaml = yaml.safe_dump(model_obj.model_dump(exclude_none=True), sort_keys=False)
+    model_yaml = yaml.safe_dump(_model_dump_for_rust(model_obj), sort_keys=False)
     result = rust_module.model_find_metric_index(model_yaml, name)
     return int(result) if result is not None else None
 
@@ -1127,7 +1137,7 @@ def model_find_metric_index_with_rust(model_obj, name: str) -> int | None:
 def model_find_segment_index_with_rust(model_obj, name: str) -> int | None:
     """Find model segment index by name via sidemantic-rs."""
     rust_module = get_rust_module()
-    model_yaml = yaml.safe_dump(model_obj.model_dump(exclude_none=True), sort_keys=False)
+    model_yaml = yaml.safe_dump(_model_dump_for_rust(model_obj), sort_keys=False)
     result = rust_module.model_find_segment_index(model_yaml, name)
     return int(result) if result is not None else None
 
@@ -1135,7 +1145,7 @@ def model_find_segment_index_with_rust(model_obj, name: str) -> int | None:
 def model_find_pre_aggregation_index_with_rust(model_obj, name: str) -> int | None:
     """Find model pre-aggregation index by name via sidemantic-rs."""
     rust_module = get_rust_module()
-    model_yaml = yaml.safe_dump(model_obj.model_dump(exclude_none=True), sort_keys=False)
+    model_yaml = yaml.safe_dump(_model_dump_for_rust(model_obj), sort_keys=False)
     result = rust_module.model_find_pre_aggregation_index(model_yaml, name)
     return int(result) if result is not None else None
 

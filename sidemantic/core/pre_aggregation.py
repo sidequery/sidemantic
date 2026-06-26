@@ -7,6 +7,11 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+# Dialects with standard CREATE INDEX support for pre-aggregation tables.
+# Snowflake/BigQuery/ClickHouse manage data layout via clustering/sort keys
+# instead, so index DDL is skipped for them.
+_INDEX_DDL_DIALECTS = {"duckdb", "postgres"}
+
 
 class RefreshKey(BaseModel):
     """Refresh strategy configuration for pre-aggregations."""
@@ -61,6 +66,23 @@ class PreAggregation(BaseModel):
         None, description="Time granularity for aggregation"
     )
 
+    # Lambda (rollupLambda) configuration: union of a batch rollup with fresher data.
+    rollups: list[str] | None = Field(
+        None,
+        description=(
+            "For type='lambda' (Cube rollupLambda): the constituent rollups this lambda unions. Stored for "
+            "round-trip; query routing matches this lambda directly on its own measures/dimensions/granularity."
+        ),
+    )
+    union_with_source_data: bool = Field(
+        False,
+        description=(
+            "For type='lambda': when True (and build_range_end is set), serve a query as a UNION of the batch "
+            "rollup table (buckets before build_range_end) with a fresh aggregation of source rows at/after "
+            "build_range_end, re-aggregated at the query grain."
+        ),
+    )
+
     # Partitioning
     partition_granularity: Literal["day", "week", "month", "quarter", "year"] | None = Field(
         None, description="Partition size for incremental refresh"
@@ -110,7 +132,7 @@ class PreAggregation(BaseModel):
 
         return table_name
 
-    def generate_materialization_sql(self, model: Any) -> str:
+    def generate_materialization_sql(self, model: Any, partition_filter: str | None = None) -> str:
         """Generate SQL to materialize this pre-aggregation.
 
         Args:
@@ -137,6 +159,16 @@ class PreAggregation(BaseModel):
             # FROM orders
             # GROUP BY 1, 2
         """
+        # original_sql pre-aggregations stage the cube's base query verbatim (no
+        # GROUP BY) so heavier rollups or ad-hoc queries can build on a
+        # materialized base instead of re-running it. They are not aggregation
+        # rollups, so the matcher never routes metric queries to them directly.
+        if self.type == "original_sql":
+            base_sql = self.sql or getattr(model, "sql", None)
+            if base_sql:
+                return base_sql
+            return f"SELECT * FROM {model.table}"
+
         select_exprs = []
         group_by_positions = []
         pos = 1
@@ -197,16 +229,128 @@ class PreAggregation(BaseModel):
         else:
             from_clause = model.table
 
-        # Build SQL
+        # Build SQL. partition_filter constrains the source rows to a single time
+        # bucket so partitioned builds materialize one table per partition.
         select_str = ",\n  ".join(select_exprs)
         group_by_str = ", ".join(group_by_positions)
+        where_clause = f"\nWHERE {partition_filter}" if partition_filter else ""
 
         sql = f"""SELECT
   {select_str}
-FROM {from_clause}
+FROM {from_clause}{where_clause}
 GROUP BY {group_by_str}"""
 
         return sql
+
+    def build_partitions(
+        self,
+        connection: Any,
+        model: Any,
+        *,
+        database: str | None = None,
+        schema: str | None = None,
+        lookback: str | None = None,
+        build_range_start: Any | None = None,
+        build_range_end: Any | None = None,
+    ) -> list[str]:
+        """Materialize a partitioned pre-aggregation as one table per time bucket.
+
+        Builds (or rebuilds) a physical table for each ``partition_granularity``
+        time bucket present in the source data, then (re)creates a covering view
+        named like the non-partitioned table so query routing reads all partitions
+        transparently and the engine prunes by the query's time filter. With a
+        ``lookback`` (or a declared ``refresh_key.update_window``) only partitions
+        whose bucket falls inside the window are rebuilt; older partitions are
+        treated as immutable.
+
+        Returns the list of partition table names that were (re)built.
+        """
+        import re
+
+        if not self.partition_granularity:
+            raise ValueError(f"Pre-aggregation '{self.name}' has no partition_granularity to build")
+        if not (self.time_dimension and self.granularity):
+            raise ValueError(f"Partitioned pre-aggregation '{self.name}' requires time_dimension and granularity")
+
+        time_dim = model.get_dimension(self.time_dimension)
+        if not time_dim:
+            raise ValueError(f"Unknown time_dimension '{self.time_dimension}' on model '{model.name}'")
+        time_expr = time_dim.sql_expr
+        from_clause = f"({model.sql}) AS t" if model.sql else model.table
+        pg = self.partition_granularity
+
+        for name, label in [(model.name, "model"), (self.name, "preagg")]:
+            if not re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", name):
+                raise ValueError(f"Invalid {label} name for partition table generation: {name}")
+        unqualified = f"{model.name}_preagg_{self.name}"
+
+        def qualify(unqualified_name: str) -> str:
+            qualified = unqualified_name
+            if schema:
+                qualified = f"{schema}.{qualified}"
+            if database:
+                qualified = f"{database}.{qualified}"
+            return qualified
+
+        # A declared update_window is the default reprocessing window.
+        if lookback is None and self.refresh_key and self.refresh_key.update_window:
+            lookback = self.refresh_key.update_window
+
+        range_preds = []
+        if build_range_start is not None:
+            range_preds.append(f"{time_expr} >= '{build_range_start}'")
+        if build_range_end is not None:
+            range_preds.append(f"{time_expr} < '{build_range_end}'")
+        range_where = (" WHERE " + " AND ".join(range_preds)) if range_preds else ""
+
+        # Discover the buckets present in the source data.
+        bucket_rows = connection.execute(
+            f"SELECT DISTINCT DATE_TRUNC('{pg}', {time_expr}) AS bucket FROM {from_clause}{range_where} ORDER BY 1"
+        ).fetchall()
+        buckets = [row[0] for row in bucket_rows if row[0] is not None]
+
+        # With a lookback, only rebuild buckets at/after the cutoff (immutable history).
+        cutoff = None
+        if lookback is not None:
+            cutoff_row = connection.execute(
+                f"SELECT DATE_TRUNC('{pg}', CAST(CURRENT_TIMESTAMP AS TIMESTAMP) - INTERVAL '{lookback}')"
+            ).fetchone()
+            cutoff = cutoff_row[0] if cutoff_row else None
+
+        built: list[str] = []
+        for bucket in buckets:
+            if cutoff is not None and bucket < cutoff:
+                continue
+            key = re.sub(r"[^0-9]", "", str(bucket)) or "0"
+            part_name = qualify(f"{unqualified}_p{key}")
+            partition_filter = f"DATE_TRUNC('{pg}', {time_expr}) = TIMESTAMP '{bucket}'"
+            source_sql = self.generate_materialization_sql(model, partition_filter=partition_filter)
+            connection.execute(f"DROP TABLE IF EXISTS {part_name}")
+            connection.execute(f"CREATE TABLE {part_name} AS {source_sql}")
+            built.append(part_name)
+
+        # (Re)create a covering view over every partition table that currently exists.
+        all_tables = connection.execute("SELECT table_name FROM information_schema.tables").fetchall()
+        prefix = f"{unqualified}_p"
+        partition_tables = sorted(
+            {qualify(row[0]) for row in all_tables if isinstance(row[0], str) and row[0].startswith(prefix)}
+            | set(built)
+        )
+
+        view_name = qualify(unqualified)
+        if partition_tables:
+            union_sql = "\nUNION ALL\n".join(f"SELECT * FROM {table}" for table in partition_tables)
+            # The base name may currently be a view (prior partitioned build) or a
+            # table (prior non-partitioned build). Some engines' DROP ... IF EXISTS
+            # errors on a type mismatch, so try both kinds.
+            for drop_stmt in (f"DROP VIEW IF EXISTS {view_name}", f"DROP TABLE IF EXISTS {view_name}"):
+                try:
+                    connection.execute(drop_stmt)
+                except Exception:
+                    pass
+            connection.execute(f"CREATE VIEW {view_name} AS {union_sql}")
+
+        return built
 
     def refresh(
         self,
@@ -219,6 +363,7 @@ GROUP BY {group_by_str}"""
         from_watermark: Any | None = None,
         to_watermark: Any | None = None,
         dialect: str | None = None,
+        model: Any | None = None,
     ) -> "RefreshResult":
         """Refresh pre-aggregation (STATELESS).
 
@@ -231,7 +376,8 @@ GROUP BY {group_by_str}"""
             table_name: Physical table name for the pre-aggregation
             mode: Refresh mode - 'full', 'incremental', or 'merge'. If None, infers from config
             watermark_column: Column to use for incremental refresh (required for incremental/merge)
-            lookback: Time interval to reprocess (e.g., '7 days', '2 hours') for late-arriving data
+            lookback: Time interval to reprocess (e.g., '7 days', '2 hours') for late-arriving data.
+                Defaults to refresh_key.update_window when omitted.
             from_watermark: Starting watermark (optional, derived from table if None)
             to_watermark: Ending watermark (optional, uses NOW() if None)
 
@@ -333,12 +479,36 @@ GROUP BY {group_by_str}"""
         """
         start_time = time.time()
 
+        # Partitioned pre-aggregations are materialized as one table per time bucket
+        # plus a covering view; delegate to build_partitions (needs the model).
+        if self.partition_granularity:
+            if model is None:
+                raise ValueError(
+                    f"Pre-aggregation '{self.name}' is partitioned (partition_granularity="
+                    f"'{self.partition_granularity}'); pass model= to refresh() or call build_partitions() directly."
+                )
+            self.build_partitions(connection, model, lookback=lookback)
+            return RefreshResult(
+                mode="partitioned",
+                rows_inserted=-1,
+                rows_updated=-1,
+                new_watermark=None,
+                duration_seconds=time.time() - start_time,
+                timestamp=datetime.now(),
+            )
+
         # Infer mode from config if not specified
         if mode is None:
             if self.refresh_key and self.refresh_key.incremental:
                 mode = "incremental"
             else:
                 mode = "full"
+
+        # A declared refresh_key.update_window is the window to reprocess for
+        # late-arriving data. Honor it as the default lookback when the caller did
+        # not pass one explicitly (an explicit lookback argument always wins).
+        if lookback is None and self.refresh_key and self.refresh_key.update_window:
+            lookback = self.refresh_key.update_window
 
         # Execute appropriate refresh strategy
         if mode == "full":
@@ -364,6 +534,11 @@ GROUP BY {group_by_str}"""
         else:
             raise ValueError(f"Invalid refresh mode: {mode}")
 
+        # Materialize declared indexes for dialects that support standard secondary
+        # indexes; engine mode manages its own object and is excluded.
+        if mode in ("full", "incremental", "merge"):
+            self._create_indexes(connection, table_name, dialect)
+
         duration_seconds = time.time() - start_time
 
         return RefreshResult(
@@ -374,6 +549,31 @@ GROUP BY {group_by_str}"""
             duration_seconds=duration_seconds,
             timestamp=datetime.now(),
         )
+
+    def _create_indexes(self, connection: Any, table_name: str, dialect: str | None) -> None:
+        """Emit CREATE INDEX statements for declared indexes (dialect-gated, idempotent).
+
+        Indexes are created only for dialects that support standard secondary
+        indexes ({duckdb, postgres}); other engines are skipped silently. Index
+        names are namespaced to the table to avoid collisions, and identifiers are
+        validated to prevent SQL injection. Uses IF NOT EXISTS so repeated
+        incremental/merge refreshes do not error.
+        """
+        import re
+
+        if not self.indexes or dialect not in _INDEX_DDL_DIALECTS:
+            return
+
+        table_base = table_name.split(".")[-1]
+        for index in self.indexes:
+            if not re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", index.name):
+                raise ValueError(f"Invalid index name for DDL generation: {index.name}")
+            for column in index.columns:
+                if not re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", column):
+                    raise ValueError(f"Invalid index column for DDL generation: {column}")
+            index_name = f"{table_base}_{index.name}"
+            columns = ", ".join(index.columns)
+            connection.execute(f"CREATE INDEX IF NOT EXISTS {index_name} ON {table_name} ({columns})")
 
     def _get_current_watermark(self, connection: Any, table_name: str, watermark_column: str) -> Any | None:
         """Get current watermark from table (STATELESS - no metadata table).
@@ -719,7 +919,7 @@ class RefreshResult:
     External orchestrators should store the new_watermark for the next refresh.
     """
 
-    mode: Literal["full", "incremental", "merge", "engine"]
+    mode: Literal["full", "incremental", "merge", "engine", "partitioned"]
     rows_inserted: int  # -1 if unknown
     rows_updated: int  # -1 if unknown
     new_watermark: Any | None  # Orchestrator stores this for next run

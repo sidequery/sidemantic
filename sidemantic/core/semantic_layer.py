@@ -18,6 +18,23 @@ from sidemantic.sql.generator import SQLGenerator
 _RUST_SQL_OUTPUT_DIALECT = "duckdb"
 
 
+class PreaggregationStrictError(RuntimeError):
+    """Raised in strict (rollup-only) mode when a query cannot be served from a pre-aggregation."""
+
+
+# Substrings that identify a "missing relation/table" execution error across
+# database adapters (DuckDB, Postgres, BigQuery, Snowflake, ClickHouse, ...).
+# Used to decide whether a routed-but-unbuilt pre-aggregation table should fall
+# back to the raw tables (which always produce correct results).
+_MISSING_RELATION_MARKERS = (
+    "does not exist",
+    "doesn't exist",
+    "no such table",
+    "unknown table",
+    "table or view",
+)
+
+
 class SemanticLayer:
     """Main semantic layer interface.
 
@@ -30,6 +47,7 @@ class SemanticLayer:
         dialect: str | None = None,
         auto_register: bool = True,
         use_preaggregations: bool = False,
+        preagg_strict: bool = False,
         preagg_database: str | None = None,
         preagg_schema: str | None = None,
         init_sql: list[str] | None = None,
@@ -54,6 +72,9 @@ class SemanticLayer:
             dialect: SQL dialect for query generation (optional, inferred from adapter)
             auto_register: Set as current layer for auto-registration (default: True)
             use_preaggregations: Enable automatic pre-aggregation routing (default: False)
+            preagg_strict: Rollup-only mode. When True, queries must be served from a
+                pre-aggregation; if none matches or its table is not built, raise
+                PreaggregationStrictError instead of falling back to raw tables (default: False)
             preagg_database: Optional database name for pre-aggregation tables
             preagg_schema: Optional schema name for pre-aggregation tables
             init_sql: SQL statements to run after connecting (DuckDB only, e.g.,
@@ -75,6 +96,7 @@ class SemanticLayer:
         self._sql_rewrite_cache: dict[tuple[object, ...], str] = {}
         self._sql_rewrite_cache_limit = 256
         self.use_preaggregations = use_preaggregations
+        self.preagg_strict = preagg_strict
         self.preagg_database = preagg_database
         self.preagg_schema = preagg_schema
         self.engine = engine or "python"
@@ -519,6 +541,7 @@ class SemanticLayer:
         ungrouped: bool = False,
         parameters: dict[str, any] | None = None,
         use_preaggregations: bool | None = None,
+        preagg_strict: bool | None = None,
         post_process: str | None = None,
     ):
         """Execute a query against the semantic layer.
@@ -533,6 +556,9 @@ class SemanticLayer:
             ungrouped: If True, return raw rows without aggregation (no GROUP BY)
             parameters: Template parameters for Jinja2 rendering
             use_preaggregations: Override pre-aggregation routing setting for this query
+            preagg_strict: Override rollup-only mode for this query. When True, raise
+                PreaggregationStrictError if no rollup matches or its table is missing,
+                instead of falling back to raw tables.
             post_process: Optional SQL to wrap around the semantic query result.
                 Use {inner} as a placeholder for the compiled semantic query, e.g.:
                 "SELECT *, revenue / count AS avg_value FROM ({inner})"
@@ -540,6 +566,9 @@ class SemanticLayer:
         Returns:
             DuckDB relation object (can convert to DataFrame with .df() or .to_df())
         """
+        use_preaggs = use_preaggregations if use_preaggregations is not None else self.use_preaggregations
+        strict = preagg_strict if preagg_strict is not None else self.preagg_strict
+
         sql = self.compile(
             metrics=metrics,
             dimensions=dimensions,
@@ -553,7 +582,53 @@ class SemanticLayer:
             post_process=post_process,
         )
 
-        return self.adapter.execute(sql)
+        if not use_preaggs:
+            return self.adapter.execute(sql)
+
+        # Pre-aggregation routing is enabled. The compiled SQL is tagged with
+        # used_preagg=true when a rollup was actually selected for this query.
+        used_preagg = "used_preagg=true" in sql
+
+        # Rollup-only: a query no rollup can serve must error rather than scan raw tables.
+        if strict and not used_preagg:
+            raise PreaggregationStrictError(
+                "Strict pre-aggregation mode: no pre-aggregation matched this query "
+                "(its metrics/dimensions/granularity are not covered by any rollup)."
+            )
+
+        try:
+            return self.adapter.execute(sql)
+        except Exception as exc:
+            # Only intervene when a routed pre-aggregation table is missing; every
+            # other error surfaces unchanged.
+            if not used_preagg or not self._is_missing_relation_error(exc):
+                raise
+            if strict:
+                raise PreaggregationStrictError(
+                    "Strict pre-aggregation mode: the matching pre-aggregation table is not built. "
+                    "Materialize it (e.g. `sidemantic preagg refresh`) before querying."
+                ) from exc
+            # A pure optimization fell through: recompile against raw tables so the
+            # query still returns correct results.
+            raw_sql = self.compile(
+                metrics=metrics,
+                dimensions=dimensions,
+                filters=filters,
+                segments=segments,
+                order_by=order_by,
+                limit=limit,
+                ungrouped=ungrouped,
+                parameters=parameters,
+                use_preaggregations=False,
+                post_process=post_process,
+            )
+            return self.adapter.execute(raw_sql)
+
+    @staticmethod
+    def _is_missing_relation_error(error: Exception) -> bool:
+        """Heuristic: does this execution error indicate a missing table/relation?"""
+        message = str(error).lower()
+        return any(marker in message for marker in _MISSING_RELATION_MARKERS)
 
     def get_import_warnings(self) -> list[dict[str, object]]:
         """Return structured warnings produced while importing model definitions."""
@@ -969,16 +1044,6 @@ class SemanticLayer:
                 routing_reason=f"multi-model query ({', '.join(sorted(model_names))}), preaggs only work for single-model queries",
             )
 
-        if ungrouped:
-            return QueryPlan(
-                sql=sql,
-                model=model_names[0],
-                metrics=bare_metrics,
-                dimensions=bare_dims,
-                used_preaggregation=False,
-                routing_reason="ungrouped query, preaggs require aggregation",
-            )
-
         model_name = model_names[0]
         try:
             model = self.get_model(model_name)
@@ -1010,6 +1075,46 @@ class SemanticLayer:
             time_granularity=time_granularity,
             filters=bare_filters,
         )
+
+        if ungrouped:
+            # Drill-to-detail can only be served from a rollup that stores the
+            # full primary key (rows are unique) and only for metrics whose raw
+            # column is the per-row value. Mirror the routing gate in
+            # _try_use_preaggregation so explain reflects actual routing.
+            non_derivable = [
+                m
+                for m in bare_metrics
+                if (metric := model.get_metric(m)) is None
+                or metric.type in {"ratio", "derived"}
+                or metric.agg in {"avg", "count_distinct"}
+            ]
+            if non_derivable:
+                return QueryPlan(
+                    sql=sql,
+                    model=model_name,
+                    metrics=bare_metrics,
+                    dimensions=bare_dims,
+                    used_preaggregation=False,
+                    routing_reason=(
+                        f"ungrouped query, metric(s) {', '.join(non_derivable)} are not derivable from stored rows"
+                    ),
+                    candidates=candidates,
+                )
+            pk_columns = set(model.primary_key_columns)
+            for candidate in candidates:
+                preagg = next((p for p in model.pre_aggregations if p.name == candidate.name), None)
+                if candidate.selected and (preagg is None or not pk_columns.issubset(set(preagg.dimensions or []))):
+                    candidate.selected = False
+            if not any(c.selected for c in candidates):
+                return QueryPlan(
+                    sql=sql,
+                    model=model_name,
+                    metrics=bare_metrics,
+                    dimensions=bare_dims,
+                    used_preaggregation=False,
+                    routing_reason="ungrouped query, no rollup carries the primary key for unique rows",
+                    candidates=candidates,
+                )
 
         selected = next((c for c in candidates if c.selected), None)
         if selected:

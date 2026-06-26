@@ -78,7 +78,7 @@ Not mapped: `propagate_filters_to_sub_query`.
 |---------|--------|
 | `type: count` | Supported |
 | `type: count_distinct` | Supported |
-| `type: count_distinct_approx` | Supported (maps to `count_distinct`, approximation semantics lost) |
+| `type: count_distinct_approx` | Supported (maps to `count_distinct`; original type preserved in `Metric.meta["cube_type"]` and `sidemantic validate` warns that it is now exact/non-additive, since there is no HLL/sketch support) |
 | `type: sum` | Supported |
 | `type: avg` | Supported |
 | `type: min` | Supported |
@@ -183,7 +183,7 @@ Pre-aggregations are fully mapped to Sidemantic's `PreAggregation` model, includ
 |---------|--------|
 | `type: rollup` | Supported |
 | `type: rollupJoin` / `rollup_join` | Supported (type normalized to `rollup_join`) |
-| `type: rollupLambda` / `lambda` | Supported (type normalized to `lambda`) |
+| `type: rollupLambda` / `lambda` | Supported (type normalized to `lambda`). With `unionWithSourceData` + `build_range_end`, queries are served as a UNION of the batch rollup (older buckets) and a fresh source aggregation (newer rows), re-aggregated at the query grain. |
 | `type: original_sql` | Supported |
 | `measures` (list of measure references) | Supported (`CUBE.` prefix stripped) |
 | `dimensions` (list of dimension references) | Supported (`CUBE.` prefix stripped) |
@@ -198,7 +198,8 @@ Pre-aggregations are fully mapped to Sidemantic's `PreAggregation` model, includ
 | `indexes: [{ name, columns, type }]` | Supported |
 | `build_range_start` / `build_range_end` | Supported (SQL expression extracted) |
 | Cross-cube dimension references in pre-aggs (e.g., `visitors.source`) | Partial support: parsed as dimension name string; the cross-cube prefix is not stripped. |
-| `rollups` (list of rollup references for rollupJoin/rollupLambda) | Unsupported (not stored) |
+| `rollups` (list of rollup references for rollupJoin/rollupLambda) | Stored (`CUBE.` prefix stripped on import, re-prefixed on export). Used for round-trip; query routing matches the lambda directly on its own grain. |
+| `unionWithSourceData` (rollupLambda real-time union) | Supported (executes the batch+source union when `build_range_end` is set). |
 | Empty pre-aggregation sections (YAML null) | Supported (treated as empty list) |
 
 ---

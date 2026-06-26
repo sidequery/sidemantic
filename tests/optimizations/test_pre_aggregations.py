@@ -793,6 +793,113 @@ def test_refresh_incremental_with_lookback():
     assert total_revenue == 1208  # 104 + 1104 from lookback
 
 
+def test_refresh_incremental_uses_update_window_as_default_lookback():
+    """refresh_key.update_window supplies the reprocessing window when no lookback is passed."""
+    conn = duckdb.connect(":memory:")
+
+    conn.execute("""
+        CREATE TABLE orders AS
+        SELECT
+            DATE '2024-01-01' + INTERVAL (i) DAY as order_date,
+            100 + i as revenue
+        FROM generate_series(0, 9) as t(i)
+    """)
+
+    # update_window is declared on the model; lookback is NOT passed to refresh()
+    preagg = PreAggregation(
+        name="daily_rollup",
+        measures=["revenue"],
+        time_dimension="order_date",
+        granularity="day",
+        refresh_key=RefreshKey(incremental=True, update_window="5 days"),
+    )
+
+    preagg.refresh(
+        connection=conn,
+        source_sql="SELECT order_date, SUM(revenue) as total_revenue FROM orders WHERE order_date > {WATERMARK} GROUP BY order_date",
+        table_name="orders_preagg_daily",
+        mode="incremental",
+        watermark_column="order_date",
+    )
+
+    # Late-arriving update to a row inside the 5-day window
+    conn.execute("""
+        UPDATE orders
+        SET revenue = revenue + 1000
+        WHERE order_date = DATE '2024-01-05'
+    """)
+
+    # No lookback argument: the declared 5-day update_window must drive reprocessing
+    preagg.refresh(
+        connection=conn,
+        source_sql="SELECT order_date, SUM(revenue) as total_revenue FROM orders WHERE order_date >= {WATERMARK} GROUP BY order_date",
+        table_name="orders_preagg_daily",
+        mode="incremental",
+        watermark_column="order_date",
+    )
+
+    total_revenue = conn.execute("""
+        SELECT SUM(total_revenue)
+        FROM orders_preagg_daily
+        WHERE order_date = DATE '2024-01-05'
+    """).fetchone()[0]
+
+    assert total_revenue == 1208  # late-arriving 1104 reprocessed because update_window covered it
+
+
+def test_explicit_lookback_overrides_update_window():
+    """An explicit lookback argument takes precedence over refresh_key.update_window."""
+    conn = duckdb.connect(":memory:")
+
+    conn.execute("""
+        CREATE TABLE orders AS
+        SELECT
+            DATE '2024-01-01' + INTERVAL (i) DAY as order_date,
+            100 + i as revenue
+        FROM generate_series(0, 9) as t(i)
+    """)
+
+    preagg = PreAggregation(
+        name="daily_rollup",
+        measures=["revenue"],
+        time_dimension="order_date",
+        granularity="day",
+        refresh_key=RefreshKey(incremental=True, update_window="5 days"),
+    )
+
+    preagg.refresh(
+        connection=conn,
+        source_sql="SELECT order_date, SUM(revenue) as total_revenue FROM orders WHERE order_date > {WATERMARK} GROUP BY order_date",
+        table_name="orders_preagg_daily",
+        mode="incremental",
+        watermark_column="order_date",
+    )
+
+    conn.execute("""
+        UPDATE orders
+        SET revenue = revenue + 1000
+        WHERE order_date = DATE '2024-01-05'
+    """)
+
+    # Explicit zero-day lookback overrides the 5-day update_window: the old row is not reprocessed
+    preagg.refresh(
+        connection=conn,
+        source_sql="SELECT order_date, SUM(revenue) as total_revenue FROM orders WHERE order_date >= {WATERMARK} GROUP BY order_date",
+        table_name="orders_preagg_daily",
+        mode="incremental",
+        watermark_column="order_date",
+        lookback="0 days",
+    )
+
+    total_revenue = conn.execute("""
+        SELECT SUM(total_revenue)
+        FROM orders_preagg_daily
+        WHERE order_date = DATE '2024-01-05'
+    """).fetchone()[0]
+
+    assert total_revenue == 104  # explicit 0-day lookback won; the late update was excluded
+
+
 def test_refresh_merge_idempotent():
     """Test merge/upsert refresh mode for idempotent updates."""
     conn = duckdb.connect(":memory:")
@@ -1140,6 +1247,158 @@ def test_ratio_metric_preaggregation_rebuilds_from_additive_leaves(layer):
     assert "orders_preagg_by_status" in preagg_sql
     assert "SUM(revenue_raw) / NULLIF(SUM(count_raw), 0)" in preagg_sql
     assert preagg_rows == baseline_rows
+
+
+def test_lambda_preaggregation_fields_default():
+    """The lambda union fields default to inert (None / False)."""
+    preagg = PreAggregation(name="lam", type="lambda")
+
+    assert preagg.rollups is None
+    assert preagg.union_with_source_data is False
+
+
+def _lambda_orders_layer(layer):
+    """Source orders with old (pre-2024-04) and recent (2024-06) rows, plus a batch
+    rollup that covers ONLY the older buckets. Recent rows live only in the source.
+    """
+    layer.use_preaggregations = True
+    layer.conn.execute("""
+        CREATE TABLE orders (
+            id INTEGER,
+            status VARCHAR,
+            amount DECIMAL(10, 2),
+            created_at TIMESTAMP
+        )
+    """)
+    layer.conn.execute("""
+        INSERT INTO orders VALUES
+            (1, 'completed', 100.00, '2024-01-15'),
+            (2, 'completed', 300.00, '2024-02-10'),
+            (3, 'pending', 50.00, '2024-03-05'),
+            (4, 'completed', 7.00, '2024-06-20'),
+            (5, 'pending', 9.00, '2024-06-21')
+    """)
+    # Batch rollup covers only buckets < 2024-04-01; recent rows are absent here.
+    layer.conn.execute("""
+        CREATE TABLE orders_preagg_lam AS
+        SELECT
+            DATE_TRUNC('day', created_at) AS created_at_day,
+            status,
+            SUM(amount) AS revenue_raw,
+            COUNT(*) AS count_raw
+        FROM orders
+        WHERE created_at < '2024-04-01'
+        GROUP BY 1, 2
+    """)
+
+
+def _lambda_orders_model(*, union_with_source_data=True, build_range_end="'2024-04-01'"):
+    return Model(
+        name="orders",
+        table="orders",
+        primary_key="id",
+        dimensions=[
+            Dimension(name="status", type="categorical", sql="status"),
+            Dimension(name="created_at", type="time", granularity="day", sql="created_at"),
+        ],
+        metrics=[
+            Metric(name="revenue", agg="sum", sql="amount"),
+            Metric(name="count", agg="count"),
+        ],
+        pre_aggregations=[
+            PreAggregation(
+                name="lam",
+                type="lambda",
+                measures=["revenue", "count"],
+                dimensions=["status"],
+                time_dimension="created_at",
+                granularity="day",
+                union_with_source_data=union_with_source_data,
+                build_range_end=build_range_end,
+            )
+        ],
+    )
+
+
+def test_lambda_preaggregation_unions_batch_rollup_with_fresh_source(layer):
+    """A lambda preagg unions its batch rollup (older buckets) with a fresh source
+    aggregation (recent buckets), re-aggregated at the query grain. Totals must match
+    the full-source baseline: older buckets come from the rollup, recent-only rows
+    from the source, counted exactly once."""
+    _lambda_orders_layer(layer)
+    layer.add_model(_lambda_orders_model())
+
+    preagg_sql = layer.compile(
+        metrics=["orders.revenue", "orders.count"],
+        dimensions=["orders.status"],
+        order_by=["status"],
+    )
+    baseline_rows = layer.query(
+        metrics=["orders.revenue", "orders.count"],
+        dimensions=["orders.status"],
+        order_by=["status"],
+        use_preaggregations=False,
+    ).fetchall()
+    preagg_rows = layer.adapter.execute(preagg_sql).fetchall()
+
+    # Reads the batch rollup table, the source table, and unions them.
+    assert "orders_preagg_lam" in preagg_sql
+    assert "UNION ALL" in preagg_sql
+    assert "FROM orders" in preagg_sql
+    # Partial-state columns are re-aggregated over the union.
+    assert "SUM(revenue_raw)" in preagg_sql
+    assert "SUM(count_raw)" in preagg_sql
+    # Disjoint split at build_range_end (no double count / gap).
+    assert "created_at_day < ('2024-04-01')" in preagg_sql
+    assert "created_at >= ('2024-04-01')" in preagg_sql
+
+    assert preagg_rows == baseline_rows
+
+
+def test_lambda_preaggregation_unions_with_granularity_rollup(layer):
+    """A day-grain lambda union answers a month query: both legs carry the
+    {time}_{day} column, and the outer DATE_TRUNC re-truncates the union to months."""
+    _lambda_orders_layer(layer)
+    layer.add_model(_lambda_orders_model())
+
+    preagg_sql = layer.compile(
+        metrics=["orders.revenue"],
+        dimensions=["orders.created_at__month"],
+        order_by=["orders.created_at__month"],
+    )
+    baseline_rows = layer.query(
+        metrics=["orders.revenue"],
+        dimensions=["orders.created_at__month"],
+        order_by=["orders.created_at__month"],
+        use_preaggregations=False,
+    ).fetchall()
+    preagg_rows = layer.adapter.execute(preagg_sql).fetchall()
+
+    assert "UNION ALL" in preagg_sql
+    assert "DATE_TRUNC('MONTH', created_at_day)" in preagg_sql
+    assert preagg_rows == baseline_rows
+
+
+def test_lambda_preaggregation_without_build_range_end_is_plain_rollup(layer):
+    """union_with_source_data=True but no build_range_end has no split point, so it
+    degrades to a plain rollup read (no UNION) and still serves the query."""
+    _lambda_orders_layer(layer)
+    # Add the recent rows to the rollup so a plain read still matches the baseline.
+    layer.conn.execute("""
+        INSERT INTO orders_preagg_lam
+        SELECT DATE_TRUNC('day', created_at), status, SUM(amount), COUNT(*)
+        FROM orders WHERE created_at >= '2024-04-01' GROUP BY 1, 2
+    """)
+    layer.add_model(_lambda_orders_model(union_with_source_data=True, build_range_end=None))
+
+    preagg_sql = layer.compile(
+        metrics=["orders.revenue"],
+        dimensions=["orders.status"],
+        order_by=["status"],
+    )
+
+    assert "UNION ALL" not in preagg_sql
+    assert "FROM orders_preagg_lam" in preagg_sql
 
 
 def test_derived_metric_preaggregation_rebuilds_from_additive_leaves(layer):
@@ -1646,6 +1905,541 @@ def test_generate_materialization_sql_normal_dimensions_still_work():
     assert "GROUP BY" in sql
     assert "LEAD" not in sql
     assert "OVER" not in sql
+
+
+def test_original_sql_materializes_base_query_without_group_by():
+    """original_sql pre-aggregations stage the cube's base query verbatim (no GROUP BY)."""
+    model = Model(
+        name="orders",
+        sql="SELECT * FROM raw.orders WHERE status != 'deleted'",
+        primary_key="order_id",
+        dimensions=[Dimension(name="status", type="categorical")],
+        metrics=[Metric(name="order_count", agg="count")],
+    )
+    preagg = PreAggregation(name="base", type="original_sql")
+
+    sql = preagg.generate_materialization_sql(model)
+
+    assert "GROUP BY" not in sql.upper()
+    assert sql == "SELECT * FROM raw.orders WHERE status != 'deleted'"
+
+
+def test_original_sql_honors_explicit_sql_field():
+    """original_sql uses its own sql field when set, overriding the model base query."""
+    model = Model(
+        name="orders",
+        sql="SELECT * FROM base",
+        primary_key="order_id",
+        dimensions=[],
+        metrics=[Metric(name="order_count", agg="count")],
+    )
+    preagg = PreAggregation(name="base", type="original_sql", sql="SELECT * FROM custom_view")
+
+    assert preagg.generate_materialization_sql(model) == "SELECT * FROM custom_view"
+
+
+def test_original_sql_refreshes_in_duckdb():
+    """A real DuckDB refresh of an original_sql preagg materializes the full base query (no aggregation)."""
+    conn = duckdb.connect(":memory:")
+    conn.execute("CREATE TABLE raw_orders AS SELECT i as order_id, i % 3 as status FROM generate_series(1, 9) t(i)")
+
+    model = Model(
+        name="orders",
+        sql="SELECT * FROM raw_orders",
+        primary_key="order_id",
+        dimensions=[Dimension(name="status", type="categorical")],
+        metrics=[Metric(name="order_count", agg="count")],
+    )
+    preagg = PreAggregation(name="base", type="original_sql")
+
+    src = preagg.generate_materialization_sql(model)
+    preagg.refresh(connection=conn, source_sql=src, table_name="orders_preagg_base", mode="full")
+
+    rows = conn.execute("SELECT COUNT(*) FROM orders_preagg_base").fetchone()[0]
+    assert rows == 9  # all base rows materialized, not collapsed by a GROUP BY
+
+
+def test_original_sql_not_routed_for_metric_queries():
+    """The matcher never selects an original_sql staged table to answer a metric query."""
+    model = Model(
+        name="orders",
+        table="orders",
+        primary_key="order_id",
+        dimensions=[Dimension(name="status", type="categorical")],
+        metrics=[Metric(name="order_count", agg="count")],
+        pre_aggregations=[PreAggregation(name="base", type="original_sql")],
+    )
+    matcher = PreAggregationMatcher(model)
+
+    assert matcher.find_matching_preagg(metrics=["order_count"], dimensions=["status"]) is None
+
+
+def test_indexes_materialized_as_create_index_on_duckdb():
+    """Declared indexes are emitted as CREATE INDEX during a DuckDB refresh."""
+    conn = duckdb.connect(":memory:")
+    conn.execute(
+        "CREATE TABLE orders AS SELECT i as order_id, i % 3 as status, i * 10 as amount FROM generate_series(1, 9) t(i)"
+    )
+
+    preagg = PreAggregation(
+        name="by_status",
+        measures=["revenue"],
+        dimensions=["status"],
+        indexes=[Index(name="status_idx", columns=["status"])],
+    )
+    preagg.refresh(
+        connection=conn,
+        source_sql="SELECT status, SUM(amount) as revenue_raw FROM orders GROUP BY status",
+        table_name="orders_preagg_by_status",
+        mode="full",
+        dialect="duckdb",
+    )
+
+    names = {
+        row[0]
+        for row in conn.execute(
+            "SELECT index_name FROM duckdb_indexes() WHERE table_name = 'orders_preagg_by_status'"
+        ).fetchall()
+    }
+    assert "orders_preagg_by_status_status_idx" in names, names
+
+
+def test_indexes_skipped_for_unsupported_dialect():
+    """Index DDL is skipped (no error, no index) for engines without standard CREATE INDEX."""
+    conn = duckdb.connect(":memory:")
+    conn.execute(
+        "CREATE TABLE orders AS SELECT i as order_id, i % 3 as status, i * 10 as amount FROM generate_series(1, 9) t(i)"
+    )
+
+    preagg = PreAggregation(
+        name="by_status",
+        measures=["revenue"],
+        dimensions=["status"],
+        indexes=[Index(name="status_idx", columns=["status"])],
+    )
+    # Snowflake is not in the index-DDL dialect set: refresh must succeed and create no index.
+    preagg.refresh(
+        connection=conn,
+        source_sql="SELECT status, SUM(amount) as revenue_raw FROM orders GROUP BY status",
+        table_name="orders_preagg_by_status",
+        mode="full",
+        dialect="snowflake",
+    )
+
+    idx = conn.execute(
+        "SELECT index_name FROM duckdb_indexes() WHERE table_name = 'orders_preagg_by_status'"
+    ).fetchall()
+    assert idx == []
+
+
+def _layer_with_unbuilt_rollup(extra_dims=None):
+    """A SemanticLayer with raw data and a rollup defined but NOT materialized."""
+    from sidemantic import SemanticLayer
+
+    layer = SemanticLayer()
+    layer.adapter.execute(
+        "CREATE TABLE orders AS SELECT i as id, i % 2 as status, i * 10 as amount FROM generate_series(1, 6) t(i)"
+    )
+    dims = [Dimension(name="status", type="categorical")]
+    if extra_dims:
+        dims.extend(extra_dims)
+    layer.add_model(
+        Model(
+            name="orders",
+            table="orders",
+            primary_key="id",
+            dimensions=dims,
+            metrics=[Metric(name="revenue", agg="sum", sql="amount")],
+            pre_aggregations=[PreAggregation(name="by_status", measures=["revenue"], dimensions=["status"])],
+        )
+    )
+    return layer
+
+
+def test_preagg_falls_back_to_raw_when_table_missing():
+    """Routing on, rollup matched but not built: fall back to raw and return correct results."""
+    layer = _layer_with_unbuilt_rollup()
+
+    result = layer.query(metrics=["orders.revenue"], dimensions=["orders.status"], use_preaggregations=True)
+    rows = sorted(result.fetchall())
+
+    # status 0 -> 20+40+60=120, status 1 -> 10+30+50=90 (computed from raw, since the rollup is absent)
+    assert rows == [(0, 120), (1, 90)]
+
+
+def test_preagg_strict_raises_when_no_rollup_matches():
+    """Rollup-only mode errors when no pre-aggregation can serve the query."""
+    from sidemantic.core.semantic_layer import PreaggregationStrictError
+
+    layer = _layer_with_unbuilt_rollup(extra_dims=[Dimension(name="region", type="categorical", sql="'x'")])
+
+    with pytest.raises(PreaggregationStrictError):
+        layer.query(
+            metrics=["orders.revenue"],
+            dimensions=["orders.region"],  # not covered by the by_status rollup
+            use_preaggregations=True,
+            preagg_strict=True,
+        )
+
+
+def test_preagg_strict_raises_when_table_missing():
+    """Rollup-only mode errors (no silent fallback) when the matching rollup table is not built."""
+    from sidemantic.core.semantic_layer import PreaggregationStrictError
+
+    layer = _layer_with_unbuilt_rollup()
+
+    with pytest.raises(PreaggregationStrictError):
+        layer.query(
+            metrics=["orders.revenue"],
+            dimensions=["orders.status"],
+            use_preaggregations=True,
+            preagg_strict=True,
+        )
+
+
+def _monthly_partitioned_model():
+    model = Model(
+        name="orders",
+        table="orders",
+        primary_key="id",
+        dimensions=[Dimension(name="created_at", type="time", granularity="day")],
+        metrics=[Metric(name="revenue", agg="sum", sql="amount")],
+    )
+    preagg = PreAggregation(
+        name="monthly",
+        measures=["revenue"],
+        time_dimension="created_at",
+        granularity="month",
+        partition_granularity="month",
+    )
+    return model, preagg
+
+
+def test_build_partitions_creates_one_table_per_bucket_and_covering_view():
+    """A partitioned build materializes one table per month plus a covering view with correct totals."""
+    conn = duckdb.connect(":memory:")
+    conn.execute(
+        "CREATE TABLE orders AS "
+        "SELECT (DATE '2024-01-01' + INTERVAL (i) MONTH) AS created_at, (i + 1) * 100 AS amount "
+        "FROM generate_series(0, 2) t(i)"
+    )  # 2024-01, 2024-02, 2024-03
+    model, preagg = _monthly_partitioned_model()
+
+    built = preagg.build_partitions(conn, model)
+
+    assert len(built) == 3  # one partition table per month bucket
+
+    total = conn.execute("SELECT SUM(revenue_raw) FROM orders_preagg_monthly").fetchone()[0]
+    assert total == 100 + 200 + 300  # covering view aggregates all partitions
+
+    kind = conn.execute(
+        "SELECT table_type FROM information_schema.tables WHERE table_name = 'orders_preagg_monthly'"
+    ).fetchone()[0]
+    assert kind == "VIEW"  # base name resolves to the covering view
+
+
+def test_build_partitions_incremental_leaves_old_partitions_immutable():
+    """With a lookback, only recent partitions rebuild; older ones are immutable."""
+    conn = duckdb.connect(":memory:")
+    conn.execute(
+        "CREATE TABLE orders AS "
+        "SELECT DATE_TRUNC('month', CURRENT_DATE) - INTERVAL (i) MONTH AS created_at, 100 AS amount "
+        "FROM generate_series(0, 3) t(i)"
+    )  # this month and the 3 prior months
+    model, preagg = _monthly_partitioned_model()
+
+    preagg.build_partitions(conn, model)  # full build: 4 partitions, each summing 100
+    assert conn.execute("SELECT SUM(revenue_raw) FROM orders_preagg_monthly").fetchone()[0] == 400
+
+    conn.execute("UPDATE orders SET amount = 999")  # source changes everywhere
+
+    rebuilt = preagg.build_partitions(conn, model, lookback="2 months")
+    assert len(rebuilt) < 4  # older partitions were not rebuilt
+
+    oldest_bucket = conn.execute("SELECT DATE_TRUNC('month', MIN(created_at)) FROM orders").fetchone()[0]
+    oldest_val = conn.execute(
+        f"SELECT revenue_raw FROM orders_preagg_monthly WHERE created_at_month = TIMESTAMP '{oldest_bucket}'"
+    ).fetchone()[0]
+    assert oldest_val == 100  # immutable: still the pre-update value
+
+
+def test_partitioned_refresh_requires_model():
+    """refresh() never silently skips partitioning: a partitioned preagg without model errors."""
+    conn = duckdb.connect(":memory:")
+    _, preagg = _monthly_partitioned_model()
+
+    with pytest.raises(ValueError, match="partitioned"):
+        preagg.refresh(connection=conn, source_sql="SELECT 1", table_name="orders_preagg_monthly", mode="full")
+
+
+def test_partitioned_refresh_with_model_delegates_to_build_partitions():
+    """refresh(model=...) builds partitions and reports mode='partitioned'."""
+    conn = duckdb.connect(":memory:")
+    conn.execute(
+        "CREATE TABLE orders AS "
+        "SELECT (DATE '2024-01-01' + INTERVAL (i) MONTH) AS created_at, 100 AS amount FROM generate_series(0, 1) t(i)"
+    )
+    model, preagg = _monthly_partitioned_model()
+
+    result = preagg.refresh(
+        connection=conn, source_sql="", table_name="orders_preagg_monthly", mode="full", model=model
+    )
+
+    assert result.mode == "partitioned"
+    assert conn.execute("SELECT SUM(revenue_raw) FROM orders_preagg_monthly").fetchone()[0] == 200
+
+
+def _ungrouped_orders_layer(layer):
+    """Build an orders base table + a PK-carrying detail rollup for ungrouped tests."""
+    layer.use_preaggregations = True
+    layer.conn.execute("CREATE TABLE orders (order_id INTEGER, status VARCHAR, amount DECIMAL(10, 2))")
+    layer.conn.execute(
+        "INSERT INTO orders VALUES "
+        "(1, 'completed', 100.00), (2, 'completed', 300.00), (3, 'pending', 50.00), (4, 'pending', 25.00)"
+    )
+    # PK in GROUP BY => one row per order_id (count_raw == 1, revenue_raw == amount).
+    layer.conn.execute(
+        """
+        CREATE TABLE orders_preagg_detail AS
+        SELECT order_id, status, COUNT(*) AS count_raw, SUM(amount) AS revenue_raw
+        FROM orders
+        GROUP BY order_id, status
+        """
+    )
+    model = Model(
+        name="orders",
+        table="orders",
+        primary_key="order_id",
+        dimensions=[
+            Dimension(name="status", type="categorical", sql="status"),
+            Dimension(name="order_id", type="categorical", sql="order_id"),
+        ],
+        metrics=[
+            Metric(name="count", agg="count"),
+            Metric(name="revenue", agg="sum", sql="amount"),
+        ],
+        pre_aggregations=[
+            PreAggregation(name="detail", measures=["count", "revenue"], dimensions=["order_id", "status"])
+        ],
+    )
+    layer.add_model(model)
+    return model
+
+
+def test_ungrouped_routes_to_pk_carrying_rollup(layer):
+    """An ungrouped query is served from a rollup that stores the primary key, returning stored rows."""
+    _ungrouped_orders_layer(layer)
+
+    preagg_sql = layer.compile(
+        metrics=["orders.revenue"],
+        dimensions=["orders.order_id", "orders.status"],
+        order_by=["order_id"],
+        ungrouped=True,
+    )
+
+    assert "orders_preagg_detail" in preagg_sql
+    assert "used_preagg=true" in preagg_sql
+
+    # Stored rows must match the raw ungrouped query (one row per order_id).
+    baseline_rows = layer.query(
+        metrics=["orders.revenue"],
+        dimensions=["orders.order_id", "orders.status"],
+        order_by=["order_id"],
+        ungrouped=True,
+        use_preaggregations=False,
+    ).fetchall()
+    preagg_rows = layer.adapter.execute(preagg_sql).fetchall()
+    assert preagg_rows == baseline_rows
+
+
+def test_ungrouped_preagg_sql_has_no_group_by(layer):
+    """Ungrouped routing selects the raw measure column with no GROUP BY / HAVING / re-aggregation."""
+    _ungrouped_orders_layer(layer)
+
+    preagg_sql = layer.compile(
+        metrics=["orders.revenue"],
+        dimensions=["orders.order_id", "orders.status"],
+        order_by=["order_id"],
+        ungrouped=True,
+    )
+
+    assert "GROUP BY" not in preagg_sql.upper()
+    assert "HAVING" not in preagg_sql.upper()
+    # Raw column selected directly, NOT re-aggregated.
+    assert "SUM(revenue_raw)" not in preagg_sql
+    assert "revenue_raw" in preagg_sql
+
+
+def test_ungrouped_explain_reports_pk_rollup_match(layer):
+    """explain() reflects that a PK-carrying rollup serves the ungrouped query (no stale reason)."""
+    _ungrouped_orders_layer(layer)
+
+    plan = layer.explain(
+        metrics=["orders.revenue"],
+        dimensions=["orders.order_id", "orders.status"],
+        ungrouped=True,
+        use_preaggregations=True,
+    )
+
+    assert plan.used_preaggregation is True
+    assert plan.selected_preagg == "detail"
+    assert "preaggs require aggregation" not in (plan.routing_reason or "")
+
+
+def test_ungrouped_rollup_without_pk_falls_to_raw(layer):
+    """A rollup lacking the primary key cannot serve ungrouped (rows not unique); falls to raw tables."""
+    layer.use_preaggregations = True
+    layer.conn.execute("CREATE TABLE orders (order_id INTEGER, status VARCHAR, amount DECIMAL(10, 2))")
+    layer.conn.execute(
+        "INSERT INTO orders VALUES (1, 'completed', 100.00), (2, 'completed', 300.00), (3, 'pending', 50.00)"
+    )
+    # No order_id in the rollup => aggregated rows, must NOT serve ungrouped.
+    layer.conn.execute(
+        """
+        CREATE TABLE orders_preagg_by_status AS
+        SELECT status, COUNT(*) AS count_raw, SUM(amount) AS revenue_raw
+        FROM orders
+        GROUP BY status
+        """
+    )
+    model = Model(
+        name="orders",
+        table="orders",
+        primary_key="order_id",
+        dimensions=[
+            Dimension(name="status", type="categorical", sql="status"),
+            Dimension(name="order_id", type="categorical", sql="order_id"),
+        ],
+        metrics=[
+            Metric(name="count", agg="count"),
+            Metric(name="revenue", agg="sum", sql="amount"),
+        ],
+        pre_aggregations=[PreAggregation(name="by_status", measures=["count", "revenue"], dimensions=["status"])],
+    )
+    layer.add_model(model)
+
+    sql = layer.compile(
+        metrics=["orders.revenue"],
+        dimensions=["orders.order_id", "orders.status"],
+        ungrouped=True,
+    )
+
+    assert "orders_preagg_by_status" not in sql
+    # Compiled against raw tables instead.
+    assert "orders_cte" in sql
+    assert "used_preagg=true" not in sql
+
+    plan = layer.explain(
+        metrics=["orders.revenue"],
+        dimensions=["orders.order_id", "orders.status"],
+        ungrouped=True,
+        use_preaggregations=True,
+    )
+    assert plan.used_preaggregation is False
+
+
+def test_ungrouped_composite_pk_partial_rollup_falls_to_raw(layer):
+    """A rollup carrying only part of a composite primary key cannot guarantee unique rows."""
+    layer.use_preaggregations = True
+    model = Model(
+        name="orders",
+        table="orders",
+        primary_key=["order_id", "line_id"],
+        dimensions=[
+            Dimension(name="order_id", type="categorical", sql="order_id"),
+            Dimension(name="line_id", type="categorical", sql="line_id"),
+            Dimension(name="status", type="categorical", sql="status"),
+        ],
+        metrics=[Metric(name="revenue", agg="sum", sql="amount")],
+        pre_aggregations=[PreAggregation(name="partial", measures=["revenue"], dimensions=["order_id", "status"])],
+    )
+    layer.add_model(model)
+
+    sql = layer.compile(
+        metrics=["orders.revenue"],
+        dimensions=["orders.order_id", "orders.status"],
+        ungrouped=True,
+    )
+
+    assert "orders_preagg_partial" not in sql
+
+
+def test_ungrouped_avg_metric_bails_to_raw(layer):
+    """avg under ungrouped is not a per-row value, so even a PK rollup must fall to raw."""
+    layer.use_preaggregations = True
+    layer.conn.execute("CREATE TABLE orders (order_id INTEGER, status VARCHAR, amount DECIMAL(10, 2))")
+    layer.conn.execute("INSERT INTO orders VALUES (1, 'completed', 100.00), (2, 'pending', 50.00)")
+    layer.conn.execute(
+        """
+        CREATE TABLE orders_preagg_detail AS
+        SELECT order_id, status, SUM(amount) AS avg_amount_raw, COUNT(*) AS count_raw
+        FROM orders
+        GROUP BY order_id, status
+        """
+    )
+    model = Model(
+        name="orders",
+        table="orders",
+        primary_key="order_id",
+        dimensions=[
+            Dimension(name="status", type="categorical", sql="status"),
+            Dimension(name="order_id", type="categorical", sql="order_id"),
+        ],
+        metrics=[
+            Metric(name="avg_amount", agg="avg", sql="amount"),
+            Metric(name="count", agg="count"),
+        ],
+        pre_aggregations=[
+            PreAggregation(name="detail", measures=["avg_amount", "count"], dimensions=["order_id", "status"])
+        ],
+    )
+    layer.add_model(model)
+
+    sql = layer.compile(
+        metrics=["orders.avg_amount"],
+        dimensions=["orders.order_id", "orders.status"],
+        ungrouped=True,
+    )
+
+    assert "orders_preagg_detail" not in sql
+    assert "orders_cte" in sql
+
+
+def test_ungrouped_strict_without_pk_rollup_raises(layer):
+    """Strict mode + ungrouped errors when no PK-carrying rollup can serve the query."""
+    from sidemantic.core.semantic_layer import PreaggregationStrictError
+
+    layer.use_preaggregations = True
+    layer.preagg_strict = True
+    layer.conn.execute("CREATE TABLE orders (order_id INTEGER, status VARCHAR, amount DECIMAL(10, 2))")
+    layer.conn.execute("INSERT INTO orders VALUES (1, 'completed', 100.00)")
+    layer.conn.execute(
+        """
+        CREATE TABLE orders_preagg_by_status AS
+        SELECT status, COUNT(*) AS count_raw, SUM(amount) AS revenue_raw
+        FROM orders
+        GROUP BY status
+        """
+    )
+    model = Model(
+        name="orders",
+        table="orders",
+        primary_key="order_id",
+        dimensions=[
+            Dimension(name="status", type="categorical", sql="status"),
+            Dimension(name="order_id", type="categorical", sql="order_id"),
+        ],
+        metrics=[Metric(name="revenue", agg="sum", sql="amount")],
+        pre_aggregations=[PreAggregation(name="by_status", measures=["revenue"], dimensions=["status"])],
+    )
+    layer.add_model(model)
+
+    with pytest.raises(PreaggregationStrictError):
+        layer.query(
+            metrics=["orders.revenue"],
+            dimensions=["orders.order_id", "orders.status"],
+            ungrouped=True,
+        )
 
 
 if __name__ == "__main__":

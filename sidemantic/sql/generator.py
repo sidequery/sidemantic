@@ -720,8 +720,11 @@ class SQLGenerator:
                 ),
             )
 
-        # Try to use pre-aggregation if enabled (single model queries only)
-        if use_preaggregations and len(model_names) == 1 and not ungrouped:
+        # Try to use pre-aggregation if enabled (single model queries only).
+        # Ungrouped (drill-to-detail) queries can be served only from a rollup
+        # that stores the model's primary key (rows are then unique); the PK
+        # check lives in _try_use_preaggregation.
+        if use_preaggregations and len(model_names) == 1:
             preagg_sql = self._try_use_preaggregation(
                 model_name=model_names[0],
                 metrics=metrics,
@@ -731,6 +734,7 @@ class SQLGenerator:
                 limit=limit,
                 offset=offset,
                 aliases=aliases,
+                ungrouped=ungrouped,
             )
             if preagg_sql:
                 # Add instrumentation comment
@@ -5406,6 +5410,7 @@ LEFT JOIN {preagg_table} AS {rollup_alias}
         limit: int | None = None,
         offset: int | None = None,
         aliases: dict[str, str] | None = None,
+        ungrouped: bool = False,
     ) -> str | None:
         """Try to generate query using a pre-aggregation.
 
@@ -5417,6 +5422,9 @@ LEFT JOIN {preagg_table} AS {rollup_alias}
             order_by: List of fields to order by
             limit: Maximum number of rows
             offset: Number of rows to skip
+            ungrouped: If True, serve raw rows (no re-aggregation, no GROUP BY)
+                directly from a rollup; only rollups carrying the model's
+                primary key qualify (rows are unique).
 
         Returns:
             SQL query string if pre-aggregation found, None otherwise
@@ -5464,6 +5472,18 @@ LEFT JOIN {preagg_table} AS {rollup_alias}
                 filter_expr = f.replace(f"{model_name}.", "").replace(f"{model_name}_cte.", "")
                 filter_exprs.append(filter_expr)
 
+        if ungrouped:
+            # Ungrouped (drill-to-detail) reads stored rows verbatim, so the
+            # requested metrics must map to a per-row stored value. Re-derivable
+            # aggregates (avg / ratio / derived) are only meaningful after a
+            # GROUP BY, so bail to raw rather than emit a per-row state column.
+            for metric_name in metric_names:
+                metric = model.get_metric(metric_name)
+                if metric is None:
+                    return None
+                if metric.type in {"ratio", "derived"} or metric.agg in {"avg", "count_distinct"}:
+                    return None
+
         matcher = PreAggregationMatcher(model)
         preagg = matcher.find_matching_preagg(
             metrics=metric_names,
@@ -5474,6 +5494,14 @@ LEFT JOIN {preagg_table} AS {rollup_alias}
 
         if not preagg:
             return None
+
+        if ungrouped:
+            # Rows are unique only if the rollup stores the full primary key as
+            # dimensions; otherwise the stored rows are aggregated and must not
+            # be served ungrouped. Fall through to raw tables.
+            preagg_dims = set(preagg.dimensions or [])
+            if not set(model.primary_key_columns).issubset(preagg_dims):
+                return None
 
         # Generate SQL against pre-aggregation table
         return self._generate_from_preaggregation(
@@ -5487,6 +5515,7 @@ LEFT JOIN {preagg_table} AS {rollup_alias}
             limit=limit,
             offset=offset,
             aliases=aliases,
+            ungrouped=ungrouped,
         )
 
     def _generate_from_preaggregation(
@@ -5501,6 +5530,7 @@ LEFT JOIN {preagg_table} AS {rollup_alias}
         limit: int | None = None,
         offset: int | None = None,
         aliases: dict[str, str] | None = None,
+        ungrouped: bool = False,
     ) -> str:
         """Generate SQL query from a pre-aggregation.
 
@@ -5514,6 +5544,8 @@ LEFT JOIN {preagg_table} AS {rollup_alias}
             order_by: List of fields to order by
             limit: Maximum number of rows
             offset: Number of rows to skip
+            ungrouped: If True, select the stored raw measure columns directly
+                with no re-aggregation, GROUP BY, or HAVING (drill-to-detail).
 
         Returns:
             SQL query string
@@ -5594,11 +5626,46 @@ LEFT JOIN {preagg_table} AS {rollup_alias}
             canonical_ref = metric_ref if "." in metric_ref else f"{model.name}.{metric_ref}"
             register_output_name(output_name, metric_ref, canonical_ref, metric_name, output_name)
 
-            metric_expr = self._preaggregation_metric_expression(model, preagg, metric_name)
+            if ungrouped:
+                # Drill-to-detail: emit the stored per-row value with no
+                # re-aggregation (rows are unique via the PK in the rollup).
+                metric_expr = f"{metric_name}_raw"
+            else:
+                metric_expr = self._preaggregation_metric_expression(model, preagg, metric_name)
             select_exprs.append(f"{metric_expr} AS {self._quote_alias(output_name)}")
 
-        # Build FROM clause
+        # Build FROM clause.
+        #
+        # Lambda (rollupLambda) pre-aggregations with union_with_source_data serve a
+        # query as the UNION of two disjoint, union-compatible legs split at
+        # build_range_end (a raw SQL expression, interpolated verbatim like the
+        # build_range/partition_filter predicates in build_partitions):
+        #   - BATCH leg: the materialized rollup table, restricted to buckets BEFORE
+        #     build_range_end.
+        #   - FRESH leg: a live aggregation of source rows AT/AFTER build_range_end,
+        #     produced by generate_materialization_sql (identical {time}_{gran}, dim,
+        #     and {measure}_raw columns), so the legs are union-compatible by
+        #     construction.
+        # The outer SELECT/GROUP BY (built below from the same partial-state columns)
+        # re-aggregates the union rows to the query grain. Without a build_range_end
+        # there is no split point, so it degrades to a plain rollup read (unioning an
+        # unbounded source would double-count).
         from_clause = preagg_table
+        if (
+            preagg.type == "lambda"
+            and getattr(preagg, "union_with_source_data", False)
+            and preagg.build_range_end
+            and preagg.time_dimension
+            and preagg.granularity
+        ):
+            time_col = f"{preagg.time_dimension}_{preagg.granularity}"
+            build_range_end = preagg.build_range_end
+            time_dim = model.get_dimension(preagg.time_dimension)
+            batch_leg = f"SELECT * FROM {preagg_table} WHERE {time_col} < ({build_range_end})"
+            fresh_leg = preagg.generate_materialization_sql(
+                model, partition_filter=f"{time_dim.sql_expr} >= ({build_range_end})"
+            )
+            from_clause = f"(\n{batch_leg}\nUNION ALL\n{fresh_leg}\n) AS t"
 
         # Build WHERE clause if filters exist
         where_clause = ""
@@ -5624,18 +5691,18 @@ LEFT JOIN {preagg_table} AS {rollup_alias}
 
             where_clause = f"\nWHERE {' AND '.join(rewritten_filters)}"
 
-        # Build GROUP BY clause
-        group_by_exprs = []
-        for i in range(1, len(parsed_dims) + 1):
-            group_by_exprs.append(str(i))
-
+        # Build GROUP BY clause (skipped for ungrouped drill-to-detail: rows are
+        # stored uniquely and selected verbatim, so no aggregation occurs).
         group_by_clause = ""
-        if group_by_exprs:
-            group_by_clause = f"\nGROUP BY {', '.join(group_by_exprs)}"
+        if not ungrouped:
+            group_by_exprs = [str(i) for i in range(1, len(parsed_dims) + 1)]
+            if group_by_exprs:
+                group_by_clause = f"\nGROUP BY {', '.join(group_by_exprs)}"
 
-        # Build HAVING clause for aggregate-stage metric filters
+        # Build HAVING clause for aggregate-stage metric filters. Aggregate-stage
+        # filters are an aggregation concept and do not apply to ungrouped rows.
         having_clause = ""
-        if aggregate_filters:
+        if aggregate_filters and not ungrouped:
             rewritten_having_filters = [
                 self._rewrite_preaggregation_aggregate_filter(model, preagg, f) for f in aggregate_filters
             ]

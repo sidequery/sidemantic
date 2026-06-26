@@ -169,3 +169,87 @@ def test_join_composite_keys_reverse_direction():
     rel = {r.name: r for r in g.get_model("orders").relationships}["cohort"]
     assert rel.foreign_key == "gender"
     assert rel.metadata.get("composite_keys") == ["gender", "state"]
+
+
+# --- & and-tree must not split inside string literals ---
+
+
+def _dim_sql(src, name, model="o"):
+    return _parse(src).get_model(model).get_dimension(name).sql
+
+
+def test_and_tree_preserves_string_literal():
+    sql = _dim_sql("source: o is duckdb.table('o') extend {\n  dimension: amp is label = 'A & B'\n}\n", "amp")
+    assert sql == "label = 'A & B'"
+
+
+def test_and_tree_still_expands_top_level():
+    sql = _dim_sql("source: o is duckdb.table('o') extend {\n  dimension: r is value < 2031 & > -8000\n}\n", "r")
+    assert sql == "value < 2031 AND value > -8000"
+
+
+# --- regex ~ must consume only its own field operand ---
+
+
+def test_regex_match_does_not_swallow_left_context():
+    sql = _dim_sql("source: o is duckdb.table('o') extend {\n  dimension: a is amount = 1 and name ~ r'foo'\n}\n", "a")
+    assert sql == "amount = 1 and REGEXP_MATCHES(name, 'foo')"
+
+
+def test_multiple_regex_matches_stay_separate():
+    sql = _dim_sql("source: o is duckdb.table('o') extend {\n  dimension: b is name ~ r'x' and code ~ r'y'\n}\n", "b")
+    assert sql == "REGEXP_MATCHES(name, 'x') and REGEXP_MATCHES(code, 'y')"
+
+
+def test_single_regex_match_still_works():
+    sql = _dim_sql(
+        "source: o is duckdb.table('o') extend {\n  dimension: c is user_email ~ r'gserviceaccount'\n}\n", "c"
+    )
+    assert sql == "REGEXP_MATCHES(user_email, 'gserviceaccount')"
+
+
+# --- pick/when/else on a single line must produce a well-formed CASE ---
+
+
+def test_single_line_pick_produces_valid_case():
+    sql = _dim_sql(
+        "source: o is duckdb.table('o') extend {\n  dimension: tier is pick 'lo' when amount < 5 else 'hi'\n}\n",
+        "tier",
+    )
+    assert sql == "CASE WHEN amount < 5 THEN 'lo' ELSE 'hi' END"
+
+
+def test_single_line_apply_pick_produces_valid_case():
+    sql = _dim_sql(
+        "source: o is duckdb.table('o') extend {\n"
+        "  dimension: bucket is status ? pick 'lo' when < 5 pick 'hi' when 'ASW' else 'x'\n"
+        "}\n",
+        "bucket",
+    )
+    assert sql == "CASE WHEN status < 5 THEN 'lo' WHEN status = 'ASW' THEN 'hi' ELSE 'x' END"
+
+
+def test_apply_pick_with_regex_conditions():
+    sql = _dim_sql(
+        "source: o is duckdb.table('o') extend {\n"
+        "  dimension: faang is title ?\n"
+        "      pick 'Facebook' when ~ r'(Facebook|Instagram)'\n"
+        "      pick 'Apple' when ~ r'(Apple|iPhone)'\n"
+        "      else 'OTHER'\n"
+        "}\n",
+        "faang",
+    )
+    assert sql == (
+        "CASE WHEN REGEXP_MATCHES(title, '(Facebook|Instagram)') THEN 'Facebook' "
+        "WHEN REGEXP_MATCHES(title, '(Apple|iPhone)') THEN 'Apple' ELSE 'OTHER' END"
+    )
+
+
+# --- @date literal carrying a time component ---
+
+
+def test_datetime_literal_becomes_timestamp():
+    sql = _dim_sql(
+        "source: o is duckdb.table('o') extend {\n  dimension: f is created_at > @2024-01-01 10:30:00\n}\n", "f"
+    )
+    assert sql == "created_at > TIMESTAMP '2024-01-01 10:30:00'"

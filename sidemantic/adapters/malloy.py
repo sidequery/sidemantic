@@ -466,29 +466,23 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         # Pattern: identifier!identifier( -> identifier(
         expr = re.sub(r"(\w+)!\w+\(", r"\1(", expr)
 
-        # ~ regex match with r'' literal: expr ~ r'pattern' -> REGEXP_MATCHES(expr, 'pattern')
-        # Use (.+?) with lookahead to capture full LHS including spaces/parens
-        expr = re.sub(
-            r"(.+?)\s+~\s+r'([^']*)'",
-            r"REGEXP_MATCHES(\1, '\2')",
-            expr,
-        )
-        expr = re.sub(
-            r'(.+?)\s+~\s+r"([^"]*)"',
-            r"REGEXP_MATCHES(\1, '\2')",
-            expr,
-        )
-        # !~ negated regex
-        expr = re.sub(
-            r"(.+?)\s+!~\s+r'([^']*)'",
-            r"NOT REGEXP_MATCHES(\1, '\2')",
-            expr,
-        )
+        # ~ / !~ regex match with r'' or r"" literal:
+        #   field ~ r'pattern' -> REGEXP_MATCHES(field, 'pattern')
+        # The LHS is restricted to a single field reference so the match does not
+        # swallow preceding conditions (`a = 1 and name ~ r'x'`) or, on a second
+        # match in the same expression, the operator joining the two matches.
+        expr = re.sub(r"([\w.`]+)\s+!~\s+r'([^']*)'", r"NOT REGEXP_MATCHES(\1, '\2')", expr)
+        expr = re.sub(r'([\w.`]+)\s+!~\s+r"([^"]*)"', r"NOT REGEXP_MATCHES(\1, '\2')", expr)
+        expr = re.sub(r"([\w.`]+)\s+~\s+r'([^']*)'", r"REGEXP_MATCHES(\1, '\2')", expr)
+        expr = re.sub(r'([\w.`]+)\s+~\s+r"([^"]*)"', r"REGEXP_MATCHES(\1, '\2')", expr)
 
-        # @date literals: @YYYY-MM-DD -> DATE 'YYYY-MM-DD'
+        # @date / @timestamp literals:
+        # @YYYY-MM-DD HH:MM:SS -> TIMESTAMP 'YYYY-MM-DD HH:MM:SS'
+        # @YYYY-MM-DD -> DATE 'YYYY-MM-DD'
         # @YYYY-MM -> DATE 'YYYY-MM-01'
         # @YYYY -> DATE 'YYYY-01-01'
         # @YYYY-Qn -> handled as text
+        expr = re.sub(r"@(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})", r"TIMESTAMP '\1 \2'", expr)
         expr = re.sub(r"@(\d{4}-\d{2}-\d{2})", r"DATE '\1'", expr)
         expr = re.sub(r"@(\d{4}-\d{2})(?!\d)", r"DATE '\1-01'", expr)
         expr = re.sub(r"@(\d{4})(?![-\d])", r"DATE '\1-01-01'", expr)
@@ -559,14 +553,55 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
             return f"COALESCE({', '.join(parts)})"
         return expr
 
+    @staticmethod
+    def _split_top_level(expr: str, sep: str) -> list[str]:
+        """Split ``expr`` on ``sep`` only at the top level (outside any
+        parentheses/brackets and outside string literals)."""
+        parts: list[str] = []
+        buf: list[str] = []
+        depth = 0
+        quote = None
+        i = 0
+        n = len(sep)
+        while i < len(expr):
+            ch = expr[i]
+            if quote is not None:
+                buf.append(ch)
+                if ch == quote:
+                    quote = None
+                i += 1
+                continue
+            if ch in ("'", '"', "`"):
+                quote = ch
+                buf.append(ch)
+            elif ch in "([{":
+                depth += 1
+                buf.append(ch)
+            elif ch in ")]}":
+                depth -= 1
+                buf.append(ch)
+            elif depth == 0 and expr[i : i + n] == sep:
+                parts.append("".join(buf))
+                buf = []
+                i += n
+                continue
+            else:
+                buf.append(ch)
+            i += 1
+        parts.append("".join(buf))
+        return parts
+
     def _transform_and_tree(self, expr: str) -> str:
         """Transform Malloy & (and-tree) to SQL AND with expanded base field.
 
         Examples:
         - "field < 2031 & > -8000" -> "field < 2031 AND field > -8000"
         - "status != 'Cancelled' & 'Returned'" -> "status != 'Cancelled' AND status != 'Returned'"
+
+        Only splits on a top-level `&` (not one inside a string literal such as
+        "label = 'A & B'").
         """
-        parts = re.split(r"\s+&\s+", expr)
+        parts = [p.strip() for p in self._split_top_level(expr, " & ")]
         if len(parts) < 2:
             return expr
 
@@ -623,34 +658,29 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
                 For apply-pick syntax: `field ? pick 'X' when < 5` the base_field
                 is extracted by the caller and partial conditions get it prepended.
         """
-        lines = expr.strip().split("\n")
+        # Find each `pick <value> when <condition>` arm and an optional trailing
+        # `else <value>`. Keyword-driven (not line-driven) so single-line and
+        # multi-line pick expressions are both handled. Each arm's condition runs
+        # until the next `pick`/`else` keyword or end of string.
+        arms = re.findall(
+            r"pick\s+(.+?)\s+when\s+(.+?)(?=\s+pick\s|\s+else\s|$)",
+            expr,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        else_match = re.search(r"(?:^|\s)else\s+(.+?)\s*$", expr, flags=re.IGNORECASE | re.DOTALL)
+
         cases = []
-        else_value = None
-
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
-
-            # Match: pick 'value' when condition
-            pick_match = re.match(r"pick\s+(.+?)\s+when\s+(.+)$", line, re.IGNORECASE)
-            if pick_match:
-                value = pick_match.group(1).strip()
-                condition = pick_match.group(2).strip()
-                if base_field:
-                    condition = self._expand_partial_condition(condition, base_field)
-                cases.append(f"WHEN {condition} THEN {value}")
-                continue
-
-            # Match: else 'value'
-            else_match = re.match(r"else\s+(.+)$", line, re.IGNORECASE)
-            if else_match:
-                else_value = else_match.group(1).strip()
+        for value, condition in arms:
+            value = value.strip()
+            condition = condition.strip()
+            if base_field:
+                condition = self._expand_partial_condition(condition, base_field)
+            cases.append(f"WHEN {condition} THEN {value}")
 
         if cases:
             case_str = "CASE " + " ".join(cases)
-            if else_value:
-                case_str += f" ELSE {else_value}"
+            if else_match:
+                case_str += f" ELSE {else_match.group(1).strip()}"
             case_str += " END"
             return case_str
 
@@ -1108,10 +1138,9 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         field_expr = ctx.fieldExpr()
         sql = self._get_text(field_expr) if field_expr else name
 
-        # Transform Malloy-specific expression syntax to SQL
-        sql = self._transform_malloy_expr(sql)
-
-        # Transform pick/when to CASE (with apply-pick support)
+        # Transform pick/when to CASE first (with apply-pick support) so the
+        # expression transforms below operate on real field references inside the
+        # WHEN clauses rather than on raw `pick ... when ...` text.
         if "pick" in sql.lower():
             # Check for apply-pick pattern: field ? pick ... when ...
             apply_match = re.match(r"^(.+?)\s*\?\s*\n?\s*(pick\s+.+)$", sql, re.DOTALL | re.IGNORECASE)
@@ -1121,6 +1150,9 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
                 sql = self._transform_pick_to_case(pick_expr, base_field=base_field)
             else:
                 sql = self._transform_pick_to_case(sql)
+
+        # Transform remaining Malloy-specific expression syntax to SQL
+        sql = self._transform_malloy_expr(sql)
 
         # Infer type
         dim_type = self._infer_dimension_type(sql, name)

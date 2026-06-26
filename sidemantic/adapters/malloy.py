@@ -306,8 +306,11 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         if any(p in sql_lower for p in time_patterns):
             return "time"
 
-        time_name_patterns = ["date", "time", "timestamp", "_at", "created", "updated"]
-        if any(p in name_lower for p in time_name_patterns):
+        # Malloy trailing time truncation (created_at.month, ts.day, ...) -> time.
+        # _extract_granularity reads the same trailing timeframe afterwards.
+        granularities = ("second", "minute", "hour", "day", "week", "month", "quarter", "year")
+        trailing = re.search(r"\.(\w+)$", sql_lower)
+        if trailing and trailing.group(1) in granularities:
             return "time"
 
         # Boolean detection - comparison that yields true/false
@@ -320,6 +323,12 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         # Numeric detection
         if re.search(r"[+\-*/]", sql) and "||" not in sql:
             return "numeric"
+
+        # Name-based time heuristic. Applied last (weakest signal) so an explicit
+        # comparison or arithmetic expression is not overridden by the field name.
+        time_name_patterns = ["date", "time", "timestamp", "_at", "created", "updated"]
+        if any(p in name_lower for p in time_name_patterns):
+            return "time"
 
         return "categorical"
 
@@ -351,6 +360,33 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
 
         return None
 
+    @staticmethod
+    def _has_top_level_arith(expr: str) -> bool:
+        """Return True if a binary arithmetic operator appears outside any
+        parentheses, brackets, or quotes.
+
+        Distinguishes a single aggregation call (`sum(x)`, `cost.sum()`) from a
+        compound expression built from several aggregates (`sum(a) / sum(b)`),
+        which must be preserved verbatim as a derived measure.
+        """
+        depth = 0
+        quote = None
+        n = len(expr)
+        for i, ch in enumerate(expr):
+            if quote is not None:
+                if ch == quote:
+                    quote = None
+                continue
+            if ch in ("'", '"', "`"):
+                quote = ch
+            elif ch in "([{":
+                depth += 1
+            elif ch in ")]}":
+                depth -= 1
+            elif depth == 0 and ch in "+-*/%" and 0 < i < n - 1 and expr[i - 1] == " " and expr[i + 1] == " ":
+                return True
+        return False
+
     def _parse_aggregation(self, expr: str) -> tuple[str | None, str | None]:
         """Parse aggregation function from expression.
 
@@ -363,6 +399,14 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
             return None, None
 
         expr_stripped = expr.strip()
+
+        # A compound expression combining aggregates with a top-level arithmetic
+        # operator (e.g. `sum(a) / sum(b)`, `cost.sum() / quantity.sum()`,
+        # `sum(x) / count()`) is not a single aggregation. Preserve it verbatim so
+        # the caller treats it as a derived measure instead of mis-capturing one
+        # function's arguments across the operator.
+        if self._has_top_level_arith(expr_stripped):
+            return None, expr_stripped
 
         # Pattern 1: dot-method aggregation - field.func() or field.func(args)
         # Handles: cost.sum(), averageRating.avg(), `number`.sum(), images.count()
@@ -475,14 +519,24 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         if "??" not in expr:
             return expr
 
-        # Split on ?? only at depth 0
+        # Split on ?? only at depth 0 and outside string literals
         parts = []
         current = []
         depth = 0
+        quote = None
         i = 0
         while i < len(expr):
             ch = expr[i]
-            if ch in ("(", "[", "{"):
+            if quote is not None:
+                current.append(ch)
+                if ch == quote:
+                    quote = None
+                i += 1
+                continue
+            if ch in ("'", '"', "`"):
+                quote = ch
+                current.append(ch)
+            elif ch in ("(", "[", "{"):
                 depth += 1
                 current.append(ch)
             elif ch in (")", "]", "}"):
@@ -1118,28 +1172,35 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         expr_text = self._get_text(field_expr) if field_expr else ""
 
         # Check for filtered measure: count() { where: ... }
+        # Successive refinements (count() { where: a } { where: b }) parse as
+        # nested ExprFieldProps; Malloy ANDs them, so unwrap every level and
+        # collect all filters rather than only the outermost one.
         filters = None
         if isinstance(field_expr, MalloyParser.ExprFieldPropsContext):
-            # Has field properties (like { where: ... })
-            inner_expr = field_expr.fieldExpr()
-            props = field_expr.fieldProperties()
+            collected_filters: list[str] = []
+            node = field_expr
+            while isinstance(node, MalloyParser.ExprFieldPropsContext):
+                props = node.fieldProperties()
+                if props:
+                    for prop_stmt in props.fieldPropertyStatement():
+                        if isinstance(prop_stmt, MalloyParser.WhereStatementContext) or hasattr(
+                            prop_stmt, "whereStatement"
+                        ):
+                            where_stmt = (
+                                prop_stmt
+                                if isinstance(prop_stmt, MalloyParser.WhereStatementContext)
+                                else getattr(prop_stmt, "whereStatement", lambda: None)()
+                            )
+                            if where_stmt:
+                                filter_list = where_stmt.filterClauseList()
+                                if filter_list:
+                                    collected_filters.extend(self._get_text(f) for f in filter_list.fieldExpr())
+                node = node.fieldExpr()
 
-            expr_text = self._get_text(inner_expr) if inner_expr else ""
-
-            if props:
-                for prop_stmt in props.fieldPropertyStatement():
-                    if isinstance(prop_stmt, MalloyParser.WhereStatementContext) or hasattr(
-                        prop_stmt, "whereStatement"
-                    ):
-                        where_stmt = (
-                            prop_stmt
-                            if isinstance(prop_stmt, MalloyParser.WhereStatementContext)
-                            else getattr(prop_stmt, "whereStatement", lambda: None)()
-                        )
-                        if where_stmt:
-                            filter_list = where_stmt.filterClauseList()
-                            if filter_list:
-                                filters = [self._get_text(f) for f in filter_list.fieldExpr()]
+            expr_text = self._get_text(node) if node is not None else ""
+            if collected_filters:
+                # Collected outermost-first; reverse to restore source order.
+                filters = list(reversed(collected_filters))
 
         # Transform Malloy-specific expression syntax to SQL
         expr_text = self._transform_malloy_expr(expr_text)
@@ -1271,17 +1332,13 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
                 if join_metadata is None:
                     join_metadata = {}
                 join_metadata["on_condition"] = expr_text
-                # Extract all FKs from equalities: field = other.field
-                fk_matches = re.findall(r"(\w+)\s*=\s*\w+\.\w+", expr_text)
-                if fk_matches:
-                    foreign_key = fk_matches[0]
-                    if len(fk_matches) > 1:
-                        join_metadata["composite_keys"] = fk_matches
-                else:
-                    # Fallback: first identifier before =
-                    match = re.match(r"(\w+)\s*=", expr_text)
-                    if match:
-                        foreign_key = match.group(1)
+                # Extract FK column(s), handling either ordering of each equality
+                # and keys qualified by the source or target name.
+                fk_keys = self._extract_on_condition_keys(expr_text, name, rel_type)
+                if fk_keys:
+                    foreign_key = fk_keys[0]
+                    if len(fk_keys) > 1:
+                        join_metadata["composite_keys"] = fk_keys
 
         self.current_relationships.append(
             Relationship(
@@ -1291,6 +1348,46 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
                 metadata=join_metadata,
             )
         )
+
+    @staticmethod
+    def _extract_on_condition_keys(expr_text: str, target_name: str, rel_type: str) -> list[str]:
+        """Extract foreign-key column(s) from a join ``on`` condition.
+
+        Handles either ordering of each equality (``src = tgt.col`` or
+        ``tgt.col = src``) and multi-condition clauses joined by ``and``. For
+        ``many_to_one`` / ``one_to_one`` the key is the source-side column; for
+        ``one_to_many`` it is the related (target-qualified) column.
+        """
+
+        def split_qualifier(tok: str) -> tuple[str | None, str]:
+            tok = tok.replace("`", "")
+            if "." in tok:
+                qualifier, column = tok.rsplit(".", 1)
+                return qualifier, column
+            return None, tok
+
+        keys: list[str] = []
+        for cond in re.split(r"\s+and\s+", expr_text, flags=re.IGNORECASE):
+            m = re.match(r"\s*([\w.`]+)\s*=\s*([\w.`]+)\s*$", cond)
+            if not m:
+                continue
+            lq, lc = split_qualifier(m.group(1))
+            rq, rc = split_qualifier(m.group(2))
+
+            # Identify which side belongs to the join target.
+            if lq == target_name:
+                target_col, source_col = lc, rc
+            elif rq == target_name:
+                target_col, source_col = rc, lc
+            elif lq is None and rq is not None:
+                source_col, target_col = lc, rc
+            elif rq is None and lq is not None:
+                source_col, target_col = rc, lc
+            else:
+                source_col, target_col = lc, rc
+
+            keys.append(target_col if rel_type == "one_to_many" else source_col)
+        return keys
 
     def _extract_inline_join_source(self, join_name: str, sq_expr):
         """Extract inline source definition from a join and add as a model.

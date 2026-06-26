@@ -28,7 +28,7 @@ from sidemantic.adapters.tableau import TableauAdapter
 from sidemantic.adapters.thoughtspot import ThoughtSpotAdapter
 from sidemantic.sql.generator import SQLGenerator
 
-ALLOWED_RELATIONSHIP_TYPES = {"many_to_one", "one_to_many", "one_to_one", "many_to_many"}
+ALLOWED_RELATIONSHIP_TYPES = {"many_to_one", "one_to_many", "one_to_one", "many_to_many", "cross"}
 UNQUOTED_SQL_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 ADDED_FIXTURE_CASES = [

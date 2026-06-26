@@ -253,3 +253,130 @@ def test_datetime_literal_becomes_timestamp():
         "source: o is duckdb.table('o') extend {\n  dimension: f is created_at > @2024-01-01 10:30:00\n}\n", "f"
     )
     assert sql == "created_at > TIMESTAMP '2024-01-01 10:30:00'"
+
+
+# --- join_cross & export / roundtrip ---
+
+
+def _export_text(graph):
+    import tempfile
+
+    out = tempfile.NamedTemporaryFile("w", suffix=".malloy", delete=False).name
+    MalloyAdapter().export(graph, out)
+    try:
+        return Path(out).read_text()
+    finally:
+        Path(out).unlink(missing_ok=True)
+
+
+def test_join_cross_maps_to_cross_type():
+    g = _parse(
+        "source: regions is duckdb.table('regions') extend { dimension: region_name is name }\n"
+        "source: orders is duckdb.table('orders') extend {\n"
+        "  primary_key: id\n"
+        "  measure: order_count is count()\n"
+        "  join_cross: regions\n"
+        "}\n"
+    )
+    rel = {r.name: r for r in g.get_model("orders").relationships}["regions"]
+    assert rel.type == "cross"
+    assert rel.foreign_key is None
+
+
+def test_cross_relationship_exports_without_key_clause():
+    from sidemantic import Metric, Model
+    from sidemantic.core.relationship import Relationship
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    g = SemanticGraph()
+    g.add_model(Model(name="regions", table="regions", primary_key="id"))
+    g.add_model(
+        Model(
+            name="orders",
+            table="orders",
+            primary_key="id",
+            metrics=[Metric(name="order_count", agg="count")],
+            relationships=[Relationship(name="regions", type="cross")],
+        )
+    )
+    text = _export_text(g)
+    assert "join_cross: regions" in text
+    assert "join_cross: regions with" not in text
+    # Round-trips back to a cross relationship.
+    import tempfile
+
+    p = tempfile.NamedTemporaryFile("w", suffix=".malloy", delete=False)
+    p.write(text)
+    p.close()
+    g2 = MalloyAdapter(warn_on_errors=False).parse(Path(p.name))
+    Path(p.name).unlink(missing_ok=True)
+    assert g2.get_model("orders").relationships[0].type == "cross"
+
+
+def test_time_dimension_granularity_survives_roundtrip():
+    from sidemantic import Dimension, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    g = SemanticGraph()
+    g.add_model(
+        Model(
+            name="orders",
+            table="orders",
+            primary_key="order_id",
+            dimensions=[Dimension(name="order_month", type="time", granularity="month", sql="created_at")],
+        )
+    )
+    text = _export_text(g)
+    assert "order_month is created_at.month" in text
+    assert "rename:" not in text
+
+
+def test_unsupported_metric_not_exported_as_count():
+    from sidemantic import Metric, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    g = SemanticGraph()
+    g.add_model(
+        Model(
+            name="o",
+            table="o",
+            primary_key="id",
+            metrics=[
+                Metric(name="rt", type="cumulative", window_expression="sum(amount)"),
+                Metric(name="c", agg="count"),
+            ],
+        )
+    )
+    text = _export_text(g)
+    assert "rt is count()" not in text
+    assert "c is count()" in text
+
+
+def test_multiline_description_collapsed_to_one_line():
+    from sidemantic import Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    g = SemanticGraph()
+    g.add_model(Model(name="o", table="o", primary_key="id", description="Line one\nLine two"))
+    text = _export_text(g)
+    assert "# desc: Line one Line two" in text
+
+
+def test_one_to_one_exports_as_join_one_not_cross():
+    from sidemantic import Model
+    from sidemantic.core.relationship import Relationship
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    g = SemanticGraph()
+    g.add_model(Model(name="customers", table="c", primary_key="customer_id"))
+    g.add_model(
+        Model(
+            name="orders",
+            table="o",
+            primary_key="id",
+            relationships=[Relationship(name="customers", type="one_to_one", foreign_key="customer_id")],
+        )
+    )
+    text = _export_text(g)
+    assert "join_one: customers with customer_id" in text
+    assert "join_cross: customers" not in text

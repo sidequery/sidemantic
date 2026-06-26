@@ -129,7 +129,7 @@ Not mapped: `--! styles` directives, `##! experimental` pragmas.
 |---------|--------|
 | `join_one: target with foreign_key` | Supported (maps to `Relationship(type="many_to_one")`) |
 | `join_many: target on condition` | Supported (maps to `Relationship(type="one_to_many")`) |
-| `join_cross: target` | Supported (maps to `Relationship(type="one_to_one")`) |
+| `join_cross: target` | Supported (maps to `Relationship(type="cross")`, generating a `CROSS JOIN`) |
 | `join_one: alias is source with fk` (aliased join) | Supported (relationship name is the alias) |
 | `join_one: alias is source on condition` | Supported (FK extracted from first identifier before `=` in the on-expression) |
 | Multiple joins in comma-separated list | Supported |
@@ -309,7 +309,7 @@ Sidemantic can export its semantic model back to Malloy format.
 | `join_one:` / `join_many:` with `on` condition | Supported (full `on` condition exported from `metadata["on_condition"]` when available) |
 | `where:` (segments) | Supported (source-level where clauses exported) |
 | Roundtrip fidelity (parse -> export -> re-parse) | Supported (semantically equivalent graphs; passthrough dimensions intentionally dropped) |
-| `join_cross:` export | Supported (one_to_one relationships exported as `join_cross:`) |
+| `join_cross:` export | Supported (`cross` relationships exported as `join_cross:` with no key clause) |
 | `rename:` export | Supported (simple identifier dimensions detected and exported as `rename: new is old`) |
 | `view:` export | Unsupported (views are not captured during parsing) |
 

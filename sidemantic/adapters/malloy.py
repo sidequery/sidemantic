@@ -1304,7 +1304,7 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
             rel_type = "one_to_many"
             join_list = ctx.joinList()
         elif isinstance(ctx, MalloyParser.DefJoinCrossContext):
-            rel_type = "one_to_one"  # Cross joins mapped to one_to_one
+            rel_type = "cross"  # Cross join -> cartesian product (CROSS JOIN)
             join_list = ctx.joinList()
         else:
             return
@@ -1799,7 +1799,7 @@ class MalloyAdapter(BaseAdapter):
 
         # Model description as tag annotation
         if model.description:
-            lines.append(f"# desc: {model.description}")
+            lines.append(f"# desc: {self._one_line(model.description)}")
 
         # Source header - use connection from metadata, default to duckdb
         connection = (model.metadata or {}).get("connection", "duckdb")
@@ -1807,6 +1807,10 @@ class MalloyAdapter(BaseAdapter):
             lines.append(f'source: {model.name} is {connection}.sql("""{model.sql}""") extend {{')
         elif model.table:
             lines.append(f"source: {model.name} is {connection}.table('{model.table}') extend {{")
+        elif model.extends:
+            # Tableless derived source: reference the base so the output is valid
+            # Malloy (`source: x is base extend {`) rather than a bare `extend {`.
+            lines.append(f"source: {model.name} is {model.extends} extend {{")
         else:
             lines.append(f"source: {model.name} extend {{")
 
@@ -1829,8 +1833,11 @@ class MalloyAdapter(BaseAdapter):
             # Skip passthrough dimensions - Malloy auto-exposes table columns
             if sql == dim.name:
                 continue
-            # Tier 4.5: detect renames (simple identifier, no operators/functions)
-            if re.match(r"^[`\w]+$", sql) and sql != dim.name:
+            # Tier 4.5: detect renames (simple identifier, no operators/functions).
+            # A time dimension with a granularity is NOT a rename: it must keep its
+            # `.granularity` suffix below so the time type survives the roundtrip.
+            is_time_with_grain = dim.type == "time" and dim.granularity
+            if re.match(r"^[`\w]+$", sql) and sql != dim.name and not is_time_with_grain:
                 renames_to_export.append((dim.name, sql))
             else:
                 dims_to_export.append((dim, sql))
@@ -1848,7 +1855,7 @@ class MalloyAdapter(BaseAdapter):
             lines.append("  dimension:")
             for dim, sql in dims_to_export:
                 if dim.description:
-                    lines.append(f"    # desc: {dim.description}")
+                    lines.append(f"    # desc: {self._one_line(dim.description)}")
                 if dim.type == "time" and dim.granularity:
                     sql_lower = sql.lower()
                     already_has_truncation = (
@@ -1862,24 +1869,32 @@ class MalloyAdapter(BaseAdapter):
                     lines.append(f"    {dim.name} is {sql}")
 
         # Measures
-        if model.metrics:
+        measure_lines: list[str] = []
+        has_real_measure = False
+        for metric in model.metrics:
+            measure_expr = self._format_measure(metric)
+            if measure_expr is None:
+                # No faithful Malloy representation (e.g. cumulative/derived with
+                # no sql); skip it rather than silently emitting a bogus count().
+                measure_lines.append(f"    // {metric.name}: unsupported metric type, not exported")
+                continue
+            has_real_measure = True
+            if metric.description:
+                measure_lines.append(f"    # desc: {self._one_line(metric.description)}")
+            measure_lines.append(f"    {metric.name} is {measure_expr}")
+        if has_real_measure:
             lines.append("")
             lines.append("  measure:")
-            for metric in model.metrics:
-                if metric.description:
-                    lines.append(f"    # desc: {metric.description}")
-                measure_expr = self._format_measure(metric)
-                lines.append(f"    {metric.name} is {measure_expr}")
+            lines.extend(measure_lines)
 
         # Joins - Tier 4.4: use on condition from metadata when available
         for rel in model.relationships:
             lines.append("")
-            if rel.type == "many_to_one":
-                join_type = "join_one"
-            elif rel.type == "one_to_one":
-                join_type = "join_cross"
-            else:
-                join_type = "join_many"
+            if rel.type == "cross":
+                # A cross join takes no key clause in Malloy.
+                lines.append(f"  join_cross: {rel.name}")
+                continue
+            join_type = "join_many" if rel.type == "one_to_many" else "join_one"
             on_condition = (rel.metadata or {}).get("on_condition")
             if on_condition:
                 lines.append(f"  {join_type}: {rel.name} on {on_condition}")
@@ -1892,14 +1907,22 @@ class MalloyAdapter(BaseAdapter):
 
         return lines
 
-    def _format_measure(self, metric: Metric) -> str:
-        """Format a metric as Malloy measure expression.
+    @staticmethod
+    def _one_line(text: str) -> str:
+        """Collapse a description to a single line so it is valid in a `# desc:`
+        annotation (Malloy annotations are line-terminated)."""
+        return " ".join(text.split())
+
+    def _format_measure(self, metric: Metric) -> str | None:
+        """Format a metric as a Malloy measure expression.
 
         Args:
             metric: Metric to format
 
         Returns:
-            Malloy measure expression string
+            The Malloy measure expression, or None if the metric has no faithful
+            Malloy representation (so the caller can skip it instead of emitting a
+            misleading default).
         """
         # Simple aggregation
         if metric.agg:
@@ -1925,4 +1948,5 @@ class MalloyAdapter(BaseAdapter):
         if metric.sql:
             return self._strip_model_prefix(metric.sql)
 
-        return "count()"
+        # No faithful Malloy representation for this metric.
+        return None

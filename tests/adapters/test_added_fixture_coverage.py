@@ -227,7 +227,8 @@ ADDED_EXPECTED_NO_COMPILE_QUERY_FIXTURES = {
     "tests/fixtures/lookml/ga360_ga_block.view.lkml",
     "tests/fixtures/lookml/lkml_model_all_fields.model.lkml",
     "tests/fixtures/lookml/lkml_parameter_join.model.lkml",
-    "tests/fixtures/lookml/node_lookml_refinement_merging.model.lkml",
+    # node_lookml_refinement_merging now compiles: its `deep_merging` view has a
+    # dimension and (per Looker semantics) defaults its table to the view name.
     "tests/fixtures/lookml/node_lookml_refinement_sequencing.model.lkml",
     "tests/fixtures/lookml/pylookml_aggregate_tables.model.lkml",
     "tests/fixtures/lookml/pylookml_manifest.lkml",

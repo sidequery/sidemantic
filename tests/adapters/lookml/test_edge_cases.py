@@ -2201,5 +2201,782 @@ def test_lookml_filter_date_expression_warns(caplog):
     assert sum("not translated" in rec.getMessage() for rec in caplog.records) >= 2
 
 
+def _parse_lkml(text):
+    import tempfile
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".lkml", delete=False) as f:
+        f.write(text)
+        f.flush()
+        return LookMLAdapter().parse(Path(f.name))
+
+
+def test_lookml_self_view_qualified_refs_resolve():
+    """${this_view.field} must resolve like ${field}, not leak literal ${...}."""
+    graph = _parse_lkml(
+        """
+view: orders {
+  sql_table_name: public.orders ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: amount { type: number  sql: ${TABLE}.amount ;; }
+  dimension: amount_x2 { type: number  sql: ${orders.amount} * 2 ;; }
+  measure: total { type: sum  sql: ${orders.amount} ;; }
+}
+"""
+    )
+    orders = graph.get_model("orders")
+    amount_x2 = orders.get_dimension("amount_x2")
+    assert "${" not in amount_x2.sql
+    assert "{model}.amount" in amount_x2.sql
+
+    total = orders.get_metric("total")
+    assert total.agg == "sum"
+    assert "${" not in total.sql
+    assert "{model}.amount" in total.sql
+
+
+def test_lookml_self_view_resolved_cross_view_left_unsupported(caplog):
+    """Self-view refs resolve; cross-view refs are unsupported -> left literal + warned.
+
+    Sidemantic has no inline cross-model column, so emitting a qualified column would
+    crash the generator ("no join path"); the honest behavior is to leave the literal
+    and warn rather than produce something that looks valid but fails.
+    """
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        graph = _parse_lkml(
+            """
+view: orders {
+  sql_table_name: public.orders ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: self_x2 { type: number  sql: ${orders.id} * 2 ;; }
+  dimension: cust_name { type: string  sql: ${customers.name} ;; }
+}
+view: customers {
+  sql_table_name: public.customers ;;
+  dimension: name { type: string  sql: ${TABLE}.name ;; }
+}
+"""
+        )
+    orders = graph.get_model("orders")
+    # self-view ref resolves to the model column (no literal left)
+    assert orders.get_dimension("self_x2").sql == "({model}.id) * 2"
+    # cross-view ref is left as the literal and a warning is emitted
+    assert orders.get_dimension("cust_name").sql == "${customers.name}"
+    assert any("cross-view reference" in rec.getMessage() for rec in caplog.records)
+
+
+def test_lookml_number_measure_cross_view_left_unsupported():
+    """type: number measures resolve self-view refs but leave cross-view refs literal (no crash)."""
+    graph = _parse_lkml(
+        """
+view: orders {
+  sql_table_name: o ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  measure: total { type: sum  sql: ${TABLE}.amount ;; }
+  measure: self_ratio { type: number  sql: ${orders.total} / 2 ;; }
+  measure: margin_pct { type: number  sql: ${customers.total} / ${orders.total} ;; }
+}
+view: customers {
+  sql_table_name: c ;;
+  dimension: total { type: number  sql: ${TABLE}.total ;; }
+}
+"""
+    )
+    orders = graph.get_model("orders")
+    # self-view measure ref resolves (no literal)
+    assert "${" not in orders.get_metric("self_ratio").sql
+    # cross-view ref is left literal (unsupported) rather than emitting a crashing column
+    assert "${customers.total}" in orders.get_metric("margin_pct").sql
+
+
+def test_lookml_number_measure_row_level_dimension_expr_skipped():
+    """A type: number measure that is a ROW-LEVEL dimension expression (no aggregate) is skipped.
+
+    `${amount} / 2` is not a valid aggregate measure -- as a metric it would return one row
+    per input row, not a scalar -- so it is dropped on import (belongs as a dimension).
+    """
+    graph = _parse_lkml(
+        """
+view: orders {
+  sql_table_name: o ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: amount { type: number  sql: ${TABLE}.amount ;; }
+  measure: half_amount { type: number  sql: ${orders.amount} / 2 ;; }
+}
+"""
+    )
+    assert graph.get_model("orders").get_metric("half_amount") is None  # row-level -> skipped
+
+
+def test_lookml_number_measure_compact_dimension_row_level_skipped():
+    """A number measure over a COMPACT dimension with no aggregate is also a row-level expr -> skipped."""
+    graph = _parse_lkml(
+        """
+view: inventory_items {
+  sql_table_name: t ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: cost {}
+  measure: half_cost { type: number  sql: ${inventory_items.cost} / 2 ;; }
+}
+"""
+    )
+    assert graph.get_model("inventory_items").get_metric("half_cost") is None
+
+
+def test_lookml_number_measure_mixed_with_raw_dimension_skipped():
+    """A number measure dividing an aggregate measure by a RAW dimension column is skipped.
+
+    `${total} / NULLIF(${amount}, 0)` has no valid SQL form (amount is neither grouped
+    nor aggregated), so it is dropped on import rather than emitting invalid SQL.
+    """
+    graph = _parse_lkml(
+        """
+view: orders {
+  sql_table_name: o ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: amount { type: number  sql: ${TABLE}.amount ;; }
+  measure: total { type: sum  sql: ${TABLE}.amount ;; }
+  measure: m { type: number  sql: ${orders.total} / NULLIF(${orders.amount}, 0) ;; }
+}
+"""
+    )
+    names = {mt.name for mt in graph.get_model("orders").metrics}
+    assert "total" in names  # the clean measure is kept
+    assert "m" not in names  # the raw-column mixed measure is dropped
+
+
+def test_lookml_number_measure_mixed_aggregate_safe_kept_and_executes():
+    """A mix where the dimension ref is INSIDE an aggregate is valid and must round-trip.
+
+    `${total} / NULLIF(SUM(${amount}), 0)` has no raw ungrouped column, so the measure
+    ref is expanded to its base aggregate over the real column and the whole expression
+    is kept as opaque complete SQL that actually executes.
+    """
+    import duckdb
+
+    from sidemantic import SemanticLayer
+
+    graph = _parse_lkml(
+        """
+view: orders {
+  sql_table_name: orders ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: amount { type: number  sql: ${TABLE}.amount ;; }
+  measure: total { type: sum  sql: ${TABLE}.amount ;; }
+  measure: m { type: number  sql: ${orders.total} / NULLIF(SUM(${orders.amount}), 0) ;; }
+}
+"""
+    )
+    m = graph.get_model("orders").get_metric("m")
+    assert m is not None and m.sql_is_complete is True
+    assert "${" not in m.sql  # measure ref expanded to base aggregate, dim ref resolved
+    layer = SemanticLayer(auto_register=False)
+    layer.add_model(graph.get_model("orders"))
+    sql = layer.compile(metrics=["orders.m"])
+    con = duckdb.connect()
+    con.execute("create table orders as select 1 id, 10 amount union all select 2, 20")
+    assert con.execute(sql).fetchall() == [(1.0,)]  # SUM(amount)/SUM(amount) = 1.0
+
+
+def test_lookml_number_measure_mixed_filtered_base_measure_keeps_filter():
+    """Expanding a FILTERED base measure in a mixed expr must keep the filter, not drop it.
+
+    `completed_total` (sum filtered to status='completed') used in
+    `${completed_total} / NULLIF(SUM(${amount}), 0)` must compile to a filtered numerator
+    (10/40 = 0.25), not an unfiltered SUM(amount)/SUM(amount) = 1.0.
+    """
+    import duckdb
+
+    from sidemantic import SemanticLayer
+
+    graph = _parse_lkml(
+        """
+view: orders {
+  sql_table_name: orders ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: amount { type: number  sql: ${TABLE}.amount ;; }
+  dimension: status { type: string  sql: ${TABLE}.status ;; }
+  measure: completed_total { type: sum  sql: ${TABLE}.amount ;; filters: [status: "completed"] }
+  measure: m { type: number  sql: ${orders.completed_total} / NULLIF(SUM(${orders.amount}), 0) ;; }
+}
+"""
+    )
+    m = graph.get_model("orders").get_metric("m")
+    assert m is not None and "completed" in m.sql  # base-measure filter folded in
+    layer = SemanticLayer(auto_register=False)
+    layer.add_model(graph.get_model("orders"))
+    sql = layer.compile(metrics=["orders.m"])
+    con = duckdb.connect()
+    con.execute("create table orders(id int, amount int, status text)")
+    con.execute("insert into orders values (1,10,'completed'),(2,30,'pending')")
+    assert con.execute(sql).fetchall() == [(0.25,)]  # 10 / (10+30)
+
+
+def test_lookml_number_measure_mixed_filter_clause_kept():
+    """A mixed expr using an aggregate FILTER (WHERE ...) clause is aggregate-safe and kept."""
+    graph = _parse_lkml(
+        """
+view: o {
+  sql_table_name: o ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: amount { type: number  sql: ${TABLE}.amount ;; }
+  dimension: status { type: string  sql: ${TABLE}.status ;; }
+  measure: total { type: sum  sql: ${TABLE}.amount ;; }
+  measure: m { type: number  sql: ${o.total} / NULLIF(SUM(${o.amount}) FILTER (WHERE ${o.status} = 'completed'), 0) ;; }
+}
+"""
+    )
+    m = graph.get_model("o").get_metric("m")
+    assert m is not None and m.sql_is_complete is True  # FILTER predicate cols are aggregate-safe
+
+
+def test_lookml_number_measure_inline_aggregate_cases_execute():
+    """A number measure with an INLINE aggregate is opaque/complete and executes correctly.
+
+    Covers a measure ref divided by an inline aggregate (${count}/COUNT(*)) and an
+    inline-aggregate-over-dimension measure with filters (SUM(${amount}) filters: ...) --
+    both previously mis-routed to the derived path (bare-token / unfiltered SQL).
+    """
+    import duckdb
+
+    from sidemantic import SemanticLayer
+
+    graph = _parse_lkml(
+        """
+view: o {
+  sql_table_name: o ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: amount { type: number  sql: ${TABLE}.amount ;; }
+  dimension: status { type: string  sql: ${TABLE}.status ;; }
+  measure: completed_count { type: count  filters: [status: "completed"] }
+  measure: rate { type: number  sql: ${o.completed_count} / NULLIF(COUNT(*), 0) ;; }
+  measure: completed_amt { type: number  sql: SUM(${o.amount}) ;; filters: [status: "completed"] }
+}
+"""
+    )
+    model = graph.get_model("o")
+    assert model.get_metric("rate").sql_is_complete is True
+    assert model.get_metric("completed_amt").sql_is_complete is True
+    layer = SemanticLayer(auto_register=False)
+    layer.add_model(model)
+    con = duckdb.connect()
+    con.execute("create table o(id int, amount int, status text)")
+    con.execute("insert into o values (1,10,'completed'),(2,30,'pending')")
+    assert con.execute(layer.compile(metrics=["o.rate"])).fetchall() == [(0.5,)]  # 1 completed / 2 rows
+    assert con.execute(layer.compile(metrics=["o.completed_amt"])).fetchall() == [(10,)]  # filtered SUM
+
+
+def test_lookml_number_measure_zero_column_aggregate_filter_applied():
+    """A complete number measure whose aggregate has NO foldable column still honors filters.
+
+    The generator filters a complete-SQL measure by nulling the raw columns it references,
+    but COUNT(*) has none to null, so the filter would be silently dropped (and a mix like
+    COUNT(*)/COUNT(DISTINCT id) would filter inconsistently). The adapter folds the filter
+    into every aggregate via CASE WHEN so the result is correct.
+    """
+    import duckdb
+
+    from sidemantic import SemanticLayer
+
+    graph = _parse_lkml(
+        """
+view: o {
+  sql_table_name: o ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: status { type: string  sql: ${TABLE}.status ;; }
+  measure: completed_num { type: number  sql: COUNT(*) ;; filters: [status: "completed"] }
+  measure: completed_ratio { type: number  sql: COUNT(*) / NULLIF(COUNT(DISTINCT ${id}), 0) ;; filters: [status: "completed"] }
+}
+"""
+    )
+    model = graph.get_model("o")
+    completed_num = model.get_metric("completed_num")
+    # Filter folded INTO the aggregate (not left as a separate, ignored filter).
+    assert "CASE WHEN" in completed_num.sql
+    assert not completed_num.filters
+    layer = SemanticLayer(auto_register=False)
+    layer.add_model(model)
+    con = duckdb.connect()
+    con.execute("create table o(id int, status text)")
+    con.execute("insert into o values (1,'completed'),(2,'pending'),(3,'completed'),(4,'cancelled')")
+    assert con.execute(layer.compile(metrics=["o.completed_num"])).fetchall() == [(2,)]  # 2 of 4
+    assert con.execute(layer.compile(metrics=["o.completed_ratio"])).fetchall() == [(1.0,)]  # 2 completed / 2 distinct
+
+
+def test_lookml_number_measure_expands_distinct_base_measure():
+    """A complete number expr referencing a supported distinct measure must EXPAND it, not drop.
+
+    sum_distinct/average_distinct/etc. are not in _SQL_AGG_FUNC, so they were missing from
+    measure_full_sql_lookup and the unexpandable check dropped the whole metric. They now
+    expand via _parse_distinct_measure's generated SQL.
+    """
+    import duckdb
+
+    from sidemantic import SemanticLayer
+
+    graph = _parse_lkml(
+        """
+view: o {
+  sql_table_name: o ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: amount { type: number  sql: ${TABLE}.amount ;; }
+  measure: sd_total { type: sum_distinct  sql: ${amount} ;;  sql_distinct_key: ${id} ;; }
+  measure: rate { type: number  sql: ${sd_total} / NULLIF(SUM(${amount}), 0) ;; }
+}
+"""
+    )
+    model = graph.get_model("o")
+    rate = model.get_metric("rate")
+    assert rate is not None and rate.sql_is_complete is True  # not dropped as unexpandable
+    layer = SemanticLayer(auto_register=False)
+    layer.add_model(model)
+    con = duckdb.connect()
+    con.execute("create table o(id int, amount int)")
+    con.execute("insert into o values (1,10),(2,20)")
+    # distinct-by-key sum = 30; SUM(amount) = 30 -> 1.0
+    assert con.execute(layer.compile(metrics=["o.rate"])).fetchall() == [(1.0,)]
+
+
+def test_lookml_number_measure_keyed_distinct_ref_with_own_filter_executes():
+    """A complete measure's own filter over an expanded KEYED distinct must fold (HASH-safe).
+
+    The keyed symmetric-distinct aggregate hashes the key; nulling the key for excluded rows
+    gives HASH(NULL) (a non-NULL constant), so column-nulling leaves garbage. The filter must
+    fold into the aggregate args instead.
+    """
+    import duckdb
+
+    from sidemantic import SemanticLayer
+
+    graph = _parse_lkml(
+        """
+view: o {
+  sql_table_name: o ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: amount { type: number  sql: ${TABLE}.amount ;; }
+  dimension: country { type: string  sql: ${TABLE}.country ;; }
+  measure: sd_total { type: sum_distinct  sql: ${amount} ;;  sql_distinct_key: ${id} ;; }
+  measure: us_rate { type: number  sql: ${sd_total} / NULLIF(SUM(${amount}), 0) ;;  filters: [country: "US"] }
+}
+"""
+    )
+    model = graph.get_model("o")
+    us_rate = model.get_metric("us_rate")
+    assert us_rate is not None and not us_rate.filters  # folded into the HASH aggregate, not column-nulled
+    layer = SemanticLayer(auto_register=False)
+    layer.add_model(model)
+    con = duckdb.connect()
+    con.execute("create table o(id int, amount int, country text)")
+    con.execute("insert into o values (1,10,'US'),(2,20,'US'),(3,1000,'CA')")
+    # US distinct-by-key sum = 30; US SUM(amount) = 30 -> 1.0 (the CA 1000 excluded, not garbage)
+    assert con.execute(layer.compile(metrics=["o.us_rate"])).fetchall() == [(1.0,)]
+
+
+def test_lookml_number_measure_count_star_sql_with_filter_expands_validly():
+    """A referenced `type: count sql: * ;;` with filters must expand as COUNT(CASE..THEN 1), not THEN *."""
+    import duckdb
+
+    from sidemantic import SemanticLayer
+
+    graph = _parse_lkml(
+        """
+view: o {
+  sql_table_name: o ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: status { type: string  sql: ${TABLE}.status ;; }
+  measure: completed_ct { type: count  sql: * ;;  filters: [status: "completed"] }
+  measure: rate { type: number  sql: ${completed_ct} / NULLIF(COUNT(*), 0) ;; }
+}
+"""
+    )
+    model = graph.get_model("o")
+    rate = model.get_metric("rate")
+    assert rate is not None and "THEN * END" not in (rate.sql or "")  # no invalid star-in-CASE
+    layer = SemanticLayer(auto_register=False)
+    layer.add_model(model)
+    con = duckdb.connect()
+    con.execute("create table o(id int, status text)")
+    con.execute("insert into o values (1,'completed'),(2,'pending'),(3,'completed'),(4,'x')")
+    assert con.execute(layer.compile(metrics=["o.rate"])).fetchall() == [(0.5,)]  # 2 of 4
+
+
+def test_lookml_number_measure_filtered_distinct_ref_not_silently_unfiltered():
+    """A FILTERED distinct base measure can't expand faithfully -> the referencing expr is dropped.
+
+    _parse_distinct_measure doesn't fold the measure's own filters (the keyed symmetric /
+    quantile forms have no single predicate slot), so expanding a filtered distinct would
+    silently produce an UNfiltered result. Skip it (drop the ref) rather than mislead; an
+    UNfiltered distinct still expands.
+    """
+    graph = _parse_lkml(
+        """
+view: o {
+  sql_table_name: o ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: amount { type: number  sql: ${TABLE}.amount ;; }
+  dimension: status { type: string  sql: ${TABLE}.status ;; }
+  measure: completed_sd { type: sum_distinct  sql: ${amount} ;;  sql_distinct_key: ${id} ;;  filters: [status: "completed"] }
+  measure: rate { type: number  sql: ${completed_sd} / NULLIF(SUM(${amount}), 0) ;; }
+  measure: sd_plain { type: sum_distinct  sql: ${amount} ;;  sql_distinct_key: ${id} ;; }
+  measure: rate_plain { type: number  sql: ${sd_plain} / NULLIF(SUM(${amount}), 0) ;; }
+}
+"""
+    )
+    model = graph.get_model("o")
+    assert model.get_metric("rate") is None  # filtered distinct ref dropped (not unfiltered)
+    assert model.get_metric("rate_plain") is not None  # unfiltered distinct still expands
+
+
+def test_lookml_number_measure_own_filter_with_null_predicate_folds():
+    """A complete measure's own filter must fold (not null columns) when SQL tests col IS NULL.
+
+    null_status_ct expands to COUNT(CASE WHEN status IS NULL THEN 1 END); applying the
+    measure's own country='US' filter by NULLING status would make status IS NULL true for
+    non-US rows, inflating the count. The filter must fold into the aggregate predicate.
+    """
+    import duckdb
+
+    from sidemantic import SemanticLayer
+
+    graph = _parse_lkml(
+        """
+view: o {
+  sql_table_name: o ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: status { type: string  sql: ${TABLE}.status ;; }
+  dimension: country { type: string  sql: ${TABLE}.country ;; }
+  dimension: amount { type: number  sql: ${TABLE}.amount ;; }
+  measure: null_status_ct { type: count  filters: [status: "NULL"] }
+  measure: us_rate { type: number  sql: ${null_status_ct} / NULLIF(SUM(${amount}), 0) ;;  filters: [country: "US"] }
+}
+"""
+    )
+    model = graph.get_model("o")
+    us_rate = model.get_metric("us_rate")
+    assert us_rate is not None and not us_rate.filters  # own filter folded into the SQL
+    layer = SemanticLayer(auto_register=False)
+    layer.add_model(model)
+    con = duckdb.connect()
+    con.execute("create table o(id int, status text, country text, amount int)")
+    con.execute("insert into o values (1,NULL,'US',10),(2,'x','US',10),(3,NULL,'CA',10)")
+    # numerator = US rows with status NULL = 1 (id1, NOT id3/CA); denom = SUM US amount = 20
+    assert con.execute(layer.compile(metrics=["o.us_rate"])).fetchall() == [(0.05,)]
+
+
+def test_lookml_number_measure_ordered_set_aggregate_kept_and_executes():
+    """A number measure using an ordered-set aggregate (WITHIN GROUP) is a valid aggregate.
+
+    sqlglot nests the ORDER BY column under exp.WithinGroup (not exp.AggFunc), so the
+    aggregate-safety check must accept it; otherwise the measure is wrongly dropped as a
+    'raw ungrouped column'.
+    """
+    import duckdb
+
+    from sidemantic import SemanticLayer
+
+    graph = _parse_lkml(
+        """
+view: o {
+  sql_table_name: o ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: amount { type: number  sql: ${TABLE}.amount ;; }
+  measure: median_amt { type: number  sql: PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY ${amount}) ;; }
+}
+"""
+    )
+    model = graph.get_model("o")
+    median = model.get_metric("median_amt")
+    assert median is not None  # not dropped
+    assert median.sql_is_complete is True
+    layer = SemanticLayer(auto_register=False)
+    layer.add_model(model)
+    con = duckdb.connect()
+    con.execute("create table o(id int, amount int)")
+    con.execute("insert into o values (1,10),(2,20),(3,30)")
+    assert con.execute(layer.compile(metrics=["o.median_amt"])).fetchall() == [(20,)]
+
+
+def test_lookml_number_measure_anonymous_aggregate_kept_and_executes():
+    """A number measure using an anonymous/engine-specific aggregate (PRODUCT) is valid.
+
+    sqlglot parses PRODUCT/ENTROPY/WEIGHTED_AVG etc. as exp.Anonymous (not exp.AggFunc), but
+    sidemantic recognizes them as aggregates; the aggregate-safety check must accept their
+    column args so the measure imports as complete SQL instead of being dropped as raw.
+    """
+    import duckdb
+
+    from sidemantic import SemanticLayer
+
+    graph = _parse_lkml(
+        """
+view: o {
+  sql_table_name: o ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: amount { type: number  sql: ${TABLE}.amount ;; }
+  measure: prod_amt { type: number  sql: PRODUCT(${amount}) ;; }
+}
+"""
+    )
+    model = graph.get_model("o")
+    prod = model.get_metric("prod_amt")
+    assert prod is not None and prod.sql_is_complete is True
+    layer = SemanticLayer(auto_register=False)
+    layer.add_model(model)
+    con = duckdb.connect()
+    con.execute("create table o(id int, amount int)")
+    con.execute("insert into o values (1,2),(2,3),(3,4)")
+    assert con.execute(layer.compile(metrics=["o.prod_amt"])).fetchall() == [(24,)]  # 2*3*4
+
+
+def test_lookml_number_measure_ordered_set_aggregate_with_filter_executes():
+    """A FILTERED ordered-set aggregate must filter the ORDER BY values, not the constant.
+
+    The zero-column fold must NOT wrap the percentile fraction (PERCENTILE_CONT(CASE ...) is
+    a non-constant parameter DuckDB rejects). The ORDER-BY column has a column, so the filter
+    is applied by the generator's column-nulling (NULLs are ignored by the percentile).
+    """
+    import duckdb
+
+    from sidemantic import SemanticLayer
+
+    graph = _parse_lkml(
+        """
+view: o {
+  sql_table_name: o ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: amount { type: number  sql: ${TABLE}.amount ;; }
+  dimension: status { type: string  sql: ${TABLE}.status ;; }
+  measure: median_done { type: number  sql: PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY ${amount}) ;; filters: [status: "completed"] }
+}
+"""
+    )
+    model = graph.get_model("o")
+    median = model.get_metric("median_done")
+    assert median is not None
+    assert "PERCENTILE_CONT(CASE" not in (median.sql or "")  # constant param not wrapped
+    layer = SemanticLayer(auto_register=False)
+    layer.add_model(model)
+    con = duckdb.connect()
+    con.execute("create table o(id int, amount int, status text)")
+    con.execute("insert into o values (1,10,'completed'),(2,30,'completed'),(3,50,'completed'),(4,1000,'pending')")
+    # median of {10,30,50} = 30; the pending 1000 must be excluded
+    assert con.execute(layer.compile(metrics=["o.median_done"])).fetchall() == [(30.0,)]
+
+
+def test_lookml_number_measure_with_subquery_skipped():
+    """A number measure containing a scalar subquery is skipped (complete-SQL can't represent it).
+
+    The complete-SQL builder rewrites every parsed column to the measure's CTE raw alias,
+    including columns INSIDE the subquery, producing a wrong correlated query -- so skip.
+    """
+    graph = _parse_lkml(
+        """
+view: o {
+  sql_table_name: o ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: amount { type: number  sql: ${TABLE}.amount ;; }
+  measure: pct_target { type: number  sql: SUM(${amount}) / NULLIF((SELECT SUM(amount) FROM targets), 0) ;; }
+  measure: ok_ratio { type: number  sql: SUM(${amount}) / NULLIF(COUNT(*), 0) ;; }
+}
+"""
+    )
+    model = graph.get_model("o")
+    assert model.get_metric("pct_target") is None  # subquery -> skipped
+    assert model.get_metric("ok_ratio") is not None  # ordinary inline-aggregate still kept
+
+
+def test_lookml_number_measure_mixed_windowed_aggregate_skipped():
+    """A mixed expr with a WINDOW aggregate over a raw column is NOT safe -> skipped.
+
+    SUM(x) OVER () runs after grouping, so a raw column there is still ungrouped and would
+    be rejected in a grouped SELECT; the measure must be dropped, not imported as invalid.
+    """
+    graph = _parse_lkml(
+        """
+view: o {
+  sql_table_name: o ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: amount { type: number  sql: ${TABLE}.amount ;; }
+  measure: total { type: sum  sql: ${TABLE}.amount ;; }
+  measure: m { type: number  sql: ${o.total} / NULLIF(SUM(${o.amount}) OVER (), 0) ;; }
+}
+"""
+    )
+    assert graph.get_model("o").get_metric("m") is None  # windowed raw column -> skipped
+
+
+def test_lookml_complete_measure_own_filter_resolves_renamed_dimension():
+    """A COMPLETE (mixed) measure's OWN filter on a renamed dimension resolves to the real column."""
+    import duckdb
+
+    from sidemantic import SemanticLayer
+
+    graph = _parse_lkml(
+        """
+view: orders {
+  sql_table_name: orders ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: amount { type: number  sql: ${TABLE}.amount ;; }
+  dimension: state { type: string  sql: ${TABLE}.status ;; }
+  measure: total { type: sum  sql: ${TABLE}.amount ;; }
+  measure: m { type: number  sql: ${orders.total} / NULLIF(SUM(${orders.amount}), 0) ;; filters: [state: "completed"] }
+}
+"""
+    )
+    m = graph.get_model("orders").get_metric("m")
+    assert m is not None and m.sql_is_complete is True
+    assert any("status" in f for f in (m.filters or []))  # renamed dim resolved to its column
+    assert not any("{model}.state" in f for f in (m.filters or []))  # not the bare dim name
+    layer = SemanticLayer(auto_register=False)
+    layer.add_model(graph.get_model("orders"))
+    sql = layer.compile(metrics=["orders.m"])
+    con = duckdb.connect()
+    con.execute("create table orders(id int, amount int, status text)")
+    con.execute("insert into orders values (1,10,'completed'),(2,30,'pending')")
+    assert con.execute(sql).fetchall()  # executes (no raw `state` column error)
+
+
+def test_lookml_measure_filter_strips_self_view_qualifier():
+    """A measure filter with a view-qualified field (orders.status) must not double-qualify."""
+    import duckdb
+
+    from sidemantic import SemanticLayer
+
+    graph = _parse_lkml(
+        """
+view: orders {
+  sql_table_name: orders ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: amount { type: number  sql: ${TABLE}.amount ;; }
+  dimension: status { type: string  sql: ${TABLE}.status ;; }
+  measure: completed_total { type: sum  sql: ${TABLE}.amount ;; filters: [orders.status: "completed"] }
+  measure: m { type: number  sql: ${orders.completed_total} / NULLIF(SUM(${orders.amount}), 0) ;; }
+}
+"""
+    )
+    m = graph.get_model("orders").get_metric("m")
+    assert m is not None and "{model}.status" in m.sql and "orders.status" not in m.sql
+    layer = SemanticLayer(auto_register=False)
+    layer.add_model(graph.get_model("orders"))
+    sql = layer.compile(metrics=["orders.m"])
+    con = duckdb.connect()
+    con.execute("create table orders(id int, amount int, status text)")
+    con.execute("insert into orders values (1,10,'completed'),(2,30,'pending')")
+    assert con.execute(sql).fetchall() == [(0.25,)]
+
+
+def test_lookml_number_measure_mixed_filtered_base_measure_resolves_renamed_dimension():
+    """Folding a base measure's filter must resolve the filter field through its dimension SQL."""
+    import duckdb
+
+    from sidemantic import SemanticLayer
+
+    graph = _parse_lkml(
+        """
+view: orders {
+  sql_table_name: orders ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: amount { type: number  sql: ${TABLE}.amount ;; }
+  dimension: state { type: string  sql: ${TABLE}.status ;; }
+  measure: completed_total { type: sum  sql: ${TABLE}.amount ;; filters: [state: "completed"] }
+  measure: m { type: number  sql: ${orders.completed_total} / NULLIF(SUM(${orders.amount}), 0) ;; }
+}
+"""
+    )
+    m = graph.get_model("orders").get_metric("m")
+    assert m is not None and "status" in m.sql and "{model}.state" not in m.sql  # renamed col resolved
+    layer = SemanticLayer(auto_register=False)
+    layer.add_model(graph.get_model("orders"))
+    sql = layer.compile(metrics=["orders.m"])
+    con = duckdb.connect()
+    con.execute("create table orders(id int, amount int, status text)")
+    con.execute("insert into orders values (1,10,'completed'),(2,30,'pending')")
+    assert con.execute(sql).fetchall() == [(0.25,)]  # 10 / (10+30)
+
+
+def test_lookml_number_measure_mixed_filtered_count_ref_keeps_filter():
+    """A filtered `type: count` (no sql) base measure expanded in a mixed expr keeps its filter."""
+    import duckdb
+
+    from sidemantic import SemanticLayer
+
+    graph = _parse_lkml(
+        """
+view: orders {
+  sql_table_name: orders ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: status { type: string  sql: ${TABLE}.status ;; }
+  measure: completed_count { type: count  filters: [status: "completed"] }
+  measure: rate { type: number  sql: ${orders.completed_count} / NULLIF(COUNT(${orders.id}), 0) ;; }
+}
+"""
+    )
+    rate = graph.get_model("orders").get_metric("rate")
+    assert rate is not None and "CASE WHEN" in rate.sql  # count filter folded, not bare COUNT(*)
+    layer = SemanticLayer(auto_register=False)
+    layer.add_model(graph.get_model("orders"))
+    sql = layer.compile(metrics=["orders.rate"])
+    con = duckdb.connect()
+    con.execute("create table orders(id int, status text)")
+    con.execute("insert into orders values (1,'completed'),(2,'pending'),(3,'completed'),(4,'pending')")
+    assert con.execute(sql).fetchall() == [(0.5,)]  # 2 completed / 4 total
+
+
+def test_lookml_number_measure_bare_column_dimension_row_level_skipped():
+    """A number measure over a bare-column dimension with no aggregate is row-level -> skipped."""
+    graph = _parse_lkml(
+        """
+view: orders {
+  sql_table_name: o ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: bare { sql: amount ;; }
+  measure: m { type: number  sql: ${orders.bare} / 2 ;; }
+}
+"""
+    )
+    assert graph.get_model("orders").get_metric("m") is None  # no aggregate -> not a valid measure
+
+
+def test_lookml_dimension_referencing_compact_dimension_resolves():
+    """A dimension whose sql references a COMPACT dimension must resolve, not leak ${name}."""
+    graph = _parse_lkml(
+        """
+view: inventory_items {
+  sql_table_name: t ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: cost {}
+  dimension: cost_x2 { sql: ${inventory_items.cost} * 2 ;; }
+}
+"""
+    )
+    cost_x2 = graph.get_model("inventory_items").get_dimension("cost_x2")
+    assert "${" not in cost_x2.sql
+    assert "{model}.cost" in cost_x2.sql
+
+
+def test_lookml_deep_reference_chain_resolves_fully():
+    """Reference chains longer than 10 must resolve fully (no fixed-depth truncation)."""
+    dims = "\n".join(f"  dimension: d{i} {{ type: number  sql: ${{d{i - 1}}} + 1 ;; }}" for i in range(1, 13))
+    graph = _parse_lkml(
+        f"view: v {{\n  sql_table_name: t ;;\n"
+        f"  dimension: d0 {{ primary_key: yes  type: number  sql: ${{TABLE}}.x ;; }}\n{dims}\n}}"
+    )
+    d12 = graph.get_model("v").get_dimension("d12")
+    assert "${" not in d12.sql
+
+
+def test_lookml_self_referential_dimension_terminates():
+    """A self-referential dimension must terminate (no infinite loop / runaway expansion)."""
+    graph = _parse_lkml(
+        "view: v { sql_table_name: t ;; "
+        "dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; } "
+        "dimension: selfd { type: number  sql: ${selfd} + 1 ;; } }"
+    )
+    selfd = graph.get_model("v").get_dimension("selfd")
+    # Resolution stops at the cycle rather than expanding many levels deep.
+    assert selfd.sql.count("+ 1") <= 2
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

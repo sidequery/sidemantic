@@ -147,7 +147,10 @@ NON_EXECUTION_REASON_ALLOWED_ADAPTERS = {
         "RillAdapter",
         "ThoughtSpotAdapter",
     },
-    "source_fragments_without_fields": {"AtScaleSMLAdapter", "MalloyAdapter", "RillAdapter"},
+    # LookML: a fieldless view now gets its implicit "table = view name" default (Looker
+    # behavior), so a refinement-fragment fixture with field-less views is a source fragment
+    # without fields rather than a tableless semantic-only model.
+    "source_fragments_without_fields": {"AtScaleSMLAdapter", "LookMLAdapter", "MalloyAdapter", "RillAdapter"},
     "semantic_only_no_sources": {
         "AtScaleSMLAdapter",
         "HolisticsAdapter",

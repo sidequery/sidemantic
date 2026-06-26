@@ -35,7 +35,12 @@ class LookMLAdapter(BaseAdapter):
     """
 
     def parse(self, source: str | Path) -> SemanticGraph:
-        """Parse LookML files into semantic graph.
+        """Parse LookML files into a semantic graph.
+
+        Auto-registration to an active SemanticLayer is suppressed while the graph is
+        built, so a tableless view that only gets its default table after refinements/
+        extends are resolved is not validated mid-parse (which would raise inside a
+        ``with SemanticLayer():`` block). The finalized models are registered once.
 
         Args:
             source: Path to .lkml file or directory
@@ -43,6 +48,40 @@ class LookMLAdapter(BaseAdapter):
         Returns:
             Semantic graph with imported models
         """
+        from sidemantic.core.registry import get_current_layer, set_current_layer
+
+        prev_layer = get_current_layer()
+        set_current_layer(None)
+        try:
+            graph = self._build_graph(source)
+        finally:
+            set_current_layer(prev_layer)
+        # Defer auto-registration until models are complete (tables defaulted). Skip ONLY
+        # intentional non-queryable templates -- abstract extension:required bases and
+        # unsupported derived tables, marked in meta -- which add_model's validation would
+        # reject; mirrors loaders._is_registerable_model. A merely-broken tableless view
+        # (e.g. extends:[missing], left unresolved) is NOT skipped, so add_model still
+        # surfaces the real "no table/sql" error instead of silently dropping it. Strip
+        # survivors' relationships pointing at a skipped template (e.g. an explore join to
+        # it) so the active layer is not left with a dangling relationship validation flags.
+        if prev_layer is not None:
+            skipped = {
+                name
+                for name, m in graph.models.items()
+                if not (m.table or m.sql or getattr(m, "dax", None) or getattr(m, "source_uri", None))
+                and (m.meta or {}).get("lookml_template")
+            }
+            for model in graph.models.values():
+                if model.name in skipped or model.name in prev_layer.graph.models:
+                    continue
+                rels = getattr(model, "relationships", None)
+                if rels:
+                    model.relationships = [r for r in rels if r.name not in skipped]
+                prev_layer.add_model(model)
+        return graph
+
+    def _build_graph(self, source: str | Path) -> SemanticGraph:
+        """Build the semantic graph from LookML files (see :meth:`parse`)."""
         graph = SemanticGraph()
         source_path = Path(source)
 
@@ -58,16 +97,49 @@ class LookMLAdapter(BaseAdapter):
         for lkml_file in lkml_files:
             self._parse_views_from_file(lkml_file, graph, refinements)
 
+        # Snapshot abstract / unsupported-derived_table flags BEFORE refinement merge:
+        # merge_model REPLACES a base view's meta when the refinement carries metadata,
+        # which would otherwise drop these markers.
+        abstract_pre = {n for n, m in graph.models.items() if (m.meta or {}).get("extension_required")}
+        unsupported_pre = {n for n, m in graph.models.items() if (m.meta or {}).get("unsupported_derived_table")}
+
         # Apply refinements: merge each refinement into its base view
         from sidemantic.core.inheritance import merge_model, resolve_model_inheritance
 
+        refinement_abstract: set[str] = set()
+        refinement_unsupported_dt: set[str] = set()
         for refinement in refinements:
             base_name = refinement.name.lstrip("+")
+            # Record flags from EACH refinement's own meta: a later refinement's merge
+            # can replace the base meta and drop a flag an earlier refinement added.
+            rmeta = refinement.meta or {}
+            if rmeta.get("extension_required"):
+                refinement_abstract.add(base_name)
+            if rmeta.get("unsupported_derived_table"):
+                refinement_unsupported_dt.add(base_name)
             if base_name in graph.models:
                 # Create a copy with the base name for merging
                 refinement_for_merge = refinement.model_copy(update={"name": base_name})
                 merged = merge_model(refinement_for_merge, graph.models[base_name])
                 graph.models[base_name] = merged
+
+        # Union the pre-merge snapshot, every refinement's own flags, and the post-merge
+        # state (so a flag added by ANY refinement is caught even if a later refinement
+        # replaced the meta). Resolve this BEFORE extends so a concrete child that only
+        # INHERITS abstractness is not treated as abstract. Record extends parents too,
+        # so descendants of an unsupported derived table are detectable after resolution
+        # clears `extends`.
+        abstract_views = (
+            abstract_pre
+            | refinement_abstract
+            | {n for n, m in graph.models.items() if (m.meta or {}).get("extension_required")}
+        )
+        unsupported_dt_views = (
+            unsupported_pre
+            | refinement_unsupported_dt
+            | {n for n, m in graph.models.items() if (m.meta or {}).get("unsupported_derived_table")}
+        )
+        extends_parent = {n: m.extends for n, m in graph.models.items() if m.extends}
 
         # Resolve extends chains. Pre-filter to models whose full chain
         # is present so one broken/missing parent doesn't block valid ones.
@@ -92,9 +164,67 @@ class LookMLAdapter(BaseAdapter):
             resolved.update(unresolvable)
             graph.models = resolved
 
+        def _extends_chain_has(name: str, flagset: set[str]) -> bool:
+            """True if name or any of its extends-ancestors is in flagset."""
+            seen: set[str] = set()
+            cur: str | None = name
+            while cur is not None and cur not in seen:
+                if cur in flagset:
+                    return True
+                seen.add(cur)
+                cur = extends_parent.get(cur)
+            return False
+
+        # Apply the implicit "table = view name" default AFTER refinements and extends
+        # are resolved, so a view whose fields/name come from a refinement or whose
+        # parent was tableless still gets its OWN name as the table (Looker's behavior).
+        # Skip abstract views, still-unresolved-extends, and views that are (or extend) an
+        # unsupported derived table. Do NOT require parsed fields: Looker defaults the table
+        # for an ordinary fieldless view (`view: orders {}`, or one with only adapter-ignored
+        # fields) too, so leaving it tableless would wrongly fail CLI validation/registration.
+        # Abstractness is NOT inherited through extends (a concrete child of an abstract base
+        # gets its own table), but an unsupported derived table IS inherited by descendants.
+        def _apply_default_tables():
+            for model_name, model in graph.models.items():
+                if (
+                    model.table is None
+                    and model.sql is None
+                    and not model.extends
+                    and model_name not in abstract_views
+                    and not _extends_chain_has(model_name, unsupported_dt_views)
+                    and not (model.meta or {}).get("unsupported_derived_table")
+                ):
+                    model.table = model_name
+
+        _apply_default_tables()
+
         # Second pass: parse explores and add relationships
         for lkml_file in lkml_files:
             self._parse_explores_from_file(lkml_file, graph)
+
+        # Re-apply the default: explores can add segments (sql_always_where /
+        # always_filter) to an otherwise-fieldless view, which only now makes it
+        # eligible for the implicit table default.
+        _apply_default_tables()
+
+        # Re-assert non-queryable markers on models intentionally left tableless. A
+        # refinement can OVERWRITE a view's meta (dropping an `extension_required` flag an
+        # earlier refinement added) even though abstractness is tracked in side-sets, so
+        # without this the loader (which keys off final meta) would try to register and
+        # reject them. Set the flag definitively now, after all merges. Also stamp a
+        # PARSER-OWNED `lookml_template` marker so registration skips (here and in the
+        # loader) key off a sidemantic-internal flag, not the public `extension_required`/
+        # `unsupported_derived_table` keys -- a native/other-format model that happens to
+        # carry those user-facing keys must still surface its missing-source error.
+        for model_name, model in graph.models.items():
+            if model.table is not None or model.sql is not None:
+                continue
+            if model_name in abstract_views:
+                model.meta = {**(model.meta or {}), "extension_required": True, "lookml_template": True}
+            elif _extends_chain_has(model_name, unsupported_dt_views) or (model.meta or {}).get(
+                "unsupported_derived_table"
+            ):
+                model.meta = {**(model.meta or {}), "unsupported_derived_table": True, "lookml_template": True}
 
         # Rebuild adjacency graph now that relationships have been added
         graph.build_adjacency()
@@ -1115,6 +1245,14 @@ class LookMLAdapter(BaseAdapter):
                 extends = flat[0] if flat else None
             elif isinstance(extends_list, str):
                 extends = extends_list
+
+        # A LookML view with no sql_table_name/derived_table implicitly uses a table
+        # named after the view (Looker's default). A view with a derived_table the
+        # adapter cannot turn into SQL must NOT get such a default; mark it so the
+        # post-merge pass skips it (the raw derived_table dict is not retained).
+        unsupported_derived_table = bool(view_def.get("derived_table")) and sql is None
+        if unsupported_derived_table:
+            model_meta["unsupported_derived_table"] = True
 
         # Build kwargs conditionally so that unset scalars don't appear in
         # model_fields_set. This matters for refinements: merge_model treats

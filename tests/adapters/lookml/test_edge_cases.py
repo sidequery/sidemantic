@@ -2978,6 +2978,469 @@ def test_lookml_self_referential_dimension_terminates():
     assert selfd.sql.count("+ 1") <= 2
 
 
+def test_lookml_view_with_unsupported_derived_table_not_defaulted():
+    """A view with a derived_table the adapter can't read must NOT get a default physical table."""
+    adapter = LookMLAdapter()
+    model = adapter._parse_view(
+        {
+            "name": "ndt_unknown",
+            # derived_table with no sql / explore_source the adapter understands
+            "derived_table": {"persist_for": "1 hour"},
+            "dimensions": [{"name": "id", "type": "number", "sql": "${TABLE}.id"}],
+        }
+    )
+    assert model.table is None  # not fabricated as a physical table named after the view
+
+
+def test_lookml_view_without_table_defaults_to_view_name():
+    """A view with no sql_table_name/derived_table should default its table to the view name."""
+    from sidemantic import SemanticLayer
+
+    graph = _parse_lkml(
+        "view: just_fields { "
+        "dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; } "
+        "measure: c { type: count } }"
+    )
+    model = graph.get_model("just_fields")
+    assert model.table == "just_fields"
+    # And it must be a valid, queryable model (previously raised ModelValidationError).
+    layer = SemanticLayer()
+    layer.add_model(model)
+    assert "just_fields" in layer.compile(metrics=["just_fields.c"])
+
+
+def test_lookml_parse_tableless_view_inside_layer_context():
+    """Parsing a tableless view inside a `with SemanticLayer()` block must not crash.
+
+    Auto-registration fires during Model construction; the default table is applied
+    after parse, so parsing must suppress registration until models are complete.
+    """
+    import tempfile
+
+    from sidemantic import SemanticLayer
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".lkml", delete=False) as f:
+        f.write(
+            "view: just_fields { dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; } measure: c { type: count } }"
+        )
+        f.flush()
+        path = Path(f.name)
+
+    with SemanticLayer() as layer:
+        LookMLAdapter().parse(path)
+    # The model is registered to the context layer with its defaulted table.
+    assert layer.graph.get_model("just_fields").table == "just_fields"
+
+
+def test_lookml_fieldless_ordinary_view_gets_default_table():
+    """An ordinary fieldless view (or one with only adapter-ignored fields) still defaults.
+
+    Looker defaults the table name to the view name regardless of parsed fields, so a
+    `view: orders {}` must not be left tableless (which would fail CLI load/registration).
+    Abstract/unsupported templates are still skipped; this only covers ordinary views.
+    """
+    import tempfile
+
+    from sidemantic import SemanticLayer
+    from sidemantic.loaders import load_from_directory
+
+    d = tempfile.mkdtemp()
+    with open(Path(d) / "v.lkml", "w") as f:
+        f.write("view: orders {}\nview: just_set { set: foo { fields: [a, b] } }\n")
+
+    layer = SemanticLayer()
+    load_from_directory(layer, d)  # must not raise the no-table ModelValidationError
+    assert layer.graph.get_model("orders").table == "orders"
+    assert layer.graph.get_model("just_set").table == "just_set"
+
+
+def test_lookml_abstract_base_not_registered_inside_layer_context():
+    """An abstract (extension: required) base must NOT be registered inside a `with` layer.
+
+    It's intentionally tableless; deferred registration must skip it (not raise) while the
+    concrete child still registers with its defaulted table.
+    """
+    import tempfile
+
+    from sidemantic import SemanticLayer
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".lkml", delete=False) as f:
+        f.write(
+            "view: base { extension: required  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; } "
+            "dimension: x { type: number  sql: ${TABLE}.x ;; } } "
+            "view: orders { extends: [base]  dimension: y { type: number  sql: ${TABLE}.y ;; } }"
+        )
+        f.flush()
+        path = Path(f.name)
+
+    with SemanticLayer() as layer:
+        LookMLAdapter().parse(path)  # must not raise ModelValidationError
+    assert "base" not in layer.graph.models  # abstract base skipped
+    assert layer.graph.get_model("orders").table == "orders"  # concrete child registered
+
+
+def test_lookml_broken_tableless_view_surfaces_error_inside_layer_context():
+    """A genuinely-broken tableless view (unresolved extends) must NOT be silently skipped.
+
+    Deferred registration skips only INTENTIONAL templates (extension:required / unsupported
+    derived tables). A `view: child { extends: [missing] }` stays tableless because its parent
+    can't resolve -- that's a real error, so add_model must still raise rather than drop it.
+    """
+    import tempfile
+
+    import pytest
+
+    from sidemantic import SemanticLayer
+    from sidemantic.validation import ModelValidationError
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".lkml", delete=False) as f:
+        f.write(
+            "view: child { extends: [missing]  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; } }"
+        )
+        f.flush()
+        path = Path(f.name)
+
+    with pytest.raises(ModelValidationError):
+        with SemanticLayer():
+            LookMLAdapter().parse(path)
+
+
+def test_lookml_abstract_base_does_not_break_directory_load():
+    """The CLI path (load_from_directory) must skip the abstract base, not abort the project."""
+    import tempfile
+
+    from sidemantic import SemanticLayer
+    from sidemantic.loaders import load_from_directory
+
+    d = tempfile.mkdtemp()
+    with open(Path(d) / "v.lkml", "w") as f:
+        f.write(
+            "view: base { extension: required  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; } "
+            "dimension: x { type: number  sql: ${TABLE}.x ;; } } "
+            "view: orders { extends: [base]  dimension: y { type: number  sql: ${TABLE}.y ;; } }"
+        )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, d)  # must not raise ModelValidationError on `base`
+    assert "base" not in layer.graph.models  # non-queryable abstract base skipped
+    assert layer.graph.get_model("orders").table == "orders"
+
+
+def test_lookml_drop_metrics_uses_base_resolution_not_identity_or_name():
+    """Orphan-metric drop keys off whether the BASE resolves to a surviving model.
+
+    NOT object identity (a refinement reconstructs the Metric object) and NOT bare name (a
+    same-named standalone from another file must survive). The orphan is the one whose base
+    measure lives only on dropped models.
+    """
+    from sidemantic import Metric, Model
+    from sidemantic.loaders import _drop_non_registerable_models
+
+    def pop(bm):
+        return Metric(
+            name="pop", type="time_comparison", base_metric=bm, comparison_type="yoy", calculation="difference"
+        )
+
+    template = Model(name="base", meta={"lookml_template": True}, metrics=[pop("total")])
+    orders = Model(name="orders", table="orders")
+
+    # A standalone `pop` over a SURVIVING model's measure (qualified ref) must be preserved.
+    standalone = pop("orders.total")
+    metrics = {"pop": standalone}
+    _drop_non_registerable_models({"base": template, "orders": orders}, metrics)
+    assert metrics.get("pop") is standalone
+
+    # A refinement reconstructs the template's `pop` (DIFFERENT object than template.metrics[0]),
+    # base `total` resolves to no surviving model -> orphan, must be dropped (identity would miss it).
+    metrics2 = {"pop": pop("total")}
+    _drop_non_registerable_models({"base": template, "orders": orders}, metrics2)
+    assert "pop" not in metrics2
+
+    # Even when a SURVIVING model has a same-named `total` measure, the template's `pop` (whose
+    # base `total` is UNQUALIFIED -- pointing at the template's own measure) is still an orphan;
+    # a bare base name existing somewhere must not save it.
+    orders_with_total = Model(name="orders", table="orders", metrics=[Metric(name="total", agg="sum", sql="amt")])
+    metrics3 = {"pop": pop("total")}
+    _drop_non_registerable_models({"base": template, "orders": orders_with_total}, metrics3)
+    assert "pop" not in metrics3
+
+
+def test_lookml_dropped_template_metric_dropped_despite_samename_local_measure():
+    """A dropped template's graph metric is removed even if a surviving model has a same-named measure.
+
+    The orphan check matches graph-level metric types (time_comparison/conversion), not bare
+    names: a surviving `orders.pop` SIMPLE measure must not keep the template's `pop`
+    period_over_period alive (which would expose a metric whose base model is gone).
+    """
+    import tempfile
+
+    from sidemantic import SemanticLayer
+    from sidemantic.loaders import load_from_directory
+
+    d = tempfile.mkdtemp()
+    with open(Path(d) / "v.lkml", "w") as f:
+        f.write(
+            "view: base { extension: required "
+            "  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; } "
+            "  dimension: amt { type: number  sql: ${TABLE}.amt ;; } "
+            "  measure: total { type: sum  sql: ${amt} ;; } "
+            "  measure: pop { type: period_over_period  based_on: total  period: year  kind: difference } } "
+            "view: orders { sql_table_name: orders ;; "
+            "  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; } "
+            "  measure: pop { type: count } }"
+        )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, d)
+    assert "base" not in layer.graph.models
+    assert "pop" not in layer.graph.metrics  # template graph metric dropped despite orders.pop
+    assert layer.graph.get_model("orders").get_metric("pop") is not None  # local measure survives
+
+
+def test_lookml_dropped_template_graph_metric_not_orphaned():
+    """A graph metric (period_over_period) on a dropped template must not linger after CLI load.
+
+    add_model auto-registers time_comparison/conversion measures as graph metrics; when the
+    only model carrying it is a skipped extension:required template, the metric must be
+    dropped too, else compile/info expose a metric whose base model is missing.
+    """
+    import tempfile
+
+    from sidemantic import SemanticLayer
+    from sidemantic.loaders import load_from_directory
+
+    d = tempfile.mkdtemp()
+    with open(Path(d) / "v.lkml", "w") as f:
+        f.write(
+            "view: base { extension: required "
+            "  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; } "
+            "  dimension: amt { type: number  sql: ${TABLE}.amt ;; } "
+            "  measure: total { type: sum  sql: ${amt} ;; } "
+            "  measure: pop { type: period_over_period  based_on: total  period: year  kind: difference } }"
+        )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, d)  # must not raise
+    assert "base" not in layer.graph.models  # template skipped
+    assert "pop" not in layer.graph.metrics  # orphaned graph metric dropped too
+
+
+def test_lookml_registerability_keys_off_parser_marker_not_user_meta():
+    """A tableless model with user `extension_required` meta but no parser marker must surface error.
+
+    The skip keys off the parser-owned `lookml_template` marker so a native/other-format
+    model that merely carries the public `extension_required` key is still registered (and
+    its missing-source error surfaced), not silently dropped.
+    """
+    from types import SimpleNamespace
+
+    from sidemantic.loaders import _is_registerable_model
+
+    user_meta = SimpleNamespace(table=None, sql=None, dax=None, source_uri=None, meta={"extension_required": True})
+    assert _is_registerable_model(user_meta) is True  # surfaces error, not dropped
+    template = SimpleNamespace(
+        table=None, sql=None, dax=None, source_uri=None, meta={"extension_required": True, "lookml_template": True}
+    )
+    assert _is_registerable_model(template) is False  # genuine LookML template skipped
+
+
+def test_lookml_abstract_marker_survives_later_refinement_meta_overwrite():
+    """A refinement overwriting meta must not strip the abstract marker the loader keys off.
+
+    `+base { extension: required }` then `+base { label: ... }` leaves base tableless but
+    its final meta only has the label; the marker is re-asserted so the CLI loader still
+    skips it instead of raising the no-table validation error.
+    """
+    import tempfile
+
+    from sidemantic import SemanticLayer
+    from sidemantic.loaders import load_from_directory
+
+    d = tempfile.mkdtemp()
+    with open(Path(d) / "v.lkml", "w") as f:
+        f.write(
+            "view: base { dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; } "
+            "dimension: x { type: number  sql: ${TABLE}.x ;; } } "
+            "view: +base { extension: required } "
+            'view: +base { label: "Base" } '
+            "view: orders { extends: [base]  dimension: y { type: number  sql: ${TABLE}.y ;; } }"
+        )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, d)  # must not raise even though `extension_required` was overwritten
+    assert "base" not in layer.graph.models
+    assert layer.graph.get_model("orders").table == "orders"
+
+
+def test_lookml_fk_inference_skips_abstract_template_no_dangling_rel():
+    """FK inference must not target a skipped abstract template, leaving a dangling relationship."""
+    import tempfile
+
+    from sidemantic import SemanticLayer
+    from sidemantic.loaders import load_from_directory
+
+    d = tempfile.mkdtemp()
+    with open(Path(d) / "v.lkml", "w") as f:
+        f.write(
+            "view: customer { extension: required  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; } } "
+            "view: customers { extends: [customer]  sql_table_name: customers ;; "
+            "dimension: name { type: string  sql: ${TABLE}.name ;; } } "
+            "view: orders { sql_table_name: orders ;; dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; } "
+            "dimension: customer_id { type: number  sql: ${TABLE}.customer_id ;; } }"
+        )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, d)
+    assert "customer" not in layer.graph.models  # abstract template not registered
+    # No model carries a relationship pointing at the skipped template.
+    for model in layer.graph.models.values():
+        for rel in getattr(model, "relationships", []) or []:
+            assert rel.name in layer.graph.models, f"dangling relationship to {rel.name}"
+
+
+def test_lookml_explore_join_to_template_no_dangling_rel():
+    """An explore join to a skipped template must not leave a dangling relationship."""
+    import tempfile
+
+    from sidemantic import SemanticLayer
+    from sidemantic.loaders import load_from_directory
+
+    d = tempfile.mkdtemp()
+    with open(Path(d) / "v.lkml", "w") as f:
+        f.write(
+            "view: customer { extension: required  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; } } "
+            "view: orders { sql_table_name: orders ;; dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; } "
+            "dimension: customer_id { type: number  sql: ${TABLE}.customer_id ;; } } "
+            "explore: orders { join: customer { sql_on: ${orders.customer_id} = ${customer.id} ;; relationship: many_to_one } }"
+        )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, d)
+    assert "customer" not in layer.graph.models
+    for model in layer.graph.models.values():
+        for rel in getattr(model, "relationships", []) or []:
+            assert rel.name in layer.graph.models, f"dangling relationship to {rel.name}"
+
+
+def test_lookml_active_layer_explore_join_to_template_no_dangling_rel():
+    """Same as above but via the ACTIVE-layer parse() path (with SemanticLayer())."""
+    import tempfile
+
+    from sidemantic import SemanticLayer
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".lkml", delete=False) as f:
+        f.write(
+            "view: customer { extension: required  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; } } "
+            "view: orders { sql_table_name: orders ;; dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; } "
+            "dimension: customer_id { type: number  sql: ${TABLE}.customer_id ;; } } "
+            "explore: orders { join: customer { sql_on: ${orders.customer_id} = ${customer.id} ;; relationship: many_to_one } }"
+        )
+        f.flush()
+        path = Path(f.name)
+
+    with SemanticLayer() as layer:
+        LookMLAdapter().parse(path)
+    assert "customer" not in layer.graph.models
+    for model in layer.graph.models.values():
+        for rel in getattr(model, "relationships", []) or []:
+            assert rel.name in layer.graph.models, f"dangling relationship to {rel.name}"
+
+
+def test_lookml_extends_tableless_view_keeps_own_table():
+    """A child extending a tableless base must default to its OWN name, not inherit the base's default."""
+    graph = _parse_lkml(
+        "view: base { dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; } "
+        "dimension: x { type: number  sql: ${TABLE}.x ;; } } "
+        "view: child { extends: [base]  dimension: y { type: number  sql: ${TABLE}.y ;; } }"
+    )
+    assert graph.get_model("base").table == "base"
+    assert graph.get_model("child").table == "child"
+
+
+def test_lookml_refinement_adds_fields_then_defaults_table():
+    """A fieldless base whose fields come from a +refinement still defaults its table after merge."""
+    graph = _parse_lkml(
+        "view: orders {} view: +orders { dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; } }"
+    )
+    assert graph.get_model("orders").table == "orders"
+
+
+def test_lookml_filter_only_view_gets_default_table():
+    """A view that declares only LookML `filter` fields (-> segments) still defaults its table.
+
+    Such a view is not 'fieldless' -- without the default it fails validation (no table/sql).
+    """
+    graph = _parse_lkml("view: ff { filter: recent { type: yesno  sql: ${TABLE}.x ;; } }")
+    model = graph.get_model("ff")
+    assert model.table == "ff"
+    assert [s.name for s in model.segments] == ["recent"]
+
+
+def test_lookml_concrete_child_of_abstract_view_gets_table():
+    """A concrete view extending an extension:required base must default to its OWN name, not be treated as abstract."""
+    graph = _parse_lkml(
+        "view: base { extension: required  "
+        "dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; } "
+        "dimension: x { type: number  sql: ${TABLE}.x ;; } } "
+        "view: orders { extends: [base]  dimension: y { type: number  sql: ${TABLE}.y ;; } }"
+    )
+    assert graph.get_model("base").table is None  # abstract base stays table-less
+    assert graph.get_model("orders").table == "orders"  # concrete child defaults to its name
+
+
+def test_lookml_unsupported_derived_table_marker_survives_refinement():
+    """The unsupported-derived_table marker must survive a refinement that carries meta (e.g. label)."""
+    graph = _parse_lkml(
+        "view: ndt { derived_table: { sql_trigger_value: SELECT CURRENT_DATE() ;; } "
+        "dimension: id { type: number  sql: ${TABLE}.id ;; } } "
+        'view: +ndt { label: "NDT View" }'
+    )
+    ndt = graph.get_model("ndt")
+    # Not defaulted to a physical table even though the refinement replaced its meta.
+    assert ndt.table is None
+    assert ndt.sql is None
+
+
+def test_lookml_child_inheriting_unsupported_derived_table_not_defaulted():
+    """A child extending a parent with an unsupported derived_table must stay table-less too."""
+    graph = _parse_lkml(
+        "view: base_ndt { derived_table: { sql_trigger_value: SELECT 1 ;; } "
+        "dimension: id { type: number  sql: ${TABLE}.id ;; } } "
+        "view: child_ndt { extends: [base_ndt] }"
+    )
+    # Inherited the unsupported-derived_table marker via extends -> not defaulted.
+    assert graph.get_model("child_ndt").table is None
+
+
+def test_lookml_refinement_added_extension_required_stays_abstract():
+    """A +refinement that adds extension: required must keep the refined view tableless."""
+    graph = _parse_lkml(
+        "view: base { dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; } } "
+        "view: +base { extension: required }"
+    )
+    assert graph.get_model("base").table is None
+
+
+def test_lookml_abstract_flag_survives_later_refinement():
+    """extension: required added by one refinement survives a later refinement that replaces meta."""
+    graph = _parse_lkml(
+        "view: base { dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; } } "
+        "view: +base { extension: required } "
+        'view: +base { label: "Base" }'
+    )
+    assert graph.get_model("base").table is None
+
+
+def test_lookml_child_of_unsupported_dt_with_own_meta_not_defaulted():
+    """A child extending an unsupported derived_table base must stay tableless even with its own meta."""
+    graph = _parse_lkml(
+        "view: base { derived_table: { sql_trigger_value: SELECT 1 ;; } "
+        "dimension: id { type: number  sql: ${TABLE}.id ;; } } "
+        'view: child { extends: [base]  label: "Child" }'
+    )
+    assert graph.get_model("child").table is None
+
+
 def test_lookml_export_unmapped_aggregations_not_count():
     """Unmapped aggregations / complex types must not be silently exported as COUNT."""
     import tempfile

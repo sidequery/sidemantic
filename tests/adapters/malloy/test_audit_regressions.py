@@ -380,3 +380,51 @@ def test_one_to_one_exports_as_join_one_not_cross():
     text = _export_text(g)
     assert "join_one: customers with customer_id" in text
     assert "join_cross: customers" not in text
+
+
+# --- Import resolution must not silently drop sources ---
+
+
+def _src(name):
+    return f"source: {name} is duckdb.table('{name}.parquet') extend {{ primary_key: id  dimension: id is id }}\n"
+
+
+def _models(path):
+    return set(MalloyAdapter(warn_on_errors=False).parse(Path(path)).models.keys())
+
+
+def test_named_import_in_chain_not_dropped(tmp_path):
+    (tmp_path / "base.malloy").write_text(_src("alpha") + _src("beta"))
+    (tmp_path / "x.malloy").write_text("import { alpha } from 'base.malloy'\n" + _src("x_src"))
+    (tmp_path / "y.malloy").write_text("import 'x.malloy'\nimport { beta } from 'base.malloy'\n" + _src("y_src"))
+    assert _models(tmp_path / "y.malloy") == {"alpha", "beta", "x_src", "y_src"}
+
+
+def test_narrow_import_then_import_all(tmp_path):
+    (tmp_path / "base.malloy").write_text(_src("alpha") + _src("beta"))
+    (tmp_path / "root.malloy").write_text(
+        "import { alpha } from 'base.malloy'\nimport 'base.malloy'\n" + _src("root_src")
+    )
+    assert _models(tmp_path / "root.malloy") == {"alpha", "beta", "root_src"}
+
+
+def test_source_imported_under_two_aliases(tmp_path):
+    (tmp_path / "base.malloy").write_text(
+        "source: customers is duckdb.table('c.parquet') extend { primary_key: cid  dimension: cid is cid }\n"
+    )
+    (tmp_path / "dual.malloy").write_text(
+        "import { customers is c1, customers is c2 } from 'base.malloy'\n" + _src("local_src")
+    )
+    assert _models(tmp_path / "dual.malloy") == {"c1", "c2", "local_src"}
+
+
+def test_circular_imports_terminate_and_keep_both(tmp_path):
+    (tmp_path / "a.malloy").write_text("import 'b.malloy'\n" + _src("a_src"))
+    (tmp_path / "b.malloy").write_text("import 'a.malloy'\n" + _src("b_src"))
+    assert _models(tmp_path / "a.malloy") == {"a_src", "b_src"}
+
+
+def test_named_import_still_filters(tmp_path):
+    (tmp_path / "base.malloy").write_text(_src("alpha") + _src("beta"))
+    (tmp_path / "m.malloy").write_text("import { alpha } from 'base.malloy'\n" + _src("m_src"))
+    assert _models(tmp_path / "m.malloy") == {"alpha", "m_src"}

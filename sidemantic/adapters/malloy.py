@@ -1613,10 +1613,10 @@ class MalloyAdapter(BaseAdapter):
             # We use a separate parsed_files set per root file to handle imports,
             # but we track which models have been added to avoid duplicates.
             for malloy_file in source_path.rglob("*.malloy"):
-                parsed_files: set[Path] = set()
+                parsed_files: set = set()
                 self._parse_file(malloy_file, graph, parsed_files, import_filter=None)
         else:
-            parsed_files: set[Path] = set()
+            parsed_files: set = set()
             self._parse_file(source_path, graph, parsed_files)
 
         return graph
@@ -1625,7 +1625,7 @@ class MalloyAdapter(BaseAdapter):
         self,
         file_path: Path,
         graph: SemanticGraph,
-        parsed_files: set[Path],
+        parsed_files: set,
         import_filter: list[tuple[str, str | None]] | None = None,
     ) -> None:
         """Parse a single Malloy file with import resolution.
@@ -1639,11 +1639,16 @@ class MalloyAdapter(BaseAdapter):
         """
         resolved_path = file_path.resolve()
 
-        # Cycle detection: skip if already parsed
-        if resolved_path in parsed_files:
+        # Dedup/cycle detection keyed on (path, filter): a file imported under a
+        # narrow named-import filter must still be parseable for a later, broader
+        # (or differently-named) import of the same file, while an identical
+        # request is parsed at most once so circular imports still terminate.
+        filter_key = None if import_filter is None else frozenset(import_filter)
+        cache_key = (resolved_path, filter_key)
+        if cache_key in parsed_files:
             return
 
-        parsed_files.add(resolved_path)
+        parsed_files.add(cache_key)
 
         if not file_path.exists():
             return
@@ -1711,40 +1716,22 @@ class MalloyAdapter(BaseAdapter):
             if import_file.exists():
                 self._parse_file(import_file, graph, parsed_files, import_items)
 
-        # Add models to graph (with optional filtering for selective imports)
+        # Add models to graph (with optional filtering/aliasing for selective imports).
         for model in visitor.models:
-            if import_filter is not None:
-                # Check if this model should be imported
-                matching_import = None
-                for name, alias in import_filter:
-                    if model.name == name:
-                        matching_import = (name, alias)
-                        break
+            if import_filter is None:
+                if model.name not in graph.models:
+                    graph.add_model(model)
+                continue
 
-                if matching_import is None:
-                    continue  # Skip this model, not in import list
-
-                # Apply alias if specified
-                name, alias = matching_import
-                if alias:
-                    model = Model(
-                        name=alias,
-                        table=model.table,
-                        sql=model.sql,
-                        description=model.description,
-                        extends=model.extends,
-                        relationships=model.relationships,
-                        primary_key=model.primary_key,
-                        dimensions=model.dimensions,
-                        metrics=model.metrics,
-                        segments=model.segments,
-                        pre_aggregations=model.pre_aggregations,
-                        metadata=model.metadata,
-                    )
-
-            # Add to graph if not already present
-            if model.name not in graph.models:
-                graph.add_model(model)
+            # A source may be selected under several names in a single import
+            # (e.g. `import { s is a, s is b }`), so emit one model per matching
+            # entry rather than only the first.
+            for name, alias in import_filter:
+                if model.name != name:
+                    continue
+                target = model if not alias else model.model_copy(update={"name": alias})
+                if target.name not in graph.models:
+                    graph.add_model(target)
 
     def export(self, graph: SemanticGraph, output_path: str | Path) -> None:
         """Export semantic graph to Malloy format.

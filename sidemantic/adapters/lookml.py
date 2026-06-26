@@ -447,10 +447,26 @@ class LookMLAdapter(BaseAdapter):
         return conds[0] if len(conds) == 1 else "(" + " OR ".join(conds) + ")"
 
     @staticmethod
-    def _split_top_level_commas(s: str) -> list[str]:
-        """Split on commas that are NOT inside ``[...]``/``(...)`` brackets."""
-        out, cur, depth = [], "", 0
+    def _split_top_level_commas(s: str, quote_aware: bool = False) -> list[str]:
+        """Split on commas that are NOT inside ``[...]``/``(...)`` brackets.
+
+        With ``quote_aware`` also ignore commas inside SQL string literals
+        (``'...'`` / ``"..."``) -- needed when splitting SQL expressions to count
+        aggregate arity (a single-arg ``COUNT(DISTINCT a || ',' || b)`` must not look
+        multi-column). It is OFF by default because LookML filter VALUES treat an
+        apostrophe as a literal char (``O'Brien, Smith`` is two values, not one).
+        """
+        out, cur, depth, quote = [], "", 0, None
         for ch in s:
+            if quote_aware and quote is not None:
+                cur += ch
+                if ch == quote:
+                    quote = None
+                continue
+            if quote_aware and ch in "'\"":
+                quote = ch
+                cur += ch
+                continue
             if ch in "[(":
                 depth += 1
             elif ch in ")]":
@@ -978,6 +994,10 @@ class LookMLAdapter(BaseAdapter):
             measure_names.add(m_name)
             m_type = m.get("type", "count")
             agg_template = self._SQL_AGG_FUNC.get(m_type)
+            # An approximate count_distinct must aggregate approximately when wrapped
+            # by a post-SQL measure (percent_of_total/previous), matching the direct metric.
+            if m_type == "count_distinct" and m.get("approximate") in ("yes", True):
+                agg_template = "APPROX_COUNT_DISTINCT({0})"
             if agg_template:
                 measure_agg_lookup[m_name] = agg_template
                 m_sql = m.get("sql")
@@ -1648,6 +1668,10 @@ class LookMLAdapter(BaseAdapter):
         }
 
         agg_type = type_mapping.get(measure_type)
+
+        # Looker's `approximate: yes` on a count_distinct -> approximate distinct count.
+        if agg_type == "count_distinct" and measure_def.get("approximate") in ("yes", True):
+            agg_type = "approx_count_distinct"
 
         # Parse filters - lkml parses these as filters__all
         # There are TWO different filter syntaxes in LookML:
@@ -2358,6 +2382,147 @@ class LookMLAdapter(BaseAdapter):
             lookml_str = lkml.dump(data)
             f.write(lookml_str)
 
+    @staticmethod
+    def _fold_filter_conds(filters: list[str], model: Model) -> str:
+        """Resolve ``metric.filters`` into an AND-joined, ``${TABLE}``-qualified SQL
+        predicate for folding into an exported aggregate measure.
+
+        Field refs are resolved through the model's dimension SQL so a renamed column is
+        used, not a bare name. Three forms are handled: ``{model}.col``, the model's own
+        name ``orders.col``, and an UNqualified dimension name used as a column
+        (``status = 'done'``, matched only before a comparison operator so string VALUES
+        aren't rewritten). Each filter is parenthesized so a filter containing ``OR`` is
+        not broken by ``AND``'s higher precedence.
+        """
+        dim_sql = {d.name: d.sql for d in model.dimensions if d.sql}
+        dim_names = {d.name for d in model.dimensions}
+
+        def _qualify(val: str) -> str:
+            # Bare column -> qualify with {model}. so it stays unambiguous in joins;
+            # any resolved expression is parenthesized to preserve precedence.
+            if re.fullmatch(r"\w+", val):
+                return f"({{model}}.{val})"
+            return f"({val})"
+
+        # Qualified ref (group 1), OR a bare known-dimension name (group 2) used as a
+        # column anywhere (incl. inside a function like LOWER(status)). Matching is done
+        # only OUTSIDE single-quoted string literals (see _resolve), so a quoted value
+        # that happens to equal a dimension name is never rewritten. Both alternatives use a
+        # negative lookbehind for `.`/word-char: the bare one so it does NOT match the field
+        # of a foreign qualifier (`status` inside `customers.status`), and the model-name one
+        # so it does NOT match a schema-qualified ref (`orders.status` inside
+        # `schema.orders.status`). The bare alt also has a negative lookahead for `(` so it
+        # does NOT match a function name (e.g. `date(...)`).
+        names_alt = "|".join(re.escape(n) for n in sorted(dim_names, key=len, reverse=True))
+        pattern = rf"(?:\{{model\}}|(?<![\w.]){re.escape(model.name)})\.(\w+)"
+        if names_alt:
+            pattern += rf"|(?<![\w.])({names_alt})\b(?!\s*\()"
+        ref_re = re.compile(pattern)
+
+        def _resolve(fstr: str) -> str:
+            def _one(m):
+                # The bare-dimension alternative (group 2) only exists when names_alt is
+                # non-empty; with no declared dimensions the pattern has a single group, so
+                # read group 2 defensively (m.group(2) would raise IndexError otherwise).
+                bare = m.group(2) if m.re.groups >= 2 else None
+                if bare is not None:
+                    # Bare dimension-name alternative: skip when it sits in a SQL TYPE context
+                    # (a cast target), not a column operand -- e.g. CAST(x AS date) or x::date
+                    # with a `date` dimension. Rewriting the type token to a column would emit
+                    # invalid SQL like CAST(x AS (${TABLE}.order_date)). (Typed literals like
+                    # `date '2024-01-01'` are protected earlier, in the split below.)
+                    pre = m.string[: m.start()]
+                    if re.search(r"(?is)\bAS\s+$", pre) or pre.rstrip().endswith("::"):
+                        return m.group(0)
+                name = m.group(1) or bare
+                return _qualify(dim_sql.get(name, name))
+
+            # Split out (and thus protect from rewriting) SQL TYPED LITERALS whose type keyword
+            # equals a dimension name (`date '2024-01-01'`, `timestamp '...'`, `interval '...'`)
+            # -- the whole `<type> '...'` unit is kept intact so the leading `date`/`time`/etc.
+            # is not mistaken for a column; then single-quoted string literals, double-quoted
+            # identifiers (doubled-quote escapes), backtick (BigQuery/MySQL) and [bracket] (SQL
+            # Server) quoted identifiers, AND Liquid/Jinja template segments ({{ }} / {% %}).
+            # Rewrite refs only in the remaining (even-index) segments so string VALUES, quoted
+            # identifiers, typed literals, and template variables are untouched. The template
+            # patterns require DOUBLE braces / brace-percent, so the single-brace {model} is safe.
+            parts = re.split(
+                r"""((?i:\b(?:date|time|timestamp|timestamptz|datetime|interval)\s+'(?:[^']|'')*')"""
+                r"""|'(?:[^']|'')*'|"(?:[^"]|"")*"|`[^`]*`|\[[^\]]*\]|\{\{.*?\}\}|\{%.*?%\})""",
+                fstr,
+            )
+            for i in range(0, len(parts), 2):
+                parts[i] = ref_re.sub(_one, parts[i])
+            return "".join(parts)
+
+        return " AND ".join("(" + _resolve(f).replace("{model}", "${TABLE}") + ")" for f in filters)
+
+    @classmethod
+    def _fold_filters_into_aggregate(cls, agg_sql: str, filters: list[str], model: Model) -> str | None:
+        """Fold ``filters`` into a single-outer-aggregate SQL expression.
+
+        For ``SUM(${TABLE}.amount)`` + ``status='done'`` returns
+        ``SUM(CASE WHEN (...) THEN ${TABLE}.amount END)``. Returns ``None`` when the
+        expression is not exactly one outer ``FUNC(arg)`` (so the caller can fall back
+        rather than mangle a complex expression).
+        """
+        m = re.match(r"^\s*(\w+)\s*\((.*)\)\s*$", agg_sql, re.S)
+        if not m:
+            return None
+        func, arg = m.group(1), m.group(2)
+        # Confirm the parens wrap the WHOLE expression (no premature close, e.g.
+        # "SUM(a)/COUNT(b)" must not be treated as one outer SUM(...)). Quote-aware: a paren
+        # inside a string literal / quoted identifier (e.g. CONCAT(a, ')')) is not syntax.
+        depth = 0
+        quote = None
+        for ch in arg:
+            if quote is not None:
+                if ch == quote:
+                    quote = None
+                continue
+            if ch in "'\"`":
+                quote = ch
+            elif ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth < 0:
+                    return None
+        if depth != 0:
+            return None
+        arg = arg.strip()
+        # The outer FUNC must itself be the aggregate. A scalar wrapper around an aggregate
+        # (e.g. ABS(SUM(amount))) has the aggregate in `arg`; folding would push CASE around
+        # the inner aggregate (ABS(CASE WHEN ... THEN SUM(amount) END)) -> wrong. Bail so the
+        # caller skips rather than emit invalid SQL.
+        from sidemantic.sql.aggregation_detection import sql_has_aggregate as _has_agg
+
+        if _has_agg(arg):
+            return None
+        conds = cls._fold_filter_conds(filters, model)
+        # COUNT(*) -> COUNT(CASE WHEN ... THEN 1 END): "* " can't live inside CASE.
+        if arg == "*":
+            return f"{func}(CASE WHEN {conds} THEN 1 END)"
+        # COUNT(DISTINCT x) -> COUNT(DISTINCT CASE WHEN ... THEN x END): DISTINCT stays
+        # outside the CASE (it's part of the aggregate, not the value being filtered). Accept
+        # the parenthesized spelling COUNT(DISTINCT(x)) too; the lookahead requires a space or
+        # `(` after DISTINCT so an identifier like `DISTINCTION` is not mistaken for it.
+        dm = re.match(r"(?is)^DISTINCT(?=[\s(])\s*(.+)$", arg)
+        if dm:
+            distinct_arg = dm.group(1).strip()
+            # A multi-column DISTINCT (COUNT(DISTINCT a, b)) has no single CASE result, so
+            # bail and let the caller skip rather than emit malformed `THEN a, b END`.
+            # quote_aware: a delimited composite key COUNT(DISTINCT a || ',' || b) is ONE
+            # column -- the comma in the string literal must not count as a separator.
+            if len(cls._split_top_level_commas(distinct_arg, quote_aware=True)) > 1:
+                return None
+            return f"{func}(DISTINCT CASE WHEN {conds} THEN {distinct_arg} END)"
+        # A multi-argument aggregate (WEIGHTED_AVG(price, qty)) has no single CASE result,
+        # so bail rather than emit malformed `THEN price, qty END`.
+        if len(cls._split_top_level_commas(arg, quote_aware=True)) > 1:
+            return None
+        return f"{func}(CASE WHEN {conds} THEN {arg} END)"
+
     def _export_view(self, model: Model, graph: SemanticGraph) -> dict:
         """Export model to LookML view definition.
 
@@ -2487,9 +2652,12 @@ class LookMLAdapter(BaseAdapter):
                 view["dimension_groups"] = dimension_groups
 
         # Export measures
+        from sidemantic.sql.aggregation_detection import sql_has_aggregate as _sql_has_aggregate
+
         measures = []
         for metric in model.metrics:
             measure_def = {"name": metric.name}
+            filters_folded = False  # set when filters are folded into the measure SQL
 
             # Handle different metric types
             if metric.type == "time_comparison":
@@ -2539,23 +2707,123 @@ class LookMLAdapter(BaseAdapter):
                 if metric.numerator and metric.denominator:
                     measure_def["sql"] = f"1.0 * ${{{metric.numerator}}} / NULLIF(${{{metric.denominator}}}, 0)"
             else:
-                # Regular aggregation measure
-                type_mapping = {
-                    "count": "count",
-                    "count_distinct": "count_distinct",
-                    "sum": "sum",
-                    "avg": "average",
-                    "min": "min",
-                    "max": "max",
-                }
-                measure_def["type"] = type_mapping.get(metric.agg, "count")
+                # Any metric.type that reaches here (time_comparison/derived/ratio
+                # were handled above) is a complex type. A running_total imported from
+                # LookML (type=cumulative + table_calculation meta) round-trips back to
+                # a LookML running_total over its base measure; other complex types
+                # (cumulative/conversion/retention/cohort) have no LookML equivalent and
+                # are skipped rather than exported as a misleading plain aggregation.
+                if metric.type is not None:
+                    rt_sql = (metric.sql or "").strip()
+                    rt_is_running_total = (metric.meta or {}).get("table_calculation") == "running_total" and rt_sql
+                    # A LookML running_total's `sql` is a SINGLE base-measure reference.
+                    # Accept a bare measure name (-> ${name}) or a string that is EXACTLY one
+                    # already-braced ref (an unresolved cross-view ${other.total}, passed
+                    # through). An EXPRESSION (e.g. "${other.total} + tax" -- note the local
+                    # ref also lost its braces) is not a valid single ref, so fall through to
+                    # the skip-with-warning rather than emit malformed `sql: ${other.total} + tax`.
+                    if rt_is_running_total and re.fullmatch(r"\$\{[^{}]+\}", rt_sql):
+                        measure_def["type"] = "running_total"
+                        measure_def["sql"] = rt_sql
+                    elif rt_is_running_total and re.fullmatch(r"\w+", rt_sql):
+                        measure_def["type"] = "running_total"
+                        measure_def["sql"] = f"${{{rt_sql}}}"
+                    else:
+                        logger.warning(
+                            "Metric %r (type=%r) has no LookML equivalent; skipping on export.",
+                            metric.name,
+                            metric.type,
+                        )
+                        continue
+                else:
+                    # Regular aggregation measure.
+                    type_mapping = {
+                        "count": "count",
+                        "count_distinct": "count_distinct",
+                        "sum": "sum",
+                        "avg": "average",
+                        "average": "average",
+                        "min": "min",
+                        "max": "max",
+                        "median": "median",
+                    }
+                    # Aggregations Looker has no native measure type for: emit as a
+                    # type: number with an explicit SQL aggregate.
+                    sql_agg_funcs = {
+                        "stddev": "STDDEV",
+                        "stddev_pop": "STDDEV_POP",
+                        "variance": "VAR_SAMP",
+                        "variance_pop": "VAR_POP",
+                    }
+                    col_sql = metric.sql.replace("{model}", "${TABLE}") if metric.sql else None
 
-                if metric.sql:
-                    sql = metric.sql.replace("{model}", "${TABLE}")
-                    measure_def["sql"] = sql
+                    if metric.agg == "approx_count_distinct":
+                        # Looker represents this as count_distinct with approximate: yes.
+                        measure_def["type"] = "count_distinct"
+                        measure_def["approximate"] = "yes"
+                        if col_sql:
+                            measure_def["sql"] = col_sql
+                    elif metric.agg in type_mapping:
+                        measure_def["type"] = type_mapping[metric.agg]
+                        if col_sql:
+                            measure_def["sql"] = col_sql
+                    elif metric.agg in sql_agg_funcs and col_sql:
+                        measure_def["type"] = "number"
+                        inner = col_sql
+                        if metric.filters:
+                            # type: number re-imports as a derived metric whose generator
+                            # does not apply LookML `filters`, so fold them into the
+                            # aggregate here and skip the separate filters block below.
+                            conds = self._fold_filter_conds(metric.filters, model)
+                            inner = f"CASE WHEN {conds} THEN {col_sql} END"
+                            filters_folded = True
+                        measure_def["sql"] = f"{sql_agg_funcs[metric.agg]}({inner})"
+                    elif metric.agg is None and col_sql and _sql_has_aggregate(metric.sql or ""):
+                        # An agg-less measure whose SQL is itself an aggregate (a complete
+                        # SUM({model}.amount) imported from Cube, or an inline aggregate
+                        # expression). Faithfully maps to a LookML type: number with the
+                        # aggregate SQL. type: number re-imports as a derived metric that
+                        # does NOT apply a separate `filters` block, so any filters must be
+                        # folded into the aggregate; if the expression isn't a single
+                        # foldable FUNC(arg), skip rather than emit a silently-unfiltered
+                        # measure.
+                        if not metric.filters and re.fullmatch(r"(?i)count\s*\(\s*(?:\*|\d+)\s*\)", col_sql.strip()):
+                            # A bare row count -- COUNT(*), COUNT(1), COUNT(0), incl. spaced
+                            # COUNT (*) -- references
+                            # no column; a type: number would re-import as a derived metric
+                            # over an empty CTE (SELECT FROM ...), which the compiler rejects.
+                            # LookML's native type: count counts rows and round-trips cleanly.
+                            measure_def["type"] = "count"
+                        else:
+                            measure_def["type"] = "number"
+                            if metric.filters:
+                                folded = self._fold_filters_into_aggregate(col_sql, metric.filters, model)
+                                if folded is None:
+                                    logger.warning(
+                                        "Metric %r has filters over a complex aggregate SQL expression that "
+                                        "cannot be folded for LookML export; skipping to avoid an unfiltered measure.",
+                                        metric.name,
+                                    )
+                                    continue
+                                measure_def["sql"] = folded
+                                filters_folded = True
+                            else:
+                                measure_def["sql"] = col_sql
+                    else:
+                        # agg=None over a NON-aggregate SQL (a plain row-level column /
+                        # string / yesno measure), an unknown aggregation, or an opaque
+                        # complete *column* expression: Looker measures aggregate, so there
+                        # is no faithful measure form. Skip with a warning rather than
+                        # forcing a misleading type: number that crashes on re-import.
+                        logger.warning(
+                            "Metric %r (agg=%r) has no LookML equivalent; skipping on export.",
+                            metric.name,
+                            metric.agg,
+                        )
+                        continue
 
-            # Add filters (skip for time_comparison as they don't use filters)
-            if metric.filters and metric.type != "time_comparison":
+            # Add filters (skip for time_comparison; skip when already folded into SQL)
+            if metric.filters and metric.type != "time_comparison" and not filters_folded:
                 filters_all = []
                 for filter_str in metric.filters:
                     # Parse SQL-format filters back to LookML format

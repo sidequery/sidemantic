@@ -1302,8 +1302,75 @@ class LookMLAdapter(BaseAdapter):
             if sql:
                 sql = sql.replace("${TABLE}", "{model}")
 
+        # Recover the granularity of the collision-export form: a standalone time
+        # dimension we emit as `type: date_time sql: DATE_TRUNC('<grain>', ...)` whose
+        # name carries a LookML timeframe suffix for that grain (e.g. started_date with
+        # DATE_TRUNC('day', ...), started_minute with DATE_TRUNC('minute', ...) -- see
+        # _export_collision_time_dim). Guard tightly so a hand-written DATE_TRUNC dim is
+        # NOT hijacked: the grain must be one sidemantic supports, the name's trailing
+        # `_<suffix>` must be a LookML timeframe mapping to that exact grain, AND the dim
+        # must carry no other properties (the collision form emits only name/type/sql).
+        # This keeps a hand-written `created` (DATE_TRUNC('day', ...)) on the categorical
+        # path (no rename to created_date), preserves a hand-written `created_date` with
+        # `hidden`/`label`/etc. as a plain dimension (props not dropped), and never copies
+        # a dialect grain like 'isoweek' into Dimension.granularity (a validation error).
+        granularity = None
+        recovered_timeframe = None
+        if (
+            dim_type in ("date", "date_time", "datetime", "time")
+            and sql
+            and not (set(dim_def) & self._PRESERVED_DIM_PROPS)
+        ):
+            bucket = self._MINUTE_BUCKET_RE.match(sql)
+            tm = self._DATE_TRUNC_RE.match(sql)
+            if bucket:
+                # A collision-export minute15/minute30 bucket: recover minute grain + the
+                # exact timeframe. KEEP the full bucket expression as the dim's sql (do NOT
+                # reduce to the raw column) so QUERIES bucket every 15/30 minutes; the
+                # generator's DATE_TRUNC('minute', ...) wrap is idempotent on an already
+                # minute-aligned bucket. Re-export detects this bucket to avoid re-wrapping.
+                tf = f"minute{bucket.group(2)}"
+                if name.endswith("_" + tf):
+                    sidemantic_type = "time"
+                    granularity = "minute"
+                    recovered_timeframe = tf
+            elif tm:
+                grain = tm.group(1).lower()
+                if grain in self._SUBSECOND_TF and name.endswith("_" + grain):
+                    # A collision-export sub-second DATE_TRUNC (millisecond/microsecond):
+                    # sidemantic has no such grain, so store the nearest (second) + the
+                    # exact timeframe in meta, KEEPING the sub-second DATE_TRUNC sql so the
+                    # exported precision round-trips (queries run at second, sidemantic's max).
+                    sidemantic_type = "time"
+                    granularity = "second"
+                    recovered_timeframe = grain
+                # Match the LONGEST known timeframe suffix, not just text after the last
+                # underscore -- multi-word timeframes like "time_of_day" must round-trip
+                # (started_time_of_day, not a bogus "day" suffix lookup).
+                elif grain in self._SUPPORTED_GRAINS:
+                    matched_tf = None
+                    for tf, g in self._TIME_GRANULARITY_TIMEFRAMES.items():
+                        if name.endswith("_" + tf) and g == grain and (not matched_tf or len(tf) > len(matched_tf)):
+                            matched_tf = tf
+                    if matched_tf:
+                        sidemantic_type = "time"
+                        granularity = grain
+                        # Only STORE the timeframe when it's an EXACT one-to-one match for the
+                        # grain. An INEXACT suffix (minute15/30, sub-second, time_of_day) on a
+                        # PLAIN DATE_TRUNC does NOT preserve that timeframe's semantics (the
+                        # explicit bucket/subsecond forms, handled above, do) -- recording it
+                        # would make the next export WIDEN a 1-minute dim into a 15-min bucket.
+                        # Recover as a plain grain time dim (no inexact meta) instead.
+                        if matched_tf not in self._INEXACT_NAME_TF:
+                            recovered_timeframe = matched_tf
+
         # Build meta dict from LookML-specific display properties
         meta = {}
+        if recovered_timeframe:
+            # Remember the exact LookML timeframe so the NEXT export strips this suffix
+            # (e.g. _time_of_day) instead of re-deriving a wrong one and renaming the
+            # field -- keeps repeated collision round-trips stable.
+            meta["lookml_timeframe"] = recovered_timeframe
         if dim_def.get("hidden") in ("yes", True):
             meta["hidden"] = True
         if dim_def.get("group_label"):
@@ -1319,6 +1386,7 @@ class LookMLAdapter(BaseAdapter):
             name=name,
             type=sidemantic_type,
             sql=sql,
+            granularity=granularity,
             description=dim_def.get("description"),
             label=dim_def.get("label"),
             value_format_name=dim_def.get("value_format_name"),
@@ -1377,7 +1445,9 @@ class LookMLAdapter(BaseAdapter):
     # Timeframes that truncate a timestamp to a coarser time grain. These keep
     # type="time" with a Sidemantic granularity so they behave as time dimensions.
     _TIME_GRANULARITY_TIMEFRAMES = {
-        "time": "hour",
+        # Looker's "time" timeframe keeps full timestamp precision (to the second);
+        # truncating to the hour silently collapses sub-hour rows.
+        "time": "second",
         "time_of_day": "hour",
         "hour": "hour",
         "minute": "minute",
@@ -1437,7 +1507,10 @@ class LookMLAdapter(BaseAdapter):
         label = dim_group_def.get("label")
         description = dim_group_def.get("description")
 
-        # Time-truncation timeframes -> time dimension with granularity.
+        # Time-truncation timeframes -> time dimension with granularity. Remember the
+        # original LookML timeframe so export can round-trip it exactly: several
+        # timeframes (e.g. "time" and "second") map to the same sidemantic granularity
+        # and would otherwise collapse to one on export.
         granularity = self._TIME_GRANULARITY_TIMEFRAMES.get(timeframe)
         if granularity is not None:
             return Dimension(
@@ -1447,6 +1520,7 @@ class LookMLAdapter(BaseAdapter):
                 granularity=granularity,
                 label=label,
                 description=description,
+                meta={"lookml_timeframe": timeframe},
             )
 
         # Fiscal quarter/year truncations honoring fiscal_month_offset. The base
@@ -2641,6 +2715,137 @@ class LookMLAdapter(BaseAdapter):
             return None
         return f"{func}(CASE WHEN {conds} THEN {arg} END)"
 
+    # DATE_TRUNC('<grain>', <expr>) emitted for collision time dimensions, and matched
+    # on import to recover the grain. The grain is the first capture; expr is the rest.
+    _DATE_TRUNC_RE = re.compile(r"(?is)^\s*DATE_TRUNC\(\s*'(\w+)'\s*,\s*(.+)\)\s*$")
+    # minute15 / minute30 bucket every N minutes -- sidemantic has no such grain (it
+    # stores them as `minute` + meta), and DATE_TRUNC('minute', ...) loses the bucket.
+    # The collision export emits the expression below; this regex recovers (src, N).
+    _MINUTE_BUCKET_TF = {"minute15": 15, "minute30": 30}
+    # Sub-second LookML timeframes finer than sidemantic's `second` grain but valid as
+    # DATE_TRUNC units; the collision export truncates at these and import recovers them.
+    _SUBSECOND_TF = frozenset({"millisecond", "microsecond"})
+    # LookML timeframes that map MANY-to-one onto a coarser/finer sidemantic grain (15/30-min
+    # buckets -> minute, sub-second -> second, time-of-day extraction -> hour). A native dim's
+    # NAME suffix must NOT infer these on export: `created_minute15` at MINUTE grain is 1-minute
+    # data, not 15-minute buckets, so emitting `[minute15]` would silently re-bucket. They only
+    # round-trip when preserved in meta['lookml_timeframe'] (the import path).
+    _INEXACT_NAME_TF = frozenset(_MINUTE_BUCKET_TF) | _SUBSECOND_TF | {"time_of_day"}
+    # Canonical EXACT LookML timeframe for each sidemantic grain (inverse of the common
+    # cases in _TIME_GRANULARITY_TIMEFRAMES). Used to give a suffixless collision time dim
+    # a recoverable name on export (e.g. `started` at hour grain -> `started_hour`).
+    _GRAIN_TO_TIMEFRAME = {
+        "second": "second",
+        "minute": "minute",
+        "hour": "hour",
+        "day": "date",
+        "week": "week",
+        "month": "month",
+        "quarter": "quarter",
+        "year": "year",
+    }
+    _MINUTE_BUCKET_RE = re.compile(
+        r"(?is)^\s*DATE_TRUNC\('hour',\s*(.+?)\)\s*\+\s*INTERVAL '1 minute'\s*\*\s*"
+        r"CAST\(FLOOR\(EXTRACT\(MINUTE FROM .+?\)\s*/\s*(15|30)\)\s*\*\s*(?:15|30)\s*AS INTEGER\)\s*$"
+    )
+
+    @staticmethod
+    def _minute_bucket_sql(src: str, n: int) -> str:
+        """An N-minute bucket truncation of ``src`` (N = 15 or 30).
+
+        Uses portable ``FLOOR(x / n) * n`` (not DuckDB-only ``//``) so the exported SQL
+        runs on Postgres/BigQuery/Snowflake too.
+        """
+        return (
+            f"DATE_TRUNC('hour', {src}) + INTERVAL '1 minute' * "
+            f"CAST(FLOOR(EXTRACT(MINUTE FROM {src}) / {n}) * {n} AS INTEGER)"
+        )
+
+    # Grains sidemantic's Dimension.granularity accepts; used to guard DATE_TRUNC recovery.
+    _SUPPORTED_GRAINS = frozenset({"second", "minute", "hour", "day", "week", "month", "quarter", "year"})
+    # Dimension-level properties the collision-export form never emits (it writes only
+    # name/type/sql). Their presence marks a HAND-WRITTEN DATE_TRUNC dimension that must
+    # not be reclassified into a time dimension (which would drop these on round-trip).
+    _PRESERVED_DIM_PROPS = frozenset(
+        {
+            "hidden",
+            "label",
+            "group_label",
+            "description",
+            "order_by_field",
+            "value_format",
+            "value_format_name",
+            "tags",
+            "can_filter",
+            "primary_key",
+            "drill_fields",
+        }
+    )
+
+    @classmethod
+    def _export_collision_time_dim(cls, dim, group_sql: str | None, used_names: set | None = None) -> dict:
+        """Export a same-prefix time dimension (different source) as a standalone dim.
+
+        Such a dimension cannot share its base name's dimension_group, so it is written
+        as a plain ``type: date_time`` dimension preserving its exact field name, with
+        the granularity baked into ``DATE_TRUNC`` so re-import recovers it (see
+        ``_parse_dimension``). If the source SQL is already a DATE_TRUNC at this grain it
+        is reused verbatim, keeping repeated round-trips stable (no nested truncation).
+        """
+        src = (group_sql if group_sql is not None else dim.sql) or ""
+        src = src.replace("{model}", "${TABLE}")
+        grain = (dim.granularity or "").lower()
+        tf = (dim.meta or {}).get("lookml_timeframe")
+        # minute15/minute30 (stored as `minute` grain + meta): emit an explicit N-minute
+        # bucket so the exported LookML buckets correctly, not every minute. If the dim's
+        # sql is ALREADY that bucket (recovered on a prior import), reuse it verbatim to
+        # avoid nesting a second bucket around it.
+        n = cls._MINUTE_BUCKET_TF.get(tf)
+        if n is not None:
+            bm = cls._MINUTE_BUCKET_RE.match(src)
+            bucket_sql = src if (bm and int(bm.group(2)) == n) else cls._minute_bucket_sql(src, n)
+            return {"name": dim.name, "type": "date_time", "sql": bucket_sql}
+        # millisecond/microsecond are finer than sidemantic's stored `second` grain but ARE
+        # valid DATE_TRUNC units, so truncate at the LookML timeframe to keep sub-second
+        # precision in the exported SQL (recovered back to second grain + meta on import).
+        if tf in cls._SUBSECOND_TF:
+            grain = tf
+        m = cls._DATE_TRUNC_RE.match(src)
+        if m and m.group(1).lower() == grain:
+            trunc_sql = src
+        else:
+            trunc_sql = f"DATE_TRUNC('{grain}', {src})"
+        # A plain DATE_TRUNC standalone is only recoverable as a TIME dim if its name ends in a
+        # LookML timeframe suffix for this grain (see _parse_dimension). Determine that trailing
+        # `_<tf>` (synthesizing the grain's canonical one for a suffixless name like `started`,
+        # which would otherwise re-import categorical); `stem` is the name without it.
+        name = dim.name
+        tf_suffix = None
+        if grain in cls._SUBSECOND_TF and name.endswith("_" + grain):
+            tf_suffix = grain
+        else:
+            for t, g in cls._TIME_GRANULARITY_TIMEFRAMES.items():
+                if name.endswith("_" + t) and g == grain and (tf_suffix is None or len(t) > len(tf_suffix)):
+                    tf_suffix = t
+        if tf_suffix is not None:
+            stem = name[: -(len(tf_suffix) + 1)]
+        else:
+            tf_suffix = grain if grain in cls._SUBSECOND_TF else cls._GRAIN_TO_TIMEFRAME.get(grain, "date")
+            stem = name
+            name = f"{stem}_{tf_suffix}"
+        # Guarantee uniqueness against every other emitted field (a sibling standalone, a
+        # dimension_group's generated `<base>_<tf>` field, a regular dimension/measure). This
+        # trio (`started` + `started_hour` + `started_date`, all different SQL) is otherwise
+        # unrepresentable; insert the disambiguator into the STEM (`started_2_hour`, NOT
+        # `started_hour_2`) so the trailing timeframe -- and thus time-recoverability on
+        # re-import -- is preserved. Valid + lossless.
+        if used_names is not None and name in used_names:
+            i = 2
+            while f"{stem}_{i}_{tf_suffix}" in used_names:
+                i += 1
+            name = f"{stem}_{i}_{tf_suffix}"
+        return {"name": name, "type": "date_time", "sql": trunc_sql}
+
     def _export_view(self, model: Model, graph: SemanticGraph) -> dict:
         """Export model to LookML view definition.
 
@@ -2719,55 +2924,143 @@ class LookMLAdapter(BaseAdapter):
         # Group time dimensions by base name
         time_dims = [d for d in model.dimensions if d.type == "time" and d.granularity]
         if time_dims:
-            # Group by base name and collect all timeframes
-            from collections import defaultdict
+            # Group by (base name, source SQL): same-prefix time dimensions backed by
+            # DIFFERENT columns are not one dimension_group, and merging them would
+            # rewire a field to the wrong source on round-trip.
+            from collections import Counter
 
-            base_name_groups = defaultdict(list)
+            base_name_groups: dict[tuple[str, str | None], list] = {}
 
             for dim in time_dims:
-                # Extract base name (remove _date, _week, etc suffix)
+                # Extract the base name by stripping the timeframe suffix. For imported
+                # dims, use the EXACT stored LookML timeframe (covers every mapped
+                # timeframe, e.g. millisecond/microsecond, not just the common few);
+                # for native dims fall back to the common suffix list.
                 base_name = dim.name
-                for suffix in ["_date", "_week", "_month", "_quarter", "_year", "_time", "_hour"]:
-                    if dim.name.endswith(suffix):
-                        base_name = dim.name[: -len(suffix)]
-                        break
-                base_name_groups[base_name].append(dim)
+                stored_tf = (dim.meta or {}).get("lookml_timeframe")
+                if stored_tf and dim.name.endswith("_" + stored_tf):
+                    base_name = dim.name[: -(len(stored_tf) + 1)]
+                else:
+                    # Native dims (no stored timeframe): strip any known LookML truncation
+                    # timeframe suffix, LONGEST first so e.g. `_minute15`/`_time_of_day`/
+                    # `_millisecond` win over `_minute`/`_time`/`_second` (else the field
+                    # re-imports renamed, e.g. created_minute15 -> created_minute15_minute).
+                    for tf in sorted(self._TIME_GRANULARITY_TIMEFRAMES, key=len, reverse=True):
+                        if dim.name.endswith("_" + tf):
+                            base_name = dim.name[: -(len(tf) + 1)]
+                            break
+                base_name_groups.setdefault((base_name, dim.sql), []).append(dim)
+
+            # When one base name spans multiple source SQLs, only ONE can be the
+            # dimension_group (a second `dimension_group: <base>` is illegal LookML);
+            # the rest are emitted as standalone DATE_TRUNC dimensions below so their
+            # field names round-trip exactly instead of being renamed.
+            base_name_counts = Counter(bn for (bn, _) in base_name_groups)
+            assigned_names: set[str] = set()
+
+            # Map granularity to timeframe. Used as a fallback for dimensions not
+            # imported from LookML (which carry no meta['lookml_timeframe']); a
+            # second-grain dimension maps to the LookML `second` timeframe so native
+            # `*_second` fields round-trip instead of collapsing to `time`.
+            granularity_mapping = {
+                "second": "second",
+                "minute": "minute",
+                "hour": "hour",
+                "day": "date",
+                "week": "week",
+                "month": "month",
+                "quarter": "quarter",
+                "year": "year",
+            }
 
             dimension_groups = []
-            for base_name, dims in base_name_groups.items():
-                # Map granularity to timeframe
-                granularity_mapping = {
-                    "hour": "time",
-                    "day": "date",
-                    "week": "week",
-                    "month": "month",
-                    "quarter": "quarter",
-                    "year": "year",
-                }
+            # Same-prefix time dimensions backed by a DIFFERENT source column can't all
+            # be dimension_groups: a second `dimension_group: <base>` is illegal LookML,
+            # and renaming it (started_2) would rename its fields (started_minute ->
+            # started_2_minute) and break every reference. The first source keeps the
+            # dimension_group; the rest are emitted as standalone dimensions that
+            # preserve the exact field name (granularity baked into DATE_TRUNC so the
+            # importer recovers it losslessly).
+            collision_dims = []
+            # Field names already taken by fields NOT produced by this time-dim pass (regular
+            # dimensions + measures). Time dims get their emitted names added below as each
+            # dimension_group (base + generated `<base>_<tf>` fields) and collision standalone
+            # is built, so a collision standalone never duplicates a group-generated field,
+            # another standalone, or a regular field (see _export_collision_time_dim).
+            _time_names = {d.name for d in time_dims}
+            used_names: set[str] = {d.name for d in model.dimensions if d.name not in _time_names}
+            used_names |= {m.name for m in model.metrics}
+            # Within a colliding base, let a clean (non-DATE_TRUNC) source win the
+            # dimension_group slot so the choice is stable across repeated round-trips
+            # (a DATE_TRUNC-sourced winner would otherwise nest truncations).
+            ordered_groups = sorted(
+                base_name_groups.items(),
+                key=lambda kv: (kv[0][0], 1 if self._DATE_TRUNC_RE.match(kv[0][1] or "") else 0, kv[0][1] or ""),
+            )
+            for (base_name, group_sql), dims in ordered_groups:
+                if base_name_counts[base_name] > 1 and base_name in assigned_names:
+                    for dim in dims:
+                        cdim = self._export_collision_time_dim(dim, group_sql, used_names)
+                        used_names.add(cdim["name"])
+                        collision_dims.append(cdim)
+                    continue
+                group_name = base_name
+                assigned_names.add(group_name)
 
-                # Collect all timeframes for this base name
+                # Collect all timeframes for this base name, de-duplicated. LookML's
+                # "time" and "second" timeframes both import to second granularity
+                # (sidemantic has no separate "time" grain), so without dedup a group
+                # containing both would emit duplicate timeframes (e.g. [time, time])
+                # and drop a field on re-import.
                 timeframes = []
-                sql = None
+                seen_timeframes = set()
                 for dim in dims:
-                    timeframe = granularity_mapping.get(dim.granularity, "date")
-                    timeframes.append(timeframe)
-                    if dim.sql and not sql:
-                        sql = dim.sql
+                    # Prefer the original LookML timeframe captured at import (so
+                    # "time"/"second"/etc. round-trip distinctly).
+                    timeframe = (dim.meta or {}).get("lookml_timeframe")
+                    if timeframe is None:
+                        # Native (non-import) dim: derive the timeframe from the field-name
+                        # suffix (longest known timeframe) so the EXACT name round-trips
+                        # (created_hour -> [hour]) -- but ONLY when that suffix is an EXACT
+                        # one-to-one match for the dim's grain. Skip the inexact/bucketing
+                        # timeframes (minute15/30, milli/microsecond, time_of_day): their
+                        # coarse mapping equals the grain, so a native `created_minute15` at
+                        # MINUTE grain would wrongly export `[minute15]` (15-min buckets). Also
+                        # skip a suffix that CONTRADICTS the grain (created_time at hour grain).
+                        # Otherwise fall back to the grain map.
+                        for tf in sorted(self._TIME_GRANULARITY_TIMEFRAMES, key=len, reverse=True):
+                            if (
+                                tf not in self._INEXACT_NAME_TF
+                                and dim.name.endswith("_" + tf)
+                                and self._TIME_GRANULARITY_TIMEFRAMES[tf] == dim.granularity
+                            ):
+                                timeframe = tf
+                                break
+                        if timeframe is None:
+                            timeframe = granularity_mapping.get(dim.granularity, "date")
+                    if timeframe not in seen_timeframes:
+                        seen_timeframes.add(timeframe)
+                        timeframes.append(timeframe)
 
                 dim_group_def = {
-                    "name": base_name,
+                    "name": group_name,
                     "type": "time",
                     "timeframes": timeframes,
                 }
 
-                if sql:
-                    sql = sql.replace("{model}", "${TABLE}")
-                    dim_group_def["sql"] = sql
+                if group_sql:
+                    dim_group_def["sql"] = group_sql.replace("{model}", "${TABLE}")
 
                 dimension_groups.append(dim_group_def)
+                # Reserve the group's name AND every field it generates (`<base>_<tf>`) so a
+                # later collision standalone for this base doesn't duplicate one of them.
+                used_names.add(group_name)
+                used_names.update(f"{group_name}_{tf}" for tf in timeframes)
 
             if dimension_groups:
                 view["dimension_groups"] = dimension_groups
+            if collision_dims:
+                view.setdefault("dimensions", []).extend(collision_dims)
 
         # Export measures
         from sidemantic.sql.aggregation_detection import sql_has_aggregate as _sql_has_aggregate

@@ -13,6 +13,83 @@ if TYPE_CHECKING:
     from sidemantic.core.semantic_layer import SemanticLayer
 
 
+def _is_registerable_model(model) -> bool:
+    """True unless ``model`` is an INTENTIONAL non-queryable template that should be
+    skipped rather than registered/validated.
+
+    Only LookML's ``extension: required`` abstract bases and unsupported derived tables
+    (kept in the parsed graph as tableless templates) are skipped -- ``add_model`` would
+    reject them and abort loading an otherwise-valid project. The skip keys off the
+    PARSER-OWNED ``lookml_template`` marker (set by the LookML adapter), NOT the public
+    ``extension_required``/``unsupported_derived_table`` keys, so a native or other-format
+    tableless model that merely carries those user-facing keys still surfaces its real
+    missing-source validation error. Any OTHER tableless model (e.g. an erroneous Hex view
+    missing its base) is likewise left in.
+    """
+    if model.table or model.sql or getattr(model, "dax", None) or getattr(model, "source_uri", None):
+        return True
+    return not (model.meta or {}).get("lookml_template")
+
+
+def _drop_non_registerable_models(all_models: dict, all_metrics: dict | None = None) -> dict:
+    """Filter to registerable models AND strip any relationship targeting a dropped one.
+
+    An explore may have already added a relationship pointing at a now-skipped template
+    (e.g. an `extension: required` join target); leaving it would dangle and fail
+    ``sidemantic validate``. Only relationships to models THIS function drops are removed
+    -- a relationship to a never-defined model is a real error that validation must still
+    surface, so it is left intact. Returns the filtered dict (mutating survivors' rels).
+
+    When ``all_metrics`` is given, also drop graph-level metrics contributed by a dropped
+    model -- ``SemanticGraph.add_model()`` auto-registers a model's ``time_comparison`` /
+    ``conversion`` measures into the graph, so a ``period_over_period`` measure on an
+    ``extension: required`` template would otherwise linger as a graph metric whose base
+    model is gone, breaking ``compile``/``info``. A metric still defined on a SURVIVING
+    model is kept.
+    """
+    kept = {name: model for name, model in all_models.items() if _is_registerable_model(model)}
+    dropped = set(all_models) - set(kept)
+    for model in kept.values():
+        rels = getattr(model, "relationships", None)
+        if rels:
+            model.relationships = [r for r in rels if r.name not in dropped]
+    if all_metrics is not None and dropped:
+        # add_model auto-registers a model's GRAPH-LEVEL measures (time_comparison/conversion)
+        # into the graph; a dropped template's such measure would linger in all_metrics with
+        # its base model gone. Decide orphan-ness by whether the metric's BASE reference proves
+        # it belongs to a surviving source -- NOT object identity (a refinement reconstructs the
+        # Metric object) and NOT a bare base NAME merely existing somewhere. Only a QUALIFIED
+        # ref to a surviving model (e.g. a standalone `${orders.total}`) proves the metric is
+        # legitimate; a template's measure references its base UNqualified (`total`, a measure
+        # on the template itself), so an unqualified base -- even if a surviving model happens
+        # to also have a `total` -- does not save it. Such candidates are dropped as orphans.
+        _ref_fields = ("base_metric", "numerator", "denominator", "base_event", "conversion_event")
+
+        def _resolves_to_surviving(metric) -> bool:
+            for f in _ref_fields:
+                ref = getattr(metric, f, None)
+                if isinstance(ref, str) and "." in ref and ref.split(".", 1)[0] in kept:
+                    return True  # qualified ref to a surviving model
+            return False
+
+        # Names of graph-level measures contributed by dropped templates (orphan candidates).
+        candidates = {
+            mm.name
+            for name in dropped
+            for mm in (getattr(all_models[name], "metrics", None) or [])
+            if mm.type in ("time_comparison", "conversion")
+        }
+        for mn in candidates:
+            m = all_metrics.get(mn)
+            if (
+                m is not None
+                and getattr(m, "type", None) in ("time_comparison", "conversion")
+                and not _resolves_to_surviving(m)
+            ):
+                all_metrics.pop(mn, None)
+    return kept
+
+
 def load_from_directory(
     layer: "SemanticLayer",
     directory: str | Path,
@@ -331,10 +408,16 @@ def load_from_directory(
     # table pair.
     _apply_snowflake_pending_relationships(all_models, all_pending_relationships)
 
+    # Drop non-queryable template models (LookML `extension: required` abstract bases /
+    # unsupported derived tables) BEFORE inference + registration, so FK inference never
+    # targets a model that won't be registered (which would leave a dangling relationship)
+    # and add_model never rejects a template that was never meant to be queried.
+    all_models = _drop_non_registerable_models(all_models, all_metrics)
+
     # Infer cross-model relationships based on naming conventions
     _infer_relationships(all_models)
 
-    # Add all models to the layer (now with relationships)
+    # Add all models to the layer (now with relationships).
     for model in all_models.values():
         if model.name not in layer.graph.models:
             layer.add_model(model)
@@ -420,6 +503,8 @@ def _load_sml_directory(layer: "SemanticLayer", directory: Path, all_models: dic
         if not hasattr(model, "_source_file"):
             model._source_file = str(directory)
     all_models.update(graph.models)
+    # Drop non-queryable templates (+ their dangling rels) before inference + registration.
+    all_models = _drop_non_registerable_models(all_models)
     _infer_relationships(all_models)
     for model in all_models.values():
         if model.name not in layer.graph.models:

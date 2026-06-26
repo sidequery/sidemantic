@@ -335,6 +335,19 @@ class SQLGenerator:
         """
         return _quote_identifier_cached(name, self.dialect, self._is_simple_identifier(name))
 
+    def _dimension_base_expr(self, dimension, *, window: bool = False) -> str:
+        """Row-level SQL expression for a dimension, with bare column names quoted.
+
+        When a dimension carries no custom ``sql``/``window`` expression its row-level form is just
+        its name, which must be quoted so identifiers containing spaces or special characters
+        (common in imported Power BI / TMDL models, e.g. ``Order Date``) are valid SQL. A custom
+        expression is assumed to be valid SQL already and is returned unchanged.
+        """
+        expr = dimension.window_sql_expr if window else dimension.sql_expr
+        if expr == dimension.name:
+            return self._quote_identifier(dimension.name)
+        return expr
+
     def _cte_name(self, model_name: str) -> str:
         """Get the CTE identifier name for a model."""
         return f"{model_name}_cte"
@@ -1505,7 +1518,7 @@ class SQLGenerator:
                 # For time dimensions with granularity, apply DATE_TRUNC
                 # Use window_sql_expr for CTE projection so window functions
                 # (LEAD, LAG, etc.) are evaluated here.
-                base_expr = dimension.window_sql_expr
+                base_expr = self._dimension_base_expr(dimension, window=True)
                 if dimension.type == "time" and dimension.granularity:
                     dim_sql = self._date_trunc(dimension.granularity, base_expr)
                 else:
@@ -1529,7 +1542,7 @@ class SQLGenerator:
 
             if gran and dimension.type == "time":
                 # Apply time granularity (in addition to base column)
-                dim_sql = self._date_trunc(gran, replace_model_placeholder(dimension.sql_expr))
+                dim_sql = self._date_trunc(gran, replace_model_placeholder(self._dimension_base_expr(dimension)))
                 alias = f"{dim_name}__{gran}"
                 if alias not in columns_added:
                     select_cols.append(f"{dim_sql} AS {self._quote_alias(alias)}")

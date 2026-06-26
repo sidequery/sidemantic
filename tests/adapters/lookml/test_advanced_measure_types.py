@@ -129,7 +129,7 @@ class TestDimensionGroupTimeframes:
     def test_time_truncation_timeframes_are_time(self, graph):
         model = graph.get_model("events_calendar")
         for tf, gran in [
-            ("occurred_time", "hour"),
+            ("occurred_time", "second"),
             ("occurred_date", "day"),
             ("occurred_week", "week"),
             ("occurred_month", "month"),

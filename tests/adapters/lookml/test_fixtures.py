@@ -69,7 +69,7 @@ class TestRedshiftAdmin:
         model = self.graph.get_model("redshift_etl_errors")
         assert model.get_dimension("error_time") is not None
         assert model.get_dimension("error_time").type == "time"
-        assert model.get_dimension("error_time").granularity == "hour"
+        assert model.get_dimension("error_time").granularity == "second"
         assert model.get_dimension("error_date") is not None
         assert model.get_dimension("error_date").type == "time"
         assert model.get_dimension("error_date").granularity == "day"
@@ -332,7 +332,7 @@ class TestPyLookMLKitchenSink:
         assert model.get_dimension("created_month") is not None
         assert model.get_dimension("created_year") is not None
         assert model.get_dimension("created_time") is not None
-        assert model.get_dimension("created_time").granularity == "hour"
+        assert model.get_dimension("created_time").granularity == "second"
 
     def test_shipped_time_group(self):
         model = self.graph.get_model("order_items")

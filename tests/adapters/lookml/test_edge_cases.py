@@ -2028,5 +2028,178 @@ view: +base_view {
         assert base.get_metric("count") is not None
 
 
+def test_lookml_filter_grammar_conversion():
+    """Lock in the corrected Looker filter-expression -> SQL conversion.
+
+    Regression coverage for the audit findings: date/numeric ranges, NOT/negation,
+    EMPTY's NULL case, wildcard NOT LIKE, mixed lists, and single-quote escaping.
+    """
+    adapter = LookMLAdapter()
+    conv = adapter._convert_lookml_filter_to_sql
+    f = "{model}.f"
+
+    # Single-quote escaping (was a SQL-injection / breakage bug)
+    assert conv("f", "O'Brien") == f"{f} = 'O''Brien'"
+
+    # EMPTY must include the NULL case
+    assert conv("f", "EMPTY") == f"({f} IS NULL OR {f} = '')"
+    assert conv("f", "-EMPTY") == f"({f} IS NOT NULL AND {f} <> '')"
+
+    # NULL passthrough
+    assert conv("f", "NULL") == f"{f} IS NULL"
+    assert conv("f", "-NULL") == f"{f} IS NOT NULL"
+
+    # Numeric ranges and interval syntax (were string-equality / garbage IN)
+    assert conv("f", "5 to 10") == f"({f} >= 5 AND {f} <= 10)"
+    assert conv("f", "5 to") == f"{f} >= 5"
+    assert conv("f", "to 10") == f"{f} <= 10"
+    assert conv("f", "[1,10]") == f"({f} >= 1 AND {f} <= 10)"
+    assert conv("f", "(1,10)") == f"({f} > 1 AND {f} < 10)"
+    assert conv("f", "[1,10)") == f"({f} >= 1 AND {f} < 10)"
+    assert conv("f", "(1,10]") == f"({f} > 1 AND {f} <= 10)"
+
+    # NOT / negation. Numeric NOT is a comparison; string negation uses the "-" form.
+    assert conv("f", "NOT 5") == f"{f} != 5"
+    assert conv("f", "-Completed") == f"{f} != 'Completed'"
+    # "not <string>" is a LITERAL value (Looker uses -FOO for string negation), not a negation.
+    assert conv("f", "not started") == f"{f} = 'not started'"
+    # Leading-NOT interval lists split at top level (the interval comma is preserved).
+    assert conv("f", "NOT [0,10],20") == f"(({f} < 0 OR {f} > 10) AND {f} != 20)"
+
+    # before / after bounds (Looker: before exclusive, after inclusive)
+    assert conv("f", "before 2020-01-01") == f"{f} < '2020-01-01'"
+    assert conv("f", "after 2020-01-01") == f"{f} >= '2020-01-01'"
+    assert conv("f", "before 2020-01") == f"{f} < '2020-01'"  # year-month is absolute
+    # Relative bounds are NOT translated as absolute literals (left for the date warning)
+    assert conv("f", "before 3 days ago") == f"{f} = 'before 3 days ago'"
+    assert conv("f", "after Monday") == f"{f} = 'after Monday'"
+    # A TRUNCATED date (single-digit month) is not a full absolute date -> not translated
+    assert conv("f", "before 2016-1") == f"{f} = 'before 2016-1'"
+
+    # Leading NOT over a mixed interval + range list negates the WHOLE list (De Morgan):
+    # "NOT [0,10], 20 to 30" excludes both, not OR-include the positive range.
+    assert conv("f", "NOT [0,10], 20 to 30") == f"(({f} < 0 OR {f} > 10) AND ({f} < 20 OR {f} > 30))"
+
+    # Numeric AND range in a single condition
+    assert conv("f", ">1 AND <100") == f"({f} > 1 AND {f} < 100)"
+    assert conv("f", ">=1 AND <=5") == f"({f} >= 1 AND {f} <= 5)"
+    # NOT of an AND-range -> De Morgan (OR of flipped comparisons), parsed before the
+    # single-comparison flip (which would otherwise treat ">1 AND <100" as one operand).
+    assert conv("f", "NOT >1 AND <100") == f"({f} <= 1 OR {f} >= 100)"
+    # AND-range with bare-fraction bounds (consistent with .5 being numeric).
+    assert conv("f", ">.5 AND <1") == f"({f} > .5 AND {f} < 1)"
+    # A string value that merely contains the word "and" is NOT a numeric AND-range.
+    assert conv("f", "red and blue OR 90") == f"{f} = 'red and blue OR 90'"
+    # Leading-NOT list with an AND-range member + a plain exclusion (De Morgan + AND).
+    assert conv("f", "NOT >1 AND <100, 200") == f"(({f} <= 1 OR {f} >= 100) AND {f} != 200)"
+
+    # Comparisons
+    assert conv("f", ">100") == f"{f} > 100"
+    assert conv("f", "<=5") == f"{f} <= 5"
+    assert conv("f", "<>0") == f"{f} != 0"
+
+    # Wildcards, incl. negated -> NOT LIKE (was != '%foo%')
+    assert conv("f", "%foo%") == f"{f} LIKE '%foo%'"
+    assert conv("f", "-%foo%") == f"{f} NOT LIKE '%foo%'"
+    # Only the "-" dash form negates a wildcard; the word "not" is a literal pattern
+    # (Looker negates strings with "-"), so "not %complete%" is a positive LIKE.
+    assert conv("f", "not %complete%") == f"{f} LIKE 'not %complete%'"
+
+    # nan/inf/Infinity are NOT numeric filter values -> stay quoted strings (float()
+    # accepts them, but Looker only uses inf as an interval bound, handled separately).
+    assert conv("f", "nan") == f"{f} = 'nan'"
+    assert conv("f", "inf") == f"{f} = 'inf'"
+    assert conv("f", "Infinity") == f"{f} = 'Infinity'"
+    # Python/float()-only numeric spellings are NOT numeric filter values -> stay quoted
+    # (exponent 1e2 would otherwise emit `= 1e2`; only plain decimals are numeric).
+    assert conv("f", "1e2") == f"{f} = '1e2'"
+    assert conv("f", ".5") == f"{f} = .5"  # but a bare decimal fraction is still numeric
+
+    # Lists
+    assert conv("f", "a,b") == f"{f} IN ('a', 'b')"
+    assert conv("f", "1,5,9") == f"{f} IN (1, 5, 9)"
+    assert conv("f", "-a,-b") == f"{f} NOT IN ('a', 'b')"
+    # A single leading NOT negates the whole NUMERIC list
+    assert conv("f", "NOT 66, 99, 4") == f"{f} NOT IN (66, 99, 4)"
+    # ...but for a STRING list the word "not" is a literal value (Looker negates
+    # strings with "-FOO"), so the leading "not" stays on the first value.
+    assert conv("f", "not started,pending") == f"{f} IN ('not started', 'pending')"
+    # A NON-first "not <string>" is also a literal include (OR'd), not an AND-exclusion.
+    assert conv("f", "pending,not started") == f"({f} = 'pending' OR {f} = 'not started')"
+    # ...while a word-NOT of a NUMERIC value in a list is a real exclusion (AND).
+    assert conv("f", "a,not 5") == f"({f} = 'a' AND {f} != 5)"
+    # Mixed-operator list is no longer silently mangled (valid SQL)
+    assert conv("f", ">1,<5") == f"({f} > 1 OR {f} < 5)"
+    assert conv("f", "%a%,%b%") == f"({f} LIKE '%a%' OR {f} LIKE '%b%')"
+
+    # Interval / range lists -> OR of each part (commas inside brackets preserved)
+    assert conv("f", "[0,9],[20,29]") == f"(({f} >= 0 AND {f} <= 9) OR ({f} >= 20 AND {f} <= 29))"
+    assert conv("f", "[0,10],20") == f"(({f} >= 0 AND {f} <= 10) OR {f} = 20)"
+    # Comma-separated "to"-ranges (no brackets) are numeric ranges, not a string IN.
+    assert conv("f", "1 to 10, 20 to 30") == f"(({f} >= 1 AND {f} <= 10) OR ({f} >= 20 AND {f} <= 30))"
+    # A non-leading exclusion in a range list is ANDed, not ORed (else it admits everything).
+    assert conv("f", "[0,30], NOT 20") == f"(({f} >= 0 AND {f} <= 30) AND {f} != 20)"
+    # NOT of a range -> the inverted (outside) condition
+    assert conv("f", "NOT 3 to 80.44") == f"({f} < 3 OR {f} > 80.44)"
+    # Leading NOT over a comparison list negates each clause (De Morgan)
+    assert conv("f", "NOT >1, 2, <100") == f"({f} <= 1 AND {f} != 2 AND {f} >= 100)"
+    # Single NOT comparison flips the operator; NOT of an interval inverts it
+    assert conv("f", "NOT >1") == f"{f} <= 1"
+    assert conv("f", "NOT (3,12)") == f"({f} <= 3 OR {f} >= 12)"
+    # AND / OR numeric grammar (OR binds loosest)
+    assert conv("f", ">1 AND <100") == f"({f} > 1 AND {f} < 100)"
+    assert conv("f", ">10 AND <=20 OR 90") == f"(({f} > 10 AND {f} <= 20) OR {f} = 90)"
+    # ORed ranges route through range SQL, not string equality
+    assert conv("f", "3 to 10 OR 30 to 100") == f"(({f} >= 3 AND {f} <= 10) OR ({f} >= 30 AND {f} <= 100))"
+    # A plain string containing "OR" is not misread as an OR filter
+    assert conv("f", "cats OR dogs") == f"{f} = 'cats OR dogs'"
+
+    # NOT NULL / NOT EMPTY are null/empty checks (same as -NULL / -EMPTY)
+    assert conv("f", "NOT NULL") == f"{f} IS NOT NULL"
+    assert conv("f", "NOT EMPTY") == f"({f} IS NOT NULL AND {f} <> '')"
+
+    # Explicit infinity bounds in interval notation -> open-ended comparisons
+    assert conv("f", "(500, inf)") == f"{f} > 500"
+    assert conv("f", "(-inf, 10]") == f"{f} <= 10"
+
+    # Dash-negation of a DOT-PREFIXED string is a string exclusion, not blocked by the `-.`
+    # (only actual negative numbers -5 / -.5 are values, not exclusions).
+    assert conv("ext", "-.csv") == "{model}.ext != '.csv'"
+    assert conv("f", "-5") == f"{f} = -5"  # negative number, not an exclusion
+    assert conv("f", "-.5") == f"{f} = -.5"  # negative bare fraction, not an exclusion
+
+    # A non-leading FRACTIONAL NOT-comparison is classified as an exclusion (AND), not a match.
+    assert conv("f", "1, NOT >.5") == f"({f} = 1 AND {f} <= .5)"
+
+    # yes/no
+    assert conv("f", "yes") == f"{f} = true"
+    assert conv("f", "no") == f"{f} = false"
+
+
+def test_lookml_filter_date_expression_warns(caplog):
+    """Untranslated date/interval filters should warn, not silently string-equal."""
+    import logging
+
+    adapter = LookMLAdapter()
+    with caplog.at_level(logging.WARNING):
+        result = adapter._convert_lookml_filter_to_sql("created_date", "last 7 days")
+    assert "last 7 days" in result  # value preserved
+    assert any("not translated" in rec.getMessage() for rec in caplog.records)
+
+    # Weekday relative date expressions also warn (not silently string-equal)
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        adapter._convert_lookml_filter_to_sql("created_date", "after Monday")
+    assert any("not translated" in rec.getMessage() for rec in caplog.records)
+
+    # A comma-separated date OR list warns per date part instead of emitting a plain
+    # IN ('today', '7 days ago'), and ORs them (Looker's list-of-alternatives semantics).
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        result = adapter._convert_lookml_filter_to_sql("created_date", "today, 7 days ago")
+    assert " OR " in result and "IN (" not in result
+    assert sum("not translated" in rec.getMessage() for rec in caplog.records) >= 2
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

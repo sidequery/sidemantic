@@ -2466,5 +2466,84 @@ def test_ungrouped_strict_without_pk_rollup_raises(layer):
         )
 
 
+def test_full_refresh_rebuilds_all_partitions_ignoring_update_window():
+    """mode='full' rebuilds every partition even when an update_window is declared."""
+    conn = duckdb.connect(":memory:")
+    # Four monthly buckets, all far older than a 1-month window.
+    conn.execute(
+        "CREATE TABLE orders AS "
+        "SELECT (DATE '2020-01-01' + INTERVAL (i) MONTH) created_at, 100 amount FROM generate_series(0, 3) t(i)"
+    )
+    model, _ = _monthly_partitioned_model()
+    preagg = PreAggregation(
+        name="monthly",
+        measures=["revenue"],
+        time_dimension="created_at",
+        granularity="month",
+        partition_granularity="month",
+        refresh_key=RefreshKey(incremental=True, update_window="1 month"),
+    )
+
+    result = preagg.refresh(
+        connection=conn, source_sql="", table_name="orders_preagg_monthly", mode="full", model=model
+    )
+
+    assert result.mode == "partitioned"
+    # All four months built despite the 1-month window (a full refresh ignores it).
+    assert conn.execute("SELECT SUM(revenue_raw) FROM orders_preagg_monthly").fetchone()[0] == 400
+
+
+def test_full_rebuild_drops_partitions_for_removed_buckets():
+    """A full rebuild drops partition tables whose source bucket no longer exists."""
+    conn = duckdb.connect(":memory:")
+    conn.execute(
+        "CREATE TABLE orders AS "
+        "SELECT (DATE '2024-01-01' + INTERVAL (i) MONTH) created_at, 100 amount FROM generate_series(0, 2) t(i)"
+    )
+    model, preagg = _monthly_partitioned_model()
+
+    preagg.build_partitions(conn, model, full_rebuild=True)
+    assert conn.execute("SELECT SUM(revenue_raw) FROM orders_preagg_monthly").fetchone()[0] == 300
+
+    # Remove the latest month's source rows, then full rebuild.
+    conn.execute("DELETE FROM orders WHERE created_at = DATE '2024-03-01'")
+    preagg.build_partitions(conn, model, full_rebuild=True)
+
+    n_partitions = conn.execute(
+        "SELECT COUNT(*) FROM information_schema.tables WHERE table_name LIKE 'orders_preagg_monthly_p%' ESCAPE '\\'"
+    ).fetchone()[0]
+    assert n_partitions == 2  # the dropped March bucket's partition is gone
+    assert conn.execute("SELECT SUM(revenue_raw) FROM orders_preagg_monthly").fetchone()[0] == 200  # no stale data
+
+
+def test_ungrouped_with_metric_filter_bails_to_raw():
+    """An ungrouped query with a metric (HAVING) filter falls through to raw, not the rollup."""
+    from sidemantic import SemanticLayer
+
+    layer = SemanticLayer()
+    layer.add_model(
+        Model(
+            name="orders",
+            table="orders",
+            primary_key="id",
+            dimensions=[Dimension(name="id", type="numeric"), Dimension(name="status", type="categorical")],
+            metrics=[Metric(name="revenue", agg="sum", sql="amount")],
+            pre_aggregations=[PreAggregation(name="by_id", measures=["revenue"], dimensions=["id", "status"])],
+        )
+    )
+
+    sql = layer.compile(
+        metrics=["orders.revenue"],
+        dimensions=["orders.status"],
+        filters=["orders.revenue > 100"],
+        ungrouped=True,
+        use_preaggregations=True,
+    )
+
+    # The rollup carries the PK, but the metric filter cannot be applied ungrouped,
+    # so routing must fall back to raw rather than silently drop the predicate.
+    assert "orders_preagg_by_id" not in sql
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

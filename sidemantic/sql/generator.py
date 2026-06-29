@@ -5473,6 +5473,10 @@ LEFT JOIN {preagg_table} AS {rollup_alias}
                 filter_exprs.append(filter_expr)
 
         if ungrouped:
+            # Metric-stage (HAVING) filters are an aggregation concept the ungrouped
+            # path cannot apply; bail to raw rather than silently dropping them.
+            if aggregate_filters:
+                return None
             # Ungrouped (drill-to-detail) reads stored rows verbatim, so the
             # requested metrics must map to a per-row stored value. Re-derivable
             # aggregates (avg / ratio / derived) are only meaningful after a

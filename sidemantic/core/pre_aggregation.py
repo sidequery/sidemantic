@@ -252,16 +252,20 @@ GROUP BY {group_by_str}"""
         lookback: str | None = None,
         build_range_start: Any | None = None,
         build_range_end: Any | None = None,
+        full_rebuild: bool = False,
     ) -> list[str]:
         """Materialize a partitioned pre-aggregation as one table per time bucket.
 
         Builds (or rebuilds) a physical table for each ``partition_granularity``
         time bucket present in the source data, then (re)creates a covering view
         named like the non-partitioned table so query routing reads all partitions
-        transparently and the engine prunes by the query's time filter. With a
-        ``lookback`` (or a declared ``refresh_key.update_window``) only partitions
-        whose bucket falls inside the window are rebuilt; older partitions are
-        treated as immutable.
+        transparently and the engine prunes by the query's time filter.
+
+        When ``full_rebuild`` is True, every bucket in range is rebuilt and any
+        partition table whose bucket is no longer in the source is dropped, so the
+        covering view never returns stale data. Otherwise only partitions inside the
+        ``lookback`` (or a declared ``refresh_key.update_window``) are rebuilt and
+        older partitions are preserved as immutable history.
 
         Returns the list of partition table names that were (re)built.
         """
@@ -292,8 +296,11 @@ GROUP BY {group_by_str}"""
                 qualified = f"{database}.{qualified}"
             return qualified
 
-        # A declared update_window is the default reprocessing window.
-        if lookback is None and self.refresh_key and self.refresh_key.update_window:
+        # A declared update_window is the default reprocessing window for incremental
+        # builds; a full rebuild ignores it and rebuilds every bucket in range.
+        if full_rebuild:
+            lookback = None
+        elif lookback is None and self.refresh_key and self.refresh_key.update_window:
             lookback = self.refresh_key.update_window
 
         range_preds = []
@@ -329,13 +336,20 @@ GROUP BY {group_by_str}"""
             connection.execute(f"CREATE TABLE {part_name} AS {source_sql}")
             built.append(part_name)
 
-        # (Re)create a covering view over every partition table that currently exists.
+        # Discover existing partition tables (those just built plus any from prior runs).
         all_tables = connection.execute("SELECT table_name FROM information_schema.tables").fetchall()
         prefix = f"{unqualified}_p"
-        partition_tables = sorted(
-            {qualify(row[0]) for row in all_tables if isinstance(row[0], str) and row[0].startswith(prefix)}
-            | set(built)
-        )
+        existing = {qualify(row[0]) for row in all_tables if isinstance(row[0], str) and row[0].startswith(prefix)}
+
+        if full_rebuild:
+            # A full rebuild reflects exactly the current source buckets: drop partitions
+            # whose bucket is no longer present so the covering view returns no stale data.
+            for stale_table in sorted(existing - set(built)):
+                connection.execute(f"DROP TABLE IF EXISTS {stale_table}")
+            partition_tables = sorted(built)
+        else:
+            # Incremental: keep immutable older partitions alongside the rebuilt ones.
+            partition_tables = sorted(existing | set(built))
 
         view_name = qualify(unqualified)
         if partition_tables:
@@ -489,7 +503,19 @@ GROUP BY {group_by_str}"""
                     f"Pre-aggregation '{self.name}' is partitioned (partition_granularity="
                     f"'{self.partition_granularity}'); pass model= to refresh() or call build_partitions() directly."
                 )
-            self.build_partitions(connection, model, database=database, schema=schema, lookback=lookback)
+            # Honor the requested mode: a full refresh rebuilds every partition, while
+            # incremental/merge only refresh recent buckets (lookback / update_window).
+            effective_mode = mode
+            if effective_mode is None:
+                effective_mode = "incremental" if (self.refresh_key and self.refresh_key.incremental) else "full"
+            self.build_partitions(
+                connection,
+                model,
+                database=database,
+                schema=schema,
+                lookback=lookback,
+                full_rebuild=(effective_mode == "full"),
+            )
             return RefreshResult(
                 mode="partitioned",
                 rows_inserted=-1,

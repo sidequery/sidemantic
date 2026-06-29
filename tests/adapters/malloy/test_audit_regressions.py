@@ -453,3 +453,23 @@ def test_pick_keyword_inside_string_literal_is_not_a_delimiter():
         "h",
     )
     assert sql == "CASE WHEN note = 'before else after' THEN 'x' ELSE 'y' END"
+
+
+def test_many_to_many_exports_as_join_many():
+    from sidemantic import Model
+    from sidemantic.core.relationship import Relationship
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    g = SemanticGraph()
+    g.add_model(Model(name="tags", table="t", primary_key="id"))
+    g.add_model(
+        Model(
+            name="orders",
+            table="o",
+            primary_key="id",
+            relationships=[Relationship(name="tags", type="many_to_many", foreign_key="tag_id")],
+        )
+    )
+    text = _export_text(g)
+    assert "join_many: tags with tag_id" in text
+    assert "join_one: tags" not in text

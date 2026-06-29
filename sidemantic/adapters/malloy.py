@@ -1989,7 +1989,9 @@ class MalloyAdapter(BaseAdapter):
                 # A cross join takes no key clause in Malloy.
                 lines.append(f"  join_cross: {rel.name}")
                 continue
-            join_type = "join_many" if rel.type == "one_to_many" else "join_one"
+            # one_to_many and many_to_many fan out -> join_many; many_to_one and
+            # one_to_one collapse to at most one match -> join_one.
+            join_type = "join_many" if rel.type in ("one_to_many", "many_to_many") else "join_one"
             on_condition = (rel.metadata or {}).get("on_condition")
             if on_condition:
                 lines.append(f"  {join_type}: {rel.name} on {on_condition}")

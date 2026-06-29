@@ -490,6 +490,13 @@ def test_regex_match_handles_quoted_paren_in_operand():
     )
 
 
+def test_date_literal_dimension_is_time_not_numeric():
+    g = _parse("source: o is duckdb.table('o') extend {\n  dimension: cutoff_date is @2024-01-01\n}\n")
+    d = g.get_model("o").get_dimension("cutoff_date")
+    assert d.type == "time"
+    assert d.sql == "DATE '2024-01-01'"
+
+
 def test_join_on_condition_skips_literal_predicate():
     g = _parse(
         "source: customers is duckdb.table('c') extend { primary_key: id }\n"

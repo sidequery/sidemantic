@@ -320,6 +320,12 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
             if "pick" not in sql_lower and "case" not in sql_lower:
                 return "boolean"
 
+        # SQL DATE/TIMESTAMP literals (e.g. from a Malloy @2024-01-01 literal) are
+        # time values. Check before numeric so the hyphens in the date are not
+        # read as subtraction. After boolean so a comparison stays boolean.
+        if re.search(r"\b(?:date|timestamp)\s+'", sql_lower):
+            return "time"
+
         # Numeric detection
         if re.search(r"[+\-*/]", sql) and "||" not in sql:
             return "numeric"

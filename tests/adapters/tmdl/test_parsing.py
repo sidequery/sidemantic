@@ -3030,6 +3030,49 @@ def test_tmdl_keyless_many_to_many_joins_without_keying_off_endpoints():
     assert "book_author_id AS book_author_id" in sql
 
 
+def test_tmdl_keyless_many_to_many_metric_raises_clear_error():
+    """Regression: a fan-out metric on a keyless table reached through a direct many-to-many cannot
+    be de-duplicated, so it must raise a clear QueryValidationError rather than emitting an empty
+    CONCAT() that crashes the SQL parser downstream."""
+    pytest.importorskip("sidemantic_dax")
+    tmdl = textwrap.dedent(
+        """
+        table Authors
+            column author_id
+                dataType: string
+                sourceColumn: author_id
+            column n
+                dataType: int64
+                sourceColumn: n
+            measure total = SUM(Authors[n])
+        table Books
+            column book_author_id
+                dataType: string
+                sourceColumn: book_author_id
+            column genre
+                dataType: string
+                sourceColumn: genre
+        relationship AuthorsBooks
+            fromColumn: Authors[author_id]
+            toColumn: Books[book_author_id]
+            fromCardinality: many
+            toCardinality: many
+        """
+    )
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".tmdl", delete=False) as f:
+        f.write(tmdl)
+        temp_path = Path(f.name)
+    try:
+        graph = TMDLAdapter().parse(temp_path)
+    finally:
+        temp_path.unlink()
+
+    layer = SemanticLayer()
+    layer.graph = graph
+    with pytest.raises(QueryValidationError, match="no primary key"):
+        layer.compile(metrics=["Authors.total"], dimensions=["Books.genre"])
+
+
 def test_tmdl_many_to_many_on_non_primary_key_column():
     """Regression: a direct many-to-many that joins on columns which are NOT either table's declared
     primary key must project and join on those exact columns, on both sides.
@@ -3174,6 +3217,9 @@ def test_tmdl_one_to_one_alternate_key_does_not_shadow_real_key():
             column meta_key
                 dataType: string
                 sourceColumn: meta_key
+            column channel
+                dataType: string
+                sourceColumn: channel
         relationship OrdersLineItems
             fromColumn: Orders[order_id]
             toColumn: LineItems[order_id]
@@ -3198,6 +3244,15 @@ def test_tmdl_one_to_one_alternate_key_does_not_shadow_real_key():
     assert graph.models["Orders"].primary_key == "order_id"
     # The one-to-one to-side still resolves its key authoritatively.
     assert graph.models["OrderMeta"].primary_key == "meta_key"
+
+    # A query THROUGH the one-to-one joins on Orders' alt_key (the relationship's fromColumn), so
+    # Orders' CTE must project alt_key -- not only its declared order_id key -- otherwise the join
+    # references a column missing from the CTE.
+    layer = SemanticLayer()
+    layer.graph = graph
+    sql = layer.compile(metrics=["Orders.cnt"], dimensions=["OrderMeta.channel"])
+    assert "Orders_cte.alt_key" in sql
+    assert "alt_key AS alt_key" in sql
 
 
 def test_tmdl_ambiguous_one_side_target_not_recovered_from_endpoint():

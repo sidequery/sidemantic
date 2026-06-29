@@ -425,8 +425,10 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
             args = m.group(3).strip()
             return f"{agg}({field}, {args})" if args else f"{agg}({field})"
 
+        # The field is a dotted path whose segments may be backtick-quoted
+        # identifiers containing spaces (`cost amount`.sum()).
         expr = re.sub(
-            r"([\w.`]+)\.(sum|avg|count|min|max|count_distinct)\s*\(\s*(.*?)\s*\)",
+            r"((?:`[^`]*`|[\w.])+)\.(sum|avg|count|min|max|count_distinct)\s*\(\s*(.*?)\s*\)",
             repl,
             expr,
             flags=re.IGNORECASE,
@@ -1621,9 +1623,27 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
             low = tok.lower()
             return low in ("true", "false", "null") or tok.replace(".", "", 1).isdigit()
 
+        def strip_outer_parens(text: str) -> str:
+            text = text.strip()
+            while len(text) >= 2 and text[0] == "(" and text[-1] == ")":
+                depth = 0
+                wraps_all = True
+                for idx, ch in enumerate(text):
+                    if ch == "(":
+                        depth += 1
+                    elif ch == ")":
+                        depth -= 1
+                        if depth == 0 and idx != len(text) - 1:
+                            wraps_all = False
+                            break
+                if not wraps_all:
+                    break
+                text = text[1:-1].strip()
+            return text
+
         keys: list[str] = []
-        for cond in re.split(r"\s+and\s+", expr_text, flags=re.IGNORECASE):
-            m = re.match(r"\s*([\w.`]+)\s*=\s*([\w.`]+)\s*$", cond)
+        for cond in re.split(r"\s+and\s+", strip_outer_parens(expr_text), flags=re.IGNORECASE):
+            m = re.match(r"\s*([\w.`]+)\s*=\s*([\w.`]+)\s*$", strip_outer_parens(cond))
             if not m:
                 continue
             lq, lc = split_qualifier(m.group(1))

@@ -559,6 +559,25 @@ def test_pick_condition_with_nested_case():
     assert sql == "CASE WHEN case when a = 1 then 1 else 0 end = 1 THEN 'x' ELSE 'y' END"
 
 
+def test_normalize_spaced_backtick_aggregate_field():
+    g = _parse("source: o is duckdb.table('o') extend {\n  measure: m is `cost amount`.sum() / count()\n}\n")
+    me = g.get_model("o").get_metric("m")
+    assert me.type == "derived"
+    assert me.sql == "SUM(`cost amount`) / count(*)"
+
+
+def test_join_on_condition_parenthesized_equality():
+    g = _parse(
+        "source: customers is duckdb.table('c') extend { primary_key: id }\n"
+        "source: orders is duckdb.table('o') extend {\n"
+        "  primary_key: id\n"
+        "  join_one: customers is duckdb.table('c') on (customer_id = customers.id)\n"
+        "}\n"
+    )
+    rel = {r.name: r for r in g.get_model("orders").relationships}["customers"]
+    assert rel.foreign_key == "customer_id"
+
+
 def test_join_on_condition_skips_literal_predicate():
     g = _parse(
         "source: customers is duckdb.table('c') extend { primary_key: id }\n"

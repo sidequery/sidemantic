@@ -1062,6 +1062,39 @@ pub fn compile_with_yaml_query(yaml: &str, query_yaml: &str) -> Result<String> {
         .map_err(|e| SidemanticError::SqlGeneration(format!("failed to compile SQL: {e}")))
 }
 
+/// Derive the result-column schema (output name + Postgres data type) for the metrics
+/// and dimensions selected by a structured query, mirroring `compile()`'s output aliases.
+pub fn result_schema_with_yaml_query(yaml: &str, query_yaml: &str) -> Result<String> {
+    let runtime = SidemanticRuntime::from_yaml(yaml)
+        .map_err(|e| SidemanticError::Validation(format!("failed to load YAML models: {e}")))?;
+    let payload: RuntimeQueryPayload = serde_yaml::from_str(query_yaml)
+        .map_err(|e| SidemanticError::Validation(format!("failed to parse query payload: {e}")))?;
+    // Carry filters/segments (with parameter interpolation) through so joinability validation
+    // sees the models they reference — a filter on an unjoinable model must fail here too.
+    let filters =
+        interpolate_query_filters(runtime.graph(), payload.filters, &payload.parameter_values)
+            .map_err(|e| {
+                SidemanticError::Validation(format!("failed to interpolate query parameters: {e}"))
+            })?;
+    let query = SemanticQuery::new()
+        .with_metrics(payload.metrics)
+        .with_dimensions(payload.dimensions)
+        .with_filters(filters)
+        .with_segments(payload.segments)
+        .with_skip_default_time_dimensions(payload.skip_default_time_dimensions);
+    let columns = SqlGenerator::new(runtime.graph())
+        .result_schema(&query)
+        .map_err(|e| {
+            SidemanticError::SqlGeneration(format!("failed to derive result schema: {e}"))
+        })?;
+    let rows: Vec<serde_json::Value> = columns
+        .into_iter()
+        .map(|(name, data_type)| serde_json::json!({ "name": name, "data_type": data_type }))
+        .collect();
+    serde_json::to_string(&rows)
+        .map_err(|e| SidemanticError::Validation(format!("failed to serialize result schema: {e}")))
+}
+
 /// Validate query references using graph and query YAML payloads.
 pub fn validate_query_references_with_yaml(
     yaml: &str,
@@ -1084,9 +1117,7 @@ pub fn validate_query_with_yaml(yaml: &str, query_yaml: &str) -> Result<Vec<Stri
 pub fn load_graph_with_yaml(yaml: &str) -> Result<String> {
     let runtime = SidemanticRuntime::from_yaml(yaml)
         .map_err(|e| SidemanticError::Validation(format!("failed to load YAML models: {e}")))?;
-    let payload = runtime.loaded_graph_payload();
-    serde_json::to_string(&payload)
-        .map_err(|e| SidemanticError::Validation(format!("failed to serialize graph payload: {e}")))
+    serialize_decorated_payload(runtime.loaded_graph_payload())
 }
 
 /// Load graph definitions from a directory and serialize runtime payload.
@@ -1094,8 +1125,7 @@ pub fn load_graph_from_directory(path: &str) -> Result<String> {
     let runtime = SidemanticRuntime::from_directory(path).map_err(|e| {
         SidemanticError::Validation(format!("failed to load directory models: {e}"))
     })?;
-    serde_json::to_string(&runtime.loaded_graph_payload())
-        .map_err(|e| SidemanticError::Validation(format!("failed to serialize graph payload: {e}")))
+    serialize_decorated_payload(runtime.loaded_graph_payload())
 }
 
 /// Export a graph to OSI YAML using the requested dialects.
@@ -1158,8 +1188,7 @@ pub fn load_graph_with_sql(sql_content: &str) -> Result<String> {
         loaded.original_model_metrics,
         loaded.model_sources,
     );
-    serde_json::to_string(&runtime.loaded_graph_payload())
-        .map_err(|e| SidemanticError::Validation(format!("failed to serialize graph payload: {e}")))
+    serialize_decorated_payload(runtime.loaded_graph_payload())
 }
 
 /// Parse SQL metric/segment definitions and return serialized payload.
@@ -4873,6 +4902,89 @@ fn catalog_metric_data_type(aggregation: Option<&str>) -> &'static str {
     }
 }
 
+fn default_time_granularities() -> Vec<String> {
+    [
+        "second", "minute", "hour", "day", "week", "month", "quarter", "year",
+    ]
+    .iter()
+    .map(|grain| grain.to_string())
+    .collect()
+}
+
+/// Inject serialize-only computed fields (`return_type`, `effective_granularities`) into the
+/// serialized graph payload so JS/TS codegen sees authoritative metric result types and
+/// time-dimension grain sets. Computed from the JSON, so no config struct carries these.
+fn decorate_loaded_graph_payload(value: &mut serde_json::Value) {
+    if let Some(models) = value
+        .get_mut("models")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for model in models {
+            if let Some(metrics) = model
+                .get_mut("metrics")
+                .and_then(serde_json::Value::as_array_mut)
+            {
+                metrics.iter_mut().for_each(decorate_metric_json);
+            }
+            if let Some(dimensions) = model
+                .get_mut("dimensions")
+                .and_then(serde_json::Value::as_array_mut)
+            {
+                dimensions.iter_mut().for_each(decorate_dimension_json);
+            }
+        }
+    }
+    if let Some(metrics) = value
+        .get_mut("top_level_metrics")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        metrics.iter_mut().for_each(decorate_metric_json);
+    }
+}
+
+fn decorate_metric_json(metric: &mut serde_json::Value) {
+    let return_type =
+        catalog_metric_data_type(metric.get("agg").and_then(serde_json::Value::as_str));
+    if let Some(object) = metric.as_object_mut() {
+        object.insert(
+            "return_type".to_string(),
+            serde_json::Value::from(return_type),
+        );
+    }
+}
+
+fn decorate_dimension_json(dimension: &mut serde_json::Value) {
+    if dimension.get("type").and_then(serde_json::Value::as_str) != Some("time") {
+        return;
+    }
+    let grains = dimension
+        .get("supported_granularities")
+        .and_then(serde_json::Value::as_array)
+        .filter(|values| !values.is_empty())
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(|value| value.as_str().map(str::to_string))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_else(default_time_granularities);
+    if let Some(object) = dimension.as_object_mut() {
+        object.insert(
+            "effective_granularities".to_string(),
+            serde_json::json!(grains),
+        );
+    }
+}
+
+fn serialize_decorated_payload(payload: LoadedGraphPayload) -> Result<String> {
+    let mut value = serde_json::to_value(payload).map_err(|e| {
+        SidemanticError::Validation(format!("failed to serialize graph payload: {e}"))
+    })?;
+    decorate_loaded_graph_payload(&mut value);
+    serde_json::to_string(&value)
+        .map_err(|e| SidemanticError::Validation(format!("failed to serialize graph payload: {e}")))
+}
+
 impl SidemanticRuntime {
     pub fn from_graph(graph: SemanticGraph) -> Self {
         Self {
@@ -5966,6 +6078,66 @@ skip_default_time_dimensions: true
         let compiled = compile_with_yaml_query(yaml, query_yaml).unwrap();
         assert!(!compiled.contains("created_at"));
         assert!(compiled.contains("status"));
+    }
+
+    #[test]
+    fn test_runtime_result_schema_with_yaml_query_matches_default_time_dimensions() {
+        let yaml = r#"
+models:
+  - name: orders
+    table: orders
+    primary_key: order_id
+    default_time_dimension: created_at
+    default_grain: month
+    dimensions:
+      - name: created_at
+        type: time
+      - name: status
+        type: categorical
+    metrics:
+      - name: revenue
+        agg: sum
+        sql: amount
+"#;
+        let query_yaml = r#"
+metrics: [orders.revenue]
+"#;
+
+        let schema_json = result_schema_with_yaml_query(yaml, query_yaml).unwrap();
+        let schema: serde_json::Value = serde_json::from_str(&schema_json).unwrap();
+        assert_eq!(schema[0]["name"], "created_at__month");
+        assert_eq!(schema[0]["data_type"], "DATE");
+        assert_eq!(schema[1]["name"], "revenue");
+    }
+
+    #[test]
+    fn test_runtime_result_schema_with_yaml_query_skips_default_time_dimensions_when_requested() {
+        let yaml = r#"
+models:
+  - name: orders
+    table: orders
+    primary_key: order_id
+    default_time_dimension: created_at
+    default_grain: month
+    dimensions:
+      - name: created_at
+        type: time
+      - name: status
+        type: categorical
+    metrics:
+      - name: revenue
+        agg: sum
+        sql: amount
+"#;
+        let query_yaml = r#"
+metrics: [orders.revenue]
+skip_default_time_dimensions: true
+"#;
+
+        let schema_json = result_schema_with_yaml_query(yaml, query_yaml).unwrap();
+        let schema: serde_json::Value = serde_json::from_str(&schema_json).unwrap();
+        assert_eq!(schema.as_array().unwrap().len(), 1);
+        assert_eq!(schema[0]["name"], "revenue");
     }
 
     #[test]

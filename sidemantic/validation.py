@@ -64,8 +64,10 @@ def validate_model(model: "Model") -> list[str]:
     """
     errors = []
 
-    # Check for primary_key
-    if not model.primary_key:
+    # A model may legitimately have no primary key (None) -- e.g. a fact or disconnected table
+    # imported from a format that declares none; it simply cannot serve as a join target. An
+    # explicitly empty primary key (empty string or list) is still treated as a misconfiguration.
+    if model.primary_key is not None and not model.primary_key:
         errors.append(f"Model '{model.name}' must have a primary_key defined")
 
     # Check for a physical, SQL, DAX, or externally sourced model definition.

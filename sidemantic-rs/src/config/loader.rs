@@ -261,6 +261,7 @@ fn parse_sql_content(content: &str) -> Result<ParsedConfig> {
     let mut models: Vec<Model> = Vec::new();
     let mut top_level_metrics: Vec<Metric> = Vec::new();
     let mut top_level_parameters: Vec<Parameter> = Vec::new();
+    let mut graph_metadata: Option<serde_json::Value> = None;
 
     match parse_sql_models(content) {
         Ok(parsed_models) => {
@@ -316,11 +317,28 @@ fn parse_sql_content(content: &str) -> Result<ParsedConfig> {
             top_level_parameters.extend(sql_parameters);
 
             if let Some(frontmatter) = frontmatter {
-                let mut model = model_from_sql_frontmatter(frontmatter)?;
-                model.metrics.extend(sql_metrics);
-                model.segments.extend(sql_segments);
-                model.pre_aggregations.extend(sql_preaggs);
-                models.push(model);
+                if frontmatter.contains_key("name") {
+                    let mut model = model_from_sql_frontmatter(frontmatter)?;
+                    model.metrics.extend(sql_metrics);
+                    model.segments.extend(sql_segments);
+                    model.pre_aggregations.extend(sql_preaggs);
+                    models.push(model);
+                } else {
+                    // Graph-level frontmatter (e.g. version/metadata with no model
+                    // name): preserve any metadata and load the SQL METRIC/PARAMETER
+                    // definitions as graph-level instead of failing
+                    // model_from_sql_frontmatter for a missing name -- mirrors the
+                    // YAML and Python SQL paths.
+                    if let Some(metadata_value) = frontmatter.get("metadata") {
+                        graph_metadata =
+                            Some(serde_json::to_value(metadata_value).map_err(|e| {
+                                SidemanticError::Validation(format!(
+                                    "failed to parse SQL frontmatter metadata: {e}"
+                                ))
+                            })?);
+                    }
+                    top_level_metrics.extend(sql_metrics);
+                }
             } else {
                 top_level_metrics.extend(sql_metrics);
             }
@@ -332,6 +350,7 @@ fn parse_sql_content(content: &str) -> Result<ParsedConfig> {
         extends_map: HashMap::new(),
         top_level_metrics,
         top_level_parameters,
+        graph_metadata,
         ..Default::default()
     })
 }
@@ -344,6 +363,7 @@ pub fn load_from_sql_string_with_metadata(content: &str) -> Result<LoadedGraphMe
         extends_map,
         top_level_metrics,
         top_level_parameters,
+        graph_metadata,
         ..
     } = parsed;
     let model_order: Vec<String> = models.iter().map(|model| model.name.clone()).collect();
@@ -376,6 +396,9 @@ pub fn load_from_sql_string_with_metadata(content: &str) -> Result<LoadedGraphMe
     }
     for parameter in top_level_parameters {
         graph.add_parameter(parameter)?;
+    }
+    if let Some(metadata) = graph_metadata {
+        graph.set_metadata(metadata);
     }
 
     let model_sources = model_order
@@ -494,7 +517,7 @@ pub fn load_from_directory_with_metadata(dir: impl AsRef<Path>) -> Result<Loaded
                 all_top_level_metrics.extend(top_level_metrics);
                 all_top_level_parameters.extend(top_level_parameters);
                 all_graph_metrics.extend(graph_metrics);
-                merge_osi_metadata(&mut merged_graph_metadata, graph_metadata);
+                merge_graph_metadata(&mut merged_graph_metadata, graph_metadata);
             }
             Some("sql") => {
                 let content = fs::read_to_string(&path).map_err(|e| {
@@ -510,6 +533,7 @@ pub fn load_from_directory_with_metadata(dir: impl AsRef<Path>) -> Result<Loaded
                     extends_map,
                     top_level_metrics,
                     top_level_parameters,
+                    graph_metadata,
                     ..
                 } = parsed;
 
@@ -533,6 +557,7 @@ pub fn load_from_directory_with_metadata(dir: impl AsRef<Path>) -> Result<Loaded
                 all_extends_map.extend(extends_map);
                 all_top_level_metrics.extend(top_level_metrics);
                 all_top_level_parameters.extend(top_level_parameters);
+                merge_graph_metadata(&mut merged_graph_metadata, graph_metadata);
             }
             _ => {}
         }
@@ -590,39 +615,37 @@ pub fn load_from_directory_with_metadata(dir: impl AsRef<Path>) -> Result<Loaded
 
 /// Merge an OSI `{ "osi": { ... } }` metadata payload into the accumulator,
 /// concatenating `semantic_models` and keeping the first `version`/`ontology`.
-fn merge_osi_metadata(acc: &mut Option<serde_json::Value>, incoming: Option<serde_json::Value>) {
+fn merge_graph_metadata(acc: &mut Option<serde_json::Value>, incoming: Option<serde_json::Value>) {
     let Some(incoming) = incoming else {
         return;
     };
-    let Some(incoming_osi) = incoming.get("osi").and_then(|v| v.as_object()).cloned() else {
-        return;
-    };
-
-    let acc_value =
-        acc.get_or_insert_with(|| serde_json::json!({ "osi": { "semantic_models": [] } }));
-    let Some(acc_osi) = acc_value
-        .as_object_mut()
-        .and_then(|m| m.get_mut("osi"))
-        .and_then(serde_json::Value::as_object_mut)
-    else {
-        return;
-    };
-
-    if let Some(serde_json::Value::Array(incoming_models)) = incoming_osi.get("semantic_models") {
-        let entry = acc_osi
-            .entry("semantic_models")
-            .or_insert_with(|| serde_json::Value::Array(Vec::new()));
-        if let serde_json::Value::Array(acc_models) = entry {
-            acc_models.extend(incoming_models.iter().cloned());
-        }
+    match acc {
+        Some(existing) => deep_merge_json(existing, incoming),
+        None => *acc = Some(incoming),
     }
+}
 
-    for key in ["version", "ontology"] {
-        if !acc_osi.contains_key(key) {
-            if let Some(value) = incoming_osi.get(key) {
-                acc_osi.insert(key.to_string(), value.clone());
+/// Recursively merge `incoming` into `target`: objects merge, arrays append, and
+/// scalars keep the existing (first-wins) value. This preserves OSI accumulation
+/// (semantic_models arrays append, version/ontology keep first) while also merging
+/// non-OSI payloads such as `metadata.snowflake` from Python `export-native` files.
+fn deep_merge_json(target: &mut serde_json::Value, incoming: serde_json::Value) {
+    match (target, incoming) {
+        (serde_json::Value::Object(target_map), serde_json::Value::Object(incoming_map)) => {
+            for (key, value) in incoming_map {
+                match target_map.get_mut(&key) {
+                    Some(existing) => deep_merge_json(existing, value),
+                    None => {
+                        target_map.insert(key, value);
+                    }
+                }
             }
         }
+        (serde_json::Value::Array(target_arr), serde_json::Value::Array(incoming_arr)) => {
+            target_arr.extend(incoming_arr);
+        }
+        // Scalars (or type mismatches): keep the existing value.
+        _ => {}
     }
 }
 
@@ -1527,6 +1550,30 @@ METRIC (
     }
 
     #[test]
+    fn test_load_from_sql_string_metadata_only_frontmatter_loads_graph_defs() {
+        // Frontmatter with only version/metadata (no model name) must preserve the
+        // metadata and load the SQL METRIC as a graph-level metric, not fail for a
+        // missing model name -- parity with the YAML and Python SQL paths.
+        let sql = r#"
+---
+version: 1
+metadata:
+  owner: data-team
+---
+
+METRIC (
+  name total_orders,
+  agg count
+);
+"#;
+
+        let loaded = load_from_sql_string_with_metadata(sql).unwrap();
+        assert!(loaded.graph.get_metric("total_orders").is_some());
+        let metadata = loaded.graph.metadata().expect("graph metadata preserved");
+        assert_eq!(metadata["owner"], "data-team");
+    }
+
+    #[test]
     fn test_load_from_sql_string_rejects_unsupported_frontmatter_version() {
         let sql = r#"
 ---
@@ -1873,6 +1920,93 @@ models:
         assert!(orders.get_dimension("status").is_some());
         assert!(orders.get_metric("revenue").is_some());
         assert!(orders.get_metric("net_revenue").is_some());
+    }
+
+    #[test]
+    fn test_load_from_directory_merges_non_osi_root_metadata() {
+        let dir = std::env::temp_dir().join(format!(
+            "sidemantic-rs-loader-metadata-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        // Python `export-native` writes root `metadata.snowflake` (no `osi` key).
+        fs::write(
+            dir.join("a.yml"),
+            r#"
+models:
+  - name: orders
+    table: orders
+    primary_key: order_id
+metadata:
+  snowflake:
+    custom_instructions: Prefer revenue.
+    verified_queries:
+      - name: q1
+"#,
+        )
+        .unwrap();
+        fs::write(
+            dir.join("b.yml"),
+            r#"
+models:
+  - name: customers
+    table: customers
+    primary_key: id
+metadata:
+  snowflake:
+    verified_queries:
+      - name: q2
+"#,
+        )
+        .unwrap();
+
+        let loaded = load_from_directory_with_metadata(&dir).unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+
+        let metadata = loaded.graph.metadata().expect("graph metadata preserved");
+        let snowflake = &metadata["snowflake"];
+        assert_eq!(snowflake["custom_instructions"], "Prefer revenue.");
+        // verified_queries from both files accumulate.
+        let names: Vec<&str> = snowflake["verified_queries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["name"].as_str().unwrap())
+            .collect();
+        assert!(names.contains(&"q1"));
+        assert!(names.contains(&"q2"));
+    }
+
+    #[test]
+    fn test_load_from_directory_preserves_sql_frontmatter_metadata() {
+        // A .sql file with only version/metadata frontmatter must keep its metadata
+        // when loaded from a directory, not just as a single file (parity with the
+        // YAML branch which already merges graph metadata).
+        let dir = std::env::temp_dir().join(format!(
+            "sidemantic-rs-loader-sqlmeta-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("metrics.sql"),
+            "---\nversion: 1\nmetadata:\n  owner: data-team\n---\n\nMETRIC (\n  name total_orders,\n  agg count\n);\n",
+        )
+        .unwrap();
+
+        let loaded = load_from_directory_with_metadata(&dir).unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+
+        assert!(loaded.graph.get_metric("total_orders").is_some());
+        let metadata = loaded.graph.metadata().expect("graph metadata preserved");
+        assert_eq!(metadata["owner"], "data-team");
     }
 
     #[test]

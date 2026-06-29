@@ -67,7 +67,11 @@ jobs:
           echo "raw wasm bytes: $(stat -c%s wasm/sidemantic_bg.wasm)"
 
       - name: Smoke test the bundle
-        run: bun run scripts/smoke.mjs
+        run: |
+          bun run scripts/smoke.mjs
+          bun run scripts/smoke_codegen.mjs
+          bun run scripts/smoke_client.mjs
+          bun run scripts/smoke_vite.mjs
 
       - name: Check package contents
         run: npm pack --dry-run

@@ -3,7 +3,9 @@
  * contract (snake_case), so the object is serialized and passed through as-is.
  */
 export interface SidemanticQuery {
-  metrics: string[];
+  /** Optional: the Rust payload defaults missing metrics to `[]`, so a dimension-only
+   *  query (e.g. a filter-value / DISTINCT-list request) is valid. */
+  metrics?: string[];
   dimensions?: string[];
   /** SQL filter expressions, e.g. `"orders.status = 'completed'"`. */
   filters?: string[];
@@ -43,6 +45,8 @@ export interface SidemanticRuntime {
   loadGraph(models: string): SemanticGraph;
   /** Generate catalog metadata for the model set under a schema name. */
   generateCatalogMetadata(models: string, schema?: string): string;
+  /** Derive the result-column schema for a structured query (output name + Postgres data type). */
+  resultSchema(models: string, query: SidemanticQueryInput): Array<{ name: string; data_type: string }>;
 }
 
 /** Initialize the underlying wasm module. Idempotent. */

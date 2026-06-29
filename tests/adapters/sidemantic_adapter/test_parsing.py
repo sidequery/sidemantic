@@ -410,6 +410,42 @@ metrics:
     assert graph2.metrics["revenue_per_order"].public is False
 
 
+def test_parse_export_preserves_graph_level_metric_synonyms(tmp_path):
+    """Top-level derived metrics must keep `synonyms` through export round-trips."""
+    adapter = SidemanticAdapter()
+    yaml_path = tmp_path / "orders.yml"
+    yaml_path.write_text(
+        """
+version: 1
+models:
+  - name: orders
+    table: orders
+    metrics:
+      - name: total_revenue
+        agg: sum
+        sql: amount
+      - name: order_count
+        agg: count
+metrics:
+  - name: revenue_per_order
+    type: derived
+    sql: orders.total_revenue / orders.order_count
+    synonyms: [aov, average order value]
+"""
+    )
+
+    graph = adapter.parse(yaml_path)
+    assert graph.metrics["revenue_per_order"].synonyms == ["aov", "average order value"]
+
+    export_path = tmp_path / "exported.yml"
+    adapter.export(graph, export_path)
+    exported = yaml.safe_load(export_path.read_text())
+    assert exported["metrics"][0]["synonyms"] == ["aov", "average order value"]
+
+    graph2 = adapter.parse(export_path)
+    assert graph2.metrics["revenue_per_order"].synonyms == ["aov", "average order value"]
+
+
 def test_parse_export_preserves_top_level_parameters(tmp_path):
     adapter = SidemanticAdapter()
     yaml_path = tmp_path / "orders.yml"
@@ -884,6 +920,46 @@ PARAMETER (
     assert graph.parameters["status_filter"].type == "string"
 
 
+def test_parse_native_sql_metadata_only_frontmatter_preserves_graph_definitions(tmp_path):
+    """Root-only metadata frontmatter must not swallow graph-level SQL metrics/params."""
+    adapter = SidemanticAdapter()
+    sql_path = tmp_path / "metrics.sql"
+    sql_path.write_text(
+        """
+---
+version: 1
+metadata:
+  description: Top-level Cortex sections
+  owner: analytics
+---
+
+METRIC (
+  name order_count,
+  agg count
+);
+
+PARAMETER (
+  name status_filter,
+  type string,
+  default_value 'paid'
+);
+"""
+    )
+
+    graph = adapter.parse(sql_path)
+
+    # No model is created from root-only metadata frontmatter.
+    assert len(graph.models) == 0
+    # Graph-level metric and parameter still load.
+    assert "order_count" in graph.metrics
+    assert graph.metrics["order_count"].agg == "count"
+    assert "status_filter" in graph.parameters
+    assert graph.parameters["status_filter"].type == "string"
+    # Root metadata is preserved on the graph.
+    assert graph.metadata.get("description") == "Top-level Cortex sections"
+    assert graph.metadata.get("owner") == "analytics"
+
+
 def test_parse_native_sql_frontmatter_rejects_unsupported_version(tmp_path):
     """Test unsupported native SQL frontmatter versions fail early."""
     adapter = SidemanticAdapter()
@@ -1116,6 +1192,68 @@ def test_dimension_window_in_sql_generation():
 
     # The window expression should appear in the generated SQL
     assert "LEAD(event) OVER (PARTITION BY person_id ORDER BY timestamp)" in sql
+
+
+def test_parse_native_yaml_round_trips_cortex_enrichment_fields(tmp_path):
+    """Cortex enrichment fields (synonyms/sample_values/search service) survive round-trip.
+
+    These fields are populated when importing a Snowflake Cortex model; the native
+    adapter must both accept them in hand-authored YAML and re-emit them on export
+    so `sidemantic export-native` does not silently drop them.
+    """
+    adapter = SidemanticAdapter()
+    yaml_path = tmp_path / "orders.yml"
+    yaml_path.write_text(
+        """
+version: 1
+models:
+  - name: orders
+    table: orders
+    primary_key: id
+    dimensions:
+      - name: status
+        type: categorical
+        synonyms:
+          - state
+          - order_status
+        sample_values:
+          - delivered
+          - shipped
+        cortex_search_service_name: ORDERS_STATUS_SEARCH
+    metrics:
+      - name: order_count
+        agg: count
+        synonyms:
+          - num_orders
+"""
+    )
+
+    graph = adapter.parse(yaml_path)
+    model = graph.models["orders"]
+
+    status = model.get_dimension("status")
+    assert status.synonyms == ["state", "order_status"]
+    assert status.sample_values == ["delivered", "shipped"]
+    assert status.cortex_search_service_name == "ORDERS_STATUS_SEARCH"
+    order_count = model.get_metric("order_count")
+    assert order_count.synonyms == ["num_orders"]
+
+    export_path = tmp_path / "exported.yml"
+    adapter.export(graph, export_path)
+    exported = yaml.safe_load(export_path.read_text())
+
+    exported_dim = exported["models"][0]["dimensions"][0]
+    assert exported_dim["synonyms"] == ["state", "order_status"]
+    assert exported_dim["sample_values"] == ["delivered", "shipped"]
+    assert exported_dim["cortex_search_service_name"] == "ORDERS_STATUS_SEARCH"
+    exported_metric = exported["models"][0]["metrics"][0]
+    assert exported_metric["synonyms"] == ["num_orders"]
+
+    # And a full re-parse preserves them.
+    graph2 = adapter.parse(export_path)
+    status2 = graph2.models["orders"].get_dimension("status")
+    assert status2.synonyms == ["state", "order_status"]
+    assert status2.cortex_search_service_name == "ORDERS_STATUS_SEARCH"
 
 
 if __name__ == "__main__":

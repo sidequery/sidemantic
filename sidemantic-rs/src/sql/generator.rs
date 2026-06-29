@@ -741,6 +741,119 @@ impl<'a> SqlGenerator<'a> {
         Ok(refs)
     }
 
+    /// Derive the output columns (alias + Postgres data type) a structured query projects,
+    /// matching `generate()`'s aliasing: bare leaf, or `{model}_{leaf}` on a leaf collision.
+    pub fn result_schema(&self, query: &SemanticQuery) -> Result<Vec<(String, String)>> {
+        let effective_dimensions = if query.skip_default_time_dimensions {
+            query.dimensions.clone()
+        } else {
+            self.apply_default_time_dimensions(&query.metrics, &query.dimensions)?
+        };
+        let dimension_refs = self.parse_dimension_refs(&effective_dimensions)?;
+        let metric_refs = self.parse_metric_refs(&query.metrics)?;
+        // Reject queries `generate`/`compile` would refuse (e.g. refs from two unrelated
+        // models with no join path) instead of returning a schema for an impossible query.
+        self.ensure_query_joinable(&dimension_refs, &metric_refs, query)?;
+
+        let mut alias_collisions: HashMap<String, usize> = HashMap::new();
+        for dim_ref in &dimension_refs {
+            *alias_collisions.entry(dim_ref.alias.clone()).or_insert(0) += 1;
+        }
+        for metric_ref in &metric_refs {
+            *alias_collisions
+                .entry(metric_ref.alias.clone())
+                .or_insert(0) += 1;
+        }
+
+        let mut columns: Vec<(String, String)> = Vec::new();
+        for dim_ref in &dimension_refs {
+            let alias = self.output_alias(&dim_ref.model, &dim_ref.alias, &alias_collisions);
+            columns.push((alias, self.dimension_ref_data_type(dim_ref).to_string()));
+        }
+        for metric_ref in &metric_refs {
+            let alias = self.output_alias(&metric_ref.model, &metric_ref.alias, &alias_collisions);
+            columns.push((alias, self.metric_ref_data_type(metric_ref).to_string()));
+        }
+        Ok(columns)
+    }
+
+    /// Validate that every model a query references is joinable from a base model,
+    /// reusing the same required-model + join-path checks as `generate`. Lets the public
+    /// `result_schema` API reject impossible queries (e.g. a `NoJoinPath` across unrelated
+    /// models) rather than returning column metadata for a query `compile` would refuse.
+    fn ensure_query_joinable(
+        &self,
+        dimension_refs: &[DimensionRef],
+        metric_refs: &[MetricRef],
+        query: &SemanticQuery,
+    ) -> Result<()> {
+        let mut required_models = self.find_required_models(dimension_refs, metric_refs)?;
+        let segment_filters = self.resolve_segments(&query.segments)?;
+        let all_filters: Vec<String> = query
+            .filters
+            .iter()
+            .cloned()
+            .chain(segment_filters)
+            .collect();
+        for model_name in self.find_filter_models(&all_filters) {
+            required_models.insert(model_name);
+        }
+        for metric_ref in metric_refs {
+            self.collect_metric_referenced_models(
+                metric_ref,
+                &mut required_models,
+                &mut HashSet::new(),
+            )?;
+        }
+        self.ensure_queryable_sources(&required_models)?;
+
+        // Dimension-first base selection, mirroring `generate`.
+        let base_model = dimension_refs
+            .first()
+            .map(|d| d.model.clone())
+            .or_else(|| metric_refs.first().map(|m| m.model.clone()));
+        if let Some(base_model) = base_model {
+            self.build_join_paths(&base_model, &required_models)?;
+        }
+        Ok(())
+    }
+
+    fn dimension_ref_data_type(&self, dim_ref: &DimensionRef) -> &'static str {
+        use crate::core::DimensionType;
+        let dimension = self
+            .graph
+            .get_model(&dim_ref.model)
+            .and_then(|model| model.get_dimension(&dim_ref.name));
+        let granularity = dim_ref
+            .granularity
+            .as_deref()
+            .or_else(|| dimension.and_then(|dimension| dimension.granularity.as_deref()));
+        match dimension.map(|dimension| &dimension.r#type) {
+            Some(DimensionType::Time) => match granularity {
+                Some("day" | "week" | "month" | "quarter" | "year") => "DATE",
+                _ => "TIMESTAMP",
+            },
+            Some(DimensionType::Numeric) => "NUMERIC",
+            Some(DimensionType::Boolean) => "BOOLEAN",
+            _ => "VARCHAR",
+        }
+    }
+
+    fn metric_ref_data_type(&self, metric_ref: &MetricRef) -> &'static str {
+        if metric_ref.graph_metric {
+            return "NUMERIC";
+        }
+        let aggregation = self
+            .graph
+            .get_model(&metric_ref.model)
+            .and_then(|model| model.get_metric(&metric_ref.name))
+            .and_then(|metric| metric.agg.as_ref());
+        match aggregation {
+            Some(Aggregation::Count) | Some(Aggregation::CountDistinct) => "BIGINT",
+            _ => "NUMERIC",
+        }
+    }
+
     fn validate_time_granularity(
         &self,
         model_name: &str,

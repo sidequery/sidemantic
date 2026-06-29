@@ -91,6 +91,67 @@ function valueFormatFor(options, context) {
   return typeof options.valueFormat === "function" ? options.valueFormat(context) : options.valueFormat;
 }
 
+// Compact axis labels — 1.2k / 3.4M. Keep in sync with the React `formatCompact`.
+export function formatCompact(value) {
+  if (!Number.isFinite(value)) return "";
+  return Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 }).format(value);
+}
+
+// Evenly spaced y-axis ticks across [min, max]. Keep in sync with the React `axisTicks`.
+export function axisTicks(min, max, count = 4) {
+  if (!(max > min)) return [min];
+  const step = (max - min) / (count - 1);
+  return Array.from({ length: count }, (_, index) => min + step * index);
+}
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+function svgEl(name, attrs = {}) {
+  const el = document.createElementNS(SVG_NS, name);
+  for (const key in attrs) el.setAttribute(key, attrs[key]);
+  return el;
+}
+
+let chartTooltipNode;
+
+function chartTooltip() {
+  if (!chartTooltipNode) {
+    chartTooltipNode = document.createElement("div");
+    chartTooltipNode.className = "sdm-chart-tooltip";
+    chartTooltipNode.hidden = true;
+    document.body.appendChild(chartTooltipNode);
+  }
+  return chartTooltipNode;
+}
+
+function bindChartTooltip(el, text) {
+  el.addEventListener("pointerenter", () => {
+    const tip = chartTooltip();
+    tip.textContent = text;
+    tip.hidden = false;
+  });
+  el.addEventListener("pointermove", (event) => {
+    const tip = chartTooltip();
+    tip.style.left = `${event.clientX + 12}px`;
+    tip.style.top = `${event.clientY + 12}px`;
+  });
+  el.addEventListener("pointerleave", () => {
+    chartTooltip().hidden = true;
+  });
+}
+
+// Redraws `draw(width)` at the SVG's measured width and on resize — keeps axis text undistorted
+// (1:1 viewBox) instead of stretching with preserveAspectRatio="none".
+function responsiveChart(svg, fallbackWidth, draw) {
+  const measure = () => Math.max(160, svg.clientWidth || Number(svg.getAttribute("width")) || fallbackWidth);
+  svg.__sdmDraw = () => draw(measure());
+  svg.__sdmDraw();
+  if (!svg.__sdmObserved && typeof ResizeObserver !== "undefined") {
+    svg.__sdmObserved = true;
+    new ResizeObserver(() => svg.__sdmDraw && svg.__sdmDraw()).observe(svg);
+  }
+}
+
 function token(value, className = "") {
   return { className, value };
 }
@@ -372,7 +433,17 @@ export function renderLeaderboard(container, query, options = {}) {
   const metricRef = options.metricRef || query.metrics?.[0];
   const dimensionKey = query.output_aliases?.[dimensionRef] || dimensionRef?.split(".").at(-1);
   const metricKey = query.output_aliases?.[metricRef] || metricRef?.split(".").at(-1);
-  const rows = result.sample_rows || [];
+  const allRows = result.sample_rows || [];
+  const extraColumns = options.extraColumns || [];
+  const limit = options.limit ?? 0;
+  // Collapsed view shows the top `limit` rows; expanded shows all of them. When `onToggleExpand` is
+  // supplied the parent (renderDimensionLeaderboardCards) owns expand state; otherwise it is stored
+  // on the container so a standalone leaderboard can expand itself.
+  const expanded = options.expanded ?? container.__sdmExpanded ?? false;
+  // Expanded view may surface a richer column set (every metric, bar-backed) than the compact collapsed
+  // view — mirrors the React parent passing different `extraColumns` per expand state.
+  const columns = expanded ? options.expandedColumns || extraColumns : extraColumns;
+  const rows = !expanded && limit > 0 ? allRows.slice(0, limit) : allRows;
   const selectedValues = new Set([
     ...(Array.isArray(options.selectedValues) ? options.selectedValues : []),
     ...(options.selectedValue === undefined ? [] : [options.selectedValue]),
@@ -382,6 +453,7 @@ export function renderLeaderboard(container, query, options = {}) {
     return Number.isFinite(value) ? value : 0;
   });
   const maxMagnitude = Math.max(0, ...values.map((value) => Math.abs(value))) || 1;
+  const gridTemplate = columns.length ? `minmax(0, 1fr) repeat(${1 + columns.length}, auto)` : "";
 
   if (options.titleEl) options.titleEl.textContent = options.dimensionLabel || labelize(dimensionKey);
   if (options.subtitleEl) {
@@ -389,7 +461,7 @@ export function renderLeaderboard(container, query, options = {}) {
   }
 
   container.replaceChildren();
-  if (rows.length === 0) {
+  if (allRows.length === 0) {
     const empty = document.createElement("p");
     empty.className = "sdm-empty-state";
     empty.textContent = options.emptyLabel || "No matching rows";
@@ -397,41 +469,139 @@ export function renderLeaderboard(container, query, options = {}) {
     return;
   }
 
-  for (const [index, row] of rows.entries()) {
-    const value = values[index] ?? 0;
-    const dimensionValue = normalizeFilterValue(row[dimensionKey]);
-    const item = document.createElement(options.interactive ? "button" : "div");
-    item.className = "sdm-leaderboard-row";
-    item.dataset.dimension = dimensionRef;
-    item.dataset.tone = value < 0 ? "negative" : "positive";
-    item.dataset.value = dimensionValue;
-    item.style.setProperty("--bar-width", `${Math.round((Math.abs(value) / maxMagnitude) * 100)}%`);
-    if (selectedValues.has(dimensionValue)) {
-      item.dataset.selected = "true";
+  if (expanded) {
+    // Expanded: a real multi-column table with a per-column magnitude bar (mirrors the React table).
+    const tableCols = [{ key: metricKey, label: labelize(metricKey), bar: true }, ...columns];
+    const colMax = {};
+    for (const col of tableCols) {
+      if (col.bar) colMax[col.key] = Math.max(0, ...rows.map((row) => Math.abs(Number(row[col.key]) || 0))) || 1;
     }
 
-    const label = document.createElement("span");
-    label.textContent = row[dimensionKey] ?? "—";
-    const strong = document.createElement("strong");
-    strong.textContent = formatValue(value, valueFormatFor(options, { metric: metricRef, key: metricKey, value, row }));
-    item.append(label, strong);
+    const table = document.createElement("table");
+    table.className = "sdm-leaderboard-table";
+    const thead = document.createElement("thead");
+    const headRow = document.createElement("tr");
+    const dimTh = document.createElement("th");
+    dimTh.textContent = options.dimensionLabel || labelize(dimensionKey);
+    headRow.appendChild(dimTh);
+    for (const col of tableCols) {
+      const th = document.createElement("th");
+      th.textContent = col.label;
+      headRow.appendChild(th);
+    }
+    thead.appendChild(headRow);
 
-    if (options.onSelect) {
-      item.addEventListener("click", () => options.onSelect({ dimension: dimensionRef, value: row[dimensionKey], row }));
+    const tbody = document.createElement("tbody");
+    for (const row of rows) {
+      const tr = document.createElement("tr");
+      const dimTd = document.createElement("td");
+      dimTd.textContent = row[dimensionKey] ?? "—";
+      tr.appendChild(dimTd);
+      for (const col of tableCols) {
+        const cellValue = Number(row[col.key]);
+        const numericCell = Number.isFinite(cellValue) ? cellValue : 0;
+        const tone = numericCell < 0 ? "negative" : "positive";
+        const td = document.createElement("td");
+        if (col.signTone) td.dataset.tone = tone;
+        if (col.bar) {
+          const bar = document.createElement("span");
+          bar.className = "sdm-leaderboard-table__bar";
+          bar.dataset.tone = tone;
+          bar.style.width = `${Math.round((Math.abs(numericCell) / (colMax[col.key] || 1)) * 100)}%`;
+          td.appendChild(bar);
+        }
+        const valueSpan = document.createElement("span");
+        valueSpan.textContent = formatValue(
+          numericCell,
+          col.key === metricKey ? valueFormatFor(options, { metric: metricRef, key: metricKey, value: numericCell, row }) : col.format,
+        );
+        td.appendChild(valueSpan);
+        tr.appendChild(td);
+      }
+      tbody.appendChild(tr);
     }
 
-    container.appendChild(item);
+    table.append(thead, tbody);
+    container.appendChild(table);
+  } else {
+    for (const [index, row] of rows.entries()) {
+      const value = values[index] ?? 0;
+      const dimensionValue = normalizeFilterValue(row[dimensionKey]);
+      const item = document.createElement(options.interactive ? "button" : "div");
+      item.className = "sdm-leaderboard-row";
+      item.dataset.dimension = dimensionRef;
+      item.dataset.tone = value < 0 ? "negative" : "positive";
+      item.dataset.value = dimensionValue;
+      item.style.setProperty("--bar-width", `${Math.round((Math.abs(value) / maxMagnitude) * 100)}%`);
+      if (gridTemplate) item.style.gridTemplateColumns = gridTemplate;
+      if (selectedValues.has(dimensionValue)) {
+        item.dataset.selected = "true";
+      }
+
+      const label = document.createElement("span");
+      label.textContent = row[dimensionKey] ?? "—";
+      const strong = document.createElement("strong");
+      strong.textContent = formatValue(value, valueFormatFor(options, { metric: metricRef, key: metricKey, value, row }));
+      item.append(label, strong);
+
+      for (const column of columns) {
+        const cellValue = Number(row[column.key]);
+        const numericCell = Number.isFinite(cellValue) ? cellValue : 0;
+        const cell = document.createElement("span");
+        cell.className = "sdm-leaderboard-cell";
+        if (column.signTone) cell.dataset.tone = numericCell < 0 ? "negative" : "positive";
+        cell.textContent = formatValue(numericCell, column.format);
+        item.append(cell);
+      }
+
+      if (options.onSelect) {
+        item.addEventListener("click", () => options.onSelect({ dimension: dimensionRef, value: row[dimensionKey], row }));
+      }
+
+      container.appendChild(item);
+    }
+  }
+
+  // Standalone expand toggle. When a parent owns expand state it passes `expandable: false` and
+  // renders its own back affordance instead.
+  if (options.expandable && (expanded || allRows.length > limit)) {
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "sdm-leaderboard-expand";
+    toggle.dataset.action = expanded ? "leaderboard-back" : "leaderboard-expand";
+    toggle.textContent = expanded ? "← Back" : `Expand table (${allRows.length})`;
+    toggle.addEventListener("click", () => {
+      if (options.onToggleExpand) {
+        options.onToggleExpand(!expanded);
+      } else {
+        container.__sdmExpanded = !expanded;
+        renderLeaderboard(container, query, options);
+      }
+    });
+    container.appendChild(toggle);
   }
 }
 
 export function renderDimensionLeaderboardCards(container, dimensions, config = {}) {
+  // Expand state lives on the container so app re-renders preserve it. When a dimension is expanded
+  // only that card renders (full width, all rows) with a back affordance; the others are hidden.
+  const expandedDim = container.__sdmExpandedDim ?? null;
+  const collapseLimit = config.limit ?? 6;
+  const expandable = config.expandable !== false;
   container.replaceChildren();
+  container.dataset.expanded = expandedDim ? "true" : "false";
 
-  for (const dimension of dimensions || []) {
+  const reRender = () => renderDimensionLeaderboardCards(container, dimensions, config);
+  const visible = expandedDim
+    ? (dimensions || []).filter((dimension) => (dimension.key || dimension) === expandedDim)
+    : dimensions || [];
+
+  for (const dimension of visible) {
     const dimensionRef = dimension.key || dimension;
     const dimensionAlias = aliasForSemanticRef(dimensionRef);
     const metricRef = config.metricRef;
     const metricAlias = aliasForSemanticRef(metricRef);
+    const expanded = dimensionRef === expandedDim;
     const rawResult = config.resultForDimension?.(dimension) || { columns: [], rows: [] };
     const result = filterZeroMetricRows(
       {
@@ -445,12 +615,24 @@ export function renderDimensionLeaderboardCards(container, dimensions, config = 
     card.className = "sdm-leaderboard";
     card.dataset.dim = dimensionRef;
     card.dataset.testid = `dimension-${dimensionAlias}`;
+    if (expanded) card.dataset.expanded = "true";
 
     const heading = document.createElement("div");
     heading.className = "sdm-section-heading";
+    if (expanded && expandable) {
+      const back = document.createElement("button");
+      back.type = "button";
+      back.className = "sdm-leaderboard-back";
+      back.dataset.action = "leaderboard-back";
+      back.textContent = "← All dimensions";
+      back.addEventListener("click", () => {
+        container.__sdmExpandedDim = null;
+        reRender();
+      });
+      heading.appendChild(back);
+    }
     const title = document.createElement("h3");
-    const subtitle = document.createElement("p");
-    heading.append(title, subtitle);
+    heading.append(title);
 
     const rows = document.createElement("div");
     rows.dataset.testid = "leaderboard-rows";
@@ -467,7 +649,12 @@ export function renderDimensionLeaderboardCards(container, dimensions, config = 
       {
         dimensionLabel: dimension.label || labelize(dimensionRef),
         emptyLabel: config.emptyLabel,
+        expandable: false,
+        expanded,
+        extraColumns: config.extraColumns,
+        expandedColumns: config.expandedColumns,
         interactive: config.interactive,
+        limit: expanded ? 0 : collapseLimit,
         metricLabel: config.metricLabel?.(dimension) || `Ranked by ${config.metricName || labelize(metricRef)}`,
         metricRef,
         onSelect: config.onSelect,
@@ -475,11 +662,23 @@ export function renderDimensionLeaderboardCards(container, dimensions, config = 
           config.selectedValuesForDimension?.(dimension) ||
           (config.selectedValueForDimension ? [config.selectedValueForDimension(dimension)] : undefined),
         selectedValue: config.selectedValueForDimension?.(dimension),
-        subtitleEl: subtitle,
         titleEl: title,
         valueFormat: config.valueFormat,
       },
     );
+
+    if (!expanded && expandable && result.rows.length > collapseLimit) {
+      const expand = document.createElement("button");
+      expand.type = "button";
+      expand.className = "sdm-leaderboard-expand";
+      expand.dataset.action = "leaderboard-expand";
+      expand.textContent = `Expand table (${result.rows.length})`;
+      expand.addEventListener("click", () => {
+        container.__sdmExpandedDim = dimensionRef;
+        reRender();
+      });
+      card.appendChild(expand);
+    }
   }
 }
 
@@ -514,102 +713,206 @@ export function renderFilterPills(container, filters, onRemove, options = {}) {
 }
 
 export function renderSparkline(svg, values, options = {}) {
+  // Compact, axis-less trend (use renderLineChart when you need axes). Responsive width (1:1 viewBox,
+  // no stretch), endpoint marker with hover tooltip, and an a11y label.
   const numbers = (values || []).map(Number).filter(Number.isFinite);
-  svg.replaceChildren();
-  if (numbers.length < 2) return;
+  svg.setAttribute("role", "img");
 
-  const width = Number(svg.getAttribute("width") || 160);
-  const height = Number(svg.getAttribute("height") || 56);
-  const pad = options.padding ?? 4;
-  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
-  svg.setAttribute("preserveAspectRatio", "none");
-
-  const min = Math.min(...numbers);
-  const max = Math.max(...numbers);
-  const span = max - min || 1;
-  const coordinates = numbers.map((value, index) => {
-    const x = pad + (index / (numbers.length - 1)) * (width - pad * 2);
-    const y = pad + (1 - (value - min) / span) * (height - pad * 2);
-    return { x, y };
-  });
-  const points = coordinates.map(({ x, y }) => `${x.toFixed(1)},${y.toFixed(1)}`);
-
-  if (options.area !== false) {
-    const area = document.createElementNS("http://www.w3.org/2000/svg", "path");
-    area.classList.add("sdm-sparkline__area");
-    area.setAttribute(
-      "d",
-      `M ${coordinates[0].x.toFixed(1)} ${(height - pad).toFixed(1)} L ${points.join(" L ")} L ${coordinates.at(-1).x.toFixed(1)} ${(height - pad).toFixed(1)} Z`,
+  responsiveChart(svg, 160, (width) => {
+    const height = svg.clientHeight || Number(svg.getAttribute("height")) || 56;
+    const pad = options.padding ?? 4;
+    svg.replaceChildren();
+    svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+    svg.removeAttribute("preserveAspectRatio");
+    if (numbers.length < 2) {
+      svg.setAttribute("aria-label", options.ariaLabel || "No trend data");
+      return;
+    }
+    svg.setAttribute(
+      "aria-label",
+      options.ariaLabel || `Trend of ${numbers.length} points, latest ${formatValue(numbers.at(-1))}`,
     );
-    svg.appendChild(area);
-  }
 
-  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-  path.classList.add("sdm-sparkline__line");
-  path.setAttribute("d", `M ${points.join(" L ")}`);
-  svg.appendChild(path);
+    const min = Math.min(...numbers);
+    const max = Math.max(...numbers);
+    const span = max - min || 1;
+    const coordinates = numbers.map((value, index) => ({
+      x: pad + (index / (numbers.length - 1)) * (width - pad * 2),
+      y: pad + (1 - (value - min) / span) * (height - pad * 2),
+    }));
+    const points = coordinates.map(({ x, y }) => `${x.toFixed(1)},${y.toFixed(1)}`);
+
+    if (options.area !== false) {
+      svg.appendChild(
+        svgEl("path", {
+          class: "sdm-sparkline__area",
+          d: `M ${coordinates[0].x.toFixed(1)} ${(height - pad).toFixed(1)} L ${points.join(" L ")} L ${coordinates.at(-1).x.toFixed(1)} ${(height - pad).toFixed(1)} Z`,
+        }),
+      );
+    }
+
+    svg.appendChild(svgEl("path", { class: "sdm-sparkline__line", d: `M ${points.join(" L ")}` }));
+
+    const last = coordinates.at(-1);
+    const dot = svgEl("circle", { class: "sdm-sparkline__dot", cx: last.x.toFixed(1), cy: last.y.toFixed(1), r: "2.5" });
+    const lastLabel = options.labels?.[numbers.length - 1];
+    bindChartTooltip(dot, `${lastLabel ? `${lastLabel}: ` : ""}${formatValue(numbers.at(-1))}`);
+    svg.appendChild(dot);
+  });
 }
 
 export function renderColumnChart(svg, rows, options = {}) {
   const data = rows || [];
-  const width = Number(svg.getAttribute("width") || 320);
-  const height = Number(svg.getAttribute("height") || 160);
-  const padX = options.paddingX ?? 16;
-  const padTop = options.paddingTop ?? 10;
-  const padBottom = options.paddingBottom ?? 28;
   const labelKey = options.labelKey || "label";
   const valueKey = options.valueKey || "value";
-  const values = data.map((row) => {
-    const value = Number(row[valueKey]);
-    return Number.isFinite(value) ? value : 0;
-  });
-  const min = Math.min(0, ...values);
-  const max = Math.max(0, ...values);
-  const span = max - min || 1;
-  const plotHeight = height - padTop - padBottom;
-  const yForValue = (value) => padTop + (1 - (value - min) / span) * plotHeight;
-  const baselineY = yForValue(0);
-  const slot = (width - padX * 2) / Math.max(data.length, 1);
-  const barWidth = Math.max(10, Math.min(42, slot * 0.56));
+  svg.setAttribute("role", "img");
 
-  svg.replaceChildren();
-  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
-  svg.setAttribute("preserveAspectRatio", "none");
+  responsiveChart(svg, 640, (width) => {
+    const height = svg.clientHeight || Number(svg.getAttribute("height")) || 200;
+    const margin = { top: 12, right: 14, bottom: 26, left: 44 };
+    const values = data.map((row) => {
+      const value = Number(row[valueKey]);
+      return Number.isFinite(value) ? value : 0;
+    });
+    const min = Math.min(0, ...values);
+    const max = Math.max(0, ...values);
+    const span = max - min || 1;
+    const plotHeight = height - margin.top - margin.bottom;
+    const yForValue = (value) => margin.top + (1 - (value - min) / span) * plotHeight;
+    const baselineY = yForValue(0);
+    const slot = (width - margin.left - margin.right) / Math.max(data.length, 1);
+    const barWidth = Math.max(8, Math.min(48, slot * 0.62));
 
-  if (min < 0) {
-    const baseline = document.createElementNS("http://www.w3.org/2000/svg", "line");
-    baseline.classList.add("sdm-column-chart__baseline");
-    baseline.setAttribute("x1", String(padX));
-    baseline.setAttribute("x2", String(width - padX));
-    baseline.setAttribute("y1", baselineY.toFixed(1));
-    baseline.setAttribute("y2", baselineY.toFixed(1));
+    svg.replaceChildren();
+    svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+    svg.removeAttribute("preserveAspectRatio");
+    svg.setAttribute("aria-label", options.ariaLabel || `Bar chart, ${data.length} categories, up to ${formatCompact(max)}`);
+
+    for (const tick of axisTicks(min, max, 4)) {
+      const y = yForValue(tick);
+      svg.appendChild(
+        svgEl("line", { class: "sdm-chart__grid", x1: margin.left, x2: width - margin.right, y1: y.toFixed(1), y2: y.toFixed(1) }),
+      );
+      const axisLabel = svgEl("text", { class: "sdm-chart__axis", x: margin.left - 6, y: (y + 3).toFixed(1), "text-anchor": "end" });
+      axisLabel.textContent = formatCompact(tick);
+      svg.appendChild(axisLabel);
+    }
+
+    const baseline = svgEl("line", {
+      class: "sdm-column-chart__baseline",
+      x1: margin.left,
+      x2: width - margin.right,
+      y1: baselineY.toFixed(1),
+      y2: baselineY.toFixed(1),
+    });
     svg.appendChild(baseline);
-  }
 
-  data.forEach((row, index) => {
-    const value = values[index] ?? 0;
-    const valueY = yForValue(value);
-    const barHeight = Math.abs(valueY - baselineY);
-    const x = padX + slot * index + (slot - barWidth) / 2;
-    const y = Math.min(valueY, baselineY);
+    data.forEach((row, index) => {
+      const value = values[index] ?? 0;
+      const valueY = yForValue(value);
+      const barHeight = Math.abs(valueY - baselineY);
+      const x = margin.left + slot * index + (slot - barWidth) / 2;
+      const y = Math.min(valueY, baselineY);
 
-    const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-    rect.setAttribute("x", x.toFixed(1));
-    rect.setAttribute("y", y.toFixed(1));
-    rect.setAttribute("width", barWidth.toFixed(1));
-    rect.setAttribute("height", barHeight.toFixed(1));
-    rect.setAttribute("rx", "3");
-    rect.dataset.tone = value < 0 ? "negative" : "positive";
-    rect.dataset.label = row[labelKey] ?? "";
-    rect.dataset.value = String(value);
-    svg.appendChild(rect);
+      const rect = svgEl("rect", {
+        x: x.toFixed(1),
+        y: y.toFixed(1),
+        width: barWidth.toFixed(1),
+        height: barHeight.toFixed(1),
+        rx: "3",
+      });
+      rect.dataset.tone = value < 0 ? "negative" : "positive";
+      rect.dataset.label = row[labelKey] ?? "";
+      rect.dataset.value = String(value);
+      bindChartTooltip(rect, `${row[labelKey] ?? ""}: ${formatValue(value)}`);
+      svg.appendChild(rect);
 
-    const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
-    label.setAttribute("x", (x + barWidth / 2).toFixed(1));
-    label.setAttribute("y", String(height - 8));
-    label.setAttribute("text-anchor", "middle");
-    label.textContent = String(row[labelKey] ?? "").slice(0, 8);
-    svg.appendChild(label);
+      const label = svgEl("text", { x: (x + barWidth / 2).toFixed(1), y: String(height - 8), "text-anchor": "middle" });
+      label.textContent = String(row[labelKey] ?? "").slice(0, 8);
+      svg.appendChild(label);
+    });
+  });
+}
+
+export function renderLineChart(svg, rows, options = {}) {
+  // Full-size time-series line for the metricSeries query shape: responsive width, y-axis gridlines +
+  // compact labels, first/mid/last x labels, per-point hover tooltips, and an a11y summary. Sparkline
+  // is the compact, axis-less variant.
+  const data = rows || [];
+  const labelKey = options.labelKey || "label";
+  const valueKey = options.valueKey || "value";
+  svg.setAttribute("role", "img");
+
+  responsiveChart(svg, 640, (width) => {
+    const height = svg.clientHeight || Number(svg.getAttribute("height")) || 200;
+    const margin = { top: 12, right: 14, bottom: 26, left: 44 };
+    const values = data.map((row) => {
+      const value = Number(row[valueKey]);
+      return Number.isFinite(value) ? value : 0;
+    });
+
+    svg.replaceChildren();
+    svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+    svg.removeAttribute("preserveAspectRatio");
+    if (values.length < 2) {
+      svg.setAttribute("aria-label", options.ariaLabel || "No series data");
+      return;
+    }
+
+    const min = Math.min(...values);
+    const max = Math.max(...values);
+    const span = max - min || 1;
+    const plotWidth = width - margin.left - margin.right;
+    const plotHeight = height - margin.top - margin.bottom;
+    const baselineY = margin.top + plotHeight;
+    const xForIndex = (index) => margin.left + (index / (values.length - 1)) * plotWidth;
+    const yForValue = (value) => margin.top + (1 - (value - min) / span) * plotHeight;
+    const coordinates = values.map((value, index) => ({ x: xForIndex(index), y: yForValue(value) }));
+    const points = coordinates.map(({ x, y }) => `${x.toFixed(1)},${y.toFixed(1)}`);
+    svg.setAttribute(
+      "aria-label",
+      options.ariaLabel || `Line chart, ${values.length} points, ${formatCompact(min)} to ${formatCompact(max)}`,
+    );
+
+    for (const tick of axisTicks(min, max, 4)) {
+      const y = yForValue(tick);
+      svg.appendChild(
+        svgEl("line", { class: "sdm-chart__grid", x1: margin.left, x2: width - margin.right, y1: y.toFixed(1), y2: y.toFixed(1) }),
+      );
+      const axisLabel = svgEl("text", { class: "sdm-chart__axis", x: margin.left - 6, y: (y + 3).toFixed(1), "text-anchor": "end" });
+      axisLabel.textContent = formatCompact(tick);
+      svg.appendChild(axisLabel);
+    }
+
+    svg.appendChild(
+      svgEl("path", {
+        class: "sdm-line-chart__area",
+        d: `M ${coordinates[0].x.toFixed(1)} ${baselineY.toFixed(1)} L ${points.join(" L ")} L ${coordinates.at(-1).x.toFixed(1)} ${baselineY.toFixed(1)} Z`,
+      }),
+    );
+    svg.appendChild(svgEl("path", { class: "sdm-line-chart__line", d: `M ${points.join(" L ")}` }));
+
+    coordinates.forEach((point, index) => {
+      const dot = svgEl("circle", { class: "sdm-line-chart__dot", cx: point.x.toFixed(1), cy: point.y.toFixed(1), r: "3" });
+      dot.dataset.label = data[index]?.[labelKey] ?? "";
+      dot.dataset.value = String(values[index]);
+      bindChartTooltip(dot, `${data[index]?.[labelKey] ?? ""}: ${formatValue(values[index])}`);
+      svg.appendChild(dot);
+    });
+
+    const labelIndexes = [0, Math.floor((values.length - 1) / 2), values.length - 1].filter(
+      (value, index, all) => all.indexOf(value) === index,
+    );
+    for (const index of labelIndexes) {
+      const label = svgEl("text", {
+        class: "sdm-line-chart__label",
+        x: xForIndex(index).toFixed(1),
+        y: String(height - 8),
+        "text-anchor": index === 0 ? "start" : index === values.length - 1 ? "end" : "middle",
+      });
+      label.textContent = String(data[index]?.[labelKey] ?? "").slice(0, 12);
+      svg.appendChild(label);
+    }
   });
 }
 
@@ -624,9 +927,17 @@ export function renderHighlightedQueryDebug(container, queries) {
   highlightCode(container, container.textContent, "sql");
 }
 
-export function renderDataPreview(table, result) {
+export function renderDataPreview(table, result, options = {}) {
   const columns = result?.columns || [];
   const rows = result?.sample_rows || [];
+  const pageSize = options.pageSize ?? 0;
+  const paginate = pageSize > 0 && rows.length > pageSize;
+  const pageCount = paginate ? Math.ceil(rows.length / pageSize) : 1;
+  let page = Math.min(Math.max(0, table.__sdmPage ?? 0), pageCount - 1);
+  table.__sdmPage = page;
+  const start = paginate ? page * pageSize : 0;
+  const visibleRows = paginate ? rows.slice(start, start + pageSize) : rows;
+
   table.replaceChildren();
 
   const thead = document.createElement("thead");
@@ -639,7 +950,7 @@ export function renderDataPreview(table, result) {
   thead.appendChild(headerRow);
 
   const tbody = document.createElement("tbody");
-  for (const row of rows) {
+  for (const row of visibleRows) {
     const tr = document.createElement("tr");
     for (const column of columns) {
       const td = document.createElement("td");
@@ -650,10 +961,63 @@ export function renderDataPreview(table, result) {
   }
 
   table.append(thead, tbody);
+
+  // Clear any external pager from a previous render.
+  if (options.pager) options.pager.replaceChildren();
+
+  if (paginate) {
+    const fillPager = (target) => {
+      const label = document.createElement("span");
+      label.textContent = `${start + 1}–${Math.min(start + pageSize, rows.length)} of ${rows.length.toLocaleString()}`;
+      const controls = document.createElement("span");
+      controls.className = "sdm-data-preview__pager-controls";
+      const prev = document.createElement("button");
+      prev.type = "button";
+      prev.dataset.action = "prev-page";
+      prev.textContent = "Prev";
+      prev.disabled = page === 0;
+      prev.addEventListener("click", () => {
+        table.__sdmPage = page - 1;
+        renderDataPreview(table, result, options);
+      });
+      const next = document.createElement("button");
+      next.type = "button";
+      next.dataset.action = "next-page";
+      next.textContent = "Next";
+      next.disabled = page >= pageCount - 1;
+      next.addEventListener("click", () => {
+        table.__sdmPage = page + 1;
+        renderDataPreview(table, result, options);
+      });
+      controls.append(prev, next);
+      target.append(label, controls);
+    };
+
+    if (options.pager) {
+      // Render the pager into a caller-provided element (kept outside the scroll area so it stays put).
+      options.pager.className = "sdm-data-preview__pager";
+      fillPager(options.pager);
+    } else {
+      const tfoot = document.createElement("tfoot");
+      const tr = document.createElement("tr");
+      const cell = document.createElement("td");
+      cell.colSpan = columns.length || 1;
+      cell.className = "sdm-data-preview__pager";
+      fillPager(cell);
+      tr.appendChild(cell);
+      tfoot.appendChild(tr);
+      table.appendChild(tfoot);
+    }
+  }
 }
 
 export function renderState(container, state) {
-  container.className = state.kind === "error" ? "sdm-state-box sdm-error-state" : "sdm-state-box sdm-empty-state";
+  // Mirrors the React LoadingState / EmptyState / ErrorState trio: error | loading | empty.
+  const kind = state.kind === "error" ? "error" : state.kind === "loading" ? "loading" : "empty";
+  const variant =
+    kind === "error" ? "sdm-error-state" : kind === "loading" ? "sdm-loading-state" : "sdm-empty-state";
+  container.className = `sdm-state-box ${variant}`;
+  container.dataset.state = kind;
   container.textContent = state.message;
 }
 

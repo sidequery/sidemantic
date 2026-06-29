@@ -38,6 +38,7 @@ class Metric(BaseModel):
             "sum",
             "count",
             "count_distinct",
+            "approx_count_distinct",
             "avg",
             "min",
             "max",
@@ -348,6 +349,9 @@ class Metric(BaseModel):
     description: str | None = Field(None, description="Human-readable description")
     label: str | None = Field(None, description="Display label")
     metadata: dict[str, Any] | None = Field(None, description="Adapter-specific metadata payload")
+
+    # Synonyms (e.g. Snowflake Cortex Analyst measures/metrics, Cube)
+    synonyms: list[str] | None = Field(None, description="Alternative names for this measure/metric")
 
     # Display formatting
     format: str | None = Field(None, description="Display format string (e.g., '$#,##0.00', '0.00%')")

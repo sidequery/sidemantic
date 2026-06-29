@@ -18,7 +18,7 @@ adbc-exec = ["dep:adbc_driver_manager", "dep:adbc_core", "dep:arrow-array", "dep
 wasm = ["dep:wasm-bindgen"]
 mcp-server = ["dep:rmcp", "dep:tokio"]
 mcp-adbc = ["mcp-server", "adbc-exec"]
-runtime-server = ["dep:axum", "dep:tokio"]
+runtime-server = ["dep:axum", "dep:tokio", "dep:rust-embed", "dep:mime_guess"]
 runtime-server-adbc = ["runtime-server", "adbc-exec", "dep:tokio-stream"]
 runtime-lsp = ["dep:tokio", "dep:tower-lsp"]
 workbench-tui = ["dep:ratatui", "dep:crossterm"]
@@ -48,6 +48,8 @@ rmcp = { version = "1.4.0", optional = true, features = ["transport-io"] }
 tokio = { version = "1", optional = true, features = ["rt-multi-thread", "macros", "io-std", "sync"] }
 tokio-stream = { version = "0.1", optional = true }
 axum = { version = "0.8.1", optional = true, features = ["json"] }
+rust-embed = { version = "8", optional = true }
+mime_guess = { version = "2", optional = true }
 tower-lsp = { version = "0.20.0", optional = true }
 ratatui = { version = "0.30.1", optional = true }
 crossterm = { version = "0.29.0", optional = true }

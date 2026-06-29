@@ -781,3 +781,829 @@ def test_load_from_directory_surfaces_malformed_osi_json(tmp_path):
     non_strict_layer = SemanticLayer()
     load_from_directory(non_strict_layer, tmp_path, strict=False)
     assert "orders" not in non_strict_layer.graph.models
+
+
+def test_load_from_directory_attaches_snowflake_metric_to_table_in_another_file(tmp_path):
+    """A Snowflake top-level metric attaches to its table even if defined in another file."""
+    # File A is Snowflake-detected (tables + base_table) and carries a top-level
+    # metric referencing `orders`, which lives in file B.
+    (tmp_path / "a_model.yaml").write_text(
+        """
+name: a_model
+tables:
+  - name: products
+    base_table:
+      database: db
+      schema: s
+      table: products
+    primary_key:
+      columns: [id]
+    dimensions:
+      - name: id
+        expr: id
+        data_type: number
+metrics:
+  - name: avg_order
+    table: orders
+    expr: SUM(amount) / COUNT(order_id)
+"""
+    )
+    (tmp_path / "b_model.yaml").write_text(
+        """
+name: b_model
+tables:
+  - name: orders
+    base_table:
+      database: db
+      schema: s
+      table: orders
+    primary_key:
+      columns: [order_id]
+    dimensions:
+      - name: order_id
+        expr: order_id
+        data_type: number
+    facts:
+      - name: amount
+        expr: amount
+        data_type: number
+"""
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+    graph = layer.graph
+
+    assert set(graph.models) == {"products", "orders"}
+    orders = graph.models["orders"]
+    assert "avg_order" in [m.name for m in orders.metrics]
+    assert "avg_order" not in graph.metrics
+    metric = orders.get_metric("avg_order")
+    # Table-scoped: complex expression re-qualified for queryability.
+    assert "{model}" in metric.sql
+    # The internal pending marker is cleaned up after attachment.
+    assert (metric.metadata or {}).get("snowflake", {}).get("pending_table") is None
+
+
+def test_load_from_directory_detects_instruction_only_snowflake_sidecar(tmp_path):
+    """A Cortex sidecar with only verified_queries/custom_instructions routes to Snowflake."""
+    # No metrics and no tables: only Snowflake-only top-level sections.
+    (tmp_path / "a_instructions.yaml").write_text(
+        """
+verified_queries:
+  - name: total revenue
+    sql: SELECT SUM(amount) FROM orders
+custom_instructions: Prefer revenue.
+module_custom_instructions:
+  sql_generation: Use explicit columns.
+"""
+    )
+    (tmp_path / "z_tables.yaml").write_text(
+        """
+name: tm
+tables:
+  - name: orders
+    base_table:
+      database: db
+      schema: s
+      table: orders
+    primary_key:
+      columns: [order_id]
+    dimensions:
+      - name: order_id
+        expr: order_id
+        data_type: number
+    facts:
+      - name: amount
+        expr: amount
+        data_type: number
+"""
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+    snowflake_meta = layer.graph.metadata.get("snowflake", {})
+
+    assert snowflake_meta.get("verified_queries")
+    assert snowflake_meta.get("custom_instructions") == "Prefer revenue."
+    assert "module_custom_instructions" in snowflake_meta
+
+
+def test_load_from_directory_detects_snowflake_section_sidecar_with_empty_metrics(tmp_path):
+    """A Cortex sidecar with a Snowflake section plus an empty ``metrics: []``
+    placeholder still routes to Snowflake (empty metrics is "no metrics", not a
+    disqualifier), so its top-level sections are not silently dropped."""
+    (tmp_path / "a_sidecar.yaml").write_text(
+        """
+metrics: []
+verified_queries:
+  - name: total revenue
+    sql: SELECT SUM(amount) FROM orders
+custom_instructions: Prefer revenue.
+"""
+    )
+    (tmp_path / "z_tables.yaml").write_text(
+        """
+name: tm
+tables:
+  - name: orders
+    base_table:
+      database: db
+      schema: s
+      table: orders
+    primary_key:
+      columns: [order_id]
+    dimensions:
+      - name: order_id
+        expr: order_id
+        data_type: number
+"""
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+    snowflake_meta = layer.graph.metadata.get("snowflake", {})
+
+    assert snowflake_meta.get("custom_instructions") == "Prefer revenue."
+    assert snowflake_meta.get("verified_queries")
+
+
+def test_load_from_directory_detects_metadata_only_native_sidecar(tmp_path):
+    """A native sidecar carrying only ``version`` + ``metadata`` (no metrics/models/
+    parameters) is routed to the native adapter, not silently skipped, so its
+    passthrough metadata reaches the graph."""
+    (tmp_path / "meta.yml").write_text(
+        """
+version: 1
+metadata:
+  owner: data-team
+  domain: sales
+"""
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+
+    assert layer.graph.metadata.get("owner") == "data-team"
+    assert layer.graph.metadata.get("domain") == "sales"
+
+
+def test_load_from_directory_detects_metric_only_snowflake_file(tmp_path):
+    """A Cortex file with only top-level metrics (table + expr) is routed to Snowflake."""
+    # Metric-only file (no tables section) parsed before the table file.
+    (tmp_path / "a_metrics.yaml").write_text(
+        """
+metrics:
+  - name: avg_order
+    table: orders
+    expr: SUM(amount) / COUNT(order_id)
+"""
+    )
+    (tmp_path / "z_tables.yaml").write_text(
+        """
+name: tables_model
+tables:
+  - name: orders
+    base_table:
+      database: db
+      schema: s
+      table: orders
+    primary_key:
+      columns: [order_id]
+    dimensions:
+      - name: order_id
+        expr: order_id
+        data_type: number
+    facts:
+      - name: amount
+        expr: amount
+        data_type: number
+"""
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+    graph = layer.graph
+
+    orders = graph.models["orders"]
+    assert "avg_order" in [m.name for m in orders.metrics]
+    assert "avg_order" not in graph.metrics
+    assert "{model}" in orders.get_metric("avg_order").sql
+
+
+def test_load_from_directory_detects_metric_sidecar_with_snowflake_metric_keys(tmp_path):
+    """A tableless metrics sidecar carrying Snowflake-only metric keys routes to Snowflake."""
+    (tmp_path / "a_metrics.yaml").write_text(
+        """
+metrics:
+  - name: global_ratio
+    expr: orders.revenue / orders.order_count
+    access_modifier: public_access
+    labels: [KPI]
+"""
+    )
+    (tmp_path / "z_tables.yaml").write_text(
+        """
+name: tm
+tables:
+  - name: orders
+    base_table:
+      database: db
+      schema: s
+      table: orders
+    primary_key:
+      columns: [order_id]
+    dimensions:
+      - name: order_id
+        expr: order_id
+        data_type: number
+    facts:
+      - name: amount
+        expr: amount
+        data_type: number
+    metrics:
+      - name: revenue
+        expr: SUM(amount)
+      - name: order_count
+        expr: COUNT(order_id)
+"""
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+    graph = layer.graph
+
+    assert "global_ratio" in graph.metrics
+    sf = graph.metrics["global_ratio"].metadata["snowflake"]
+    assert sf["access_modifier"] == "public_access"
+    assert sf["labels"] == ["KPI"]
+
+
+def test_load_from_directory_detects_mixed_snowflake_metrics_file(tmp_path):
+    """A metrics-only Cortex file may mix table-scoped and tableless view metrics."""
+    # No tables section; one metric has table (table-scoped), one omits it (graph-level).
+    (tmp_path / "a_metrics.yaml").write_text(
+        """
+metrics:
+  - name: avg_order
+    table: orders
+    expr: SUM(amount) / COUNT(order_id)
+  - name: global_ratio
+    expr: orders.revenue / orders.order_count
+"""
+    )
+    (tmp_path / "z_tables.yaml").write_text(
+        """
+name: tables_model
+tables:
+  - name: orders
+    base_table:
+      database: db
+      schema: s
+      table: orders
+    primary_key:
+      columns: [order_id]
+    dimensions:
+      - name: order_id
+        expr: order_id
+        data_type: number
+    facts:
+      - name: amount
+        expr: amount
+        data_type: number
+    metrics:
+      - name: revenue
+        expr: SUM(amount)
+      - name: order_count
+        expr: COUNT(order_id)
+"""
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+    graph = layer.graph
+
+    # Table-scoped metric attaches to its table; tableless metric stays graph-level.
+    assert "avg_order" in [m.name for m in graph.models["orders"].metrics]
+    assert "global_ratio" in graph.metrics
+    assert "avg_order" not in graph.metrics
+
+
+def test_load_from_directory_detects_named_view_metric_sidecar(tmp_path):
+    """A Cortex sidecar with a root ``name`` and only tableless view metrics (no
+    Snowflake-only key or section) still routes to Snowflake, not silently dropped.
+
+    The root ``name`` is the sole Cortex signal: native detection rejects ``name``
+    so the file is not native-compatible, and without this routing the view metric
+    is lost on the CLI load_from_directory / export-native path.
+    """
+    (tmp_path / "a_sidecar.yaml").write_text(
+        """
+name: view_metrics
+metrics:
+  - name: global_ratio
+    expr: orders.revenue / orders.order_count
+"""
+    )
+    (tmp_path / "z_tables.yaml").write_text(
+        """
+name: tm
+tables:
+  - name: orders
+    base_table:
+      database: db
+      schema: s
+      table: orders
+    primary_key:
+      columns: [order_id]
+    dimensions:
+      - name: order_id
+        expr: order_id
+        data_type: number
+    facts:
+      - name: amount
+        expr: amount
+        data_type: number
+    metrics:
+      - name: revenue
+        expr: SUM(amount)
+      - name: order_count
+        expr: COUNT(order_id)
+"""
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+
+    assert "global_ratio" in layer.graph.metrics
+
+
+def test_load_from_directory_detects_relationship_only_snowflake_sidecar(tmp_path):
+    """A Cortex sidecar with only top-level relationships routes to Snowflake and attaches joins."""
+    # Non-standard join columns so foreign-key inference would NOT recreate the join.
+    (tmp_path / "a_rels.yaml").write_text(
+        """
+relationships:
+  - name: orders_to_customers
+    left_table: orders
+    right_table: customers
+    relationship_columns:
+      - left_column: cust_ref
+        right_column: cust_pk
+    relationship_type: many_to_one
+"""
+    )
+    (tmp_path / "z_tables.yaml").write_text(
+        """
+name: tm
+tables:
+  - name: orders
+    base_table:
+      database: db
+      schema: s
+      table: orders
+    primary_key:
+      columns: [order_id]
+    dimensions:
+      - name: order_id
+        expr: order_id
+        data_type: number
+      - name: cust_ref
+        expr: cust_ref
+        data_type: number
+  - name: customers
+    base_table:
+      database: db
+      schema: s
+      table: customers
+    primary_key:
+      columns: [cust_pk]
+    dimensions:
+      - name: cust_pk
+        expr: cust_pk
+        data_type: number
+"""
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+    graph = layer.graph
+
+    orders = graph.models["orders"]
+    rel = next(r for r in orders.relationships if r.name == "customers")
+    assert rel.metadata["snowflake"]["name"] == "orders_to_customers"
+    assert rel.foreign_key == "cust_ref"
+    assert graph.find_relationship_path("orders", "customers")
+
+
+def test_load_from_directory_detects_view_metric_sidecar_with_snowflake_sections(tmp_path):
+    """A tableless Cortex sidecar with verified_queries routes to Snowflake."""
+    # Pure view-level metrics (no table) plus Snowflake-only top-level sections.
+    (tmp_path / "a_sidecar.yaml").write_text(
+        """
+metrics:
+  - name: global_ratio
+    expr: orders.revenue / orders.order_count
+verified_queries:
+  - name: total revenue
+    sql: SELECT SUM(amount) FROM orders
+custom_instructions: Prefer revenue.
+"""
+    )
+    (tmp_path / "z_tables.yaml").write_text(
+        """
+name: tm
+tables:
+  - name: orders
+    base_table:
+      database: db
+      schema: s
+      table: orders
+    primary_key:
+      columns: [order_id]
+    dimensions:
+      - name: order_id
+        expr: order_id
+        data_type: number
+    facts:
+      - name: amount
+        expr: amount
+        data_type: number
+    metrics:
+      - name: revenue
+        expr: SUM(amount)
+      - name: order_count
+        expr: COUNT(order_id)
+"""
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+    graph = layer.graph
+
+    assert "global_ratio" in graph.metrics
+    snowflake_meta = graph.metadata.get("snowflake", {})
+    assert snowflake_meta.get("verified_queries")
+    assert snowflake_meta.get("custom_instructions") == "Prefer revenue."
+
+
+def test_load_from_directory_explicit_snowflake_relationship_beats_inference(tmp_path):
+    """An explicit Cortex relationship takes precedence over a guessed foreign key."""
+    # orders has customer_id (inferable to customers) AND an explicit Snowflake join.
+    (tmp_path / "a_rels.yaml").write_text(
+        """
+relationships:
+  - name: orders_to_customers
+    left_table: orders
+    right_table: customers
+    relationship_columns:
+      - left_column: cust_ref
+        right_column: cust_pk
+    relationship_type: many_to_one
+"""
+    )
+    (tmp_path / "z_tables.yaml").write_text(
+        """
+name: tm
+tables:
+  - name: orders
+    base_table:
+      database: db
+      schema: s
+      table: orders
+    primary_key:
+      columns: [order_id]
+    dimensions:
+      - name: order_id
+        expr: order_id
+        data_type: number
+      - name: customer_id
+        expr: customer_id
+        data_type: number
+      - name: cust_ref
+        expr: cust_ref
+        data_type: number
+  - name: customers
+    base_table:
+      database: db
+      schema: s
+      table: customers
+    primary_key:
+      columns: [cust_pk]
+    dimensions:
+      - name: cust_pk
+        expr: cust_pk
+        data_type: number
+"""
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+    orders = layer.graph.models["orders"]
+
+    customer_rels = [r for r in orders.relationships if r.name == "customers"]
+    assert len(customer_rels) == 1
+    assert customer_rels[0].foreign_key == "cust_ref"
+    assert customer_rels[0].metadata["snowflake"]["name"] == "orders_to_customers"
+
+
+def test_load_from_directory_keeps_same_target_snowflake_relationships(tmp_path):
+    """Two distinct named relationships between the same tables in a split project
+    must both survive: de-dup is by Snowflake name/columns, not the target table."""
+    (tmp_path / "a_rels.yaml").write_text(
+        """
+relationships:
+  - name: orders_to_customers_billing
+    left_table: orders
+    right_table: customers
+    relationship_columns:
+      - left_column: billing_cust_ref
+        right_column: cust_pk
+    relationship_type: many_to_one
+  - name: orders_to_customers_shipping
+    left_table: orders
+    right_table: customers
+    relationship_columns:
+      - left_column: shipping_cust_ref
+        right_column: cust_pk
+    relationship_type: many_to_one
+"""
+    )
+    (tmp_path / "z_tables.yaml").write_text(
+        """
+name: tm
+tables:
+  - name: orders
+    base_table:
+      database: db
+      schema: s
+      table: orders
+    primary_key:
+      columns: [order_id]
+    dimensions:
+      - name: order_id
+        expr: order_id
+        data_type: number
+      - name: billing_cust_ref
+        expr: billing_cust_ref
+        data_type: number
+      - name: shipping_cust_ref
+        expr: shipping_cust_ref
+        data_type: number
+  - name: customers
+    base_table:
+      database: db
+      schema: s
+      table: customers
+    primary_key:
+      columns: [cust_pk]
+    dimensions:
+      - name: cust_pk
+        expr: cust_pk
+        data_type: number
+"""
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+    orders = layer.graph.models["orders"]
+
+    customer_rels = [r for r in orders.relationships if r.name == "customers"]
+    assert {r.metadata["snowflake"]["name"] for r in customer_rels} == {
+        "orders_to_customers_billing",
+        "orders_to_customers_shipping",
+    }
+    assert {r.foreign_key for r in customer_rels} == {"billing_cust_ref", "shipping_cust_ref"}
+
+
+def test_load_from_directory_merges_snowflake_metadata_across_files(tmp_path):
+    """Multi-file Cortex projects must accumulate top-level sections, not overwrite."""
+    (tmp_path / "a.yaml").write_text(
+        """
+name: a
+tables:
+  - name: orders
+    base_table:
+      database: db
+      schema: s
+      table: orders
+    primary_key:
+      columns: [id]
+    dimensions:
+      - name: id
+        expr: id
+        data_type: number
+verified_queries:
+  - name: q1
+    question: x
+    sql: SELECT 1
+custom_instructions: from A
+"""
+    )
+    (tmp_path / "b.yaml").write_text(
+        """
+name: b
+tables:
+  - name: customers
+    base_table:
+      database: db
+      schema: s
+      table: customers
+    primary_key:
+      columns: [id]
+    dimensions:
+      - name: id
+        expr: id
+        data_type: number
+verified_queries:
+  - name: q2
+    question: y
+    sql: SELECT 2
+"""
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+    graph = layer.graph
+
+    merged = graph.metadata["snowflake"]["verified_queries"]
+    assert sorted(q["name"] for q in merged) == ["q1", "q2"]
+    # Dynamic attribute accumulates too.
+    assert len(getattr(graph, "verified_queries", [])) == 2
+
+
+def test_load_from_directory_merges_module_custom_instructions_across_files(tmp_path):
+    """Split Cortex files with different module_custom_instructions keys must
+    deep-merge (accumulate), not overwrite to the last file's value."""
+    (tmp_path / "a.yaml").write_text(
+        """
+name: a
+tables:
+  - name: orders
+    base_table:
+      database: db
+      schema: s
+      table: orders
+    primary_key:
+      columns: [id]
+    dimensions:
+      - name: id
+        expr: id
+        data_type: number
+module_custom_instructions:
+  sql_generation: Use explicit columns.
+"""
+    )
+    (tmp_path / "b.yaml").write_text(
+        """
+name: b
+tables:
+  - name: customers
+    base_table:
+      database: db
+      schema: s
+      table: customers
+    primary_key:
+      columns: [cid]
+    dimensions:
+      - name: cid
+        expr: cid
+        data_type: number
+module_custom_instructions:
+  question_generation: Prefer revenue.
+"""
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+    graph = layer.graph
+
+    mci = getattr(graph, "module_custom_instructions", {}) or {}
+    assert mci.get("sql_generation") == "Use explicit columns."
+    assert mci.get("question_generation") == "Prefer revenue."
+    # The deep-merged metadata carries both too, so export round-trips them.
+    merged_meta = graph.metadata["snowflake"]["module_custom_instructions"]
+    assert merged_meta.get("sql_generation") == "Use explicit columns."
+    assert merged_meta.get("question_generation") == "Prefer revenue."
+
+
+def test_load_from_directory_preserves_snowflake_top_level_sections(tmp_path):
+    """CLI-first load -> export-native must round-trip Snowflake Cortex top-level sections."""
+    import yaml
+
+    from sidemantic.adapters.sidemantic import SidemanticAdapter
+
+    (tmp_path / "cortex.yaml").write_text(
+        """
+name: cortex
+tables:
+  - name: orders
+    base_table:
+      database: db
+      schema: s
+      table: orders
+    primary_key:
+      columns: [order_id]
+    dimensions:
+      - name: order_id
+        expr: order_id
+        data_type: number
+    measures:
+      - name: order_total
+        expr: total
+        data_type: number
+        default_aggregation: sum
+verified_queries:
+  - name: total revenue
+    question: what is the total revenue
+    sql: "SELECT SUM(total) FROM orders"
+custom_instructions: Prefer revenue.
+module_custom_instructions:
+  sql_generation: Use explicit columns.
+"""
+    )
+
+    layer = SemanticLayer(auto_register=False)
+    load_from_directory(layer, tmp_path)
+    graph = layer.graph
+
+    # Top-level sections reach layer.graph (both as metadata and dynamic attrs).
+    assert graph.metadata["snowflake"]["verified_queries"]
+    assert graph.metadata["snowflake"]["custom_instructions"] == "Prefer revenue."
+    assert getattr(graph, "verified_queries", None)
+    assert getattr(graph, "custom_instructions", None) == "Prefer revenue."
+
+    # export-native emits a root metadata block carrying them.
+    out = tmp_path / "native.yml"
+    SidemanticAdapter().export(graph, out)
+    data = yaml.safe_load(out.read_text())
+    assert data["metadata"]["snowflake"]["custom_instructions"] == "Prefer revenue."
+
+    # And a native re-parse keeps them on graph.metadata.
+    graph2 = SidemanticAdapter().parse(out)
+    assert graph2.metadata["snowflake"]["verified_queries"]
+
+
+def test_load_from_directory_same_named_scoped_metrics_on_different_tables(tmp_path):
+    """Same-named table-scoped metrics on different tables must not overwrite each other."""
+    # Two metric sidecars each define a metric named "total" for a different table.
+    (tmp_path / "a_metrics.yaml").write_text(
+        """
+metrics:
+  - name: total
+    table: orders
+    expr: SUM(amount)
+"""
+    )
+    (tmp_path / "b_metrics.yaml").write_text(
+        """
+metrics:
+  - name: total
+    table: customers
+    expr: SUM(balance)
+"""
+    )
+    (tmp_path / "z_tables.yaml").write_text(
+        """
+name: tm
+tables:
+  - name: orders
+    base_table:
+      database: db
+      schema: s
+      table: orders
+    primary_key:
+      columns: [id]
+    dimensions:
+      - name: id
+        expr: id
+        data_type: number
+    facts:
+      - name: amount
+        expr: amount
+        data_type: number
+  - name: customers
+    base_table:
+      database: db
+      schema: s
+      table: customers
+    primary_key:
+      columns: [id]
+    dimensions:
+      - name: id
+        expr: id
+        data_type: number
+    facts:
+      - name: balance
+        expr: balance
+        data_type: number
+"""
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+    graph = layer.graph
+
+    # Both scoped metrics attach to their respective tables.
+    assert "total" in [m.name for m in graph.models["orders"].metrics]
+    assert "total" in [m.name for m in graph.models["customers"].metrics]

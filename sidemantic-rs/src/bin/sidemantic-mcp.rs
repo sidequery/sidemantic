@@ -796,6 +796,9 @@ fn metric_json(metric: &Metric) -> JsonValue {
     if let Some(description) = &metric.description {
         entry.insert("description".to_string(), json!(description));
     }
+    if let Some(base_metric) = &metric.base_metric {
+        entry.insert("base_metric".to_string(), json!(base_metric));
+    }
     if !metric.filters.is_empty() {
         entry.insert("filters".to_string(), json!(metric.filters));
     }

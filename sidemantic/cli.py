@@ -26,6 +26,11 @@ dashboard_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(dashboard_app, name="dashboard")
+gen_app = typer.Typer(
+    help="Generate typed TypeScript clients from the semantic layer",
+    no_args_is_help=True,
+)
+app.add_typer(gen_app, name="gen")
 
 # Global state for config (set in callback, used in commands)
 _loaded_config: SidemanticConfig | None = None
@@ -130,7 +135,14 @@ def _load_query_layer(
     else:
         layer = SemanticLayer(**layer_kwargs)
 
-    load_from_directory(layer, str(models))
+    if models.is_file():
+        # Load exactly the requested file, not its whole parent directory: a
+        # sibling model or an unrelated broken draft must not pollute or fail the load.
+        from sidemantic.loaders import load_from_file
+
+        load_from_file(layer, models)
+    else:
+        load_from_directory(layer, str(models))
     if not layer.graph.models:
         raise ValueError("No models found")
     return layer
@@ -885,6 +897,70 @@ def dashboard_types(
         raise typer.Exit(1)
 
 
+@gen_app.command("types")
+def gen_types(
+    models: Path = typer.Option(".", "--models", "-m", help="Directory or file with semantic layer definitions"),
+    output: Path = typer.Option(None, "--out", "--output", "-o", help="TypeScript output file; defaults to stdout"),
+    no_yaml: bool = typer.Option(False, "--no-yaml", help="Omit the embedded SCHEMA_YAML constant"),
+):
+    """Generate a typed query-client schema from the semantic layer.
+
+    Emits an `as const` schema (field types per model) for use with `createClient`
+    from `sidemantic-wasm/client`.
+    """
+    try:
+        from sidemantic.codegen import generate_client_schema_ts
+
+        layer = _load_query_layer(models)
+        rendered = generate_client_schema_ts(layer, include_yaml=not no_yaml)
+        if output:
+            output.write_text(rendered)
+            typer.echo(f"Client schema written to {output}", err=True)
+        else:
+            typer.echo(rendered)
+    except Exception as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(1)
+
+
+@gen_app.command("sql")
+def gen_sql(
+    sources: list[str] = typer.Argument(None, help="TypeScript files, directories, or globs to scan"),
+    models: Path = typer.Option(".", "--models", "-m", help="Directory or file with semantic layer definitions"),
+    output: Path = typer.Option(None, "--out", "--output", "-o", help="TypeScript output file; defaults to stdout"),
+    call: str = typer.Option("query", "--call", help="Call name whose first string-literal argument is semantic SQL"),
+):
+    """Generate typed bindings for semantic SQL literals in TypeScript sources (sqlx-style).
+
+    Emits a `GeneratedQueries` interface for use with `createSqlClient`. Each query is
+    validated against the semantic layer (a bad reference fails the build). v1 limits:
+    static string/template literals only (no `${}` interpolation); arbitrary SELECT
+    expressions and min/max/derived metric value types are approximate.
+    """
+    try:
+        from sidemantic.codegen import expand_sources, extract_sql_literals, generate_sql_types_ts
+
+        if not sources:
+            typer.echo("Error: provide at least one TypeScript source file, directory, or glob", err=True)
+            raise typer.Exit(1)
+        layer = _load_query_layer(models)
+        literals = extract_sql_literals(expand_sources(sources), call=call)
+        if not literals:
+            typer.echo(f"Error: no `{call}(...)` semantic SQL literals found in the given sources", err=True)
+            raise typer.Exit(1)
+        rendered = generate_sql_types_ts(layer, literals)
+        if output:
+            output.write_text(rendered)
+            typer.echo(f"Typed query bindings ({len(literals)}) written to {output}", err=True)
+        else:
+            typer.echo(rendered)
+    except typer.Exit:
+        raise
+    except Exception as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(1)
+
+
 @app.command("explain-sql")
 def explain_sql_command(
     sql: str = typer.Argument(..., help="SQL query to explain"),
@@ -1081,6 +1157,7 @@ def api_serve(
     max_request_body_bytes: int = typer.Option(
         None, "--max-request-body-bytes", help="Maximum request body size in bytes"
     ),
+    ui: bool = typer.Option(True, "--ui/--no-ui", help="Serve the embedded web UI at the root path"),
 ):
     """
     Start an HTTP API server for the semantic layer.
@@ -1095,7 +1172,7 @@ def api_serve(
       sidemantic api-serve --demo
     """
     try:
-        from sidemantic.api_server import start_api_server
+        from sidemantic.api_server import start_api_server, ui_static_dir
     except ImportError as e:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(1)
@@ -1192,8 +1269,14 @@ def api_serve(
                 placeholders = ", ".join(["?" for _ in columns])
                 layer.adapter.executemany(f"INSERT INTO {table} VALUES ({placeholders})", rows)
 
+    serve_ui = ui and ui_static_dir().joinpath("index.html").exists()
+
     typer.echo(f"Starting HTTP API server for: {directory}", err=True)
     typer.echo(f"Listening on http://{host_resolved}:{port_resolved}", err=True)
+    if serve_ui:
+        typer.echo(f"Web UI: http://{host_resolved}:{port_resolved}/", err=True)
+    elif ui:
+        typer.echo("Web UI: not built (run scripts/build_webapp.py)", err=True)
     if auth_token_resolved:
         typer.echo("Authentication: bearer token required", err=True)
     else:
@@ -1206,6 +1289,7 @@ def api_serve(
         auth_token=auth_token_resolved,
         cors_origins=cors_origins_resolved,
         max_request_body_bytes=max_body_bytes_resolved,
+        serve_ui=serve_ui,
     )
 
 

@@ -216,6 +216,7 @@ jobs:
       rust_changed: ${{ steps.changes.outputs.rust }}
       duckdb_changed: ${{ steps.changes.outputs.duckdb }}
       dax_changed: ${{ steps.changes.outputs.dax }}
+      webapp_changed: ${{ steps.changes.outputs.webapp }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -232,6 +233,8 @@ jobs:
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'tests/dax/fixtures/**'
+            webapp:
+              - 'webapp/**'
 
   dax-rust:
     name: Rust (DAX crates)
@@ -414,3 +417,26 @@ jobs:
       - name: Run extension tests
         working-directory: sidemantic-duckdb
         run: make test
+
+  webapp:
+    name: Webapp (types + unit)
+    needs: check-rust-changes
+    if: needs.check-rust-changes.outputs.webapp_changed == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: webapp
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Unit tests
+        run: bun test src

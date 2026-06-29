@@ -418,3 +418,16 @@ def test_avg_metric_needs_correct_count(layer):
         assert records[0]["avg_amount"] == 150.0  # (300 / 2)
     else:
         pytest.fail("Should route to pre-aggregation")
+
+
+def test_preaggregation_supports_subday_granularity():
+    """A pre-agg can be defined at minute/second grain (model accepts what the matcher
+    hierarchy now reasons about). Regression: PreAggregation.granularity used to reject
+    these grains, making the matcher's minute/second hierarchy entries unreachable."""
+    from sidemantic.core.preagg_matcher import GRANULARITY_HIERARCHY
+
+    minute_pa = PreAggregation(name="m", measures=["c"], dimensions=[], time_dimension="ts", granularity="minute")
+    second_pa = PreAggregation(name="s", measures=["c"], dimensions=[], time_dimension="ts", granularity="second")
+    assert minute_pa.granularity == "minute"
+    assert second_pa.granularity == "second"
+    assert "minute" in GRANULARITY_HIERARCHY and "second" in GRANULARITY_HIERARCHY

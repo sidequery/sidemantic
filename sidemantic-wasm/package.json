@@ -28,6 +28,26 @@
       "types": "./index.d.ts",
       "import": "./index.js"
     },
+    "./client": {
+      "types": "./client.d.ts",
+      "import": "./client.js"
+    },
+    "./codegen": {
+      "types": "./codegen.d.ts",
+      "import": "./codegen.js"
+    },
+    "./vite": {
+      "types": "./vite.d.ts",
+      "import": "./vite.js"
+    },
+    "./adapters/wasm": {
+      "types": "./adapters/wasm.d.ts",
+      "import": "./adapters/wasm.js"
+    },
+    "./adapters/serve": {
+      "types": "./adapters/serve.d.ts",
+      "import": "./adapters/serve.js"
+    },
     "./wasm": {
       "types": "./wasm/sidemantic.d.ts",
       "import": "./wasm/sidemantic.js"
@@ -37,9 +57,20 @@
   "main": "./index.js",
   "module": "./index.js",
   "types": "./index.d.ts",
+  "bin": {
+    "sidemantic-codegen": "./bin/sidemantic-codegen.js"
+  },
   "files": [
     "index.js",
     "index.d.ts",
+    "client.js",
+    "client.d.ts",
+    "codegen.js",
+    "codegen.d.ts",
+    "vite.js",
+    "vite.d.ts",
+    "bin",
+    "adapters",
     "wasm",
     "README.md",
     "LICENSE"
@@ -47,6 +78,14 @@
   "scripts": {
     "build": "bash scripts/build.sh",
     "prepack": "bash scripts/build.sh"
+  },
+  "peerDependencies": {
+    "vite": "*"
+  },
+  "peerDependenciesMeta": {
+    "vite": {
+      "optional": true
+    }
   },
   "engines": {
     "node": ">=18"

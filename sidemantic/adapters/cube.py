@@ -15,6 +15,23 @@ from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
 
 
+class CubeImportWarning(UserWarning):
+    """A Cube construct was imported but is not executed by sidemantic's query engine.
+
+    The construct is preserved (on a field or on ``meta``) so format round-trips keep it,
+    but it has no effect on generated SQL. Filter this category to silence these notices.
+    """
+
+
+def _warn_inert(member: str, feature: str, detail: str) -> None:
+    """Warn that an imported Cube construct is preserved but has no query effect."""
+    warnings.warn(
+        f"{member}: {feature} is preserved for round-trip but not executed by sidemantic ({detail}).",
+        CubeImportWarning,
+        stacklevel=3,
+    )
+
+
 def _normalize_cube_sql(sql: str | None, cube_name: str | None = None) -> str | None:
     """Normalize Cube.js SQL syntax to Sidemantic format.
 
@@ -438,11 +455,18 @@ class CubeAdapter(BaseAdapter):
             "string": "categorical",
             "number": "numeric",
             "time": "time",
-            "boolean": "categorical",
+            "boolean": "boolean",
             "switch": "categorical",  # enum-like dimension with a predefined values list
         }
 
         sidemantic_type = type_mapping.get(dim_type, "categorical")
+
+        if dim_def.get("sub_query"):
+            _warn_inert(
+                f"{cube_name}.{name}",
+                "sub_query dimension",
+                "imported as a plain SQL dimension; the measure-as-dimension is not auto-joined",
+            )
 
         # For time dimensions, extract granularity
         granularity = None
@@ -525,7 +549,7 @@ class CubeAdapter(BaseAdapter):
         type_mapping = {
             "count": "count",
             "count_distinct": "count_distinct",
-            "count_distinct_approx": "count_distinct",
+            "count_distinct_approx": "approx_count_distinct",
             "sum": "sum",
             "avg": "avg",
             "min": "min",
@@ -538,6 +562,20 @@ class CubeAdapter(BaseAdapter):
         meta = measure_def.get("meta")
         drill_fields = measure_def.get("drill_members")
         public = measure_def.get("shown", measure_def.get("public", True))
+
+        # Measure-level case/switch is a multi-stage construct sidemantic does not execute.
+        # Preserve the raw definition on meta (for round-trip) and warn, rather than silently
+        # dropping the case block (the measure otherwise keeps only its declared/default
+        # aggregation, losing the conditional selection entirely).
+        case_def = measure_def.get("case")
+        if case_def:
+            meta = dict(meta) if meta else {}
+            meta["case"] = case_def
+            _warn_inert(
+                f"{cube_name}.{name}",
+                "measure-level case/switch",
+                "conditional (multi-stage) measure selection is not reproduced",
+            )
 
         agg_type = type_mapping.get(measure_type)
         metric_type = None
@@ -701,6 +739,13 @@ class CubeAdapter(BaseAdapter):
             if add_group_by is not None:
                 meta["add_group_by"] = add_group_by
 
+        if group_by is not None or add_group_by is not None or measure_def.get("multi_stage"):
+            _warn_inert(
+                f"{cube_name}.{name}",
+                "multi_stage measure (group_by/add_group_by)",
+                "percent-of-total / nested-aggregate semantics are not reproduced",
+            )
+
         return Metric(
             name=name,
             type=metric_type,
@@ -824,6 +869,22 @@ class CubeAdapter(BaseAdapter):
         # Parse build range
         build_range_start = preagg_def.get("build_range_start", {}).get("sql")
         build_range_end = preagg_def.get("build_range_end", {}).get("sql")
+
+        # Fidelity: these pre-agg controls are preserved for round-trip but are not honored
+        # by sidemantic's matcher/materializer. Warn so the semantics aren't assumed to work.
+        member = f"{cube_name}.{name}"
+        if preagg_type in ("rollup_join", "lambda", "original_sql"):
+            _warn_inert(member, f"pre-aggregation type '{preagg_type}'", "only 'rollup' is materialized and routed")
+        if partition_granularity:
+            _warn_inert(member, "partition_granularity", "rollups are materialized unpartitioned")
+        if refresh_key and refresh_key.sql:
+            _warn_inert(member, "refresh_key.sql", "no refresh scheduler runs the staleness query")
+        if indexes:
+            _warn_inert(member, "indexes", "no CREATE INDEX is emitted for materialized rollups")
+        if build_range_start or build_range_end:
+            _warn_inert(member, "build_range_start/end", "the full source is scanned at materialization")
+        if preagg_def.get("segments"):
+            _warn_inert(member, "pre-aggregation segments", "segment coverage is not checked during matching")
 
         return PreAggregation(
             name=name,
@@ -978,6 +1039,11 @@ class CubeAdapter(BaseAdapter):
         default_filters = view_def.get("default_filters")
         if default_filters:
             meta["default_filters"] = default_filters
+            _warn_inert(
+                view_def.get("name", "view"),
+                "view default_filters",
+                "enforced view filters are stored as metadata only and not applied to queries",
+            )
 
         # meta.default_ui_filters: pre-populated (editable) workbench filters.
         view_meta = view_def.get("meta")
@@ -1152,6 +1218,7 @@ class CubeAdapter(BaseAdapter):
                 type_mapping = {
                     "count": "count",
                     "count_distinct": "count_distinct",
+                    "approx_count_distinct": "count_distinct_approx",
                     "sum": "sum",
                     "avg": "avg",
                     "min": "min",

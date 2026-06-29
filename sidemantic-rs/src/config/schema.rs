@@ -33,7 +33,8 @@ pub struct SidemanticConfig {
     pub sql_metrics: Option<String>,
     #[serde(default)]
     pub sql_segments: Option<String>,
-    /// Graph-level metadata payload (round-trips format-specific state such as OSI).
+    /// Graph-level metadata payload (round-trips format-specific state such as OSI,
+    /// and Snowflake Cortex top-level sections from the Python native export).
     #[serde(default)]
     pub metadata: Option<serde_json::Value>,
 }
@@ -132,6 +133,15 @@ pub struct DimensionConfig {
     pub metadata: Option<serde_json::Value>,
     #[serde(default)]
     pub meta: Option<serde_json::Value>,
+    /// Alternative names (e.g. Snowflake Cortex Analyst, Cube).
+    #[serde(default)]
+    pub synonyms: Option<Vec<String>>,
+    /// Representative sample values for this dimension.
+    #[serde(default)]
+    pub sample_values: Option<Vec<String>>,
+    /// Linked Cortex Search service name (Snowflake Cortex Analyst).
+    #[serde(default)]
+    pub cortex_search_service_name: Option<String>,
     pub format: Option<String>,
     pub value_format_name: Option<String>,
     pub parent: Option<String>,
@@ -190,6 +200,9 @@ pub struct MetricConfig {
     pub metadata: Option<serde_json::Value>,
     #[serde(default)]
     pub meta: Option<serde_json::Value>,
+    /// Alternative names (e.g. Snowflake Cortex Analyst, Cube).
+    #[serde(default)]
+    pub synonyms: Option<Vec<String>>,
     #[serde(default = "default_public")]
     pub public: bool,
 }
@@ -548,6 +561,31 @@ impl ModelConfig {
     }
 }
 
+/// Fold enrichment fields that have no first-class core slot (Cortex/native
+/// synonyms, sample values, search service) into the ``metadata`` JSON object so
+/// they survive the Rust load path (graph/catalog payload) instead of being
+/// silently dropped by ``into_dimension``/``into_metric``. Existing metadata keys
+/// are never overwritten.
+fn merge_metadata_extras(
+    base: Option<serde_json::Value>,
+    extras: Vec<(&str, serde_json::Value)>,
+) -> Option<serde_json::Value> {
+    if extras.is_empty() {
+        return base;
+    }
+    let mut map = match base {
+        Some(serde_json::Value::Object(map)) => map,
+        None => serde_json::Map::new(),
+        // Non-object metadata is unexpected for native files; leave it untouched
+        // rather than risk losing it.
+        Some(other) => return Some(other),
+    };
+    for (key, value) in extras {
+        map.entry(key.to_string()).or_insert(value);
+    }
+    Some(serde_json::Value::Object(map))
+}
+
 impl DimensionConfig {
     fn into_dimension(self) -> Dimension {
         let dim_type = match self
@@ -562,6 +600,21 @@ impl DimensionConfig {
             _ => DimensionType::Categorical,
         };
 
+        let metadata = merge_metadata_extras(
+            self.metadata,
+            [
+                self.synonyms
+                    .map(|v| ("synonyms", serde_json::Value::from(v))),
+                self.sample_values
+                    .map(|v| ("sample_values", serde_json::Value::from(v))),
+                self.cortex_search_service_name
+                    .map(|v| ("cortex_search_service_name", serde_json::Value::from(v))),
+            ]
+            .into_iter()
+            .flatten()
+            .collect(),
+        );
+
         Dimension {
             name: self.name,
             r#type: dim_type,
@@ -570,7 +623,7 @@ impl DimensionConfig {
             supported_granularities: self.supported_granularities,
             label: self.label,
             description: self.description,
-            metadata: self.metadata,
+            metadata,
             meta: self.meta,
             format: self.format,
             value_format_name: self.value_format_name,
@@ -641,6 +694,14 @@ impl MetricConfig {
                 .collect()
         });
 
+        let metadata = merge_metadata_extras(
+            self.metadata,
+            self.synonyms
+                .map(|v| ("synonyms", serde_json::Value::from(v)))
+                .into_iter()
+                .collect(),
+        );
+
         Metric {
             name: self.name,
             extends: self.extends,
@@ -653,7 +714,7 @@ impl MetricConfig {
             filters: self.filters,
             label: self.label,
             description: self.description,
-            metadata: self.metadata,
+            metadata,
             meta: self.meta,
             window: self.window,
             grain_to_date,
@@ -1490,6 +1551,83 @@ models:
             orders.pre_aggregations[0].meta.as_ref().unwrap()["owner"],
             "analytics"
         );
+    }
+
+    #[test]
+    fn test_native_contract_accepts_snowflake_enrichment_fields() {
+        // Native YAML produced by Python `export-native` after a Snowflake import
+        // carries root `metadata`, dimension synonyms/sample_values/cortex search,
+        // and metric synonyms. The Rust native loader must accept (not reject) it.
+        let yaml = r#"
+metadata:
+  snowflake:
+    verified_queries:
+      - name: total revenue
+    custom_instructions: Prefer revenue.
+models:
+  - name: orders
+    table: orders
+    dimensions:
+      - name: status
+        type: categorical
+        synonyms: [state]
+        sample_values: ["1001", "1002"]
+        cortex_search_service_name: status_search
+    metrics:
+      - name: revenue
+        agg: sum
+        sql: amount
+        synonyms: [total revenue]
+"#;
+
+        let config: SidemanticConfig = serde_yaml::from_str(yaml).unwrap();
+
+        assert_eq!(
+            config.metadata.as_ref().unwrap()["snowflake"]["custom_instructions"],
+            "Prefer revenue."
+        );
+
+        let dim = &config.models[0].dimensions[0];
+        assert_eq!(dim.synonyms.as_deref(), Some(&["state".to_string()][..]));
+        assert_eq!(
+            dim.sample_values.as_deref(),
+            Some(&["1001".to_string(), "1002".to_string()][..])
+        );
+        assert_eq!(
+            dim.cortex_search_service_name.as_deref(),
+            Some("status_search")
+        );
+
+        let metric = &config.models[0].metrics[0];
+        assert_eq!(
+            metric.synonyms.as_deref(),
+            Some(&["total revenue".to_string()][..])
+        );
+
+        // The config must convert into the internal model, and the enrichment
+        // fields (which have no first-class core slot) must survive under the core
+        // `metadata` instead of being dropped by into_dimension/into_metric.
+        let (models, _, _) = config.into_parts().unwrap();
+        let orders = models.iter().find(|m| m.name == "orders").unwrap();
+        let status = orders
+            .dimensions
+            .iter()
+            .find(|d| d.name == "status")
+            .unwrap();
+        let status_meta = status
+            .metadata
+            .as_ref()
+            .expect("dimension metadata preserved");
+        assert_eq!(status_meta["synonyms"][0], "state");
+        assert_eq!(status_meta["sample_values"][0], "1001");
+        assert_eq!(status_meta["sample_values"][1], "1002");
+        assert_eq!(status_meta["cortex_search_service_name"], "status_search");
+        let revenue = orders.metrics.iter().find(|m| m.name == "revenue").unwrap();
+        let revenue_meta = revenue
+            .metadata
+            .as_ref()
+            .expect("metric metadata preserved");
+        assert_eq!(revenue_meta["synonyms"][0], "total revenue");
     }
 
     #[test]

@@ -293,7 +293,15 @@ class SemanticGraph:
                         if not relationship.foreign_key:
                             continue
                         local_keys = model.primary_key_columns
-                        remote_keys = relationship.foreign_key_columns
+                        # The related side joins on its own key column. When the relationship records
+                        # it (e.g. a direct TMDL many-to-many carries the toColumn as primary_key),
+                        # use that so a join between differently named columns (A[a_id] <-> B[b_id])
+                        # references B's real column rather than reusing A's foreign-key name.
+                        remote_keys = (
+                            relationship.primary_key_columns
+                            if relationship.primary_key
+                            else relationship.foreign_key_columns
+                        )
                         custom_condition = _custom_join_condition(relationship.sql)
                         add_edge(model_name, related_model, local_keys, remote_keys, "one_to_many", custom_condition)
                         add_edge(

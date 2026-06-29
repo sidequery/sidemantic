@@ -2983,26 +2983,28 @@ def test_tmdl_many_to_many_recovers_endpoint_keys():
     import re
 
     pytest.importorskip("sidemantic_dax")
+    # Use differently named join columns on each side so the related-side join key cannot be
+    # satisfied by accidentally reusing the other side's column name.
     tmdl = textwrap.dedent(
         """
         table Authors
-            column author_name
+            column author_id
                 dataType: string
-                sourceColumn: author_name
+                sourceColumn: author_id
             column region
                 dataType: string
                 sourceColumn: region
             measure book_count = COUNTROWS(Authors)
         table Books
-            column author_name
+            column book_author_id
                 dataType: string
-                sourceColumn: author_name
+                sourceColumn: book_author_id
             column genre
                 dataType: string
                 sourceColumn: genre
         relationship AuthorsBooks
-            fromColumn: Authors[author_name]
-            toColumn: Books[author_name]
+            fromColumn: Authors[author_id]
+            toColumn: Books[book_author_id]
             fromCardinality: many
             toCardinality: many
         """
@@ -3020,15 +3022,18 @@ def test_tmdl_many_to_many_recovers_endpoint_keys():
     assert authors.relationships[0].type == "many_to_many"
     # Each keyless side recovers its own real endpoint column -- never None, a phantom "id", or a
     # foreign key pointing at another table.
-    assert authors.primary_key == "author_name"
-    assert books.primary_key == "author_name"
+    assert authors.primary_key == "author_id"
+    assert books.primary_key == "book_author_id"
 
-    # The recovered keys give the no-bridge many-to-many join a real key on each side, so the
-    # compiled SQL contains no empty CONCAT().
+    # The recovered keys give the no-bridge many-to-many join a real key on each side, and the join
+    # references each table's OWN column (not the other side's name), so there is no empty CONCAT()
+    # and no reference to a column the related CTE never projects.
     layer = SemanticLayer()
     layer.graph = graph
     sql = layer.compile(metrics=["Authors.book_count"], dimensions=["Books.genre"])
     assert not re.search(r"CONCAT\(\s*\)", sql)
+    assert "Books_cte.book_author_id" in sql
+    assert "Books_cte.author_id" not in sql
 
 
 def test_tmdl_one_to_one_recovers_keyless_source_key():

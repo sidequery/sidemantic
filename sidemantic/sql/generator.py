@@ -1537,6 +1537,19 @@ class SQLGenerator:
                         )
                         for pk in target_keys:
                             add_passthrough_column(pk)
+                    elif (
+                        other_join.name == model_name
+                        and other_join.type == "many_to_many"
+                        and (not other_join.through or other_join.through not in self.graph.models)
+                    ):
+                        # Direct (no-bridge) many-to-many: this model is the related side, joined on
+                        # the relationship's recorded target key (a TMDL toColumn that need not be
+                        # this model's declared primary key), so that exact column must be projected.
+                        related_keys = (
+                            other_join.primary_key_columns if other_join.primary_key else model.primary_key_columns
+                        )
+                        for pk in related_keys:
+                            add_passthrough_column(pk)
 
             for other_model_name, other_model in self.graph.models.items():
                 if other_model_name not in all_models:

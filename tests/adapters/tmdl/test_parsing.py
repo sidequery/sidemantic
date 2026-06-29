@@ -3036,6 +3036,59 @@ def test_tmdl_many_to_many_recovers_endpoint_keys():
     assert "Books_cte.author_id" not in sql
 
 
+def test_tmdl_many_to_many_on_non_primary_key_column():
+    """Regression: a direct many-to-many that joins on a column which is NOT the related table's
+    declared primary key must project and join on that exact column, not the declared key.
+
+    Here B declares isKey ``id`` but the relationship targets ``B[alt_id]``. The join must reference
+    B's ``alt_id`` and B's CTE must project ``alt_id`` (it is otherwise keyed only off ``id``).
+    """
+
+    pytest.importorskip("sidemantic_dax")
+    tmdl = textwrap.dedent(
+        """
+        table A
+            column a_id
+                dataType: string
+                sourceColumn: a_id
+            measure a_count = COUNTROWS(A)
+        table B
+            column id
+                dataType: string
+                isKey
+                sourceColumn: id
+            column alt_id
+                dataType: string
+                sourceColumn: alt_id
+            column b_label
+                dataType: string
+                sourceColumn: b_label
+        relationship AB
+            fromColumn: A[a_id]
+            toColumn: B[alt_id]
+            fromCardinality: many
+            toCardinality: many
+        """
+    )
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".tmdl", delete=False) as f:
+        f.write(tmdl)
+        temp_path = Path(f.name)
+    try:
+        graph = TMDLAdapter().parse(temp_path)
+    finally:
+        temp_path.unlink()
+
+    # B keeps its declared primary key; the many-to-many target column is independent of it.
+    assert graph.models["B"].primary_key == "id"
+
+    layer = SemanticLayer()
+    layer.graph = graph
+    sql = layer.compile(metrics=["A.a_count"], dimensions=["B.b_label"])
+    # The join uses B's alt_id and B's CTE projects it, so it is not a join on a missing column.
+    assert "B_cte.alt_id" in sql
+    assert "alt_id AS alt_id" in sql
+
+
 def test_tmdl_one_to_one_recovers_keyless_source_key():
     """Regression: a one-to-one relationship has a unique key on BOTH sides, so a keyless table on
     the fromColumn (source) side must recover its endpoint as its primary key.

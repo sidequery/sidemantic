@@ -164,7 +164,21 @@ class PreAggregation(BaseModel):
         # materialized base instead of re-running it. They are not aggregation
         # rollups, so the matcher never routes metric queries to them directly.
         if self.type == "original_sql":
-            base_sql = self.sql or getattr(model, "sql", None)
+            if self.sql:
+                # self.sql may carry {model} placeholders (e.g. normalized from Cube's ${CUBE}),
+                # used both as a FROM source and as a column qualifier ({model}.col). A custom
+                # query with no placeholder is staged verbatim.
+                if "{model}" not in self.sql:
+                    return self.sql
+                if getattr(model, "sql", None):
+                    # sql-backed model: expose its query as an aliased CTE and point {model} at
+                    # that alias. Inlining a bare "(SELECT ...)" instead would produce invalid
+                    # "(SELECT ...).col" column qualifiers in DuckDB/Postgres-style dialects.
+                    alias = f"{model.name}__base"
+                    return f"WITH {alias} AS (\n{model.sql}\n)\n{self.sql.replace('{model}', alias)}"
+                # table-backed model: {model} resolves directly to the table name.
+                return self.sql.replace("{model}", model.table)
+            base_sql = getattr(model, "sql", None)
             if base_sql:
                 return base_sql
             return f"SELECT * FROM {model.table}"
@@ -208,6 +222,13 @@ class PreAggregation(BaseModel):
             for measure_name in self.measures:
                 measure = model.get_metric(measure_name)
                 if measure:
+                    if measure.agg is None:
+                        # Measures without a plain aggregation are not materializable rollup
+                        # columns: derived measures are computed at query time from their
+                        # dependencies, and complete-expression measures (number_agg /
+                        # PERCENTILE) are not re-aggregatable. Skip them (the matcher likewise
+                        # never routes complete-expression measures to a rollup).
+                        continue
                     # Generate aggregation expression
                     agg_type = measure.agg.upper()
                     if agg_type == "COUNT" and not measure.sql:
@@ -222,6 +243,18 @@ class PreAggregation(BaseModel):
                         select_exprs.append(f"COUNT(DISTINCT {measure.sql_expr}) as {measure_name}_raw")
                     else:
                         select_exprs.append(f"{agg_type}({measure.sql_expr}) as {measure_name}_raw")
+
+        # A rollup that projects nothing would render "SELECT  FROM ... GROUP BY " (invalid
+        # SQL). This happens when its measures are all non-materializable (agg=None: derived or
+        # complete-expression like number_agg/PERCENTILE) and it declares no dimensions or time
+        # dimension. Reject it explicitly so the refresh command surfaces a clear error instead
+        # of a database parse failure.
+        if not select_exprs:
+            raise ValueError(
+                f"Pre-aggregation '{self.name}' has no materializable columns: its measures are all "
+                f"non-aggregatable (derived or complete-expression) and it declares no dimensions or "
+                f"time dimension. Add a plain aggregate measure or a dimension, or drop this rollup."
+            )
 
         # Build FROM clause
         if model.sql:

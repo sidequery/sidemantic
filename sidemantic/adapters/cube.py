@@ -1,5 +1,6 @@
 """Cube adapter for importing Cube.js semantic models."""
 
+import os
 import re
 import warnings
 from pathlib import Path
@@ -32,42 +33,70 @@ def _warn_inert(member: str, feature: str, detail: str) -> None:
     )
 
 
-def _normalize_cube_sql(sql: str | None, cube_name: str | None = None) -> str | None:
-    """Normalize Cube.js SQL syntax to Sidemantic format.
+# Keys the adapter writes into the cube_internal namespace; on export these are consumed and
+# stripped, while any other (user-supplied) keys in the namespace are preserved.
+_ADAPTER_INTERNAL_KEYS = frozenset(
+    {
+        "cube_type",
+        "order_by",
+        "reduce_by",
+        "rolling_window_leading",
+        "rolling_window_offset",
+        "latitude",
+        "longitude",
+        "top_level",
+        "sub_query",
+    }
+)
 
-    Handles:
-    - ${CUBE} -> {model} placeholder
-    - ${cube_name} -> {model} placeholder
-    - {CUBE} -> {model} placeholder (variant without dollar sign)
 
-    Note: ${measure_ref} references are handled separately in _parse_measure()
-    for derived metrics.
+def _cube_internal(meta: object) -> dict:
+    """Return the adapter-internal marker namespace from a meta value, tolerating a
+    user-supplied ``cube_internal`` that isn't a mapping (returns an empty dict)."""
+    if isinstance(meta, dict):
+        ns = meta.get("cube_internal")
+        if isinstance(ns, dict):
+            return ns
+    return {}
 
-    Args:
-        sql: SQL expression string or None
-        cube_name: Name of the cube (used to replace ${cube_name} references)
 
-    Returns:
-        Normalized SQL string or None
-    """
-    if sql is None:
-        return None
-
-    # Replace ${CUBE} and {CUBE} variants with {model}
-    result = sql.replace("${CUBE}", "{model}")
-    result = result.replace("{CUBE}", "{model}")
-
-    # Replace ${cube_name} with {model} if cube_name is provided
-    if cube_name:
-        result = result.replace(f"${{{cube_name}}}", "{model}")
-        result = result.replace(f"{{{cube_name}}}", "{model}")
-
-    return result
+def _set_cube_internal(meta: dict | None, **markers) -> dict:
+    """Stash adapter-internal export markers under a dedicated ``meta["cube_internal"]``
+    namespace, so they never collide with (or get mistaken for) user-supplied measure meta
+    of the same name (e.g. a measure whose own ``meta`` has a ``cube_type`` key). Only
+    non-None markers are stored; a non-dict existing value is replaced (not crashed on)."""
+    out = dict(meta) if isinstance(meta, dict) else {}
+    internal = dict(_cube_internal(out))
+    internal.update({k: v for k, v in markers.items() if v is not None})
+    if internal:
+        out["cube_internal"] = internal
+    return out
 
 
 # Matches a Cube member reference: ${cube.col}, {cube.col}, ${CUBE}.col, {cube}.col, etc.
 # group(1) = content inside braces, group(2) = optional trailing ".column".
 _CUBE_MEMBER_RE = re.compile(r"\$?\{([^}]+)\}(?:\.(\w+))?")
+
+# Matches a single-quoted string literal OR a Cube member reference. Used to rewrite member
+# references while leaving member-looking text inside string literals untouched. The literal
+# alternative is non-capturing, so the member groups remain group(1)/group(2); a matched
+# literal therefore has group(1) is None.
+_CUBE_MEMBER_OR_STRING_RE = re.compile(r"'(?:[^']|'')*'|" + _CUBE_MEMBER_RE.pattern)
+
+# Matches a single-quoted string literal OR a literal ``{model}`` placeholder. Used on export
+# to translate ``{model}`` back to ``${CUBE}`` only outside quoted strings, so a ``{model}``
+# occurring inside a literal (e.g. ``label = '{model}'``) is preserved verbatim and survives an
+# import->export round-trip (import already skips quoted literals when normalizing).
+_MODEL_OR_STRING_RE = re.compile(r"'(?:[^']|'')*'|\{model\}")
+
+
+def _model_placeholder_to_cube(sql: str) -> str:
+    """Replace ``{model}`` with ``${CUBE}`` everywhere except inside single-quoted literals."""
+
+    def repl(match: re.Match) -> str:
+        return "${CUBE}" if match.group(0) == "{model}" else match.group(0)
+
+    return _MODEL_OR_STRING_RE.sub(repl, sql)
 
 
 def _split_cube_ref(inner: str, trailing: str | None) -> tuple[str, str | None]:
@@ -82,6 +111,60 @@ def _split_cube_ref(inner: str, trailing: str | None) -> tuple[str, str | None]:
         head, col = inner.split(".", 1)
         return head, col
     return inner, None
+
+
+def _normalize_cube_sql(sql: str | None, cube_name: str | None = None) -> str | None:
+    """Normalize Cube.js self-references in a SQL expression to Sidemantic's ``{model}``.
+
+    Rewrites references to *this* cube only:
+    - ``${CUBE}`` / ``{CUBE}`` / ``${cube_name}`` / ``{cube_name}`` -> ``{model}``
+    - dotted column refs ``${CUBE.col}`` / ``{CUBE.col}`` / ``${CUBE}.col`` and the
+      ``cube_name`` equivalents -> ``{model}.col``
+
+    References to *other* cubes and bare ``${measure}`` references are left untouched:
+    the former cannot be expressed as ``{model}``, and the latter are resolved later in
+    ``_parse_measure()`` for derived metrics.
+
+    Args:
+        sql: SQL expression string or None
+        cube_name: Name of the cube whose self-references should be normalized
+
+    Returns:
+        Normalized SQL string or None
+    """
+    if sql is None:
+        return None
+
+    def repl(match: re.Match) -> str:
+        if match.group(1) is None:
+            return match.group(0)  # single-quoted string literal -> leave untouched
+        head, col = _split_cube_ref(match.group(1), match.group(2))
+        if head in ("CUBE", cube_name):
+            return f"{{model}}.{col}" if col else "{model}"
+        # Other-cube / measure / bare references are handled elsewhere.
+        return match.group(0)
+
+    return _CUBE_MEMBER_OR_STRING_RE.sub(repl, sql)
+
+
+# Cube join "relationship" values -> Sidemantic relationship types. Cube accepts both the
+# camelCase forms (belongsTo/hasMany/hasOne) and the snake_case forms.
+_CUBE_RELATIONSHIP_MAP = {
+    "belongsTo": "many_to_one",
+    "hasMany": "one_to_many",
+    "hasOne": "one_to_one",
+    # Legacy snake_case aliases Cube also accepts.
+    "belongs_to": "many_to_one",
+    "has_many": "one_to_many",
+    "has_one": "one_to_one",
+    "many_to_one": "many_to_one",
+    "one_to_many": "one_to_many",
+    "one_to_one": "one_to_one",
+}
+
+# Directories pruned when scanning a Cube project root for .js files: a YAML-only adapter
+# only needs to warn that JS cubes exist, so it should not descend into dependency/build trees.
+_JS_SCAN_SKIP_DIRS = {"node_modules", "dist", "build", ".git", ".venv", "__pycache__"}
 
 
 class CubeAdapter(BaseAdapter):
@@ -116,6 +199,23 @@ class CubeAdapter(BaseAdapter):
                 self._parse_file(yaml_file, graph, pending_views, pending_hierarchies, pending_extends)
             for yaml_file in source_path.rglob("*.yaml"):
                 self._parse_file(yaml_file, graph, pending_views, pending_hierarchies, pending_extends)
+            # Cube's native model format is JavaScript; this adapter parses YAML only.
+            # Scan lazily, pruning dependency/build trees (a Cube project root often has a
+            # large node_modules/dist) and stopping at the first match -- just enough to warn
+            # without walking or materializing every .js path under the root.
+            example_js = None
+            for walk_root, walk_dirs, walk_files in os.walk(source_path):
+                walk_dirs[:] = [d for d in walk_dirs if d not in _JS_SCAN_SKIP_DIRS]
+                example_js = next((f for f in walk_files if f.endswith(".js")), None)
+                if example_js is not None:
+                    break
+            if example_js is not None:
+                warnings.warn(
+                    f"Cube adapter parses YAML only; skipped JavaScript cube file(s) under "
+                    f"{source_path} (e.g. {example_js}).",
+                    CubeImportWarning,
+                    stacklevel=2,
+                )
         else:
             # Parse single file
             self._parse_file(source_path, graph, pending_views, pending_hierarchies, pending_extends)
@@ -296,7 +396,15 @@ class CubeAdapter(BaseAdapter):
         if not join_name:
             return None
 
-        rel_type = join_def.get("relationship", "many_to_one")
+        raw_relationship = join_def.get("relationship", "many_to_one")
+        rel_type = _CUBE_RELATIONSHIP_MAP.get(raw_relationship) if isinstance(raw_relationship, str) else None
+        if rel_type is None:
+            warnings.warn(
+                f"Unknown Cube join relationship {raw_relationship!r} on '{self_name}' -> "
+                f"'{join_name}'; defaulting to 'many_to_one'.",
+                stacklevel=2,
+            )
+            rel_type = "many_to_one"
         join_sql = join_def.get("sql", "") or ""
 
         native_sql, from_col, to_col = self._convert_cube_join(join_sql, self_name, join_name)
@@ -354,6 +462,34 @@ class CubeAdapter(BaseAdapter):
         sql = cube_def.get("sql")
         extends = cube_def.get("extends")
         cube_meta = cube_def.get("meta")
+
+        # Cube-level governance/visibility fields have no first-class Sidemantic equivalent.
+        # Preserve them in meta; warn for the security-relevant ones (access_policy, public).
+        extra_meta = {}
+        access_policy = cube_def.get("access_policy")
+        if access_policy is not None:
+            extra_meta["access_policy"] = access_policy
+        if cube_def.get("public") is False or cube_def.get("shown") is False:
+            extra_meta["public"] = False
+        for cosmetic_key in ("data_source", "title"):
+            cosmetic_val = cube_def.get(cosmetic_key)
+            if cosmetic_val is not None:
+                extra_meta[cosmetic_key] = cosmetic_val
+        if access_policy is not None or extra_meta.get("public") is False:
+            warnings.warn(
+                f"Cube '{name}' uses access_policy/public visibility controls, which Sidemantic "
+                f"does not enforce; preserved in meta only.",
+                CubeImportWarning,
+                stacklevel=2,
+            )
+        if extra_meta:
+            # Stash the preserved top-level fields inside the adapter-owned ``cube_internal``
+            # namespace (under ``top_level``) so export lifts only these back to real Cube
+            # keys. A user's own ``meta.cube_top_level`` is never touched -- it is just ordinary
+            # metadata and round-trips verbatim. Merge with any existing adapter top_level.
+            existing_top = _cube_internal(cube_meta).get("top_level")
+            existing_top = existing_top if isinstance(existing_top, dict) else {}
+            cube_meta = _set_cube_internal(cube_meta, top_level={**existing_top, **extra_meta})
 
         # Parse dimensions and find primary key
         dimensions = []
@@ -461,13 +597,6 @@ class CubeAdapter(BaseAdapter):
 
         sidemantic_type = type_mapping.get(dim_type, "categorical")
 
-        if dim_def.get("sub_query"):
-            _warn_inert(
-                f"{cube_name}.{name}",
-                "sub_query dimension",
-                "imported as a plain SQL dimension; the measure-as-dimension is not auto-joined",
-            )
-
         # For time dimensions, extract granularity
         granularity = None
         if dim_type == "time":
@@ -477,7 +606,7 @@ class CubeAdapter(BaseAdapter):
         supported_granularities = None
         custom_grans = dim_def.get("granularities")
         if custom_grans and isinstance(custom_grans, list):
-            supported_granularities = [g.get("name") for g in custom_grans if g.get("name")]
+            supported_granularities = [g.get("name") for g in custom_grans if isinstance(g, dict) and g.get("name")]
 
         # Normalize SQL to replace ${CUBE}/{CUBE} with {model}
         dim_sql = _normalize_cube_sql(dim_def.get("sql"), cube_name)
@@ -508,13 +637,60 @@ class CubeAdapter(BaseAdapter):
         mask = dim_def.get("mask")
         currency = dim_def.get("currency")
         if switch_values is not None or mask is not None or currency is not None:
-            meta = dict(meta) if meta else {}
+            meta = dict(meta) if isinstance(meta, dict) else {}
             if switch_values is not None:
                 meta["switch_values"] = switch_values
             if mask is not None:
                 meta["mask"] = mask
             if currency is not None:
                 meta["currency"] = currency
+
+        # Cube dimension features with no first-class Sidemantic equivalent: preserve in
+        # meta and warn so the loss is visible rather than silent.
+        geo_lat = dim_def.get("latitude")
+        geo_lon = dim_def.get("longitude")
+        if dim_type == "geo" or geo_lat is not None or geo_lon is not None:
+            # Store the geo marker + lat/long under the internal namespace so a user dimension
+            # whose own meta uses "cube_type"/"latitude"/"longitude" is never misread on export.
+            meta = _set_cube_internal(
+                meta,
+                cube_type="geo",
+                latitude=_normalize_cube_sql(geo_lat, cube_name) if isinstance(geo_lat, str) else geo_lat,
+                longitude=_normalize_cube_sql(geo_lon, cube_name) if isinstance(geo_lon, str) else geo_lon,
+            )
+            warnings.warn(
+                f"Cube dimension '{cube_name}.{name}' is type geo; Sidemantic has no geo type, so "
+                f"latitude/longitude are preserved in meta and it is imported as categorical.",
+                CubeImportWarning,
+                stacklevel=2,
+            )
+
+        sub_query = dim_def.get("sub_query")
+        if sub_query is not None:
+            # Stash under the adapter-owned namespace so export lifts it back to the top-level
+            # Cube `sub_query` property (a plain meta key would round-trip to meta.sub_query and
+            # silently demote a measure-as-dimension back to a plain SQL dimension).
+            meta = _set_cube_internal(meta, sub_query=sub_query)
+            warnings.warn(
+                f"Cube dimension '{cube_name}.{name}' uses sub_query, which Sidemantic does not "
+                f"support; preserved in meta but not applied.",
+                CubeImportWarning,
+                stacklevel=2,
+            )
+
+        if (
+            custom_grans
+            and isinstance(custom_grans, list)
+            and any(isinstance(g, dict) and ("sql" in g or "interval" in g or "origin" in g) for g in custom_grans)
+        ):
+            meta = dict(meta) if isinstance(meta, dict) else {}
+            meta["custom_granularities"] = custom_grans
+            warnings.warn(
+                f"Cube dimension '{cube_name}.{name}' defines custom granularities with sql/interval/origin; "
+                f"Sidemantic keeps the names but preserves their definitions only in meta.",
+                CubeImportWarning,
+                stacklevel=2,
+            )
 
         return Dimension(
             name=name,
@@ -586,36 +762,38 @@ class CubeAdapter(BaseAdapter):
         # Handle unknown measure types explicitly
         if agg_type is None and measure_type not in ("number",):
             if measure_type == "rank":
-                # Rank measures: use count as executable fallback, store rank
-                # metadata so consumers can handle them specially
+                # Rank measures: use count as executable fallback, store rank metadata under
+                # the internal namespace so consumers (and export) can handle them specially.
                 agg_type = "count"
-                meta = meta.copy() if meta else {}
-                meta["cube_type"] = "rank"
-                meta["order_by"] = measure_def.get("order_by")
-                meta["reduce_by"] = measure_def.get("reduce_by")
+                # Stash rank metadata under the adapter-owned namespace (so export can handle it
+                # specially) and warn that this is a lossy COUNT fallback, not a real rank.
+                meta = _set_cube_internal(
+                    meta,
+                    cube_type="rank",
+                    order_by=measure_def.get("order_by"),
+                    reduce_by=measure_def.get("reduce_by"),
+                )
                 warnings.warn(
                     f"Cube measure '{cube_name}.{name}' has type 'rank', which is not supported; "
                     f"imported as a non-rank COUNT fallback (agg='count'). The result is a plain "
                     f"count, NOT a rank, and no RANK() SQL is generated.",
+                    CubeImportWarning,
                     stacklevel=2,
                 )
             elif measure_type == "number_agg":
-                # Custom SQL aggregate (e.g., PERCENTILE_CONT). The sql field holds
-                # the complete aggregate expression, so leave agg=None and preserve
-                # the SQL verbatim. Record the original Cube type for consumers.
+                # Custom SQL aggregate (e.g., PERCENTILE_CONT). The sql field holds the
+                # complete aggregate expression, so leave agg=None and preserve the SQL
+                # verbatim. Record the original Cube type under the internal namespace.
                 agg_type = None
                 sql_is_complete = True
-                meta = meta.copy() if meta else {}
-                meta["cube_type"] = "number_agg"
+                meta = _set_cube_internal(meta, cube_type="number_agg")
             elif measure_type in ("string", "time", "boolean"):
-                # Non-numeric measure types (Tesseract). The sql is a complete
-                # expression (often itself an aggregate, e.g. type: time with
-                # MAX({CUBE}.created_at)). Preserve it verbatim with agg=None and
-                # record the original Cube type rather than forcing a count.
+                # Non-numeric measure types (Tesseract). The sql is a complete expression
+                # (often itself an aggregate, e.g. type: time with MAX({CUBE}.created_at)).
+                # Preserve it verbatim with agg=None and record the original Cube type.
                 agg_type = None
                 sql_is_complete = True
-                meta = meta.copy() if meta else {}
-                meta["cube_type"] = measure_type
+                meta = _set_cube_internal(meta, cube_type=measure_type)
             else:
                 # Truly unknown types fall back to count
                 agg_type = "count"
@@ -640,6 +818,19 @@ class CubeAdapter(BaseAdapter):
             rw_granularity = rolling_window.get("granularity")
             if rw_type == "to_date" and rw_granularity:
                 grain_to_date = rw_granularity
+            # leading/offset have no first-class Sidemantic field. Preserve them in meta
+            # (so measures differing only by leading/offset don't collapse) and warn that
+            # they are not yet reflected in query results.
+            rw_leading = rolling_window.get("leading")
+            rw_offset = rolling_window.get("offset")
+            if rw_leading is not None or rw_offset is not None:
+                meta = _set_cube_internal(meta, rolling_window_leading=rw_leading, rolling_window_offset=rw_offset)
+                warnings.warn(
+                    f"Cube measure '{cube_name}.{name}' uses rolling_window leading/offset, which "
+                    f"Sidemantic does not yet apply; preserved in meta but not reflected in results.",
+                    CubeImportWarning,
+                    stacklevel=2,
+                )
 
         # For calculated measures (type=number), treat as derived with SQL expression
         if measure_type == "number" and not rolling_window:
@@ -703,21 +894,58 @@ class CubeAdapter(BaseAdapter):
                 has_inline_agg = any(agg in measure_sql.upper() for agg in ["COUNT(", "SUM(", "AVG(", "MIN(", "MAX("])
 
                 if has_inline_agg:
-                    # This is a SQL expression metric with inline aggregations
-                    # Don't try to replace measure references - use SQL as-is
-                    # Set agg=None to signal this is a complete SQL expression
+                    # This is a SQL expression metric with inline aggregations (e.g. COUNT(*)).
+                    # Don't try to replace measure references - use SQL as-is. Set agg=None and
+                    # mark the expression complete: the aggregate lives in sql and cannot be
+                    # re-derived from a rollup's stored columns, so the matcher must not route a
+                    # query for it to a pre-aggregation (the materializer likewise skips agg=None
+                    # measures, so routing would otherwise recompute it over rollup rows).
                     agg_type = None
+                    sql_is_complete = True
                 else:
-                    # Complex derived metric - replace measure references
-                    def replace_measure_ref(match):
-                        measure_ref = match.group(1)
-                        # Don't replace if it's already been normalized to {model}
-                        if measure_ref == "model":
-                            return "{model}"
-                        # Convert ${measure_name} to cube_name.measure_name
-                        return f"{cube_name}.{measure_ref}"
+                    # Complex derived metric referencing other measures. Re-resolve member
+                    # references from the ORIGINAL sql so BOTH the ${...} and the no-dollar
+                    # {...} forms -- self-cube (${CUBE.m}/{CUBE.m}/${CUBE}.m), cross-cube
+                    # (${other.m}/{other.m}), and bare (${m}/{m}) -- become cube.measure
+                    # dependency refs, rather than column refs that point at nothing.
+                    def _resolve_member(match: re.Match) -> str:
+                        inner, trailing = match.group(1), match.group(2)
+                        if trailing is not None:
+                            # Trailing form ${X}.col / {X}.col references a COLUMN of X's table,
+                            # not a member -- keep it as a column ref so it is not mistaken for a
+                            # metric dependency.
+                            if not inner.isidentifier() or not trailing.isidentifier():
+                                return match.group(0)
+                            if inner in ("CUBE", cube_name, "model"):
+                                return f"{{model}}.{trailing}"
+                            # Cross-cube trailing ${other}.col references a column on the joined
+                            # cube's table. Sidemantic calculated measures reference members, not
+                            # raw joined columns, and leaving the ${other} placeholder in the metric
+                            # SQL compiles to invalid SQL (DuckDB reads ${other} as a struct
+                            # literal). Translate it to the cross-cube member form other.col -- the
+                            # same result as the ${other.col} in-brace form -- so it joins and
+                            # resolves to that member.
+                            return f"{inner}.{trailing}"
+                        # In-brace form ${X.col} / ${X} / ${col} references a MEMBER.
+                        head, col = _split_cube_ref(inner, None)
+                        if not head.isidentifier():
+                            return match.group(0)  # not a member ref (e.g. struct/JSON literal)
+                        if col is None:
+                            if head in ("CUBE", cube_name, "model"):
+                                return "{model}"  # bare cube self-reference -> table placeholder
+                            return f"{cube_name}.{head}"  # bare {measure} -> this cube's measure
+                        if not col.isidentifier():
+                            return match.group(0)
+                        if head in ("CUBE", cube_name):
+                            return f"{cube_name}.{col}"
+                        return f"{head}.{col}"  # cross-cube reference, already qualified
 
-                    measure_sql = re.sub(r"\$\{(\w+)\}", replace_measure_ref, measure_sql)
+                    # Resolve member refs but never inside single-quoted string literals, so a
+                    # literal like '{pending}' is not rewritten into a member reference.
+                    measure_sql = _CUBE_MEMBER_OR_STRING_RE.sub(
+                        lambda m: m.group(0) if m.group(1) is None else _resolve_member(m),
+                        measure_def.get("sql") or "",
+                    )
 
         # Preserve Cube-specific measure params that have no first-class Sidemantic
         # equivalent: mask/currency, and multi-stage group_by/add_group_by used for
@@ -727,7 +955,7 @@ class CubeAdapter(BaseAdapter):
         group_by = measure_def.get("group_by")
         add_group_by = measure_def.get("add_group_by")
         if any(v is not None for v in (mask, currency, group_by, add_group_by)):
-            meta = dict(meta) if meta else {}
+            meta = dict(meta) if isinstance(meta, dict) else {}
             if mask is not None:
                 meta["mask"] = mask
             if currency is not None:
@@ -787,6 +1015,7 @@ class CubeAdapter(BaseAdapter):
             "rollupJoin": "rollup_join",
             "rollupLambda": "lambda",
             "rollup_join": "rollup_join",
+            "originalSql": "original_sql",
             "original_sql": "original_sql",
             "rollup": "rollup",
             "lambda": "lambda",
@@ -865,8 +1094,11 @@ class CubeAdapter(BaseAdapter):
                 )
 
         # Parse build range
-        build_range_start = preagg_def.get("build_range_start", {}).get("sql")
-        build_range_end = preagg_def.get("build_range_end", {}).get("sql")
+        # The key may be present with a null/non-dict value, so guard before .get("sql").
+        build_range_start_def = preagg_def.get("build_range_start")
+        build_range_start = build_range_start_def.get("sql") if isinstance(build_range_start_def, dict) else None
+        build_range_end_def = preagg_def.get("build_range_end")
+        build_range_end = build_range_end_def.get("sql") if isinstance(build_range_end_def, dict) else None
 
         # Fidelity: these pre-agg controls are preserved for round-trip but are not honored
         # by sidemantic's matcher/materializer. Warn so the semantics aren't assumed to work.
@@ -884,9 +1116,16 @@ class CubeAdapter(BaseAdapter):
         if preagg_def.get("segments"):
             _warn_inert(member, "pre-aggregation segments", "segment coverage is not checked during matching")
 
+        # original_sql pre-aggregations stage a custom query; preserve it so it is
+        # materialized/exported instead of falling back to the model's SQL. Normalize Cube
+        # self-references (${CUBE}/{CUBE.col}/...) to the {model} placeholder, as for every
+        # other Cube SQL field, so materialization does not send raw ${CUBE} to the database.
+        sql = _normalize_cube_sql(preagg_def.get("sql"), cube_name)
+
         return PreAggregation(
             name=name,
             type=preagg_type,
+            sql=sql,
             measures=measures if measures else None,
             dimensions=dimensions if dimensions else None,
             time_dimension=time_dimension,
@@ -1050,12 +1289,91 @@ class CubeAdapter(BaseAdapter):
             if default_ui_filters is not None:
                 meta["default_ui_filters"] = default_ui_filters
 
+        # View-level access_policy (RBAC) has no first-class equivalent; preserve + warn.
+        access_policy = view_def.get("access_policy")
+        if access_policy is not None:
+            meta["access_policy"] = access_policy
+            warnings.warn(
+                f"Cube view '{name}' defines access_policy (RBAC), which Sidemantic does not "
+                f"enforce; preserved in meta only.",
+                CubeImportWarning,
+                stacklevel=2,
+            )
+        view_title = view_def.get("title")
+        if view_title is not None:
+            meta["title"] = view_title
+
         return Model(
             name=name,
+            description=view_def.get("description"),
             dimensions=dimensions,
             metrics=metrics,
             meta=meta,
         )
+
+    @staticmethod
+    def _model_sql_to_cube(sql: str | None) -> str | None:
+        """Translate Sidemantic's ``{model}`` placeholder back to Cube's ``${CUBE}``."""
+        if sql is None:
+            return None
+        return _model_placeholder_to_cube(sql)
+
+    def _geo_ref_to_cube(self, ref: object) -> object:
+        """Translate a preserved geo latitude/longitude ref back to Cube form.
+
+        Handles both the string form and Cube's ``{sql: ...}`` object form, converting any
+        ``{model}`` placeholder back to ``${CUBE}``.
+        """
+        if isinstance(ref, str):
+            return self._model_sql_to_cube(ref)
+        if isinstance(ref, dict) and "sql" in ref:
+            return {**ref, "sql": self._model_sql_to_cube(ref["sql"])}
+        return ref
+
+    @staticmethod
+    def _exported_meta(meta: object) -> dict:
+        """Return a meta dict for export with the adapter-owned cube_internal markers removed
+        but any user-supplied keys in that namespace preserved, so an import->export round-trip
+        does not drop a user's own ``cube_internal`` metadata."""
+        if not isinstance(meta, dict):
+            return {}
+        out = dict(meta)
+        internal = out.get("cube_internal")
+        if isinstance(internal, dict):
+            user_internal = {k: v for k, v in internal.items() if k not in _ADAPTER_INTERNAL_KEYS}
+            if user_internal:
+                out["cube_internal"] = user_internal
+            else:
+                out.pop("cube_internal", None)
+        return out
+
+    @staticmethod
+    def _derived_sql_to_cube(sql: str | None, known_members: set[str]) -> str | None:
+        """Translate a derived-measure SQL back to Cube form.
+
+        Converts ``{model}`` placeholders to ``${CUBE}`` and re-wraps qualified references
+        that are *known semantic members* (``cube.measure`` present in ``known_members``)
+        into Cube ``${...}`` refs, so cross-cube references round-trip. Arbitrary dotted SQL
+        -- non-member ``table.column``, schema-qualified functions, numeric literals, and
+        member-looking text inside single-quoted string literals -- is left untouched so it
+        is not misread by Cube as a member reference.
+        """
+        if sql is None:
+            return None
+        out = _model_placeholder_to_cube(sql)
+
+        # Match a single-quoted string literal OR a qualified member token. Literals are
+        # returned verbatim (group(1) is None), so 'orders.total' inside a string is never
+        # rewritten; only real member tokens outside quotes are wrapped.
+        pattern = re.compile(r"'(?:[^']|'')*'|(?<![\w.${])([A-Za-z_]\w*\.[A-Za-z_]\w*)\b")
+
+        def _wrap(match: re.Match) -> str:
+            token = match.group(1)
+            if token is None:
+                return match.group(0)
+            return f"${{{token}}}" if token in known_members else match.group(0)
+
+        return pattern.sub(_wrap, out)
 
     def export(self, graph: SemanticGraph, output_path: str | Path) -> None:
         """Export semantic graph to Cube YAML format.
@@ -1107,26 +1425,46 @@ class CubeAdapter(BaseAdapter):
             cube["description"] = model.description
 
         if model.meta:
-            cube["meta"] = model.meta
+            # Top-level Cube fields stashed in the adapter-owned cube_internal.top_level namespace
+            # on import are lifted back to real Cube keys; arbitrary user meta -- including a
+            # user's own meta.cube_top_level or a key named like a Cube field (e.g. meta.public) --
+            # stays under meta and is never promoted.
+            top_level = _cube_internal(model.meta).get("top_level")
+            if isinstance(top_level, dict):
+                for k, v in top_level.items():
+                    cube[k] = v
+            remaining_meta = self._exported_meta(model.meta)
+            if remaining_meta:
+                cube["meta"] = remaining_meta
 
         # Export dimensions
         dimensions = []
-        drill_members = []  # Track dimensions with drill-down support
 
         for dim in model.dimensions:
             dim_def = {"name": dim.name}
+            internal = _cube_internal(dim.meta)
 
-            # Map Sidemantic types to Cube types
-            type_mapping = {
-                "categorical": "string",
-                "numeric": "number",
-                "time": "time",
-                "boolean": "boolean",
-            }
-            dim_def["type"] = type_mapping.get(dim.type, "string")
+            # Cube geo dimensions are imported as categorical with the geo marker + lat/long
+            # stashed in the internal namespace; re-emit them as a real Cube geo dimension
+            # with top-level latitude/longitude rather than leaving them buried in meta.
+            if internal.get("cube_type") == "geo" and ("latitude" in internal or "longitude" in internal):
+                dim_def["type"] = "geo"
+                for geo_key in ("latitude", "longitude"):
+                    geo_val = internal.get(geo_key)
+                    if geo_val is not None:
+                        dim_def[geo_key] = self._geo_ref_to_cube(geo_val)
+            else:
+                # Map Sidemantic types to Cube types
+                type_mapping = {
+                    "categorical": "string",
+                    "numeric": "number",
+                    "time": "time",
+                    "boolean": "boolean",
+                }
+                dim_def["type"] = type_mapping.get(dim.type, "string")
 
             if dim.sql:
-                dim_def["sql"] = dim.sql
+                dim_def["sql"] = self._model_sql_to_cube(dim.sql)
 
             if dim.description:
                 dim_def["description"] = dim.description
@@ -1138,8 +1476,15 @@ class CubeAdapter(BaseAdapter):
             if dim.label:
                 dim_def["title"] = dim.label
 
-            if dim.meta:
-                dim_def["meta"] = dim.meta
+            # Re-emit an imported measure-as-dimension as the top-level Cube `sub_query` property
+            # (stashed in the adapter-owned namespace on import).
+            sub_query = internal.get("sub_query")
+            if sub_query is not None:
+                dim_def["sub_query"] = sub_query
+
+            dim_meta = self._exported_meta(dim.meta)
+            if dim_meta:
+                dim_def["meta"] = dim_meta
 
             if not dim.public:
                 dim_def["shown"] = False
@@ -1147,10 +1492,6 @@ class CubeAdapter(BaseAdapter):
             # Mark primary key dimension
             if model.primary_key and dim.name == model.primary_key:
                 dim_def["primary_key"] = True
-
-            # Track hierarchies - collect all dimensions for drill_members
-            if dim.parent or any(other.parent == dim.name for other in model.dimensions):
-                drill_members.append(dim.name)
 
             dimensions.append(dim_def)
 
@@ -1170,7 +1511,11 @@ class CubeAdapter(BaseAdapter):
         if dimensions:
             cube["dimensions"] = dimensions
 
-        # Export measures
+        # Export measures. Build the set of qualified semantic members so derived-measure
+        # SQL only re-wraps real member references, never arbitrary dotted SQL.
+        known_members = {
+            f"{mname}.{member.name}" for mname, m in resolved_models.items() for member in (*m.metrics, *m.dimensions)
+        }
         measures = []
         for measure in model.metrics:
             measure_def = {"name": measure.name}
@@ -1187,22 +1532,38 @@ class CubeAdapter(BaseAdapter):
                     )
                     measure_def["sql"] = f"${{{num_ref}}}::float / NULLIF(${{{denom_ref}}}, 0)"
             elif measure.type == "derived":
-                # Derived metrics become calculated measures
+                # Derived metrics become calculated measures; re-wrap member references so
+                # cross-cube refs (${other.measure}) round-trip instead of becoming plain SQL.
                 measure_def["type"] = "number"
                 if measure.sql:
-                    measure_def["sql"] = measure.sql
+                    measure_def["sql"] = self._derived_sql_to_cube(measure.sql, known_members)
             elif measure.type == "cumulative":
-                # Cumulative metrics become rolling window measures (Cube has rolling_window)
-                measure_def["type"] = "number"
+                # Cube rolling-window measures keep their aggregation type (sum/count/...),
+                # not type: number (which does not aggregate).
+                rolling_agg_mapping = {
+                    "count": "count",
+                    "count_distinct": "count_distinct",
+                    "sum": "sum",
+                    "avg": "avg",
+                    "min": "min",
+                    "max": "max",
+                }
+                measure_def["type"] = rolling_agg_mapping.get(measure.agg, "number")
                 if measure.sql:
-                    measure_def["sql"] = measure.sql
+                    measure_def["sql"] = self._model_sql_to_cube(measure.sql)
+                rolling_window = None
                 if measure.window:
-                    measure_def["rolling_window"] = {"trailing": measure.window}
+                    rolling_window = {"trailing": measure.window}
                 elif measure.grain_to_date:
-                    measure_def["rolling_window"] = {
-                        "type": "to_date",
-                        "granularity": measure.grain_to_date,
-                    }
+                    rolling_window = {"type": "to_date", "granularity": measure.grain_to_date}
+                if rolling_window is not None:
+                    # Re-attach leading/offset preserved under the internal meta namespace.
+                    rw_internal = _cube_internal(measure.meta)
+                    if rw_internal.get("rolling_window_leading") is not None:
+                        rolling_window["leading"] = rw_internal["rolling_window_leading"]
+                    if rw_internal.get("rolling_window_offset") is not None:
+                        rolling_window["offset"] = rw_internal["rolling_window_offset"]
+                    measure_def["rolling_window"] = rolling_window
             elif measure.type == "time_comparison":
                 # Time comparison - use Cube's time dimension features
                 measure_def["type"] = "number"
@@ -1222,13 +1583,28 @@ class CubeAdapter(BaseAdapter):
                     "min": "min",
                     "max": "max",
                 }
-                measure_def["type"] = type_mapping.get(measure.agg, "count")
+                internal = _cube_internal(measure.meta)
+                cube_type = internal.get("cube_type")
+                if cube_type in ("rank", "number_agg", "string", "time", "boolean"):
+                    # Measures with a recorded original Cube type: re-emit that type, not the
+                    # aggregation. rank in particular carries an executable count fallback in
+                    # agg, so checking cube_type first keeps it from exporting as type: count.
+                    measure_def["type"] = cube_type
+                    if cube_type == "rank":
+                        for rank_field in ("order_by", "reduce_by"):
+                            if internal.get(rank_field) is not None:
+                                measure_def[rank_field] = internal[rank_field]
+                elif measure.agg is not None:
+                    measure_def["type"] = type_mapping.get(measure.agg, "count")
+                else:
+                    # agg=None with no recorded type is a complete SQL expression.
+                    measure_def["type"] = "number"
 
                 if measure.sql:
-                    measure_def["sql"] = measure.sql
+                    measure_def["sql"] = self._model_sql_to_cube(measure.sql)
 
             if measure.filters:
-                measure_def["filters"] = [{"sql": f} for f in measure.filters]
+                measure_def["filters"] = [{"sql": self._model_sql_to_cube(f)} for f in measure.filters]
 
             if measure.description:
                 measure_def["description"] = measure.description
@@ -1241,22 +1617,21 @@ class CubeAdapter(BaseAdapter):
                 measure_def["title"] = measure.label
 
             if measure.meta:
-                measure_def["meta"] = measure.meta
+                # Strip only the adapter-owned cube_internal markers (re-emitted as real Cube
+                # fields above); user-supplied meta -- including their own cube_internal keys --
+                # is preserved.
+                exported_meta = self._exported_meta(measure.meta)
+                if exported_meta:
+                    measure_def["meta"] = exported_meta
 
             if not measure.public:
                 measure_def["shown"] = False
 
-            # Add drill fields if specified
-            if measure.drill_fields and drill_members:
-                # Only include drill fields that exist in this model
+            # Export drill fields only when the measure actually declared them; do not
+            # fabricate them from the model's hierarchy dimensions.
+            if measure.drill_fields:
                 valid_drill = [f for f in measure.drill_fields if f in [d.name for d in model.dimensions]]
-                if valid_drill:
-                    measure_def["drill_members"] = valid_drill
-            elif measure.drill_fields:
-                measure_def["drill_members"] = measure.drill_fields
-            elif drill_members:
-                # Default to hierarchy dimensions
-                measure_def["drill_members"] = drill_members
+                measure_def["drill_members"] = valid_drill or measure.drill_fields
 
             measures.append(measure_def)
 
@@ -1269,9 +1644,7 @@ class CubeAdapter(BaseAdapter):
             for segment in model.segments:
                 segment_def = {"name": segment.name}
                 if segment.sql:
-                    # Replace {model} placeholder with CUBE reference
-                    segment_sql = segment.sql.replace("{model}", "${CUBE}")
-                    segment_def["sql"] = segment_sql
+                    segment_def["sql"] = self._model_sql_to_cube(segment.sql)
                 if segment.description:
                     segment_def["description"] = segment.description
                 if not segment.public:
@@ -1281,8 +1654,15 @@ class CubeAdapter(BaseAdapter):
         # Export joins (all relationship types)
         joins = []
         for relationship in model.relationships:
-            # Skip many_to_many (needs junction table info)
-            if relationship.type == "many_to_many":
+            # Cube has no representation for many_to_many (needs a junction) or cross
+            # joins; omit them with a warning rather than emitting an invalid join.
+            if relationship.type in ("many_to_many", "cross"):
+                warnings.warn(
+                    f"Cube export: relationship '{model.name}' -> '{relationship.name}' is "
+                    f"{relationship.type}, which Cube cannot represent; omitting it from the export.",
+                    CubeImportWarning,
+                    stacklevel=2,
+                )
                 continue
 
             # Find target model from resolved models (inheritance-applied)
@@ -1323,7 +1703,26 @@ class CubeAdapter(BaseAdapter):
         if model.pre_aggregations:
             cube["pre_aggregations"] = []
             for preagg in model.pre_aggregations:
-                preagg_def = {"name": preagg.name, "type": preagg.type}
+                # Emit Cube's camelCase pre-aggregation type names (not the snake_case
+                # internal form, which Cube does not accept).
+                cube_preagg_type = {
+                    "rollup": "rollup",
+                    "original_sql": "originalSql",
+                    "rollup_join": "rollupJoin",
+                    "lambda": "rollupLambda",
+                }.get(preagg.type, preagg.type)
+                preagg_def = {"name": preagg.name, "type": cube_preagg_type}
+                if preagg.sql:
+                    # Translate the {model} placeholder back to Cube's ${CUBE} (the originalSql
+                    # query was normalized on import); leave any string literals untouched.
+                    preagg_def["sql"] = self._model_sql_to_cube(preagg.sql)
+                if preagg.rollups:
+                    # Only unqualified refs name a rollup on THIS cube and need the CUBE prefix;
+                    # an already-qualified cross-cube ref (e.g. ``visitors.for_join``) must stay
+                    # as-is, since Cube treats ``CUBE.visitors.for_join`` as a current-cube member.
+                    preagg_def["rollups"] = [r if "." in r else f"CUBE.{r}" for r in preagg.rollups]
+                if preagg.union_with_source_data:
+                    preagg_def["union_with_source_data"] = True
                 if preagg.measures:
                     preagg_def["measures"] = [f"CUBE.{m}" for m in preagg.measures]
                 if preagg.dimensions:
@@ -1356,10 +1755,6 @@ class CubeAdapter(BaseAdapter):
                     preagg_def["build_range_start"] = {"sql": preagg.build_range_start}
                 if preagg.build_range_end:
                     preagg_def["build_range_end"] = {"sql": preagg.build_range_end}
-                if preagg.rollups:
-                    preagg_def["rollups"] = [f"CUBE.{r}" for r in preagg.rollups]
-                if preagg.union_with_source_data:
-                    preagg_def["union_with_source_data"] = True
                 cube["pre_aggregations"].append(preagg_def)
 
         return cube

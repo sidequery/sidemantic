@@ -685,11 +685,12 @@ def _apply_relationships(
     # primary key for tables that did not declare an explicit isKey column.
     pk_candidates: dict[str, set[str]] = {}
     pk_target_nodes: dict[str, TmdlNode] = {}
-    # Lower-confidence endpoint columns recovered only for tables the cardinality-aware backfill
-    # leaves keyless: both sides of a many-to-many (no one-side at all) and the source side of a
-    # one-to-one (which may be an alternate key). Each is a real join column of its table, never a
-    # foreign key pointing elsewhere, and never overrides an authoritative one-side key.
-    fallback_endpoints_by_table: dict[str, set[str]] = {}
+    # Unique source-side keys recovered only for an otherwise-keyless table: the source (from) side
+    # of a one-to-one, which is unique on both sides. Many-to-many endpoints are deliberately NOT
+    # recovered -- they sit on the "many" side and can repeat, so using one as a primary key would
+    # make symmetric aggregates silently undercount. A direct many-to-many join does not need this:
+    # build_adjacency joins (and the model CTEs project) on the relationship's own from/to columns.
+    one_to_one_source_keys: dict[str, set[str]] = {}
 
     for node in nodes:
         props = _props(node)
@@ -771,16 +772,11 @@ def _apply_relationships(
             pk_target_nodes.setdefault(pk_target, node)
             if pk_column:
                 pk_candidates.setdefault(pk_target, set()).add(pk_column)
-        # Lower-confidence endpoint columns to fall back on only when the cardinality-aware backfill
-        # leaves a table keyless: a many-to-many has no one-side, and a one-to-one's source side may
-        # be an alternate key. Each is a real join column of that table, never a foreign key.
-        if rel_type == "many_to_many":
-            if from_column:
-                fallback_endpoints_by_table.setdefault(from_table, set()).add(from_column)
-            if to_column:
-                fallback_endpoints_by_table.setdefault(to_table, set()).add(to_column)
-        elif rel_type == "one_to_one" and from_column:
-            fallback_endpoints_by_table.setdefault(from_table, set()).add(from_column)
+        # A one-to-one is unique on both sides, so its source (from) column is a real unique key to
+        # fall back on for an otherwise-keyless source table. Many-to-many endpoints are not unique
+        # and are intentionally not recovered here.
+        if rel_type == "one_to_one" and from_column:
+            one_to_one_source_keys.setdefault(from_table, set()).add(from_column)
 
         relationship_props = _relationship_passthrough_properties(node)
         relationship = Relationship(
@@ -863,10 +859,11 @@ def _apply_relationships(
                     model_name=target_name,
                 )
 
-    # Fallback recovery for tables the cardinality-aware backfill could not key: a many-to-many
-    # participant or a one-to-one source side adopts its own unambiguous endpoint column. This runs
-    # only for tables still keyless (so an authoritative one-side key always wins) and only when the
-    # column is unambiguous, so it never overrides or conflicts with a real primary key.
+    # Fallback recovery for tables the cardinality-aware backfill could not key: a one-to-one source
+    # side adopts its own unambiguous unique endpoint column. This runs only for tables still keyless
+    # (so an authoritative one-side key always wins), only when the column is unambiguous, and never
+    # for a table whose one-side keys were ambiguous, so it cannot substitute a non-authoritative or
+    # non-unique key for a real primary key.
     for model in graph.models.values():
         if not getattr(model, "_tmdl_primary_key_inferred", False) or model.primary_key is not None:
             continue
@@ -874,7 +871,7 @@ def _apply_relationships(
             # An authoritative one-side key existed but was ambiguous/unresolvable; leave the key
             # unresolved rather than substituting a non-authoritative endpoint.
             continue
-        own_endpoints = fallback_endpoints_by_table.get(model.name, set()) & {dim.name for dim in model.dimensions}
+        own_endpoints = one_to_one_source_keys.get(model.name, set()) & {dim.name for dim in model.dimensions}
         if len(own_endpoints) == 1:
             model.primary_key = next(iter(own_endpoints))
 

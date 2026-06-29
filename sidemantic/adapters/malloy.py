@@ -413,13 +413,32 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
     def _normalize_agg_calls(expr: str) -> str:
         """Rewrite Malloy aggregate syntax to SQL inside a preserved expression.
 
-        `field.sum()` / `field.avg()` / ... -> `SUM(field)` / `AVG(field)` / ...,
-        a dotted path `a.b.c.sum()` -> `SUM(a.b.c)`, and a bare `count()` ->
-        `count(*)`. Used when a compound aggregate expression is kept as a derived
-        measure so the stored SQL is executable.
+        `field.sum()` -> `SUM(field)`; a dotted path `a.b.c.sum()` -> `SUM(a.b.c)`;
+        `count()` -> `count(*)`; and the distinct-count forms `count(x)`,
+        `count_distinct(x)`, `field.count_distinct()` -> `COUNT(DISTINCT x)`
+        (Malloy `count(expr)` is a distinct count, and `count_distinct` is not a
+        SQL function). Used when a compound aggregate expression is kept as a
+        derived measure so the stored SQL is executable.
         """
 
-        def repl(m: re.Match) -> str:
+        def count_repl(m: re.Match) -> str:
+            arg = m.group(1).strip()
+            if arg == "":
+                return "count(*)"
+            if arg == "*" or arg.lower().startswith("distinct "):
+                return m.group(0)
+            return f"COUNT(DISTINCT {arg})"
+
+        # Standard function forms count(x) / count_distinct(x) / count() — not
+        # preceded by `.` so dot-method calls below are left for the next pass.
+        expr = re.sub(
+            r"(?<![\w.`])count(?:_distinct)?\s*\(\s*([^)]*?)\s*\)",
+            count_repl,
+            expr,
+            flags=re.IGNORECASE,
+        )
+
+        def dot_repl(m: re.Match) -> str:
             field = m.group(1)
             agg = m.group(2).lower()
             args = m.group(3).strip()
@@ -428,15 +447,14 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
             sql_agg = agg.upper()
             return f"{sql_agg}({field}, {args})" if args else f"{sql_agg}({field})"
 
-        # The field is a dotted path whose segments may be backtick-quoted
-        # identifiers containing spaces (`cost amount`.sum()).
-        expr = re.sub(
+        # Dot-method aggregates; the field may be a backtick-quoted identifier
+        # with spaces (`cost amount`.sum()).
+        return re.sub(
             r"((?:`[^`]*`|[\w.])+)\.(sum|avg|count|min|max|count_distinct)\s*\(\s*(.*?)\s*\)",
-            repl,
+            dot_repl,
             expr,
             flags=re.IGNORECASE,
         )
-        return re.sub(r"\bcount\s*\(\s*\)", "count(*)", expr, flags=re.IGNORECASE)
 
     def _parse_aggregation(self, expr: str) -> tuple[str | None, str | None]:
         """Parse aggregation function from expression.
@@ -526,12 +544,21 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         # @YYYY-MM -> DATE 'YYYY-MM-01'
         # @YYYY -> DATE 'YYYY-01-01'
         # @YYYY-Qn -> handled as text
-        # Timestamp literal: time is HH:MM with optional :SS, optional fractional
-        # seconds, and an optional [zone] suffix (which is dropped). Must run
-        # before the date-only rule so a time component is not left dangling.
+        # Timestamp literal: time is the hour with optional :MM, :SS, fractional
+        # seconds (`.` or `,` separator), and an optional [zone] suffix (dropped).
+        # Padded to HH:MM:SS and the fraction comma normalized to a dot so the
+        # result is a valid SQL literal. Runs before the date-only rule so a time
+        # component is never left dangling.
+        def _timestamp_literal(m: re.Match) -> str:
+            time = m.group(2).replace(",", ".")
+            parts = time.split(":")
+            while len(parts) < 3:
+                parts.append("00")
+            return f"TIMESTAMP '{m.group(1)} {':'.join(parts)}'"
+
         expr = re.sub(
-            r"@(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)(?:\[[^\]]+\])?",
-            r"TIMESTAMP '\1 \2'",
+            r"@(\d{4}-\d{2}-\d{2})[ T](\d{2}(?::\d{2}(?::\d{2}(?:[.,]\d+)?)?)?)(?:\[[^\]]+\])?",
+            _timestamp_literal,
             expr,
         )
         expr = re.sub(r"@(\d{4}-\d{2}-\d{2})", r"DATE '\1'", expr)

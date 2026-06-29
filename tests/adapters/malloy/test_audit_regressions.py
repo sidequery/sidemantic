@@ -558,9 +558,21 @@ def test_timestamp_literal_forms():
             "a",
         )
 
-    assert sql("@2024-01-01 10:30") == "t > TIMESTAMP '2024-01-01 10:30'"
+    # All forms pad to HH:MM:SS and normalize a comma fraction to a dot.
+    assert sql("@2024-01-01 10") == "t > TIMESTAMP '2024-01-01 10:00:00'"
+    assert sql("@2024-01-01 10:30") == "t > TIMESTAMP '2024-01-01 10:30:00'"
     assert sql("@2024-01-01 10:30:00.123") == "t > TIMESTAMP '2024-01-01 10:30:00.123'"
+    assert sql("@2024-01-01 10:30:00,123") == "t > TIMESTAMP '2024-01-01 10:30:00.123'"
     assert sql("@2024-01-01 10:30:00[UTC]") == "t > TIMESTAMP '2024-01-01 10:30:00'"
+
+
+def test_normalize_count_function_forms_to_distinct():
+    def sql(expr):
+        g = _parse(f"source: o is duckdb.table('o') extend {{\n  measure: m is {expr}\n}}\n")
+        return g.get_model("o").get_metric("m").sql
+
+    assert sql("count(user_id) / count()") == "COUNT(DISTINCT user_id) / count(*)"
+    assert sql("count_distinct(user_id) / count()") == "COUNT(DISTINCT user_id) / count(*)"
 
 
 def test_pick_condition_with_nested_case():

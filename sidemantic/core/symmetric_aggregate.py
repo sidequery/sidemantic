@@ -122,8 +122,11 @@ def build_symmetric_aggregate_sql(
         return f"{sum_expr} / NULLIF({count_expr}, 0)"
 
     elif agg_type == "count":
-        # Count distinct primary keys, honoring any metric-level filter baked
-        # into the raw measure column (NULL for non-matching rows).
+        # COUNT(*) has no per-row value to gate on, so count distinct PKs directly.
+        if measure_expr == "*":
+            return f"COUNT(DISTINCT {pk_col})"
+        # Otherwise count distinct primary keys, honoring any metric-level filter
+        # baked into the raw measure column (NULL for non-matching rows).
         return f"COUNT(DISTINCT CASE WHEN {measure_col} IS NOT NULL THEN {pk_col} END)"
 
     elif agg_type == "count_distinct":

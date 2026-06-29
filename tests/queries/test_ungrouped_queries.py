@@ -4,7 +4,7 @@ import re
 
 import pytest
 
-from sidemantic import Dimension, Metric, Model
+from sidemantic import Dimension, Metric, Model, SemanticLayer
 from tests.utils import fetch_dicts
 
 
@@ -315,6 +315,27 @@ def test_with_totals_and_ungrouped_raises(layer):
 
     with pytest.raises(ValueError, match="with_totals cannot be combined with ungrouped"):
         layer.compile(metrics=["orders.revenue"], dimensions=["orders.status"], with_totals=True, ungrouped=True)
+
+
+def test_with_totals_with_limit_raises(layer):
+    """with_totals + limit/offset would page out the grand-total row, so it is rejected."""
+    layer.add_model(_totals_orders_model())
+
+    with pytest.raises(ValueError, match="with_totals cannot be combined with limit/offset"):
+        layer.compile(metrics=["orders.revenue"], dimensions=["orders.status"], with_totals=True, limit=2)
+    with pytest.raises(ValueError, match="with_totals cannot be combined with limit/offset"):
+        layer.compile(metrics=["orders.revenue"], dimensions=["orders.status"], with_totals=True, offset=1)
+
+
+def test_with_totals_ignores_configured_default_limit():
+    """A configured default_limit must not page out the grand-total row."""
+    layer = SemanticLayer(default_limit=1)
+    layer.add_model(_totals_orders_model())
+
+    # default_limit=1 would otherwise truncate, but with_totals skips the cap.
+    sql = layer.compile(metrics=["orders.revenue"], dimensions=["orders.status"], with_totals=True)
+    assert "GROUPING SETS" in sql
+    assert "\nLIMIT 1" not in sql
 
 
 def test_with_totals_unsupported_window_path_raises(layer):

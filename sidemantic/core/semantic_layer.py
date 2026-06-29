@@ -685,9 +685,18 @@ class SemanticLayer:
         metrics = metrics or []
         dimensions = dimensions or []
 
-        # Apply opt-in default/max row-limit caps before engine dispatch so both
-        # the Rust and Python compile paths see the resolved limit.
-        limit = self._resolve_row_limit(limit)
+        if with_totals and (limit is not None or offset is not None):
+            raise ValueError(
+                "with_totals cannot be combined with limit/offset: the grand-total row shares "
+                "the grouped result set with the detail rows, so pagination could page it out. "
+                "Paginate in a wrapper (post_process) or omit with_totals."
+            )
+
+        # Apply opt-in default/max row-limit caps before engine dispatch so both the Rust and
+        # Python compile paths see the resolved limit. Skip the caps when with_totals is set so
+        # a configured default_limit/max_limit cannot page out the grand-total row.
+        if not with_totals:
+            limit = self._resolve_row_limit(limit)
 
         # Validate query
         errors = self._validate_query(metrics, dimensions, validate_query)

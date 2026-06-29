@@ -158,9 +158,14 @@ pub fn build_symmetric_aggregate_sql_with_key_expr(
             )
         }
         SymmetricAggType::Count => {
-            // Count distinct primary keys, honoring any metric-level filter baked
-            // into the raw measure column (NULL for non-matching rows).
-            format!("COUNT(DISTINCT CASE WHEN {measure_col} IS NOT NULL THEN {pk_col} END)")
+            // COUNT(*) has no per-row value to gate on, so count distinct PKs directly.
+            // Otherwise honor any metric-level filter baked into the raw measure column
+            // (NULL for non-matching rows).
+            if measure_expr == "*" {
+                format!("COUNT(DISTINCT {pk_col})")
+            } else {
+                format!("COUNT(DISTINCT CASE WHEN {measure_col} IS NOT NULL THEN {pk_col} END)")
+            }
         }
         SymmetricAggType::CountDistinct => {
             // Count distinct on the measure itself - no symmetric aggregate needed
@@ -227,6 +232,18 @@ mod tests {
             sql,
             "COUNT(DISTINCT CASE WHEN amount IS NOT NULL THEN order_id END)"
         );
+    }
+
+    #[test]
+    fn test_symmetric_count_star_is_unfiltered() {
+        let sql = build_symmetric_aggregate_sql(
+            "*",
+            "order_id",
+            SymmetricAggType::Count,
+            None,
+            SqlDialect::DuckDB,
+        );
+        assert_eq!(sql, "COUNT(DISTINCT order_id)");
     }
 
     #[test]

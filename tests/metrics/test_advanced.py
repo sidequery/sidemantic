@@ -276,6 +276,50 @@ def test_offset_ratio_metric_multi_period():
     assert abs(rows[5][2] - 1.2) < 0.01  # Jun
 
 
+def test_offset_ratio_metric_uses_base_granularity():
+    """offset_window honors a dimension's own granularity even without a __gran suffix."""
+    sales = Model(
+        name="sales",
+        sql="""
+            SELECT DATE '2024-01-01' AS day, 100 AS revenue
+            UNION ALL SELECT DATE '2024-01-02', 110
+            UNION ALL SELECT DATE '2024-01-03', 120
+            UNION ALL SELECT DATE '2024-01-04', 130
+            UNION ALL SELECT DATE '2024-01-05', 140
+            UNION ALL SELECT DATE '2024-01-06', 150
+            UNION ALL SELECT DATE '2024-01-07', 160
+            UNION ALL SELECT DATE '2024-01-08', 200
+        """,
+        primary_key="day",
+        dimensions=[Dimension(name="day", sql="day", type="time", granularity="day")],
+        metrics=[Metric(name="revenue", agg="sum", sql="revenue")],
+    )
+
+    growth = Metric(
+        name="growth",
+        type="ratio",
+        numerator="sales.revenue",
+        denominator="sales.revenue",
+        offset_window="7 days",
+    )
+
+    graph = SemanticGraph()
+    graph.add_model(sales)
+    graph.add_metric(growth)
+
+    generator = SQLGenerator(graph)
+    # Query the base time dimension WITHOUT an explicit __day suffix.
+    sql = generator.generate(metrics=["growth"], dimensions=["sales.day"])
+
+    # "7 days" on the dimension's day grain maps to a 7-row LAG, not a 1-row month fallback.
+    assert "LAG(base.revenue, 7)" in sql
+
+    conn = duckdb.connect(":memory:")
+    rows = df_rows(conn.execute(sql))
+    # Day 8 (200) / day 1 (100) = 2.0
+    assert abs(rows[7][2] - 2.0) < 0.01
+
+
 def test_offset_ratio_metric_year_offset():
     """A '1 year' offset_window over 6 months of monthly data yields all NULLs."""
     sales = Model(

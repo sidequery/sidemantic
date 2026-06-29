@@ -5032,7 +5032,10 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
                                 time_dim = f"base.{dim_name}"
                                 if gran:
                                     time_dim = f"base.{dim_name}__{gran}"
-                                    time_dim_gran = gran
+                                # Fall back to the dimension's own base granularity when the
+                                # query did not request an explicit __gran suffix, so an
+                                # offset_window like "7 days" maps to the right number of rows.
+                                time_dim_gran = gran or dim.granularity
                                 break
 
                 if not time_dim:

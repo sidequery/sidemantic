@@ -136,6 +136,17 @@ class TestBuildSymmetricAggregateSql:
 
         assert sql == "COUNT(DISTINCT CASE WHEN events_cte.x_raw IS NOT NULL THEN events_cte.id END)"
 
+    def test_count_star_is_unfiltered(self):
+        """COUNT(*) has no per-row value, so it counts distinct PKs without a CASE gate."""
+        sql = build_symmetric_aggregate_sql(
+            measure_expr="*",
+            primary_key="order_id",
+            agg_type="count",
+        )
+
+        # Must not render an invalid `CASE WHEN * IS NOT NULL`.
+        assert sql == "COUNT(DISTINCT order_id)"
+
     # ==========================================================================
     # COUNT DISTINCT aggregation tests
     # ==========================================================================

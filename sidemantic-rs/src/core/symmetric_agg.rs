@@ -145,12 +145,17 @@ pub fn build_symmetric_aggregate_sql_with_key_expr(
             )
         }
         SymmetricAggType::Avg => {
-            // Sum divided by distinct count
+            // Sum (NULL-coalesced for the hash trick) divided by the count of entities
+            // that actually have a value. SQL AVG ignores NULLs, so NULL-measure rows
+            // must be excluded from the denominator too, else the coalesced 0 in the
+            // numerator would drag the average down ({10, NULL} -> 5 not 10).
             let sum_expr = format!(
                 "(SUM(DISTINCT {symmetric_base_expr} + {symmetric_measure_expr}) - \
                  SUM(DISTINCT {symmetric_base_expr}))"
             );
-            format!("{sum_expr} / NULLIF(COUNT(DISTINCT {pk_col}), 0)")
+            format!(
+                "{sum_expr} / NULLIF(COUNT(DISTINCT CASE WHEN {measure_col} IS NOT NULL THEN {pk_col} END), 0)"
+            )
         }
         SymmetricAggType::Count => {
             // Count distinct primary keys, honoring any metric-level filter baked

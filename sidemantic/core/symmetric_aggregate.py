@@ -54,7 +54,7 @@ def build_symmetric_aggregate_sql(
         '(SUM(DISTINCT (HASH(order_id)::HUGEINT * (1::HUGEINT << 40)) + COALESCE(amount, 0)) - SUM(DISTINCT (HASH(order_id)::HUGEINT * (1::HUGEINT << 40))))'
 
         >>> build_symmetric_aggregate_sql("amount", "order_id", "avg", "orders_cte")
-        '(SUM(DISTINCT (HASH(orders_cte.order_id)::HUGEINT * (1::HUGEINT << 40)) + COALESCE(orders_cte.amount, 0)) - SUM(DISTINCT (HASH(orders_cte.order_id)::HUGEINT * (1::HUGEINT << 40)))) / NULLIF(COUNT(DISTINCT orders_cte.order_id), 0)'
+        '(SUM(DISTINCT (HASH(orders_cte.order_id)::HUGEINT * (1::HUGEINT << 40)) + COALESCE(orders_cte.amount, 0)) - SUM(DISTINCT (HASH(orders_cte.order_id)::HUGEINT * (1::HUGEINT << 40)))) / NULLIF(COUNT(DISTINCT CASE WHEN orders_cte.amount IS NOT NULL THEN orders_cte.order_id END), 0)'
     """
     # Add table prefix if provided
     pk_col = f"{model_alias}.{primary_key}" if model_alias else primary_key
@@ -112,10 +112,13 @@ def build_symmetric_aggregate_sql(
         return f"(SUM(DISTINCT ({hash_expr} * {multiplier}) + {coalesced_measure}) - SUM(DISTINCT ({hash_expr} * {multiplier})))"
 
     elif agg_type == "avg":
-        # Sum divided by distinct count
+        # Sum (NULL-coalesced for the fan-out hash trick) divided by the count of
+        # entities that actually have a value. SQL AVG ignores NULLs, so a NULL
+        # measure must be excluded from the denominator too — otherwise a coalesced
+        # 0 in the numerator would drag the average down (e.g. {10, NULL} -> 5 not 10).
         hash_expr = hash_func(pk_col)
         sum_expr = f"(SUM(DISTINCT ({hash_expr} * {multiplier}) + {coalesced_measure}) - SUM(DISTINCT ({hash_expr} * {multiplier})))"
-        count_expr = f"COUNT(DISTINCT {pk_col})"
+        count_expr = f"COUNT(DISTINCT CASE WHEN {measure_col} IS NOT NULL THEN {pk_col} END)"
         return f"{sum_expr} / NULLIF({count_expr}, 0)"
 
     elif agg_type == "count":

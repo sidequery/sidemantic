@@ -46,10 +46,10 @@ def test_build_symmetric_aggregate_avg():
         agg_type="avg",
     )
 
-    # Average is sum divided by distinct count
+    # Average is sum divided by the count of entities with a non-NULL value
     assert "SUM(DISTINCT" in sql
     assert "HASH(order_id)" in sql
-    assert "COUNT(DISTINCT order_id)" in sql
+    assert "COUNT(DISTINCT CASE WHEN amount IS NOT NULL THEN order_id END)" in sql
     assert "NULLIF" in sql
 
 

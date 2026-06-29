@@ -80,9 +80,9 @@ class TestBuildSymmetricAggregateSql:
             agg_type="avg",
         )
 
-        # AVG is implemented as SUM / COUNT DISTINCT pk
+        # AVG is implemented as SUM / COUNT of entities with a non-NULL value
         assert "SUM(DISTINCT" in sql
-        assert "COUNT(DISTINCT order_id)" in sql
+        assert "COUNT(DISTINCT CASE WHEN amount IS NOT NULL THEN order_id END)" in sql
         assert "NULLIF" in sql  # Prevents division by zero
         assert "/" in sql
 
@@ -97,7 +97,7 @@ class TestBuildSymmetricAggregateSql:
 
         assert "HASH(products_cte.product_id)" in sql
         assert "products_cte.price" in sql
-        assert "COUNT(DISTINCT products_cte.product_id)" in sql
+        assert "COUNT(DISTINCT CASE WHEN products_cte.price IS NOT NULL THEN products_cte.product_id END)" in sql
 
     def test_avg_coalesces_measure(self):
         """AVG wraps the measure in COALESCE(..., 0) to survive NULLs in fan-out."""
@@ -356,7 +356,7 @@ class TestBuildSymmetricAggregateSql:
         )
 
         assert "FARM_FINGERPRINT" in sql
-        assert "COUNT(DISTINCT order_id)" in sql
+        assert "COUNT(DISTINCT CASE WHEN amount IS NOT NULL THEN order_id END)" in sql
         assert "NULLIF" in sql
 
 
@@ -761,8 +761,9 @@ class TestSymmetricAggregateExecution:
         )
 
         result = conn.execute(f"SELECT {symmetric_sql} FROM joined_data").fetchone()[0]
-        # (100 + 0 + 50) / 3 distinct orders = 50.0
-        assert result == 50.0
+        # SQL AVG ignores NULLs: the NULL-amount order is excluded from BOTH the
+        # numerator (coalesced to 0) and the denominator, so (100 + 50) / 2 = 75.0.
+        assert result == 75.0
 
     def test_empty_result_set(self, conn):
         """Test symmetric aggregate on empty result set."""

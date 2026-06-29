@@ -2971,5 +2971,65 @@ def test_tmdl_deeply_nested_dax_does_not_crash_import():
     assert "dax_parse_error" in codes
 
 
+def test_tmdl_many_to_many_recovers_endpoint_keys():
+    """Regression: a direct (no-bridge) many-to-many relationship between tables with no isKey
+    column must recover each side's join (endpoint) column as its primary key.
+
+    The cardinality-aware backfill gives a many-to-many relationship no one-side key, so without
+    this recovery both tables stay keyless and the no-bridge many-to-many join builds an empty key
+    list, producing invalid symmetric-aggregate SQL such as an empty CONCAT(). The recovered key is
+    the relationship's own join column on each side, never a many-side foreign key.
+    """
+    import re
+
+    pytest.importorskip("sidemantic_dax")
+    tmdl = textwrap.dedent(
+        """
+        table Authors
+            column author_name
+                dataType: string
+                sourceColumn: author_name
+            column region
+                dataType: string
+                sourceColumn: region
+            measure book_count = COUNTROWS(Authors)
+        table Books
+            column author_name
+                dataType: string
+                sourceColumn: author_name
+            column genre
+                dataType: string
+                sourceColumn: genre
+        relationship AuthorsBooks
+            fromColumn: Authors[author_name]
+            toColumn: Books[author_name]
+            fromCardinality: many
+            toCardinality: many
+        """
+    )
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".tmdl", delete=False) as f:
+        f.write(tmdl)
+        temp_path = Path(f.name)
+    try:
+        graph = TMDLAdapter().parse(temp_path)
+    finally:
+        temp_path.unlink()
+
+    authors = graph.models["Authors"]
+    books = graph.models["Books"]
+    assert authors.relationships[0].type == "many_to_many"
+    # Each keyless side recovers its own real endpoint column -- never None, a phantom "id", or a
+    # foreign key pointing at another table.
+    assert authors.primary_key == "author_name"
+    assert books.primary_key == "author_name"
+
+    # The recovered keys give the no-bridge many-to-many join a real key on each side, so the
+    # compiled SQL contains no empty CONCAT().
+    layer = SemanticLayer()
+    layer.graph = graph
+    sql = layer.compile(metrics=["Authors.book_count"], dimensions=["Books.genre"])
+    assert not re.search(r"CONCAT\(\s*\)", sql)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

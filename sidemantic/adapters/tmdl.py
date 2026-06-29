@@ -685,6 +685,11 @@ def _apply_relationships(
     # primary key for tables that did not declare an explicit isKey column.
     pk_candidates: dict[str, set[str]] = {}
     pk_target_nodes: dict[str, TmdlNode] = {}
+    # For many-to-many relationships there is no single one-side, so the cardinality-aware backfill
+    # below gives neither table a key. A direct (no-bridge) many-to-many join still needs a key on
+    # each side, so track each table's OWN endpoint column on its many-to-many relationships (its
+    # real join column, not a foreign key pointing at another table) to recover one afterwards.
+    m2m_endpoints_by_table: dict[str, set[str]] = {}
 
     for node in nodes:
         props = _props(node)
@@ -762,6 +767,12 @@ def _apply_relationships(
             pk_target_nodes.setdefault(pk_target, node)
             if pk_column:
                 pk_candidates.setdefault(pk_target, set()).add(pk_column)
+        if rel_type == "many_to_many":
+            # Each side's own join column is a real column of that table (not an FK to elsewhere).
+            if from_column:
+                m2m_endpoints_by_table.setdefault(from_table, set()).add(from_column)
+            if to_column:
+                m2m_endpoints_by_table.setdefault(to_table, set()).add(to_column)
 
         relationship_props = _relationship_passthrough_properties(node)
         relationship = Relationship(
@@ -836,6 +847,17 @@ def _apply_relationships(
                 ),
                 model_name=target_name,
             )
+
+    # Recover keys for many-to-many participants that the cardinality-aware backfill could not give
+    # one. A direct (no-bridge) many-to-many edge joins on each side's endpoint column, so a keyless
+    # participant adopts its own unambiguous many-to-many endpoint column. This is the relationship's
+    # real join column for that table, never a many-side foreign key promoted to a primary key.
+    for model in graph.models.values():
+        if not getattr(model, "_tmdl_primary_key_inferred", False) or model.primary_key is not None:
+            continue
+        own_endpoints = m2m_endpoints_by_table.get(model.name, set()) & {dim.name for dim in model.dimensions}
+        if len(own_endpoints) == 1:
+            model.primary_key = next(iter(own_endpoints))
 
 
 def _node_passthrough_properties(node: TmdlNode, excluded_keys: set[str]) -> list[dict[str, Any]]:

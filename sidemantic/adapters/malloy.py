@@ -521,7 +521,14 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         # @YYYY-MM -> DATE 'YYYY-MM-01'
         # @YYYY -> DATE 'YYYY-01-01'
         # @YYYY-Qn -> handled as text
-        expr = re.sub(r"@(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})", r"TIMESTAMP '\1 \2'", expr)
+        # Timestamp literal: time is HH:MM with optional :SS, optional fractional
+        # seconds, and an optional [zone] suffix (which is dropped). Must run
+        # before the date-only rule so a time component is not left dangling.
+        expr = re.sub(
+            r"@(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)(?:\[[^\]]+\])?",
+            r"TIMESTAMP '\1 \2'",
+            expr,
+        )
         expr = re.sub(r"@(\d{4}-\d{2}-\d{2})", r"DATE '\1'", expr)
         expr = re.sub(r"@(\d{4}-\d{2})(?!\d)", r"DATE '\1-01'", expr)
         expr = re.sub(r"@(\d{4})(?![-\d])", r"DATE '\1-01-01'", expr)
@@ -842,9 +849,11 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
     @staticmethod
     def _scan_keywords(s: str, keywords: tuple[str, ...]) -> list[tuple[int, int, str]]:
         """Return (start, end, keyword) for each whole-word keyword occurrence at
-        the top level (outside string literals and parentheses)."""
+        the top level (outside string literals, parentheses, and any nested SQL
+        ``case ... end`` block, so an inner when/then/else is not reported)."""
         found: list[tuple[int, int, str]] = []
         depth = 0
+        case_depth = 0
         quote = None
         i = 0
         n = len(s)
@@ -871,18 +880,27 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
                 i += 1
                 continue
             if depth == 0:
-                matched = None
-                for kw in keywords:
+                # Match a whole word: case/end adjust nesting depth; the requested
+                # keywords are only reported outside any nested case...end block.
+                hit = None
+                for kw in ("case", "end", *keywords):
                     j = i + len(kw)
-                    if s[i:j].lower() == kw:
-                        before_ok = i == 0 or not (s[i - 1].isalnum() or s[i - 1] == "_")
-                        after_ok = j >= n or not (s[j].isalnum() or s[j] == "_")
-                        if before_ok and after_ok:
-                            matched = (i, j, kw)
-                            break
-                if matched:
-                    found.append(matched)
-                    i = matched[1]
+                    if (
+                        s[i:j].lower() == kw
+                        and (i == 0 or not (s[i - 1].isalnum() or s[i - 1] == "_"))
+                        and (j >= n or not (s[j].isalnum() or s[j] == "_"))
+                    ):
+                        hit = (kw, j)
+                        break
+                if hit is not None:
+                    kw, j = hit
+                    if kw == "case":
+                        case_depth += 1
+                    elif kw == "end":
+                        case_depth = max(0, case_depth - 1)
+                    elif case_depth == 0:
+                        found.append((i, j, kw))
+                    i = j
                     continue
             i += 1
         return found

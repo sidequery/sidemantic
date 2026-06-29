@@ -537,6 +537,28 @@ def test_unspaced_dot_method_ratio_normalized():
     assert me.sql == "SUM(cost)/SUM(quantity)"
 
 
+def test_timestamp_literal_forms():
+    def sql(lit):
+        return _dim_sql(
+            f"source: o is duckdb.table('o') extend {{\n  dimension: a is t > {lit}\n}}\n",
+            "a",
+        )
+
+    assert sql("@2024-01-01 10:30") == "t > TIMESTAMP '2024-01-01 10:30'"
+    assert sql("@2024-01-01 10:30:00.123") == "t > TIMESTAMP '2024-01-01 10:30:00.123'"
+    assert sql("@2024-01-01 10:30:00[UTC]") == "t > TIMESTAMP '2024-01-01 10:30:00'"
+
+
+def test_pick_condition_with_nested_case():
+    sql = _dim_sql(
+        "source: o is duckdb.table('o') extend {\n"
+        "  dimension: f is pick 'x' when case when a = 1 then 1 else 0 end = 1 else 'y'\n"
+        "}\n",
+        "f",
+    )
+    assert sql == "CASE WHEN case when a = 1 then 1 else 0 end = 1 THEN 'x' ELSE 'y' END"
+
+
 def test_join_on_condition_skips_literal_predicate():
     g = _parse(
         "source: customers is duckdb.table('c') extend { primary_key: id }\n"

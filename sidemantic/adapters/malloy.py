@@ -1657,19 +1657,24 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
             if is_literal(lc) or is_literal(rc):
                 continue
 
-            # Identify which side belongs to the join target.
+            # Identify the related (target) vs source side. A side qualified by
+            # the target name is the related column; otherwise the unqualified
+            # side is the related column (Malloy convention) and the other side
+            # belongs to the source.
             if lq == target_name:
-                target_col, source_col = lc, rc
+                related_col, source_col = lc, rc
             elif rq == target_name:
-                target_col, source_col = rc, lc
+                related_col, source_col = rc, lc
             elif lq is None and rq is not None:
-                source_col, target_col = lc, rc
+                related_col, source_col = lc, rc
             elif rq is None and lq is not None:
-                source_col, target_col = rc, lc
+                related_col, source_col = rc, lc
             else:
-                source_col, target_col = lc, rc
+                related_col, source_col = lc, rc
 
-            keys.append(target_col if rel_type == "one_to_many" else source_col)
+            # one_to_many keys on the related (foreign) column; many_to_one and
+            # one_to_one key on the source column.
+            keys.append(related_col if rel_type == "one_to_many" else source_col)
         return keys
 
     def _extract_inline_join_source(self, join_name: str, sq_expr):

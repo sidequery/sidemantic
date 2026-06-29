@@ -168,6 +168,20 @@ def test_join_many_on_condition_uses_related_key():
     assert rel.foreign_key == "order_id"
 
 
+def test_join_many_unqualified_related_key():
+    # Related FK unqualified, source PK qualified by the source name.
+    g = _parse(
+        "source: items is duckdb.table('i') extend { measure: ic is count() }\n"
+        "source: orders is duckdb.table('o') extend {\n"
+        "  primary_key: id\n"
+        "  join_many: items is duckdb.table('i') on order_id = orders.id\n"
+        "}\n"
+    )
+    rel = {r.name: r for r in g.get_model("orders").relationships}["items"]
+    assert rel.type == "one_to_many"
+    assert rel.foreign_key == "order_id"
+
+
 def test_join_composite_keys_reverse_direction():
     g = _parse(
         "source: cohort is duckdb.table('co') extend { primary_key: id }\n"

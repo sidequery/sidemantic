@@ -352,16 +352,18 @@ GROUP BY {group_by_str}"""
             partition_tables = sorted(existing | set(built))
 
         view_name = qualify(unqualified)
+        # Always drop the prior covering view/table first: a full rebuild may have
+        # dropped partitions it referenced, and a rebuild that finds no buckets must
+        # not leave a view pointing at removed tables. The base name may be a view
+        # (prior partitioned build) or a table (prior non-partitioned build), and
+        # some engines' DROP ... IF EXISTS errors on a type mismatch, so try both.
+        for drop_stmt in (f"DROP VIEW IF EXISTS {view_name}", f"DROP TABLE IF EXISTS {view_name}"):
+            try:
+                connection.execute(drop_stmt)
+            except Exception:
+                pass
         if partition_tables:
             union_sql = "\nUNION ALL\n".join(f"SELECT * FROM {table}" for table in partition_tables)
-            # The base name may currently be a view (prior partitioned build) or a
-            # table (prior non-partitioned build). Some engines' DROP ... IF EXISTS
-            # errors on a type mismatch, so try both kinds.
-            for drop_stmt in (f"DROP VIEW IF EXISTS {view_name}", f"DROP TABLE IF EXISTS {view_name}"):
-                try:
-                    connection.execute(drop_stmt)
-                except Exception:
-                    pass
             connection.execute(f"CREATE VIEW {view_name} AS {union_sql}")
 
         return built

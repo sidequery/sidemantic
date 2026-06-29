@@ -5555,7 +5555,11 @@ LEFT JOIN {preagg_table} AS {rollup_alias}
                 metric = model.get_metric(metric_name)
                 if metric is None:
                     return None
-                if metric.type in {"ratio", "derived"} or metric.agg in {"avg", "count_distinct"}:
+                if metric.type in {"ratio", "derived"} or metric.agg in {
+                    "avg",
+                    "count_distinct",
+                    "approx_count_distinct",
+                }:
                     return None
 
         matcher = PreAggregationMatcher(model)

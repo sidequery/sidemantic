@@ -2545,5 +2545,55 @@ def test_ungrouped_with_metric_filter_bails_to_raw():
     assert "orders_preagg_by_id" not in sql
 
 
+def test_full_rebuild_with_no_buckets_drops_covering_view():
+    """A full rebuild that finds no source rows drops the covering view (no stale references)."""
+    conn = duckdb.connect(":memory:")
+    conn.execute(
+        "CREATE TABLE orders AS "
+        "SELECT (DATE '2024-01-01' + INTERVAL (i) MONTH) created_at, 100 amount FROM generate_series(0, 1) t(i)"
+    )
+    model, preagg = _monthly_partitioned_model()
+
+    preagg.build_partitions(conn, model, full_rebuild=True)
+    assert conn.execute("SELECT SUM(revenue_raw) FROM orders_preagg_monthly").fetchone()[0] == 200
+
+    # Empty the source, then full rebuild: no buckets -> view and partitions all gone.
+    conn.execute("DELETE FROM orders")
+    preagg.build_partitions(conn, model, full_rebuild=True)
+
+    remaining = conn.execute(
+        "SELECT COUNT(*) FROM information_schema.tables WHERE table_name LIKE 'orders_preagg_monthly%' ESCAPE '\\'"
+    ).fetchone()[0]
+    assert remaining == 0  # covering view + partitions dropped; nothing left pointing at removed tables
+
+
+def test_ungrouped_approx_count_distinct_bails_to_raw():
+    """An ungrouped query using approx_count_distinct falls back to raw (the _raw state is not per-row)."""
+    from sidemantic import SemanticLayer
+
+    layer = SemanticLayer()
+    layer.add_model(
+        Model(
+            name="orders",
+            table="orders",
+            primary_key="id",
+            dimensions=[Dimension(name="id", type="numeric"), Dimension(name="status", type="categorical")],
+            metrics=[Metric(name="uniq", agg="approx_count_distinct", sql="user_id")],
+            pre_aggregations=[PreAggregation(name="by_id", measures=["uniq"], dimensions=["id", "status"])],
+        )
+    )
+
+    sql = layer.compile(
+        metrics=["orders.uniq"],
+        dimensions=["orders.status"],
+        ungrouped=True,
+        use_preaggregations=True,
+    )
+
+    # The stored uniq_raw is an approximate-distinct state for the PK group, not a
+    # per-row value, so the ungrouped drill must fall back to raw.
+    assert "orders_preagg_by_id" not in sql
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -1106,7 +1106,7 @@ class SemanticLayer:
                 for m in bare_metrics
                 if (metric := model.get_metric(m)) is None
                 or metric.type in {"ratio", "derived"}
-                or metric.agg in {"avg", "count_distinct"}
+                or metric.agg in {"avg", "count_distinct", "approx_count_distinct"}
             ]
             if non_derivable:
                 return QueryPlan(

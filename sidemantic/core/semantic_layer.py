@@ -698,9 +698,10 @@ class SemanticLayer:
         use_preaggs = use_preaggregations if use_preaggregations is not None else self.use_preaggregations
 
         inner_sql = None
-        # The Rust compiler payload has no timezone or with_totals field, so force the
-        # Python path rather than silently dropping the requested query timezone/totals.
-        if self._use_rust_sql_generator and timezone is None and not with_totals:
+        # The Rust generator implements neither query-timezone bucketing nor with_totals
+        # GROUPING SETS, so use the Python path when either is requested.
+        # (Pre-agg bypass for timezone queries is enforced inside SQLGenerator.generate.)
+        if self._use_rust_sql_generator and not timezone and not with_totals:
             inner_sql = self._compile_with_rust(
                 metrics=metrics,
                 dimensions=dimensions,

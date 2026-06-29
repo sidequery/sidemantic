@@ -144,15 +144,6 @@ EXPECTED_GAPS = {
     "tests.queries.test_sql_rewriter::test_rewrite_less_than_relative_date": (
         "Rust SQL generator does not yet support the extended relative-date operators (!=/<>, </<=)"
     ),
-    "tests.dates.test_integration::test_query_timezone_shifts_date_trunc_bucket": (
-        "Rust adapter does not yet support the query-time timezone compile kwarg / Python adapter.execute handle"
-    ),
-    "tests.dates.test_integration::test_query_timezone_default_none_unchanged": (
-        "Rust adapter does not yet support the query-time timezone compile kwarg / Python adapter.execute handle"
-    ),
-    "tests.dates.test_integration::test_query_timezone_generic_dialect": (
-        "Rust adapter does not yet support the query-time timezone compile kwarg / Python adapter.execute handle"
-    ),
     "tests.core.test_auto_dimensions::test_auto_dimensions_from_table": (
         "Rust adapter does not yet support Python auto-dimension DB introspection"
     ),

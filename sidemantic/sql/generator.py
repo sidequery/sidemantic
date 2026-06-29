@@ -70,13 +70,23 @@ class SQLGenerator:
             dialect: SQL dialect for generation (default: duckdb)
             preagg_database: Optional database name for pre-aggregation tables
             preagg_schema: Optional schema name for pre-aggregation tables
-            timezone: Optional query timezone. When set, time-dimension expressions
-                are converted to this timezone before truncation (truncation-side only).
+            timezone: Optional IANA timezone; when set, time dimensions are bucketed
+                in this timezone (UTC-stored timestamps converted before truncation)
         """
         self.graph = graph
         self.dialect = dialect
         self.preagg_database = preagg_database
         self.preagg_schema = preagg_schema
+        # The timezone is interpolated into SQL string literals (AT TIME ZONE '...', etc.),
+        # so it must not contain quote/escape characters. Restrict to IANA-name characters
+        # to prevent SQL injection from a request- or preference-supplied value; the database
+        # validates that the zone actually exists at execution time.
+        if timezone is not None and not all(c.isalnum() or c in "_+-/" for c in timezone):
+            raise ValueError(
+                f"Invalid timezone {timezone!r}: expected an IANA timezone name like "
+                "'America/New_York' (letters, digits, '_', '/', '+', '-'). The value is "
+                "embedded into generated SQL, so other characters are rejected."
+            )
         self.timezone = timezone
         self._dialect_instance = _cached_dialect(dialect)
         self._generate_cache: dict[tuple[object, ...], str] = {}
@@ -176,6 +186,28 @@ class SQLGenerator:
         self._generate_cache[cache_key] = sql
         return sql
 
+    def _localize_to_timezone(self, column_expr: str) -> str:
+        """Convert a UTC-stored timestamp to wall-clock time in ``self.timezone``.
+
+        Returns the dialect-appropriate expression so that a subsequent DATE_TRUNC
+        buckets on local-time boundaries. Raises for dialects without timezone support.
+        """
+        tz = self.timezone
+        if self.dialect in {"duckdb", "postgres"}:
+            return f"((({column_expr}) AT TIME ZONE 'UTC') AT TIME ZONE '{tz}')"
+        if self.dialect == "snowflake":
+            return f"CONVERT_TIMEZONE('UTC', '{tz}', {column_expr})"
+        if self.dialect == "bigquery":
+            return f"DATETIME({column_expr}, '{tz}')"
+        if self.dialect in {"spark", "databricks"}:
+            return f"from_utc_timestamp({column_expr}, '{tz}')"
+        if self.dialect == "clickhouse":
+            return f"toTimeZone({column_expr}, '{tz}')"
+        raise ValueError(
+            f"Query timezone is not supported for dialect '{self.dialect}'. "
+            "Supported: duckdb, postgres, snowflake, bigquery, spark, databricks, clickhouse."
+        )
+
     def _date_trunc(self, granularity: str, column_expr: str) -> str:
         """Generate dialect-specific time truncation expression.
 
@@ -186,7 +218,8 @@ class SQLGenerator:
         Returns:
             Time truncation SQL expression appropriate for the dialect
         """
-        column_expr = self._apply_timezone(column_expr)
+        if self.timezone:
+            column_expr = self._localize_to_timezone(column_expr)
 
         if self.dialect == "bigquery":
             return f"DATE_TRUNC({column_expr}, {granularity.upper()})"
@@ -207,27 +240,6 @@ class SQLGenerator:
         col = sqlglot.parse_one(column_expr, into=exp.Column, dialect=self.dialect)
         date_trunc = exp.DateTrunc(this=col, unit=exp.Literal.string(granularity))
         return date_trunc.sql(dialect=self.dialect)
-
-    def _apply_timezone(self, column_expr: str) -> str:
-        """Convert a time-dimension expression into the query timezone.
-
-        Truncation-side only: wraps the column so that DATE_TRUNC buckets by the
-        query timezone rather than the stored (typically UTC) instant. Returns the
-        expression unchanged when no query timezone is configured.
-
-        Args:
-            column_expr: SQL column expression
-
-        Returns:
-            Timezone-shifted column expression, or the input unchanged
-        """
-        if not self.timezone:
-            return column_expr
-        tz = self.timezone.replace("'", "''")
-        if self.dialect == "duckdb":
-            return f"timezone('{tz}', {column_expr})"
-        # Generic / postgres and other dialects supporting standard AT TIME ZONE.
-        return f"({column_expr}) AT TIME ZONE '{tz}'"
 
     def _build_interval(self, num: str, unit: str) -> str:
         """Build dialect-specific INTERVAL expression.
@@ -588,6 +600,14 @@ class SQLGenerator:
         segments = segments or []
         parameters = parameters or {}
         aliases = aliases or {}
+
+        # Pre-aggregations are materialized with UTC time buckets, so a timezone-bucketed
+        # query cannot be served from a rollup without returning wrong (UTC) buckets. Force a
+        # live query whenever a timezone is set; this covers direct SQLGenerator use as well
+        # as the SemanticLayer.compile() path. (Computed before the cache key below.)
+        if self.timezone:
+            use_preaggregations = False
+
         cache_key = self._generate_cache_key(
             metrics,
             dimensions,
@@ -3080,10 +3100,11 @@ class SQLGenerator:
             return self._build_measure_total_subquery_sql(model_name, measure)
 
         raw_ref = self._cte_ref(model_name, f"{measure.name}_raw")
-        if measure.agg == "approx_count_distinct":
-            distinct_expr = f"APPROX_COUNT_DISTINCT({raw_ref})"
-        else:
-            distinct_expr = f"COUNT(DISTINCT {raw_ref})"
+        distinct_expr = (
+            f"APPROX_COUNT_DISTINCT({raw_ref})"
+            if measure.agg == "approx_count_distinct"
+            else f"COUNT(DISTINCT {raw_ref})"
+        )
         query = select(distinct_expr).from_(self._quote_identifier(self._cte_name(base_model_name)))
         query = self._add_join_paths_to_query(query, base_model_name, other_models, models_with_filters)
         where_filters, _ = self._split_where_having_filters(filters, query_model_names)

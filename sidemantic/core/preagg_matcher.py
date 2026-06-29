@@ -17,6 +17,8 @@ GRANULARITY_HIERARCHY = {
     "week": 4,
     "day": 5,
     "hour": 6,
+    "minute": 7,
+    "second": 8,
 }
 
 
@@ -243,10 +245,10 @@ class PreAggregationMatcher:
             return count_measure is not None
 
         if agg_type in ("count_distinct", "approx_count_distinct"):
-            # COUNT DISTINCT is NOT derivable from pre-aggregated data
-            # (would need HyperLogLog or storing exact values). APPROX_COUNT_DISTINCT
-            # materializes to a plain integer with no stored HLL sketch, so it is
-            # likewise not rollup-derivable.
+            # COUNT DISTINCT is NOT derivable from re-aggregated pre-agg rows
+            # (would need HyperLogLog or storing exact values). approx_count_distinct
+            # would be additive if we stored HLL sketches, but sidemantic materializes a
+            # plain integer, so it is not safely rollup-derivable either.
             return False
 
         # Default: allow if present

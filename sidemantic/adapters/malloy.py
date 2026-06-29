@@ -421,6 +421,35 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         derived measure so the stored SQL is executable.
         """
 
+        def sub_outside_quotes(s: str, pattern: str, repl) -> str:
+            # Apply re.sub only to text outside string literals so an
+            # aggregate-looking value inside a literal (e.g. 'count()') is intact.
+            # Backticks are NOT string delimiters here: a backtick-quoted field
+            # name (`cost amount`.sum()) is part of an aggregate to normalize.
+            out: list[str] = []
+            i, n = 0, len(s)
+            while i < n:
+                c = s[i]
+                if c in ("'", '"'):
+                    j = i + 1
+                    while j < n:
+                        if s[j] == "\\":
+                            j += 2
+                            continue
+                        if s[j] == c:
+                            j += 1
+                            break
+                        j += 1
+                    out.append(s[i:j])
+                    i = j
+                else:
+                    j = i
+                    while j < n and s[j] not in ("'", '"'):
+                        j += 1
+                    out.append(re.sub(pattern, repl, s[i:j], flags=re.IGNORECASE))
+                    i = j
+            return "".join(out)
+
         def count_repl(m: re.Match) -> str:
             arg = m.group(1).strip()
             if arg == "":
@@ -428,15 +457,6 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
             if arg == "*" or arg.lower().startswith("distinct "):
                 return m.group(0)
             return f"COUNT(DISTINCT {arg})"
-
-        # Standard function forms count(x) / count_distinct(x) / count() — not
-        # preceded by `.` so dot-method calls below are left for the next pass.
-        expr = re.sub(
-            r"(?<![\w.`])count(?:_distinct)?\s*\(\s*([^)]*?)\s*\)",
-            count_repl,
-            expr,
-            flags=re.IGNORECASE,
-        )
 
         def dot_repl(m: re.Match) -> str:
             field = m.group(1)
@@ -447,13 +467,15 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
             sql_agg = agg.upper()
             return f"{sql_agg}({field}, {args})" if args else f"{sql_agg}({field})"
 
+        # Standard function forms count(x) / count_distinct(x) / count() — not
+        # preceded by `.` so dot-method calls are handled by the next pass.
+        expr = sub_outside_quotes(expr, r"(?<![\w.`])count(?:_distinct)?\s*\(\s*([^)]*?)\s*\)", count_repl)
         # Dot-method aggregates; the field may be a backtick-quoted identifier
         # with spaces (`cost amount`.sum()).
-        return re.sub(
+        return sub_outside_quotes(
+            expr,
             r"((?:`[^`]*`|[\w.])+)\.(sum|avg|count|min|max|count_distinct)\s*\(\s*(.*?)\s*\)",
             dot_repl,
-            expr,
-            flags=re.IGNORECASE,
         )
 
     def _parse_aggregation(self, expr: str) -> tuple[str | None, str | None]:
@@ -629,22 +651,32 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
                 start = i + 1
                 i += 1
                 continue
-            matched = None
-            # Logical operators and CASE keywords bound an arithmetic operand on
-            # the left (the pick -> CASE rewrite runs before this, so a condition
-            # like `WHEN title ~ r'...'` must stop the operand at `WHEN`).
-            for kw in ("and", "or", "not", "when", "then", "else", "case", "end"):
+            # Whole-word keyword handling. `case`/`end` bracket a CASE expression
+            # and behave like parentheses so the whole `case ... end` is one
+            # operand; `and`/`or`/`not`/`when`/`then`/`else` bound the operand on
+            # the left (the pick -> CASE rewrite runs first, so `WHEN x ~ r'...'`
+            # must stop the operand at `WHEN`).
+            matched_kw = None
+            for kw in ("case", "end", "and", "or", "not", "when", "then", "else"):
                 j = i + len(kw)
                 if (
                     s[i:j].lower() == kw
                     and (i == 0 or not (s[i - 1].isalnum() or s[i - 1] == "_"))
                     and (j >= end or not (s[j].isalnum() or s[j] == "_"))
                 ):
-                    matched = j
+                    matched_kw = (kw, j)
                     break
-            if matched is not None:
-                start = matched
-                i = matched
+            if matched_kw is not None:
+                kw, j = matched_kw
+                if kw == "case":
+                    stack.append(start)
+                    start = i
+                elif kw == "end":
+                    if stack:
+                        start = stack.pop()
+                else:
+                    start = j
+                i = j
                 continue
             i += 1
 
@@ -2230,9 +2262,11 @@ class MalloyAdapter(BaseAdapter):
         """Rewrite SQL aggregate syntax back to Malloy for export.
 
         COUNT(DISTINCT x) -> count(x), count(*) -> count(), and uppercase
-        SUM/AVG/MIN/MAX/COUNT(...) -> lowercase, so a derived measure whose SQL
-        came from import normalization parses again as Malloy.
+        SUM/AVG/MIN/MAX(...) -> lowercase, so a derived measure whose SQL came
+        from import normalization parses again as Malloy. COUNT(expr) is left
+        untouched: Malloy count(field) is a distinct count, so translating a
+        plain SQL COUNT(field) would change non-null counts into distinct counts.
         """
         sql = re.sub(r"\bcount\s*\(\s*distinct\s+(.+?)\s*\)", r"count(\1)", sql, flags=re.IGNORECASE)
         sql = re.sub(r"\bcount\s*\(\s*\*\s*\)", "count()", sql, flags=re.IGNORECASE)
-        return re.sub(r"\b(SUM|AVG|MIN|MAX|COUNT)\s*\(", lambda m: m.group(1).lower() + "(", sql)
+        return re.sub(r"\b(SUM|AVG|MIN|MAX)\s*\(", lambda m: m.group(1).lower() + "(", sql)

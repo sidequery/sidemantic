@@ -604,6 +604,34 @@ def test_pick_condition_with_nested_case():
     assert sql == "CASE WHEN case when a = 1 then 1 else 0 end = 1 THEN 'x' ELSE 'y' END"
 
 
+def test_agg_normalization_ignores_string_literals():
+    g = _parse(
+        "source: o is duckdb.table('o') extend {\n"
+        "  measure: m is sum(case when label = 'count()' then amount else 0 end) / sum(qty)\n"
+        "}\n"
+    )
+    assert g.get_model("o").get_metric("m").sql == "sum(case when label = 'count()' then amount else 0 end) / sum(qty)"
+
+
+def test_regex_match_case_expression_operand():
+    assert (
+        _dim_sql(
+            "source: o is duckdb.table('o') extend {\n"
+            "  dimension: a is case when flag then name else alt end ~ r'foo'\n"
+            "}\n",
+            "a",
+        )
+        == "REGEXP_MATCHES(case when flag then name else alt end, 'foo')"
+    )
+
+
+def test_export_does_not_distinctify_plain_count():
+    # COUNT(field) has no faithful Malloy form (count(field) is distinct), so it
+    # is left untouched; only COUNT(DISTINCT ...) / COUNT(*) translate.
+    assert MalloyAdapter()._sql_aggs_to_malloy("COUNT(user_id) / COUNT(*)") == "COUNT(user_id) / count()"
+    assert MalloyAdapter()._sql_aggs_to_malloy("COUNT(DISTINCT x) / SUM(y)") == "count(x) / sum(y)"
+
+
 def test_normalize_spaced_backtick_aggregate_field():
     g = _parse("source: o is duckdb.table('o') extend {\n  measure: m is `cost amount`.sum() / count()\n}\n")
     me = g.get_model("o").get_metric("m")

@@ -421,9 +421,12 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
 
         def repl(m: re.Match) -> str:
             field = m.group(1)
-            agg = m.group(2).upper()
+            agg = m.group(2).lower()
             args = m.group(3).strip()
-            return f"{agg}({field}, {args})" if args else f"{agg}({field})"
+            if agg == "count_distinct":
+                return f"COUNT(DISTINCT {field})"
+            sql_agg = agg.upper()
+            return f"{sql_agg}({field}, {args})" if args else f"{sql_agg}({field})"
 
         # The field is a dotted path whose segments may be backtick-quoted
         # identifiers containing spaces (`cost amount`.sum()).

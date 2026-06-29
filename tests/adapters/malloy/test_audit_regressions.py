@@ -566,6 +566,13 @@ def test_normalize_spaced_backtick_aggregate_field():
     assert me.sql == "SUM(`cost amount`) / count(*)"
 
 
+def test_normalize_dot_method_count_distinct():
+    g = _parse("source: o is duckdb.table('o') extend {\n  measure: m is user_id.count_distinct() / count()\n}\n")
+    me = g.get_model("o").get_metric("m")
+    assert me.type == "derived"
+    assert me.sql == "COUNT(DISTINCT user_id) / count(*)"
+
+
 def test_join_on_condition_parenthesized_equality():
     g = _parse(
         "source: customers is duckdb.table('c') extend { primary_key: id }\n"

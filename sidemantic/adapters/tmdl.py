@@ -754,16 +754,19 @@ def _apply_relationships(
             foreign_key = None
             primary_key = None
 
-        # Record the real key column on the one-side (PK side) of this relationship so a table
-        # that omitted its isKey column can recover a real primary key below. many_to_many has no
-        # single one-side, so it does not contribute a candidate.
+        # Record the real key column on each one-side (PK side) of this relationship so a table that
+        # omitted its isKey column can recover a real primary key below. A one-to-one relationship
+        # has a unique key on BOTH sides, so both endpoints are recoverable; one/many relationships
+        # contribute only their single one-side; many-to-many has no one-side (handled separately).
+        one_side_keys: list[tuple[str, str | None]] = []
         if rel_type == "one_to_many":
-            pk_target, pk_column = from_table, from_column
-        elif rel_type in ("many_to_one", "one_to_one"):
-            pk_target, pk_column = to_table, to_column
-        else:
-            pk_target, pk_column = None, None
-        if pk_target is not None:
+            one_side_keys.append((from_table, from_column))
+        elif rel_type == "many_to_one":
+            one_side_keys.append((to_table, to_column))
+        elif rel_type == "one_to_one":
+            one_side_keys.append((from_table, from_column))
+            one_side_keys.append((to_table, to_column))
+        for pk_target, pk_column in one_side_keys:
             pk_target_nodes.setdefault(pk_target, node)
             if pk_column:
                 pk_candidates.setdefault(pk_target, set()).add(pk_column)

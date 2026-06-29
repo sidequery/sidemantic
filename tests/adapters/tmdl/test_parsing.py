@@ -3031,5 +3031,57 @@ def test_tmdl_many_to_many_recovers_endpoint_keys():
     assert not re.search(r"CONCAT\(\s*\)", sql)
 
 
+def test_tmdl_one_to_one_recovers_keyless_source_key():
+    """Regression: a one-to-one relationship has a unique key on BOTH sides, so a keyless table on
+    the fromColumn (source) side must recover its endpoint as its primary key.
+
+    Otherwise only the to-side gets a key; the source stays None, and while the join is still built
+    on the source's from-column, the source CTE -- keyed off the now-empty primary_key_columns --
+    never selects that column, producing a join on a column missing from the CTE.
+    """
+    pytest.importorskip("sidemantic_dax")
+    tmdl = textwrap.dedent(
+        """
+        table A
+            column a_key
+                dataType: string
+                sourceColumn: a_key
+            measure a_count = COUNTROWS(A)
+        table B
+            column b_key
+                dataType: string
+                sourceColumn: b_key
+            column b_label
+                dataType: string
+                sourceColumn: b_label
+        relationship AB
+            fromColumn: A[a_key]
+            toColumn: B[b_key]
+            fromCardinality: one
+            toCardinality: one
+        """
+    )
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".tmdl", delete=False) as f:
+        f.write(tmdl)
+        temp_path = Path(f.name)
+    try:
+        graph = TMDLAdapter().parse(temp_path)
+    finally:
+        temp_path.unlink()
+
+    assert graph.models["A"].relationships[0].type == "one_to_one"
+    # Both unique sides recover their endpoint key -- the source side is no longer left None.
+    assert graph.models["A"].primary_key == "a_key"
+    assert graph.models["B"].primary_key == "b_key"
+
+    # The source key is projected into the source CTE and referenced by the join, so the join is not
+    # on a column that is absent from the CTE.
+    layer = SemanticLayer()
+    layer.graph = graph
+    sql = layer.compile(metrics=["A.a_count"], dimensions=["B.b_label"])
+    assert "a_key AS a_key" in sql
+    assert "A_cte.a_key" in sql
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

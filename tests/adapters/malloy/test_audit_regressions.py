@@ -632,6 +632,16 @@ def test_agg_normalization_ignores_string_literals():
     assert g.get_model("o").get_metric("m").sql == "sum(case when label = 'count()' then amount else 0 end) / sum(qty)"
 
 
+def test_count_with_string_literal_argument_normalized():
+    # A string literal inside the count() argument must not break the match.
+    g = _parse(
+        "source: o is duckdb.table('o') extend {\n"
+        "  measure: m is count(case when plan = 'pro' then user_id end) / count()\n"
+        "}\n"
+    )
+    assert g.get_model("o").get_metric("m").sql == "COUNT(DISTINCT case when plan = 'pro' then user_id end) / count(*)"
+
+
 def test_regex_match_case_expression_operand():
     assert (
         _dim_sql(

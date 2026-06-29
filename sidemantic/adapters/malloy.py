@@ -61,6 +61,73 @@ def _sub_outside_quotes(s: str, pattern: str, repl) -> str:
     return "".join(out)
 
 
+def _normalize_count_calls(s: str) -> str:
+    """Rewrite Malloy count syntax to SQL with quote- and paren-aware scanning.
+
+    count() -> count(*); count(x) / count_distinct(x) -> COUNT(DISTINCT x). The
+    argument is captured by balanced parens (so a string literal inside it, e.g.
+    count(case when p = 'pro' then x end), does not break the match), while a
+    literal that merely looks like a count ('count()') is left untouched.
+    """
+    out: list[str] = []
+    i, n = 0, len(s)
+    while i < n:
+        c = s[i]
+        if c in ("'", '"'):
+            j = i + 1
+            while j < n:
+                if s[j] == "\\":
+                    j += 2
+                    continue
+                if s[j] == c:
+                    j += 1
+                    break
+                j += 1
+            out.append(s[i:j])
+            i = j
+            continue
+        m = re.match(r"count(?:_distinct)?", s[i:], re.IGNORECASE)
+        if m and (i == 0 or not (s[i - 1].isalnum() or s[i - 1] in "_.`")):
+            k = i + m.end()
+            while k < n and s[k] == " ":
+                k += 1
+            if k < n and s[k] == "(":
+                depth, p, q = 0, k, None
+                while p < n:
+                    ch = s[p]
+                    if q is not None:
+                        if ch == "\\":
+                            p += 2
+                            continue
+                        if ch == q:
+                            q = None
+                        p += 1
+                        continue
+                    if ch in ("'", '"'):
+                        q = ch
+                    elif ch == "(":
+                        depth += 1
+                    elif ch == ")":
+                        depth -= 1
+                        if depth == 0:
+                            p += 1
+                            break
+                    p += 1
+                if depth == 0:
+                    arg = s[k + 1 : p - 1].strip()
+                    if arg == "":
+                        out.append("count(*)")
+                    elif arg == "*" or arg.lower().startswith("distinct "):
+                        out.append(s[i:p])
+                    else:
+                        out.append(f"COUNT(DISTINCT {arg})")
+                    i = p
+                    continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
 class MalloySyntaxError(ValueError):
     """Raised when a Malloy document contains syntax errors and strict parsing is requested.
 
@@ -451,14 +518,6 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         derived measure so the stored SQL is executable.
         """
 
-        def count_repl(m: re.Match) -> str:
-            arg = m.group(1).strip()
-            if arg == "":
-                return "count(*)"
-            if arg == "*" or arg.lower().startswith("distinct "):
-                return m.group(0)
-            return f"COUNT(DISTINCT {arg})"
-
         def dot_repl(m: re.Match) -> str:
             field = m.group(1)
             agg = m.group(2).lower()
@@ -468,9 +527,10 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
             sql_agg = agg.upper()
             return f"{sql_agg}({field}, {args})" if args else f"{sql_agg}({field})"
 
-        # Standard function forms count(x) / count_distinct(x) / count() — not
-        # preceded by `.` so dot-method calls are handled by the next pass.
-        expr = _sub_outside_quotes(expr, r"(?<![\w.`])count(?:_distinct)?\s*\(\s*([^)]*?)\s*\)", count_repl)
+        # Standard function forms count(x) / count_distinct(x) / count() — handled
+        # with a quote/paren-aware scan so an argument containing a string literal
+        # is matched as a whole; dot-method calls are normalized by the next pass.
+        expr = _normalize_count_calls(expr)
         # Dot-method aggregates; the field may be a backtick-quoted identifier
         # with spaces (`cost amount`.sum()).
         return _sub_outside_quotes(

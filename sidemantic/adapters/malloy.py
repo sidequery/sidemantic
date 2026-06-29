@@ -508,11 +508,28 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         """
         if end <= 0:
             return None
-        if s[end - 1] == ")":
+
+        # Mark positions inside string literals so the backward balance scan
+        # ignores parentheses inside quotes, e.g. the ')' in replace(name, ')', '').
+        quoted = [False] * end
+        q = None
+        for i in range(end):
+            c = s[i]
+            if q is not None:
+                quoted[i] = True
+                if c == q:
+                    q = None
+            elif c in ("'", '"', "`"):
+                q = c
+                quoted[i] = True
+
+        if s[end - 1] == ")" and not quoted[end - 1]:
             depth = 0
             k = end
             while k > 0:
                 k -= 1
+                if quoted[k]:
+                    continue
                 if s[k] == ")":
                     depth += 1
                 elif s[k] == "(":

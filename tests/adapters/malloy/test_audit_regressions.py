@@ -482,6 +482,14 @@ def test_regex_match_handles_spaced_function_call():
     )
 
 
+def test_regex_match_handles_quoted_paren_in_operand():
+    # A ')' inside a string-literal argument must not break the operand balance scan.
+    assert (
+        _dim_sql("source: o is duckdb.table('o') extend {\n  dimension: a is replace(name, ')', '') ~ r'x'\n}\n", "a")
+        == "REGEXP_MATCHES(replace(name, ')', ''), 'x')"
+    )
+
+
 def test_join_on_condition_skips_literal_predicate():
     g = _parse(
         "source: customers is duckdb.table('c') extend { primary_key: id }\n"

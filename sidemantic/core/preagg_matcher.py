@@ -489,12 +489,12 @@ class PreAggregationMatcher:
                 if self._is_exact_grain(preagg, query_dimensions, query_granularity):
                     measure_details.append(f"{metric_name} ({metric.agg} exact grain)")
                 else:
-                    measure_details.append(f"{metric_name} (count_distinct_not_rollup_safe)")
+                    measure_details.append(f"{metric_name} ({metric.agg}_not_rollup_safe)")
                     measures_ok = False
             elif not self._is_measure_derivable(metric, preagg):
                 agg = metric.agg or "complex"
                 if agg in ("count_distinct", "approx_count_distinct"):
-                    measure_details.append(f"{metric_name} (count_distinct_not_rollup_safe)")
+                    measure_details.append(f"{metric_name} ({agg}_not_rollup_safe)")
                 elif agg == "avg":
                     measure_details.append(f"{metric_name} (avg needs companion count measure)")
                 elif metric.name not in (preagg.measures or []):

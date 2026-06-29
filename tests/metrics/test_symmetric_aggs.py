@@ -21,7 +21,7 @@ def test_build_symmetric_aggregate_sum():
     assert "SUM(DISTINCT" in sql
     assert "HASH(order_id)" in sql
     assert "HUGEINT" in sql
-    assert "+ amount)" in sql
+    assert "+ COALESCE(amount, 0))" in sql
 
 
 def test_build_symmetric_aggregate_sum_with_alias():
@@ -35,7 +35,7 @@ def test_build_symmetric_aggregate_sum_with_alias():
 
     # Check key components with alias are present
     assert "HASH(orders_cte.order_id)" in sql
-    assert "orders_cte.amount)" in sql
+    assert "COALESCE(orders_cte.amount, 0))" in sql
 
 
 def test_build_symmetric_aggregate_avg():
@@ -46,10 +46,10 @@ def test_build_symmetric_aggregate_avg():
         agg_type="avg",
     )
 
-    # Average is sum divided by distinct count
+    # Average is sum divided by the count of entities with a non-NULL value
     assert "SUM(DISTINCT" in sql
     assert "HASH(order_id)" in sql
-    assert "COUNT(DISTINCT order_id)" in sql
+    assert "COUNT(DISTINCT CASE WHEN amount IS NOT NULL THEN order_id END)" in sql
     assert "NULLIF" in sql
 
 
@@ -61,7 +61,7 @@ def test_build_symmetric_aggregate_count():
         agg_type="count",
     )
 
-    assert sql == "COUNT(DISTINCT order_id)"
+    assert sql == "COUNT(DISTINCT CASE WHEN amount IS NOT NULL THEN order_id END)"
 
 
 def test_build_symmetric_aggregate_count_distinct():
@@ -411,5 +411,89 @@ def test_preagg_grain_preserved_with_filters():
     assert rows_sorted[0][2] == 18  # 2024-01-01 total_qty (all items for date)
     assert rows_sorted[1][1] == 150  # 2024-01-02 revenue
     assert rows_sorted[1][2] == 7  # 2024-01-02 total_qty
+
+    conn.close()
+
+
+def test_filtered_count_under_fanout():
+    """Test that a filtered count metric honors its filter under fan-out.
+
+    A Metric(agg="count", filters=[...]) must not collapse to an unfiltered
+    COUNT(DISTINCT pk) when the symmetric-aggregate path is taken (fan-out via a
+    one-to-many join). The filtered count and the unfiltered count must differ.
+    """
+    conn = duckdb.connect(":memory:")
+
+    # Orders 1 & 3 completed, order 2 cancelled.
+    conn.execute("""
+        CREATE TABLE raw_orders AS
+        SELECT * FROM (VALUES
+            (1, 'completed'),
+            (2, 'cancelled'),
+            (3, 'completed')
+        ) AS t(order_id, status)
+    """)
+
+    # Items fan each order out.
+    conn.execute("""
+        CREATE TABLE raw_order_items AS
+        SELECT * FROM (VALUES
+            (1, 1, 'X'),
+            (2, 1, 'X'),
+            (3, 2, 'X'),
+            (4, 3, 'X'),
+            (5, 3, 'X')
+        ) AS t(item_id, order_id, region)
+    """)
+
+    graph = SemanticGraph()
+
+    orders = Model(
+        name="orders",
+        table="raw_orders",
+        primary_key="order_id",
+        dimensions=[Dimension(name="status", type="categorical", sql="status")],
+        metrics=[
+            Metric(name="completed_count", agg="count", filters=["{model}.status = 'completed'"]),
+            Metric(name="order_count", agg="count"),
+        ],
+        relationships=[
+            Relationship(name="order_items", type="one_to_many", sql="order_id", foreign_key="order_id"),
+        ],
+    )
+
+    order_items = Model(
+        name="order_items",
+        table="raw_order_items",
+        primary_key="item_id",
+        dimensions=[Dimension(name="region", type="categorical", sql="region")],
+        metrics=[],
+        relationships=[
+            Relationship(name="orders", type="many_to_one", foreign_key="order_id", primary_key="order_id"),
+        ],
+    )
+
+    graph.add_model(orders)
+    graph.add_model(order_items)
+
+    generator = SQLGenerator(graph)
+
+    # Grouping by an order_items dimension forces the symmetric-aggregate path.
+    sql = generator.generate(
+        metrics=["orders.completed_count", "orders.order_count"],
+        dimensions=["order_items.region"],
+    )
+
+    result = conn.execute(sql)
+    rows = fetch_rows(result)
+
+    assert len(rows) == 1
+    row = rows[0]
+    # row = (region, completed_count, order_count)
+    assert row[0] == "X"
+    assert row[1] == 2  # filtered: orders 1 & 3 are completed
+    assert row[2] == 3  # unfiltered: orders 1, 2, 3
+    # The filter must actually change the result.
+    assert row[1] != row[2]
 
     conn.close()

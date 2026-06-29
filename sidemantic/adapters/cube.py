@@ -593,6 +593,12 @@ class CubeAdapter(BaseAdapter):
                 meta["cube_type"] = "rank"
                 meta["order_by"] = measure_def.get("order_by")
                 meta["reduce_by"] = measure_def.get("reduce_by")
+                warnings.warn(
+                    f"Cube measure '{cube_name}.{name}' has type 'rank', which is not supported; "
+                    f"imported as a non-rank COUNT fallback (agg='count'). The result is a plain "
+                    f"count, NOT a rank, and no RANK() SQL is generated.",
+                    stacklevel=2,
+                )
             elif measure_type == "number_agg":
                 # Custom SQL aggregate (e.g., PERCENTILE_CONT). The sql field holds
                 # the complete aggregate expression, so leave agg=None and preserve

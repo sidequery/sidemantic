@@ -158,6 +158,7 @@ class SQLGenerator:
         use_preaggregations,
         aliases,
         skip_default_time_dimensions,
+        with_totals,
     ) -> tuple[object, ...]:
         return (
             getattr(self.graph, "_version", 0),
@@ -176,6 +177,7 @@ class SQLGenerator:
             use_preaggregations,
             self._freeze_cache_value(aliases),
             skip_default_time_dimensions,
+            with_totals,
         )
 
     def _cache_generate_result(self, cache_key: tuple[object, ...], sql: str) -> str:
@@ -583,6 +585,7 @@ class SQLGenerator:
         use_preaggregations: bool = False,
         aliases: dict[str, str] | None = None,
         skip_default_time_dimensions: bool = False,
+        with_totals: bool = False,
     ) -> str:
         """Generate SQL query from semantic layer query.
 
@@ -599,6 +602,10 @@ class SQLGenerator:
             use_preaggregations: Enable automatic pre-aggregation routing (default: False)
             aliases: Custom aliases for fields (dict mapping field reference to alias)
             skip_default_time_dimensions: If True, don't auto-include default_time_dimension
+            with_totals: If True, add a grand-total row via GROUPING SETS, marked with a
+                trailing _is_total column (1 for the grand total, 0 for detail rows) so it
+                is distinguishable from a real all-NULL dimension group. Cannot be combined
+                with ungrouped, limit, or offset
 
         Returns:
             SQL query string
@@ -630,10 +637,14 @@ class SQLGenerator:
             use_preaggregations,
             aliases,
             skip_default_time_dimensions,
+            with_totals,
         )
         cached = self._generate_cache.get(cache_key)
         if cached is not None:
             return cached
+
+        if with_totals and ungrouped:
+            raise ValueError("with_totals cannot be combined with ungrouped")
 
         # Auto-include default_time_dimension from metrics if not already present
         if not skip_default_time_dimensions:
@@ -659,13 +670,13 @@ class SQLGenerator:
             # e.g., "created_at >= 'last 7 days'"
             import re
 
-            match = re.match(r"^(.+?)\s*(>=|<=|>|<|=)\s*['\"](.+?)['\"]$", f)
+            match = re.match(r"^(.+?)\s*(>=|<=|<>|!=|>|<|=)\s*['\"](.+?)['\"]$", f)
             if match:
                 column, operator, value = match.groups()
                 if RelativeDateRange.is_relative_date(value):
                     # Convert relative date to SQL expression
-                    if operator in [">=", ">"]:
-                        # For >= or >, just use the start date
+                    if operator in [">=", ">", "<", "<="]:
+                        # For inequality comparisons, compare against the period start
                         sql_expr = RelativeDateRange.parse(value, self.dialect)
                         processed_filters.append(f"{column} {operator} {sql_expr}")
                     elif operator == "=":
@@ -676,7 +687,14 @@ class SQLGenerator:
                         else:
                             processed_filters.append(f)
                     else:
-                        processed_filters.append(f)
+                        # For != / <>, negate the full range when available
+                        range_expr = RelativeDateRange.to_range(value, column.strip(), self.dialect)
+                        if range_expr is not None:
+                            processed_filters.append(f"NOT ({range_expr})")
+                        else:
+                            # Fall back to a point comparison against the period start
+                            sql_expr = RelativeDateRange.parse(value, self.dialect)
+                            processed_filters.append(f"{column.strip()} <> {sql_expr}")
                 else:
                     processed_filters.append(f)
             else:
@@ -729,6 +747,12 @@ class SQLGenerator:
 
         needs_window_functions = any(metric_needs_window(m) for m in metrics)
 
+        if with_totals and needs_window_functions:
+            raise NotImplementedError(
+                "with_totals is not yet supported for window-function "
+                "(cumulative / time_comparison / conversion / retention / cohort) queries"
+            )
+
         if needs_window_functions:
             return self._cache_generate_result(
                 cache_key,
@@ -749,6 +773,11 @@ class SQLGenerator:
 
         # Find all models needed for the query
         model_names = self._find_required_models(metrics, dimensions, filters)
+
+        if with_totals and (use_preaggregations or self._needs_preaggregation_for_fanout(metrics, dimensions)):
+            raise NotImplementedError(
+                "with_totals is not yet supported for pre-aggregated or fanout (symmetric-aggregate) queries"
+            )
 
         if use_preaggregations and not ungrouped:
             join_key_preagg_sql = self._try_use_join_key_preaggregation(
@@ -908,6 +937,7 @@ class SQLGenerator:
             offset=offset,
             ungrouped=ungrouped,
             aliases=aliases,
+            with_totals=with_totals,
         )
 
         # Combine CTEs and main query
@@ -1153,7 +1183,15 @@ class SQLGenerator:
             try:
                 parsed = sqlglot.parse_one(filter_expr, dialect=self.dialect)
                 conjuncts = list(parsed.flatten() if isinstance(parsed, exp.And) else [parsed])
-                flat_parts.extend(c.sql(dialect=self.dialect) for c in conjuncts)
+                for c in conjuncts:
+                    # A flattened conjunct that is itself an OR (lower precedence than the
+                    # surrounding AND) must keep grouping parens, otherwise the later
+                    # ' AND '.join() rejoin in _build_model_cte / the WHERE builder changes
+                    # precedence: (A OR B) AND C would become A OR B AND C.
+                    rendered = (
+                        exp.paren(c).sql(dialect=self.dialect) if isinstance(c, exp.Or) else c.sql(dialect=self.dialect)
+                    )
+                    flat_parts.append(rendered)
             except Exception:
                 flat_parts.append(filter_expr)
 
@@ -2442,6 +2480,7 @@ class SQLGenerator:
         offset: int | None = None,
         ungrouped: bool = False,
         aliases: dict[str, str] | None = None,
+        with_totals: bool = False,
     ) -> str:
         """Build main SELECT using SQLGlot builder API.
 
@@ -2457,6 +2496,7 @@ class SQLGenerator:
             offset: Row offset
             ungrouped: If True, return raw rows without aggregation
             aliases: Custom aliases for fields (dict mapping field reference to alias)
+            with_totals: If True, add a grand-total row (all dims NULL) via GROUPING SETS
 
         Returns:
             SQL SELECT statement
@@ -2674,6 +2714,16 @@ class SQLGenerator:
         else:
             self._bsl_all_query_context = previous_bsl_all_context
 
+        # Mark the GROUPING SETS grand-total row so consumers can tell it apart from a real
+        # all-NULL dimension group. GROUPING(<dim>) is 1 for the super-aggregate (total) row
+        # and 0 for detail rows; any single grouped dimension works because the total grouping
+        # set drops them all.
+        if with_totals and parsed_dims and not ungrouped:
+            first_ref, first_gran = parsed_dims[0]
+            first_model_name, first_dim_name = first_ref.split(".")
+            first_col_name = f"{first_dim_name}__{first_gran}" if first_gran else first_dim_name
+            select_exprs.append(f"GROUPING({self._cte_ref(first_model_name, first_col_name)}) AS _is_total")
+
         # Build query using builder API
         query = select(*select_exprs).from_(self._quote_identifier(self._cte_name(base_model_name)))
 
@@ -2695,8 +2745,15 @@ class SQLGenerator:
         # Add GROUP BY (all dimensions by position)
         # Skip GROUP BY for ungrouped queries
         if parsed_dims and not ungrouped:
-            group_by_positions = list(range(1, len(parsed_dims) + 1))
-            query = query.group_by(*group_by_positions)
+            if with_totals:
+                # GROUPING SETS ((1, 2, ..., n), ()) adds one grand-total row (all dims
+                # NULL) whose aggregates are recomputed over the full raw dataset, so
+                # COUNT(DISTINCT) and composite measures stay correct.
+                positions = ", ".join(str(i) for i in range(1, len(parsed_dims) + 1))
+                query = query.group_by(f"GROUPING SETS (({positions}), ())")
+            else:
+                group_by_positions = list(range(1, len(parsed_dims) + 1))
+                query = query.group_by(*group_by_positions)
 
         # Add HAVING clause (metric filters applied after aggregation)
         if having_filters:
@@ -2799,6 +2856,34 @@ class SQLGenerator:
             return offset_map[comparison_type].get(time_granularity, 1)
 
         return 1
+
+    def _offset_window_to_lag_rows(self, offset_window: str | None, time_granularity: str | None) -> int:
+        """Convert a ratio offset_window (e.g. '3 months') to a row-based LAG offset.
+
+        Row-based, like _calculate_lag_offset: scale the window onto the result-set
+        grain. When the time dimension granularity is known it is used directly;
+        otherwise month grain is assumed (matching _calculate_lag_offset, which
+        defaults YoY to 12 rows on the assumption of monthly data). So '3 months'
+        -> 3 rows and '1 year' -> 12 rows. This is an approximation that assumes one
+        row per grain period with no gaps; sparse/irregular time series will be off
+        (same limitation as _calculate_lag_offset).
+        """
+        if not offset_window:
+            return 1
+        parts = offset_window.split()
+        if len(parts) != 2:
+            return 1
+        num_s, unit = parts
+        try:
+            num = int(num_s)
+        except ValueError:
+            return 1
+        unit = unit.lower().rstrip("s")
+        grain_days = {"day": 1, "week": 7, "month": 30, "quarter": 90, "year": 365}
+        if unit not in grain_days:
+            return 1
+        grain = time_granularity if time_granularity in grain_days else "month"
+        return max(round(num * grain_days[unit] / grain_days[grain]), 1)
 
     def _wrap_with_fill_nulls(self, sql_expr: str, metric) -> str:
         """Wrap SQL expression with COALESCE if fill_nulls_with is specified.
@@ -4965,6 +5050,7 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
 
                 # Find time dimension
                 time_dim = None
+                time_dim_gran = None
                 for dim_ref, gran in parsed_dims:
                     dim_name = dim_ref.split(".")[1] if "." in dim_ref else dim_ref
                     model_name = dim_ref.split(".")[0] if "." in dim_ref else None
@@ -4976,6 +5062,10 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
                                 time_dim = f"base.{dim_name}"
                                 if gran:
                                     time_dim = f"base.{dim_name}__{gran}"
+                                # Fall back to the dimension's own base granularity when the
+                                # query did not request an explicit __gran suffix, so an
+                                # offset_window like "7 days" maps to the right number of rows.
+                                time_dim_gran = gran or dim.granularity
                                 break
 
                 if not time_dim:
@@ -5002,9 +5092,10 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
 
                 # Add LAG for denominator - reference base.denom_alias since it's from inner query
                 # Quote alias to handle dotted names
+                lag_rows = self._offset_window_to_lag_rows(metric.offset_window, time_dim_gran)
                 prev_denom_alias = self._quote_alias(f"{m}_prev_denom")
                 lag_selects.append(
-                    f"LAG(base.{sql_identifier(denom_alias)}) OVER ({partition_clause}ORDER BY {time_dim}) AS {prev_denom_alias}"
+                    f"LAG(base.{sql_identifier(denom_alias)}, {lag_rows}) OVER ({partition_clause}ORDER BY {time_dim}) AS {prev_denom_alias}"
                 )
 
             # Build intermediate CTE - inner_query already has all the columns we need

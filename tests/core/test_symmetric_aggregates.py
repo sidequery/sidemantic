@@ -58,6 +58,16 @@ class TestBuildSymmetricAggregateSql:
         assert "HASH(line_id)" in sql
         assert "price * quantity" in sql
 
+    def test_sum_coalesces_measure(self):
+        """SUM wraps the measure in COALESCE(..., 0) to survive NULLs in fan-out."""
+        sql = build_symmetric_aggregate_sql(
+            measure_expr="amount",
+            primary_key="order_id",
+            agg_type="sum",
+        )
+
+        assert "COALESCE(amount, 0)" in sql
+
     # ==========================================================================
     # AVG aggregation tests
     # ==========================================================================
@@ -70,9 +80,9 @@ class TestBuildSymmetricAggregateSql:
             agg_type="avg",
         )
 
-        # AVG is implemented as SUM / COUNT DISTINCT pk
+        # AVG is implemented as SUM / COUNT of entities with a non-NULL value
         assert "SUM(DISTINCT" in sql
-        assert "COUNT(DISTINCT order_id)" in sql
+        assert "COUNT(DISTINCT CASE WHEN amount IS NOT NULL THEN order_id END)" in sql
         assert "NULLIF" in sql  # Prevents division by zero
         assert "/" in sql
 
@@ -87,7 +97,17 @@ class TestBuildSymmetricAggregateSql:
 
         assert "HASH(products_cte.product_id)" in sql
         assert "products_cte.price" in sql
-        assert "COUNT(DISTINCT products_cte.product_id)" in sql
+        assert "COUNT(DISTINCT CASE WHEN products_cte.price IS NOT NULL THEN products_cte.product_id END)" in sql
+
+    def test_avg_coalesces_measure(self):
+        """AVG wraps the measure in COALESCE(..., 0) to survive NULLs in fan-out."""
+        sql = build_symmetric_aggregate_sql(
+            measure_expr="amount",
+            primary_key="order_id",
+            agg_type="avg",
+        )
+
+        assert "COALESCE(amount, 0)" in sql
 
     # ==========================================================================
     # COUNT aggregation tests
@@ -96,24 +116,36 @@ class TestBuildSymmetricAggregateSql:
     def test_count_basic(self):
         """Test COUNT symmetric aggregate (counts distinct PKs)."""
         sql = build_symmetric_aggregate_sql(
-            measure_expr="*",
+            measure_expr="x_raw",
             primary_key="order_id",
             agg_type="count",
         )
 
-        # COUNT uses COUNT DISTINCT on primary key
-        assert sql == "COUNT(DISTINCT order_id)"
+        # COUNT counts distinct PKs, gated on the raw measure being non-NULL so
+        # any metric-level filter baked into the raw column is honored.
+        assert sql == "COUNT(DISTINCT CASE WHEN x_raw IS NOT NULL THEN order_id END)"
 
     def test_count_with_model_alias(self):
         """Test COUNT with table alias."""
         sql = build_symmetric_aggregate_sql(
-            measure_expr="*",
+            measure_expr="x_raw",
             primary_key="id",
             agg_type="count",
             model_alias="events_cte",
         )
 
-        assert sql == "COUNT(DISTINCT events_cte.id)"
+        assert sql == "COUNT(DISTINCT CASE WHEN events_cte.x_raw IS NOT NULL THEN events_cte.id END)"
+
+    def test_count_star_is_unfiltered(self):
+        """COUNT(*) has no per-row value, so it counts distinct PKs without a CASE gate."""
+        sql = build_symmetric_aggregate_sql(
+            measure_expr="*",
+            primary_key="order_id",
+            agg_type="count",
+        )
+
+        # Must not render an invalid `CASE WHEN * IS NOT NULL`.
+        assert sql == "COUNT(DISTINCT order_id)"
 
     # ==========================================================================
     # COUNT DISTINCT aggregation tests
@@ -175,12 +207,40 @@ class TestBuildSymmetricAggregateSql:
         assert sql == "MIN(orders_cte.amount)"
 
     def test_median_raises_with_helpful_message(self):
-        """Test that MEDIAN raises ValueError with guidance."""
-        with pytest.raises(ValueError, match="do not support MEDIAN"):
+        """Test that MEDIAN raises ValueError naming the agg and the workaround."""
+        with pytest.raises(ValueError, match="MEDIAN") as exc_info:
             build_symmetric_aggregate_sql(
                 measure_expr="amount",
                 primary_key="order_id",
                 agg_type="median",
+            )
+        message = str(exc_info.value)
+        assert "fan-out" in message
+        assert "pre-aggregate" in message
+
+    @pytest.mark.parametrize("agg", ["stddev", "stddev_pop", "variance", "variance_pop"])
+    def test_stddev_variance_raise_actionable_error(self, agg):
+        """stddev/variance family raises an actionable error, not the opaque catch-all."""
+        with pytest.raises(ValueError) as exc_info:
+            build_symmetric_aggregate_sql(
+                measure_expr="amount",
+                primary_key="order_id",
+                agg_type=agg,
+            )
+        message = str(exc_info.value)
+        # Names the specific agg and the workaround, and is NOT the old opaque message.
+        assert agg.upper() in message
+        assert "fan-out" in message
+        assert "pre-aggregate" in message
+        assert "Unsupported aggregation type" not in message
+
+    def test_truly_unknown_agg_still_generic(self):
+        """A genuinely unknown agg still hits the defensive catch-all message."""
+        with pytest.raises(ValueError, match="Unsupported aggregation type"):
+            build_symmetric_aggregate_sql(
+                measure_expr="amount",
+                primary_key="order_id",
+                agg_type="not_a_real_agg",
             )
 
     # ==========================================================================
@@ -307,7 +367,7 @@ class TestBuildSymmetricAggregateSql:
         )
 
         assert "FARM_FINGERPRINT" in sql
-        assert "COUNT(DISTINCT order_id)" in sql
+        assert "COUNT(DISTINCT CASE WHEN amount IS NOT NULL THEN order_id END)" in sql
         assert "NULLIF" in sql
 
 
@@ -438,10 +498,12 @@ class TestSymmetricAggregateExecution:
             ) AS t(order_id, customer_id)
         """)
 
-        # Join creates fan-out (Alice has 3 orders, Bob has 1)
+        # Join creates fan-out (Alice has 3 orders, Bob has 1).
+        # measure_raw mirrors the generator's `1 AS <measure>_raw` for an
+        # unfiltered count (never NULL).
         conn.execute("""
             CREATE VIEW joined_data AS
-            SELECT c.customer_id, c.name, o.order_id
+            SELECT c.customer_id, c.name, o.order_id, 1 AS measure_raw
             FROM customers c
             JOIN orders o ON c.customer_id = o.customer_id
         """)
@@ -452,7 +514,7 @@ class TestSymmetricAggregateExecution:
 
         # Symmetric COUNT gives correct customer count
         symmetric_sql = build_symmetric_aggregate_sql(
-            measure_expr="*",
+            measure_expr="measure_raw",
             primary_key="customer_id",
             agg_type="count",
         )
@@ -629,6 +691,90 @@ class TestSymmetricAggregateExecution:
         result = conn.execute(f"SELECT {symmetric_sql} FROM joined_data").fetchone()[0]
         # NULL treated as 0: 100 + 0 + 50 = 150
         assert result == 150
+
+    def test_null_measure_auto_coalesced_in_sum(self, conn):
+        """NULL measure values are auto-coalesced to 0 in the SUM symmetric aggregate.
+
+        Without the COALESCE baked into the helper, order 2's NULL would drop its
+        value-bearing row from the first SUM while its hash term survives in the
+        subtractor, leaving a huge HASH*multiplier (~-2.27e30) in the result.
+        """
+        conn.execute("""
+            CREATE TABLE orders AS
+            SELECT * FROM (VALUES
+                (1, 100),
+                (2, NULL),
+                (3, 50)
+            ) AS t(order_id, amount)
+        """)
+
+        conn.execute("""
+            CREATE TABLE order_items AS
+            SELECT * FROM (VALUES
+                (1, 1),
+                (2, 1),
+                (3, 2),
+                (4, 3)
+            ) AS t(item_id, order_id)
+        """)
+
+        conn.execute("""
+            CREATE VIEW joined_data AS
+            SELECT o.order_id, o.amount, i.item_id
+            FROM orders o
+            JOIN order_items i ON o.order_id = i.order_id
+        """)
+
+        # No manual COALESCE - the helper coalesces the measure for us.
+        symmetric_sql = build_symmetric_aggregate_sql(
+            measure_expr="amount",
+            primary_key="order_id",
+            agg_type="sum",
+        )
+
+        result = conn.execute(f"SELECT {symmetric_sql} FROM joined_data").fetchone()[0]
+        # NULL treated as 0: 100 + 0 + 50 = 150
+        assert result == 150
+
+    def test_null_measure_auto_coalesced_in_avg(self, conn):
+        """NULL measure values are auto-coalesced to 0 in the AVG symmetric aggregate."""
+        conn.execute("""
+            CREATE TABLE orders AS
+            SELECT * FROM (VALUES
+                (1, 100),
+                (2, NULL),
+                (3, 50)
+            ) AS t(order_id, amount)
+        """)
+
+        conn.execute("""
+            CREATE TABLE order_items AS
+            SELECT * FROM (VALUES
+                (1, 1),
+                (2, 1),
+                (3, 2),
+                (4, 3)
+            ) AS t(item_id, order_id)
+        """)
+
+        conn.execute("""
+            CREATE VIEW joined_data AS
+            SELECT o.order_id, o.amount, i.item_id
+            FROM orders o
+            JOIN order_items i ON o.order_id = i.order_id
+        """)
+
+        # No manual COALESCE - the helper coalesces the measure for us.
+        symmetric_sql = build_symmetric_aggregate_sql(
+            measure_expr="amount",
+            primary_key="order_id",
+            agg_type="avg",
+        )
+
+        result = conn.execute(f"SELECT {symmetric_sql} FROM joined_data").fetchone()[0]
+        # SQL AVG ignores NULLs: the NULL-amount order is excluded from BOTH the
+        # numerator (coalesced to 0) and the denominator, so (100 + 50) / 2 = 75.0.
+        assert result == 75.0
 
     def test_empty_result_set(self, conn):
         """Test symmetric aggregate on empty result set."""
@@ -940,7 +1086,11 @@ class TestSymmetricAggregateEdgeCases:
         assert result == 450  # 100 + 200 + 150
 
     def test_all_null_measures(self, conn):
-        """Test when all measure values are NULL."""
+        """Test when all measure values are NULL.
+
+        NULLs are auto-coalesced to 0 inside the symmetric SUM, so a non-empty
+        group of all-NULL measures now sums to 0 (matches "treat missing as 0").
+        """
         conn.execute("""
             CREATE TABLE orders AS
             SELECT * FROM (VALUES
@@ -971,7 +1121,7 @@ class TestSymmetricAggregateEdgeCases:
         )
 
         result = conn.execute(f"SELECT {symmetric_sql} FROM joined_data").fetchone()[0]
-        assert result is None
+        assert result == 0
 
     def test_avg_with_zero_count(self, conn):
         """Test AVG returns NULL when count is zero (empty set)."""

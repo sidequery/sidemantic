@@ -97,3 +97,11 @@ def test_approx_count_distinct_cube_round_trip(tmp_path):
     assert "count_distinct_approx" in out.read_text()
     reimported = CubeAdapter().parse(str(out))
     assert reimported.get_model("orders").get_metric("uu").agg == "approx_count_distinct"
+
+
+def test_migrator_approx_agg_names_are_valid_metric_aggs():
+    """Migrator approx agg names produce valid Metric aggregations, not crashes."""
+    # The migrator maps approxdistinct -> approx_count_distinct and
+    # approxquantile -> median. Both must be constructible Metric aggs.
+    assert Metric(name="m1", agg="approx_count_distinct", sql="user_id").agg == "approx_count_distinct"
+    assert Metric(name="m2", agg="median", sql="amount").agg == "median"

@@ -267,6 +267,66 @@ def test_sql_compilation_preserves_zero_limit_and_offset(layer):
     assert "\nOFFSET 0" in sql
 
 
+def test_query_offset_pages_results(layer):
+    layer.conn.execute("CREATE TABLE orders (order_id INTEGER, status VARCHAR)")
+    layer.conn.execute("INSERT INTO orders VALUES (1,'a'),(2,'b'),(3,'c'),(4,'d'),(5,'e')")
+    layer.add_model(
+        Model(
+            name="orders",
+            table="orders",
+            primary_key="order_id",
+            dimensions=[Dimension(name="status", type="categorical")],
+            metrics=[Metric(name="count", agg="count")],
+        )
+    )
+
+    # query() now accepts offset and pages correctly
+    rows = df_rows(
+        layer.query(
+            dimensions=["orders.status"],
+            order_by=["orders.status"],
+            limit=2,
+            offset=2,
+        )
+    )
+    assert rows == [("c",), ("d",)]
+
+    # offset matches what compile() emits
+    sql = layer.compile(dimensions=["orders.status"], order_by=["orders.status"], limit=2, offset=2)
+    assert "\nOFFSET 2" in sql
+
+
+@pytest.mark.parametrize(
+    "default_limit,max_limit,explicit_limit,expected_limit",
+    [
+        (None, None, None, None),  # off: no cap, no default
+        (None, None, 5, 5),  # off: explicit limit untouched
+        (100, None, None, 100),  # default applies when no explicit limit
+        (100, None, 5, 5),  # explicit limit overrides default
+        (None, 50, 1000, 50),  # max caps an explicit limit
+        (None, 50, 10, 10),  # max leaves a below-cap limit alone
+        (100, 50, None, 50),  # default applies then is capped by max
+    ],
+)
+def test_row_limit_cap(default_limit, max_limit, explicit_limit, expected_limit):
+    """Opt-in default_limit/max_limit row caps; defaults of None keep behavior unchanged."""
+    layer = SemanticLayer(default_limit=default_limit, max_limit=max_limit)
+    layer.add_model(
+        Model(
+            name="orders",
+            table="orders",
+            primary_key="order_id",
+            dimensions=[Dimension(name="status", type="categorical")],
+            metrics=[Metric(name="count", agg="count")],
+        )
+    )
+    sql = layer.compile(dimensions=["orders.status"], limit=explicit_limit)
+    if expected_limit is None:
+        assert "LIMIT" not in sql.upper()
+    else:
+        assert f"LIMIT {expected_limit}" in sql
+
+
 def test_multi_model_query(layer):
     """Test query across multiple models."""
     orders = Model(

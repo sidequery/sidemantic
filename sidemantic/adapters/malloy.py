@@ -521,11 +521,17 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
                         break
             if depth != 0:
                 return None
-            # Include a leading function-name identifier, e.g. the `lower` in `lower(x)`.
-            start = k
-            while start > 0 and (s[start - 1].isalnum() or s[start - 1] in "_.`"):
-                start -= 1
-            return start
+            # Include a leading function-name identifier, allowing optional
+            # whitespace before the parenthesis (e.g. `lower(x)` or `lower (x)`).
+            ident_end = k
+            while ident_end > 0 and s[ident_end - 1] == " ":
+                ident_end -= 1
+            if ident_end > 0 and (s[ident_end - 1].isalnum() or s[ident_end - 1] in "_.`"):
+                start = ident_end
+                while start > 0 and (s[start - 1].isalnum() or s[start - 1] in "_.`"):
+                    start -= 1
+                return start
+            return k
         start = end
         while start > 0 and (s[start - 1].isalnum() or s[start - 1] in "_.`"):
             start -= 1
@@ -1506,6 +1512,10 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
                 return qualifier, column
             return None, tok
 
+        def is_literal(tok: str) -> bool:
+            low = tok.lower()
+            return low in ("true", "false", "null") or tok.replace(".", "", 1).isdigit()
+
         keys: list[str] = []
         for cond in re.split(r"\s+and\s+", expr_text, flags=re.IGNORECASE):
             m = re.match(r"\s*([\w.`]+)\s*=\s*([\w.`]+)\s*$", cond)
@@ -1513,6 +1523,11 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
                 continue
             lq, lc = split_qualifier(m.group(1))
             rq, rc = split_qualifier(m.group(2))
+
+            # A `col = literal` equality (e.g. `customers.active = true`) is a
+            # filter predicate, not a join key, so it contributes no foreign key.
+            if is_literal(lc) or is_literal(rc):
+                continue
 
             # Identify which side belongs to the join target.
             if lq == target_name:

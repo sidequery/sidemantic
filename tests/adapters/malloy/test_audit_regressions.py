@@ -473,3 +473,24 @@ def test_many_to_many_exports_as_join_many():
     text = _export_text(g)
     assert "join_many: tags with tag_id" in text
     assert "join_one: tags" not in text
+
+
+def test_regex_match_handles_spaced_function_call():
+    assert (
+        _dim_sql("source: o is duckdb.table('o') extend {\n  dimension: a is lower (name) ~ r'foo'\n}\n", "a")
+        == "REGEXP_MATCHES(lower (name), 'foo')"
+    )
+
+
+def test_join_on_condition_skips_literal_predicate():
+    g = _parse(
+        "source: customers is duckdb.table('c') extend { primary_key: id }\n"
+        "source: orders is duckdb.table('o') extend {\n"
+        "  primary_key: id\n"
+        "  join_one: customers is duckdb.table('c') on customers.active = true and customer_id = customers.id\n"
+        "}\n"
+    )
+    rel = {r.name: r for r in g.get_model("orders").relationships}["customers"]
+    # The `customers.active = true` filter must not become the foreign key.
+    assert rel.foreign_key == "customer_id"
+    assert rel.metadata.get("composite_keys") is None

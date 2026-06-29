@@ -1,5 +1,6 @@
 """LookML adapter for importing Looker semantic models."""
 
+import logging
 import re
 from pathlib import Path
 
@@ -9,6 +10,8 @@ from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
+
+logger = logging.getLogger(__name__)
 
 
 def _import_lkml():
@@ -193,107 +196,429 @@ class LookMLAdapter(BaseAdapter):
 
         return resolved
 
-    def _convert_lookml_filter_to_sql(self, field: str, value: str) -> str:
-        """Convert a LookML filter value to SQL condition.
+    # Plain decimal numeric literal: optional sign, then digits with optional fraction,
+    # or a bare fraction. Deliberately excludes Python-/float()-only spellings that this
+    # converter (which does not know the field type) cannot safely emit unquoted:
+    # nan/inf/Infinity, exponents (1e2), and underscores (1_000) -- a string filter value
+    # like "1e2" must stay a quoted literal, not become `= 1e2`.
+    _NUMERIC_LITERAL_RE = re.compile(r"[+-]?(\d+(\.\d*)?|\.\d+)")
 
-        Handles LookML filter syntax:
-        - "value" -> field = 'value'
-        - "val1,val2,val3" -> field IN ('val1', 'val2', 'val3')
-        - "-value" -> field != 'value' (negation)
-        - "-val1,-val2" -> field NOT IN ('val1', 'val2')
-        - "yes"/"no" -> field = true/false (for yesno dimensions)
-        - ">100", ">=50", "<10", "<=5", "!=0" -> numeric comparisons
-        - "%pattern%" -> field LIKE '%pattern%' (wildcards)
-        - "NULL" -> field IS NULL
-        - "-NULL" -> field IS NOT NULL
-        - "EMPTY" -> field = ''
-        - "-EMPTY" -> field != ''
+    @classmethod
+    def _filter_is_number(cls, s: str) -> bool:
+        """True if ``s`` is a plain decimal numeric literal (signed / fractional)."""
+        return bool(cls._NUMERIC_LITERAL_RE.fullmatch(s.strip()))
 
-        Args:
-            field: The field name
-            value: The LookML filter value
+    @staticmethod
+    def _numeric_range_bounds(s: str):
+        """Parse a Looker numeric range/interval into ``(lo, lo_incl, hi, hi_incl)``.
 
-        Returns:
-            SQL condition string
+        Handles ``a to b`` / ``a to`` / ``to b`` (inclusive both ends) and bracket
+        intervals ``[a,b] (a,b) [a,b) (a,b]``. An empty bound -- or an explicit
+        ``inf`` / ``-inf`` (Looker's open-ended notation) -- is ``None`` (open).
+        Returns ``None`` if ``s`` is not a numeric range.
         """
-        # Handle NULL special values
-        if value.upper() == "NULL":
-            return f"{{model}}.{field} IS NULL"
-        if value.upper() == "-NULL":
-            return f"{{model}}.{field} IS NOT NULL"
+        s = s.strip()
+        num = r"(-?\d*\.?\d*|[+-]?inf)"
 
-        # Handle EMPTY special values
-        if value.upper() == "EMPTY":
-            return f"{{model}}.{field} = ''"
-        if value.upper() == "-EMPTY":
-            return f"{{model}}.{field} != ''"
+        def norm(b):
+            b = (b or "").strip()
+            return None if b == "" or b.lower().lstrip("+-") == "inf" else b
 
-        # Handle yes/no boolean values
-        if value.lower() == "yes":
-            return f"{{model}}.{field} = true"
-        if value.lower() == "no":
-            return f"{{model}}.{field} = false"
+        m = re.match(rf"(?i)^([\[\(])\s*{num}\s*,\s*{num}\s*([\]\)])$", s)
+        if m:
+            lb, lo, hi, rb = m.groups()
+            lo, hi = norm(lo), norm(hi)
+            return None if lo is None and hi is None else (lo, lb == "[", hi, rb == "]")
+        m = re.match(rf"(?i)^{num}\s*to\s*{num}$", s)
+        if m:
+            lo, hi = norm(m.group(1)), norm(m.group(2))
+            return None if lo is None and hi is None else (lo, True, hi, True)
+        return None
 
-        # Check if this is a comma-separated list of values (OR condition)
-        # But be careful: ">100,<200" is two comparison operators, not a list
+    @staticmethod
+    def _range_sql(bounds, col: str) -> str:
+        """SQL for an inclusive/exclusive numeric range (``col >= a AND col <= b``)."""
+        lo, lo_incl, hi, hi_incl = bounds
+        conds = []
+        if lo is not None:
+            conds.append(f"{col} >{'=' if lo_incl else ''} {lo}")
+        if hi is not None:
+            conds.append(f"{col} <{'=' if hi_incl else ''} {hi}")
+        return conds[0] if len(conds) == 1 else "(" + " AND ".join(conds) + ")"
+
+    @staticmethod
+    def _range_sql_negated(bounds, col: str) -> str:
+        """SQL for the negation of a numeric range (``col < a OR col > b``)."""
+        lo, lo_incl, hi, hi_incl = bounds
+        conds = []
+        if lo is not None:
+            conds.append(f"{col} <{'' if lo_incl else '='} {lo}")
+        if hi is not None:
+            conds.append(f"{col} >{'' if hi_incl else '='} {hi}")
+        return conds[0] if len(conds) == 1 else "(" + " OR ".join(conds) + ")"
+
+    @staticmethod
+    def _split_top_level_commas(s: str) -> list[str]:
+        """Split on commas that are NOT inside ``[...]``/``(...)`` brackets."""
+        out, cur, depth = [], "", 0
+        for ch in s:
+            if ch in "[(":
+                depth += 1
+            elif ch in ")]":
+                depth = max(0, depth - 1)
+            if ch == "," and depth == 0:
+                out.append(cur)
+                cur = ""
+            else:
+                cur += ch
+        out.append(cur)
+        return [x.strip() for x in out if x.strip() != ""]
+
+    # Tokens that mark a value as a LookML date/interval filter expression
+    # (e.g. "last 7 days", "3 months ago", "this year"). These are not yet
+    # translated to SQL; we warn rather than silently string-comparing them.
+    _DATE_FILTER_RE = re.compile(
+        r"(?i)\b(ago|day|days|week|weeks|month|months|year|years|quarter|quarters|"
+        r"hour|hours|minute|minutes|second|seconds|today|yesterday|tomorrow|now|fiscal|"
+        r"before|after|"
+        r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
+        r"week|month|year)\b"
+    )
+
+    def _convert_lookml_filter_to_sql(self, field: str, value: str) -> str:
+        """Convert a LookML filter value to a SQL condition.
+
+        Implements the representable parts of Looker's filter expression
+        language (https://cloud.google.com/looker/docs/filter-expressions):
+
+        - ``value`` -> ``field = 'value'`` (single quotes escaped)
+        - ``a,b,c`` -> ``field IN ('a','b','c')`` (numeric: unquoted)
+        - ``-value`` / ``not value`` -> ``field <> 'value'``
+        - ``-a,-b`` -> ``field NOT IN ('a','b')``
+        - ``-%pat%`` / ``not %pat%`` -> ``field NOT LIKE '%pat%'``
+        - ``yes`` / ``no`` -> ``field = true`` / ``field = false``
+        - ``>100``, ``>=5``, ``<=5``, ``<10``, ``!=0``, ``<>0`` -> comparisons
+        - ``5 to 10`` -> ``field >= 5 AND field <= 10`` (open: ``5 to`` / ``to 10``)
+        - ``[1,10]`` ``(1,10)`` ``[1,10)`` ``(1,10]`` -> inclusive/exclusive ranges
+        - ``%pat%`` / ``_at`` -> ``field LIKE '%pat%'``
+        - ``NULL`` / ``-NULL`` -> ``IS NULL`` / ``IS NOT NULL``
+        - ``EMPTY`` -> ``(field IS NULL OR field = '')`` (and the negation)
+        - ``before X`` / ``after X`` -> ``field < X`` / ``field > X``
+        - mixed comma lists (operators/wildcards) -> includes OR'd, excludes AND'd
+
+        Date/interval expressions (``last 7 days``, ``3 months ago`` ...) are not
+        yet translated: they emit a literal equality but log a warning so the
+        silent zero-row match is at least surfaced.
+        """
+        col = f"{{model}}.{field}"
+
+        def q(s: str) -> str:
+            return "'" + s.replace("'", "''") + "'"
+
+        is_number = self._filter_is_number
+
+        # Shared numeric grammar (matches _filter_is_number, incl. bare fractions like .5):
+        # _num is a plain decimal literal; _cmp is a single comparison "<op> <number>".
+        _num = r"[+-]?(?:\d+\.?\d*|\.\d+)"
+        _cmp = rf"(?:>=|<=|!=|<>|>|<)\s*{_num}"
+
+        def _is_numeric_and_range(s: str) -> bool:
+            """True if ``s`` is an AND-joined chain of numeric comparisons (">1 AND <100")."""
+            if not re.search(r"(?i)\sand\s", s):
+                return False
+            arms = [a.strip() for a in re.split(r"(?i)\s+and\s+", s)]
+            return len(arms) > 1 and all(re.fullmatch(_cmp, a) for a in arms)
+
+        def single(v: str) -> str:
+            """Convert one (non-list) LookML filter token to a SQL condition."""
+            v = v.strip()
+            up = v.upper()
+            if up == "NULL":
+                return f"{col} IS NULL"
+            if up == "-NULL":
+                return f"{col} IS NOT NULL"
+            if up == "EMPTY":
+                return f"({col} IS NULL OR {col} = '')"
+            if up == "-EMPTY":
+                return f"({col} IS NOT NULL AND {col} <> '')"
+            if v.lower() == "yes":
+                return f"{col} = true"
+            if v.lower() == "no":
+                return f"{col} = false"
+
+            # Negation. Looker uses "-FOO" for STRING negation; the word "not" is only
+            # for the number/null/range filter forms. So a bare string like
+            # `not started` is a LITERAL value, not a negation, and must fall through.
+            nm = re.match(r"(?i)^not\s+(.+)$", v)
+            neg_word = nm.group(1).strip() if nm else None
+            neg_dash = (
+                v[1:] if (v.startswith("-") and len(v) > 1 and not re.match(r"^-(>=|<=|!=|<>|>|<|\d|\.)", v)) else None
+            )
+            neg = neg_word if neg_word is not None else neg_dash
+            if neg is not None:
+                # "NOT NULL" / "NOT EMPTY" are null/empty checks, same as -NULL / -EMPTY.
+                if neg.upper() == "NULL":
+                    return f"{col} IS NOT NULL"
+                if neg.upper() == "EMPTY":
+                    return f"({col} IS NOT NULL AND {col} <> '')"
+                if ("%" in neg or "_" in neg) and neg_dash is not None:
+                    # Only the "-%pat%" dash form negates a wildcard. The word form
+                    # "not %complete%" is a literal string pattern (Looker negates strings
+                    # with "-"), so let it fall through to a positive LIKE below.
+                    return f"{col} NOT LIKE {q(neg)}"
+                # NOT of an AND-range -> De Morgan: OR of each flipped comparison, e.g.
+                # "NOT >1 AND <100" -> (f <= 1 OR f >= 100). Checked before the single
+                # comparison flip, which would otherwise read ">1 AND <100" as one operand.
+                _flip = {">": "<=", ">=": "<", "<": ">=", "<=": ">", "!=": "=", "<>": "="}
+                if _is_numeric_and_range(neg):
+                    flipped = []
+                    for s in re.split(r"(?i)\s+and\s+", neg):
+                        sm = re.match(r"^(>=|<=|!=|<>|>|<)\s*(.+)$", s.strip())
+                        flipped.append(f"{col} {_flip[sm.group(1)]} {sm.group(2).strip()}")
+                    return "(" + " OR ".join(flipped) + ")"
+                # NOT of a comparison -> flip the operator, e.g. "NOT >1" -> "f <= 1".
+                ncmp = re.match(r"^(>=|<=|!=|<>|>|<)\s*(.+)$", neg)
+                if ncmp:
+                    _flip = {">": "<=", ">=": "<", "<": ">=", "<=": ">", "!=": "=", "<>": "="}
+                    nop, noperand = ncmp.group(1), ncmp.group(2).strip()
+                    return f"{col} {_flip[nop]} {noperand if is_number(noperand) else q(noperand)}"
+                # NOT of a numeric range/interval -> the inverted (outside) condition,
+                # e.g. "NOT 3 to 80" -> (f < 3 OR f > 80).
+                neg_range = self._numeric_range_bounds(neg)
+                if neg_range:
+                    return self._range_sql_negated(neg_range, col)
+                if is_number(neg):
+                    return f"{col} != {neg}"
+                # Plain string: only "-FOO" negates a string; "not foo" is a literal
+                # value, so let it fall through to the default string-equality below.
+                if neg_dash is not None:
+                    return f"{col} != {q(neg)}"
+
+            # before / after <value>. Per Looker, "before" is exclusive and "after"
+            # is inclusive. Only translate ABSOLUTE bounds (a number, or a full Looker
+            # absolute date: YYYY, YYYY-MM, or YYYY-MM-DD with zero-padded 2-digit
+            # parts, "/" or "-" separators). Truncated/relative operands ("2016-1",
+            # "3 days ago", "Monday") aren't absolute and fall through to the
+            # date-expression warning rather than a wrong literal comparison.
+            bm = re.match(r"(?i)^(before|after)\s+(.+)$", v)
+            if bm:
+                operand = bm.group(2).strip()
+                is_abs_date = re.fullmatch(r"\d{4}([-/]\d{2}([-/]\d{2})?)?", operand)
+                if is_number(operand) or is_abs_date:
+                    op = "<" if bm.group(1).lower() == "before" else ">="
+                    rhs = operand if is_number(operand) else q(operand)
+                    return f"{col} {op} {rhs}"
+
+            def _is_numeric_clause(s: str) -> bool:
+                # A clause is numeric if it is a comparison, a numeric range, a bare number,
+                # or an AND-range whose arms are ALL numeric comparisons. It must NOT count
+                # a clause merely because it contains the word "and" ("red and blue" is a
+                # string literal, not a numeric AND-range).
+                s = s.strip()
+                return bool(
+                    re.fullmatch(_cmp, s) or self._numeric_range_bounds(s) or is_number(s) or _is_numeric_and_range(s)
+                )
+
+            # OR of numeric sub-filters, e.g. ">10 AND <=20 OR 90" or "3 to 10 OR 30 to 100"
+            # (OR binds loosest). Range branches must go through _range_sql, not single(),
+            # which only handles non-range tokens.
+            if re.search(r"(?i)\sor\s", v):
+                or_parts = [s.strip() for s in re.split(r"(?i)\s+or\s+", v)]
+                if len(or_parts) > 1 and all(_is_numeric_clause(p) for p in or_parts):
+                    rendered = []
+                    for p in or_parts:
+                        pr = self._numeric_range_bounds(p)
+                        rendered.append(self._range_sql(pr, col) if pr else single(p))
+                    return "(" + " OR ".join(rendered) + ")"
+
+            # Numeric AND range in a single condition, e.g. ">1 AND <100". Each part
+            # must FULLY be a numeric comparison, so values like "<=20 OR 90" (which
+            # carry their own OR) are not misread as a clean AND range.
+            if re.search(r"(?i)\sand\s", v):
+                subs = [s.strip() for s in re.split(r"(?i)\s+and\s+", v)]
+                if len(subs) > 1 and all(re.fullmatch(_cmp, s) for s in subs):
+                    return "(" + " AND ".join(single(s) for s in subs) + ")"
+
+            # comparison operators ">=", "<=", "!=", "<>", ">", "<"
+            cm = re.match(r"^(>=|<=|!=|<>|>|<)\s*(.+)$", v)
+            if cm:
+                operator, operand = cm.group(1), cm.group(2).strip()
+                if operator == "<>":
+                    operator = "!="
+                rhs = operand if is_number(operand) else q(operand)
+                return f"{col} {operator} {rhs}"
+
+            # wildcard LIKE
+            if "%" in v or "_" in v:
+                return f"{col} LIKE {q(v)}"
+
+            # numeric equality (incl. negative numbers)
+            if is_number(v):
+                return f"{col} = {v}"
+
+            # date/interval expression we cannot translate yet -> warn instead of
+            # silently emitting a string equality that matches zero rows.
+            if self._DATE_FILTER_RE.search(v):
+                logger.warning(
+                    "LookML date/interval filter %r on field %r is not translated to SQL; "
+                    "emitting a literal equality (will not match as Looker intends).",
+                    v,
+                    field,
+                )
+
+            return f"{col} = {q(v)}"
+
+        value = (value or "").strip()
+
+        def _is_exclusion(p: str) -> bool:
+            # A list token is an exclusion only when single() actually negates it -- the
+            # "-FOO" dash form, or the word "not" applied to a null/empty/numeric/range/
+            # comparison form. Word "not" before a bare STRING ("not started") is a literal
+            # value (an include), not an exclusion.
+            if p.startswith("-") and len(p) > 1 and not re.match(r"^-(\d|\.)", p):
+                return True
+            nm2 = re.match(r"(?i)^not\s+(.+)$", p)
+            if not nm2:
+                return False
+            operand = nm2.group(1).strip()
+            return bool(
+                operand.upper() in ("NULL", "EMPTY")
+                or is_number(operand)
+                or self._numeric_range_bounds(operand)
+                or re.match(r"^(>=|<=|!=|<>|>|<)\s*-?\d", operand)
+            )
+
+        # Numeric interval / range: "[a,b]", "(a,b)", "a to b", "a to", "to b".
+        single_range = self._numeric_range_bounds(value)
+        if single_range:
+            return self._range_sql(single_range, col)
+
+        # Negated interval / range: "NOT (3,12)" / "NOT 3 to 12" -> inverted condition.
+        # Handled here (before comma splitting) so the interval's comma is not split.
+        not_range = re.match(r"(?i)^not\s+(.+)$", value)
+        if not_range:
+            nr = self._numeric_range_bounds(not_range.group(1).strip())
+            if nr:
+                return self._range_sql_negated(nr, col)
+
+        # Numeric range LIST: bracket intervals ("[0,9],[20,29]") or "to"-ranges
+        # ("1 to 10, 20 to 30"), optionally mixed with plain values and exclusions.
+        # Split only on top-level commas so commas inside brackets are preserved. A
+        # LEADING "NOT" negates the WHOLE list (De Morgan), so defer that to the comma-list
+        # leading-NOT branch -- otherwise "NOT [0,10], 20 to 30" would mis-handle here.
+        if "," in value and not re.match(r"(?i)^not\s", value):
+            segs = self._split_top_level_commas(value)
+            if any(self._numeric_range_bounds(s) for s in segs):
+                # OR the positive alternatives (ranges + plain values), AND the exclusions
+                # ("NOT 20" / "-x"): Looker numeric lists combine alternatives then exclude.
+                includes, excludes = [], []
+                for s in segs:
+                    r = self._numeric_range_bounds(s)
+                    if r:
+                        includes.append(self._range_sql(r, col))
+                    elif _is_exclusion(s):
+                        excludes.append(single(s))
+                    else:
+                        includes.append(single(s))
+                clauses = []
+                if includes:
+                    clauses.append("(" + " OR ".join(includes) + ")" if len(includes) > 1 else includes[0])
+                clauses.extend(excludes)
+                return "(" + " AND ".join(clauses) + ")" if len(clauses) > 1 else clauses[0]
+
+        # Comma-separated list
         if "," in value:
-            parts = [p.strip() for p in value.split(",")]
+            parts = [p.strip() for p in value.split(",") if p.strip() != ""]
 
-            # Check if all parts are negations (NOT IN)
-            if all(p.startswith("-") for p in parts):
-                # Remove the - prefix from each
-                clean_parts = [p[1:] for p in parts]
-                # Check if they're all simple strings (not operators)
-                if all(not re.match(r"^(>=|<=|!=|<>|>|<)", p) for p in clean_parts):
-                    quoted = ", ".join(f"'{p}'" for p in clean_parts)
-                    return f"{{model}}.{field} NOT IN ({quoted})"
+            def is_plain(p: str) -> bool:
+                return (
+                    not p.startswith("-")
+                    and not re.match(r"^(>=|<=|!=|<>|>|<)", p)
+                    and not re.match(r"(?i)^not\s", p)
+                    and "%" not in p
+                    and "_" not in p
+                )
 
-            # Check if all parts are simple values (no operators) -> IN clause
-            if all(not p.startswith("-") and not re.match(r"^(>=|<=|!=|<>|>|<)", p) for p in parts):
-                # Check if all parts are numeric
-                if all(p.replace(".", "").replace("-", "").isdigit() for p in parts):
-                    # Numeric IN clause (no quotes)
-                    return f"{{model}}.{field} IN ({', '.join(parts)})"
-                else:
-                    # String IN clause (with quotes)
-                    quoted = ", ".join(f"'{p}'" for p in parts)
-                    return f"{{model}}.{field} IN ({quoted})"
+            def is_neg_plain(p: str) -> bool:
+                return p.startswith("-") and "%" not in p[1:] and "_" not in p[1:] and not re.match(r"^-(\d|\.)", p)
 
-            # Mixed operators - this is actually multiple filter conditions
-            # LookML doesn't really support this in a single filter value
-            # Fall through to single value handling (will be slightly wrong but safer)
+            # A single leading "NOT" negates the whole list: "NOT 1, 2, 3" -> NOT IN (1, 2, 3).
+            _flip = {">": "<=", ">=": "<", "<": ">=", "<=": ">", "!=": "=", "<>": "="}
 
-        # Handle negation prefix for single values
-        if value.startswith("-") and not re.match(r"^-(>=|<=|!=|<>|>|<|\d)", value):
-            negated_value = value[1:]
-            if negated_value.replace(".", "").replace("-", "").isdigit():
-                return f"{{model}}.{field} != {negated_value}"
-            else:
-                return f"{{model}}.{field} != '{negated_value}'"
+            def negate(p: str) -> str | None:
+                """SQL for NOT(p) where p is an AND-range, comparison, range, or number."""
+                if _is_numeric_and_range(p):
+                    # De Morgan: NOT(a AND b) -> (NOT a OR NOT b).
+                    flipped = []
+                    for s in re.split(r"(?i)\s+and\s+", p):
+                        sm = re.match(r"^(>=|<=|!=|<>|>|<)\s*(.+)$", s.strip())
+                        flipped.append(f"{col} {_flip[sm.group(1)]} {sm.group(2).strip()}")
+                    return "(" + " OR ".join(flipped) + ")"
+                cm2 = re.match(r"^(>=|<=|!=|<>|>|<)\s*(.+)$", p)
+                if cm2:
+                    op, operand = cm2.group(1), cm2.group(2).strip()
+                    return f"{col} {_flip[op]} {operand if is_number(operand) else q(operand)}"
+                rng = self._numeric_range_bounds(p)
+                if rng:
+                    return self._range_sql_negated(rng, col)
+                if is_number(p):
+                    return f"{col} != {p}"
+                return None
 
-        # Handle comparison operators: ">1000", "<=100", ">=5", "<10", "!=0"
-        if match := re.match(r"^(>=|<=|!=|<>|>|<)(.+)$", value):
-            operator, operand = match.groups()
-            operand = operand.strip()
-            # Normalize <> to !=
-            if operator == "<>":
-                operator = "!="
-            # Check if operand is numeric
-            if operand.replace(".", "").replace("-", "").isdigit():
-                return f"{{model}}.{field} {operator} {operand}"
-            else:
-                return f"{{model}}.{field} {operator} '{operand}'"
+            lead_not = re.match(r"(?i)^not\s+(.+)$", value)
+            if lead_not:
+                # Split at top level so an interval's inner comma (e.g. "NOT [0,10],20")
+                # is not broken into "[0"/"10]" fragments.
+                neg_parts = [p for p in self._split_top_level_commas(lead_not.group(1)) if p != ""]
+                # Fast path: NOT IN for a list of plain simple values (no operators,
+                # wildcards, or intervals -- those need per-item negation below).
+                plain_simple = neg_parts and all(
+                    is_plain(p) and "[" not in p and "(" not in p and not self._numeric_range_bounds(p)
+                    for p in neg_parts
+                )
+                if plain_simple:
+                    if all(is_number(p) for p in neg_parts):
+                        return f"{col} NOT IN ({', '.join(neg_parts)})"
+                    # String list: Looker negates strings with "-FOO", not the word
+                    # "not", so a leading "not" is part of the first literal value
+                    # (mirroring the single-token path). "not started,pending" ->
+                    # IN ('not started', 'pending'), not NOT IN ('started','pending').
+                    orig_segs = self._split_top_level_commas(value)
+                    return f"{col} IN ({', '.join(q(s) for s in orig_segs)})"
+                # Leading NOT over comparison/range/interval operands: negate each and
+                # AND them (De Morgan), e.g. "NOT >1, [0,10]" -> (<=1 AND (<0 OR >10)).
+                negated = [negate(p) for p in neg_parts]
+                if neg_parts and all(n is not None for n in negated):
+                    return "(" + " AND ".join(negated) + ")"
 
-        # Handle wildcard patterns (LIKE)
-        if "%" in value or "_" in value:
-            return f"{{model}}.{field} LIKE '{value}'"
+            if parts and all(is_plain(p) for p in parts):
+                if all(is_number(p) for p in parts):
+                    return f"{col} IN ({', '.join(parts)})"
+                # If any part is a date/interval expression ("today, 7 days ago"), OR
+                # them via single() so each hits the untranslated-date warning path
+                # instead of silently emitting IN ('today', '7 days ago').
+                if any(self._DATE_FILTER_RE.search(p) for p in parts):
+                    return "(" + " OR ".join(single(p) for p in parts) + ")"
+                return f"{col} IN ({', '.join(q(p) for p in parts)})"
 
-        # Handle numeric values
-        if value.replace(".", "").replace("-", "").isdigit():
-            return f"{{model}}.{field} = {value}"
+            if parts and all(is_neg_plain(p) for p in parts):
+                clean = [p[1:] for p in parts]
+                if all(is_number(p) for p in clean):
+                    return f"{col} NOT IN ({', '.join(clean)})"
+                return f"{col} NOT IN ({', '.join(q(p) for p in clean)})"
 
-        # Default: string equality
-        return f"{{model}}.{field} = '{value}'"
+            # Mixed list: OR the includes together, AND the exclusions (see _is_exclusion).
+            includes, excludes = [], []
+            for p in parts:
+                cond = single(p)
+                (excludes if _is_exclusion(p) else includes).append(cond)
+            clauses = []
+            if includes:
+                clauses.append("(" + " OR ".join(includes) + ")" if len(includes) > 1 else includes[0])
+            clauses.extend(excludes)
+            return "(" + " AND ".join(clauses) + ")" if len(clauses) > 1 else clauses[0]
+
+        return single(value)
 
     def _parse_view(self, view_def: dict) -> Model | None:
         """Parse LookML view into Sidemantic model.

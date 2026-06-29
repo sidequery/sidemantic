@@ -647,6 +647,17 @@ def test_count_with_backtick_field_containing_paren():
     assert g.get_model("o").get_metric("m").sql == "COUNT(DISTINCT `user(id`) / count(*)"
 
 
+def test_count_skips_whitespace_before_paren():
+    g = _parse("source: o is duckdb.table('o') extend {\n  measure: m is count\n(user_id) / count()\n}\n")
+    assert g.get_model("o").get_metric("m").sql == "COUNT(DISTINCT user_id) / count(*)"
+
+
+def test_aggregate_text_inside_backtick_field_preserved():
+    # A backtick field literally named "gross.sum()" must not be normalized.
+    g = _parse("source: o is duckdb.table('o') extend {\n  measure: m is `gross.sum()` / count()\n}\n")
+    assert g.get_model("o").get_metric("m").sql == "`gross.sum()` / count(*)"
+
+
 def test_regex_match_case_expression_operand():
     assert (
         _dim_sql(

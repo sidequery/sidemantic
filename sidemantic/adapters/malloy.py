@@ -91,7 +91,7 @@ def _normalize_count_calls(s: str) -> str:
         m = re.match(r"count(?:_distinct)?", s[i:], re.IGNORECASE)
         if m and (i == 0 or not (s[i - 1].isalnum() or s[i - 1] in "_.`")):
             k = i + m.end()
-            while k < n and s[k] == " ":
+            while k < n and s[k].isspace():  # any whitespace, e.g. count\n(x)
                 k += 1
             if k < n and s[k] == "(":
                 depth, p, q = 0, k, None
@@ -128,6 +128,111 @@ def _normalize_count_calls(s: str) -> str:
         out.append(c)
         i += 1
     return "".join(out)
+
+
+_DOT_AGGS = ("count_distinct", "sum", "avg", "count", "min", "max")
+
+
+def _normalize_dot_aggregates(s: str) -> str:
+    """Rewrite Malloy dot-method aggregates ``field.sum()`` -> ``SUM(field)`` and
+    ``field.count_distinct()`` -> ``COUNT(DISTINCT field)``.
+
+    Scans with quote/backtick awareness: a backtick-quoted field name is treated
+    as an atomic part of the field reference, so aggregate-looking text inside a
+    backtick identifier (like a field literally named "gross.sum()") is
+    preserved, while a real backtick-field followed by .sum() is normalized.
+    """
+    result: list[str] = []
+    last, i, n = 0, 0, len(s)
+    field_start: int | None = None
+    while i < n:
+        c = s[i]
+        if c in ("'", '"'):
+            field_start = None
+            i += 1
+            while i < n:
+                if s[i] == "\\":
+                    i += 2
+                    continue
+                if s[i] == c:
+                    i += 1
+                    break
+                i += 1
+            continue
+        if c == "`":
+            if field_start is None:
+                field_start = i
+            i += 1
+            while i < n:
+                if s[i] == "\\":
+                    i += 2
+                    continue
+                if s[i] == "`":
+                    i += 1
+                    break
+                i += 1
+            continue
+        if c == ".":
+            matched = None
+            for agg in _DOT_AGGS:
+                ke = i + 1 + len(agg)
+                if s[i + 1 : ke].lower() == agg and (ke >= n or not (s[ke].isalnum() or s[ke] == "_")):
+                    k = ke
+                    while k < n and s[k].isspace():
+                        k += 1
+                    if k < n and s[k] == "(":
+                        matched = (agg, k)
+                        break
+            if matched is not None and field_start is not None:
+                agg, paren = matched
+                depth, p, q = 0, paren, None
+                while p < n:
+                    ch = s[p]
+                    if q is not None:
+                        if ch == "\\":
+                            p += 2
+                            continue
+                        if ch == q:
+                            q = None
+                        p += 1
+                        continue
+                    if ch in ("'", '"', "`"):
+                        q = ch
+                    elif ch == "(":
+                        depth += 1
+                    elif ch == ")":
+                        depth -= 1
+                        if depth == 0:
+                            p += 1
+                            break
+                    p += 1
+                if depth == 0:
+                    field = s[field_start:i]
+                    args = s[paren + 1 : p - 1].strip()
+                    if agg == "count_distinct":
+                        repl = f"COUNT(DISTINCT {field})"
+                    else:
+                        sql_agg = agg.upper()
+                        repl = f"{sql_agg}({field}, {args})" if args else f"{sql_agg}({field})"
+                    result.append(s[last:field_start])
+                    result.append(repl)
+                    last = i = p
+                    field_start = None
+                    continue
+            # plain '.' inside a dotted field reference
+            if field_start is None:
+                field_start = i
+            i += 1
+            continue
+        if c.isalnum() or c == "_":
+            if field_start is None:
+                field_start = i
+            i += 1
+            continue
+        field_start = None
+        i += 1
+    result.append(s[last:])
+    return "".join(result)
 
 
 class MalloySyntaxError(ValueError):
@@ -519,27 +624,10 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         SQL function). Used when a compound aggregate expression is kept as a
         derived measure so the stored SQL is executable.
         """
-
-        def dot_repl(m: re.Match) -> str:
-            field = m.group(1)
-            agg = m.group(2).lower()
-            args = m.group(3).strip()
-            if agg == "count_distinct":
-                return f"COUNT(DISTINCT {field})"
-            sql_agg = agg.upper()
-            return f"{sql_agg}({field}, {args})" if args else f"{sql_agg}({field})"
-
-        # Standard function forms count(x) / count_distinct(x) / count() — handled
-        # with a quote/paren-aware scan so an argument containing a string literal
-        # is matched as a whole; dot-method calls are normalized by the next pass.
-        expr = _normalize_count_calls(expr)
-        # Dot-method aggregates; the field may be a backtick-quoted identifier
-        # with spaces (`cost amount`.sum()).
-        return _sub_outside_quotes(
-            expr,
-            r"((?:`[^`]*`|[\w.])+)\.(sum|avg|count|min|max|count_distinct)\s*\(\s*(.*?)\s*\)",
-            dot_repl,
-        )
+        # Standard function forms count(x) / count_distinct(x) / count() first,
+        # then dot-method aggregates; both scan with quote/paren/backtick
+        # awareness so literals and backtick identifiers are preserved.
+        return _normalize_dot_aggregates(_normalize_count_calls(expr))
 
     def _parse_aggregation(self, expr: str) -> tuple[str | None, str | None]:
         """Parse aggregation function from expression.

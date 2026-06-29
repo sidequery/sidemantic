@@ -232,6 +232,28 @@ def test_with_totals_single_dimension(layer):
     assert total_rows[0]["revenue"] == sum(per_status.values()) == 35
 
 
+def test_with_totals_marks_total_row_when_dimension_has_nulls(layer):
+    """A genuine NULL dimension value is distinguished from the grand total via _is_total."""
+    layer.conn.execute(
+        "CREATE TABLE orders (order_id INTEGER, status VARCHAR, region VARCHAR, amount INTEGER, customer_id INTEGER)"
+    )
+    # Order 2 has a genuine NULL status, so two output rows will have status=NULL:
+    # the real null-status group and the grand total.
+    layer.conn.execute("INSERT INTO orders VALUES (1,'completed','US',10,1),(2,NULL,'US',15,2),(3,'pending','EU',10,1)")
+    layer.add_model(_totals_orders_model())
+
+    rows = fetch_dicts(layer.query(metrics=["orders.revenue"], dimensions=["orders.status"], with_totals=True))
+    null_status_rows = [r for r in rows if r["status"] is None]
+    assert len(null_status_rows) == 2  # real null-status detail + grand total
+
+    detail = [r for r in null_status_rows if r["_is_total"] == 0]
+    total = [r for r in null_status_rows if r["_is_total"] == 1]
+    assert len(detail) == 1 and detail[0]["revenue"] == 15  # the NULL-status order only
+    assert len(total) == 1 and total[0]["revenue"] == 35  # grand total over all rows
+    # Every detail row (including non-NULL statuses) is marked 0.
+    assert all(r["_is_total"] == 0 for r in rows if r["status"] is not None)
+
+
 def test_with_totals_count_distinct_recomputed(layer):
     """Grand-total distinct count is recomputed over all rows, not summed per group."""
     layer.conn.execute(

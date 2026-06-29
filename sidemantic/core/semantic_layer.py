@@ -550,7 +550,10 @@ class SemanticLayer:
                 Use {inner} as a placeholder for the compiled semantic query, e.g.:
                 "SELECT *, revenue / count AS avg_value FROM ({inner})"
             timezone: Optional query timezone applied to time-dimension truncation
-            with_totals: If True, add a grand-total row (all dimensions NULL) via GROUPING SETS
+            with_totals: If True, add a grand-total row via GROUPING SETS, marked with a
+                trailing _is_total column (1 for the grand total, 0 for detail rows) so it
+                is distinguishable from a real all-NULL dimension group. Cannot be combined
+                with ungrouped, limit, or offset
 
         Returns:
             DuckDB relation object (can convert to DataFrame with .df() or .to_df())
@@ -672,7 +675,10 @@ class SemanticLayer:
                 converted to this timezone before truncation. Most meaningful on
                 TIMESTAMPTZ columns. Truncation-side only: time-dimension filter
                 comparisons are not timezone-shifted.
-            with_totals: If True, add a grand-total row (all dimensions NULL) via GROUPING SETS
+            with_totals: If True, add a grand-total row via GROUPING SETS, marked with a
+                trailing _is_total column (1 for the grand total, 0 for detail rows) so it
+                is distinguishable from a real all-NULL dimension group. Cannot be combined
+                with ungrouped, limit, or offset
 
         Returns:
             SQL query string

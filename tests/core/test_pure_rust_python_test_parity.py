@@ -138,6 +138,9 @@ EXPECTED_GAPS = {
     "tests.queries.test_ungrouped_queries::test_with_totals_ignores_configured_default_limit": (
         "Rust adapter does not yet support the with_totals (GROUPING SETS grand-total) compile kwarg"
     ),
+    "tests.queries.test_ungrouped_queries::test_with_totals_marks_total_row_when_dimension_has_nulls": (
+        "Rust adapter does not yet support the with_totals (GROUPING SETS grand-total) compile kwarg"
+    ),
     "tests.dates.test_integration::test_not_equal_relative_date_single_day": (
         "Rust SQL generator does not yet support the extended relative-date operators (!=/<>, </<=)"
     ),

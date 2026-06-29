@@ -589,7 +589,10 @@ class SQLGenerator:
             use_preaggregations: Enable automatic pre-aggregation routing (default: False)
             aliases: Custom aliases for fields (dict mapping field reference to alias)
             skip_default_time_dimensions: If True, don't auto-include default_time_dimension
-            with_totals: If True, add a grand-total row (all dimensions NULL) via GROUPING SETS
+            with_totals: If True, add a grand-total row via GROUPING SETS, marked with a
+                trailing _is_total column (1 for the grand total, 0 for detail rows) so it
+                is distinguishable from a real all-NULL dimension group. Cannot be combined
+                with ungrouped, limit, or offset
 
         Returns:
             SQL query string
@@ -2693,6 +2696,16 @@ class SQLGenerator:
             delattr(self, "_bsl_all_query_context")
         else:
             self._bsl_all_query_context = previous_bsl_all_context
+
+        # Mark the GROUPING SETS grand-total row so consumers can tell it apart from a real
+        # all-NULL dimension group. GROUPING(<dim>) is 1 for the super-aggregate (total) row
+        # and 0 for detail rows; any single grouped dimension works because the total grouping
+        # set drops them all.
+        if with_totals and parsed_dims and not ungrouped:
+            first_ref, first_gran = parsed_dims[0]
+            first_model_name, first_dim_name = first_ref.split(".")
+            first_col_name = f"{first_dim_name}__{first_gran}" if first_gran else first_dim_name
+            select_exprs.append(f"GROUPING({self._cte_ref(first_model_name, first_col_name)}) AS _is_total")
 
         # Build query using builder API
         query = select(*select_exprs).from_(self._quote_identifier(self._cte_name(base_model_name)))

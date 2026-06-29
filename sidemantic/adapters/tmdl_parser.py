@@ -304,8 +304,17 @@ class _TmdlParser:
             return self._parse_backtick_block(opening_consumed=False)
 
         expression_lines: list[str] = []
+        pending_blanks: list[str] = []
         while self.index < len(self.lines):
             line = self.lines[self.index]
+            if line.is_blank:
+                # A blank line inside the body (e.g. the idiomatic VAR ... <blank> RETURN ...
+                # layout) must not terminate the block. Buffer it and only commit it once a
+                # genuinely deeper non-blank line follows; trailing blanks are dropped so the
+                # block ends cleanly.
+                pending_blanks.append("")
+                self.index += 1
+                continue
             if line.indent <= base_indent:
                 break
             if (
@@ -315,6 +324,8 @@ class _TmdlParser:
                 and _looks_like_block_trailing_property(line.content)
             ):
                 break
+            expression_lines.extend(pending_blanks)
+            pending_blanks = []
             expression_lines.append(_strip_indent(line.raw, base_indent + 1, self.indent_config))
             self.index += 1
 
@@ -414,11 +425,20 @@ def _indent_level(indent_width: int, config: _IndentConfig | None, raw: str, fil
     if config.kind == "tabs":
         tab_count = len(leading) - len(leading.lstrip("\t"))
         if tab_count:
+            # Tabs (optionally followed by spaces inside an expression body) -> the structural
+            # indent is the leading tab run; trailing spaces belong to the captured text.
             return tab_count
+        # Spaces under a tab-indented document. This is normally only seen inside a re-exported
+        # expression block body (e.g. inlined culture JSON), so normalize to a best-effort tab
+        # level rather than rejecting the file -- legitimate round-tripped content must re-import.
         return max(1, (indent_width + 3) // 4)
 
     if "\t" in leading:
+        # A tab under a space-indented document (e.g. inlined tab-indented culture JSON in a
+        # re-exported model). Normalize via expandtabs to a best-effort level rather than rejecting
+        # so the round-trip parses; structural lines in real source files are style-consistent.
         indent_width = len(leading.expandtabs(config.width))
+        return max(1, (indent_width + config.width - 1) // config.width)
     return max(1, (indent_width + config.width - 1) // config.width)
 
 

@@ -38,7 +38,7 @@ jobs:
           print(metadata)
           requires = metadata.get_all("Requires-Dist", [])
           extras = set(metadata.get_all("Provides-Extra", []))
-          heavy_optional = ("textual", "pyarrow", "mcp", "riffq", "altair", "vl-convert-python")
+          heavy_optional = ("textual", "pyarrow", "mcp", "riffq", "altair", "vl-convert-python", "sidemantic-dax")
           for requirement in requires:
               name = re.split(r"[<>=!~;\[ ]", requirement.strip(), maxsplit=1)[0]
               if name in heavy_optional:

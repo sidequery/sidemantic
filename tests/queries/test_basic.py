@@ -459,6 +459,59 @@ def test_custom_join_sql_projects_extra_predicate_columns():
     assert rows == [("Expired", None), ("US", 50)]
 
 
+def test_compiles_and_executes_columns_with_spaces():
+    """Regression: dimensions whose names contain spaces (common in imported Power BI / TMDL
+    models, e.g. "Order Date") must be quoted in generated SQL so queries parse and execute,
+    rather than failing with a sqlglot ParseError on the unquoted identifier."""
+    from datetime import date
+
+    conn = duckdb.connect(":memory:")
+    conn.execute('CREATE TABLE sales (id INTEGER, "Order Date" DATE, "Order Status" VARCHAR, quantity INTEGER)')
+    conn.execute(
+        "INSERT INTO sales VALUES "
+        "(1, DATE '2024-01-15', 'shipped', 5), "
+        "(2, DATE '2024-01-15', 'pending', 3), "
+        "(3, DATE '2024-02-10', 'shipped', 7)"
+    )
+
+    layer = SemanticLayer()
+    layer.conn = conn
+    layer.add_model(
+        Model(
+            name="Sales",
+            table="sales",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="Order Date", type="time", granularity="month"),
+                Dimension(name="Order Status", type="categorical"),
+            ],
+            metrics=[Metric(name="qty", agg="sum", sql="quantity")],
+        )
+    )
+
+    # Group by a spaced time dimension with a grain -- the original crash path (_date_trunc).
+    by_month = df_rows(
+        layer.query(metrics=["Sales.qty"], dimensions=["Sales.Order Date"], order_by=["Sales.Order Date"])
+    )
+    assert by_month == [(date(2024, 1, 1), 8), (date(2024, 2, 1), 7)]
+
+    # Group by a spaced categorical dimension, ordered by it.
+    by_status = df_rows(
+        layer.query(metrics=["Sales.qty"], dimensions=["Sales.Order Status"], order_by=["Sales.Order Status"])
+    )
+    assert by_status == [("pending", 3), ("shipped", 12)]
+
+    # Filter on a spaced column (the raw-SQL filter quotes the identifier).
+    shipped = df_rows(
+        layer.query(
+            metrics=["Sales.qty"],
+            dimensions=["Sales.Order Status"],
+            filters=["Sales.\"Order Status\" = 'shipped'"],
+        )
+    )
+    assert shipped == [("shipped", 12)]
+
+
 def test_dotted_graph_metric_projects_sql_column_and_orders_by_alias(layer):
     layer.conn.execute("CREATE TABLE events (event_id INTEGER, status VARCHAR, latency INTEGER)")
     layer.conn.execute(

@@ -34,8 +34,10 @@ class Model(BaseModel):
     # Relationships
     relationships: list[Relationship] = Field(default_factory=list, description="Relationships to other models")
 
-    # Primary key (required) - can be single column or list for composite keys
-    primary_key: str | list[str] = Field(default="id", description="Primary key column(s)")
+    # Primary key - single column or list for composite keys. None means "no known primary key"
+    # (e.g. a fact or disconnected table imported from a format that does not declare one); such a
+    # model contributes no key column to joins rather than a fabricated default.
+    primary_key: str | list[str] | None = Field(default="id", description="Primary key column(s)")
 
     # Unique key constraints
     unique_keys: list[list[str]] | None = Field(None, description="Unique key constraints (each is a list of columns)")
@@ -81,7 +83,13 @@ class Model(BaseModel):
 
     @property
     def primary_key_columns(self) -> list[str]:
-        """Get primary key as list of columns (normalizes single string to list)."""
+        """Get primary key as list of columns (normalizes single string to list).
+
+        Returns an empty list when the model has no known primary key (``primary_key is None``),
+        so keyed-join logic naturally injects no key column for such a model.
+        """
+        if self.primary_key is None:
+            return []
         if isinstance(self.primary_key, str):
             return [self.primary_key]
         return self.primary_key

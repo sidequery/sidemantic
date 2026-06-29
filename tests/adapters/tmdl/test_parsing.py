@@ -43,10 +43,16 @@ def _dax_parser_available() -> bool:
     return True
 
 
-def _assert_expected_import_warnings(warnings: list[dict], *, dax_parser_unavailable: int = 0):
+def _assert_expected_import_warnings(
+    warnings: list[dict], *, dax_parser_unavailable: int = 0, dax_not_translated: int = 0
+):
     expected = Counter()
     if dax_parser_unavailable and not _dax_parser_available():
         expected["dax_parser_unavailable"] = dax_parser_unavailable
+    if dax_not_translated and _dax_parser_available():
+        # When the DAX parser is available, measures whose DAX cannot be reduced to a native
+        # aggregation are preserved as derived metrics and surfaced via a dax_not_translated warning.
+        expected["dax_not_translated"] = dax_not_translated
     assert Counter(warning["code"] for warning in warnings) == expected
 
 
@@ -320,7 +326,7 @@ def test_tmdl_realistic_fixture_import_export_contract(tmp_path):
     fixture_root = Path("tests/fixtures/tmdl_realistic")
     graph = TMDLAdapter().parse(fixture_root)
 
-    _assert_expected_import_warnings(getattr(graph, "import_warnings"), dax_parser_unavailable=5)
+    _assert_expected_import_warnings(getattr(graph, "import_warnings"), dax_parser_unavailable=5, dax_not_translated=1)
     assert set(graph.models) == {"Sales", "Products", "Calendar", "Sales By Category"}
 
     sales = graph.models["Sales"]
@@ -368,7 +374,9 @@ def test_tmdl_realistic_fixture_import_export_contract(tmp_path):
     assert export_files == fixture_files
 
     reparsed_graph = TMDLAdapter().parse(export_dir)
-    _assert_expected_import_warnings(getattr(reparsed_graph, "import_warnings"), dax_parser_unavailable=5)
+    _assert_expected_import_warnings(
+        getattr(reparsed_graph, "import_warnings"), dax_parser_unavailable=5, dax_not_translated=1
+    )
     assert set(reparsed_graph.models) == set(graph.models)
     reparsed_sales = reparsed_graph.models["Sales"]
     reparsed_calculated = reparsed_graph.models["Sales By Category"]
@@ -1126,6 +1134,7 @@ def test_tmdl_warning_fixture_collects_relationship_warnings():
 
     warnings = getattr(graph, "import_warnings")
     assert [(warning["code"], warning["context"], warning["name"]) for warning in warnings] == [
+        ("dax_not_translated", "measure", "Bad Measure"),
         ("relationship_parse_skip", "relationship", "Bad-Relationship"),
     ]
     assert all(warning.get("file") for warning in warnings)
@@ -2134,7 +2143,13 @@ models:
     assert sales.get_metric("Avg Price").dax == "DIVIDE(SUM(Sales[Amount]), SUM(Sales[Quantity]), 0)"
     assert positive_sales.dax == "FILTER(Sales, Sales[Amount] > 0)"
     assert positive_sales.table is None
-    assert getattr(reparsed, "import_warnings") == []
+    # "Avg Price" is DIVIDE(SUM(...), SUM(...)) -- a ratio that cannot reduce to a single native
+    # aggregation, so it is preserved as derived and surfaced via a dax_not_translated warning.
+    reparsed_warnings = getattr(reparsed, "import_warnings")
+    if _dax_parser_available():
+        assert Counter(w["code"] for w in reparsed_warnings) == Counter({"dax_not_translated": 1})
+    else:
+        assert reparsed_warnings == []
 
 
 def test_tmdl_export_preserves_expression_meta_for_measure_and_calculated_column():
@@ -2559,7 +2574,9 @@ def test_tmdl_export_script_file():
         assert "table orders" in content
         reparsed = adapter.parse(temp_path)
         assert set(reparsed.models) == {"orders"}
-        assert reparsed.models["orders"].primary_key == "id"
+        # The model's primary_key "id" is not backed by an isKey column, so TMDL cannot encode it;
+        # the round-trip yields no key (None) rather than re-fabricating a phantom "id".
+        assert reparsed.models["orders"].primary_key is None
     finally:
         temp_path.unlink()
 
@@ -2640,7 +2657,9 @@ def test_tmdl_export_script_preserves_realistic_project_metadata(tmp_path):
     assert "annotation RelationshipLineage" in content
 
     reparsed = TMDLAdapter().parse(out_path)
-    _assert_expected_import_warnings(getattr(reparsed, "import_warnings"), dax_parser_unavailable=5)
+    _assert_expected_import_warnings(
+        getattr(reparsed, "import_warnings"), dax_parser_unavailable=5, dax_not_translated=1
+    )
     assert set(reparsed.models) == {"Sales", "Products", "Calendar", "Sales By Category"}
     assert getattr(reparsed, "_tmdl_database_name") == "Retail Analytics"
     assert getattr(reparsed, "_tmdl_model_child_nodes")[0].name == "Executive"
@@ -2796,8 +2815,8 @@ def test_tmdl_export_preserves_raw_identifier_literals():
         TMDLAdapter().export(graph, tmpdir)
         database_file = Path(tmpdir) / "definition" / "database.tmdl"
         model_file = Path(tmpdir) / "definition" / "model.tmdl"
-        sales_table_file = Path(tmpdir) / "definition" / "tables" / "Sales_Table.tmdl"
-        products_table_file = Path(tmpdir) / "definition" / "tables" / "Products_Table.tmdl"
+        sales_table_file = Path(tmpdir) / "definition" / "tables" / "Sales Table.tmdl"
+        products_table_file = Path(tmpdir) / "definition" / "tables" / "Products Table.tmdl"
         rel_file = Path(tmpdir) / "definition" / "relationships.tmdl"
 
         assert sales_table_file.exists()
@@ -2850,6 +2869,106 @@ def test_tmdl_export_preserves_escaped_quote_value_literals():
         table_file = Path(tmpdir) / "definition" / "tables" / "Sales.tmdl"
         content = table_file.read_text()
         assert 'caption: "Order ""ID"""' in content
+
+
+def test_tmdl_dax_reduction_semantics():
+    """Regression: DAX measures reduce to the CORRECT (agg, column) or stay derived.
+
+    Guards the mistranslation fixes -- COUNTBLANK must not invert to count, an aggregate over a
+    measure reference must not be treated as a column, an unbracketed dotted column must not leak
+    the table prefix, and any reduced simple-aggregation sql must reference a real column.
+    """
+    pytest.importorskip("sidemantic_dax")
+    tmdl = textwrap.dedent(
+        """
+        table Sales
+            column Amount
+                dataType: double
+                sourceColumn: Amount
+            column Region
+                dataType: string
+                sourceColumn: Region
+            measure 'Total' = SUM(Sales[Amount])
+            measure 'Blanks' = COUNTBLANK(Sales[Region])
+            measure 'Ref Max' = MAX([Total])
+            measure 'Dotted' = SUM(Sales.Amount)
+        """
+    )
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".tmdl", delete=False) as f:
+        f.write(tmdl)
+        temp_path = Path(f.name)
+    try:
+        graph = TMDLAdapter().parse(temp_path)
+    finally:
+        temp_path.unlink()
+    sales = graph.models["Sales"]
+    columns = {dim.name for dim in sales.dimensions}
+
+    # The genuinely-simple aggregation still reduces correctly.
+    total = sales.get_metric("Total")
+    assert (total.agg, total.sql) == ("sum", "Amount")
+
+    # COUNTBLANK counts blanks; it must NOT invert into a plain count over the column.
+    blanks = sales.get_metric("Blanks")
+    assert not (blanks.agg == "count" and blanks.sql == "Region")
+
+    # MAX([Total]) references a measure, not a column -> must not become max(Total).
+    ref_max = sales.get_metric("Ref Max")
+    assert not (ref_max.agg == "max" and ref_max.sql == "Total")
+
+    # An unbracketed dotted column must never leak the table prefix into sql.
+    dotted = sales.get_metric("Dotted")
+    assert dotted.sql != "Sales.Amount"
+    if dotted.agg is not None:
+        assert dotted.sql == "Amount"
+
+    # Every reduced simple-aggregation sql must reference a real column of the table.
+    for metric in sales.metrics:
+        if metric.agg and metric.sql is not None:
+            assert metric.sql in columns, f"{metric.name} reduced to non-column {metric.sql!r}"
+
+
+def test_tmdl_real_fixture_reductions_reference_real_columns():
+    """Every simple-aggregation measure reduced from a real Power BI model must reference an actual
+    column of its table (guards the column-membership gating against silent mistranslation)."""
+    pytest.importorskip("sidemantic_dax")
+    graph = TMDLAdapter().parse("tests/fixtures/external_powerbi/microsoft-analysis-services-sales")
+    for model in graph.models.values():
+        columns = {dim.name for dim in model.dimensions}
+        for metric in model.metrics:
+            if metric.agg and metric.sql is not None:
+                assert metric.sql in columns, f"{model.name}.{metric.name} -> non-column {metric.sql!r}"
+
+
+def test_tmdl_deeply_nested_dax_does_not_crash_import():
+    """Regression: a pathologically nested DAX measure surfaces a catchable parse error (the Rust
+    recursion-depth guard) and a dax_parse_error warning, rather than overflowing the stack and
+    killing the host process."""
+    pytest.importorskip("sidemantic_dax")
+    import sidemantic_dax
+
+    with pytest.raises(Exception):
+        sidemantic_dax.parse_expression("(" * 5000 + "1" + ")" * 5000)
+
+    nested = "(" * 5000 + "Sales[Amount]" + ")" * 5000
+    tmdl = textwrap.dedent(
+        f"""
+        table Sales
+            column Amount
+                dataType: double
+                sourceColumn: Amount
+            measure 'Deep' = {nested}
+        """
+    )
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".tmdl", delete=False) as f:
+        f.write(tmdl)
+        temp_path = Path(f.name)
+    try:
+        graph = TMDLAdapter().parse(temp_path)
+    finally:
+        temp_path.unlink()
+    codes = {w["code"] for w in getattr(graph, "import_warnings", [])}
+    assert "dax_parse_error" in codes
 
 
 if __name__ == "__main__":

@@ -17,8 +17,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.version.outputs.tag }}
+      new_version: ${{ steps.version.outputs.new_version }}
     permissions:
-      id-token: write
       contents: write
 
     steps:
@@ -158,6 +158,78 @@ jobs:
           git push origin main
           git push origin "v${{ steps.version.outputs.new_version }}"
 
+      - name: Upload sdist and sidemantic wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-base
+          path: dist/*
+          if-no-files-found: error
+
+  build-dax-wheels:
+    name: Build sidemantic-dax wheel (${{ matrix.target }})
+    needs: publish
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64
+          - os: ubuntu-latest
+            target: aarch64
+          - os: macos-13
+            target: x86_64
+          - os: macos-14
+            target: aarch64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.publish.outputs.tag }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build abi3 wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          command: build
+          args: --release --manifest-path crates/dax-pyo3/Cargo.toml --out crates/dax-pyo3/dist
+          manylinux: auto
+          target: ${{ matrix.target }}
+
+      - name: Upload abi3 wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-dax-${{ matrix.os }}-${{ matrix.target }}
+          path: crates/dax-pyo3/dist/*.whl
+          if-no-files-found: error
+
+  release:
+    name: Publish to PyPI and create release
+    needs:
+      - publish
+      - build-dax-wheels
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: write
+
+    steps:
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Download distributions
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: dist-*
+          merge-multiple: true
+
       - name: Publish to PyPI
         env:
           UV_PUBLISH_TOKEN: ${{ secrets.PYPI_TOKEN }}
@@ -167,6 +239,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "v${{ steps.version.outputs.new_version }}" \
-            --title "v${{ steps.version.outputs.new_version }}" \
+          gh release create "${{ needs.publish.outputs.tag }}" \
+            --title "${{ needs.publish.outputs.tag }}" \
             --generate-notes

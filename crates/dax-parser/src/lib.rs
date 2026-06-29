@@ -2051,7 +2051,11 @@ mod tests {
         // must error rather than overflow.
         with_big_stack(|| {
             let depth = MAX_PARSE_DEPTH + 50;
-            let src = format!("evaluate {{ {}1{} }}", "f(".repeat(depth), ")".repeat(depth));
+            let src = format!(
+                "evaluate {{ {}1{} }}",
+                "f(".repeat(depth),
+                ")".repeat(depth)
+            );
             let err = parse_query(&src).unwrap_err();
             let msg = err.to_string();
             assert!(msg.contains("nesting too deep"), "got: {msg}");

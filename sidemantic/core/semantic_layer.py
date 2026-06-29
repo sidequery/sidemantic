@@ -32,6 +32,7 @@ _MISSING_RELATION_MARKERS = (
     "no such table",
     "unknown table",
     "table or view",
+    "not found",  # BigQuery surfaces missing tables as "404 Not found: Table ..."
 )
 
 
@@ -570,7 +571,9 @@ class SemanticLayer:
         use_preaggs = use_preaggregations if use_preaggregations is not None else self.use_preaggregations
         strict = preagg_strict if preagg_strict is not None else self.preagg_strict
 
-        sql = self.compile(
+        # Detect pre-aggregation routing from the un-post-processed compile: post_process
+        # wraps the query and strips the `-- sidemantic ... used_preagg=true` marker.
+        routing_sql = self.compile(
             metrics=metrics,
             dimensions=dimensions,
             filters=filters,
@@ -580,9 +583,26 @@ class SemanticLayer:
             ungrouped=ungrouped,
             parameters=parameters,
             use_preaggregations=use_preaggregations,
-            post_process=post_process,
             timezone=timezone,
         )
+        used_preagg = "used_preagg=true" in routing_sql
+
+        if post_process:
+            sql = self.compile(
+                metrics=metrics,
+                dimensions=dimensions,
+                filters=filters,
+                segments=segments,
+                order_by=order_by,
+                limit=limit,
+                ungrouped=ungrouped,
+                parameters=parameters,
+                use_preaggregations=use_preaggregations,
+                post_process=post_process,
+                timezone=timezone,
+            )
+        else:
+            sql = routing_sql
 
         def recompile_raw():
             return self.compile(
@@ -596,24 +616,27 @@ class SemanticLayer:
                 parameters=parameters,
                 use_preaggregations=False,
                 post_process=post_process,
+                timezone=timezone,
             )
 
-        return self._execute_with_preagg_fallback(sql, recompile_raw, use_preaggs=use_preaggs, strict=strict)
+        return self._execute_with_preagg_fallback(
+            sql, recompile_raw, use_preaggs=use_preaggs, strict=strict, used_preagg=used_preagg
+        )
 
-    def _execute_with_preagg_fallback(self, primary_sql, recompile_raw, *, use_preaggs: bool, strict: bool):
+    def _execute_with_preagg_fallback(
+        self, primary_sql, recompile_raw, *, use_preaggs: bool, strict: bool, used_preagg: bool
+    ):
         """Execute primary_sql, falling back to raw tables when a routed rollup is missing.
 
         Shared by query() and sql() so both the Python API and the SQL/CLI path get
-        identical missing-rollup behavior. When pre-aggregation routing is enabled and
-        the compiled SQL is tagged with used_preagg=true:
+        identical missing-rollup behavior. ``used_preagg`` says whether routing selected
+        a rollup (the caller detects it before any post-processing strips the marker):
         - if no rollup matched and strict is set, raise (rollup-only mode);
         - if the routed rollup table does not exist, fall back to recompile_raw() (or
           raise in strict mode). Any other error surfaces unchanged.
         """
         if not use_preaggs:
             return self.adapter.execute(primary_sql)
-
-        used_preagg = "used_preagg=true" in primary_sql
 
         # Rollup-only: a query no rollup can serve must error rather than scan raw tables.
         if strict and not used_preagg:
@@ -1481,7 +1504,11 @@ class SemanticLayer:
             return QueryRewriter(self.graph, dialect=self.dialect, use_preaggregations=False).rewrite(query)
 
         return self._execute_with_preagg_fallback(
-            rewritten_sql, recompile_raw, use_preaggs=self.use_preaggregations, strict=self.preagg_strict
+            rewritten_sql,
+            recompile_raw,
+            use_preaggs=self.use_preaggregations,
+            strict=self.preagg_strict,
+            used_preagg="used_preagg=true" in rewritten_sql,
         )
 
     def explain_sql(self, query: str, strict: bool = True):

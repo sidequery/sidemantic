@@ -2595,5 +2595,58 @@ def test_ungrouped_approx_count_distinct_bails_to_raw():
     assert "orders_preagg_by_id" not in sql
 
 
+def test_query_with_post_process_falls_back_to_raw_when_rollup_missing():
+    """post_process strips the routing marker, but fallback still triggers (detected pre-post-process)."""
+    layer = _layer_with_unbuilt_rollup()
+    layer.use_preaggregations = True
+
+    result = layer.query(
+        metrics=["orders.revenue"],
+        dimensions=["orders.status"],
+        post_process="SELECT * FROM ({inner})",
+    )
+
+    assert set(result.fetchall()) == {(0, 120), (1, 90)}  # correct totals from raw fallback
+
+
+def test_is_missing_relation_error_recognizes_bigquery_not_found():
+    """BigQuery surfaces missing tables as '404 Not found: Table ...', which must trigger fallback."""
+    from sidemantic.core.semantic_layer import SemanticLayer
+
+    err = Exception("404 Not found: Table myproj:ds.orders_preagg_by_status was not found in location US")
+    assert SemanticLayer._is_missing_relation_error(err)
+
+
+def test_build_partitions_scopes_discovery_to_target_schema():
+    """Partition discovery is scoped to the target schema, ignoring same-named tables elsewhere."""
+    conn = duckdb.connect(":memory:")
+    conn.execute("CREATE SCHEMA s")
+    conn.execute(
+        "CREATE TABLE s.orders AS "
+        "SELECT (DATE '2024-01-01' + INTERVAL (i) MONTH) created_at, 100 amount FROM generate_series(0, 1) t(i)"
+    )
+    # A stray same-named partition in the default schema must NOT pollute the s view.
+    conn.execute("CREATE TABLE orders_preagg_monthly_p99999999 AS SELECT 1 AS x")
+
+    model = Model(
+        name="orders",
+        table="s.orders",
+        primary_key="id",
+        dimensions=[Dimension(name="created_at", type="time", granularity="day")],
+        metrics=[Metric(name="revenue", agg="sum", sql="amount")],
+    )
+    preagg = PreAggregation(
+        name="monthly",
+        measures=["revenue"],
+        time_dimension="created_at",
+        granularity="month",
+        partition_granularity="month",
+    )
+    preagg.build_partitions(conn, model, schema="s")
+
+    # The covering view references only the two s-schema partitions (not the mis-qualified stray).
+    assert conn.execute("SELECT SUM(revenue_raw) FROM s.orders_preagg_monthly").fetchone()[0] == 200
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -336,10 +336,26 @@ GROUP BY {group_by_str}"""
             connection.execute(f"CREATE TABLE {part_name} AS {source_sql}")
             built.append(part_name)
 
-        # Discover existing partition tables (those just built plus any from prior runs).
-        all_tables = connection.execute("SELECT table_name FROM information_schema.tables").fetchall()
+        # Discover existing partition tables IN THE TARGET SCHEMA only (those just built
+        # plus any from prior runs). Filtering by schema prevents a same-named partition
+        # in another schema from being mis-qualified into this one (which would make the
+        # covering view reference a nonexistent table, or a full rebuild drop the wrong one).
+        if schema:
+            effective_schema = schema
+        else:
+            try:
+                effective_schema = connection.execute("SELECT current_schema()").fetchone()[0]
+            except Exception:
+                effective_schema = None
         prefix = f"{unqualified}_p"
-        existing = {qualify(row[0]) for row in all_tables if isinstance(row[0], str) and row[0].startswith(prefix)}
+        all_tables = connection.execute("SELECT table_schema, table_name FROM information_schema.tables").fetchall()
+        existing = {
+            qualify(tname)
+            for tschema, tname in all_tables
+            if isinstance(tname, str)
+            and tname.startswith(prefix)
+            and (effective_schema is None or tschema == effective_schema)
+        }
 
         if full_rebuild:
             # A full rebuild reflects exactly the current source buckets: drop partitions

@@ -172,6 +172,79 @@ def validate_model(model: "Model") -> list[str]:
     return errors
 
 
+# Pre-aggregation configuration that Sidemantic parses and stores (e.g. so Cube
+# models round-trip cleanly) but does not act on during query routing or refresh.
+# Surfacing these as non-fatal warnings keeps an imported model from silently
+# behaving differently than it did in its source tool. See docs/compatibility/cube.md.
+_INERT_PREAGG_TYPE_NOTES = {
+    "rollup_join": (
+        "type 'rollup_join' is parsed but not executed; Sidemantic matches and materializes it as a "
+        "plain rollup and does not perform cross-data-source rollup joins"
+    ),
+    "lambda": (
+        "type 'lambda' is parsed but not executed; Sidemantic treats it as a plain rollup and does not "
+        "union a batch rollup with real-time source data"
+    ),
+}
+
+
+def _preagg_unions_source(preagg) -> bool:
+    """A lambda pre-aggregation that actually unions fresh source data at query time.
+
+    When True the lambda is executed (UNION of the batch rollup with a fresh source
+    aggregation split at build_range_end), so its 'inert' and 'build_range no runtime
+    effect' notes no longer apply.
+    """
+    return (
+        preagg.type == "lambda"
+        and getattr(preagg, "union_with_source_data", False)
+        and preagg.build_range_end is not None
+    )
+
+
+def validate_model_warnings(model: "Model") -> list[str]:
+    """Collect non-fatal warnings for a model definition.
+
+    Unlike :func:`validate_model`, these never fail validation. They flag
+    pre-aggregation configuration that Sidemantic accepts and stores but does not
+    act on at query or refresh time, so an imported model (for example from Cube)
+    is not silently degraded without notice.
+
+    Args:
+        model: Model to inspect
+
+    Returns:
+        List of warning messages (empty if none)
+    """
+    warnings: list[str] = []
+
+    for preagg in model.pre_aggregations:
+        prefix = f"Pre-aggregation '{model.name}.{preagg.name}'"
+
+        # A lambda with union_with_source_data + build_range_end is executed (it
+        # unions the batch rollup with fresh source data), so its inert-type note and
+        # build_range note no longer apply.
+        unions_source = _preagg_unions_source(preagg)
+
+        inert_type_note = _INERT_PREAGG_TYPE_NOTES.get(preagg.type)
+        if inert_type_note and not unions_source:
+            warnings.append(f"{prefix}: {inert_type_note}")
+
+        if (preagg.build_range_start is not None or preagg.build_range_end is not None) and not unions_source:
+            warnings.append(
+                f"{prefix}: build_range_start/build_range_end have no runtime effect; Sidemantic does not "
+                "bound materialization by a build range"
+            )
+
+        if preagg.refresh_key and preagg.refresh_key.sql:
+            warnings.append(
+                f"{prefix}: refresh_key.sql is parsed but not executed; Sidemantic has no scheduler to run a "
+                "change-detection query, so refresh timing must come from your external orchestrator"
+            )
+
+    return warnings
+
+
 def validate_metric(measure: "Metric", graph: "SemanticGraph") -> list[str]:
     """Validate a measure definition.
 

@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from sidemantic import SemanticLayer, load_from_directory
-from sidemantic.validation import validate_metric, validate_model
+from sidemantic.validation import validate_metric, validate_model, validate_model_warnings
 
 
 @dataclass
@@ -35,6 +35,7 @@ def validate_directory(directory: str | Path) -> ValidationReport:
 
     for model_name, model in layer.graph.models.items():
         report.errors.extend(validate_model(model))
+        report.warnings.extend(validate_model_warnings(model))
 
         if not model.dimensions:
             report.warnings.append(f"Model '{model_name}' has no dimensions")

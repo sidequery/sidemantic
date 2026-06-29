@@ -111,6 +111,11 @@ class PreAggregationMatcher:
         Returns:
             True if pre-aggregation can satisfy the query
         """
+        # original_sql pre-aggregations stage a base query, not an aggregation
+        # rollup, so they never directly satisfy a metric query.
+        if preagg.type == "original_sql":
+            return False
+
         # 1. Check dimension subset
         # Query dimensions must be subset of pre-agg dimensions
         preagg_dims = set(preagg.dimensions or [])
@@ -432,6 +437,16 @@ class PreAggregationMatcher:
         Same logic as can_satisfy_query but returns structured check details
         instead of a boolean.
         """
+        # original_sql pre-aggregations are staged base tables, not queryable rollups.
+        if preagg.type == "original_sql":
+            return PreaggCandidate(
+                name=preagg.name,
+                matched=False,
+                score=None,
+                selected=False,
+                checks=[PreaggCheck("type", False, "original_sql is a staged base table, not a queryable rollup")],
+            )
+
         checks: list[PreaggCheck] = []
 
         # 1. Dimension subset check

@@ -740,7 +740,10 @@ def _segment_to_rust_dict(segment) -> dict[str, Any]:
 
 
 def _pre_aggregation_to_rust_dict(preagg) -> dict[str, Any]:
-    return preagg.model_dump(mode="json", exclude_none=True)
+    # rollups / union_with_source_data are lambda-only fields absent from the
+    # sidemantic-rs YAML schema; exclude them to match the production serializer
+    # (sidemantic/rust_bridge.py::_serialize_pre_aggregation).
+    return preagg.model_dump(mode="json", exclude_none=True, exclude={"rollups", "union_with_source_data"})
 
 
 def _table_calculation_to_rust_dict(calc) -> dict[str, Any]:

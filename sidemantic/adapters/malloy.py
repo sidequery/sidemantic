@@ -2216,9 +2216,23 @@ class MalloyAdapter(BaseAdapter):
         if metric.type == "ratio" and metric.numerator and metric.denominator:
             return f"{metric.numerator} / {metric.denominator}"
 
-        # Fallback to sql
+        # Fallback to sql. Convert the SQL aggregate forms that import
+        # normalization introduces back to Malloy so the derived measure
+        # round-trips (Malloy has no count(*) or count(DISTINCT ...)).
         if metric.sql:
-            return self._strip_model_prefix(metric.sql)
+            return self._sql_aggs_to_malloy(self._strip_model_prefix(metric.sql))
 
         # No faithful Malloy representation for this metric.
         return None
+
+    @staticmethod
+    def _sql_aggs_to_malloy(sql: str) -> str:
+        """Rewrite SQL aggregate syntax back to Malloy for export.
+
+        COUNT(DISTINCT x) -> count(x), count(*) -> count(), and uppercase
+        SUM/AVG/MIN/MAX/COUNT(...) -> lowercase, so a derived measure whose SQL
+        came from import normalization parses again as Malloy.
+        """
+        sql = re.sub(r"\bcount\s*\(\s*distinct\s+(.+?)\s*\)", r"count(\1)", sql, flags=re.IGNORECASE)
+        sql = re.sub(r"\bcount\s*\(\s*\*\s*\)", "count()", sql, flags=re.IGNORECASE)
+        return re.sub(r"\b(SUM|AVG|MIN|MAX|COUNT)\s*\(", lambda m: m.group(1).lower() + "(", sql)

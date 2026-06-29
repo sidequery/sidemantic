@@ -575,6 +575,25 @@ def test_normalize_count_function_forms_to_distinct():
     assert sql("count_distinct(user_id) / count()") == "COUNT(DISTINCT user_id) / count(*)"
 
 
+def test_derived_count_measure_roundtrips_to_valid_malloy():
+    # Stored SQL is query-valid; export converts the SQL aggregate forms back to
+    # Malloy so a strict reparse of the exported file succeeds.
+    import tempfile
+
+    src = "source: o is duckdb.table('o') extend {\n  primary_key: id\n  measure: m is count(user_id) / count()\n}\n"
+    g = _parse(src)
+    assert g.get_model("o").get_metric("m").sql == "COUNT(DISTINCT user_id) / count(*)"
+    out = tempfile.NamedTemporaryFile("w", suffix=".malloy", delete=False).name
+    try:
+        MalloyAdapter().export(g, out)
+        text = Path(out).read_text()
+        assert "m is count(user_id) / count()" in text
+        # Re-parses strictly (valid Malloy, not SQL count(*)).
+        MalloyAdapter(strict=True).parse(Path(out))
+    finally:
+        Path(out).unlink(missing_ok=True)
+
+
 def test_pick_condition_with_nested_case():
     sql = _dim_sql(
         "source: o is duckdb.table('o') extend {\n"

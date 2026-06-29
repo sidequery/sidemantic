@@ -505,6 +505,21 @@ def test_date_literal_dimension_is_time_not_numeric():
     assert d.sql == "DATE '2024-01-01'"
 
 
+def test_regex_match_backtick_operand_with_spaces():
+    assert (
+        _dim_sql("source: o is duckdb.table('o') extend {\n  dimension: a is `user name` ~ r'foo'\n}\n", "a")
+        == "REGEXP_MATCHES(`user name`, 'foo')"
+    )
+
+
+def test_pick_escaped_quote_before_keyword_in_condition():
+    sql = _dim_sql(
+        "source: o is duckdb.table('o') extend {\n  dimension: b is pick 'x' when note = 'it\\'s else ok' else 'y'\n}\n",
+        "b",
+    )
+    assert sql == "CASE WHEN note = 'it\\'s else ok' THEN 'x' ELSE 'y' END"
+
+
 def test_join_on_condition_skips_literal_predicate():
     g = _parse(
         "source: customers is duckdb.table('c') extend { primary_key: id }\n"

@@ -381,8 +381,15 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         quote = None
         n = len(expr)
         prev = ""  # last operand-boundary char seen at depth 0 (spaces ignored)
+        skip_next = False
         for i, ch in enumerate(expr):
+            if skip_next:
+                skip_next = False
+                continue
             if quote is not None:
+                if ch == "\\":
+                    skip_next = True  # ignore the escaped char so \' does not close
+                    continue
                 if ch == quote:
                     quote = None
                     prev = ch
@@ -524,19 +531,44 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         if end <= 0:
             return None
 
-        # Mark positions inside string literals so the backward balance scan
-        # ignores parentheses inside quotes, e.g. the ')' in replace(name, ')', '').
+        # Mark positions inside string literals (escape-aware) so the backward
+        # scans ignore parentheses, spaces, and quotes inside string/backtick
+        # literals, e.g. the ')' in replace(name, ')', '') or the space in the
+        # backtick identifier `user name`.
         quoted = [False] * end
         q = None
-        for i in range(end):
+        i = 0
+        while i < end:
             c = s[i]
             if q is not None:
                 quoted[i] = True
+                if c == "\\" and i + 1 < end:
+                    quoted[i + 1] = True
+                    i += 2
+                    continue
                 if c == q:
                     q = None
             elif c in ("'", '"', "`"):
                 q = c
                 quoted[i] = True
+            i += 1
+
+        def walk_left(stop: int) -> int:
+            # Walk left over a field reference, consuming whole quoted segments
+            # (e.g. a backtick identifier with spaces) atomically.
+            p = stop
+            while p > 0:
+                j = p - 1
+                if quoted[j]:
+                    while j > 0 and quoted[j - 1]:
+                        j -= 1
+                    p = j
+                    continue
+                if s[j].isalnum() or s[j] in "_.`":
+                    p -= 1
+                    continue
+                break
+            return p
 
         if s[end - 1] == ")" and not quoted[end - 1]:
             depth = 0
@@ -559,14 +591,10 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
             while ident_end > 0 and s[ident_end - 1] == " ":
                 ident_end -= 1
             if ident_end > 0 and (s[ident_end - 1].isalnum() or s[ident_end - 1] in "_.`"):
-                start = ident_end
-                while start > 0 and (s[start - 1].isalnum() or s[start - 1] in "_.`"):
-                    start -= 1
-                return start
+                return walk_left(ident_end)
             return k
-        start = end
-        while start > 0 and (s[start - 1].isalnum() or s[start - 1] in "_.`"):
-            start -= 1
+
+        start = walk_left(end)
         return start if start != end else None
 
     def _transform_regex_match(self, expr: str) -> str:
@@ -614,6 +642,10 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
             ch = expr[i]
             if quote is not None:
                 current.append(ch)
+                if ch == "\\" and i + 1 < len(expr):
+                    current.append(expr[i + 1])  # keep the escaped char verbatim
+                    i += 2
+                    continue
                 if ch == quote:
                     quote = None
                 i += 1
@@ -658,6 +690,10 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
             ch = expr[i]
             if quote is not None:
                 buf.append(ch)
+                if ch == "\\" and i + 1 < len(expr):
+                    buf.append(expr[i + 1])  # keep the escaped char verbatim
+                    i += 2
+                    continue
                 if ch == quote:
                     quote = None
                 i += 1
@@ -799,6 +835,9 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         while i < n:
             ch = s[i]
             if quote is not None:
+                if ch == "\\":
+                    i += 2  # skip the escaped char so \' does not close the string
+                    continue
                 if ch == quote:
                     quote = None
                 i += 1

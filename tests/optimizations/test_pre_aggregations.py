@@ -1348,9 +1348,9 @@ def test_lambda_preaggregation_unions_batch_rollup_with_fresh_source(layer):
     # Partial-state columns are re-aggregated over the union.
     assert "SUM(revenue_raw)" in preagg_sql
     assert "SUM(count_raw)" in preagg_sql
-    # Disjoint split at build_range_end (no double count / gap).
-    assert "created_at_day < ('2024-04-01')" in preagg_sql
-    assert "created_at >= ('2024-04-01')" in preagg_sql
+    # Disjoint split aligned to the build_range_end bucket boundary (no double count / gap).
+    assert "created_at_day < DATE_TRUNC('day', CAST(('2024-04-01') AS TIMESTAMP))" in preagg_sql
+    assert "created_at >= DATE_TRUNC('day', CAST(('2024-04-01') AS TIMESTAMP))" in preagg_sql
 
     assert preagg_rows == baseline_rows
 
@@ -2646,6 +2646,55 @@ def test_build_partitions_scopes_discovery_to_target_schema():
 
     # The covering view references only the two s-schema partitions (not the mis-qualified stray).
     assert conn.execute("SELECT SUM(revenue_raw) FROM s.orders_preagg_monthly").fetchone()[0] == 200
+
+
+def test_lambda_union_does_not_double_count_boundary_bucket():
+    """A mid-bucket build_range_end must not double-count the boundary bucket's post-cutoff rows."""
+    from sidemantic import SemanticLayer
+
+    layer = SemanticLayer()
+    layer.adapter.execute(
+        "CREATE TABLE orders AS SELECT * FROM (VALUES "
+        "(TIMESTAMP '2024-01-01 09:00', 100), "  # day 1
+        "(TIMESTAMP '2024-01-02 09:00', 200), "  # day 2, before the noon cutoff
+        "(TIMESTAMP '2024-01-02 15:00', 300)  "  # day 2, after the cutoff
+        ") t(created_at, amount)"
+    )
+    layer.add_model(
+        Model(
+            name="orders",
+            table="orders",
+            primary_key="id",
+            dimensions=[Dimension(name="created_at", type="time", granularity="day")],
+            metrics=[Metric(name="revenue", agg="sum", sql="amount")],
+            pre_aggregations=[
+                PreAggregation(
+                    name="lam",
+                    type="lambda",
+                    union_with_source_data=True,
+                    measures=["revenue"],
+                    time_dimension="created_at",
+                    granularity="day",
+                    build_range_end="TIMESTAMP '2024-01-02 12:00'",
+                )
+            ],
+        )
+    )
+    model = layer.graph.get_model("orders")
+    # Materialize the batch rollup over the FULL source (so day 2 = 200 + 300 = 500).
+    layer.adapter.execute(
+        f"CREATE TABLE orders_preagg_lam AS {model.pre_aggregations[0].generate_materialization_sql(model)}"
+    )
+
+    result = layer.query(
+        metrics=["orders.revenue"],
+        dimensions=["orders.created_at__day"],
+        use_preaggregations=True,
+    )
+    by_day = {str(row[0])[:10]: row[1] for row in result.fetchall()}
+
+    assert by_day["2024-01-01"] == 100  # from the batch leg
+    assert by_day["2024-01-02"] == 500  # boundary bucket re-aggregated once from source, not 800
 
 
 if __name__ == "__main__":

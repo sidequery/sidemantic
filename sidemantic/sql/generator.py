@@ -5718,9 +5718,9 @@ LEFT JOIN {preagg_table} AS {rollup_alias}
         # query as the UNION of two disjoint, union-compatible legs split at
         # build_range_end (a raw SQL expression, interpolated verbatim like the
         # build_range/partition_filter predicates in build_partitions):
-        #   - BATCH leg: the materialized rollup table, restricted to buckets BEFORE
-        #     build_range_end.
-        #   - FRESH leg: a live aggregation of source rows AT/AFTER build_range_end,
+        #   - BATCH leg: the materialized rollup table, restricted to buckets entirely
+        #     before the build_range_end bucket.
+        #   - FRESH leg: a live aggregation of source rows from the build_range_end bucket onward,
         #     produced by generate_materialization_sql (identical {time}_{gran}, dim,
         #     and {measure}_raw columns), so the legs are union-compatible by
         #     construction.
@@ -5739,9 +5739,17 @@ LEFT JOIN {preagg_table} AS {rollup_alias}
             time_col = f"{preagg.time_dimension}_{preagg.granularity}"
             build_range_end = preagg.build_range_end
             time_dim = model.get_dimension(preagg.time_dimension)
-            batch_leg = f"SELECT * FROM {preagg_table} WHERE {time_col} < ({build_range_end})"
+            # Split at the bucket BOUNDARY, not the raw build_range_end. The batch
+            # rollup row for the boundary bucket aggregates the whole bucket (refresh
+            # does not bound materialization), so a mid-bucket split would double-count:
+            # the batch leg would keep the full bucket while the fresh leg re-adds its
+            # >= build_range_end rows. Excluding the whole boundary bucket from the
+            # batch leg and re-aggregating it from source in the fresh leg keeps the
+            # two legs disjoint.
+            boundary = f"DATE_TRUNC('{preagg.granularity}', CAST(({build_range_end}) AS TIMESTAMP))"
+            batch_leg = f"SELECT * FROM {preagg_table} WHERE {time_col} < {boundary}"
             fresh_leg = preagg.generate_materialization_sql(
-                model, partition_filter=f"{time_dim.sql_expr} >= ({build_range_end})"
+                model, partition_filter=f"{time_dim.sql_expr} >= {boundary}"
             )
             from_clause = f"(\n{batch_leg}\nUNION ALL\n{fresh_leg}\n) AS t"
 

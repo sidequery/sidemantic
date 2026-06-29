@@ -466,15 +466,8 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         # Pattern: identifier!identifier( -> identifier(
         expr = re.sub(r"(\w+)!\w+\(", r"\1(", expr)
 
-        # ~ / !~ regex match with r'' or r"" literal:
-        #   field ~ r'pattern' -> REGEXP_MATCHES(field, 'pattern')
-        # The LHS is restricted to a single field reference so the match does not
-        # swallow preceding conditions (`a = 1 and name ~ r'x'`) or, on a second
-        # match in the same expression, the operator joining the two matches.
-        expr = re.sub(r"([\w.`]+)\s+!~\s+r'([^']*)'", r"NOT REGEXP_MATCHES(\1, '\2')", expr)
-        expr = re.sub(r'([\w.`]+)\s+!~\s+r"([^"]*)"', r"NOT REGEXP_MATCHES(\1, '\2')", expr)
-        expr = re.sub(r"([\w.`]+)\s+~\s+r'([^']*)'", r"REGEXP_MATCHES(\1, '\2')", expr)
-        expr = re.sub(r'([\w.`]+)\s+~\s+r"([^"]*)"', r"REGEXP_MATCHES(\1, '\2')", expr)
+        # ~ / !~ regex match: field ~ r'pattern' -> REGEXP_MATCHES(field, 'pattern')
+        expr = self._transform_regex_match(expr)
 
         # @date / @timestamp literals:
         # @YYYY-MM-DD HH:MM:SS -> TIMESTAMP 'YYYY-MM-DD HH:MM:SS'
@@ -503,6 +496,66 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         if " ? " in expr and " | " in expr and "pick" not in expr.lower():
             expr = self._transform_or_tree(expr)
 
+        return expr
+
+    @staticmethod
+    def _left_operand_start(s: str, end: int) -> int | None:
+        """Return the start index of the operand ending at ``end``.
+
+        Handles a balanced parenthesised group or function call
+        (``lower(name)``, ``(a || b)``) as well as a plain field reference
+        (``name``, ``a.b``, `` `x` ``). Returns None when there is no operand.
+        """
+        if end <= 0:
+            return None
+        if s[end - 1] == ")":
+            depth = 0
+            k = end
+            while k > 0:
+                k -= 1
+                if s[k] == ")":
+                    depth += 1
+                elif s[k] == "(":
+                    depth -= 1
+                    if depth == 0:
+                        break
+            if depth != 0:
+                return None
+            # Include a leading function-name identifier, e.g. the `lower` in `lower(x)`.
+            start = k
+            while start > 0 and (s[start - 1].isalnum() or s[start - 1] in "_.`"):
+                start -= 1
+            return start
+        start = end
+        while start > 0 and (s[start - 1].isalnum() or s[start - 1] in "_.`"):
+            start -= 1
+        return start if start != end else None
+
+    def _transform_regex_match(self, expr: str) -> str:
+        """Transform Malloy regex matches to ``REGEXP_MATCHES`` calls.
+
+        ``operand ~ r'pat'`` -> ``REGEXP_MATCHES(operand, 'pat')`` and
+        ``operand !~ r'pat'`` -> ``NOT REGEXP_MATCHES(operand, 'pat')``.
+
+        The immediate left operand is found by walking back over a single
+        balanced expression, so a match never swallows preceding conditions
+        (``a = 1 and name ~ r'x'``) and computed/parenthesised operands
+        (``lower(name) ~ r'x'``) are preserved. Matches are rewritten
+        right-to-left so earlier offsets stay valid.
+        """
+        pattern = re.compile(r"(!?~)\s+r(['\"])(.*?)\2")
+        for m in reversed(list(pattern.finditer(expr))):
+            end = m.start()
+            while end > 0 and expr[end - 1] == " ":
+                end -= 1
+            operand_start = self._left_operand_start(expr, end)
+            if operand_start is None:
+                continue
+            operand = expr[operand_start:end]
+            replacement = f"REGEXP_MATCHES({operand}, '{m.group(3)}')"
+            if m.group(1) == "!~":
+                replacement = f"NOT {replacement}"
+            expr = expr[:operand_start] + replacement + expr[m.end() :]
         return expr
 
     def _transform_null_coalesce(self, expr: str) -> str:
@@ -658,33 +711,88 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
                 For apply-pick syntax: `field ? pick 'X' when < 5` the base_field
                 is extracted by the caller and partial conditions get it prepended.
         """
-        # Find each `pick <value> when <condition>` arm and an optional trailing
-        # `else <value>`. Keyword-driven (not line-driven) so single-line and
-        # multi-line pick expressions are both handled. Each arm's condition runs
-        # until the next `pick`/`else` keyword or end of string.
-        arms = re.findall(
-            r"pick\s+(.+?)\s+when\s+(.+?)(?=\s+pick\s|\s+else\s|$)",
-            expr,
-            flags=re.IGNORECASE | re.DOTALL,
-        )
-        else_match = re.search(r"(?:^|\s)else\s+(.+?)\s*$", expr, flags=re.IGNORECASE | re.DOTALL)
+        # Locate the pick/when/else keywords at the top level (outside string
+        # literals and parentheses), then slice the arms between them. This is
+        # keyword-driven rather than line-driven so single-line and multi-line
+        # forms both work, and quote-aware so a keyword inside a string literal
+        # (e.g. `when note = 'a else b'`) is not treated as a delimiter.
+        keywords = self._scan_keywords(expr, ("pick", "when", "else"))
+        if not any(kw == "pick" for _, _, kw in keywords):
+            return expr
 
         cases = []
-        for value, condition in arms:
-            value = value.strip()
-            condition = condition.strip()
-            if base_field:
-                condition = self._expand_partial_condition(condition, base_field)
-            cases.append(f"WHEN {condition} THEN {value}")
+        else_value = None
+        i = 0
+        while i < len(keywords):
+            _, end, kw = keywords[i]
+            if kw == "else":
+                else_value = expr[end:].strip()
+                break
+            if kw == "pick" and i + 1 < len(keywords) and keywords[i + 1][2] == "when":
+                when_start, when_end = keywords[i + 1][0], keywords[i + 1][1]
+                value = expr[end:when_start].strip()
+                cond_end = keywords[i + 2][0] if i + 2 < len(keywords) else len(expr)
+                condition = expr[when_end:cond_end].strip()
+                if base_field:
+                    condition = self._expand_partial_condition(condition, base_field)
+                cases.append(f"WHEN {condition} THEN {value}")
+                i += 2
+                continue
+            i += 1
 
         if cases:
             case_str = "CASE " + " ".join(cases)
-            if else_match:
-                case_str += f" ELSE {else_match.group(1).strip()}"
+            if else_value:
+                case_str += f" ELSE {else_value}"
             case_str += " END"
             return case_str
 
         return expr
+
+    @staticmethod
+    def _scan_keywords(s: str, keywords: tuple[str, ...]) -> list[tuple[int, int, str]]:
+        """Return (start, end, keyword) for each whole-word keyword occurrence at
+        the top level (outside string literals and parentheses)."""
+        found: list[tuple[int, int, str]] = []
+        depth = 0
+        quote = None
+        i = 0
+        n = len(s)
+        while i < n:
+            ch = s[i]
+            if quote is not None:
+                if ch == quote:
+                    quote = None
+                i += 1
+                continue
+            if ch in ("'", '"', "`"):
+                quote = ch
+                i += 1
+                continue
+            if ch in "([{":
+                depth += 1
+                i += 1
+                continue
+            if ch in ")]}":
+                depth -= 1
+                i += 1
+                continue
+            if depth == 0:
+                matched = None
+                for kw in keywords:
+                    j = i + len(kw)
+                    if s[i:j].lower() == kw:
+                        before_ok = i == 0 or not (s[i - 1].isalnum() or s[i - 1] == "_")
+                        after_ok = j >= n or not (s[j].isalnum() or s[j] == "_")
+                        if before_ok and after_ok:
+                            matched = (i, j, kw)
+                            break
+                if matched:
+                    found.append(matched)
+                    i = matched[1]
+                    continue
+            i += 1
+        return found
 
     def _expand_partial_condition(self, condition: str, base_field: str) -> str:
         """Expand a partial comparison by prepending the base field.

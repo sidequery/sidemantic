@@ -428,3 +428,28 @@ def test_named_import_still_filters(tmp_path):
     (tmp_path / "base.malloy").write_text(_src("alpha") + _src("beta"))
     (tmp_path / "m.malloy").write_text("import { alpha } from 'base.malloy'\n" + _src("m_src"))
     assert _models(tmp_path / "m.malloy") == {"alpha", "m_src"}
+
+
+# --- Code-review follow-ups ---
+
+
+def test_regex_match_preserves_function_lhs():
+    # A computed / parenthesised left operand must still become REGEXP_MATCHES.
+    assert (
+        _dim_sql("source: o is duckdb.table('o') extend {\n  dimension: a is lower(name) ~ r'foo'\n}\n", "a")
+        == "REGEXP_MATCHES(lower(name), 'foo')"
+    )
+    assert (
+        _dim_sql("source: o is duckdb.table('o') extend {\n  dimension: b is (name) ~ r'foo'\n}\n", "b")
+        == "REGEXP_MATCHES((name), 'foo')"
+    )
+
+
+def test_pick_keyword_inside_string_literal_is_not_a_delimiter():
+    sql = _dim_sql(
+        "source: o is duckdb.table('o') extend {\n"
+        "  dimension: h is pick 'x' when note = 'before else after' else 'y'\n"
+        "}\n",
+        "h",
+    )
+    assert sql == "CASE WHEN note = 'before else after' THEN 'x' ELSE 'y' END"

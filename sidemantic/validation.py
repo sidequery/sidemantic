@@ -242,15 +242,6 @@ def validate_model_warnings(model: "Model") -> list[str]:
                 "change-detection query, so refresh timing must come from your external orchestrator"
             )
 
-    for metric in model.metrics:
-        metric_meta = getattr(metric, "meta", None) or {}
-        if metric_meta.get("cube_type") == "count_distinct_approx":
-            warnings.append(
-                f"Metric '{model.name}.{metric.name}': imported from Cube 'count_distinct_approx' as exact "
-                "'count_distinct'; Sidemantic has no HLL/sketch support, so it is non-additive and only "
-                "accelerates queries that exactly match a pre-aggregation's grain"
-            )
-
     return warnings
 
 

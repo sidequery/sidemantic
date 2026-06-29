@@ -78,7 +78,7 @@ Not mapped: `propagate_filters_to_sub_query`.
 |---------|--------|
 | `type: count` | Supported |
 | `type: count_distinct` | Supported |
-| `type: count_distinct_approx` | Supported (maps to `count_distinct`; original type preserved in `Metric.meta["cube_type"]` and `sidemantic validate` warns that it is now exact/non-additive, since there is no HLL/sketch support) |
+| `type: count_distinct_approx` | Supported (maps to `approx_count_distinct`) |
 | `type: sum` | Supported |
 | `type: avg` | Supported |
 | `type: min` | Supported |

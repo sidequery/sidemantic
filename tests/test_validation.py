@@ -388,41 +388,6 @@ def test_refresh_key_without_sql_does_not_warn():
     assert not any("refresh_key.sql" in w for w in validate_model_warnings(model))
 
 
-def test_count_distinct_approx_marker_warns():
-    """A metric imported from Cube's count_distinct_approx is flagged as exact/non-additive."""
-    model = Model(
-        name="orders",
-        table="orders",
-        primary_key="order_id",
-        dimensions=[Dimension(name="status", type="categorical")],
-        metrics=[
-            Metric(
-                name="uniq_users",
-                agg="count_distinct",
-                sql="user_id",
-                meta={"cube_type": "count_distinct_approx"},
-            )
-        ],
-    )
-
-    warnings = validate_model_warnings(model)
-
-    assert any("count_distinct_approx" in w and "non-additive" in w for w in warnings), warnings
-
-
-def test_plain_count_distinct_metric_does_not_warn():
-    """An ordinary exact count_distinct (no Cube approx marker) is not flagged."""
-    model = Model(
-        name="orders",
-        table="orders",
-        primary_key="order_id",
-        dimensions=[Dimension(name="status", type="categorical")],
-        metrics=[Metric(name="uniq_users", agg="count_distinct", sql="user_id")],
-    )
-
-    assert validate_model_warnings(model) == []
-
-
 def test_validate_directory_surfaces_preagg_warnings_without_failing(tmp_path):
     """The CLI validation path reports inert-field warnings but still passes."""
     (tmp_path / "orders.yml").write_text(

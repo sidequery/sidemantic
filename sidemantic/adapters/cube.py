@@ -583,14 +583,6 @@ class CubeAdapter(BaseAdapter):
         # verbatim (no auto-extraction of aggregations into agg=).
         sql_is_complete = False
 
-        # count_distinct_approx maps to exact count_distinct (Sidemantic has no
-        # HLL/sketch support). Record the original Cube type so the loss of
-        # additive approximate-distinct semantics stays visible to validation and
-        # round-trip export rather than vanishing silently.
-        if measure_type == "count_distinct_approx":
-            meta = meta.copy() if meta else {}
-            meta["cube_type"] = "count_distinct_approx"
-
         # Handle unknown measure types explicitly
         if agg_type is None and measure_type not in ("number",):
             if measure_type == "rank":

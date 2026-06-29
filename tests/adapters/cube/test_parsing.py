@@ -88,39 +88,6 @@ def test_cube_adapter_pre_aggregations():
     assert created_at.type == "time"
 
 
-def test_cube_adapter_count_distinct_approx_records_original_type(tmp_path):
-    """count_distinct_approx maps to exact count_distinct but preserves the original Cube type."""
-    cube_yaml = tmp_path / "visitors.yml"
-    cube_yaml.write_text(
-        """
-cubes:
-  - name: visitors
-    sql_table: public.visitors
-    measures:
-      - name: unique_visitors
-        type: count_distinct_approx
-        sql: user_id
-      - name: exact_visitors
-        type: count_distinct
-        sql: user_id
-"""
-    )
-
-    adapter = CubeAdapter()
-    graph = adapter.parse(cube_yaml)
-
-    visitors = graph.get_model("visitors")
-    approx = visitors.get_metric("unique_visitors")
-    exact = visitors.get_metric("exact_visitors")
-
-    # Collapsed to exact count_distinct for execution (no HLL/sketch support)...
-    assert approx.agg == "count_distinct"
-    # ...but the original Cube type is preserved so the loss of additivity stays visible.
-    assert (approx.meta or {}).get("cube_type") == "count_distinct_approx"
-    # A plain count_distinct carries no such marker.
-    assert "cube_type" not in (exact.meta or {})
-
-
 def test_cube_rollup_lambda_round_trips_rollups_and_union_flag(tmp_path):
     """rollupLambda's rollups list and unionWithSourceData flag survive Cube round-trip.
 

@@ -73,7 +73,9 @@ def _normalize_count_calls(s: str) -> str:
     i, n = 0, len(s)
     while i < n:
         c = s[i]
-        if c in ("'", '"'):
+        # Copy string and backtick-identifier literals verbatim (a backtick field
+        # may contain parens, e.g. `user(id`).
+        if c in ("'", '"', "`"):
             j = i + 1
             while j < n:
                 if s[j] == "\\":
@@ -103,7 +105,7 @@ def _normalize_count_calls(s: str) -> str:
                             q = None
                         p += 1
                         continue
-                    if ch in ("'", '"'):
+                    if ch in ("'", '"', "`"):
                         q = ch
                     elif ch == "(":
                         depth += 1

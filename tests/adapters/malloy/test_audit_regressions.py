@@ -642,6 +642,11 @@ def test_count_with_string_literal_argument_normalized():
     assert g.get_model("o").get_metric("m").sql == "COUNT(DISTINCT case when plan = 'pro' then user_id end) / count(*)"
 
 
+def test_count_with_backtick_field_containing_paren():
+    g = _parse("source: o is duckdb.table('o') extend {\n  measure: m is count(`user(id`) / count()\n}\n")
+    assert g.get_model("o").get_metric("m").sql == "COUNT(DISTINCT `user(id`) / count(*)"
+
+
 def test_regex_match_case_expression_operand():
     assert (
         _dim_sql(

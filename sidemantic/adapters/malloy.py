@@ -372,25 +372,34 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         parentheses, brackets, or quotes.
 
         Distinguishes a single aggregation call (`sum(x)`, `cost.sum()`) from a
-        compound expression built from several aggregates (`sum(a) / sum(b)`),
-        which must be preserved verbatim as a derived measure.
+        compound expression built from several aggregates (`sum(a) / sum(b)` or
+        the unspaced `sum(a)/sum(b)`), which must be preserved verbatim as a
+        derived measure. Spaces around the operator are not required; a left
+        operand must exist so a leading unary minus is not treated as binary.
         """
         depth = 0
         quote = None
         n = len(expr)
+        prev = ""  # last operand-boundary char seen at depth 0 (spaces ignored)
         for i, ch in enumerate(expr):
             if quote is not None:
                 if ch == quote:
                     quote = None
+                    prev = ch
                 continue
             if ch in ("'", '"', "`"):
                 quote = ch
+                prev = ch
             elif ch in "([{":
                 depth += 1
+                prev = ch
             elif ch in ")]}":
                 depth -= 1
-            elif depth == 0 and ch in "+-*/%" and 0 < i < n - 1 and expr[i - 1] == " " and expr[i + 1] == " ":
+                prev = ch
+            elif depth == 0 and ch in "+-*/%" and i < n - 1 and (prev.isalnum() or prev in ")_.`'\""):
                 return True
+            elif ch != " ":
+                prev = ch
         return False
 
     def _parse_aggregation(self, expr: str) -> tuple[str | None, str | None]:

@@ -33,6 +33,14 @@ def test_ratio_of_two_aggregates_is_derived():
     assert me.sql == "sum(amount) / sum(quantity)"
 
 
+def test_unspaced_ratio_of_two_aggregates_is_derived():
+    g = _parse("source: orders is duckdb.table('orders') extend {\n  measure: ratio1 is sum(amount)/sum(quantity)\n}\n")
+    me = g.get_model("orders").get_metric("ratio1")
+    assert me.agg is None
+    assert me.type == "derived"
+    assert me.sql == "sum(amount)/sum(quantity)"
+
+
 def test_sum_over_count_is_derived():
     g = _parse("source: orders is duckdb.table('orders') extend {\n  measure: avg_ov is sum(amount) / count()\n}\n")
     me = g.get_model("orders").get_metric("avg_ov")

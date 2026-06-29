@@ -210,6 +210,9 @@ def test_offset_ratio_metric():
 
     print("Results:", rows)
 
+    # "1 month" on month-grain data maps to a 1-row LAG
+    assert "LAG(base.revenue, 1)" in sql
+
     # Results are (month, revenue, mom_growth)
     # First month has no prior data (NULL)
     # Feb: 150 / 100 = 1.5
@@ -219,6 +222,101 @@ def test_offset_ratio_metric():
     assert abs(rows[1][2] - 1.5) < 0.01  # Feb
     assert abs(rows[2][2] - 1.333) < 0.01  # Mar
     assert abs(rows[3][2] - 0.9) < 0.01  # Apr
+
+
+def test_offset_ratio_metric_multi_period():
+    """Ratio metric with a multi-period offset_window honors the interval."""
+    sales = Model(
+        name="sales",
+        sql="""
+            SELECT '2024-01'::VARCHAR AS month, 100 AS revenue
+            UNION ALL SELECT '2024-02', 150
+            UNION ALL SELECT '2024-03', 200
+            UNION ALL SELECT '2024-04', 180
+            UNION ALL SELECT '2024-05', 220
+            UNION ALL SELECT '2024-06', 240
+        """,
+        primary_key="month",
+        dimensions=[Dimension(name="month", sql="month", type="time")],
+        metrics=[Metric(name="revenue", agg="sum", sql="revenue")],
+    )
+
+    # 3-month offset: current / value 3 months ago
+    growth = Metric(
+        name="growth",
+        type="ratio",
+        numerator="sales.revenue",
+        denominator="sales.revenue",
+        offset_window="3 months",
+    )
+
+    graph = SemanticGraph()
+    graph.add_model(sales)
+    graph.add_metric(growth)
+
+    generator = SQLGenerator(graph)
+    sql = generator.generate(metrics=["growth"], dimensions=["sales.month"])
+
+    # "3 months" on month-grain data maps to a 3-row LAG
+    assert "LAG(base.revenue, 3)" in sql
+
+    conn = duckdb.connect(":memory:")
+    rows = df_rows(conn.execute(sql))
+
+    # Results are (month, revenue, growth)
+    # Jan/Feb/Mar have no 3-row lookback -> None
+    # Apr: 180 / 100 = 1.8
+    # May: 220 / 150 = 1.4667
+    # Jun: 240 / 200 = 1.2
+    assert rows[0][2] is None  # Jan
+    assert rows[1][2] is None  # Feb
+    assert rows[2][2] is None  # Mar
+    assert abs(rows[3][2] - 1.8) < 0.01  # Apr
+    assert abs(rows[4][2] - 1.4667) < 0.01  # May
+    assert abs(rows[5][2] - 1.2) < 0.01  # Jun
+
+
+def test_offset_ratio_metric_year_offset():
+    """A '1 year' offset_window over 6 months of monthly data yields all NULLs."""
+    sales = Model(
+        name="sales",
+        sql="""
+            SELECT '2024-01'::VARCHAR AS month, 100 AS revenue
+            UNION ALL SELECT '2024-02', 150
+            UNION ALL SELECT '2024-03', 200
+            UNION ALL SELECT '2024-04', 180
+            UNION ALL SELECT '2024-05', 220
+            UNION ALL SELECT '2024-06', 240
+        """,
+        primary_key="month",
+        dimensions=[Dimension(name="month", sql="month", type="time")],
+        metrics=[Metric(name="revenue", agg="sum", sql="revenue")],
+    )
+
+    yoy = Metric(
+        name="yoy",
+        type="ratio",
+        numerator="sales.revenue",
+        denominator="sales.revenue",
+        offset_window="1 year",
+    )
+
+    graph = SemanticGraph()
+    graph.add_model(sales)
+    graph.add_metric(yoy)
+
+    generator = SQLGenerator(graph)
+    sql = generator.generate(metrics=["yoy"], dimensions=["sales.month"])
+
+    # "1 year" on month-grain data maps to a 12-row LAG
+    assert "LAG(base.revenue, 12)" in sql
+
+    conn = duckdb.connect(":memory:")
+    rows = df_rows(conn.execute(sql))
+
+    # No 12-row lookback exists in 6 rows -> every growth value is None
+    for row in rows:
+        assert row[2] is None
 
 
 def test_conversion_metric():

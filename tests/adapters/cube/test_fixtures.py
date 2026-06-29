@@ -463,6 +463,14 @@ class TestMultiStageTimeShift:
         assert product_rank.meta.get("order_by") is not None
         assert product_rank.meta.get("reduce_by") is not None
 
+    def test_rank_measure_warns(self):
+        """type: rank imports as a count fallback and warns the user it is not a rank."""
+        adapter = CubeAdapter()
+        with pytest.warns(UserWarning, match="rank"):
+            graph = adapter.parse(FIXTURES_DIR / "multi_stage_time_shift.yml")
+        # fallback behavior unchanged
+        assert graph.get_model("ranking").get_metric("product_rank").agg == "count"
+
     def test_ranking_measures(self, graph):
         rank_model = graph.get_model("ranking")
         revenue = rank_model.get_metric("revenue")

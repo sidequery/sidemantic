@@ -525,7 +525,7 @@ class CubeAdapter(BaseAdapter):
         type_mapping = {
             "count": "count",
             "count_distinct": "count_distinct",
-            "count_distinct_approx": "count_distinct",
+            "count_distinct_approx": "approx_count_distinct",
             "sum": "sum",
             "avg": "avg",
             "min": "min",
@@ -555,6 +555,12 @@ class CubeAdapter(BaseAdapter):
                 meta["cube_type"] = "rank"
                 meta["order_by"] = measure_def.get("order_by")
                 meta["reduce_by"] = measure_def.get("reduce_by")
+                warnings.warn(
+                    f"Cube measure '{cube_name}.{name}' has type 'rank', which is not supported; "
+                    f"imported as a non-rank COUNT fallback (agg='count'). The result is a plain "
+                    f"count, NOT a rank, and no RANK() SQL is generated.",
+                    stacklevel=2,
+                )
             elif measure_type == "number_agg":
                 # Custom SQL aggregate (e.g., PERCENTILE_CONT). The sql field holds
                 # the complete aggregate expression, so leave agg=None and preserve
@@ -1131,6 +1137,7 @@ class CubeAdapter(BaseAdapter):
                 type_mapping = {
                     "count": "count",
                     "count_distinct": "count_distinct",
+                    "approx_count_distinct": "count_distinct_approx",
                     "sum": "sum",
                     "avg": "avg",
                     "min": "min",

@@ -296,6 +296,62 @@ class TestSharedFiltersOnOuterQuery:
             if r.get("revenue"):
                 assert r["revenue"] == 300
 
+    def test_or_group_parens_preserved_in_pushdown(self):
+        """A filter '(A OR B) AND C' must keep the OR group's parens when its
+        conjuncts are flattened and rejoined with AND during pushdown. Otherwise
+        SQL precedence silently turns it into 'A OR (B AND C)', a different
+        predicate, and the wrong rows are included."""
+        graph = self._build_graph()
+        gen = SQLGenerator(graph)
+
+        # (amount = 50 OR amount = 100) AND order_date = '2024-01-01'
+        # Correct: only id=1 (amount=100, date=2024-01-01) qualifies -> revenue 100.
+        # Buggy flatten 'amount=50 OR amount=100 AND date=...' would also pull in
+        # id=3 (amount=50, date=2024-01-02) -> a spurious 2024-01-02 row of 50.
+        sql = gen.generate(
+            metrics=["orders.revenue"],
+            dimensions=["orders.order_date"],
+            filters=["(orders_cte.amount = 50 OR orders_cte.amount = 100) AND orders_cte.order_date = '2024-01-01'"],
+        )
+
+        conn = duckdb.connect(":memory:")
+        rows = fetch_dicts(conn.execute(sql))
+        conn.close()
+
+        revenues = {r["order_date"].isoformat(): r["revenue"] for r in rows if r.get("revenue")}
+        assert revenues == {"2024-01-01": 100}, revenues
+
+    def test_classify_filters_preserves_or_group_parens(self):
+        """Unit-level regression: a single-model '(A OR B) AND C' conjunct set must
+        round-trip through ' AND '.join(...) to a predicate identical to the original."""
+        gen = SQLGenerator(self._build_graph())
+        pushdown, main, _ = gen._classify_filters_for_pushdown(
+            ["(orders.amount = 50 OR orders.amount = 100) AND orders.order_date = '2024-01-01'"],
+            {"orders", "items"},
+        )
+        pushed = pushdown["orders"]
+        # Rejoined exactly as _build_model_cte would.
+        rejoined = " AND ".join(pushed)
+
+        # Truth-table equivalence vs the original grouped predicate over the
+        # distinct (amount, order_date) combinations in the fixture.
+        conn = duckdb.connect(":memory:")
+        cases = [
+            (50, "2024-01-01"),
+            (100, "2024-01-01"),
+            (200, "2024-01-01"),
+            (50, "2024-01-02"),
+            (100, "2024-01-02"),
+        ]
+        original = "(amount = 50 OR amount = 100) AND order_date = '2024-01-01'"
+        rejoined_pred = rejoined.replace("orders.", "").replace("orders_cte.", "")
+        for amount, date in cases:
+            tbl = f"SELECT {amount} AS amount, '{date}'::DATE AS order_date"
+            want = conn.execute(f"SELECT ({original}) FROM ({tbl})").fetchone()[0]
+            got = conn.execute(f"SELECT ({rejoined_pred}) FROM ({tbl})").fetchone()[0]
+            assert want == got, (amount, date, want, got, rejoined)
+        conn.close()
+
 
 # ==========================================================================
 # Fix 6: Duplicate segment resolution (segments=None after resolve)

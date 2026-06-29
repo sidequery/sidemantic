@@ -11,11 +11,29 @@ the join creates duplicates.
 
 from typing import Literal
 
+# Aggregations that cannot be expressed as a symmetric aggregate under fan-out.
+# They have no SUM(DISTINCT hash * M + value) decomposition that survives
+# deduplication, so they raise an actionable error rather than emit fake SQL.
+_NON_SYMMETRIC_AGGS = {"median", "stddev", "stddev_pop", "variance", "variance_pop"}
+
 
 def build_symmetric_aggregate_sql(
     measure_expr: str,
     primary_key: str,
-    agg_type: Literal["sum", "avg", "count", "count_distinct", "min", "max", "median"],
+    agg_type: Literal[
+        "sum",
+        "avg",
+        "count",
+        "count_distinct",
+        "approx_count_distinct",
+        "min",
+        "max",
+        "median",
+        "stddev",
+        "stddev_pop",
+        "variance",
+        "variance_pop",
+    ],
     model_alias: str | None = None,
     dialect: str = "duckdb",
 ) -> str:
@@ -33,10 +51,10 @@ def build_symmetric_aggregate_sql(
 
     Examples:
         >>> build_symmetric_aggregate_sql("amount", "order_id", "sum")
-        '(SUM(DISTINCT (HASH(order_id)::HUGEINT * (1::HUGEINT << 40)) + amount) - SUM(DISTINCT (HASH(order_id)::HUGEINT * (1::HUGEINT << 40))))'
+        '(SUM(DISTINCT (HASH(order_id)::HUGEINT * (1::HUGEINT << 40)) + COALESCE(amount, 0)) - SUM(DISTINCT (HASH(order_id)::HUGEINT * (1::HUGEINT << 40))))'
 
         >>> build_symmetric_aggregate_sql("amount", "order_id", "avg", "orders_cte")
-        '(SUM(DISTINCT (HASH(orders_cte.order_id)::HUGEINT * (1::HUGEINT << 40)) + orders_cte.amount) - SUM(DISTINCT (HASH(orders_cte.order_id)::HUGEINT * (1::HUGEINT << 40)))) / NULLIF(COUNT(DISTINCT orders_cte.order_id), 0)'
+        '(SUM(DISTINCT (HASH(orders_cte.order_id)::HUGEINT * (1::HUGEINT << 40)) + COALESCE(orders_cte.amount, 0)) - SUM(DISTINCT (HASH(orders_cte.order_id)::HUGEINT * (1::HUGEINT << 40)))) / NULLIF(COUNT(DISTINCT orders_cte.order_id), 0)'
     """
     # Add table prefix if provided
     pk_col = f"{model_alias}.{primary_key}" if model_alias else primary_key
@@ -83,39 +101,55 @@ def build_symmetric_aggregate_sql(
 
         multiplier = "(1::HUGEINT << 40)"  # ~1e12 in HUGEINT space
 
+    # COALESCE the measure to 0 so a NULL value doesn't drop the row from the
+    # value-bearing SUM while its hash term survives in the subtractor SUM, which
+    # would break the cancellation and leave a huge HASH*multiplier in the result.
+    coalesced_measure = f"COALESCE({measure_col}, 0)"
+
     if agg_type == "sum":
         # SUM(DISTINCT HASH(pk) * multiplier + value) - SUM(DISTINCT HASH(pk) * multiplier)
         hash_expr = hash_func(pk_col)
-        return (
-            f"(SUM(DISTINCT ({hash_expr} * {multiplier}) + {measure_col}) - SUM(DISTINCT ({hash_expr} * {multiplier})))"
-        )
+        return f"(SUM(DISTINCT ({hash_expr} * {multiplier}) + {coalesced_measure}) - SUM(DISTINCT ({hash_expr} * {multiplier})))"
 
     elif agg_type == "avg":
         # Sum divided by distinct count
         hash_expr = hash_func(pk_col)
-        sum_expr = (
-            f"(SUM(DISTINCT ({hash_expr} * {multiplier}) + {measure_col}) - SUM(DISTINCT ({hash_expr} * {multiplier})))"
-        )
+        sum_expr = f"(SUM(DISTINCT ({hash_expr} * {multiplier}) + {coalesced_measure}) - SUM(DISTINCT ({hash_expr} * {multiplier})))"
         count_expr = f"COUNT(DISTINCT {pk_col})"
         return f"{sum_expr} / NULLIF({count_expr}, 0)"
 
     elif agg_type == "count":
-        # Count distinct primary keys
-        return f"COUNT(DISTINCT {pk_col})"
+        # Count distinct primary keys, honoring any metric-level filter baked
+        # into the raw measure column (NULL for non-matching rows).
+        return f"COUNT(DISTINCT CASE WHEN {measure_col} IS NOT NULL THEN {pk_col} END)"
 
     elif agg_type == "count_distinct":
         # Count distinct on the measure itself - no symmetric aggregate needed
         return f"COUNT(DISTINCT {measure_col})"
+
+    elif agg_type == "approx_count_distinct":
+        # Approximate distinct is inherently dedupe-safe under fan-out (like
+        # count_distinct): duplicated rows don't change the distinct cardinality,
+        # so no symmetric aggregate trick is needed.
+        return f"APPROX_COUNT_DISTINCT({measure_col})"
 
     elif agg_type in ("min", "max"):
         # MIN/MAX are idempotent to fan-out: duplicated rows don't change the result
         agg_func = agg_type.upper()
         return f"{agg_func}({measure_col})"
 
-    elif agg_type == "median":
+    elif agg_type in _NON_SYMMETRIC_AGGS:
+        # median/stddev/variance genuinely cannot be expressed as a symmetric
+        # aggregate: there is no SUM(DISTINCT hash * M + value) decomposition that
+        # recovers the true result after deduplicating fan-out rows. Erroring is
+        # correct; the message names the agg and the concrete workarounds.
         raise ValueError(
-            "Symmetric aggregates do not support MEDIAN. "
-            "Use pre-aggregation or restructure the query to avoid fan-out joins."
+            f"{agg_type.upper()} cannot be computed as a symmetric aggregate under a fan-out "
+            f"(one-to-many) join, because deduplicating fan-out rows would change the result. "
+            f"Restructure the query so '{measure_expr}' is not aggregated across a fan-out join: "
+            f"either pre-aggregate the measure to its entity grain (group by the model's primary "
+            f"key) before joining, or query this metric without the fan-out dimension/join "
+            f"(ungrouped or grouped only by the metric's own model)."
         )
 
     else:

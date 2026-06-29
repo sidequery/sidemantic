@@ -367,9 +367,13 @@ fn parse_symmetric_agg_type(agg_type: &str) -> sidemantic::Result<SymmetricAggTy
         "count_distinct" => Ok(SymmetricAggType::CountDistinct),
         "min" => Ok(SymmetricAggType::Min),
         "max" => Ok(SymmetricAggType::Max),
-        "median" => Err(sidemantic::SidemanticError::Validation(
-            "Symmetric aggregates do not support MEDIAN. Use pre-aggregation or restructure the query to avoid fan-out joins.".to_string(),
-        )),
+        "median" | "stddev" | "stddev_pop" | "variance" | "variance_pop" => {
+            Err(sidemantic::SidemanticError::Validation(format!(
+                "{} cannot be computed as a symmetric aggregate under a fan-out (one-to-many) join; \
+                 pre-aggregate the measure to its entity grain, or query without the fan-out join.",
+                agg_type.to_uppercase()
+            )))
+        }
         value => Err(sidemantic::SidemanticError::Validation(format!(
             "Unsupported aggregation type for symmetric aggregates: {value}"
         ))),

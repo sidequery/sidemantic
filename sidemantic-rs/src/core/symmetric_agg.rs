@@ -131,7 +131,10 @@ pub fn build_symmetric_aggregate_sql_with_key_expr(
     };
 
     let symmetric_base_expr = format!("({hash_expr} * {multiplier})");
-    let symmetric_measure_expr = measure_col.clone();
+    // COALESCE the measure to 0 so a NULL value doesn't drop the row from the
+    // value-bearing SUM while its hash term survives in the subtractor SUM, which
+    // would break the cancellation and leave a huge HASH*multiplier in the result.
+    let symmetric_measure_expr = format!("COALESCE({measure_col}, 0)");
 
     match agg_type {
         SymmetricAggType::Sum => {
@@ -150,8 +153,9 @@ pub fn build_symmetric_aggregate_sql_with_key_expr(
             format!("{sum_expr} / NULLIF(COUNT(DISTINCT {pk_col}), 0)")
         }
         SymmetricAggType::Count => {
-            // Count distinct primary keys
-            format!("COUNT(DISTINCT {pk_col})")
+            // Count distinct primary keys, honoring any metric-level filter baked
+            // into the raw measure column (NULL for non-matching rows).
+            format!("COUNT(DISTINCT CASE WHEN {measure_col} IS NOT NULL THEN {pk_col} END)")
         }
         SymmetricAggType::CountDistinct => {
             // Count distinct on the measure itself - no symmetric aggregate needed
@@ -187,7 +191,7 @@ mod tests {
         );
         assert!(sql.contains("SUM(DISTINCT"));
         assert!(sql.contains("HASH(order_id)::HUGEINT"));
-        assert!(sql.contains("+ amount"));
+        assert!(sql.contains("+ COALESCE(amount, 0)"));
         assert!(sql.contains("(1::HUGEINT << 40)"));
     }
 
@@ -214,7 +218,10 @@ mod tests {
             None,
             SqlDialect::DuckDB,
         );
-        assert_eq!(sql, "COUNT(DISTINCT order_id)");
+        assert_eq!(
+            sql,
+            "COUNT(DISTINCT CASE WHEN amount IS NOT NULL THEN order_id END)"
+        );
     }
 
     #[test]
@@ -275,6 +282,6 @@ mod tests {
             SqlDialect::DuckDB,
         );
         assert!(sql.contains("HASH(CONCAT("));
-        assert!(sql.contains("+ o.amount"));
+        assert!(sql.contains("+ COALESCE(o.amount, 0)"));
     }
 }

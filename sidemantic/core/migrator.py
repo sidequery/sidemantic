@@ -397,8 +397,12 @@ class Migrator:
                         "variance": "variance",
                         "variancepop": "var_pop",
                         "median": "median",
-                        "approxdistinct": "approx_distinct",
-                        "approxquantile": "approx_quantile",
+                        "approxdistinct": "approx_count_distinct",
+                        # APPROX_QUANTILE takes a percentile argument that can't be
+                        # modeled as a bare agg, so downgrade it to median (the 0.5
+                        # percentile). A non-0.5 percentile loses precision but yields
+                        # a valid metric rather than an unsupported agg name.
+                        "approxquantile": "median",
                     }
 
                     agg_name = agg_name_map.get(agg_type_name, agg_type_name)

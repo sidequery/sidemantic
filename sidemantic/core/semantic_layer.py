@@ -35,6 +35,8 @@ class SemanticLayer:
         init_sql: list[str] | None = None,
         engine: str | None = None,
         fallback: bool | None = None,
+        default_limit: int | None = None,
+        max_limit: int | None = None,
     ):
         """Initialize semantic layer.
 
@@ -63,6 +65,11 @@ class SemanticLayer:
                 legacy SIDEMANTIC_RS_* environment flags are honored.
             fallback: Whether explicit Rust/auto engine mode may fall back to Python.
                 Defaults to False for engine="rust" and True for engine="auto".
+            default_limit: Opt-in row limit applied when a query specifies no explicit
+                limit (default: None, i.e. unlimited). Safety cap to avoid accidental
+                full-table scans.
+            max_limit: Opt-in maximum row limit; an explicit (or defaulted) limit larger
+                than this is capped to it (default: None, i.e. uncapped).
         """
         from sidemantic.db.base import BaseDatabaseAdapter
 
@@ -78,6 +85,8 @@ class SemanticLayer:
         self.preagg_database = preagg_database
         self.preagg_schema = preagg_schema
         self.engine = engine or "python"
+        self.default_limit = default_limit
+        self.max_limit = max_limit
         self._strict_rust_sql_generator_entrypoint = is_strict_for("sql_generator_entrypoint")
         self._strict_rust_query_validation = is_strict_for("semantic_core_query_validation")
         if engine == "python":
@@ -516,10 +525,13 @@ class SemanticLayer:
         segments: list[str] | None = None,
         order_by: list[str] | None = None,
         limit: int | None = None,
+        offset: int | None = None,
         ungrouped: bool = False,
         parameters: dict[str, any] | None = None,
         use_preaggregations: bool | None = None,
         post_process: str | None = None,
+        timezone: str | None = None,
+        with_totals: bool = False,
     ):
         """Execute a query against the semantic layer.
 
@@ -530,12 +542,15 @@ class SemanticLayer:
             segments: List of segment references (e.g., ["orders.active_users"])
             order_by: List of fields to order by
             limit: Maximum number of rows to return
+            offset: Number of rows to skip
             ungrouped: If True, return raw rows without aggregation (no GROUP BY)
             parameters: Template parameters for Jinja2 rendering
             use_preaggregations: Override pre-aggregation routing setting for this query
             post_process: Optional SQL to wrap around the semantic query result.
                 Use {inner} as a placeholder for the compiled semantic query, e.g.:
                 "SELECT *, revenue / count AS avg_value FROM ({inner})"
+            timezone: Optional query timezone applied to time-dimension truncation
+            with_totals: If True, add a grand-total row (all dimensions NULL) via GROUPING SETS
 
         Returns:
             DuckDB relation object (can convert to DataFrame with .df() or .to_df())
@@ -547,10 +562,13 @@ class SemanticLayer:
             segments=segments,
             order_by=order_by,
             limit=limit,
+            offset=offset,
             ungrouped=ungrouped,
             parameters=parameters,
             use_preaggregations=use_preaggregations,
             post_process=post_process,
+            timezone=timezone,
+            with_totals=with_totals,
         )
 
         return self.adapter.execute(sql)
@@ -600,6 +618,21 @@ class SemanticLayer:
             use_preaggregations=use_preaggregations,
         )
 
+    def _resolve_row_limit(self, limit: int | None) -> int | None:
+        """Apply opt-in default/max row-limit safety caps.
+
+        - When no explicit limit is given, fall back to ``default_limit`` (if set).
+        - When an explicit (or defaulted) limit exceeds ``max_limit`` (if set), cap it.
+
+        Both ``default_limit`` and ``max_limit`` default to ``None`` so behavior is
+        unchanged unless configured on the ``SemanticLayer``.
+        """
+        if limit is None and self.default_limit is not None:
+            limit = self.default_limit
+        if self.max_limit is not None and limit is not None and limit > self.max_limit:
+            limit = self.max_limit
+        return limit
+
     def compile(
         self,
         metrics: list[str] | None = None,
@@ -615,6 +648,8 @@ class SemanticLayer:
         use_preaggregations: bool | None = None,
         aliases: dict[str, str] | None = None,
         post_process: str | None = None,
+        timezone: str | None = None,
+        with_totals: bool = False,
     ) -> str:
         """Compile a query to SQL without executing.
 
@@ -633,6 +668,11 @@ class SemanticLayer:
             post_process: Optional SQL to wrap around the semantic query result.
                 Use {inner} as a placeholder for the compiled semantic query, e.g.:
                 "SELECT *, revenue / count AS avg_value FROM ({inner})"
+            timezone: Optional query timezone. When set, time-dimension expressions are
+                converted to this timezone before truncation. Most meaningful on
+                TIMESTAMPTZ columns. Truncation-side only: time-dimension filter
+                comparisons are not timezone-shifted.
+            with_totals: If True, add a grand-total row (all dimensions NULL) via GROUPING SETS
 
         Returns:
             SQL query string
@@ -645,6 +685,10 @@ class SemanticLayer:
         metrics = metrics or []
         dimensions = dimensions or []
 
+        # Apply opt-in default/max row-limit caps before engine dispatch so both
+        # the Rust and Python compile paths see the resolved limit.
+        limit = self._resolve_row_limit(limit)
+
         # Validate query
         errors = self._validate_query(metrics, dimensions, validate_query)
         if errors:
@@ -654,7 +698,9 @@ class SemanticLayer:
         use_preaggs = use_preaggregations if use_preaggregations is not None else self.use_preaggregations
 
         inner_sql = None
-        if self._use_rust_sql_generator:
+        # The Rust compiler payload has no timezone or with_totals field, so force the
+        # Python path rather than silently dropping the requested query timezone/totals.
+        if self._use_rust_sql_generator and timezone is None and not with_totals:
             inner_sql = self._compile_with_rust(
                 metrics=metrics,
                 dimensions=dimensions,
@@ -705,6 +751,8 @@ class SemanticLayer:
                 parameters=parameters,
                 use_preaggregations=use_preaggs,
                 aliases=aliases,
+                timezone=timezone,
+                with_totals=with_totals,
             )
 
         return self._apply_post_process(inner_sql, post_process)
@@ -742,12 +790,15 @@ class SemanticLayer:
         parameters: dict[str, any] | None,
         use_preaggregations: bool,
         aliases: dict[str, str] | None,
+        timezone: str | None = None,
+        with_totals: bool = False,
     ) -> str:
         generator = SQLGenerator(
             self.graph,
             dialect=dialect or self.dialect,
             preagg_database=self.preagg_database,
             preagg_schema=self.preagg_schema,
+            timezone=timezone,
         )
 
         return generator.generate(
@@ -762,6 +813,7 @@ class SemanticLayer:
             parameters=parameters,
             use_preaggregations=use_preaggregations,
             aliases=aliases,
+            with_totals=with_totals,
         )
 
     def _compile_with_rust(

@@ -41,6 +41,21 @@ def test_unspaced_ratio_of_two_aggregates_is_derived():
     assert me.sql == "sum(amount)/sum(quantity)"
 
 
+def test_newline_before_operator_is_derived():
+    # A top-level operator on the next line must still mark the measure derived.
+    g = _parse(
+        "source: orders is duckdb.table('orders') extend {\n  measure: r is sum(amount)\n    / sum(quantity)\n}\n"
+    )
+    me = g.get_model("orders").get_metric("r")
+    assert me.agg is None
+    assert me.type == "derived"
+
+
+def test_export_does_not_rewrite_backtick_field():
+    # A backtick field name that looks like an aggregate is left intact on export.
+    assert MalloyAdapter()._sql_aggs_to_malloy("`COUNT(*)` / count(*)") == "`COUNT(*)` / count()"
+
+
 def test_sum_over_count_is_derived():
     g = _parse("source: orders is duckdb.table('orders') extend {\n  measure: avg_ov is sum(amount) / count()\n}\n")
     me = g.get_model("orders").get_metric("avg_ov")

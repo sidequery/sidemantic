@@ -31,16 +31,17 @@ except ImportError:
     ErrorListener = object  # type: ignore[assignment,misc]
 
 
-def _sub_outside_quotes(s: str, pattern: str, repl) -> str:
-    """Apply ``re.sub(pattern, repl, ...)`` (IGNORECASE) only to text outside
-    single/double-quoted string literals, so an aggregate-looking value inside a
-    literal (e.g. ``'count()'``) is left intact. Backticks are NOT treated as
-    string delimiters: a backtick-quoted field name is part of an aggregate."""
+def _sub_outside_quotes(s: str, pattern: str, repl, quotes: tuple[str, ...] = ("'", '"')) -> str:
+    """Apply ``re.sub(pattern, repl, ...)`` (IGNORECASE) only to text outside the
+    given quote characters, so a value inside a literal (e.g. ``'count()'``) is
+    left intact. ``quotes`` defaults to single/double quotes (backticks are part
+    of a field reference); pass backtick too when rewriting already-SQL text
+    where a backtick identifier must be protected."""
     out: list[str] = []
     i, n = 0, len(s)
     while i < n:
         c = s[i]
-        if c in ("'", '"'):
+        if c in quotes:
             j = i + 1
             while j < n:
                 if s[j] == "\\":
@@ -54,7 +55,7 @@ def _sub_outside_quotes(s: str, pattern: str, repl) -> str:
             i = j
         else:
             j = i
-            while j < n and s[j] not in ("'", '"'):
+            while j < n and s[j] not in quotes:
                 j += 1
             out.append(re.sub(pattern, repl, s[i:j], flags=re.IGNORECASE))
             i = j
@@ -609,7 +610,7 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
                 prev = ch
             elif depth == 0 and ch in "+-*/%" and i < n - 1 and (prev.isalnum() or prev in ")_.`'\""):
                 return True
-            elif ch != " ":
+            elif not ch.isspace():  # ignore all whitespace (newlines/tabs) before the operator
                 prev = ch
         return False
 
@@ -2420,6 +2421,9 @@ class MalloyAdapter(BaseAdapter):
         untouched: Malloy count(field) is a distinct count, so translating a
         plain SQL COUNT(field) would change non-null counts into distinct counts.
         """
-        sql = _sub_outside_quotes(sql, r"\bcount\s*\(\s*distinct\s+(.+?)\s*\)", r"count(\1)")
-        sql = _sub_outside_quotes(sql, r"\bcount\s*\(\s*\*\s*\)", "count()")
-        return _sub_outside_quotes(sql, r"\b(SUM|AVG|MIN|MAX)\s*\(", lambda m: m.group(1).lower() + "(")
+        # Protect backtick identifiers too: this rewrites already-SQL text, where
+        # a backtick-quoted field name may itself look like an aggregate.
+        bq = ("'", '"', "`")
+        sql = _sub_outside_quotes(sql, r"\bcount\s*\(\s*distinct\s+(.+?)\s*\)", r"count(\1)", bq)
+        sql = _sub_outside_quotes(sql, r"\bcount\s*\(\s*\*\s*\)", "count()", bq)
+        return _sub_outside_quotes(sql, r"\b(SUM|AVG|MIN|MAX)\s*\(", lambda m: m.group(1).lower() + "(", bq)

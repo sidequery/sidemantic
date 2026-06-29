@@ -833,6 +833,11 @@ def _apply_relationships(
     # key (e.g. DateKey/ProductKey) is recovered only when the relationships referencing a model as
     # the one-side agree on a single key column. If a target is left without a resolvable key, emit
     # a warning naming the model so the ambiguity is surfaced rather than silently fabricated.
+    # Tables referenced as a one-side join target whose authoritative key could not be resolved to a
+    # single column (ambiguous across relationships, or unavailable). Their key stays unresolved, and
+    # the endpoint fallback below must NOT substitute a non-authoritative many-to-many / one-to-one
+    # endpoint for them -- that would mask the ambiguity with a misleading row identity.
+    ambiguous_pk_targets: set[str] = set()
     for target_name, node in pk_target_nodes.items():
         target_model = graph.models.get(target_name)
         # Only backfill tables that did not declare an explicit isKey column. Tables with a real
@@ -842,19 +847,21 @@ def _apply_relationships(
         candidates = pk_candidates.get(target_name) or set()
         if len(candidates) == 1:
             target_model.primary_key = next(iter(candidates))
-        elif warnings is not None:
-            _append_import_warning(
-                warnings,
-                node,
-                code="primary_key_unresolved",
-                context="relationship",
-                message=(
-                    f"Could not resolve a primary key for model '{target_name}': it is referenced as a "
-                    "join target but declares no isKey column and the relationship key columns are "
-                    f"{'ambiguous' if candidates else 'unavailable'}."
-                ),
-                model_name=target_name,
-            )
+        else:
+            ambiguous_pk_targets.add(target_name)
+            if warnings is not None:
+                _append_import_warning(
+                    warnings,
+                    node,
+                    code="primary_key_unresolved",
+                    context="relationship",
+                    message=(
+                        f"Could not resolve a primary key for model '{target_name}': it is referenced as a "
+                        "join target but declares no isKey column and the relationship key columns are "
+                        f"{'ambiguous' if candidates else 'unavailable'}."
+                    ),
+                    model_name=target_name,
+                )
 
     # Fallback recovery for tables the cardinality-aware backfill could not key: a many-to-many
     # participant or a one-to-one source side adopts its own unambiguous endpoint column. This runs
@@ -862,6 +869,10 @@ def _apply_relationships(
     # column is unambiguous, so it never overrides or conflicts with a real primary key.
     for model in graph.models.values():
         if not getattr(model, "_tmdl_primary_key_inferred", False) or model.primary_key is not None:
+            continue
+        if model.name in ambiguous_pk_targets:
+            # An authoritative one-side key existed but was ambiguous/unresolvable; leave the key
+            # unresolved rather than substituting a non-authoritative endpoint.
             continue
         own_endpoints = fallback_endpoints_by_table.get(model.name, set()) & {dim.name for dim in model.dimensions}
         if len(own_endpoints) == 1:

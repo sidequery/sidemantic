@@ -3206,5 +3206,69 @@ def test_tmdl_one_to_one_alternate_key_does_not_shadow_real_key():
     assert graph.models["OrderMeta"].primary_key == "meta_key"
 
 
+def test_tmdl_ambiguous_one_side_target_not_recovered_from_endpoint():
+    """Regression: a table whose authoritative one-side key is ambiguous (referenced by multiple
+    relationships using different key columns) must stay keyless, not adopt a many-to-many endpoint.
+
+    Substituting a many-to-many/one-to-one endpoint would mask the ambiguity with a non-authoritative
+    row identity, so symmetric aggregates on the table would silently dedupe on the wrong column.
+    """
+    pytest.importorskip("sidemantic_dax")
+    tmdl = textwrap.dedent(
+        """
+        table D
+            column key1
+                dataType: string
+                sourceColumn: key1
+            column key2
+                dataType: string
+                sourceColumn: key2
+            column tag
+                dataType: string
+                sourceColumn: tag
+        table F1
+            column key1
+                dataType: string
+                sourceColumn: key1
+        table F2
+            column key2
+                dataType: string
+                sourceColumn: key2
+        table X
+            column x_tag
+                dataType: string
+                sourceColumn: x_tag
+        relationship F1D
+            fromColumn: F1[key1]
+            toColumn: D[key1]
+            fromCardinality: many
+            toCardinality: one
+        relationship F2D
+            fromColumn: F2[key2]
+            toColumn: D[key2]
+            fromCardinality: many
+            toCardinality: one
+        relationship DX
+            fromColumn: D[tag]
+            toColumn: X[x_tag]
+            fromCardinality: many
+            toCardinality: many
+        """
+    )
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".tmdl", delete=False) as f:
+        f.write(tmdl)
+        temp_path = Path(f.name)
+    try:
+        graph = TMDLAdapter().parse(temp_path)
+    finally:
+        temp_path.unlink()
+
+    # D's one-side key is ambiguous, so it stays unresolved (never the many-to-many "tag" endpoint),
+    # and the ambiguity is surfaced as a warning.
+    assert graph.models["D"].primary_key is None
+    codes = {w["code"] for w in getattr(graph, "import_warnings", [])}
+    assert "primary_key_unresolved" in codes
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

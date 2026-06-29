@@ -685,10 +685,6 @@ def _apply_relationships(
     # primary key for tables that did not declare an explicit isKey column.
     pk_candidates: dict[str, set[str]] = {}
     pk_target_nodes: dict[str, TmdlNode] = {}
-    # Every column that participates in a relationship as an endpoint, grouped by the table it
-    # belongs to. Used as a last-resort key recovery for tables the direction-based pass below does
-    # not target (e.g. a table that is only ever a relationship's "many" side).
-    endpoint_columns_by_table: dict[str, set[str]] = {}
 
     for node in nodes:
         props = _props(node)
@@ -766,10 +762,6 @@ def _apply_relationships(
             pk_target_nodes.setdefault(pk_target, node)
             if pk_column:
                 pk_candidates.setdefault(pk_target, set()).add(pk_column)
-        if from_column:
-            endpoint_columns_by_table.setdefault(from_table, set()).add(from_column)
-        if to_column:
-            endpoint_columns_by_table.setdefault(to_table, set()).add(to_column)
 
         relationship_props = _relationship_passthrough_properties(node)
         relationship = Relationship(
@@ -844,21 +836,6 @@ def _apply_relationships(
                 ),
                 model_name=target_name,
             )
-
-    # Final fallback: any inferred table whose primary key is still not one of its real columns (a
-    # phantom default the direction-based pass did not replace) recovers its key from the
-    # relationship endpoint columns that belong to it, when exactly one such column exists. This
-    # eliminates the fabricated "id" key for tables that only ever appear as a relationship's many
-    # side but still expose a real join-key column (e.g. a degenerate fact bridge).
-    for model in graph.models.values():
-        if not getattr(model, "_tmdl_primary_key_inferred", False):
-            continue
-        real_columns = {dim.name for dim in model.dimensions}
-        if model.primary_key in real_columns:
-            continue
-        own_endpoints = endpoint_columns_by_table.get(model.name, set()) & real_columns
-        if len(own_endpoints) == 1:
-            model.primary_key = next(iter(own_endpoints))
 
 
 def _node_passthrough_properties(node: TmdlNode, excluded_keys: set[str]) -> list[dict[str, Any]]:

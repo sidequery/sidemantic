@@ -194,12 +194,6 @@ impl<'a> Lexer<'a> {
         self.input.as_bytes().get(self.idx + n).copied()
     }
 
-    /// First `char` starting at byte offset `idx + n`. `n` must land on a char
-    /// boundary (callers pass small ASCII-relative offsets where this holds).
-    fn peek_char_n(&self, n: usize) -> Option<char> {
-        self.input.get(self.idx + n..).and_then(|s| s.chars().next())
-    }
-
     fn bump_char(&mut self) -> Option<char> {
         let ch = self.peek_char()?;
         self.idx += ch.len_utf8();

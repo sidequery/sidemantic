@@ -92,8 +92,8 @@ def test_adventureworks_roundtrip_preserves_cardinality_and_keys(tmp_path):
     """Regression for the P0 phantom-key and P1 cardinality fixes against a real Power BI model.
 
     Importing AdventureWorks, then exporting and re-importing it, must:
-    (a) leave every relationship join-target table with a real primary-key column rather than a
-        fabricated "id" (the phantom-key P0);
+    (a) resolve a real primary-key column for one-side dimension tables, and never fabricate a key
+        (no phantom "id", no many-side foreign key promoted to a primary key) (the phantom-key P0);
     (b) preserve the raw cardinality text -- a cardinality omitted in the source must stay omitted
         on re-export rather than being synthesized (the cardinality P1 / export corruption);
     (c) re-import cleanly with stable relationship types (the export must produce valid TMDL even
@@ -102,12 +102,21 @@ def test_adventureworks_roundtrip_preserves_cardinality_and_keys(tmp_path):
     fixture = FIXTURE_ROOT / "pbi-tools-adventureworks-dw2020"
     graph = TMDLAdapter().parse(fixture)
 
-    # (a) Every dimension / join-target table resolves a real key (never the phantom "id").
-    join_targets = {"Customer", "Date", "Product", "Reseller", "Sales Territory", "Sales Order"}
-    for name in join_targets:
+    # (a) Dimension (one-side) join targets resolve a real key column from their relationships.
+    dimension_join_targets = {"Customer", "Date", "Product", "Reseller", "Sales Territory"}
+    for name in dimension_join_targets:
         model = graph.models[name]
         columns = {dim.name for dim in model.dimensions}
-        assert model.primary_key in columns, f"{name} has phantom primary_key {model.primary_key!r}"
+        assert model.primary_key in columns, f"{name} should resolve a real key, got {model.primary_key!r}"
+    # No table is left with a fabricated key: a resolved primary key is always a real column, and a
+    # table with no inferable key stays None rather than a phantom "id" or a many-side foreign key
+    # promoted to a primary key. "Sales Order" is only ever a relationship's many side, so it has no
+    # primary key.
+    for model in graph.models.values():
+        if model.primary_key is not None:
+            columns = {dim.name for dim in model.dimensions}
+            assert model.primary_key in columns, f"{model.name} has phantom primary_key {model.primary_key!r}"
+    assert graph.models["Sales Order"].primary_key is None
 
     types_before = sorted((m.name, r.name, r.type) for m in graph.models.values() for r in m.relationships)
 

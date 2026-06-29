@@ -220,6 +220,12 @@ class PreAggregationMatcher:
         """
         preagg_measures = preagg.measures or []
 
+        # Complete-expression measures (e.g. number_agg / PERCENTILE) carry a full aggregate
+        # in sql that cannot be re-derived from a rollup's stored columns, so they are never
+        # rollup-derivable (the materializer likewise does not store them).
+        if getattr(query_metric, "sql_is_complete", False):
+            return False
+
         # Complex metrics can be rebuilt from additive leaf state even when
         # the derived metric itself is not materialized.
         if query_metric.type in {"ratio", "derived"} or (

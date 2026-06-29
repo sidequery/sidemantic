@@ -459,9 +459,9 @@ class TestMultiStageTimeShift:
         assert product_rank.agg == "count"
         # rank metadata preserved for special handling
         assert product_rank.meta is not None
-        assert product_rank.meta.get("cube_type") == "rank"
-        assert product_rank.meta.get("order_by") is not None
-        assert product_rank.meta.get("reduce_by") is not None
+        assert product_rank.meta["cube_internal"]["cube_type"] == "rank"
+        assert product_rank.meta["cube_internal"].get("order_by") is not None
+        assert product_rank.meta["cube_internal"].get("reduce_by") is not None
 
     def test_rank_measure_warns(self):
         """type: rank imports as a count fallback and warns the user it is not a rank."""
@@ -806,7 +806,7 @@ class TestTesseractFeatures:
         assert p95.type is None
         assert p95.sql is not None
         assert "PERCENTILE_CONT" in p95.sql
-        assert p95.meta.get("cube_type") == "number_agg"
+        assert p95.meta["cube_internal"]["cube_type"] == "number_agg"
 
     def test_non_numeric_measure_types(self, graph):
         """string / time / boolean measures preserve sql and record cube_type."""
@@ -815,7 +815,7 @@ class TestTesseractFeatures:
             m = orders.get_metric(mname)
             assert m is not None, mname
             assert m.agg is None, mname
-            assert m.meta.get("cube_type") == ctype
+            assert m.meta["cube_internal"]["cube_type"] == ctype
             assert m.sql is not None
 
     def test_aggregate_expression_measures_preserved_verbatim(self, graph):
@@ -831,7 +831,7 @@ class TestTesseractFeatures:
         assert latest is not None
         assert latest.agg is None
         assert latest.type is None
-        assert latest.meta.get("cube_type") == "time"
+        assert latest.meta["cube_internal"]["cube_type"] == "time"
         # sql preserved verbatim with the {model} placeholder intact
         assert latest.sql == "MAX({model}.created_at)"
 
@@ -839,7 +839,7 @@ class TestTesseractFeatures:
         assert total_agg is not None
         assert total_agg.agg is None
         assert total_agg.type is None
-        assert total_agg.meta.get("cube_type") == "number_agg"
+        assert total_agg.meta["cube_internal"]["cube_type"] == "number_agg"
         assert total_agg.sql == "SUM({model}.amount)"
 
     def test_complete_sql_measures_have_no_dependencies(self, graph):

@@ -2097,6 +2097,30 @@ def test_preagg_strict_raises_when_table_missing():
         )
 
 
+def test_sql_path_falls_back_to_raw_when_rollup_missing():
+    """layer.sql() (the SQL/CLI path) also falls back to raw when the rollup table is missing."""
+    layer = _layer_with_unbuilt_rollup()
+    layer.use_preaggregations = True
+
+    result = layer.sql("SELECT orders.revenue, orders.status FROM orders")
+
+    # The rollup table is absent, so rows come back only if it fell back to raw.
+    # The rewriter orders columns dimensions-first, so each row is (status, revenue).
+    assert set(result.fetchall()) == {(0, 120), (1, 90)}
+
+
+def test_sql_path_strict_raises_when_rollup_missing():
+    """Strict (rollup-only) mode also applies on the SQL/CLI path."""
+    from sidemantic.core.semantic_layer import PreaggregationStrictError
+
+    layer = _layer_with_unbuilt_rollup()
+    layer.use_preaggregations = True
+    layer.preagg_strict = True
+
+    with pytest.raises(PreaggregationStrictError):
+        layer.sql("SELECT orders.revenue, orders.status FROM orders")
+
+
 def _monthly_partitioned_model():
     model = Model(
         name="orders",

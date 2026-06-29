@@ -218,5 +218,105 @@ models:
     assert "Would add 1 pre-aggregations" in result.stderr
 
 
+def test_preagg_refresh_creates_indexes_on_duckdb(tmp_path):
+    """`preagg refresh --db` infers the duckdb dialect so declared indexes are materialized."""
+    import duckdb
+
+    db = tmp_path / "data.db"
+    conn = duckdb.connect(str(db))
+    conn.execute("CREATE TABLE orders AS SELECT i id, i % 2 status, i * 10 amount FROM generate_series(1, 6) t(i)")
+    conn.close()
+
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    (models_dir / "orders.yml").write_text(
+        """
+models:
+  - name: orders
+    table: orders
+    primary_key: id
+    dimensions:
+      - name: status
+        type: categorical
+    metrics:
+      - name: revenue
+        agg: sum
+        sql: amount
+    pre_aggregations:
+      - name: by_status
+        type: rollup
+        measures: [revenue]
+        dimensions: [status]
+        indexes:
+          - name: status_idx
+            columns: [status]
+"""
+    )
+
+    result = runner.invoke(app, ["preagg", "refresh", str(models_dir), "--db", str(db), "--mode", "full"])
+    assert result.exit_code == 0, result.stderr + result.stdout
+
+    conn = duckdb.connect(str(db))
+    names = {
+        row[0]
+        for row in conn.execute(
+            "SELECT index_name FROM duckdb_indexes() WHERE table_name = 'orders_preagg_by_status'"
+        ).fetchall()
+    }
+    conn.close()
+    assert "orders_preagg_by_status_status_idx" in names
+
+
+def test_preagg_refresh_partitioned_builds_via_cli(tmp_path):
+    """`preagg refresh` passes the model through, so partitioned rollups build instead of erroring."""
+    import duckdb
+
+    db = tmp_path / "data.db"
+    conn = duckdb.connect(str(db))
+    conn.execute(
+        "CREATE TABLE orders AS "
+        "SELECT (DATE '2024-01-01' + INTERVAL (i) MONTH) created_at, (i + 1) * 100 amount FROM generate_series(0, 2) t(i)"
+    )
+    conn.close()
+
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    (models_dir / "orders.yml").write_text(
+        """
+models:
+  - name: orders
+    table: orders
+    primary_key: id
+    dimensions:
+      - name: created_at
+        type: time
+        granularity: day
+    metrics:
+      - name: revenue
+        agg: sum
+        sql: amount
+    pre_aggregations:
+      - name: monthly
+        type: rollup
+        measures: [revenue]
+        time_dimension: created_at
+        granularity: month
+        partition_granularity: month
+"""
+    )
+
+    result = runner.invoke(app, ["preagg", "refresh", str(models_dir), "--db", str(db), "--mode", "full"])
+    assert result.exit_code == 0, result.stderr + result.stdout
+
+    conn = duckdb.connect(str(db))
+    total = conn.execute("SELECT SUM(revenue_raw) FROM orders_preagg_monthly").fetchone()[0]
+    kind = conn.execute(
+        "SELECT table_type FROM information_schema.tables WHERE table_name = 'orders_preagg_monthly'"
+    ).fetchone()[0]
+    conn.close()
+    assert total == 600  # 100 + 200 + 300 across the three monthly partitions
+    assert kind == "VIEW"  # covering view over the partition tables
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -364,6 +364,8 @@ GROUP BY {group_by_str}"""
         to_watermark: Any | None = None,
         dialect: str | None = None,
         model: Any | None = None,
+        database: str | None = None,
+        schema: str | None = None,
     ) -> "RefreshResult":
         """Refresh pre-aggregation (STATELESS).
 
@@ -487,7 +489,7 @@ GROUP BY {group_by_str}"""
                     f"Pre-aggregation '{self.name}' is partitioned (partition_granularity="
                     f"'{self.partition_granularity}'); pass model= to refresh() or call build_partitions() directly."
                 )
-            self.build_partitions(connection, model, lookback=lookback)
+            self.build_partitions(connection, model, database=database, schema=schema, lookback=lookback)
             return RefreshResult(
                 mode="partitioned",
                 rows_inserted=-1,

@@ -582,12 +582,36 @@ class SemanticLayer:
             post_process=post_process,
         )
 
-        if not use_preaggs:
-            return self.adapter.execute(sql)
+        def recompile_raw():
+            return self.compile(
+                metrics=metrics,
+                dimensions=dimensions,
+                filters=filters,
+                segments=segments,
+                order_by=order_by,
+                limit=limit,
+                ungrouped=ungrouped,
+                parameters=parameters,
+                use_preaggregations=False,
+                post_process=post_process,
+            )
 
-        # Pre-aggregation routing is enabled. The compiled SQL is tagged with
-        # used_preagg=true when a rollup was actually selected for this query.
-        used_preagg = "used_preagg=true" in sql
+        return self._execute_with_preagg_fallback(sql, recompile_raw, use_preaggs=use_preaggs, strict=strict)
+
+    def _execute_with_preagg_fallback(self, primary_sql, recompile_raw, *, use_preaggs: bool, strict: bool):
+        """Execute primary_sql, falling back to raw tables when a routed rollup is missing.
+
+        Shared by query() and sql() so both the Python API and the SQL/CLI path get
+        identical missing-rollup behavior. When pre-aggregation routing is enabled and
+        the compiled SQL is tagged with used_preagg=true:
+        - if no rollup matched and strict is set, raise (rollup-only mode);
+        - if the routed rollup table does not exist, fall back to recompile_raw() (or
+          raise in strict mode). Any other error surfaces unchanged.
+        """
+        if not use_preaggs:
+            return self.adapter.execute(primary_sql)
+
+        used_preagg = "used_preagg=true" in primary_sql
 
         # Rollup-only: a query no rollup can serve must error rather than scan raw tables.
         if strict and not used_preagg:
@@ -597,7 +621,7 @@ class SemanticLayer:
             )
 
         try:
-            return self.adapter.execute(sql)
+            return self.adapter.execute(primary_sql)
         except Exception as exc:
             # Only intervene when a routed pre-aggregation table is missing; every
             # other error surfaces unchanged.
@@ -610,19 +634,7 @@ class SemanticLayer:
                 ) from exc
             # A pure optimization fell through: recompile against raw tables so the
             # query still returns correct results.
-            raw_sql = self.compile(
-                metrics=metrics,
-                dimensions=dimensions,
-                filters=filters,
-                segments=segments,
-                order_by=order_by,
-                limit=limit,
-                ungrouped=ungrouped,
-                parameters=parameters,
-                use_preaggregations=False,
-                post_process=post_process,
-            )
-            return self.adapter.execute(raw_sql)
+            return self.adapter.execute(recompile_raw())
 
     @staticmethod
     def _is_missing_relation_error(error: Exception) -> bool:
@@ -1457,7 +1469,12 @@ class SemanticLayer:
                 self._sql_rewrite_cache.pop(next(iter(self._sql_rewrite_cache)))
             self._sql_rewrite_cache[cache_key] = rewritten_sql
 
-        return self.adapter.execute(rewritten_sql)
+        def recompile_raw():
+            return QueryRewriter(self.graph, dialect=self.dialect, use_preaggregations=False).rewrite(query)
+
+        return self._execute_with_preagg_fallback(
+            rewritten_sql, recompile_raw, use_preaggs=self.use_preaggregations, strict=self.preagg_strict
+        )
 
     def explain_sql(self, query: str, strict: bool = True):
         """Explain semantic SQL rewrite planning without executing the query.

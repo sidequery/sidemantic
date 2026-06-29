@@ -1722,7 +1722,7 @@ def refresh(
 
         typer.echo(f"\nRefreshing {len(preaggs_to_refresh)} pre-aggregation(s)...\n", err=True)
 
-        # Get dialect from connection string for engine mode
+        # Determine the dialect: drives index DDL (DuckDB/Postgres) and engine MVs.
         dialect = None
         if mode == "engine":
             if "snowflake" in connection_str:
@@ -1735,6 +1735,8 @@ def refresh(
                 typer.echo(f"Error: Unsupported dialect for engine mode: {connection_str}", err=True)
                 typer.echo("Engine mode supports: snowflake, clickhouse, bigquery", err=True)
                 raise typer.Exit(1)
+        elif connection_str.startswith("duckdb://"):
+            dialect = "duckdb"
 
         # Refresh each pre-aggregation
         for model_name, model_obj, preagg_obj in preaggs_to_refresh:
@@ -1760,6 +1762,9 @@ def refresh(
                 mode=mode,
                 watermark_column=watermark_column,
                 dialect=dialect,
+                model=model_obj,
+                database=database,
+                schema=schema,
             )
 
             # Print result

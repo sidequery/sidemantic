@@ -9,7 +9,7 @@ from sqlglot import exp, select
 from sqlglot.dialects.dialect import Dialect
 
 from sidemantic.core.preagg_matcher import PreAggregationMatcher
-from sidemantic.core.semantic_graph import SemanticGraph
+from sidemantic.core.semantic_graph import SemanticGraph, _relationship_local_key_columns
 from sidemantic.core.symmetric_aggregate import build_symmetric_aggregate_sql
 from sidemantic.sql.aggregation_detection import sql_has_aggregate
 from sidemantic.validation import QueryValidationError
@@ -392,6 +392,21 @@ class SQLGenerator:
         if expr == dimension.name:
             return self._quote_identifier(dimension.name)
         return expr
+
+    def _require_primary_key(self, model_name: str, pk_cols: list[str], reason: str) -> None:
+        """Raise a clear error when a primary key is required but missing.
+
+        Symmetric (fan-out-safe) aggregation and primary-key count-distinct de-duplicate rows by the
+        model's primary key. A model with no primary key (e.g. a keyless TMDL table reachable only
+        through a many-to-many relationship) cannot be de-duplicated, so fail loudly here instead of
+        emitting an empty ``CONCAT()`` that crashes the SQL parser downstream.
+        """
+        if not pk_cols:
+            raise QueryValidationError(
+                f"Cannot compute a fan-out-safe aggregate for model '{model_name}' {reason}: it has "
+                "no primary key. Declare a primary key (for a TMDL model, mark a unique column with "
+                "isKey) so rows can be de-duplicated across the join."
+            )
 
     def _cte_name(self, model_name: str) -> str:
         """Get the CTE identifier name for a model."""
@@ -1551,9 +1566,25 @@ class SQLGenerator:
                 and relationship.name in all_models
                 and relationship.type in ("one_to_one", "one_to_many")
             ):
-                local_keys = relationship.primary_key_columns if relationship.primary_key else model.primary_key_columns
+                # Project the SAME local key the join uses (build_adjacency calls this helper too):
+                # a TMDL one-to-one/one-to-many joins on its fromColumn, which need not be this
+                # model's declared primary key, so projecting the model PK alone would omit it.
+                local_keys = _relationship_local_key_columns(model, relationship)
                 for pk in local_keys:
                     add_passthrough_column(pk)
+            elif (
+                needs_keyed_joins
+                and relationship.name in all_models
+                and relationship.type == "many_to_many"
+                and relationship.primary_key
+                and (not relationship.through or relationship.through not in self.graph.models)
+            ):
+                # Direct (no-bridge) many-to-many source side carrying an explicit target key: this
+                # model joins on the relationship's own from-column (a TMDL fromColumn that need not
+                # be its declared primary key), so that exact column must be projected. The legacy
+                # shape (no target key) joins on the model primary key, already projected above.
+                for fk in relationship.foreign_key_columns:
+                    add_passthrough_column(fk)
 
         # Check if other models have has_many/has_one pointing to this model
         if needs_keyed_joins:
@@ -1578,6 +1609,19 @@ class SQLGenerator:
                             other_join.primary_key_columns if other_join.primary_key else model.primary_key_columns
                         )
                         for pk in target_keys:
+                            add_passthrough_column(pk)
+                    elif (
+                        other_join.name == model_name
+                        and other_join.type == "many_to_many"
+                        and (not other_join.through or other_join.through not in self.graph.models)
+                    ):
+                        # Direct (no-bridge) many-to-many: this model is the related side, joined on
+                        # the relationship's recorded target key (a TMDL toColumn that need not be
+                        # this model's declared primary key), so that exact column must be projected.
+                        related_keys = (
+                            other_join.primary_key_columns if other_join.primary_key else model.primary_key_columns
+                        )
+                        for pk in related_keys:
                             add_passthrough_column(pk)
 
             for other_model_name, other_model in self.graph.models.items():
@@ -1800,6 +1844,7 @@ class SQLGenerator:
                     base_sql = "1"
                 elif measure.agg in ("count_distinct", "approx_count_distinct") and not measure.sql:
                     pk_cols = model.primary_key_columns
+                    self._require_primary_key(model.name, pk_cols, "for a primary-key count-distinct")
                     if len(pk_cols) == 1:
                         base_sql = self._quote_identifier(pk_cols[0])
                     else:
@@ -2664,6 +2709,9 @@ class SQLGenerator:
                             # Get primary key for this model
                             model_obj = self.graph.get_model(model_name)
                             pk_cols = model_obj.primary_key_columns
+                            self._require_primary_key(
+                                model_name, pk_cols, "across a fan-out (many-to-many or one-to-many) join"
+                            )
                             # For composite keys, concatenate columns for hashing
                             if len(pk_cols) == 1:
                                 pk = self._cte_ref(model_name, pk_cols[0])

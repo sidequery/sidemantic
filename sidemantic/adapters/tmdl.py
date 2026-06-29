@@ -685,10 +685,12 @@ def _apply_relationships(
     # primary key for tables that did not declare an explicit isKey column.
     pk_candidates: dict[str, set[str]] = {}
     pk_target_nodes: dict[str, TmdlNode] = {}
-    # Every column that participates in a relationship as an endpoint, grouped by the table it
-    # belongs to. Used as a last-resort key recovery for tables the direction-based pass below does
-    # not target (e.g. a table that is only ever a relationship's "many" side).
-    endpoint_columns_by_table: dict[str, set[str]] = {}
+    # Unique source-side keys recovered only for an otherwise-keyless table: the source (from) side
+    # of a one-to-one, which is unique on both sides. Many-to-many endpoints are deliberately NOT
+    # recovered -- they sit on the "many" side and can repeat, so using one as a primary key would
+    # make symmetric aggregates silently undercount. A direct many-to-many join does not need this:
+    # build_adjacency joins (and the model CTEs project) on the relationship's own from/to columns.
+    one_to_one_source_keys: dict[str, set[str]] = {}
 
     for node in nodes:
         props = _props(node)
@@ -753,9 +755,13 @@ def _apply_relationships(
             foreign_key = None
             primary_key = None
 
-        # Record the real key column on the one-side (PK side) of this relationship so a table
-        # that omitted its isKey column can recover a real primary key below. many_to_many has no
-        # single one-side, so it does not contribute a candidate.
+        # Record the authoritative one-side (PK side) key of this relationship so a table that
+        # omitted its isKey column can recover a real primary key below. one_to_many points at the
+        # from-side's key; many_to_one and one_to_one point at the to-side's key. The one_to_one
+        # *source* (from) side is intentionally NOT recorded here: it may be an alternate key, so it
+        # must not compete with -- and make ambiguous -- a real one-side key the same table receives
+        # from another relationship. It is recovered as a fallback only when the table is otherwise
+        # keyless (below).
         if rel_type == "one_to_many":
             pk_target, pk_column = from_table, from_column
         elif rel_type in ("many_to_one", "one_to_one"):
@@ -766,10 +772,11 @@ def _apply_relationships(
             pk_target_nodes.setdefault(pk_target, node)
             if pk_column:
                 pk_candidates.setdefault(pk_target, set()).add(pk_column)
-        if from_column:
-            endpoint_columns_by_table.setdefault(from_table, set()).add(from_column)
-        if to_column:
-            endpoint_columns_by_table.setdefault(to_table, set()).add(to_column)
+        # A one-to-one is unique on both sides, so its source (from) column is a real unique key to
+        # fall back on for an otherwise-keyless source table. Many-to-many endpoints are not unique
+        # and are intentionally not recovered here.
+        if rel_type == "one_to_one" and from_column:
+            one_to_one_source_keys.setdefault(from_table, set()).add(from_column)
 
         relationship_props = _relationship_passthrough_properties(node)
         relationship = Relationship(
@@ -822,6 +829,11 @@ def _apply_relationships(
     # key (e.g. DateKey/ProductKey) is recovered only when the relationships referencing a model as
     # the one-side agree on a single key column. If a target is left without a resolvable key, emit
     # a warning naming the model so the ambiguity is surfaced rather than silently fabricated.
+    # Tables referenced as a one-side join target whose authoritative key could not be resolved to a
+    # single column (ambiguous across relationships, or unavailable). Their key stays unresolved, and
+    # the endpoint fallback below must NOT substitute a non-authoritative many-to-many / one-to-one
+    # endpoint for them -- that would mask the ambiguity with a misleading row identity.
+    ambiguous_pk_targets: set[str] = set()
     for target_name, node in pk_target_nodes.items():
         target_model = graph.models.get(target_name)
         # Only backfill tables that did not declare an explicit isKey column. Tables with a real
@@ -831,32 +843,35 @@ def _apply_relationships(
         candidates = pk_candidates.get(target_name) or set()
         if len(candidates) == 1:
             target_model.primary_key = next(iter(candidates))
-        elif warnings is not None:
-            _append_import_warning(
-                warnings,
-                node,
-                code="primary_key_unresolved",
-                context="relationship",
-                message=(
-                    f"Could not resolve a primary key for model '{target_name}': it is referenced as a "
-                    "join target but declares no isKey column and the relationship key columns are "
-                    f"{'ambiguous' if candidates else 'unavailable'}."
-                ),
-                model_name=target_name,
-            )
+        else:
+            ambiguous_pk_targets.add(target_name)
+            if warnings is not None:
+                _append_import_warning(
+                    warnings,
+                    node,
+                    code="primary_key_unresolved",
+                    context="relationship",
+                    message=(
+                        f"Could not resolve a primary key for model '{target_name}': it is referenced as a "
+                        "join target but declares no isKey column and the relationship key columns are "
+                        f"{'ambiguous' if candidates else 'unavailable'}."
+                    ),
+                    model_name=target_name,
+                )
 
-    # Final fallback: any inferred table whose primary key is still not one of its real columns (a
-    # phantom default the direction-based pass did not replace) recovers its key from the
-    # relationship endpoint columns that belong to it, when exactly one such column exists. This
-    # eliminates the fabricated "id" key for tables that only ever appear as a relationship's many
-    # side but still expose a real join-key column (e.g. a degenerate fact bridge).
+    # Fallback recovery for tables the cardinality-aware backfill could not key: a one-to-one source
+    # side adopts its own unambiguous unique endpoint column. This runs only for tables still keyless
+    # (so an authoritative one-side key always wins), only when the column is unambiguous, and never
+    # for a table whose one-side keys were ambiguous, so it cannot substitute a non-authoritative or
+    # non-unique key for a real primary key.
     for model in graph.models.values():
-        if not getattr(model, "_tmdl_primary_key_inferred", False):
+        if not getattr(model, "_tmdl_primary_key_inferred", False) or model.primary_key is not None:
             continue
-        real_columns = {dim.name for dim in model.dimensions}
-        if model.primary_key in real_columns:
+        if model.name in ambiguous_pk_targets:
+            # An authoritative one-side key existed but was ambiguous/unresolvable; leave the key
+            # unresolved rather than substituting a non-authoritative endpoint.
             continue
-        own_endpoints = endpoint_columns_by_table.get(model.name, set()) & real_columns
+        own_endpoints = one_to_one_source_keys.get(model.name, set()) & {dim.name for dim in model.dimensions}
         if len(own_endpoints) == 1:
             model.primary_key = next(iter(own_endpoints))
 

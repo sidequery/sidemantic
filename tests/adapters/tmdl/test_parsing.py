@@ -2971,5 +2971,353 @@ def test_tmdl_deeply_nested_dax_does_not_crash_import():
     assert "dax_parse_error" in codes
 
 
+def test_tmdl_keyless_many_to_many_joins_without_keying_off_endpoints():
+    """Regression: a direct (no-bridge) many-to-many between keyless tables joins on the
+    relationship's own from/to columns and does NOT adopt either as a primary key.
+
+    A many-to-many endpoint sits on the "many" side and can repeat, so it is not a valid unique key
+    -- promoting it would make symmetric aggregates silently undercount. Each table therefore stays
+    keyless (primary_key None), while the join still references and projects each side's own column
+    (using differently named columns so the related side cannot accidentally reuse the other name).
+    """
+    pytest.importorskip("sidemantic_dax")
+    tmdl = textwrap.dedent(
+        """
+        table Authors
+            column author_id
+                dataType: string
+                sourceColumn: author_id
+            column region
+                dataType: string
+                sourceColumn: region
+        table Books
+            column book_author_id
+                dataType: string
+                sourceColumn: book_author_id
+            column genre
+                dataType: string
+                sourceColumn: genre
+        relationship AuthorsBooks
+            fromColumn: Authors[author_id]
+            toColumn: Books[book_author_id]
+            fromCardinality: many
+            toCardinality: many
+        """
+    )
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".tmdl", delete=False) as f:
+        f.write(tmdl)
+        temp_path = Path(f.name)
+    try:
+        graph = TMDLAdapter().parse(temp_path)
+    finally:
+        temp_path.unlink()
+
+    authors = graph.models["Authors"]
+    books = graph.models["Books"]
+    assert authors.relationships[0].type == "many_to_many"
+    # Neither table adopts its non-unique many-to-many endpoint as a primary key.
+    assert authors.primary_key is None
+    assert books.primary_key is None
+
+    # The join still works: it references each table's OWN column (not the other side's name) and
+    # both columns are projected, so it is not a join on a column missing from a CTE.
+    layer = SemanticLayer()
+    layer.graph = graph
+    sql = layer.compile(dimensions=["Authors.region", "Books.genre"])
+    assert "Authors_cte.author_id" in sql
+    assert "Books_cte.book_author_id" in sql
+    assert "author_id AS author_id" in sql
+    assert "book_author_id AS book_author_id" in sql
+
+
+def test_tmdl_keyless_many_to_many_metric_raises_clear_error():
+    """Regression: a fan-out metric on a keyless table reached through a direct many-to-many cannot
+    be de-duplicated, so it must raise a clear QueryValidationError rather than emitting an empty
+    CONCAT() that crashes the SQL parser downstream."""
+    pytest.importorskip("sidemantic_dax")
+    tmdl = textwrap.dedent(
+        """
+        table Authors
+            column author_id
+                dataType: string
+                sourceColumn: author_id
+            column n
+                dataType: int64
+                sourceColumn: n
+            measure total = SUM(Authors[n])
+        table Books
+            column book_author_id
+                dataType: string
+                sourceColumn: book_author_id
+            column genre
+                dataType: string
+                sourceColumn: genre
+        relationship AuthorsBooks
+            fromColumn: Authors[author_id]
+            toColumn: Books[book_author_id]
+            fromCardinality: many
+            toCardinality: many
+        """
+    )
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".tmdl", delete=False) as f:
+        f.write(tmdl)
+        temp_path = Path(f.name)
+    try:
+        graph = TMDLAdapter().parse(temp_path)
+    finally:
+        temp_path.unlink()
+
+    layer = SemanticLayer()
+    layer.graph = graph
+    with pytest.raises(QueryValidationError, match="no primary key"):
+        layer.compile(metrics=["Authors.total"], dimensions=["Books.genre"])
+
+
+def test_tmdl_many_to_many_on_non_primary_key_column():
+    """Regression: a direct many-to-many that joins on columns which are NOT either table's declared
+    primary key must project and join on those exact columns, on both sides.
+
+    Here both A and B declare isKey ``id`` but the relationship joins ``A[a_alt]`` to ``B[b_alt]``.
+    The join must reference each table's alternate column (never its declared ``id``) and each CTE
+    must project its alternate column, otherwise the join is on a column missing from the CTE.
+    """
+
+    import re
+
+    pytest.importorskip("sidemantic_dax")
+    tmdl = textwrap.dedent(
+        """
+        table A
+            column id
+                dataType: string
+                isKey
+                sourceColumn: id
+            column a_alt
+                dataType: string
+                sourceColumn: a_alt
+            measure a_count = COUNTROWS(A)
+        table B
+            column id
+                dataType: string
+                isKey
+                sourceColumn: id
+            column b_alt
+                dataType: string
+                sourceColumn: b_alt
+            column b_label
+                dataType: string
+                sourceColumn: b_label
+        relationship AB
+            fromColumn: A[a_alt]
+            toColumn: B[b_alt]
+            fromCardinality: many
+            toCardinality: many
+        """
+    )
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".tmdl", delete=False) as f:
+        f.write(tmdl)
+        temp_path = Path(f.name)
+    try:
+        graph = TMDLAdapter().parse(temp_path)
+    finally:
+        temp_path.unlink()
+
+    # Both tables keep their declared primary keys; the many-to-many columns are independent of them.
+    assert graph.models["A"].primary_key == "id"
+    assert graph.models["B"].primary_key == "id"
+
+    layer = SemanticLayer()
+    layer.graph = graph
+    sql = layer.compile(metrics=["A.a_count"], dimensions=["B.b_label"])
+    # The join pairs each side's alternate column (not the declared id key), and each CTE projects
+    # its alternate column, so neither side joins on a column missing from its CTE.
+    assert re.search(r"ON\s+B_cte\.b_alt\s*=\s*A_cte\.a_alt", sql) or re.search(
+        r"ON\s+A_cte\.a_alt\s*=\s*B_cte\.b_alt", sql
+    ), sql
+    assert "a_alt AS a_alt" in sql
+    assert "b_alt AS b_alt" in sql
+
+
+def test_tmdl_one_to_one_recovers_keyless_source_key():
+    """Regression: a one-to-one relationship has a unique key on BOTH sides, so a keyless table on
+    the fromColumn (source) side must recover its endpoint as its primary key.
+
+    Otherwise only the to-side gets a key; the source stays None, and while the join is still built
+    on the source's from-column, the source CTE -- keyed off the now-empty primary_key_columns --
+    never selects that column, producing a join on a column missing from the CTE.
+    """
+    pytest.importorskip("sidemantic_dax")
+    tmdl = textwrap.dedent(
+        """
+        table A
+            column a_key
+                dataType: string
+                sourceColumn: a_key
+            measure a_count = COUNTROWS(A)
+        table B
+            column b_key
+                dataType: string
+                sourceColumn: b_key
+            column b_label
+                dataType: string
+                sourceColumn: b_label
+        relationship AB
+            fromColumn: A[a_key]
+            toColumn: B[b_key]
+            fromCardinality: one
+            toCardinality: one
+        """
+    )
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".tmdl", delete=False) as f:
+        f.write(tmdl)
+        temp_path = Path(f.name)
+    try:
+        graph = TMDLAdapter().parse(temp_path)
+    finally:
+        temp_path.unlink()
+
+    assert graph.models["A"].relationships[0].type == "one_to_one"
+    # Both unique sides recover their endpoint key -- the source side is no longer left None.
+    assert graph.models["A"].primary_key == "a_key"
+    assert graph.models["B"].primary_key == "b_key"
+
+    # The source key is projected into the source CTE and referenced by the join, so the join is not
+    # on a column that is absent from the CTE.
+    layer = SemanticLayer()
+    layer.graph = graph
+    sql = layer.compile(metrics=["A.a_count"], dimensions=["B.b_label"])
+    assert "a_key AS a_key" in sql
+    assert "A_cte.a_key" in sql
+
+
+def test_tmdl_one_to_one_alternate_key_does_not_shadow_real_key():
+    """Regression: a one-to-one source-side endpoint must not compete with a real one-side key.
+
+    A table that is the fromColumn side of a one-to-one on an alternate key and also the one-side of
+    a one-to-many on its real key must keep the real one-to-many key. The one-to-one source endpoint
+    is recovered only as a fallback for otherwise-keyless tables, so it never makes the primary key
+    ambiguous (which would drop it to None and emit empty-key SQL).
+    """
+    pytest.importorskip("sidemantic_dax")
+    tmdl = textwrap.dedent(
+        """
+        table Orders
+            column order_id
+                dataType: int64
+                sourceColumn: order_id
+            column alt_key
+                dataType: string
+                sourceColumn: alt_key
+            measure cnt = COUNTROWS(Orders)
+        table LineItems
+            column order_id
+                dataType: int64
+                sourceColumn: order_id
+        table OrderMeta
+            column meta_key
+                dataType: string
+                sourceColumn: meta_key
+            column channel
+                dataType: string
+                sourceColumn: channel
+        relationship OrdersLineItems
+            fromColumn: Orders[order_id]
+            toColumn: LineItems[order_id]
+            fromCardinality: one
+            toCardinality: many
+        relationship OrdersMeta
+            fromColumn: Orders[alt_key]
+            toColumn: OrderMeta[meta_key]
+            fromCardinality: one
+            toCardinality: one
+        """
+    )
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".tmdl", delete=False) as f:
+        f.write(tmdl)
+        temp_path = Path(f.name)
+    try:
+        graph = TMDLAdapter().parse(temp_path)
+    finally:
+        temp_path.unlink()
+
+    # Orders keeps its real one-to-many key; the alternate one-to-one key must not shadow it to None.
+    assert graph.models["Orders"].primary_key == "order_id"
+    # The one-to-one to-side still resolves its key authoritatively.
+    assert graph.models["OrderMeta"].primary_key == "meta_key"
+
+    # A query THROUGH the one-to-one joins on Orders' alt_key (the relationship's fromColumn), so
+    # Orders' CTE must project alt_key -- not only its declared order_id key -- otherwise the join
+    # references a column missing from the CTE.
+    layer = SemanticLayer()
+    layer.graph = graph
+    sql = layer.compile(metrics=["Orders.cnt"], dimensions=["OrderMeta.channel"])
+    assert "Orders_cte.alt_key" in sql
+    assert "alt_key AS alt_key" in sql
+
+
+def test_tmdl_ambiguous_one_side_target_not_recovered_from_endpoint():
+    """Regression: a table whose authoritative one-side key is ambiguous (referenced by multiple
+    relationships using different key columns) must stay keyless, not adopt a many-to-many endpoint.
+
+    Substituting a many-to-many/one-to-one endpoint would mask the ambiguity with a non-authoritative
+    row identity, so symmetric aggregates on the table would silently dedupe on the wrong column.
+    """
+    pytest.importorskip("sidemantic_dax")
+    tmdl = textwrap.dedent(
+        """
+        table D
+            column key1
+                dataType: string
+                sourceColumn: key1
+            column key2
+                dataType: string
+                sourceColumn: key2
+            column tag
+                dataType: string
+                sourceColumn: tag
+        table F1
+            column key1
+                dataType: string
+                sourceColumn: key1
+        table F2
+            column key2
+                dataType: string
+                sourceColumn: key2
+        table X
+            column x_tag
+                dataType: string
+                sourceColumn: x_tag
+        relationship F1D
+            fromColumn: F1[key1]
+            toColumn: D[key1]
+            fromCardinality: many
+            toCardinality: one
+        relationship F2D
+            fromColumn: F2[key2]
+            toColumn: D[key2]
+            fromCardinality: many
+            toCardinality: one
+        relationship DX
+            fromColumn: D[tag]
+            toColumn: X[x_tag]
+            fromCardinality: many
+            toCardinality: many
+        """
+    )
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".tmdl", delete=False) as f:
+        f.write(tmdl)
+        temp_path = Path(f.name)
+    try:
+        graph = TMDLAdapter().parse(temp_path)
+    finally:
+        temp_path.unlink()
+
+    # D's one-side key is ambiguous, so it stays unresolved (never the many-to-many "tag" endpoint),
+    # and the ambiguity is surfaced as a warning.
+    assert graph.models["D"].primary_key is None
+    codes = {w["code"] for w in getattr(graph, "import_warnings", [])}
+    assert "primary_key_unresolved" in codes
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

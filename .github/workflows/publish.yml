@@ -240,5 +240,6 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release create "${{ needs.publish.outputs.tag }}" \
+            --repo "${{ github.repository }}" \
             --title "${{ needs.publish.outputs.tag }}" \
             --generate-notes

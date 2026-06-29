@@ -706,5 +706,40 @@ def test_count_distinct_with_actual_data(layer):
     assert counts["Los Angeles"] == 3
 
 
+def test_direct_many_to_many_without_target_key_joins_on_model_pk():
+    """Regression: a direct (no-bridge) many_to_many that records only a foreign_key (the related
+    side's column) and no target primary_key must join the local side on the model's primary key.
+
+    Treating foreign_key as the local column too would emit a join on a column the source CTE does
+    not have. (A TMDL many-to-many records both endpoints via primary_key and is handled separately.)
+    """
+    import re
+
+    layer = SemanticLayer()
+    layer.add_model(
+        Model(
+            name="a",
+            table="a",
+            primary_key="id",
+            dimensions=[Dimension(name="id", type="numeric")],
+            metrics=[Metric(name="cnt", agg="count")],
+            relationships=[Relationship(name="b", type="many_to_many", foreign_key="a_id")],
+        )
+    )
+    layer.add_model(
+        Model(
+            name="b",
+            table="b",
+            primary_key="a_id",
+            dimensions=[Dimension(name="a_id", type="numeric"), Dimension(name="label", type="categorical")],
+        )
+    )
+
+    sql = layer.compile(metrics=["a.cnt"], dimensions=["b.label"])
+    # Local side joins on A's primary key; it never references a raw a_id column (A has none).
+    assert re.search(r"a_cte\.id\b", sql)
+    assert "a_cte.a_id" not in sql
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

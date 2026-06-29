@@ -1534,11 +1534,13 @@ class SQLGenerator:
                 needs_keyed_joins
                 and relationship.name in all_models
                 and relationship.type == "many_to_many"
+                and relationship.primary_key
                 and (not relationship.through or relationship.through not in self.graph.models)
             ):
-                # Direct (no-bridge) many-to-many source side: this model joins on the relationship's
-                # own from-column (a TMDL fromColumn that need not be this model's declared primary
-                # key), so that exact column must be projected.
+                # Direct (no-bridge) many-to-many source side carrying an explicit target key: this
+                # model joins on the relationship's own from-column (a TMDL fromColumn that need not
+                # be its declared primary key), so that exact column must be projected. The legacy
+                # shape (no target key) joins on the model primary key, already projected above.
                 for fk in relationship.foreign_key_columns:
                     add_passthrough_column(fk)
 

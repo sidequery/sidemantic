@@ -292,17 +292,19 @@ class SemanticGraph:
                     if not junction_model or junction_model not in self.models:
                         if not relationship.foreign_key:
                             continue
-                        # Each side joins on its OWN recorded column. A direct TMDL many-to-many
-                        # carries the source fromColumn as foreign_key and the target toColumn as
-                        # primary_key, and either may be an alternate (non-primary) key. Using these
-                        # rather than the models' declared primary keys keeps a join between
-                        # differently named columns (A[a_id] <-> B[b_id]) correct on both sides.
-                        local_keys = relationship.foreign_key_columns or model.primary_key_columns
-                        remote_keys = (
-                            relationship.primary_key_columns
-                            if relationship.primary_key
-                            else relationship.foreign_key_columns
-                        )
+                        if relationship.primary_key:
+                            # An explicit target key is recorded: a direct TMDL many-to-many carries
+                            # the source fromColumn as foreign_key and the target toColumn as
+                            # primary_key, and either may be an alternate (non-primary) key. Each side
+                            # joins on its own recorded column, keeping a join between differently
+                            # named columns (A[a_id] <-> B[b_id]) correct on both sides.
+                            local_keys = relationship.foreign_key_columns or model.primary_key_columns
+                            remote_keys = relationship.primary_key_columns
+                        else:
+                            # Legacy/compatibility shape: foreign_key names the RELATED side's column
+                            # and the local side joins on this model's primary key.
+                            local_keys = model.primary_key_columns
+                            remote_keys = relationship.foreign_key_columns
                         custom_condition = _custom_join_condition(relationship.sql)
                         add_edge(model_name, related_model, local_keys, remote_keys, "one_to_many", custom_condition)
                         add_edge(

@@ -96,9 +96,9 @@ class TestEdgeCases:
         assert "join_target_b" in rels
         assert rels["join_target_b"].type == "one_to_many"
 
-        # join_cross -> one_to_one (our mapping)
+        # join_cross -> cross (real CROSS JOIN / cartesian product)
         assert "join_target_c" in rels
-        assert rels["join_target_c"].type == "one_to_one"
+        assert rels["join_target_c"].type == "cross"
 
     def test_join_direction_stored(self):
         """Test that join direction modifiers (LEFT, INNER, etc.) are stored in metadata."""

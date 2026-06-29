@@ -31,6 +31,211 @@ except ImportError:
     ErrorListener = object  # type: ignore[assignment,misc]
 
 
+def _sub_outside_quotes(s: str, pattern: str, repl, quotes: tuple[str, ...] = ("'", '"')) -> str:
+    """Apply ``re.sub(pattern, repl, ...)`` (IGNORECASE) only to text outside the
+    given quote characters, so a value inside a literal (e.g. ``'count()'``) is
+    left intact. ``quotes`` defaults to single/double quotes (backticks are part
+    of a field reference); pass backtick too when rewriting already-SQL text
+    where a backtick identifier must be protected."""
+    out: list[str] = []
+    i, n = 0, len(s)
+    while i < n:
+        c = s[i]
+        if c in quotes:
+            j = i + 1
+            while j < n:
+                if s[j] == "\\":
+                    j += 2
+                    continue
+                if s[j] == c:
+                    j += 1
+                    break
+                j += 1
+            out.append(s[i:j])
+            i = j
+        else:
+            j = i
+            while j < n and s[j] not in quotes:
+                j += 1
+            out.append(re.sub(pattern, repl, s[i:j], flags=re.IGNORECASE))
+            i = j
+    return "".join(out)
+
+
+def _normalize_count_calls(s: str) -> str:
+    """Rewrite Malloy count syntax to SQL with quote- and paren-aware scanning.
+
+    count() -> count(*); count(x) / count_distinct(x) -> COUNT(DISTINCT x). The
+    argument is captured by balanced parens (so a string literal inside it, e.g.
+    count(case when p = 'pro' then x end), does not break the match), while a
+    literal that merely looks like a count ('count()') is left untouched.
+    """
+    out: list[str] = []
+    i, n = 0, len(s)
+    while i < n:
+        c = s[i]
+        # Copy string and backtick-identifier literals verbatim (a backtick field
+        # may contain parens, e.g. `user(id`).
+        if c in ("'", '"', "`"):
+            j = i + 1
+            while j < n:
+                if s[j] == "\\":
+                    j += 2
+                    continue
+                if s[j] == c:
+                    j += 1
+                    break
+                j += 1
+            out.append(s[i:j])
+            i = j
+            continue
+        m = re.match(r"count(?:_distinct)?", s[i:], re.IGNORECASE)
+        if m and (i == 0 or not (s[i - 1].isalnum() or s[i - 1] in "_.`")):
+            k = i + m.end()
+            while k < n and s[k].isspace():  # any whitespace, e.g. count\n(x)
+                k += 1
+            if k < n and s[k] == "(":
+                depth, p, q = 0, k, None
+                while p < n:
+                    ch = s[p]
+                    if q is not None:
+                        if ch == "\\":
+                            p += 2
+                            continue
+                        if ch == q:
+                            q = None
+                        p += 1
+                        continue
+                    if ch in ("'", '"', "`"):
+                        q = ch
+                    elif ch == "(":
+                        depth += 1
+                    elif ch == ")":
+                        depth -= 1
+                        if depth == 0:
+                            p += 1
+                            break
+                    p += 1
+                if depth == 0:
+                    arg = s[k + 1 : p - 1].strip()
+                    if arg == "":
+                        out.append("count(*)")
+                    elif arg == "*" or arg.lower().startswith("distinct "):
+                        out.append(s[i:p])
+                    else:
+                        out.append(f"COUNT(DISTINCT {arg})")
+                    i = p
+                    continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+_DOT_AGGS = ("count_distinct", "sum", "avg", "count", "min", "max")
+
+
+def _normalize_dot_aggregates(s: str) -> str:
+    """Rewrite Malloy dot-method aggregates ``field.sum()`` -> ``SUM(field)`` and
+    ``field.count_distinct()`` -> ``COUNT(DISTINCT field)``.
+
+    Scans with quote/backtick awareness: a backtick-quoted field name is treated
+    as an atomic part of the field reference, so aggregate-looking text inside a
+    backtick identifier (like a field literally named "gross.sum()") is
+    preserved, while a real backtick-field followed by .sum() is normalized.
+    """
+    result: list[str] = []
+    last, i, n = 0, 0, len(s)
+    field_start: int | None = None
+    while i < n:
+        c = s[i]
+        if c in ("'", '"'):
+            field_start = None
+            i += 1
+            while i < n:
+                if s[i] == "\\":
+                    i += 2
+                    continue
+                if s[i] == c:
+                    i += 1
+                    break
+                i += 1
+            continue
+        if c == "`":
+            if field_start is None:
+                field_start = i
+            i += 1
+            while i < n:
+                if s[i] == "\\":
+                    i += 2
+                    continue
+                if s[i] == "`":
+                    i += 1
+                    break
+                i += 1
+            continue
+        if c == ".":
+            matched = None
+            for agg in _DOT_AGGS:
+                ke = i + 1 + len(agg)
+                if s[i + 1 : ke].lower() == agg and (ke >= n or not (s[ke].isalnum() or s[ke] == "_")):
+                    k = ke
+                    while k < n and s[k].isspace():
+                        k += 1
+                    if k < n and s[k] == "(":
+                        matched = (agg, k)
+                        break
+            if matched is not None and field_start is not None:
+                agg, paren = matched
+                depth, p, q = 0, paren, None
+                while p < n:
+                    ch = s[p]
+                    if q is not None:
+                        if ch == "\\":
+                            p += 2
+                            continue
+                        if ch == q:
+                            q = None
+                        p += 1
+                        continue
+                    if ch in ("'", '"', "`"):
+                        q = ch
+                    elif ch == "(":
+                        depth += 1
+                    elif ch == ")":
+                        depth -= 1
+                        if depth == 0:
+                            p += 1
+                            break
+                    p += 1
+                if depth == 0:
+                    field = s[field_start:i]
+                    args = s[paren + 1 : p - 1].strip()
+                    if agg == "count_distinct":
+                        repl = f"COUNT(DISTINCT {field})"
+                    else:
+                        sql_agg = agg.upper()
+                        repl = f"{sql_agg}({field}, {args})" if args else f"{sql_agg}({field})"
+                    result.append(s[last:field_start])
+                    result.append(repl)
+                    last = i = p
+                    field_start = None
+                    continue
+            # plain '.' inside a dotted field reference
+            if field_start is None:
+                field_start = i
+            i += 1
+            continue
+        if c.isalnum() or c == "_":
+            if field_start is None:
+                field_start = i
+            i += 1
+            continue
+        field_start = None
+        i += 1
+    result.append(s[last:])
+    return "".join(result)
+
+
 class MalloySyntaxError(ValueError):
     """Raised when a Malloy document contains syntax errors and strict parsing is requested.
 
@@ -306,8 +511,11 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         if any(p in sql_lower for p in time_patterns):
             return "time"
 
-        time_name_patterns = ["date", "time", "timestamp", "_at", "created", "updated"]
-        if any(p in name_lower for p in time_name_patterns):
+        # Malloy trailing time truncation (created_at.month, ts.day, ...) -> time.
+        # _extract_granularity reads the same trailing timeframe afterwards.
+        granularities = ("second", "minute", "hour", "day", "week", "month", "quarter", "year")
+        trailing = re.search(r"\.(\w+)$", sql_lower)
+        if trailing and trailing.group(1) in granularities:
             return "time"
 
         # Boolean detection - comparison that yields true/false
@@ -317,9 +525,26 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
             if "pick" not in sql_lower and "case" not in sql_lower:
                 return "boolean"
 
+        # SQL DATE/TIMESTAMP literals (e.g. from a Malloy @2024-01-01 literal) are
+        # time values. Check before numeric so the hyphens in the date are not
+        # read as subtraction. After boolean so a comparison stays boolean.
+        if re.search(r"\b(?:date|timestamp)\s+'", sql_lower):
+            return "time"
+
+        # Duration arithmetic (created_at + 1 day, ts - 7 days) yields a time
+        # value. Check before numeric so the operator is not read as numeric.
+        if re.search(r"\b\d+\s+(?:second|minute|hour|day|week|month|quarter|year)s?\b", sql_lower):
+            return "time"
+
         # Numeric detection
         if re.search(r"[+\-*/]", sql) and "||" not in sql:
             return "numeric"
+
+        # Name-based time heuristic. Applied last (weakest signal) so an explicit
+        # comparison or arithmetic expression is not overridden by the field name.
+        time_name_patterns = ["date", "time", "timestamp", "_at", "created", "updated"]
+        if any(p in name_lower for p in time_name_patterns):
+            return "time"
 
         return "categorical"
 
@@ -351,6 +576,65 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
 
         return None
 
+    @staticmethod
+    def _has_top_level_arith(expr: str) -> bool:
+        """Return True if a binary arithmetic operator appears outside any
+        parentheses, brackets, or quotes.
+
+        Distinguishes a single aggregation call (`sum(x)`, `cost.sum()`) from a
+        compound expression built from several aggregates (`sum(a) / sum(b)` or
+        the unspaced `sum(a)/sum(b)`), which must be preserved verbatim as a
+        derived measure. Spaces around the operator are not required; a left
+        operand must exist so a leading unary minus is not treated as binary.
+        """
+        depth = 0
+        quote = None
+        n = len(expr)
+        prev = ""  # last operand-boundary char seen at depth 0 (spaces ignored)
+        skip_next = False
+        for i, ch in enumerate(expr):
+            if skip_next:
+                skip_next = False
+                continue
+            if quote is not None:
+                if ch == "\\":
+                    skip_next = True  # ignore the escaped char so \' does not close
+                    continue
+                if ch == quote:
+                    quote = None
+                    prev = ch
+                continue
+            if ch in ("'", '"', "`"):
+                quote = ch
+                prev = ch
+            elif ch in "([{":
+                depth += 1
+                prev = ch
+            elif ch in ")]}":
+                depth -= 1
+                prev = ch
+            elif depth == 0 and ch in "+-*/%" and i < n - 1 and (prev.isalnum() or prev in ")_.`'\""):
+                return True
+            elif not ch.isspace():  # ignore all whitespace (newlines/tabs) before the operator
+                prev = ch
+        return False
+
+    @staticmethod
+    def _normalize_agg_calls(expr: str) -> str:
+        """Rewrite Malloy aggregate syntax to SQL inside a preserved expression.
+
+        `field.sum()` -> `SUM(field)`; a dotted path `a.b.c.sum()` -> `SUM(a.b.c)`;
+        `count()` -> `count(*)`; and the distinct-count forms `count(x)`,
+        `count_distinct(x)`, `field.count_distinct()` -> `COUNT(DISTINCT x)`
+        (Malloy `count(expr)` is a distinct count, and `count_distinct` is not a
+        SQL function). Used when a compound aggregate expression is kept as a
+        derived measure so the stored SQL is executable.
+        """
+        # Standard function forms count(x) / count_distinct(x) / count() first,
+        # then dot-method aggregates; both scan with quote/paren/backtick
+        # awareness so literals and backtick identifiers are preserved.
+        return _normalize_dot_aggregates(_normalize_count_calls(expr))
+
     def _parse_aggregation(self, expr: str) -> tuple[str | None, str | None]:
         """Parse aggregation function from expression.
 
@@ -363,6 +647,14 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
             return None, None
 
         expr_stripped = expr.strip()
+
+        # A compound expression combining aggregates with a top-level arithmetic
+        # operator (e.g. `sum(a) / sum(b)`, `cost.sum() / quantity.sum()`,
+        # `sum(x) / count()`) is not a single aggregation. Keep it as a derived
+        # measure, but normalize Malloy aggregate syntax (dot-method calls and a
+        # bare `count()`) to SQL so the stored expression is valid SQL.
+        if self._has_top_level_arith(expr_stripped):
+            return None, self._normalize_agg_calls(expr_stripped)
 
         # Pattern 1: dot-method aggregation - field.func() or field.func(args)
         # Handles: cost.sum(), averageRating.avg(), `number`.sum(), images.count()
@@ -422,29 +714,32 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         # Pattern: identifier!identifier( -> identifier(
         expr = re.sub(r"(\w+)!\w+\(", r"\1(", expr)
 
-        # ~ regex match with r'' literal: expr ~ r'pattern' -> REGEXP_MATCHES(expr, 'pattern')
-        # Use (.+?) with lookahead to capture full LHS including spaces/parens
-        expr = re.sub(
-            r"(.+?)\s+~\s+r'([^']*)'",
-            r"REGEXP_MATCHES(\1, '\2')",
-            expr,
-        )
-        expr = re.sub(
-            r'(.+?)\s+~\s+r"([^"]*)"',
-            r"REGEXP_MATCHES(\1, '\2')",
-            expr,
-        )
-        # !~ negated regex
-        expr = re.sub(
-            r"(.+?)\s+!~\s+r'([^']*)'",
-            r"NOT REGEXP_MATCHES(\1, '\2')",
-            expr,
-        )
+        # ~ / !~ regex match: field ~ r'pattern' -> REGEXP_MATCHES(field, 'pattern')
+        expr = self._transform_regex_match(expr)
 
-        # @date literals: @YYYY-MM-DD -> DATE 'YYYY-MM-DD'
+        # @date / @timestamp literals:
+        # @YYYY-MM-DD HH:MM:SS -> TIMESTAMP 'YYYY-MM-DD HH:MM:SS'
+        # @YYYY-MM-DD -> DATE 'YYYY-MM-DD'
         # @YYYY-MM -> DATE 'YYYY-MM-01'
         # @YYYY -> DATE 'YYYY-01-01'
         # @YYYY-Qn -> handled as text
+        # Timestamp literal: time is the hour with optional :MM, :SS, fractional
+        # seconds (`.` or `,` separator), and an optional [zone] suffix (dropped).
+        # Padded to HH:MM:SS and the fraction comma normalized to a dot so the
+        # result is a valid SQL literal. Runs before the date-only rule so a time
+        # component is never left dangling.
+        def _timestamp_literal(m: re.Match) -> str:
+            time = m.group(2).replace(",", ".")
+            parts = time.split(":")
+            while len(parts) < 3:
+                parts.append("00")
+            return f"TIMESTAMP '{m.group(1)} {':'.join(parts)}'"
+
+        expr = re.sub(
+            r"@(\d{4}-\d{2}-\d{2})[ T](\d{2}(?::\d{2}(?::\d{2}(?:[.,]\d+)?)?)?)(?:\[[^\]]+\])?",
+            _timestamp_literal,
+            expr,
+        )
         expr = re.sub(r"@(\d{4}-\d{2}-\d{2})", r"DATE '\1'", expr)
         expr = re.sub(r"@(\d{4}-\d{2})(?!\d)", r"DATE '\1-01'", expr)
         expr = re.sub(r"@(\d{4})(?![-\d])", r"DATE '\1-01-01'", expr)
@@ -467,6 +762,112 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
 
         return expr
 
+    @staticmethod
+    def _left_operand_start(s: str, end: int) -> int | None:
+        """Return the start index of the regex-match left operand ending at ``end``.
+
+        The operand is a full arithmetic `fieldExpr` (Malloy binds `~` looser than
+        arithmetic but tighter than comparison/logical operators), so the scan
+        crosses `+ - * / %`, parenthesised groups, function calls, and string /
+        backtick literals, but stops at a top-level comparison operator
+        (`= < > ! ~`), a comma, an enclosing `(`, or a logical keyword
+        (`and`/`or`/`not`). Returns None when there is no operand.
+        """
+        if end <= 0:
+            return None
+
+        start = 0  # operand start at the current parenthesis depth
+        stack: list[int] = []  # saved starts for enclosing depths
+        q = None
+        i = 0
+        while i < end:
+            c = s[i]
+            if q is not None:
+                if c == "\\":
+                    i += 2  # skip the escaped char
+                    continue
+                if c == q:
+                    q = None
+                i += 1
+                continue
+            if c in ("'", '"', "`"):
+                q = c
+                i += 1
+                continue
+            if c == "(":
+                stack.append(start)
+                start = i + 1
+                i += 1
+                continue
+            if c == ")":
+                if stack:
+                    start = stack.pop()
+                i += 1
+                continue
+            if c in "=<>!~,":
+                start = i + 1
+                i += 1
+                continue
+            # Whole-word keyword handling. `case`/`end` bracket a CASE expression
+            # and behave like parentheses so the whole `case ... end` is one
+            # operand; `and`/`or`/`not`/`when`/`then`/`else` bound the operand on
+            # the left (the pick -> CASE rewrite runs first, so `WHEN x ~ r'...'`
+            # must stop the operand at `WHEN`).
+            matched_kw = None
+            for kw in ("case", "end", "and", "or", "not", "when", "then", "else"):
+                j = i + len(kw)
+                if (
+                    s[i:j].lower() == kw
+                    and (i == 0 or not (s[i - 1].isalnum() or s[i - 1] == "_"))
+                    and (j >= end or not (s[j].isalnum() or s[j] == "_"))
+                ):
+                    matched_kw = (kw, j)
+                    break
+            if matched_kw is not None:
+                kw, j = matched_kw
+                if kw == "case":
+                    stack.append(start)
+                    start = i
+                elif kw == "end":
+                    if stack:
+                        start = stack.pop()
+                else:
+                    start = j
+                i = j
+                continue
+            i += 1
+
+        while start < end and s[start] == " ":
+            start += 1
+        return start if start < end else None
+
+    def _transform_regex_match(self, expr: str) -> str:
+        """Transform Malloy regex matches to ``REGEXP_MATCHES`` calls.
+
+        ``operand ~ r'pat'`` -> ``REGEXP_MATCHES(operand, 'pat')`` and
+        ``operand !~ r'pat'`` -> ``NOT REGEXP_MATCHES(operand, 'pat')``.
+
+        The immediate left operand is found by walking back over a single
+        balanced expression, so a match never swallows preceding conditions
+        (``a = 1 and name ~ r'x'``) and computed/parenthesised operands
+        (``lower(name) ~ r'x'``) are preserved. Matches are rewritten
+        right-to-left so earlier offsets stay valid.
+        """
+        pattern = re.compile(r"(!?~)\s+r(['\"])(.*?)\2")
+        for m in reversed(list(pattern.finditer(expr))):
+            end = m.start()
+            while end > 0 and expr[end - 1] == " ":
+                end -= 1
+            operand_start = self._left_operand_start(expr, end)
+            if operand_start is None:
+                continue
+            operand = expr[operand_start:end]
+            replacement = f"REGEXP_MATCHES({operand}, '{m.group(3)}')"
+            if m.group(1) == "!~":
+                replacement = f"NOT {replacement}"
+            expr = expr[:operand_start] + replacement + expr[m.end() :]
+        return expr
+
     def _transform_null_coalesce(self, expr: str) -> str:
         """Transform Malloy ?? null coalescing to SQL COALESCE.
 
@@ -475,14 +876,28 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         if "??" not in expr:
             return expr
 
-        # Split on ?? only at depth 0
+        # Split on ?? only at depth 0 and outside string literals
         parts = []
         current = []
         depth = 0
+        quote = None
         i = 0
         while i < len(expr):
             ch = expr[i]
-            if ch in ("(", "[", "{"):
+            if quote is not None:
+                current.append(ch)
+                if ch == "\\" and i + 1 < len(expr):
+                    current.append(expr[i + 1])  # keep the escaped char verbatim
+                    i += 2
+                    continue
+                if ch == quote:
+                    quote = None
+                i += 1
+                continue
+            if ch in ("'", '"', "`"):
+                quote = ch
+                current.append(ch)
+            elif ch in ("(", "[", "{"):
                 depth += 1
                 current.append(ch)
             elif ch in (")", "]", "}"):
@@ -505,14 +920,59 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
             return f"COALESCE({', '.join(parts)})"
         return expr
 
+    @staticmethod
+    def _split_top_level(expr: str, sep: str) -> list[str]:
+        """Split ``expr`` on ``sep`` only at the top level (outside any
+        parentheses/brackets and outside string literals)."""
+        parts: list[str] = []
+        buf: list[str] = []
+        depth = 0
+        quote = None
+        i = 0
+        n = len(sep)
+        while i < len(expr):
+            ch = expr[i]
+            if quote is not None:
+                buf.append(ch)
+                if ch == "\\" and i + 1 < len(expr):
+                    buf.append(expr[i + 1])  # keep the escaped char verbatim
+                    i += 2
+                    continue
+                if ch == quote:
+                    quote = None
+                i += 1
+                continue
+            if ch in ("'", '"', "`"):
+                quote = ch
+                buf.append(ch)
+            elif ch in "([{":
+                depth += 1
+                buf.append(ch)
+            elif ch in ")]}":
+                depth -= 1
+                buf.append(ch)
+            elif depth == 0 and expr[i : i + n] == sep:
+                parts.append("".join(buf))
+                buf = []
+                i += n
+                continue
+            else:
+                buf.append(ch)
+            i += 1
+        parts.append("".join(buf))
+        return parts
+
     def _transform_and_tree(self, expr: str) -> str:
         """Transform Malloy & (and-tree) to SQL AND with expanded base field.
 
         Examples:
         - "field < 2031 & > -8000" -> "field < 2031 AND field > -8000"
         - "status != 'Cancelled' & 'Returned'" -> "status != 'Cancelled' AND status != 'Returned'"
+
+        Only splits on a top-level `&` (not one inside a string literal such as
+        "label = 'A & B'").
         """
-        parts = re.split(r"\s+&\s+", expr)
+        parts = [p.strip() for p in self._split_top_level(expr, " & ")]
         if len(parts) < 2:
             return expr
 
@@ -569,29 +1029,34 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
                 For apply-pick syntax: `field ? pick 'X' when < 5` the base_field
                 is extracted by the caller and partial conditions get it prepended.
         """
-        lines = expr.strip().split("\n")
+        # Locate the pick/when/else keywords at the top level (outside string
+        # literals and parentheses), then slice the arms between them. This is
+        # keyword-driven rather than line-driven so single-line and multi-line
+        # forms both work, and quote-aware so a keyword inside a string literal
+        # (e.g. `when note = 'a else b'`) is not treated as a delimiter.
+        keywords = self._scan_keywords(expr, ("pick", "when", "else"))
+        if not any(kw == "pick" for _, _, kw in keywords):
+            return expr
+
         cases = []
         else_value = None
-
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
-
-            # Match: pick 'value' when condition
-            pick_match = re.match(r"pick\s+(.+?)\s+when\s+(.+)$", line, re.IGNORECASE)
-            if pick_match:
-                value = pick_match.group(1).strip()
-                condition = pick_match.group(2).strip()
+        i = 0
+        while i < len(keywords):
+            _, end, kw = keywords[i]
+            if kw == "else":
+                else_value = expr[end:].strip()
+                break
+            if kw == "pick" and i + 1 < len(keywords) and keywords[i + 1][2] == "when":
+                when_start, when_end = keywords[i + 1][0], keywords[i + 1][1]
+                value = expr[end:when_start].strip()
+                cond_end = keywords[i + 2][0] if i + 2 < len(keywords) else len(expr)
+                condition = expr[when_end:cond_end].strip()
                 if base_field:
                     condition = self._expand_partial_condition(condition, base_field)
                 cases.append(f"WHEN {condition} THEN {value}")
+                i += 2
                 continue
-
-            # Match: else 'value'
-            else_match = re.match(r"else\s+(.+)$", line, re.IGNORECASE)
-            if else_match:
-                else_value = else_match.group(1).strip()
+            i += 1
 
         if cases:
             case_str = "CASE " + " ".join(cases)
@@ -601,6 +1066,65 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
             return case_str
 
         return expr
+
+    @staticmethod
+    def _scan_keywords(s: str, keywords: tuple[str, ...]) -> list[tuple[int, int, str]]:
+        """Return (start, end, keyword) for each whole-word keyword occurrence at
+        the top level (outside string literals, parentheses, and any nested SQL
+        ``case ... end`` block, so an inner when/then/else is not reported)."""
+        found: list[tuple[int, int, str]] = []
+        depth = 0
+        case_depth = 0
+        quote = None
+        i = 0
+        n = len(s)
+        while i < n:
+            ch = s[i]
+            if quote is not None:
+                if ch == "\\":
+                    i += 2  # skip the escaped char so \' does not close the string
+                    continue
+                if ch == quote:
+                    quote = None
+                i += 1
+                continue
+            if ch in ("'", '"', "`"):
+                quote = ch
+                i += 1
+                continue
+            if ch in "([{":
+                depth += 1
+                i += 1
+                continue
+            if ch in ")]}":
+                depth -= 1
+                i += 1
+                continue
+            if depth == 0:
+                # Match a whole word: case/end adjust nesting depth; the requested
+                # keywords are only reported outside any nested case...end block.
+                hit = None
+                for kw in ("case", "end", *keywords):
+                    j = i + len(kw)
+                    if (
+                        s[i:j].lower() == kw
+                        and (i == 0 or not (s[i - 1].isalnum() or s[i - 1] == "_"))
+                        and (j >= n or not (s[j].isalnum() or s[j] == "_"))
+                    ):
+                        hit = (kw, j)
+                        break
+                if hit is not None:
+                    kw, j = hit
+                    if kw == "case":
+                        case_depth += 1
+                    elif kw == "end":
+                        case_depth = max(0, case_depth - 1)
+                    elif case_depth == 0:
+                        found.append((i, j, kw))
+                    i = j
+                    continue
+            i += 1
+        return found
 
     def _expand_partial_condition(self, condition: str, base_field: str) -> str:
         """Expand a partial comparison by prepending the base field.
@@ -1054,10 +1578,9 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         field_expr = ctx.fieldExpr()
         sql = self._get_text(field_expr) if field_expr else name
 
-        # Transform Malloy-specific expression syntax to SQL
-        sql = self._transform_malloy_expr(sql)
-
-        # Transform pick/when to CASE (with apply-pick support)
+        # Transform pick/when to CASE first (with apply-pick support) so the
+        # expression transforms below operate on real field references inside the
+        # WHEN clauses rather than on raw `pick ... when ...` text.
         if "pick" in sql.lower():
             # Check for apply-pick pattern: field ? pick ... when ...
             apply_match = re.match(r"^(.+?)\s*\?\s*\n?\s*(pick\s+.+)$", sql, re.DOTALL | re.IGNORECASE)
@@ -1067,6 +1590,9 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
                 sql = self._transform_pick_to_case(pick_expr, base_field=base_field)
             else:
                 sql = self._transform_pick_to_case(sql)
+
+        # Transform remaining Malloy-specific expression syntax to SQL
+        sql = self._transform_malloy_expr(sql)
 
         # Infer type
         dim_type = self._infer_dimension_type(sql, name)
@@ -1118,28 +1644,35 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         expr_text = self._get_text(field_expr) if field_expr else ""
 
         # Check for filtered measure: count() { where: ... }
+        # Successive refinements (count() { where: a } { where: b }) parse as
+        # nested ExprFieldProps; Malloy ANDs them, so unwrap every level and
+        # collect all filters rather than only the outermost one.
         filters = None
         if isinstance(field_expr, MalloyParser.ExprFieldPropsContext):
-            # Has field properties (like { where: ... })
-            inner_expr = field_expr.fieldExpr()
-            props = field_expr.fieldProperties()
+            collected_filters: list[str] = []
+            node = field_expr
+            while isinstance(node, MalloyParser.ExprFieldPropsContext):
+                props = node.fieldProperties()
+                if props:
+                    for prop_stmt in props.fieldPropertyStatement():
+                        if isinstance(prop_stmt, MalloyParser.WhereStatementContext) or hasattr(
+                            prop_stmt, "whereStatement"
+                        ):
+                            where_stmt = (
+                                prop_stmt
+                                if isinstance(prop_stmt, MalloyParser.WhereStatementContext)
+                                else getattr(prop_stmt, "whereStatement", lambda: None)()
+                            )
+                            if where_stmt:
+                                filter_list = where_stmt.filterClauseList()
+                                if filter_list:
+                                    collected_filters.extend(self._get_text(f) for f in filter_list.fieldExpr())
+                node = node.fieldExpr()
 
-            expr_text = self._get_text(inner_expr) if inner_expr else ""
-
-            if props:
-                for prop_stmt in props.fieldPropertyStatement():
-                    if isinstance(prop_stmt, MalloyParser.WhereStatementContext) or hasattr(
-                        prop_stmt, "whereStatement"
-                    ):
-                        where_stmt = (
-                            prop_stmt
-                            if isinstance(prop_stmt, MalloyParser.WhereStatementContext)
-                            else getattr(prop_stmt, "whereStatement", lambda: None)()
-                        )
-                        if where_stmt:
-                            filter_list = where_stmt.filterClauseList()
-                            if filter_list:
-                                filters = [self._get_text(f) for f in filter_list.fieldExpr()]
+            expr_text = self._get_text(node) if node is not None else ""
+            if collected_filters:
+                # Collected outermost-first; reverse to restore source order.
+                filters = list(reversed(collected_filters))
 
         # Transform Malloy-specific expression syntax to SQL
         expr_text = self._transform_malloy_expr(expr_text)
@@ -1211,7 +1744,7 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
             rel_type = "one_to_many"
             join_list = ctx.joinList()
         elif isinstance(ctx, MalloyParser.DefJoinCrossContext):
-            rel_type = "one_to_one"  # Cross joins mapped to one_to_one
+            rel_type = "cross"  # Cross join -> cartesian product (CROSS JOIN)
             join_list = ctx.joinList()
         else:
             return
@@ -1271,17 +1804,13 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
                 if join_metadata is None:
                     join_metadata = {}
                 join_metadata["on_condition"] = expr_text
-                # Extract all FKs from equalities: field = other.field
-                fk_matches = re.findall(r"(\w+)\s*=\s*\w+\.\w+", expr_text)
-                if fk_matches:
-                    foreign_key = fk_matches[0]
-                    if len(fk_matches) > 1:
-                        join_metadata["composite_keys"] = fk_matches
-                else:
-                    # Fallback: first identifier before =
-                    match = re.match(r"(\w+)\s*=", expr_text)
-                    if match:
-                        foreign_key = match.group(1)
+                # Extract FK column(s), handling either ordering of each equality
+                # and keys qualified by the source or target name.
+                fk_keys = self._extract_on_condition_keys(expr_text, name, rel_type)
+                if fk_keys:
+                    foreign_key = fk_keys[0]
+                    if len(fk_keys) > 1:
+                        join_metadata["composite_keys"] = fk_keys
 
         self.current_relationships.append(
             Relationship(
@@ -1291,6 +1820,80 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
                 metadata=join_metadata,
             )
         )
+
+    @staticmethod
+    def _extract_on_condition_keys(expr_text: str, target_name: str, rel_type: str) -> list[str]:
+        """Extract foreign-key column(s) from a join ``on`` condition.
+
+        Handles either ordering of each equality (``src = tgt.col`` or
+        ``tgt.col = src``) and multi-condition clauses joined by ``and``. For
+        ``many_to_one`` / ``one_to_one`` the key is the source-side column; for
+        ``one_to_many`` it is the related (target-qualified) column.
+        """
+
+        def split_qualifier(tok: str) -> tuple[str | None, str]:
+            tok = tok.replace("`", "")
+            if "." in tok:
+                qualifier, column = tok.rsplit(".", 1)
+                return qualifier, column
+            return None, tok
+
+        def is_literal(tok: str) -> bool:
+            low = tok.lower()
+            return low in ("true", "false", "null") or tok.replace(".", "", 1).isdigit()
+
+        def strip_outer_parens(text: str) -> str:
+            text = text.strip()
+            while len(text) >= 2 and text[0] == "(" and text[-1] == ")":
+                depth = 0
+                wraps_all = True
+                for idx, ch in enumerate(text):
+                    if ch == "(":
+                        depth += 1
+                    elif ch == ")":
+                        depth -= 1
+                        if depth == 0 and idx != len(text) - 1:
+                            wraps_all = False
+                            break
+                if not wraps_all:
+                    break
+                text = text[1:-1].strip()
+            return text
+
+        keys: list[str] = []
+        for cond in re.split(r"\s+and\s+", strip_outer_parens(expr_text), flags=re.IGNORECASE):
+            m = re.match(r"\s*([\w.`]+)\s*=\s*([\w.`]+)\s*$", strip_outer_parens(cond))
+            if not m:
+                continue
+            lq, lc = split_qualifier(m.group(1))
+            rq, rc = split_qualifier(m.group(2))
+
+            # A `col = literal` equality (e.g. `customers.active = true`) is a
+            # filter predicate, not a join key, so it contributes no foreign key.
+            if is_literal(lc) or is_literal(rc):
+                continue
+
+            # Identify the related (target) vs source side. A side qualified by
+            # the target name is the related column; otherwise the unqualified
+            # side is the related column (Malloy convention) and the other side
+            # belongs to the source.
+            if lq == target_name:
+                related_col, source_col = lc, rc
+            elif rq == target_name:
+                related_col, source_col = rc, lc
+            elif lq is None and rq is not None:
+                related_col, source_col = lc, rc
+            elif rq is None and lq is not None:
+                related_col, source_col = rc, lc
+            else:
+                # Both sides unqualified: keep the first identifier (the
+                # documented "first identifier before =" behavior).
+                related_col = source_col = lc
+
+            # one_to_many keys on the related (foreign) column; many_to_one and
+            # one_to_one key on the source column.
+            keys.append(related_col if rel_type == "one_to_many" else source_col)
+        return keys
 
     def _extract_inline_join_source(self, join_name: str, sq_expr):
         """Extract inline source definition from a join and add as a model.
@@ -1484,10 +2087,10 @@ class MalloyAdapter(BaseAdapter):
             # We use a separate parsed_files set per root file to handle imports,
             # but we track which models have been added to avoid duplicates.
             for malloy_file in source_path.rglob("*.malloy"):
-                parsed_files: set[Path] = set()
+                parsed_files: set = set()
                 self._parse_file(malloy_file, graph, parsed_files, import_filter=None)
         else:
-            parsed_files: set[Path] = set()
+            parsed_files: set = set()
             self._parse_file(source_path, graph, parsed_files)
 
         return graph
@@ -1496,7 +2099,7 @@ class MalloyAdapter(BaseAdapter):
         self,
         file_path: Path,
         graph: SemanticGraph,
-        parsed_files: set[Path],
+        parsed_files: set,
         import_filter: list[tuple[str, str | None]] | None = None,
     ) -> None:
         """Parse a single Malloy file with import resolution.
@@ -1510,11 +2113,16 @@ class MalloyAdapter(BaseAdapter):
         """
         resolved_path = file_path.resolve()
 
-        # Cycle detection: skip if already parsed
-        if resolved_path in parsed_files:
+        # Dedup/cycle detection keyed on (path, filter): a file imported under a
+        # narrow named-import filter must still be parseable for a later, broader
+        # (or differently-named) import of the same file, while an identical
+        # request is parsed at most once so circular imports still terminate.
+        filter_key = None if import_filter is None else frozenset(import_filter)
+        cache_key = (resolved_path, filter_key)
+        if cache_key in parsed_files:
             return
 
-        parsed_files.add(resolved_path)
+        parsed_files.add(cache_key)
 
         if not file_path.exists():
             return
@@ -1582,40 +2190,22 @@ class MalloyAdapter(BaseAdapter):
             if import_file.exists():
                 self._parse_file(import_file, graph, parsed_files, import_items)
 
-        # Add models to graph (with optional filtering for selective imports)
+        # Add models to graph (with optional filtering/aliasing for selective imports).
         for model in visitor.models:
-            if import_filter is not None:
-                # Check if this model should be imported
-                matching_import = None
-                for name, alias in import_filter:
-                    if model.name == name:
-                        matching_import = (name, alias)
-                        break
+            if import_filter is None:
+                if model.name not in graph.models:
+                    graph.add_model(model)
+                continue
 
-                if matching_import is None:
-                    continue  # Skip this model, not in import list
-
-                # Apply alias if specified
-                name, alias = matching_import
-                if alias:
-                    model = Model(
-                        name=alias,
-                        table=model.table,
-                        sql=model.sql,
-                        description=model.description,
-                        extends=model.extends,
-                        relationships=model.relationships,
-                        primary_key=model.primary_key,
-                        dimensions=model.dimensions,
-                        metrics=model.metrics,
-                        segments=model.segments,
-                        pre_aggregations=model.pre_aggregations,
-                        metadata=model.metadata,
-                    )
-
-            # Add to graph if not already present
-            if model.name not in graph.models:
-                graph.add_model(model)
+            # A source may be selected under several names in a single import
+            # (e.g. `import { s is a, s is b }`), so emit one model per matching
+            # entry rather than only the first.
+            for name, alias in import_filter:
+                if model.name != name:
+                    continue
+                target = model if not alias else model.model_copy(update={"name": alias})
+                if target.name not in graph.models:
+                    graph.add_model(target)
 
     def export(self, graph: SemanticGraph, output_path: str | Path) -> None:
         """Export semantic graph to Malloy format.
@@ -1670,7 +2260,7 @@ class MalloyAdapter(BaseAdapter):
 
         # Model description as tag annotation
         if model.description:
-            lines.append(f"# desc: {model.description}")
+            lines.append(f"# desc: {self._one_line(model.description)}")
 
         # Source header - use connection from metadata, default to duckdb
         connection = (model.metadata or {}).get("connection", "duckdb")
@@ -1678,6 +2268,10 @@ class MalloyAdapter(BaseAdapter):
             lines.append(f'source: {model.name} is {connection}.sql("""{model.sql}""") extend {{')
         elif model.table:
             lines.append(f"source: {model.name} is {connection}.table('{model.table}') extend {{")
+        elif model.extends:
+            # Tableless derived source: reference the base so the output is valid
+            # Malloy (`source: x is base extend {`) rather than a bare `extend {`.
+            lines.append(f"source: {model.name} is {model.extends} extend {{")
         else:
             lines.append(f"source: {model.name} extend {{")
 
@@ -1700,8 +2294,11 @@ class MalloyAdapter(BaseAdapter):
             # Skip passthrough dimensions - Malloy auto-exposes table columns
             if sql == dim.name:
                 continue
-            # Tier 4.5: detect renames (simple identifier, no operators/functions)
-            if re.match(r"^[`\w]+$", sql) and sql != dim.name:
+            # Tier 4.5: detect renames (simple identifier, no operators/functions).
+            # A time dimension with a granularity is NOT a rename: it must keep its
+            # `.granularity` suffix below so the time type survives the roundtrip.
+            is_time_with_grain = dim.type == "time" and dim.granularity
+            if re.match(r"^[`\w]+$", sql) and sql != dim.name and not is_time_with_grain:
                 renames_to_export.append((dim.name, sql))
             else:
                 dims_to_export.append((dim, sql))
@@ -1719,7 +2316,7 @@ class MalloyAdapter(BaseAdapter):
             lines.append("  dimension:")
             for dim, sql in dims_to_export:
                 if dim.description:
-                    lines.append(f"    # desc: {dim.description}")
+                    lines.append(f"    # desc: {self._one_line(dim.description)}")
                 if dim.type == "time" and dim.granularity:
                     sql_lower = sql.lower()
                     already_has_truncation = (
@@ -1733,24 +2330,34 @@ class MalloyAdapter(BaseAdapter):
                     lines.append(f"    {dim.name} is {sql}")
 
         # Measures
-        if model.metrics:
+        measure_lines: list[str] = []
+        has_real_measure = False
+        for metric in model.metrics:
+            measure_expr = self._format_measure(metric)
+            if measure_expr is None:
+                # No faithful Malloy representation (e.g. cumulative/derived with
+                # no sql); skip it rather than silently emitting a bogus count().
+                measure_lines.append(f"    // {metric.name}: unsupported metric type, not exported")
+                continue
+            has_real_measure = True
+            if metric.description:
+                measure_lines.append(f"    # desc: {self._one_line(metric.description)}")
+            measure_lines.append(f"    {metric.name} is {measure_expr}")
+        if has_real_measure:
             lines.append("")
             lines.append("  measure:")
-            for metric in model.metrics:
-                if metric.description:
-                    lines.append(f"    # desc: {metric.description}")
-                measure_expr = self._format_measure(metric)
-                lines.append(f"    {metric.name} is {measure_expr}")
+            lines.extend(measure_lines)
 
         # Joins - Tier 4.4: use on condition from metadata when available
         for rel in model.relationships:
             lines.append("")
-            if rel.type == "many_to_one":
-                join_type = "join_one"
-            elif rel.type == "one_to_one":
-                join_type = "join_cross"
-            else:
-                join_type = "join_many"
+            if rel.type == "cross":
+                # A cross join takes no key clause in Malloy.
+                lines.append(f"  join_cross: {rel.name}")
+                continue
+            # one_to_many and many_to_many fan out -> join_many; many_to_one and
+            # one_to_one collapse to at most one match -> join_one.
+            join_type = "join_many" if rel.type in ("one_to_many", "many_to_many") else "join_one"
             on_condition = (rel.metadata or {}).get("on_condition")
             if on_condition:
                 lines.append(f"  {join_type}: {rel.name} on {on_condition}")
@@ -1763,14 +2370,22 @@ class MalloyAdapter(BaseAdapter):
 
         return lines
 
-    def _format_measure(self, metric: Metric) -> str:
-        """Format a metric as Malloy measure expression.
+    @staticmethod
+    def _one_line(text: str) -> str:
+        """Collapse a description to a single line so it is valid in a `# desc:`
+        annotation (Malloy annotations are line-terminated)."""
+        return " ".join(text.split())
+
+    def _format_measure(self, metric: Metric) -> str | None:
+        """Format a metric as a Malloy measure expression.
 
         Args:
             metric: Metric to format
 
         Returns:
-            Malloy measure expression string
+            The Malloy measure expression, or None if the metric has no faithful
+            Malloy representation (so the caller can skip it instead of emitting a
+            misleading default).
         """
         # Simple aggregation
         if metric.agg:
@@ -1792,8 +2407,28 @@ class MalloyAdapter(BaseAdapter):
         if metric.type == "ratio" and metric.numerator and metric.denominator:
             return f"{metric.numerator} / {metric.denominator}"
 
-        # Fallback to sql
+        # Fallback to sql. Convert the SQL aggregate forms that import
+        # normalization introduces back to Malloy so the derived measure
+        # round-trips (Malloy has no count(*) or count(DISTINCT ...)).
         if metric.sql:
-            return self._strip_model_prefix(metric.sql)
+            return self._sql_aggs_to_malloy(self._strip_model_prefix(metric.sql))
 
-        return "count()"
+        # No faithful Malloy representation for this metric.
+        return None
+
+    @staticmethod
+    def _sql_aggs_to_malloy(sql: str) -> str:
+        """Rewrite SQL aggregate syntax back to Malloy for export.
+
+        COUNT(DISTINCT x) -> count(x), count(*) -> count(), and uppercase
+        SUM/AVG/MIN/MAX(...) -> lowercase, so a derived measure whose SQL came
+        from import normalization parses again as Malloy. COUNT(expr) is left
+        untouched: Malloy count(field) is a distinct count, so translating a
+        plain SQL COUNT(field) would change non-null counts into distinct counts.
+        """
+        # Protect backtick identifiers too: this rewrites already-SQL text, where
+        # a backtick-quoted field name may itself look like an aggregate.
+        bq = ("'", '"', "`")
+        sql = _sub_outside_quotes(sql, r"\bcount\s*\(\s*distinct\s+(.+?)\s*\)", r"count(\1)", bq)
+        sql = _sub_outside_quotes(sql, r"\bcount\s*\(\s*\*\s*\)", "count()", bq)
+        return _sub_outside_quotes(sql, r"\b(SUM|AVG|MIN|MAX)\s*\(", lambda m: m.group(1).lower() + "(", bq)

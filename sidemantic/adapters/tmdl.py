@@ -685,11 +685,11 @@ def _apply_relationships(
     # primary key for tables that did not declare an explicit isKey column.
     pk_candidates: dict[str, set[str]] = {}
     pk_target_nodes: dict[str, TmdlNode] = {}
-    # For many-to-many relationships there is no single one-side, so the cardinality-aware backfill
-    # below gives neither table a key. A direct (no-bridge) many-to-many join still needs a key on
-    # each side, so track each table's OWN endpoint column on its many-to-many relationships (its
-    # real join column, not a foreign key pointing at another table) to recover one afterwards.
-    m2m_endpoints_by_table: dict[str, set[str]] = {}
+    # Lower-confidence endpoint columns recovered only for tables the cardinality-aware backfill
+    # leaves keyless: both sides of a many-to-many (no one-side at all) and the source side of a
+    # one-to-one (which may be an alternate key). Each is a real join column of its table, never a
+    # foreign key pointing elsewhere, and never overrides an authoritative one-side key.
+    fallback_endpoints_by_table: dict[str, set[str]] = {}
 
     for node in nodes:
         props = _props(node)
@@ -754,28 +754,33 @@ def _apply_relationships(
             foreign_key = None
             primary_key = None
 
-        # Record the real key column on each one-side (PK side) of this relationship so a table that
-        # omitted its isKey column can recover a real primary key below. A one-to-one relationship
-        # has a unique key on BOTH sides, so both endpoints are recoverable; one/many relationships
-        # contribute only their single one-side; many-to-many has no one-side (handled separately).
-        one_side_keys: list[tuple[str, str | None]] = []
+        # Record the authoritative one-side (PK side) key of this relationship so a table that
+        # omitted its isKey column can recover a real primary key below. one_to_many points at the
+        # from-side's key; many_to_one and one_to_one point at the to-side's key. The one_to_one
+        # *source* (from) side is intentionally NOT recorded here: it may be an alternate key, so it
+        # must not compete with -- and make ambiguous -- a real one-side key the same table receives
+        # from another relationship. It is recovered as a fallback only when the table is otherwise
+        # keyless (below).
         if rel_type == "one_to_many":
-            one_side_keys.append((from_table, from_column))
-        elif rel_type == "many_to_one":
-            one_side_keys.append((to_table, to_column))
-        elif rel_type == "one_to_one":
-            one_side_keys.append((from_table, from_column))
-            one_side_keys.append((to_table, to_column))
-        for pk_target, pk_column in one_side_keys:
+            pk_target, pk_column = from_table, from_column
+        elif rel_type in ("many_to_one", "one_to_one"):
+            pk_target, pk_column = to_table, to_column
+        else:
+            pk_target, pk_column = None, None
+        if pk_target is not None:
             pk_target_nodes.setdefault(pk_target, node)
             if pk_column:
                 pk_candidates.setdefault(pk_target, set()).add(pk_column)
+        # Lower-confidence endpoint columns to fall back on only when the cardinality-aware backfill
+        # leaves a table keyless: a many-to-many has no one-side, and a one-to-one's source side may
+        # be an alternate key. Each is a real join column of that table, never a foreign key.
         if rel_type == "many_to_many":
-            # Each side's own join column is a real column of that table (not an FK to elsewhere).
             if from_column:
-                m2m_endpoints_by_table.setdefault(from_table, set()).add(from_column)
+                fallback_endpoints_by_table.setdefault(from_table, set()).add(from_column)
             if to_column:
-                m2m_endpoints_by_table.setdefault(to_table, set()).add(to_column)
+                fallback_endpoints_by_table.setdefault(to_table, set()).add(to_column)
+        elif rel_type == "one_to_one" and from_column:
+            fallback_endpoints_by_table.setdefault(from_table, set()).add(from_column)
 
         relationship_props = _relationship_passthrough_properties(node)
         relationship = Relationship(
@@ -851,14 +856,14 @@ def _apply_relationships(
                 model_name=target_name,
             )
 
-    # Recover keys for many-to-many participants that the cardinality-aware backfill could not give
-    # one. A direct (no-bridge) many-to-many edge joins on each side's endpoint column, so a keyless
-    # participant adopts its own unambiguous many-to-many endpoint column. This is the relationship's
-    # real join column for that table, never a many-side foreign key promoted to a primary key.
+    # Fallback recovery for tables the cardinality-aware backfill could not key: a many-to-many
+    # participant or a one-to-one source side adopts its own unambiguous endpoint column. This runs
+    # only for tables still keyless (so an authoritative one-side key always wins) and only when the
+    # column is unambiguous, so it never overrides or conflicts with a real primary key.
     for model in graph.models.values():
         if not getattr(model, "_tmdl_primary_key_inferred", False) or model.primary_key is not None:
             continue
-        own_endpoints = m2m_endpoints_by_table.get(model.name, set()) & {dim.name for dim in model.dimensions}
+        own_endpoints = fallback_endpoints_by_table.get(model.name, set()) & {dim.name for dim in model.dimensions}
         if len(own_endpoints) == 1:
             model.primary_key = next(iter(own_endpoints))
 

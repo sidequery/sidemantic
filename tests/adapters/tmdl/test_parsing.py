@@ -3083,5 +3083,58 @@ def test_tmdl_one_to_one_recovers_keyless_source_key():
     assert "A_cte.a_key" in sql
 
 
+def test_tmdl_one_to_one_alternate_key_does_not_shadow_real_key():
+    """Regression: a one-to-one source-side endpoint must not compete with a real one-side key.
+
+    A table that is the fromColumn side of a one-to-one on an alternate key and also the one-side of
+    a one-to-many on its real key must keep the real one-to-many key. The one-to-one source endpoint
+    is recovered only as a fallback for otherwise-keyless tables, so it never makes the primary key
+    ambiguous (which would drop it to None and emit empty-key SQL).
+    """
+    pytest.importorskip("sidemantic_dax")
+    tmdl = textwrap.dedent(
+        """
+        table Orders
+            column order_id
+                dataType: int64
+                sourceColumn: order_id
+            column alt_key
+                dataType: string
+                sourceColumn: alt_key
+            measure cnt = COUNTROWS(Orders)
+        table LineItems
+            column order_id
+                dataType: int64
+                sourceColumn: order_id
+        table OrderMeta
+            column meta_key
+                dataType: string
+                sourceColumn: meta_key
+        relationship OrdersLineItems
+            fromColumn: Orders[order_id]
+            toColumn: LineItems[order_id]
+            fromCardinality: one
+            toCardinality: many
+        relationship OrdersMeta
+            fromColumn: Orders[alt_key]
+            toColumn: OrderMeta[meta_key]
+            fromCardinality: one
+            toCardinality: one
+        """
+    )
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".tmdl", delete=False) as f:
+        f.write(tmdl)
+        temp_path = Path(f.name)
+    try:
+        graph = TMDLAdapter().parse(temp_path)
+    finally:
+        temp_path.unlink()
+
+    # Orders keeps its real one-to-many key; the alternate one-to-one key must not shadow it to None.
+    assert graph.models["Orders"].primary_key == "order_id"
+    # The one-to-one to-side still resolves its key authoritatively.
+    assert graph.models["OrderMeta"].primary_key == "meta_key"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

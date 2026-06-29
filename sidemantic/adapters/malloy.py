@@ -31,6 +31,36 @@ except ImportError:
     ErrorListener = object  # type: ignore[assignment,misc]
 
 
+def _sub_outside_quotes(s: str, pattern: str, repl) -> str:
+    """Apply ``re.sub(pattern, repl, ...)`` (IGNORECASE) only to text outside
+    single/double-quoted string literals, so an aggregate-looking value inside a
+    literal (e.g. ``'count()'``) is left intact. Backticks are NOT treated as
+    string delimiters: a backtick-quoted field name is part of an aggregate."""
+    out: list[str] = []
+    i, n = 0, len(s)
+    while i < n:
+        c = s[i]
+        if c in ("'", '"'):
+            j = i + 1
+            while j < n:
+                if s[j] == "\\":
+                    j += 2
+                    continue
+                if s[j] == c:
+                    j += 1
+                    break
+                j += 1
+            out.append(s[i:j])
+            i = j
+        else:
+            j = i
+            while j < n and s[j] not in ("'", '"'):
+                j += 1
+            out.append(re.sub(pattern, repl, s[i:j], flags=re.IGNORECASE))
+            i = j
+    return "".join(out)
+
+
 class MalloySyntaxError(ValueError):
     """Raised when a Malloy document contains syntax errors and strict parsing is requested.
 
@@ -421,35 +451,6 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         derived measure so the stored SQL is executable.
         """
 
-        def sub_outside_quotes(s: str, pattern: str, repl) -> str:
-            # Apply re.sub only to text outside string literals so an
-            # aggregate-looking value inside a literal (e.g. 'count()') is intact.
-            # Backticks are NOT string delimiters here: a backtick-quoted field
-            # name (`cost amount`.sum()) is part of an aggregate to normalize.
-            out: list[str] = []
-            i, n = 0, len(s)
-            while i < n:
-                c = s[i]
-                if c in ("'", '"'):
-                    j = i + 1
-                    while j < n:
-                        if s[j] == "\\":
-                            j += 2
-                            continue
-                        if s[j] == c:
-                            j += 1
-                            break
-                        j += 1
-                    out.append(s[i:j])
-                    i = j
-                else:
-                    j = i
-                    while j < n and s[j] not in ("'", '"'):
-                        j += 1
-                    out.append(re.sub(pattern, repl, s[i:j], flags=re.IGNORECASE))
-                    i = j
-            return "".join(out)
-
         def count_repl(m: re.Match) -> str:
             arg = m.group(1).strip()
             if arg == "":
@@ -469,10 +470,10 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
 
         # Standard function forms count(x) / count_distinct(x) / count() — not
         # preceded by `.` so dot-method calls are handled by the next pass.
-        expr = sub_outside_quotes(expr, r"(?<![\w.`])count(?:_distinct)?\s*\(\s*([^)]*?)\s*\)", count_repl)
+        expr = _sub_outside_quotes(expr, r"(?<![\w.`])count(?:_distinct)?\s*\(\s*([^)]*?)\s*\)", count_repl)
         # Dot-method aggregates; the field may be a backtick-quoted identifier
         # with spaces (`cost amount`.sum()).
-        return sub_outside_quotes(
+        return _sub_outside_quotes(
             expr,
             r"((?:`[^`]*`|[\w.])+)\.(sum|avg|count|min|max|count_distinct)\s*\(\s*(.*?)\s*\)",
             dot_repl,
@@ -1729,7 +1730,9 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
             elif rq is None and lq is not None:
                 related_col, source_col = rc, lc
             else:
-                related_col, source_col = lc, rc
+                # Both sides unqualified: keep the first identifier (the
+                # documented "first identifier before =" behavior).
+                related_col = source_col = lc
 
             # one_to_many keys on the related (foreign) column; many_to_one and
             # one_to_one key on the source column.
@@ -2267,6 +2270,6 @@ class MalloyAdapter(BaseAdapter):
         untouched: Malloy count(field) is a distinct count, so translating a
         plain SQL COUNT(field) would change non-null counts into distinct counts.
         """
-        sql = re.sub(r"\bcount\s*\(\s*distinct\s+(.+?)\s*\)", r"count(\1)", sql, flags=re.IGNORECASE)
-        sql = re.sub(r"\bcount\s*\(\s*\*\s*\)", "count()", sql, flags=re.IGNORECASE)
-        return re.sub(r"\b(SUM|AVG|MIN|MAX)\s*\(", lambda m: m.group(1).lower() + "(", sql)
+        sql = _sub_outside_quotes(sql, r"\bcount\s*\(\s*distinct\s+(.+?)\s*\)", r"count(\1)")
+        sql = _sub_outside_quotes(sql, r"\bcount\s*\(\s*\*\s*\)", "count()")
+        return _sub_outside_quotes(sql, r"\b(SUM|AVG|MIN|MAX)\s*\(", lambda m: m.group(1).lower() + "(")

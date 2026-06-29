@@ -195,6 +195,25 @@ def test_join_composite_keys_reverse_direction():
     assert rel.metadata.get("composite_keys") == ["gender", "state"]
 
 
+def test_join_both_unqualified_keeps_first_identifier():
+    g = _parse(
+        "source: customers is duckdb.table('c') extend { primary_key: id }\n"
+        "source: orders is duckdb.table('o') extend {\n"
+        "  primary_key: id\n"
+        "  join_one: customers is duckdb.table('c') on customer_id = id\n"
+        "}\n"
+    )
+    rel = {r.name: r for r in g.get_model("orders").relationships}["customers"]
+    assert rel.foreign_key == "customer_id"
+
+
+def test_export_agg_rewrite_ignores_string_literals():
+    sql = "SUM(CASE WHEN label = 'COUNT(*)' THEN amount ELSE 0 END) / COUNT(*)"
+    assert (
+        MalloyAdapter()._sql_aggs_to_malloy(sql) == "sum(CASE WHEN label = 'COUNT(*)' THEN amount ELSE 0 END) / count()"
+    )
+
+
 # --- & and-tree must not split inside string literals ---
 
 

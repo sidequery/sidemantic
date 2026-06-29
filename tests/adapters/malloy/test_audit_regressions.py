@@ -134,6 +134,11 @@ def test_comparison_expression_not_overridden_to_time_by_name():
     assert g.get_model("o").get_dimension("created_after_cutoff").type == "boolean"
 
 
+def test_duration_arithmetic_is_time_not_numeric():
+    g = _parse("source: o is duckdb.table('o') extend {\n  dimension: ship_date is created_at + 1 day\n}\n")
+    assert g.get_model("o").get_dimension("ship_date").type == "time"
+
+
 # --- Chained filter refinements must AND, not drop ---
 
 

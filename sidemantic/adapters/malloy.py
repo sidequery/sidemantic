@@ -531,6 +531,11 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         if re.search(r"\b(?:date|timestamp)\s+'", sql_lower):
             return "time"
 
+        # Duration arithmetic (created_at + 1 day, ts - 7 days) yields a time
+        # value. Check before numeric so the operator is not read as numeric.
+        if re.search(r"\b\d+\s+(?:second|minute|hour|day|week|month|quarter|year)s?\b", sql_lower):
+            return "time"
+
         # Numeric detection
         if re.search(r"[+\-*/]", sql) and "||" not in sql:
             return "numeric"

@@ -409,6 +409,30 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
                 prev = ch
         return False
 
+    @staticmethod
+    def _normalize_agg_calls(expr: str) -> str:
+        """Rewrite Malloy aggregate syntax to SQL inside a preserved expression.
+
+        `field.sum()` / `field.avg()` / ... -> `SUM(field)` / `AVG(field)` / ...,
+        a dotted path `a.b.c.sum()` -> `SUM(a.b.c)`, and a bare `count()` ->
+        `count(*)`. Used when a compound aggregate expression is kept as a derived
+        measure so the stored SQL is executable.
+        """
+
+        def repl(m: re.Match) -> str:
+            field = m.group(1)
+            agg = m.group(2).upper()
+            args = m.group(3).strip()
+            return f"{agg}({field}, {args})" if args else f"{agg}({field})"
+
+        expr = re.sub(
+            r"([\w.`]+)\.(sum|avg|count|min|max|count_distinct)\s*\(\s*(.*?)\s*\)",
+            repl,
+            expr,
+            flags=re.IGNORECASE,
+        )
+        return re.sub(r"\bcount\s*\(\s*\)", "count(*)", expr, flags=re.IGNORECASE)
+
     def _parse_aggregation(self, expr: str) -> tuple[str | None, str | None]:
         """Parse aggregation function from expression.
 
@@ -424,11 +448,11 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
 
         # A compound expression combining aggregates with a top-level arithmetic
         # operator (e.g. `sum(a) / sum(b)`, `cost.sum() / quantity.sum()`,
-        # `sum(x) / count()`) is not a single aggregation. Preserve it verbatim so
-        # the caller treats it as a derived measure instead of mis-capturing one
-        # function's arguments across the operator.
+        # `sum(x) / count()`) is not a single aggregation. Keep it as a derived
+        # measure, but normalize Malloy aggregate syntax (dot-method calls and a
+        # bare `count()`) to SQL so the stored expression is valid SQL.
         if self._has_top_level_arith(expr_stripped):
-            return None, expr_stripped
+            return None, self._normalize_agg_calls(expr_stripped)
 
         # Pattern 1: dot-method aggregation - field.func() or field.func(args)
         # Handles: cost.sum(), averageRating.avg(), `number`.sum(), images.count()
@@ -522,80 +546,72 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
 
     @staticmethod
     def _left_operand_start(s: str, end: int) -> int | None:
-        """Return the start index of the operand ending at ``end``.
+        """Return the start index of the regex-match left operand ending at ``end``.
 
-        Handles a balanced parenthesised group or function call
-        (``lower(name)``, ``(a || b)``) as well as a plain field reference
-        (``name``, ``a.b``, `` `x` ``). Returns None when there is no operand.
+        The operand is a full arithmetic `fieldExpr` (Malloy binds `~` looser than
+        arithmetic but tighter than comparison/logical operators), so the scan
+        crosses `+ - * / %`, parenthesised groups, function calls, and string /
+        backtick literals, but stops at a top-level comparison operator
+        (`= < > ! ~`), a comma, an enclosing `(`, or a logical keyword
+        (`and`/`or`/`not`). Returns None when there is no operand.
         """
         if end <= 0:
             return None
 
-        # Mark positions inside string literals (escape-aware) so the backward
-        # scans ignore parentheses, spaces, and quotes inside string/backtick
-        # literals, e.g. the ')' in replace(name, ')', '') or the space in the
-        # backtick identifier `user name`.
-        quoted = [False] * end
+        start = 0  # operand start at the current parenthesis depth
+        stack: list[int] = []  # saved starts for enclosing depths
         q = None
         i = 0
         while i < end:
             c = s[i]
             if q is not None:
-                quoted[i] = True
-                if c == "\\" and i + 1 < end:
-                    quoted[i + 1] = True
-                    i += 2
+                if c == "\\":
+                    i += 2  # skip the escaped char
                     continue
                 if c == q:
                     q = None
-            elif c in ("'", '"', "`"):
+                i += 1
+                continue
+            if c in ("'", '"', "`"):
                 q = c
-                quoted[i] = True
+                i += 1
+                continue
+            if c == "(":
+                stack.append(start)
+                start = i + 1
+                i += 1
+                continue
+            if c == ")":
+                if stack:
+                    start = stack.pop()
+                i += 1
+                continue
+            if c in "=<>!~,":
+                start = i + 1
+                i += 1
+                continue
+            matched = None
+            # Logical operators and CASE keywords bound an arithmetic operand on
+            # the left (the pick -> CASE rewrite runs before this, so a condition
+            # like `WHEN title ~ r'...'` must stop the operand at `WHEN`).
+            for kw in ("and", "or", "not", "when", "then", "else", "case", "end"):
+                j = i + len(kw)
+                if (
+                    s[i:j].lower() == kw
+                    and (i == 0 or not (s[i - 1].isalnum() or s[i - 1] == "_"))
+                    and (j >= end or not (s[j].isalnum() or s[j] == "_"))
+                ):
+                    matched = j
+                    break
+            if matched is not None:
+                start = matched
+                i = matched
+                continue
             i += 1
 
-        def walk_left(stop: int) -> int:
-            # Walk left over a field reference, consuming whole quoted segments
-            # (e.g. a backtick identifier with spaces) atomically.
-            p = stop
-            while p > 0:
-                j = p - 1
-                if quoted[j]:
-                    while j > 0 and quoted[j - 1]:
-                        j -= 1
-                    p = j
-                    continue
-                if s[j].isalnum() or s[j] in "_.`":
-                    p -= 1
-                    continue
-                break
-            return p
-
-        if s[end - 1] == ")" and not quoted[end - 1]:
-            depth = 0
-            k = end
-            while k > 0:
-                k -= 1
-                if quoted[k]:
-                    continue
-                if s[k] == ")":
-                    depth += 1
-                elif s[k] == "(":
-                    depth -= 1
-                    if depth == 0:
-                        break
-            if depth != 0:
-                return None
-            # Include a leading function-name identifier, allowing optional
-            # whitespace before the parenthesis (e.g. `lower(x)` or `lower (x)`).
-            ident_end = k
-            while ident_end > 0 and s[ident_end - 1] == " ":
-                ident_end -= 1
-            if ident_end > 0 and (s[ident_end - 1].isalnum() or s[ident_end - 1] in "_.`"):
-                return walk_left(ident_end)
-            return k
-
-        start = walk_left(end)
-        return start if start != end else None
+        while start < end and s[start] == " ":
+            start += 1
+        return start if start < end else None
 
     def _transform_regex_match(self, expr: str) -> str:
         """Transform Malloy regex matches to ``REGEXP_MATCHES`` calls.

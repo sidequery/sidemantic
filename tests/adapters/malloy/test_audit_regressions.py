@@ -46,7 +46,8 @@ def test_sum_over_count_is_derived():
     me = g.get_model("orders").get_metric("avg_ov")
     assert me.agg is None
     assert me.type == "derived"
-    assert me.sql == "sum(amount) / count()"
+    # bare count() normalized to count(*) so the derived SQL is executable
+    assert me.sql == "sum(amount) / count(*)"
 
 
 def test_dot_method_aggregate_arithmetic_is_derived():
@@ -56,7 +57,8 @@ def test_dot_method_aggregate_arithmetic_is_derived():
     me = g.get_model("orders").get_metric("dotarith")
     assert me.agg is None
     assert me.type == "derived"
-    assert me.sql == "cost.sum() / quantity.sum()"
+    # Malloy dot-method aggregates normalized to SQL function calls
+    assert me.sql == "SUM(cost) / SUM(quantity)"
 
 
 def test_single_aggregates_still_parse():
@@ -518,6 +520,21 @@ def test_pick_escaped_quote_before_keyword_in_condition():
         "b",
     )
     assert sql == "CASE WHEN note = 'it\\'s else ok' THEN 'x' ELSE 'y' END"
+
+
+def test_regex_match_binary_operand():
+    # The regex operand is the full arithmetic expression, not just the last token.
+    assert (
+        _dim_sql("source: o is duckdb.table('o') extend {\n  dimension: a is amount + tax ~ r'5'\n}\n", "a")
+        == "REGEXP_MATCHES(amount + tax, '5')"
+    )
+
+
+def test_unspaced_dot_method_ratio_normalized():
+    g = _parse("source: o is duckdb.table('o') extend {\n  measure: d is cost.sum()/quantity.sum()\n}\n")
+    me = g.get_model("o").get_metric("d")
+    assert me.type == "derived"
+    assert me.sql == "SUM(cost)/SUM(quantity)"
 
 
 def test_join_on_condition_skips_literal_predicate():

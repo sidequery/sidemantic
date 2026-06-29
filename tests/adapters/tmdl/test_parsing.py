@@ -3037,35 +3037,42 @@ def test_tmdl_many_to_many_recovers_endpoint_keys():
 
 
 def test_tmdl_many_to_many_on_non_primary_key_column():
-    """Regression: a direct many-to-many that joins on a column which is NOT the related table's
-    declared primary key must project and join on that exact column, not the declared key.
+    """Regression: a direct many-to-many that joins on columns which are NOT either table's declared
+    primary key must project and join on those exact columns, on both sides.
 
-    Here B declares isKey ``id`` but the relationship targets ``B[alt_id]``. The join must reference
-    B's ``alt_id`` and B's CTE must project ``alt_id`` (it is otherwise keyed only off ``id``).
+    Here both A and B declare isKey ``id`` but the relationship joins ``A[a_alt]`` to ``B[b_alt]``.
+    The join must reference each table's alternate column (never its declared ``id``) and each CTE
+    must project its alternate column, otherwise the join is on a column missing from the CTE.
     """
+
+    import re
 
     pytest.importorskip("sidemantic_dax")
     tmdl = textwrap.dedent(
         """
         table A
-            column a_id
+            column id
                 dataType: string
-                sourceColumn: a_id
+                isKey
+                sourceColumn: id
+            column a_alt
+                dataType: string
+                sourceColumn: a_alt
             measure a_count = COUNTROWS(A)
         table B
             column id
                 dataType: string
                 isKey
                 sourceColumn: id
-            column alt_id
+            column b_alt
                 dataType: string
-                sourceColumn: alt_id
+                sourceColumn: b_alt
             column b_label
                 dataType: string
                 sourceColumn: b_label
         relationship AB
-            fromColumn: A[a_id]
-            toColumn: B[alt_id]
+            fromColumn: A[a_alt]
+            toColumn: B[b_alt]
             fromCardinality: many
             toCardinality: many
         """
@@ -3078,15 +3085,20 @@ def test_tmdl_many_to_many_on_non_primary_key_column():
     finally:
         temp_path.unlink()
 
-    # B keeps its declared primary key; the many-to-many target column is independent of it.
+    # Both tables keep their declared primary keys; the many-to-many columns are independent of them.
+    assert graph.models["A"].primary_key == "id"
     assert graph.models["B"].primary_key == "id"
 
     layer = SemanticLayer()
     layer.graph = graph
     sql = layer.compile(metrics=["A.a_count"], dimensions=["B.b_label"])
-    # The join uses B's alt_id and B's CTE projects it, so it is not a join on a missing column.
-    assert "B_cte.alt_id" in sql
-    assert "alt_id AS alt_id" in sql
+    # The join pairs each side's alternate column (not the declared id key), and each CTE projects
+    # its alternate column, so neither side joins on a column missing from its CTE.
+    assert re.search(r"ON\s+B_cte\.b_alt\s*=\s*A_cte\.a_alt", sql) or re.search(
+        r"ON\s+A_cte\.a_alt\s*=\s*B_cte\.b_alt", sql
+    ), sql
+    assert "a_alt AS a_alt" in sql
+    assert "b_alt AS b_alt" in sql
 
 
 def test_tmdl_one_to_one_recovers_keyless_source_key():

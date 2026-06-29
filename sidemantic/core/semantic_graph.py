@@ -292,11 +292,12 @@ class SemanticGraph:
                     if not junction_model or junction_model not in self.models:
                         if not relationship.foreign_key:
                             continue
-                        local_keys = model.primary_key_columns
-                        # The related side joins on its own key column. When the relationship records
-                        # it (e.g. a direct TMDL many-to-many carries the toColumn as primary_key),
-                        # use that so a join between differently named columns (A[a_id] <-> B[b_id])
-                        # references B's real column rather than reusing A's foreign-key name.
+                        # Each side joins on its OWN recorded column. A direct TMDL many-to-many
+                        # carries the source fromColumn as foreign_key and the target toColumn as
+                        # primary_key, and either may be an alternate (non-primary) key. Using these
+                        # rather than the models' declared primary keys keeps a join between
+                        # differently named columns (A[a_id] <-> B[b_id]) correct on both sides.
+                        local_keys = relationship.foreign_key_columns or model.primary_key_columns
                         remote_keys = (
                             relationship.primary_key_columns
                             if relationship.primary_key

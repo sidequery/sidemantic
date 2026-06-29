@@ -1512,6 +1512,17 @@ class SQLGenerator:
                 local_keys = relationship.primary_key_columns if relationship.primary_key else model.primary_key_columns
                 for pk in local_keys:
                     add_passthrough_column(pk)
+            elif (
+                needs_keyed_joins
+                and relationship.name in all_models
+                and relationship.type == "many_to_many"
+                and (not relationship.through or relationship.through not in self.graph.models)
+            ):
+                # Direct (no-bridge) many-to-many source side: this model joins on the relationship's
+                # own from-column (a TMDL fromColumn that need not be this model's declared primary
+                # key), so that exact column must be projected.
+                for fk in relationship.foreign_key_columns:
+                    add_passthrough_column(fk)
 
         # Check if other models have has_many/has_one pointing to this model
         if needs_keyed_joins:

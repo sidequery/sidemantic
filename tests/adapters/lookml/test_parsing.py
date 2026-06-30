@@ -119,7 +119,8 @@ def test_lookml_adapter_ecommerce():
     # Test dimension group with multiple timeframes
     created_time = orders.get_dimension("created_time")
     assert created_time is not None
-    assert created_time.granularity == "hour"
+    # Looker's "time" timeframe keeps to-the-second precision.
+    assert created_time.granularity == "second"
 
     created_date = orders.get_dimension("created_date")
     assert created_date is not None

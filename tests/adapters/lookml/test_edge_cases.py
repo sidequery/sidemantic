@@ -2961,6 +2961,827 @@ def test_lookml_view_with_unsupported_derived_table_not_defaulted():
     assert model.table is None  # not fabricated as a physical table named after the view
 
 
+def test_lookml_time_timeframe_keeps_second_precision():
+    """Looker's "time" timeframe keeps to-the-second precision, not hour."""
+    graph = _parse_lkml(
+        """
+view: v {
+  sql_table_name: t ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension_group: created {
+    type: time
+    timeframes: [time, date, minute]
+    sql: ${TABLE}.created_at ;;
+  }
+}
+"""
+    )
+    model = graph.get_model("v")
+    assert model.get_dimension("created_time").granularity == "second"
+    assert model.get_dimension("created_minute").granularity == "minute"
+    assert model.get_dimension("created_date").granularity == "day"
+
+
+def test_lookml_native_suffix_contradicting_grain_uses_grain():
+    """A native dim whose name suffix CONTRADICTS its granularity preserves the GRAIN, not the name.
+
+    created_time at hour granularity must export as [hour] (-> created_hour), not [time]
+    (which imports as second), so queries keep grouping by hour.
+    """
+    import tempfile
+
+    from sidemantic import Dimension, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="v",
+            table="t",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(name="created_time", type="time", granularity="hour", sql="ts"),  # suffix `time` != hour
+            ],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    grains = {
+        d.name: d.granularity for d in LookMLAdapter().parse(Path(out)).get_model("v").dimensions if d.type == "time"
+    }
+    assert grains == {"created_hour": "hour"}  # grain preserved (not silently downgraded to second)
+
+
+def test_lookml_native_minute15_name_does_not_widen_grain():
+    """A native created_minute15 at MINUTE grain must not export [minute15] (15-min buckets).
+
+    The coarse mapping of minute15 equals `minute`, so the old name-suffix inference emitted
+    [minute15] -- silently re-bucketing 1-minute data into 15-minute intervals. Inexact
+    suffixes are now excluded from name inference, so it exports [minute] (true grain).
+    """
+    import tempfile
+
+    from sidemantic import Dimension, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="ev",
+            table="t",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(name="created_minute15", type="time", granularity="minute", sql="ts"),  # no meta
+            ],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    txt = open(out).read()
+    assert "minute15" not in txt  # no silent grain widening
+    assert "minute" in txt
+    # meta-preserved minute15 still round-trips as a 15-min bucket (import path unaffected)
+    graph2 = SemanticGraph()
+    graph2.add_model(
+        Model(
+            name="ev",
+            table="t",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(
+                    name="created_minute15",
+                    type="time",
+                    granularity="minute",
+                    sql="ts",
+                    meta={"lookml_timeframe": "minute15"},
+                ),
+            ],
+        )
+    )
+    out2 = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph2, out2)
+    assert "minute15" in open(out2).read()
+
+
+def test_lookml_native_inexact_timeframe_suffix_preserves_grain_not_name():
+    """NATIVE inexact-suffix time dims (no meta) preserve the GRAIN, even if the name changes.
+
+    minute15 / minute30 / millisecond / microsecond / time_of_day map MANY-to-one onto a
+    coarser-or-finer sidemantic grain, so a native created_minute15 at MINUTE grain must NOT
+    export [minute15] (which buckets into 15-min intervals -- a silent grain change). It
+    exports at the true grain instead, so the field re-imports renamed (created_minute) but
+    with the CORRECT queryable grain. Exact name round-trip for these needs preserved
+    meta['lookml_timeframe'] (the import path), covered separately.
+    """
+    import tempfile
+
+    from sidemantic import Dimension, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    for name, grain in [
+        ("created_minute15", "minute"),
+        ("created_millisecond", "second"),
+        ("created_time_of_day", "hour"),
+    ]:
+        graph = SemanticGraph()
+        graph.add_model(
+            Model(
+                name="v",
+                table="t",
+                primary_key="id",
+                dimensions=[
+                    Dimension(name="id", type="numeric", sql="id"),
+                    Dimension(name=name, type="time", granularity=grain, sql="ts"),  # no meta
+                ],
+            )
+        )
+        out = tempfile.mktemp(suffix=".lkml")
+        LookMLAdapter().export(graph, out)
+        grains = [d.granularity for d in LookMLAdapter().parse(Path(out)).get_model("v").dimensions if d.type == "time"]
+        assert grains == [grain], f"{name}: grain not preserved -> {grains}"
+
+
+def test_lookml_uncommon_timeframe_suffix_roundtrips():
+    """Imported timeframes like millisecond/microsecond round-trip (base derived from stored timeframe)."""
+    import tempfile
+
+    graph = _parse_lkml(
+        """
+view: v {
+  sql_table_name: t ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension_group: created {
+    type: time
+    timeframes: [millisecond, microsecond, date]
+    sql: ${TABLE}.created_at ;;
+  }
+}
+"""
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    names = {d.name for d in LookMLAdapter().parse(Path(out)).get_model("v").dimensions if d.type == "time"}
+    assert {"created_millisecond", "created_microsecond"} <= names
+    assert not any(n.endswith("_millisecond_millisecond") or n.endswith("_microsecond_microsecond") for n in names)
+
+
+def test_lookml_time_grain_roundtrip():
+    """time/hour/minute/date grains round-trip through export without grain or suffix corruption."""
+    import tempfile
+
+    graph = _parse_lkml(
+        """
+view: v {
+  sql_table_name: t ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension_group: created {
+    type: time
+    timeframes: [time, hour, minute, date]
+    sql: ${TABLE}.created_at ;;
+  }
+}
+"""
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    grains = {
+        d.name: d.granularity for d in LookMLAdapter().parse(Path(out)).get_model("v").dimensions if d.type == "time"
+    }
+    assert grains == {
+        "created_time": "second",
+        "created_hour": "hour",
+        "created_minute": "minute",
+        "created_date": "day",
+    }
+
+
+def test_lookml_native_second_grain_roundtrips():
+    """A second-grain dimension not imported from LookML (no meta) exports as `second`, not `time`."""
+    import tempfile
+
+    from sidemantic import Dimension, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="v",
+            table="t",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(name="created_second", type="time", granularity="second", sql="{model}.created_at"),
+            ],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    names = {d.name for d in LookMLAdapter().parse(Path(out)).get_model("v").dimensions if d.type == "time"}
+    assert "created_second" in names
+
+
+def test_lookml_same_prefix_time_dims_different_sources_not_merged():
+    """Same-prefix time dims backed by different columns must not merge to one group (wrong source)."""
+    import tempfile
+
+    from sidemantic import Dimension, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="v",
+            table="t",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(name="started_date", type="time", granularity="day", sql="{model}.started_at"),
+                Dimension(name="started_second", type="time", granularity="second", sql="{model}.other_at"),
+            ],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    time_dims = [d for d in LookMLAdapter().parse(Path(out)).get_model("v").dimensions if d.type == "time"]
+    sources = {d.sql for d in time_dims}
+    # Each field keeps its own source column (no rewiring to the other group's SQL).
+    assert any("started_at" in (s or "") for s in sources)
+    assert any("other_at" in (s or "") for s in sources)
+    # Split groups get suffix-free, collision-free names (no started_date_date etc.).
+    assert not any(d.name.endswith("_date_date") or d.name.endswith("_hour_hour") for d in time_dims)
+
+
+def test_lookml_collision_subsecond_timeframe_preserves_precision():
+    """A millisecond/microsecond collision dim exports DATE_TRUNC at that grain (not second).
+
+    sidemantic stores them as `second`, so the exported SQL must use the LookML timeframe
+    grain to keep sub-second precision, and re-import recovers second grain + the timeframe.
+    """
+    import tempfile
+
+    from sidemantic import Dimension, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="v",
+            table="t",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(
+                    name="started_date", type="time", granularity="day", sql="a", meta={"lookml_timeframe": "date"}
+                ),
+                Dimension(
+                    name="started_millisecond",
+                    type="time",
+                    granularity="second",
+                    sql="b",
+                    meta={"lookml_timeframe": "millisecond"},
+                ),
+            ],
+        )
+    )
+    adapter = LookMLAdapter()
+    out = tempfile.mktemp(suffix=".lkml")
+    adapter.export(graph, out)
+    assert "DATE_TRUNC('millisecond'" in open(out).read()  # sub-second precision kept, not 'second'
+    g = adapter.parse(Path(out))
+    ms = g.get_model("v").get_dimension("started_millisecond")
+    assert ms.granularity == "second" and (ms.meta or {}).get("lookml_timeframe") == "millisecond"
+    # second round-trip stable (no nested DATE_TRUNC)
+    out2 = tempfile.mktemp(suffix=".lkml")
+    adapter.export(g, out2)
+    assert "DATE_TRUNC('millisecond', DATE_TRUNC" not in open(out2).read()
+
+
+def test_lookml_collision_disambiguated_field_stays_time_recoverable():
+    """A disambiguated collision field must stay TIME-recoverable, not become categorical.
+
+    The unrepresentable trio (`started` + `started_hour` + `started_date`, all different SQL)
+    forces one field to be renamed for uniqueness. The disambiguator goes into the STEM
+    (`started_2_hour`, not `started_hour_2`) so the trailing timeframe is preserved and the
+    field re-imports as time@hour, not a categorical dim. Stable across round-trips.
+    """
+    import tempfile
+
+    from sidemantic import Dimension, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="ev",
+            table="t",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(name="started", type="time", granularity="hour", sql="a"),
+                Dimension(name="started_hour", type="time", granularity="hour", sql="b"),
+                Dimension(name="started_date", type="time", granularity="day", sql="c"),
+            ],
+        )
+    )
+    adapter = LookMLAdapter()
+    g = graph
+    for _ in range(2):
+        out = tempfile.mktemp(suffix=".lkml")
+        adapter.export(g, out)
+        g = adapter.parse(Path(out))
+        kinds = {d.name: d.type for d in g.get_model("ev").dimensions if d.name != "id"}
+        # all three time sources stay TIME (none degraded to categorical), 3 distinct names
+        assert all(t == "time" for t in kinds.values()), kinds
+        assert len(kinds) == 3, kinds
+
+
+def test_lookml_suffixless_collision_no_dimension_group_field_duplicate():
+    """A suffixless dim must not win the group slot and GENERATE a name a sibling standalone owns.
+
+    `started` (hour) + `started_hour` (hour, diff SQL) + `started_date`: if suffixless `started`
+    won the dimension_group, the group would generate `started_hour` AND a standalone
+    `started_hour` would exist -> a runtime field collision. A suffixed sibling wins the group
+    slot instead, so every generated field name (group fields + standalones) is unique.
+    """
+    import re
+    import tempfile
+    from collections import Counter
+
+    from sidemantic import Dimension, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="ev",
+            table="t",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(name="started", type="time", granularity="hour", sql="a"),
+                Dimension(name="started_hour", type="time", granularity="hour", sql="b"),
+                Dimension(name="started_date", type="time", granularity="day", sql="c"),
+            ],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    text = open(out).read()
+    generated = re.findall(r"\n  dimension: (\w+) \{", text)  # standalones
+    for base, tfs in re.findall(r"dimension_group: (\w+) \{[^}]*?timeframes:\s*\[([^\]]*)\]", text, re.S):
+        generated += [f"{base}_{tf.strip()}" for tf in tfs.split(",")]  # group-generated fields
+    dups = {n: c for n, c in Counter(generated).items() if c > 1}
+    assert not dups, f"duplicate generated field names: {dups}"
+
+
+def test_lookml_suffixless_collision_synth_name_avoids_duplicate():
+    """Synthesizing a recoverable suffix must not duplicate an existing field name.
+
+    `started` (hour) alongside an EXISTING `started_hour` and a `started_date` source must not
+    emit two `started_hour` blocks; the suffixless one keeps its name (no data-losing dup).
+    """
+    import re
+    import tempfile
+    from collections import Counter
+
+    from sidemantic import Dimension, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="ev",
+            table="t",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(name="started", type="time", granularity="hour", sql="a"),
+                Dimension(name="started_hour", type="time", granularity="hour", sql="b"),  # already exists
+                Dimension(name="started_date", type="time", granularity="day", sql="c"),
+            ],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    names = re.findall(r"dimension(?:_group)?: (\w+)", open(out).read())
+    dups = {n: c for n, c in Counter(names).items() if c > 1}
+    assert not dups, f"duplicate field names emitted: {dups}"
+
+
+def test_lookml_suffixless_collision_time_dim_stays_time():
+    """A suffixless collision time dim must remain a TIME dim across round-trips, not categorical.
+
+    `started` (hour grain) colliding with `started_date` (day, different SQL) can't keep its
+    bare name as a recoverable standalone, so the collision export appends the grain timeframe
+    (-> `started_hour`) so re-import restores time granularity instead of dropping to a
+    categorical dim (which would break time queries/filters on the field).
+    """
+    import tempfile
+
+    from sidemantic import Dimension, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="ev",
+            table="t",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(name="started", type="time", granularity="hour", sql="created_at"),  # suffixless
+                Dimension(name="started_date", type="time", granularity="day", sql="updated_at"),
+            ],
+        )
+    )
+    adapter = LookMLAdapter()
+    g = graph
+    for _ in range(2):
+        out = tempfile.mktemp(suffix=".lkml")
+        adapter.export(g, out)
+        g = adapter.parse(Path(out))
+        times = {d.name: d.granularity for d in g.get_model("ev").dimensions if d.type == "time"}
+        # the suffixless dim is recoverable as time@hour (renamed started -> started_hour)
+        assert times.get("started_hour") == "hour", times
+        assert times.get("started_date") == "day", times
+
+
+def test_lookml_native_collision_inexact_name_not_widened_on_import():
+    """A NATIVE collision dim named *_minute15 (no meta) must not gain false minute15 meta.
+
+    Without meta the collision exporter writes a plain DATE_TRUNC('minute', ...), so import
+    must recover grain=minute with NO lookml_timeframe (recording 'minute15' would make the
+    next export widen the 1-minute dim into a 15-minute bucket). Stable across round-trips.
+    """
+    import tempfile
+
+    from sidemantic import Dimension, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="ev",
+            table="t",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(name="started_date", type="time", granularity="day", sql="created_at"),
+                # same prefix, DIFFERENT sql -> collision; NO meta
+                Dimension(name="started_minute15", type="time", granularity="minute", sql="updated_at"),
+            ],
+        )
+    )
+    adapter = LookMLAdapter()
+    out = tempfile.mktemp(suffix=".lkml")
+    adapter.export(graph, out)
+    assert "DATE_TRUNC('minute'" in open(out).read()  # plain minute trunc, not a 15-min bucket
+    g = adapter.parse(Path(out))
+    m15 = g.get_model("ev").get_dimension("started_minute15")
+    assert m15.granularity == "minute"
+    assert not (m15.meta or {}).get("lookml_timeframe")  # NO false minute15 meta
+    # stable: second round-trip still minute, still no bucket
+    out2 = tempfile.mktemp(suffix=".lkml")
+    adapter.export(g, out2)
+    assert "FLOOR(" not in open(out2).read()  # never widened into a bucket
+    m15b = adapter.parse(Path(out2)).get_model("ev").get_dimension("started_minute15")
+    assert m15b.granularity == "minute" and not (m15b.meta or {}).get("lookml_timeframe")
+
+
+def test_lookml_collision_minute15_bucket_roundtrips():
+    """A minute15 collision dim exports a faithful 15-min bucket (not minute) and round-trips.
+
+    sidemantic has no 15-min grain (stores minute15 as `minute` + meta), so the standalone
+    collision form must emit an explicit N-minute bucket that the importer recovers back to
+    grain=minute + meta['lookml_timeframe']='minute15', stable across repeated round-trips.
+    """
+    import tempfile
+
+    from sidemantic import Dimension, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="v",
+            table="t",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(
+                    name="started_date", type="time", granularity="day", sql="a", meta={"lookml_timeframe": "date"}
+                ),
+                Dimension(
+                    name="started_minute15",
+                    type="time",
+                    granularity="minute",
+                    sql="b",
+                    meta={"lookml_timeframe": "minute15"},
+                ),
+            ],
+        )
+    )
+    adapter = LookMLAdapter()
+    out = tempfile.mktemp(suffix=".lkml")
+    adapter.export(graph, out)
+    text = open(out).read()
+    # Faithful 15-minute bucket via PORTABLE FLOOR (not DuckDB-only //), not DATE_TRUNC('minute').
+    assert "FLOOR(" in text and " / 15) * 15" in text and "//" not in text
+    g = adapter.parse(Path(out))
+    m15 = g.get_model("v").get_dimension("started_minute15")
+    assert m15.granularity == "minute" and (m15.meta or {}).get("lookml_timeframe") == "minute15"
+    # The recovered dim KEEPS the bucket expression (so QUERIES bucket 15-min, not minute).
+    assert "FLOOR(" in (m15.sql or "")
+    # second round-trip stays stable (no nested bucket)
+    out2 = tempfile.mktemp(suffix=".lkml")
+    adapter.export(g, out2)
+    assert "FLOOR(EXTRACT(MINUTE FROM DATE_TRUNC('hour'" not in open(out2).read()  # no FLOOR(...bucket...)
+    m15b = adapter.parse(Path(out2)).get_model("v").get_dimension("started_minute15")
+    assert m15b.granularity == "minute" and (m15b.meta or {}).get("lookml_timeframe") == "minute15"
+
+
+def test_lookml_collision_minute15_query_buckets_by_15_minutes():
+    """A round-tripped minute15 collision dim must GROUP queries by 15-minute buckets, not minute."""
+    import tempfile
+
+    import duckdb
+
+    from sidemantic import Dimension, Metric, Model, SemanticLayer
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="v",
+            table="v",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(
+                    name="started_date", type="time", granularity="day", sql="a", meta={"lookml_timeframe": "date"}
+                ),
+                Dimension(
+                    name="started_minute15",
+                    type="time",
+                    granularity="minute",
+                    sql="ts",
+                    meta={"lookml_timeframe": "minute15"},
+                ),
+            ],
+            metrics=[Metric(name="cnt", agg="count")],
+        )
+    )
+    adapter = LookMLAdapter()
+    out = tempfile.mktemp(suffix=".lkml")
+    adapter.export(graph, out)
+    g = adapter.parse(Path(out))
+    layer = SemanticLayer(auto_register=False)
+    for m in g.models.values():
+        layer.add_model(m)
+    sql = layer.compile(dimensions=["v.started_minute15"], metrics=["v.cnt"])
+    con = duckdb.connect()
+    con.execute(
+        "create table v as select 1 id, TIMESTAMP '2024-01-01 10:07' a, TIMESTAMP '2024-01-01 10:07' ts "
+        "union all select 2, TIMESTAMP '2024-01-01 10:11', TIMESTAMP '2024-01-01 10:11' "
+        "union all select 3, TIMESTAMP '2024-01-01 10:22', TIMESTAMP '2024-01-01 10:22'"
+    )
+    import datetime
+
+    rows = sorted(con.execute(sql).fetchall())
+    assert rows == [(datetime.datetime(2024, 1, 1, 10, 0), 2), (datetime.datetime(2024, 1, 1, 10, 15), 1)]
+
+
+def test_lookml_collision_time_dim_multiword_timeframe_suffix_recovered():
+    """A collision standalone dim with a MULTI-WORD timeframe suffix (time_of_day) recovers.
+
+    The grain suffix is matched against the longest known LookML timeframe, not just the
+    text after the last underscore, so started_time_of_day round-trips as a time dimension
+    (gran=hour), not a renamed categorical.
+    """
+    import tempfile
+
+    from sidemantic import Dimension, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="v",
+            table="t",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(
+                    name="started_date", type="time", granularity="day", sql="a", meta={"lookml_timeframe": "date"}
+                ),
+                Dimension(
+                    name="started_time_of_day",
+                    type="time",
+                    granularity="hour",
+                    sql="b",
+                    meta={"lookml_timeframe": "time_of_day"},
+                ),
+            ],
+        )
+    )
+    adapter = LookMLAdapter()
+    # Repeated round-trips must be STABLE: the recovered timeframe is stored in meta so
+    # the next export strips the _time_of_day suffix instead of renaming the field.
+    g = graph
+    for _ in range(3):
+        out = tempfile.mktemp(suffix=".lkml")
+        adapter.export(g, out)
+        g = adapter.parse(Path(out))
+        grains = {d.name: d.granularity for d in g.get_model("v").dimensions if d.type == "time"}
+        assert grains == {"started_date": "day", "started_time_of_day": "hour"}
+
+
+def test_lookml_same_prefix_time_dims_roundtrip_names_and_grains_losslessly():
+    """Collision time dims must round-trip with EXACT names AND granularities.
+
+    Two same-prefix time dims on different sources can't both be dimension_groups, so
+    the extra one is exported as a standalone DATE_TRUNC dimension. Both the field name
+    and the granularity must survive re-import (no started_2_minute rename, no grain
+    loss), and a second round-trip must be stable (no nested DATE_TRUNC).
+    """
+    import tempfile
+
+    from sidemantic import Dimension, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="v",
+            table="t",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id", primary_key=True),
+                Dimension(name="started_hour", type="time", granularity="hour", sql="started_at"),
+                Dimension(name="started_minute", type="time", granularity="minute", sql="completed_at"),
+            ],
+        )
+    )
+    adapter = LookMLAdapter()
+    out1 = tempfile.mktemp(suffix=".lkml")
+    adapter.export(graph, out1)
+    g2 = adapter.parse(Path(out1))
+    grains = {d.name: d.granularity for d in g2.get_model("v").dimensions if d.type == "time"}
+    assert grains == {"started_hour": "hour", "started_minute": "minute"}
+
+    # Second round-trip is stable and never nests DATE_TRUNC.
+    out2 = tempfile.mktemp(suffix=".lkml")
+    adapter.export(g2, out2)
+    assert "DATE_TRUNC('minute', DATE_TRUNC" not in open(out2).read()
+    assert "DATE_TRUNC('hour', DATE_TRUNC" not in open(out2).read()
+    grains2 = {d.name: d.granularity for d in adapter.parse(Path(out2)).get_model("v").dimensions if d.type == "time"}
+    assert grains2 == {"started_hour": "hour", "started_minute": "minute"}
+
+
+def test_lookml_handwritten_date_trunc_dimension_not_hijacked():
+    """A hand-written DATE_TRUNC dimension must keep its name/type, not be turned into a time group.
+
+    The DATE_TRUNC granularity recovery is only for the collision-export form (name ends
+    in _<grain>); an arbitrary-named dim like `created` stays categorical (no rename to
+    created_date), and an unsupported dialect grain like 'isoweek' must not crash parsing.
+    """
+    import tempfile
+
+    # Unsupported grain must not raise a granularity validation error.
+    graph = _parse_lkml(
+        """
+view: v {
+  sql_table_name: t ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: w { type: date_time  sql: DATE_TRUNC('isoweek', ${TABLE}.created_at) ;; }
+}
+"""
+    )
+    w = graph.get_model("v").get_dimension("w")
+    assert w.type == "categorical" and w.granularity is None
+
+    # Arbitrary-named DATE_TRUNC dim keeps its exact name across a round-trip.
+    graph2 = _parse_lkml(
+        """
+view: v {
+  sql_table_name: t ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: created { type: date_time  sql: DATE_TRUNC('day', ${TABLE}.created_at) ;; }
+}
+"""
+    )
+    assert graph2.get_model("v").get_dimension("created").type == "categorical"
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph2, out)
+    names = {d.name for d in LookMLAdapter().parse(Path(out)).get_model("v").dimensions}
+    assert "created" in names and "created_date" not in names
+
+    # A hand-written dim whose NAME does carry a timeframe suffix (created_date) but also
+    # has dimension-level properties (hidden/label) is NOT the collision-export form, so
+    # it stays a plain dimension and those properties survive the round-trip.
+    graph3 = _parse_lkml(
+        """
+view: v {
+  sql_table_name: t ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: created_date { type: date_time  hidden: yes  label: "Created"  sql: DATE_TRUNC('day', ${TABLE}.created_at) ;; }
+}
+"""
+    )
+    assert graph3.get_model("v").get_dimension("created_date").type == "categorical"
+    out3 = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph3, out3)
+    text3 = open(out3).read()
+    assert "created_date" in {d.name for d in LookMLAdapter().parse(Path(out3)).get_model("v").dimensions}
+    assert "hidden: yes" in text3 and "Created" in text3  # properties preserved
+
+
+def test_lookml_split_time_group_names_avoid_existing_bases():
+    """A synthetic split-group name must not collide with an existing time-group base."""
+    import re
+    import tempfile
+
+    from sidemantic import Dimension, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="v",
+            table="t",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(name="started_date", type="time", granularity="day", sql="{model}.a"),
+                Dimension(name="started_hour", type="time", granularity="hour", sql="{model}.b"),
+                Dimension(name="started_2_hour", type="time", granularity="hour", sql="{model}.c"),
+            ],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    names = re.findall(r"dimension_group: (\w+)", open(out).read())
+    assert len(names) == len(set(names)), f"colliding dimension_group names: {names}"
+
+
+def test_lookml_native_time_named_second_grain_roundtrips():
+    """A native second-grain dim named *_time must export as `time` so the name round-trips."""
+    import tempfile
+
+    from sidemantic import Dimension, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="v",
+            table="t",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(name="created_time", type="time", granularity="second", sql="{model}.created_at"),
+            ],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    names = {d.name for d in LookMLAdapter().parse(Path(out)).get_model("v").dimensions if d.type == "time"}
+    assert "created_time" in names  # not renamed to created_second
+
+
+def test_lookml_time_and_second_timeframes_no_duplicate_export():
+    """A group with both `time` and `second` (both -> second grain) must not emit duplicate timeframes."""
+    import re
+    import tempfile
+
+    graph = _parse_lkml(
+        """
+view: v {
+  sql_table_name: t ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension_group: created {
+    type: time
+    timeframes: [time, second, hour]
+    sql: ${TABLE}.created_at ;;
+  }
+}
+"""
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    text = open(out).read()
+    timeframes = re.search(r"timeframes:\s*\[([^\]]*)\]", text).group(1)
+    parts = [p.strip() for p in timeframes.split(",")]
+    assert len(parts) == len(set(parts)), f"duplicate timeframes exported: {parts}"
+    # Both `time` and `second` are preserved (no collapse/drop) via the stored
+    # original timeframe, so re-import keeps every member.
+    names = {d.name for d in LookMLAdapter().parse(Path(out)).get_model("v").dimensions if d.type == "time"}
+    assert {"created_time", "created_second", "created_hour"} <= names
+
+
 def test_lookml_view_without_table_defaults_to_view_name():
     """A view with no sql_table_name/derived_table should default its table to the view name."""
     from sidemantic import SemanticLayer

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { addDays, bucketOffset, endOfBucket, previousRange } from "./time";
+import { addDays, bucketOffset, endOfBucket, previousRange, previousYearRange } from "./time";
 
 describe("bucketOffset", () => {
   test("counts whole grain units between two bucket starts", () => {
@@ -27,6 +27,47 @@ describe("previousRange", () => {
       from: "2024-01-01",
       to: "2024-01-07",
     });
+  });
+});
+
+describe("previousYearRange", () => {
+  test("shifts both endpoints back one calendar year, same month/day", () => {
+    expect(previousYearRange({ from: "2024-03-01", to: "2024-03-31" })).toEqual({
+      from: "2023-03-01",
+      to: "2023-03-31",
+    });
+  });
+
+  test("clamps Feb 29 to Feb 28 when the prior year isn't a leap year", () => {
+    expect(previousYearRange({ from: "2024-02-01", to: "2024-02-29" })).toEqual({
+      from: "2023-02-01",
+      to: "2023-02-28",
+    });
+  });
+
+  test("keeps Feb 29 when the prior year is a leap year", () => {
+    expect(previousYearRange({ from: "2025-02-01", to: "2025-02-28" })).toEqual({
+      from: "2024-02-01",
+      to: "2024-02-28",
+    });
+  });
+
+  // Weekly-grain YoY is the alignment edge case: a year isn't a whole number of weeks, so the
+  // previous-year window's first bucket sits at a fractional-week offset. bucketOffset must still
+  // map each current week onto the nearest previous-year week (rounding), keeping the overlay aligned.
+  test("weekly bucketOffset aligns a previous-year series to the current one", () => {
+    const range = { from: "2024-01-01", to: "2024-01-28" };
+    const prev = previousYearRange(range); // { from: "2023-01-01", to: "2023-01-28" }
+    expect(prev).toEqual({ from: "2023-01-01", to: "2023-01-28" });
+
+    // Current weekly buckets and the previous-year weekly buckets, offset from each series' first.
+    const curWeeks = ["2024-01-01", "2024-01-08", "2024-01-15", "2024-01-22"];
+    const prevWeeks = ["2023-01-02", "2023-01-09", "2023-01-16", "2023-01-23"];
+    const curOffsets = curWeeks.map((w) => bucketOffset(curWeeks[0], w, "week"));
+    const prevOffsets = prevWeeks.map((w) => bucketOffset(prevWeeks[0], w, "week"));
+    // Each period's buckets are 0..3, so aligning by offset lines them up one-to-one.
+    expect(curOffsets).toEqual([0, 1, 2, 3]);
+    expect(prevOffsets).toEqual([0, 1, 2, 3]);
   });
 });
 

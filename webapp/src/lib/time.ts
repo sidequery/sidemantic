@@ -54,6 +54,26 @@ export function previousRange(range: DateRange): DateRange {
   return { from, to };
 }
 
+/** Shift an ISO date back one calendar year, keeping the same month/day. Feb 29 has no counterpart
+ *  in a non-leap year, so it clamps to Feb 28 (matching how spreadsheets/BI tools handle the leap
+ *  day in year-over-year comparisons). */
+function isoYearAgo(value: string): string {
+  const date = parseISO(value);
+  const year = date.getUTCFullYear() - 1;
+  const month = date.getUTCMonth();
+  const day = date.getUTCDate();
+  // Feb 29 -> Feb 28 when the prior year isn't a leap year.
+  const lastOfMonth = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+  return isoDate(new Date(Date.UTC(year, month, Math.min(day, lastOfMonth))));
+}
+
+/** The same month/day span one year earlier, for year-over-year comparison. Both endpoints shift
+ *  back a year independently (clamping Feb 29), so the window keeps its calendar alignment rather
+ *  than its exact day count. */
+export function previousYearRange(range: DateRange): DateRange {
+  return { from: isoYearAgo(range.from), to: isoYearAgo(range.to) };
+}
+
 export type DatePreset = { key: string; label: string; days: number };
 
 export const DATE_PRESETS: DatePreset[] = [

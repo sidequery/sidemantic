@@ -9,6 +9,9 @@ const base: ExplorerState = {
   filters: {},
   grain: "month",
   dateRange: undefined,
+  contextColumn: "none",
+  comparison: "previous",
+  comparisonRange: undefined,
   pivotDims: [],
   pivotMetrics: [],
 };
@@ -58,12 +61,49 @@ describe("decodeState", () => {
     expect(decodeState("from=2024-1-1&to=2024-01-31", base).dateRange).toBeUndefined();
   });
 
+  test("a pre-E2/E3 URL (no ctx/cmp params) decodes to the defaults", () => {
+    const next = decodeState("view=explore&grain=month&metric=orders.revenue", base);
+    expect(next.contextColumn).toBe("none");
+    expect(next.comparison).toBe("previous");
+    expect(next.comparisonRange).toBeUndefined();
+  });
+
+  test("reads the context column and comparison mode", () => {
+    const next = decodeState("ctx=deltaPct&cmp=year", base);
+    expect(next.contextColumn).toBe("deltaPct");
+    expect(next.comparison).toBe("year");
+  });
+
+  test("ignores an unknown context column or comparison mode", () => {
+    const next = decodeState("ctx=bogus&cmp=galaxy", base);
+    expect(next.contextColumn).toBe("none");
+    expect(next.comparison).toBe("previous");
+  });
+
+  test("reads a custom comparison range only when comparison is custom", () => {
+    const custom = decodeState("cmp=custom&cfrom=2023-01-01&cto=2023-01-31", base);
+    expect(custom.comparison).toBe("custom");
+    expect(custom.comparisonRange).toEqual({ from: "2023-01-01", to: "2023-01-31" });
+    // A custom range attached to a non-custom mode is ignored.
+    const ignored = decodeState("cmp=year&cfrom=2023-01-01&cto=2023-01-31", base);
+    expect(ignored.comparisonRange).toBeUndefined();
+  });
+
+  test("encodeState omits default context/comparison so links stay short and back-compatible", () => {
+    const params = new URLSearchParams(encodeState(base));
+    expect(params.has("ctx")).toBe(false);
+    expect(params.has("cmp")).toBe(false);
+  });
+
   test("round-trips a populated state through encodeState", () => {
     const populated: ExplorerState = {
       ...base,
       view: "pivot",
       grain: "week",
       dateRange: { from: "2024-01-01", to: "2024-03-31" },
+      contextColumn: "pctTotal",
+      comparison: "custom",
+      comparisonRange: { from: "2023-01-01", to: "2023-03-31" },
       filters: { "orders.status": ["completed"] },
       pivotDims: ["orders.country"],
       pivotMetrics: ["orders.revenue"],

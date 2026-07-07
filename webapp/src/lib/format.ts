@@ -73,3 +73,15 @@ export function formatDelta(current: number, previous: number | null | undefined
 export function sqlLiteral(value: string): string {
   return `'${value.replaceAll("'", "''")}'`;
 }
+
+/** Human summary of a dimension's filter for a pill, e.g. "is 3 values", "is not US",
+ *  "contains 'acme'". `label` is the dimension label; the caller prefixes it. */
+export function filterSummary(filter: { mode: "include" | "exclude" | "contains"; values: string[]; pattern?: string }): string {
+  if (filter.mode === "contains") return `contains ${sqlLiteral(filter.pattern ?? "")}`;
+  const { values } = filter;
+  const verb = filter.mode === "exclude" ? "is not" : "is";
+  if (values.length === 0) return verb; // transient empty state
+  if (values.length === 1) return `${verb} ${displayDimValue(values[0])}`;
+  if (values.length <= 2) return `${verb} ${values.map(displayDimValue).join(", ")}`;
+  return `${verb} ${values.length} values`;
+}

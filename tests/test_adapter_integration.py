@@ -93,6 +93,11 @@ class TestServerConnectionAdapterIntegration:
         class MockAdapter:
             dialect = "duckdb"
 
+            def cursor(self):
+                # Each query runs on a per-request cursor; the mock delegates to itself
+                # so adapter_calls still records the SQL the handler executes.
+                return self
+
             def execute(self, sql):
                 adapter_calls.append(sql)
                 return MockResult()
@@ -141,6 +146,11 @@ class TestServerConnectionAdapterIntegration:
         class MockAdapter:
             dialect = "duckdb"
 
+            def cursor(self):
+                # Each query runs on a per-request cursor; the mock delegates to itself
+                # so adapter_calls still records the SQL the handler executes.
+                return self
+
             def execute(self, sql):
                 adapter_calls.append(sql)
                 return MockResult()
@@ -185,6 +195,11 @@ class TestServerConnectionAdapterIntegration:
 
         class MockAdapter:
             dialect = "duckdb"
+
+            def cursor(self):
+                # Each query runs on a per-request cursor; the mock delegates to itself
+                # so adapter_calls still records the SQL the handler executes.
+                return self
 
             def execute(self, sql):
                 adapter_calls.append(sql)

@@ -9,6 +9,9 @@ type TimeSeriesChartProps = {
   comparison?: SeriesPoint[];
   formatValue: (value: number) => string;
   formatAxis?: (value: number) => string;
+  /** Render a raw bucket label (x value) for display — e.g. into the selected timezone. Identity
+   *  by default, so the UTC case is unchanged. */
+  formatLabel?: (label: string) => string;
   comparisonLabel?: string;
   /** Accessible summary for screen readers — the SVG is otherwise opaque to assistive tech. */
   ariaLabel?: string;
@@ -30,6 +33,7 @@ export function TimeSeriesChart({
   comparison,
   formatValue,
   formatAxis = formatValue,
+  formatLabel = (label) => label,
   comparisonLabel = "Previous",
   ariaLabel,
   onBrush,
@@ -146,7 +150,7 @@ export function TimeSeriesChart({
     ariaLabel ??
     (empty
       ? "Time series chart: not enough data to plot."
-      : `Time series chart, ${count} points from ${points[0].x} to ${points[count - 1].x}.`);
+      : `Time series chart, ${count} points from ${formatLabel(points[0].x)} to ${formatLabel(points[count - 1].x)}.`);
 
   return (
     <div className="relative border border-line bg-surface text-accent">
@@ -225,7 +229,7 @@ export function TimeSeriesChart({
             {points.map((point, index) =>
               index % labelEvery === 0 || index === count - 1 ? (
                 <text key={point.x} x={xAt(index)} y={HEIGHT - 8} textAnchor="middle" className="fill-faint font-mono text-[10px]">
-                  {point.x}
+                  {formatLabel(point.x)}
                 </text>
               ) : null,
             )}
@@ -238,7 +242,7 @@ export function TimeSeriesChart({
           className="pointer-events-none absolute top-8 z-20 -translate-x-1/2 whitespace-nowrap border border-line bg-surface px-2 py-1.5 text-2xs shadow-[var(--shadow)]"
           style={{ left: tooltipLeft }}
         >
-          <div className="mb-0.5 font-mono text-faint">{hoverCur.x}</div>
+          <div className="mb-0.5 font-mono text-faint">{formatLabel(hoverCur.x)}</div>
           <div className="flex items-center justify-between gap-3">
             <span className="text-muted">Current</span>
             <span className="font-mono tnum font-medium text-ink">{formatValue(hoverCur.y)}</span>

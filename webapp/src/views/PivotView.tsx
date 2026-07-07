@@ -64,7 +64,10 @@ export function PivotView() {
         ? previewRows({ dimensions: pivotDims, metrics: pivotMetrics }, baseFilters, 50)
         : pivotGroup(pivotMetrics, pivotDims, baseFilters, orderBy, 500)
       : null;
-  const { result, loading, error } = useQueryResult(backend, query);
+  // Stamp the selected timezone so any time-bucketed pivot dimension truncates in-zone server-side
+  // (elided when UTC, matching the pre-E4 request shape).
+  const tzQuery = query ? { ...query, timezone: state.timezone } : null;
+  const { result, loading, error } = useQueryResult(backend, tzQuery);
 
   const metricByRef = useMemo(() => new Map(allMetrics.map((m) => [m.ref, m])), [allMetrics]);
   const refByAlias = useMemo(() => {

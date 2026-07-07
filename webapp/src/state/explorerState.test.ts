@@ -9,6 +9,7 @@ const base: ExplorerState = {
   selectedMetric: "orders.revenue",
   filters: {},
   grain: "month",
+  timezone: "UTC",
   dateRange: undefined,
   contextColumn: "none",
   comparison: "previous",
@@ -100,6 +101,14 @@ describe("explorerReducer — filter actions", () => {
 describe("setContextColumn", () => {
   test("sets the leaderboard context column", () => {
     expect(explorerReducer(base, { type: "setContextColumn", column: "pctTotal" }).contextColumn).toBe("pctTotal");
+  });
+});
+
+describe("setTimezone", () => {
+  test("sets the timezone and leaves everything else intact", () => {
+    const next = explorerReducer(base, { type: "setTimezone", timezone: "America/New_York" });
+    expect(next.timezone).toBe("America/New_York");
+    expect(next).toEqual({ ...base, timezone: "America/New_York" });
   });
 });
 

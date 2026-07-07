@@ -13,6 +13,14 @@ const COMPARISONS = new Set<ComparisonMode>(["off", "previous", "year", "custom"
 // these values — the historical behavior — and freshly-default state produces the same short URL.
 const DEFAULT_CONTEXT: ContextColumn = "none";
 const DEFAULT_COMPARISON: ComparisonMode = "previous";
+const DEFAULT_TIMEZONE = "UTC";
+
+// True for a syntactically-plausible IANA zone id ("UTC", "America/New_York", "Etc/GMT+5"). Guards
+// a hand-edited ?tz from injecting arbitrary text; the exact set is validated when the selector is
+// populated, but any value here still round-trips a link that another client can re-validate.
+function isTimezoneId(value: string | null): value is string {
+  return value != null && /^[A-Za-z][A-Za-z0-9/_+-]{0,63}$/.test(value);
+}
 
 function parseJson(value: string | null): unknown {
   if (!value) return undefined;
@@ -79,6 +87,7 @@ export function encodeState(state: ExplorerState): string {
   if (state.model) params.set("model", state.model);
   if (state.selectedMetric) params.set("metric", state.selectedMetric);
   if (state.grain) params.set("grain", state.grain);
+  if (state.timezone && state.timezone !== DEFAULT_TIMEZONE) params.set("tz", state.timezone);
   if (state.dateRange) {
     params.set("from", state.dateRange.from);
     params.set("to", state.dateRange.to);
@@ -108,6 +117,9 @@ export function decodeState(search: string, base: ExplorerState): ExplorerState 
   if (metric) next.selectedMetric = metric;
   const grain = params.get("grain");
   if (grain && GRAINS.has(grain)) next.grain = grain as ExplorerState["grain"];
+  // Missing ?tz decodes to UTC (the base), keeping pre-E4 links unchanged.
+  const tz = params.get("tz");
+  if (isTimezoneId(tz)) next.timezone = tz;
 
   const from = params.get("from");
   const to = params.get("to");

@@ -8,6 +8,7 @@ import { ErrorBoundary } from "./components/ErrorBoundary";
 import { DateRangeControl } from "./components/DateRangeControl";
 import { FilterPill } from "./components/FilterPill";
 import { GrainSelect } from "./components/GrainSelect";
+import { TimezoneSelect } from "./components/TimezoneSelect";
 import { EmptyState, ErrorState } from "./components/States";
 import { ThemeToggle } from "./components/ThemeToggle";
 import { ViewSwitcher } from "./components/ViewSwitcher";
@@ -122,6 +123,7 @@ function Shell() {
         onComparisonChange={(comparison, range) => dispatch({ type: "setComparison", comparison, range })}
       />
       <GrainSelect grain={state.grain} options={grains} disabled={!hasTime} onChange={(grain) => dispatch({ type: "setGrain", grain })} />
+      <TimezoneSelect timezone={state.timezone} disabled={!hasTime} onChange={(timezone) => dispatch({ type: "setTimezone", timezone })} />
       {dirty ? (
         <button
           type="button"

@@ -16,6 +16,8 @@ type MetricTimeSeriesProps = {
   loading?: boolean;
   /** Short label for the comparison window ("Prev period" / "Prev year" / a custom range). */
   comparisonLabel?: string;
+  /** Render a raw UTC bucket label into the selected timezone (axis ticks + tooltip). */
+  formatLabel?: (label: string) => string;
   onBrush: (range: BrushRange | null) => void;
 };
 
@@ -31,6 +33,7 @@ export function MetricTimeSeries({
   hasTime,
   loading,
   comparisonLabel = "Prev period",
+  formatLabel,
   onBrush,
 }: MetricTimeSeriesProps) {
   const hint = { format: metric.format, type: metric.type };
@@ -55,6 +58,7 @@ export function MetricTimeSeries({
           comparison={comparisonPoints}
           formatValue={(value) => formatValue(value, hint)}
           formatAxis={(value) => formatCompact(value, hint)}
+          formatLabel={formatLabel}
           comparisonLabel={comparisonLabel}
           ariaLabel={ariaSummary}
           onBrush={onBrush}

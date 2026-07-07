@@ -76,6 +76,12 @@ class Model(BaseModel):
     # Arbitrary metadata (ai_context, custom_extensions, etc.)
     meta: dict[str, Any] | None = Field(None, description="Arbitrary metadata for extensions")
 
+    # Access control and row-level security policy. When set, queries touching this model are
+    # subject to an access gate and per-request row filters enforced in the compile/query path.
+    security: SecurityPolicy | None = Field(
+        None, description="Model-level access control and row-level security policy"
+    )
+
     def __init__(self, **data):
         super().__init__(**data)
 

@@ -1,105 +1,155 @@
-"""Security policy definitions - model access control and row-level filtering.
+"""Security policies for models: access control and row-level filtering.
 
-This module defines ONLY the data model and a pure rendering helper for security
-policies. It performs NO enforcement: nothing here is wired into the query path.
-A separate follow-up work item builds enforcement on top of these definitions, so
-the field names and semantics documented below are load-bearing.
+A ``SecurityPolicy`` attaches to a ``Model`` and declares two independent controls:
+
+- ``access``: a boolean gate. Either a literal ``bool`` or a Jinja boolean
+  expression over the ``user`` namespace (e.g. ``"{{ user.role == 'admin' }}"``).
+  A falsy result denies the whole query touching that model.
+- ``row_filters``: a list of SQL filter templates rendered per-request over the
+  same ``user`` namespace (e.g. ``"tenant_id = {{ user.tenant_id }}"``). Each is
+  AND-ed into that model's own CTE so rows are scoped before joins/aggregation.
+
+The ONLY template namespace is ``user``. Rendering uses ``StrictUndefined`` so a
+row filter referencing an attribute the caller did not supply raises rather than
+silently rendering an empty (and therefore unscoped) predicate.
 """
 
+from __future__ import annotations
+
+from jinja2 import Environment, StrictUndefined, TemplateError, UndefinedError
 from pydantic import BaseModel, Field
 
-# NOTE: SecurityError lives in sidemantic.core.semantic_layer (next to the other custom
-# errors). It is imported lazily inside render_row_filter rather than at module level,
-# because semantic_layer pulls in the SQL generator / rust bridge; importing it eagerly
-# here would drag those into every `from sidemantic import Model` (Model imports this
-# module), which must stay lightweight for Pyodide.
+# A dedicated environment for security templates. It uses StrictUndefined so any
+# reference to an undefined `user` attribute raises instead of rendering empty
+# (an empty row filter would silently widen access). Uses the same delimiters as
+# the SQL template renderer to stay consistent with the rest of the codebase.
+_security_env = Environment(
+    variable_start_string="{{",
+    variable_end_string="}}",
+    block_start_string="{%",
+    block_end_string="%}",
+    comment_start_string="{#",
+    comment_end_string="#}",
+    autoescape=False,
+    undefined=StrictUndefined,
+)
 
 
 class SecurityPolicy(BaseModel):
-    """Security policy attached to a model via ``Model.security``.
+    """Model-level security policy: access gate plus row-level filters.
 
-    A security policy declares who may query a model (``access``) and how the
-    model's rows must be filtered per user (``row_filters``). Both use Jinja
-    templates whose only namespace is ``user`` - a mapping of the querying user's
-    attributes (e.g. ``{{ user.region }}``, ``{{ user.role }}``).
-
-    Intended enforcement semantics (implemented by the future enforcement layer,
-    NOT here):
-
-    - ``access`` is evaluated as a Jinja expression over the ``user`` namespace.
-      A falsy result means the model is not queryable by that user. A plain bool
-      is allowed as a constant (``True`` = always allowed, ``False`` = never).
-    - Each entry in ``row_filters`` is a SQL fragment template. At query time the
-      rendered fragments are ANDed together and injected into the model's WHERE
-      clause *inside that model's CTE*, so they scope the model's own rows before
-      any join or aggregation.
-    - ``user`` is the ONLY template namespace exposed to these templates.
-    - Deny-by-default: if a model carries a ``security`` block and a query supplies
-      no user attributes, the enforcement layer raises (a query cannot silently
-      bypass a declared policy). Undefined attribute references likewise raise.
-
-    Example:
-        SecurityPolicy(
-            access="user.role in ['analyst', 'admin']",
-            row_filters=["region = '{{ user.region }}'"],
-        )
+    Attributes:
+        access: Whether the model may be queried. A literal ``bool`` or a Jinja
+            boolean expression over ``user`` (rendered as ``{{ (EXPR) }}`` and
+            interpreted truthy/falsy). Defaults to ``True`` (no access restriction).
+        row_filters: SQL filter templates rendered per-request over ``user`` and
+            AND-ed into the model's CTE (row-level security). Defaults to empty.
     """
 
-    access: str | bool = Field(
-        default=True,
-        description=(
-            "Jinja expression over the `user` namespace deciding model queryability; "
-            "a falsy result means the model is not queryable. A plain bool is a constant "
-            "(True = always allowed, False = never)."
-        ),
-    )
+    access: str | bool = Field(default=True, description="Access gate: bool or Jinja boolean expression over `user`")
     row_filters: list[str] = Field(
         default_factory=list,
-        description=(
-            "SQL fragment templates with Jinja `user` refs (e.g. \"region = '{{ user.region }}'\"). "
-            "Rendered fragments are ANDed into the model's WHERE clause inside its CTE at query time."
-        ),
+        description="Row-level filter templates rendered over `user` and AND-ed into the model CTE",
     )
 
     def __hash__(self) -> int:
         return hash((self.access, tuple(self.row_filters)))
 
 
+def _sql_escape_attributes(value):
+    """Recursively SQL-escape string values so they cannot break out of a quoted literal.
+
+    Doubles single quotes in strings (the standard SQL escape). Dicts and lists are walked
+    so nested ``user`` attribute access stays escaped. Non-string scalars pass through
+    unchanged so numeric/boolean predicates render as-is.
+    """
+    if isinstance(value, str):
+        return value.replace("'", "''")
+    if isinstance(value, dict):
+        return {key: _sql_escape_attributes(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return type(value)(_sql_escape_attributes(item) for item in value)
+    return value
+
+
 def render_row_filter(filter_template: str, user_attributes: dict) -> str:
-    """Render a single row-filter template against a user's attributes.
+    """Render a row-filter template against user attributes.
 
-    Pure helper: it renders one ``row_filters`` template and returns the resulting
-    SQL fragment. It performs no escaping, quoting, or validation of the injected
-    values - that is the responsibility of the enforcement layer. This helper is
-    NOT wired into the query path; it exists so the enforcement work item can reuse
-    a single, tested rendering path.
-
-    The user's attributes are exposed under the ``user`` namespace only, matching
-    the documented ``SecurityPolicy`` semantics. Rendering uses StrictUndefined, so
-    any reference to an attribute not present in ``user_attributes`` raises
-    ``SecurityError`` rather than silently rendering an empty string.
+    The only namespace exposed is ``user``. Rendering uses ``StrictUndefined`` so
+    that a filter referencing an attribute the caller did not supply raises a
+    ``SecurityError`` rather than rendering an empty (unscoped) predicate.
 
     Args:
-        filter_template: A single ``row_filters`` entry, e.g. "region = '{{ user.region }}'".
-        user_attributes: Mapping of the querying user's attributes, exposed as ``user``.
+        filter_template: SQL filter template, e.g. ``"tenant_id = {{ user.tenant_id }}"``.
+        user_attributes: Mapping bound to the ``user`` namespace.
 
     Returns:
         The rendered SQL fragment.
 
     Raises:
-        SecurityError: If the template references an undefined user attribute, or has
-            a Jinja syntax error.
+        SecurityError: If the template references an undefined ``user`` attribute
+            or is otherwise malformed.
     """
-    # Reuse the SQL-friendly Jinja environment from the template module rather than
-    # duplicating its delimiter/autoescape configuration.
-    from jinja2 import StrictUndefined, TemplateError
+    # Imported lazily to avoid a circular import (semantic_layer imports this module).
+    from sidemantic.core.semantic_layer import SecurityError
+
+    try:
+        template = _security_env.from_string(filter_template)
+        # SQL-escape string attribute values before interpolation. Row filter templates
+        # commonly wrap the value in single quotes (e.g. "email = '{{ user.email }}'"); a raw
+        # value like "x' OR '1'='1" would otherwise break out of the literal and inject a
+        # boolean condition. Doubling embedded single quotes keeps the value a single quoted
+        # literal after sqlglot re-parses/re-serializes the fragment. Non-string values
+        # (ints, bools) are left untouched so numeric predicates render correctly.
+        safe_user = _sql_escape_attributes(user_attributes if user_attributes is not None else {})
+        return template.render(user=safe_user)
+    except UndefinedError as exc:
+        raise SecurityError(
+            f"Row filter {filter_template!r} references an undefined user attribute: {exc}. "
+            "Provide the attribute in user_attributes or remove it from the filter."
+        ) from exc
+    except TemplateError as exc:
+        raise SecurityError(f"Row filter {filter_template!r} failed to render: {exc}") from exc
+
+
+def evaluate_access(access: str | bool, user_attributes: dict | None) -> bool:
+    """Evaluate a model access gate to a boolean.
+
+    Args:
+        access: Literal ``bool`` (used directly) or a Jinja boolean expression
+            over ``user``, compiled and evaluated to a truthy/falsy value.
+        user_attributes: Mapping bound to the ``user`` namespace. ``None`` is
+            treated as an empty mapping for evaluation purposes (deny-by-default
+            for missing attributes is enforced by the caller, not here).
+
+    Returns:
+        The boolean result of the gate.
+
+    Raises:
+        SecurityError: If the expression references an undefined ``user`` attribute
+            or is otherwise malformed.
+    """
+    if isinstance(access, bool):
+        return access
 
     from sidemantic.core.semantic_layer import SecurityError
-    from sidemantic.core.template import SQLTemplateRenderer
 
-    env = SQLTemplateRenderer().env.overlay(undefined=StrictUndefined)
+    # Accept both a bare Jinja expression ("user.role == 'admin'") and a fully wrapped
+    # variable ("{{ user.role == 'admin' }}"). compile_expression wants the bare form, so
+    # strip a single enclosing {{ ... }} when present.
+    expr_source = access.strip()
+    if expr_source.startswith("{{") and expr_source.endswith("}}"):
+        expr_source = expr_source[2:-2].strip()
+
     try:
-        template = env.from_string(filter_template)
-        return template.render(user=user_attributes)
-    except TemplateError as e:
-        raise SecurityError(f"Failed to render row filter {filter_template!r}: {e}") from e
+        # compile_expression evaluates a single Jinja expression and returns its
+        # native Python value, so `user.role == 'admin'` yields a real bool.
+        expr = _security_env.compile_expression(expr_source)
+        return bool(expr(user=user_attributes if user_attributes is not None else {}))
+    except UndefinedError as exc:
+        raise SecurityError(
+            f"Access expression {access!r} references an undefined user attribute: {exc}. "
+            "Provide the attribute in user_attributes."
+        ) from exc
+    except TemplateError as exc:
+        raise SecurityError(f"Access expression {access!r} failed to evaluate: {exc}") from exc

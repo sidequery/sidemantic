@@ -120,11 +120,12 @@ def test_render_row_filter_undefined_attr_raises():
 
 
 def test_render_row_filter_renders_quote_containing_value():
-    """A value containing a quote renders literally.
+    """A value containing a quote is SQL-escaped so it cannot break out of the literal.
 
-    render_row_filter does NOT escape, quote, or validate values - escaping/validation
-    is the enforcement layer's responsibility. This test only asserts the template
-    renders without error and substitutes the raw value.
+    render_row_filter doubles embedded single quotes (the standard SQL escape) before
+    interpolation, so a value like ``O'Brien`` renders as a single quoted literal
+    ``'O''Brien'`` rather than terminating the string early (which would enable
+    injection). Non-string values pass through untouched.
     """
     rendered = render_row_filter("name = '{{ user.name }}'", {"name": "O'Brien"})
-    assert rendered == "name = 'O'Brien'"
+    assert rendered == "name = 'O''Brien'"

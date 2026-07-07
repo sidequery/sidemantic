@@ -38,6 +38,7 @@ __all__ = [
     "RefreshKey",
     "RefreshResult",
     "Relationship",
+    "SecurityError",
     "SecurityPolicy",
     "Segment",
     "SemanticLayer",
@@ -66,4 +67,8 @@ def __getattr__(name):  # Lazy import to avoid importing duckdb on package impor
         from sidemantic.dashboard import DashboardSpecError  # type: ignore
 
         return DashboardSpecError
+    if name == "SecurityError":
+        from sidemantic.core.semantic_layer import SecurityError  # type: ignore
+
+        return SecurityError
     raise AttributeError(name)

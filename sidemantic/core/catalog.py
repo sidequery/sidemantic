@@ -65,7 +65,7 @@ def get_postgres_type_for_metric(agg: str) -> str:
         return "NUMERIC"  # Safe default
 
 
-def get_catalog_metadata(graph: SemanticGraph, schema: str = "public") -> dict:
+def get_catalog_metadata(graph: SemanticGraph, schema: str = "public", enforce_visibility: bool = False) -> dict:
     """Export semantic layer as Postgres-compatible catalog metadata.
 
     This generates metadata that can be used to populate information_schema
@@ -80,6 +80,8 @@ def get_catalog_metadata(graph: SemanticGraph, schema: str = "public") -> dict:
     Args:
         graph: Semantic graph to export
         schema: Schema name to use (default: 'public')
+        enforce_visibility: When True, omit dimensions/metrics whose ``public=False`` from
+            the exported columns (default: False)
 
     Returns:
         Dictionary containing:
@@ -171,6 +173,10 @@ def get_catalog_metadata(graph: SemanticGraph, schema: str = "public") -> dict:
             if dim.name == model.primary_key:
                 continue
 
+            # Omit non-public dimensions when visibility enforcement is on.
+            if enforce_visibility and not dim.public:
+                continue
+
             data_type = get_postgres_type_for_dimension(dim.type, dim.granularity)
 
             col_meta = {
@@ -203,6 +209,10 @@ def get_catalog_metadata(graph: SemanticGraph, schema: str = "public") -> dict:
         # Key design: metrics appear as regular columns that can be SELECT'd
         # The semantic layer handles the aggregation behind the scenes
         for metric in model.metrics:
+            # Omit non-public metrics when visibility enforcement is on.
+            if enforce_visibility and not metric.public:
+                continue
+
             data_type = get_postgres_type_for_metric(metric.agg)
 
             col_meta = {

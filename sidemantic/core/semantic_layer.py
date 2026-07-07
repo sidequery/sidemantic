@@ -27,7 +27,7 @@ class SecurityError(Exception):
 
     Covers denied model access (falsy ``access`` expression), missing user attributes under
     deny-by-default, and failures rendering a row-filter template (e.g. an undefined ``user``
-    attribute reference). Not raised anywhere yet - enforcement is a separate work item.
+    attribute reference).
     """
 
 
@@ -75,6 +75,7 @@ class SemanticLayer:
         default_limit: int | None = None,
         max_limit: int | None = None,
         allow_non_additive_unsafe: bool = False,
+        enforce_visibility: bool = False,
     ):
         """Initialize semantic layer.
 
@@ -115,6 +116,9 @@ class SemanticLayer:
                 at query time for metrics that declare a non_additive_dimension. The generator
                 has no semi-additive handling, so such metrics are over-aggregated (wrong)
                 results; this flag opts into that behavior explicitly (default: False).
+            enforce_visibility: When True, requesting a dimension/metric whose ``public=False``
+                raises during compile, and catalog/introspection listings omit non-public
+                fields. Defaults to False so library users are unaffected.
         """
         from sidemantic.db.base import BaseDatabaseAdapter
 
@@ -138,6 +142,7 @@ class SemanticLayer:
         self.default_limit = default_limit
         self.max_limit = max_limit
         self.allow_non_additive_unsafe = allow_non_additive_unsafe
+        self.enforce_visibility = enforce_visibility
         self._strict_rust_sql_generator_entrypoint = is_strict_for("sql_generator_entrypoint")
         self._strict_rust_query_validation = is_strict_for("semantic_core_query_validation")
         if engine == "python":
@@ -624,6 +629,7 @@ class SemanticLayer:
         post_process: str | None = None,
         timezone: str | None = None,
         with_totals: bool = False,
+        user_attributes: dict | None = None,
     ):
         """Execute a query against the semantic layer.
 
@@ -637,6 +643,10 @@ class SemanticLayer:
             offset: Number of rows to skip
             ungrouped: If True, return raw rows without aggregation (no GROUP BY)
             parameters: Template parameters for Jinja2 rendering
+            user_attributes: Per-request attributes bound to the ``user`` namespace when
+                enforcing model security policies (access gates and row-level filters). A
+                model with a declared security policy but ``user_attributes is None`` is
+                denied (deny-by-default); pass ``{}`` for an empty attribute set.
             use_preaggregations: Override pre-aggregation routing setting for this query
             preagg_strict: Override rollup-only mode for this query. When True, raise
                 PreaggregationStrictError if no rollup matches or its table is missing,
@@ -671,6 +681,7 @@ class SemanticLayer:
             use_preaggregations=use_preaggregations,
             timezone=timezone,
             with_totals=with_totals,
+            user_attributes=user_attributes,
         )
         used_preagg = "used_preagg=true" in routing_sql
 
@@ -687,6 +698,7 @@ class SemanticLayer:
                 use_preaggregations=use_preaggregations,
                 post_process=post_process,
                 timezone=timezone,
+                user_attributes=user_attributes,
             )
         else:
             sql = routing_sql
@@ -704,6 +716,7 @@ class SemanticLayer:
                 use_preaggregations=False,
                 post_process=post_process,
                 timezone=timezone,
+                user_attributes=user_attributes,
             )
 
         return self._execute_with_preagg_fallback(
@@ -762,7 +775,7 @@ class SemanticLayer:
         """Return UI/FFI-friendly model metadata, including source and DAX/TMDL state."""
         from sidemantic.core.introspection import describe_graph
 
-        return describe_graph(self.graph, model_names=model_names)
+        return describe_graph(self.graph, model_names=model_names, enforce_visibility=self.enforce_visibility)
 
     def chart(
         self,
@@ -831,6 +844,7 @@ class SemanticLayer:
         post_process: str | None = None,
         timezone: str | None = None,
         with_totals: bool = False,
+        user_attributes: dict | None = None,
     ) -> str:
         """Compile a query to SQL without executing.
 
@@ -844,6 +858,10 @@ class SemanticLayer:
             offset: Number of rows to skip
             dialect: SQL dialect override (defaults to layer's dialect)
             ungrouped: If True, return raw rows without aggregation (no GROUP BY)
+            user_attributes: Per-request attributes bound to the ``user`` namespace when
+                enforcing model security policies (access gates and row-level filters). A
+                model with a declared security policy but ``user_attributes is None`` is
+                denied (deny-by-default); pass ``{}`` for an empty attribute set.
             use_preaggregations: Override pre-aggregation routing setting for this query
             aliases: Custom output aliases keyed by semantic field reference
             post_process: Optional SQL to wrap around the semantic query result.
@@ -887,14 +905,33 @@ class SemanticLayer:
         if errors:
             raise QueryValidationError("Query validation failed:\n" + "\n".join(f"  - {e}" for e in errors))
 
+        # Visibility: when enforce_visibility is set, requesting a non-public field is rejected
+        # before any SQL is generated.
+        if self.enforce_visibility:
+            self._enforce_visibility_for_query(metrics, dimensions)
+
         # Determine if pre-aggregations should be used
         use_preaggs = use_preaggregations if use_preaggregations is not None else self.use_preaggregations
+
+        # Pre-agg interaction: if any participating model has active row filters for this query,
+        # disable pre-aggregation routing. A rollup is pre-materialized without per-user row
+        # filtering, so serving a security-filtered query from it would leak unfiltered rows.
+        # This is the simplest correct v1; filtered rollups would need identical filtering.
+        security_active = self._query_has_active_row_filters(metrics, dimensions, filters, user_attributes)
+        if security_active:
+            use_preaggs = False
+
+        # The Rust SQL generator does not enforce security policies, so any query touching a
+        # model with a security policy (row filters or an access gate) must use the Python path.
+        security_forces_python = user_attributes is not None or self._query_touches_secured_model(
+            metrics, dimensions, filters
+        )
 
         inner_sql = None
         # The Rust generator implements neither query-timezone bucketing nor with_totals
         # GROUPING SETS, so use the Python path when either is requested.
         # (Pre-agg bypass for timezone queries is enforced inside SQLGenerator.generate.)
-        if self._use_rust_sql_generator and not timezone and not with_totals:
+        if self._use_rust_sql_generator and not timezone and not with_totals and not security_forces_python:
             inner_sql = self._compile_with_rust(
                 metrics=metrics,
                 dimensions=dimensions,
@@ -947,6 +984,7 @@ class SemanticLayer:
                 aliases=aliases,
                 timezone=timezone,
                 with_totals=with_totals,
+                user_attributes=user_attributes,
             )
 
         return self._apply_post_process(inner_sql, post_process)
@@ -986,6 +1024,7 @@ class SemanticLayer:
         aliases: dict[str, str] | None,
         timezone: str | None = None,
         with_totals: bool = False,
+        user_attributes: dict | None = None,
     ) -> str:
         generator = SQLGenerator(
             self.graph,
@@ -1009,7 +1048,97 @@ class SemanticLayer:
             use_preaggregations=use_preaggregations,
             aliases=aliases,
             with_totals=with_totals,
+            user_attributes=user_attributes,
         )
+
+    def _security_participating_models(
+        self,
+        metrics: list[str] | None,
+        dimensions: list[str] | None,
+        filters: list[str] | None,
+    ) -> set[str]:
+        """Resolve the full participating-model set (base + joined + intermediate) for a query.
+
+        Delegates to the SQLGenerator so this set matches exactly what the generator's
+        ``_enforce_security`` iterates over.
+        """
+        generator = SQLGenerator(self.graph, dialect=self.dialect)
+        model_names = generator._find_required_models(metrics or [], dimensions or [], filters or [])
+        if not model_names:
+            return set()
+        return generator._participating_models(model_names)
+
+    def _query_touches_secured_model(
+        self,
+        metrics: list[str] | None,
+        dimensions: list[str] | None,
+        filters: list[str] | None,
+    ) -> bool:
+        """Whether any participating model declares a security policy."""
+        for model_name in self._security_participating_models(metrics, dimensions, filters):
+            model = self.graph.models.get(model_name)
+            if model is not None and model.security is not None:
+                return True
+        return False
+
+    def _query_has_active_row_filters(
+        self,
+        metrics: list[str] | None,
+        dimensions: list[str] | None,
+        filters: list[str] | None,
+        user_attributes: dict | None,
+    ) -> bool:
+        """Whether any participating model contributes at least one row filter for this query.
+
+        Used to disable pre-aggregation routing: a rollup is materialized without the per-user
+        row filter, so serving a filtered query from it would leak unfiltered rows.
+        """
+        if user_attributes is None:
+            # Deny-by-default handles the secured-model case; without attributes there is no
+            # rendered row filter to worry about here.
+            return False
+        for model_name in self._security_participating_models(metrics, dimensions, filters):
+            model = self.graph.models.get(model_name)
+            if model is not None and model.security is not None and model.security.row_filters:
+                return True
+        return False
+
+    def _enforce_visibility_for_query(
+        self,
+        metrics: list[str] | None,
+        dimensions: list[str] | None,
+    ) -> None:
+        """Reject requests for non-public dimensions/metrics when enforce_visibility is set.
+
+        Raises:
+            SecurityError: If a requested field's owning definition has ``public=False``.
+        """
+        for dim in dimensions or []:
+            ref = dim.rsplit("__", 1)[0] if "__" in dim else dim
+            if "." not in ref:
+                continue
+            model_name, field_name = ref.split(".", 1)
+            model = self.graph.models.get(model_name)
+            if model is None:
+                continue
+            dimension = model.get_dimension(field_name)
+            if dimension is not None and not dimension.public:
+                raise SecurityError(f"Field '{model_name}.{field_name}' is not public")
+
+        for metric in metrics or []:
+            if "." not in metric:
+                # Graph-level metric reference.
+                graph_metric = self.graph.metrics.get(metric)
+                if graph_metric is not None and not getattr(graph_metric, "public", True):
+                    raise SecurityError(f"Field '{metric}' is not public")
+                continue
+            model_name, field_name = metric.split(".", 1)
+            model = self.graph.models.get(model_name)
+            if model is None:
+                continue
+            metric_obj = model.get_metric(field_name)
+            if metric_obj is not None and not metric_obj.public:
+                raise SecurityError(f"Field '{model_name}.{field_name}' is not public")
 
     def _compile_with_rust(
         self,

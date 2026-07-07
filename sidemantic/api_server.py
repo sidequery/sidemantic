@@ -20,9 +20,9 @@ from sidemantic import SemanticLayer, __version__
 from sidemantic.loaders import load_from_directory
 from sidemantic.server.common import (
     ARROW_STREAM_MEDIA_TYPE,
-    reader_to_arrow_bytes,
     record_batch_reader_to_table,
     result_to_record_batch_reader,
+    table_to_arrow_bytes,
     table_to_json_rows,
     validate_filter_expression,
 )
@@ -112,6 +112,8 @@ def start_api_server(
     cors_origins: list[str] | None = None,
     max_request_body_bytes: int = 1024 * 1024,
     serve_ui: bool = True,
+    result_cache_mb: int = 0,
+    result_cache_ttl: float = 60.0,
 ) -> None:
     """Start the HTTP API server."""
     try:
@@ -125,6 +127,8 @@ def start_api_server(
         cors_origins=cors_origins,
         max_request_body_bytes=max_request_body_bytes,
         serve_ui=serve_ui,
+        result_cache_mb=result_cache_mb,
+        result_cache_ttl=result_cache_ttl,
     )
     uvicorn.run(app, host=host, port=port, log_level="info")
 
@@ -140,8 +144,15 @@ def create_app(
     cors_origins: list[str] | None = None,
     max_request_body_bytes: int = 1024 * 1024,
     serve_ui: bool = False,
+    result_cache_mb: int = 0,
+    result_cache_ttl: float = 60.0,
 ) -> FastAPI:
-    """Create a FastAPI app for a loaded semantic layer."""
+    """Create a FastAPI app for a loaded semantic layer.
+
+    When ``result_cache_mb`` > 0, read-only query handlers serve identical
+    repeated queries from a content-keyed Arrow result cache (opt-in; the
+    library ``SemanticLayer.query()`` is never cached by default).
+    """
     app = FastAPI(title="Sidemantic API", version=__version__)
     app.state.layer = layer
     # Reentrant lock reserved for layer-MUTATION endpoints (model registration,
@@ -150,6 +161,16 @@ def create_app(
     # per-request adapter.cursor(), so HTTP reads run concurrently.
     app.state.lock = threading.RLock()
     app.state.auth_token = auth_token
+
+    if result_cache_mb and result_cache_mb > 0:
+        from sidemantic.core.result_cache import ResultCache
+
+        app.state.result_cache = ResultCache(
+            max_bytes=result_cache_mb * 1024 * 1024,
+            ttl_seconds=result_cache_ttl,
+        )
+    else:
+        app.state.result_cache = None
 
     if cors_origins:
         app.add_middleware(
@@ -294,7 +315,8 @@ def create_app(
         format: Literal["json", "arrow"] | None = Query(default=None),
     ):
         # Read-only query: compile (pure CPU) then execute on a fresh per-request
-        # cursor so concurrent reads do not serialize on one connection.
+        # cursor so concurrent reads do not serialize on one connection. Execution
+        # flows through _query_table so the opt-in result cache can serve repeats.
         current_layer = app.state.layer
         filters = payload.resolved_filters()
         for filter_str in filters:
@@ -311,9 +333,8 @@ def create_app(
             parameters=payload.parameters,
             use_preaggregations=payload.use_preaggregations,
         )
-        cursor = current_layer.adapter.cursor()
-        result = cursor.execute(sql)
-        return _build_query_response(request, current_layer, result, sql=sql, format_override=format)
+        table = _query_table(app, current_layer, sql)
+        return _build_query_response(request, current_layer, table, sql=sql, format_override=format)
 
     @app.post("/sql/compile", dependencies=[Depends(require_auth)])
     def compile_sql(payload: SQLRequest) -> dict[str, str]:
@@ -329,16 +350,16 @@ def create_app(
         request: Request,
         format: Literal["json", "arrow"] | None = Query(default=None),
     ):
-        # Read-only query: rewrite (pure CPU) then execute on a fresh per-request cursor.
+        # Read-only query: rewrite (pure CPU) then execute on a fresh per-request
+        # cursor, routed through _query_table for opt-in result caching.
         current_layer = app.state.layer
         query = _normalize_sql_query(payload.query)
         rewritten_sql = QueryRewriter(current_layer.graph, dialect=current_layer.dialect).rewrite(query)
-        cursor = current_layer.adapter.cursor()
-        result = cursor.execute(rewritten_sql)
+        table = _query_table(app, current_layer, rewritten_sql)
         return _build_query_response(
             request,
             current_layer,
-            result,
+            table,
             sql=rewritten_sql,
             original_sql=query,
             format_override=format,
@@ -351,16 +372,16 @@ def create_app(
         format: Literal["json", "arrow"] | None = Query(default=None),
     ):
         """Execute raw SQL directly on the underlying database, bypassing the semantic rewriter."""
-        # Read-only query (SELECT enforced) on a fresh per-request cursor.
+        # Read-only query (SELECT enforced) on a fresh per-request cursor,
+        # routed through _query_table for opt-in result caching.
         current_layer = app.state.layer
         query = _normalize_sql_query(payload.query)
         _require_select_statement(query)
-        cursor = current_layer.adapter.cursor()
-        result = cursor.execute(query)
+        table = _query_table(app, current_layer, query)
         return _build_query_response(
             request,
             current_layer,
-            result,
+            table,
             sql=query,
             format_override=format,
         )
@@ -393,29 +414,58 @@ def create_app(
     return app
 
 
+def _execute_to_table(layer: SemanticLayer, sql: str) -> Any:
+    """Execute SQL on the layer's adapter and materialize a PyArrow table.
+
+    Caching operates on fully-materialized tables (rather than single-use
+    RecordBatchReaders) so a cached result can be served to many requests.
+
+    Executes on a fresh per-request cursor rather than the shared connection so
+    concurrent reads run in parallel; the result cache's singleflight then dedups
+    identical concurrent queries into a single underlying execute.
+    """
+    result = layer.adapter.cursor().execute(sql)
+    reader = result_to_record_batch_reader(result, layer.adapter)
+    return record_batch_reader_to_table(reader)
+
+
+def _query_table(app: FastAPI, layer: SemanticLayer, sql: str) -> Any:
+    """Return the Arrow table for ``sql``, served from the result cache if enabled.
+
+    The cache is opt-in (``result_cache_mb`` > 0). The key covers the compiled
+    SQL, dialect + connection fingerprint, layer generation, and user attributes
+    (None today; A2 will populate them). Singleflight in ResultCache ensures a
+    duplicate in-flight query runs the underlying execute exactly once.
+    """
+    cache = getattr(app.state, "result_cache", None)
+    if cache is None:
+        return _execute_to_table(layer, sql)
+
+    key = layer.build_result_key(sql, user_attributes=None)
+    return cache.get_or_compute(key, lambda: _execute_to_table(layer, sql))
+
+
 def _build_query_response(
     request: Request,
     layer: SemanticLayer,
-    result: Any,
+    table: Any,
     sql: str,
     format_override: Literal["json", "arrow"] | None,
     original_sql: str | None = None,
 ):
-    reader = result_to_record_batch_reader(result, layer.adapter)
     response_format = _resolve_response_format(request, format_override)
 
     if response_format == ARROW_FORMAT:
-        body, row_count = reader_to_arrow_bytes(reader)
+        body = table_to_arrow_bytes(table)
         return Response(
             content=body,
             media_type=ARROW_STREAM_MEDIA_TYPE,
             headers={
-                "X-Sidemantic-Row-Count": str(row_count),
+                "X-Sidemantic-Row-Count": str(table.num_rows),
                 "X-Sidemantic-Dialect": layer.dialect,
             },
         )
 
-    table = record_batch_reader_to_table(reader)
     payload: dict[str, Any] = {
         "sql": sql,
         "rows": table_to_json_rows(table),

@@ -83,6 +83,44 @@ def _build_test_client(
     return TestClient(app)
 
 
+def _build_test_client_with_cache(tmp_path: Path, result_cache_mb: int = 16, result_cache_ttl: float = 60.0):
+    """Build a client with the result cache enabled, returning (client, app)."""
+    models_dir = tmp_path / "models"
+    _write_models(models_dir)
+
+    db_path = tmp_path / "warehouse.duckdb"
+    conn = duckdb.connect(str(db_path))
+    conn.execute(
+        """
+        create table orders (
+            id integer,
+            status varchar,
+            amount double,
+            created_at timestamp
+        )
+        """
+    )
+    conn.executemany(
+        "insert into orders values (?, ?, ?, ?)",
+        [
+            (1, "completed", 10.0, "2024-01-01 10:00:00"),
+            (2, "completed", 20.0, "2024-01-02 11:00:00"),
+            (3, "pending", 5.0, "2024-01-03 12:00:00"),
+        ],
+    )
+    conn.close()
+
+    layer = SemanticLayer(connection=f"duckdb:///{db_path}", auto_register=False)
+    load_from_directory(layer, str(models_dir))
+    app = create_app(
+        layer,
+        auth_token="secret",
+        result_cache_mb=result_cache_mb,
+        result_cache_ttl=result_cache_ttl,
+    )
+    return TestClient(app), app
+
+
 def _auth_headers(token: str = "secret") -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
@@ -138,6 +176,45 @@ def test_describe_endpoint(tmp_path):
     assert dimensions["status"]["type"] == "categorical"
     metric_names = {metric["name"] for metric in orders["metrics"]}
     assert {"order_count", "total_amount"} <= metric_names
+
+
+def test_result_cache_serves_repeated_query(tmp_path):
+    client, app = _build_test_client_with_cache(tmp_path)
+
+    body = {
+        "dimensions": ["orders.status"],
+        "metrics": ["orders.total_amount", "orders.order_count"],
+        "order_by": ["orders.status"],
+    }
+
+    first = client.post("/query", headers=_auth_headers(), json=body)
+    second = client.post("/query", headers=_auth_headers(), json=body)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    # Identical results served both times.
+    assert first.json()["rows"] == second.json()["rows"]
+
+    stats = app.state.result_cache.stats()
+    assert stats["hits"] == 1
+    assert stats["misses"] == 1
+    assert stats["entries"] == 1
+
+    # A different query is a distinct cache entry (another miss).
+    other = client.post(
+        "/query",
+        headers=_auth_headers(),
+        json={"dimensions": ["orders.status"], "metrics": ["orders.order_count"]},
+    )
+    assert other.status_code == 200
+    stats2 = app.state.result_cache.stats()
+    assert stats2["misses"] == 2
+    assert stats2["entries"] == 2
+
+
+def test_result_cache_disabled_by_default(tmp_path):
+    client = _build_test_client(tmp_path)
+    assert client.app.state.result_cache is None
 
 
 def test_serve_ui_serves_spa_and_keeps_api_gated(tmp_path):

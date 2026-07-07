@@ -4,6 +4,7 @@ Rill separates data loading (Model YAML) from semantic definitions (Metrics View
 This adapter focuses on the Metrics View YAML which defines dimensions and measures.
 """
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -322,6 +323,8 @@ class RillAdapter:
             if smallest_time_grain and not timeseries_column:
                 meta["rill_smallest_time_grain"] = smallest_time_grain
 
+        security = self._parse_security(data.get("security"))
+
         return Model(
             name=model_name,
             description=description,
@@ -331,7 +334,37 @@ class RillAdapter:
             default_time_dimension=default_time_dimension,
             default_grain=default_grain,
             meta=meta,
+            security=security,
         )
+
+    @staticmethod
+    def _translate_user_refs(template: str) -> str:
+        """Rewrite Rill/Go-template ``{{ .user.x }}`` refs to sidemantic's Jinja ``{{ user.x }}``."""
+        # Rill exposes attributes as `.user.email`; sidemantic's namespace is `user.email`.
+        return re.sub(r"\.user\.", "user.", template)
+
+    def _parse_security(self, security_def: Any):
+        """Map a Rill metrics-view ``security:`` block to a SecurityPolicy (access + row filter).
+
+        Rill uses Go templates over ``.user.*``; we translate those to sidemantic's ``user.*``
+        Jinja namespace. Only the mechanical subset (``access`` and ``row_filter``) is mapped.
+        """
+        if not isinstance(security_def, dict):
+            return None
+        from sidemantic.core.security import SecurityPolicy
+
+        access = security_def.get("access")
+        row_filter = security_def.get("row_filter")
+        kwargs: dict[str, Any] = {}
+        if isinstance(access, str) and access.strip():
+            kwargs["access"] = self._translate_user_refs(access)
+        elif isinstance(access, bool):
+            kwargs["access"] = access
+        if isinstance(row_filter, str) and row_filter.strip():
+            kwargs["row_filters"] = [self._translate_user_refs(row_filter)]
+        if not kwargs:
+            return None
+        return SecurityPolicy(**kwargs)
 
     @staticmethod
     def _natural_dimension_name(dim_def: dict[str, Any], index: int) -> str | None:

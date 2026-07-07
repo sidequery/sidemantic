@@ -232,6 +232,12 @@
           "title": "Type",
           "type": "string"
         },
+        "uri": {
+          "default": false,
+          "description": "Whether this dimension's values should be rendered as links in UIs",
+          "title": "Uri",
+          "type": "boolean"
+        },
         "value_format_name": {
           "anyOf": [
             {
@@ -2520,6 +2526,12 @@
                 ],
                 "title": "Type",
                 "type": "string"
+              },
+              "uri": {
+                "default": false,
+                "description": "Whether this dimension's values should be rendered as links in UIs",
+                "title": "Uri",
+                "type": "boolean"
               },
               "value_format_name": {
                 "anyOf": [

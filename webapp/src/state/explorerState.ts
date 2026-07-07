@@ -20,6 +20,7 @@ export type ExplorerState = {
   selectedMetric: string; // metric ref ranking leaderboards / focused in detail
   filters: FilterState; // dimRef -> selected values
   grain: Grain;
+  timezone: string; // IANA zone for time bucketing + label rendering; "UTC" default (E4)
   dateRange?: DateRange; // undefined = all time
   contextColumn: ContextColumn; // leaderboard context column (E2)
   comparison: ComparisonMode; // comparison window for deltas/overlay (E3)
@@ -42,6 +43,7 @@ export type ExplorerAction =
   | { type: "removeFilterDim"; dim: string }
   | { type: "clearFilters" }
   | { type: "setGrain"; grain: Grain }
+  | { type: "setTimezone"; timezone: string }
   | { type: "setDateRange"; range?: DateRange }
   | { type: "setContextColumn"; column: ContextColumn }
   | { type: "setComparison"; comparison: ComparisonMode; range?: DateRange }
@@ -121,6 +123,8 @@ export function explorerReducer(state: ExplorerState, action: ExplorerAction): E
       return { ...state, filters: {} };
     case "setGrain":
       return { ...state, grain: action.grain };
+    case "setTimezone":
+      return { ...state, timezone: action.timezone };
     case "setDateRange":
       return { ...state, dateRange: action.range };
     case "setContextColumn":
@@ -164,6 +168,7 @@ export function initialStateFromCatalog(catalog: Catalog): ExplorerState {
     selectedMetric: metric,
     filters: {},
     grain: (model?.defaultGrain as Grain) ?? "month",
+    timezone: "UTC",
     dateRange: undefined,
     contextColumn: "none",
     comparison: "previous", // preserve the pre-E3 previous-period comparison as the default

@@ -9,6 +9,7 @@ const base: ExplorerState = {
   selectedMetric: "orders.revenue",
   filters: {},
   grain: "month",
+  timezone: "UTC",
   dateRange: undefined,
   contextColumn: "none",
   comparison: "previous",
@@ -132,11 +133,30 @@ describe("decodeState", () => {
     expect(params.has("cmp")).toBe(false);
   });
 
+  test("a pre-E4 URL (no tz param) decodes to UTC", () => {
+    expect(decodeState("view=explore&grain=month", base).timezone).toBe("UTC");
+  });
+
+  test("timezone round-trips through the tz param", () => {
+    const state = { ...base, timezone: "America/New_York" };
+    expect(encodeState(state)).toContain("tz=America%2FNew_York");
+    expect(decodeState(encodeState(state), base).timezone).toBe("America/New_York");
+  });
+
+  test("encodeState omits the default UTC timezone so links stay short", () => {
+    expect(new URLSearchParams(encodeState(base)).has("tz")).toBe(false);
+  });
+
+  test("ignores a malformed tz value (keeps the base UTC)", () => {
+    expect(decodeState("tz=" + encodeURIComponent("Not A Zone!!"), base).timezone).toBe("UTC");
+  });
+
   test("round-trips a populated state through encodeState", () => {
     const populated: ExplorerState = {
       ...base,
       view: "pivot",
       grain: "week",
+      timezone: "Europe/Berlin",
       dateRange: { from: "2024-01-01", to: "2024-03-31" },
       contextColumn: "pctTotal",
       comparison: "custom",

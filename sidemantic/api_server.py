@@ -48,6 +48,7 @@ class StructuredQueryRequest(BaseModel):
     ungrouped: bool = False
     parameters: dict[str, Any] | None = None
     use_preaggregations: bool | None = None
+    timezone: str | None = None
 
     def resolved_filters(self) -> list[str]:
         filters = list(self.filters)
@@ -305,6 +306,7 @@ def create_app(
             ungrouped=payload.ungrouped,
             parameters=payload.parameters,
             use_preaggregations=payload.use_preaggregations,
+            timezone=payload.timezone,
         )
         return {"sql": sql}
 
@@ -332,6 +334,7 @@ def create_app(
             ungrouped=payload.ungrouped,
             parameters=payload.parameters,
             use_preaggregations=payload.use_preaggregations,
+            timezone=payload.timezone,
         )
         table = _query_table(app, current_layer, sql)
         return _build_query_response(request, current_layer, table, sql=sql, format_override=format)

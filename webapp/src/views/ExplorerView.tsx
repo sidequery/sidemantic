@@ -9,7 +9,16 @@ import type { BrushRange } from "../components/TimeSeriesChart";
 import { formatDelta, formatValue } from "../lib/format";
 import { graphMetricsForModel } from "../lib/catalog";
 import { composeFilters, dimTypes, metricSeries, metricTotals } from "../lib/queries";
-import { bucketOffset, dateOnly, endOfBucket, previousRange, previousYearRange, type DateRange } from "../lib/time";
+import type { StructuredQuery } from "../data/types";
+import {
+  bucketOffset,
+  dateOnly,
+  endOfBucket,
+  formatBucketLabel,
+  previousRange,
+  previousYearRange,
+  type DateRange,
+} from "../lib/time";
 import { useExplorer } from "../state/ExplorerContext";
 import { useQueryResult } from "../state/useQueryResult";
 
@@ -58,18 +67,27 @@ export function ExplorerView() {
     [state.filters, timeRef, prevRange, types],
   );
 
+  // Stamp the selected timezone onto every query so the backend truncates time buckets in-zone
+  // (UTC is elided at the wire boundary, matching the pre-E4 request shape).
+  const tz = state.timezone;
+  const withTz = (query: StructuredQuery | null): StructuredQuery | null =>
+    query ? { ...query, timezone: tz } : null;
+
   // Strip queries — one aggregate per shape, covering every metric at once.
-  const totals = useQueryResult(backend, stripMetricRefs.length ? metricTotals(stripMetricRefs, baseFilters) : null);
+  const totals = useQueryResult(backend, stripMetricRefs.length ? withTz(metricTotals(stripMetricRefs, baseFilters)) : null);
   const series = useQueryResult(
     backend,
-    stripMetricRefs.length && timeRef ? metricSeries(stripMetricRefs, timeRef, state.grain, baseFilters) : null,
+    stripMetricRefs.length && timeRef ? withTz(metricSeries(stripMetricRefs, timeRef, state.grain, baseFilters)) : null,
   );
-  const comparison = useQueryResult(backend, stripMetricRefs.length && prevFilters ? metricTotals(stripMetricRefs, prevFilters) : null);
+  const comparison = useQueryResult(
+    backend,
+    stripMetricRefs.length && prevFilters ? withTz(metricTotals(stripMetricRefs, prevFilters)) : null,
+  );
   // The single extra query the chart needs: the focused metric over the *previous* period (the
   // dashed overlay). Everything else is reused from the strip results above.
   const prevSeries = useQueryResult(
     backend,
-    rankMetric && timeRef && prevFilters ? metricSeries([rankMetric.ref], timeRef, state.grain, prevFilters) : null,
+    rankMetric && timeRef && prevFilters ? withTz(metricSeries([rankMetric.ref], timeRef, state.grain, prevFilters)) : null,
   );
 
   // Surface a failure from any strip query (totals/series/comparison/prev), not just totals, so a
@@ -162,6 +180,7 @@ export function ExplorerView() {
           hasTime={!!timeRef}
           loading={series.loading}
           comparisonLabel={comparisonLabel}
+          formatLabel={(label) => formatBucketLabel(label, state.grain, tz)}
           onBrush={onBrush}
         />
       ) : null}

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { addDays, bucketOffset, endOfBucket, previousRange, previousYearRange } from "./time";
+import { addDays, bucketOffset, endOfBucket, formatBucketLabel, previousRange, previousYearRange } from "./time";
 
 describe("bucketOffset", () => {
   test("counts whole grain units between two bucket starts", () => {
@@ -85,5 +85,35 @@ describe("addDays", () => {
   test("crosses month and leap-day boundaries in UTC", () => {
     expect(addDays("2024-02-28", 1)).toBe("2024-02-29");
     expect(addDays("2024-03-01", -1)).toBe("2024-02-29");
+  });
+});
+
+describe("formatBucketLabel", () => {
+  test("passes UTC (and unparseable labels) through unchanged", () => {
+    expect(formatBucketLabel("2024-01-02", "day", "UTC")).toBe("2024-01-02");
+    expect(formatBucketLabel("2024-01-02T03:00:00", "hour", "UTC")).toBe("2024-01-02T03:00:00");
+    expect(formatBucketLabel("", "day", "UTC")).toBe("");
+    expect(formatBucketLabel("not-a-date", "day", "America/New_York")).toBe("not-a-date");
+  });
+
+  test("renders a UTC instant's hour into a non-UTC zone", () => {
+    // 2026-01-15T12:00:00Z is 07:00 EST (UTC-5) in New York.
+    expect(formatBucketLabel("2026-01-15T12:00:00", "hour", "America/New_York")).toBe("2026-01-15 07:00");
+    // Same instant in Tokyo (UTC+9) is 21:00 the same day.
+    expect(formatBucketLabel("2026-01-15T12:00:00", "hour", "Asia/Tokyo")).toBe("2026-01-15 21:00");
+  });
+
+  test("shifts the calendar day for a coarse-grain label when the zone crosses midnight", () => {
+    // A midnight-UTC day bucket is the previous local day in New York (19:00 the day before).
+    expect(formatBucketLabel("2026-01-15T00:00:00", "day", "America/New_York")).toBe("2026-01-14");
+    // ...and already the next local day in Tokyo (+9).
+    expect(formatBucketLabel("2026-01-15T00:00:00", "day", "Asia/Tokyo")).toBe("2026-01-15");
+  });
+
+  test("handles the US spring-forward DST transition (2026-03-08) in New York", () => {
+    // Before the 07:00Z jump New York is EST (UTC-5): 06:00Z -> 01:00.
+    expect(formatBucketLabel("2026-03-08T06:00:00", "hour", "America/New_York")).toBe("2026-03-08 01:00");
+    // Local 02:00 is skipped; after the jump New York is EDT (UTC-4): 08:00Z -> 04:00, not 03:00.
+    expect(formatBucketLabel("2026-03-08T08:00:00", "hour", "America/New_York")).toBe("2026-03-08 04:00");
   });
 });

@@ -273,6 +273,34 @@ def test_compile_and_query_json_endpoints(tmp_path):
     ]
 
 
+def test_compile_accepts_timezone(tmp_path):
+    # The optional timezone field on the structured-query request threads into
+    # layer.compile so time-dimension truncation happens in the requested zone.
+    client = _build_test_client(tmp_path)
+
+    without_tz = client.post(
+        "/compile",
+        headers=_auth_headers(),
+        json={"dimensions": ["orders.created_at__day"], "metrics": ["orders.order_count"]},
+    )
+    with_tz = client.post(
+        "/compile",
+        headers=_auth_headers(),
+        json={
+            "dimensions": ["orders.created_at__day"],
+            "metrics": ["orders.order_count"],
+            "timezone": "America/New_York",
+        },
+    )
+
+    assert without_tz.status_code == 200
+    assert with_tz.status_code == 200
+    tz_sql = with_tz.json()["sql"]
+    # The zone shows up in the compiled SQL and the timezone-aware SQL differs from the UTC default.
+    assert "America/New_York" in tz_sql
+    assert tz_sql != without_tz.json()["sql"]
+
+
 def test_query_arrow_endpoint(tmp_path):
     client = _build_test_client(tmp_path)
 

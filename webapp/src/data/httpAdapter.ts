@@ -53,6 +53,8 @@ function toRequestBody(query: StructuredQuery): Record<string, unknown> {
   if (query.ungrouped) body.ungrouped = true;
   if (query.parameters) body.parameters = query.parameters;
   if (query.usePreaggregations != null) body.use_preaggregations = query.usePreaggregations;
+  // Omit UTC so requests stay identical to the pre-timezone wire format (backend defaults to UTC).
+  if (query.timezone && query.timezone !== "UTC") body.timezone = query.timezone;
   return body;
 }
 

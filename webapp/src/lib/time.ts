@@ -74,6 +74,43 @@ export function previousYearRange(range: DateRange): DateRange {
   return { from: isoYearAgo(range.from), to: isoYearAgo(range.to) };
 }
 
+// --- Timezone-aware bucket-label formatting (E4) ---------------------------------------------
+// Bucket labels come off the wire as UTC instants ("2024-01-02" or "2024-01-02T03:00:00"). With a
+// non-UTC zone selected, the backend already truncates in that zone, but the labels it returns are
+// still wall-clock strings without an offset. We render them via Intl in the selected zone so an
+// hour bucket shows the local hour and a day/week/month label shows the local calendar boundary.
+
+// Reuse formatters (constructing Intl.DateTimeFormat is comparatively expensive) keyed by zone+grain.
+const bucketFormatters = new Map<string, Intl.DateTimeFormat>();
+
+function bucketFormatter(timeZone: string, grain: Grain): Intl.DateTimeFormat {
+  const cacheKey = `${timeZone}|${grain}`;
+  const cached = bucketFormatters.get(cacheKey);
+  if (cached) return cached;
+  // Hour grain needs the clock time; coarser grains only need the date part (in-zone).
+  const options: Intl.DateTimeFormatOptions =
+    grain === "hour"
+      ? { timeZone, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }
+      : { timeZone, year: "numeric", month: "2-digit", day: "2-digit" };
+  const formatter = new Intl.DateTimeFormat("en-CA", options); // en-CA => ISO-ish YYYY-MM-DD ordering
+  bucketFormatters.set(cacheKey, formatter);
+  return formatter;
+}
+
+/** Render a UTC bucket label into `timeZone` for axis ticks / tooltips. UTC (or an unparseable
+ *  label) passes through unchanged so nothing regresses in the default case. Uses Intl only — no
+ *  date library. */
+export function formatBucketLabel(label: string, grain: Grain, timeZone: string): string {
+  if (!timeZone || timeZone === "UTC") return label;
+  const instant = new Date(normalizeBucketLabel(label));
+  if (Number.isNaN(instant.getTime())) return label;
+  const parts = bucketFormatter(timeZone, grain).formatToParts(instant);
+  const get = (type: string) => parts.find((part) => part.type === type)?.value ?? "";
+  const date = `${get("year")}-${get("month")}-${get("day")}`;
+  if (grain !== "hour") return date;
+  return `${date} ${get("hour")}:${get("minute")}`;
+}
+
 export type DatePreset = { key: string; label: string; days: number };
 
 export const DATE_PRESETS: DatePreset[] = [
@@ -91,7 +128,16 @@ export function presetRange(days: number, today: Date = new Date()): DateRange {
 
 /** SQL filter expressions bounding a time dimension ref to a date range. The upper bound is
  *  exclusive (`< day after to`) so a timestamp column still includes the whole final day rather
- *  than truncating to its midnight. */
+ *  than truncating to its midnight.
+ *
+ *  TIMEZONE LIMITATION (E4): these bounds are UTC day boundaries — `cast('YYYY-MM-DD' as date)`
+ *  compares against the raw (UTC) timestamp column, not the selected-zone local day. With a
+ *  non-UTC zone selected the E4 change makes bucket *labels* and server-side *truncation* in-zone,
+ *  but the range window itself is still cut at UTC midnight. So e.g. a "Last 7 days" window in
+ *  America/New_York can include/exclude a few UTC-vs-local boundary hours at its edges. Full
+ *  in-zone boundary reinterpretation (converting the column to the zone before comparing, or
+ *  shifting the literals by the zone offset) is deferred — it needs the dimension's column
+ *  expression and zone-shifted literals, a larger change than this item. */
 export function timeFilters(ref: string, range: DateRange): string[] {
   return [`${ref} >= cast('${range.from}' as date)`, `${ref} < cast('${addDays(range.to, 1)}' as date)`];
 }

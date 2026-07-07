@@ -31,6 +31,15 @@ class SecurityError(Exception):
     """
 
 
+class UnsupportedMetricError(RuntimeError):
+    """Raised when a queried metric uses a feature the generator cannot serve correctly.
+
+    Currently raised for metrics with ``non_additive_dimension`` set, which would
+    otherwise be silently over-aggregated (wrong results). Suppress with
+    ``SemanticLayer(allow_non_additive_unsafe=True)``.
+    """
+
+
 # Substrings that identify a "missing relation/table" execution error across
 # database adapters (DuckDB, Postgres, BigQuery, Snowflake, ClickHouse, ...).
 # Used to decide whether a routed-but-unbuilt pre-aggregation table should fall
@@ -65,6 +74,7 @@ class SemanticLayer:
         fallback: bool | None = None,
         default_limit: int | None = None,
         max_limit: int | None = None,
+        allow_non_additive_unsafe: bool = False,
     ):
         """Initialize semantic layer.
 
@@ -101,6 +111,10 @@ class SemanticLayer:
                 full-table scans.
             max_limit: Opt-in maximum row limit; an explicit (or defaulted) limit larger
                 than this is capped to it (default: None, i.e. uncapped).
+            allow_non_additive_unsafe: When True, suppress the UnsupportedMetricError raised
+                at query time for metrics that declare a non_additive_dimension. The generator
+                has no semi-additive handling, so such metrics are over-aggregated (wrong)
+                results; this flag opts into that behavior explicitly (default: False).
         """
         from sidemantic.db.base import BaseDatabaseAdapter
 
@@ -119,6 +133,7 @@ class SemanticLayer:
         self.engine = engine or "python"
         self.default_limit = default_limit
         self.max_limit = max_limit
+        self.allow_non_additive_unsafe = allow_non_additive_unsafe
         self._strict_rust_sql_generator_entrypoint = is_strict_for("sql_generator_entrypoint")
         self._strict_rust_query_validation = is_strict_for("semantic_core_query_validation")
         if engine == "python":
@@ -934,6 +949,7 @@ class SemanticLayer:
             preagg_database=self.preagg_database,
             preagg_schema=self.preagg_schema,
             timezone=timezone,
+            allow_non_additive_unsafe=self.allow_non_additive_unsafe,
         )
 
         return generator.generate(

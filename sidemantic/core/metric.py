@@ -4,8 +4,6 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
-from .dependency_analyzer import extract_metric_dependencies
-
 
 class Metric(BaseModel):
     """Measure definition - supports simple aggregations and complex metric types.
@@ -419,4 +417,6 @@ class Metric(BaseModel):
         Returns:
             Set of measure/metric names this depends on.
         """
+        from .dependency_analyzer import extract_metric_dependencies
+
         return extract_metric_dependencies(self, graph, model_context)

@@ -1,10 +1,5 @@
 """Automatic dependency detection from SQL expressions."""
 
-import sqlglot
-from sqlglot import expressions as exp
-
-from sidemantic.sql.aggregation_detection import sql_has_aggregate
-
 
 def extract_column_references(sql_expr: str) -> set[str]:
     """Extract all column references from a SQL expression.
@@ -16,6 +11,9 @@ def extract_column_references(sql_expr: str) -> set[str]:
 
 def _extract_column_reference_parts(sql_expr: str) -> list[tuple[str | None, str]]:
     """Extract column references as optional table/model qualifier plus column name."""
+    import sqlglot
+    from sqlglot import expressions as exp
+
     try:
         parsed = sqlglot.parse_one(sql_expr, read="duckdb")
     except Exception:
@@ -73,6 +71,8 @@ def extract_metric_dependencies(metric_obj, graph=None, model_context=None) -> s
         # (e.g., SUM(x) / SUM(y), COUNT(DISTINCT col) * 1.0).
         # Keep these dependency-free: the aggregations are inline, not metric references.
         # Use the shared detector so behavior is consistent across parser call sites.
+        from sidemantic.sql.aggregation_detection import sql_has_aggregate
+
         if not metric_obj.type and sql_has_aggregate(metric_obj.sql):
             # Expression metric with inline aggregations - no measure dependencies
             return deps

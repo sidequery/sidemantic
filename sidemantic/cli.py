@@ -1,13 +1,29 @@
 """CLI for sidemantic semantic layer operations."""
 
+from __future__ import annotations
+
 import os
 import tempfile
 from pathlib import Path
 
 import typer
 
-from sidemantic import SemanticLayer, __version__, load_from_directory
+from sidemantic import __version__
 from sidemantic.config import SidemanticConfig, build_connection_string, find_config, get_init_sql, load_config
+
+
+def SemanticLayer(*args, **kwargs):  # noqa: N802 - deliberately shadows the class so call sites stay unchanged while deferring the import
+    """Lazy SemanticLayer constructor for fast help/version paths."""
+    from sidemantic import SemanticLayer as _SemanticLayer
+
+    return _SemanticLayer(*args, **kwargs)
+
+
+def load_from_directory(*args, **kwargs):
+    """Lazy loader import for fast help/version paths."""
+    from sidemantic import load_from_directory as _load_from_directory
+
+    return _load_from_directory(*args, **kwargs)
 
 
 def version_callback(value: bool):

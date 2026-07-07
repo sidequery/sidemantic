@@ -23,6 +23,44 @@ def _quote_identifier_cached(name: str, dialect: str, is_simple: bool) -> str:
     return sqlglot.to_identifier(name, quoted=True).sql(dialect=dialect)
 
 
+@lru_cache(maxsize=4096)
+def _parse_fragment_cached(sql: str, dialect: str) -> exp.Expression:
+    """Parse a SQL fragment once, cached across all SQLGenerator instances.
+
+    sqlglot parsing dominates compile latency because the generator re-parses the
+    same small fragments (filters, metric SQL, column refs) many times per compile.
+    A single parse_one is ~100x the cost of an AST copy, so callers that mutate the
+    tree should go through _parse_fragment() (which copies) rather than parsing anew.
+
+    The cached tree is shared; NEVER mutate the value returned here directly.
+    """
+    return sqlglot.parse_one(sql, dialect=dialect)
+
+
+def _parse_fragment(sql: str, dialect: str) -> exp.Expression:
+    """Return a fresh, mutable copy of a cached parsed fragment.
+
+    Use this at any call site that embeds the result into a larger tree or mutates
+    it in place (find_all + set/replace, transform, etc.), since sqlglot maintains
+    parent pointers on nodes.
+    """
+    return _parse_fragment_cached(sql, dialect).copy()
+
+
+@lru_cache(maxsize=4096)
+def _date_trunc_simple_cached(granularity: str, column_expr: str, dialect: str) -> str:
+    """Cached DATE_TRUNC serialization for a bare column expression.
+
+    Serializing an exp.DateTrunc triggers an internal sqlglot parse in several
+    dialects, and _date_trunc is called many times per compile with the same few
+    (granularity, column, dialect) tuples. This returns the fully rendered string;
+    the result is a plain str, so no defensive copy is needed.
+    """
+    col = sqlglot.parse_one(column_expr, into=exp.Column, dialect=dialect)
+    date_trunc = exp.DateTrunc(this=col, unit=exp.Literal.string(granularity))
+    return date_trunc.sql(dialect=dialect)
+
+
 _dialect_cache: dict[str, Dialect] = {}
 _tls = threading.local()
 
@@ -62,6 +100,7 @@ class SQLGenerator:
         preagg_database: str | None = None,
         preagg_schema: str | None = None,
         timezone: str | None = None,
+        allow_non_additive_unsafe: bool = False,
     ):
         """Initialize SQL generator.
 
@@ -72,11 +111,16 @@ class SQLGenerator:
             preagg_schema: Optional schema name for pre-aggregation tables
             timezone: Optional IANA timezone; when set, time dimensions are bucketed
                 in this timezone (UTC-stored timestamps converted before truncation)
+            allow_non_additive_unsafe: When True, do not raise for metrics that declare
+                a non_additive_dimension. The generator has no semi-additive handling, so
+                such metrics are over-aggregated (wrong) results; this flag opts into that
+                behavior explicitly (default: False)
         """
         self.graph = graph
         self.dialect = dialect
         self.preagg_database = preagg_database
         self.preagg_schema = preagg_schema
+        self.allow_non_additive_unsafe = allow_non_additive_unsafe
         # The timezone is interpolated into SQL string literals (AT TIME ZONE '...', etc.),
         # so it must not contain quote/escape characters. Restrict to IANA-name characters
         # to prevent SQL injection from a request- or preference-supplied value; the database
@@ -91,6 +135,50 @@ class SQLGenerator:
         self._dialect_instance = _cached_dialect(dialect)
         self._generate_cache: dict[tuple[object, ...], str] = {}
         self._generate_cache_limit = 256
+
+    def _resolve_metric_obj(self, reference: str):
+        """Resolve a metric reference to its Metric object, or None if not found."""
+        metric = None
+        try:
+            _, metric = self.graph.resolve_metric_reference(reference)
+        except KeyError:
+            pass
+        if not metric and "." not in reference:
+            try:
+                metric = self.graph.get_metric(reference)
+            except KeyError:
+                pass
+            if not metric:
+                for model in self.graph.models.values():
+                    found = model.get_metric(reference)
+                    if found:
+                        metric = found
+                        break
+        return metric
+
+    def _guard_non_additive(self, metrics: list[str]) -> None:
+        """Raise if any queried metric declares a non_additive_dimension.
+
+        The generator has no semi-additive handling, so such a metric would be
+        summed across the dimension it must not be summed across, producing wrong
+        (over-aggregated) results. Opt out with allow_non_additive_unsafe.
+        """
+        if self.allow_non_additive_unsafe:
+            return
+        for reference in metrics:
+            metric = self._resolve_metric_obj(reference)
+            if metric is not None and getattr(metric, "non_additive_dimension", None):
+                # Lazy import to avoid a circular import (semantic_layer imports this module).
+                from sidemantic.core.semantic_layer import UnsupportedMetricError
+
+                raise UnsupportedMetricError(
+                    f"Metric '{reference}' declares non_additive_dimension "
+                    f"'{metric.non_additive_dimension}', but the SQL generator has no "
+                    "semi-additive handling and would over-aggregate it across that "
+                    "dimension (wrong results). Pre-aggregate this metric upstream, or "
+                    "pass allow_non_additive_unsafe=True to SemanticLayer to query it "
+                    "anyway (accepting incorrect aggregation)."
+                )
 
     @staticmethod
     def _agg_sql_name(agg: str) -> str:
@@ -236,10 +324,10 @@ class SQLGenerator:
         if "{" in column_expr or "(" in column_expr:
             return f"DATE_TRUNC('{granularity}', {column_expr})"
 
-        # Parse the column expression to handle table.column references
-        col = sqlglot.parse_one(column_expr, into=exp.Column, dialect=self.dialect)
-        date_trunc = exp.DateTrunc(this=col, unit=exp.Literal.string(granularity))
-        return date_trunc.sql(dialect=self.dialect)
+        # Parse the column expression to handle table.column references. The
+        # serialization (and the parse below) are memoized module-side because
+        # exp.DateTrunc.sql() re-parses internally in several dialects.
+        return _date_trunc_simple_cached(granularity, column_expr, self.dialect)
 
     def _build_interval(self, num: str, unit: str) -> str:
         """Build dialect-specific INTERVAL expression.
@@ -297,7 +385,7 @@ class SQLGenerator:
             # parsing, so sqlglot can handle the expression as valid SQL.
             f_resolved = f.replace("{model}.", f"{model_name}.")
             try:
-                parsed = sqlglot.parse_one(f_resolved, dialect=self.dialect)
+                parsed = _parse_fragment(f_resolved, self.dialect)
                 for column in parsed.find_all(exp.Column):
                     tbl = column.table
                     if tbl and tbl.replace("_cte", "") == model_name:
@@ -336,10 +424,10 @@ class SQLGenerator:
         result = []
         for f in filters:
             try:
-                parsed = sqlglot.parse_one(f, dialect=self.dialect)
+                parsed = _parse_fragment(f, self.dialect)
                 for column in parsed.find_all(exp.Column):
                     if not column.table and column.name in dim_map:
-                        replacement = sqlglot.parse_one(dim_map[column.name], dialect=self.dialect)
+                        replacement = _parse_fragment(dim_map[column.name], self.dialect)
                         # Strip model-qualified refs from the replacement so
                         # expressions like events.region don't leak into
                         # subquery contexts where the alias is t/s.
@@ -431,7 +519,7 @@ class SQLGenerator:
         to_marker = "__to__"
         condition = join_path.custom_condition.replace("{from}", from_marker).replace("{to}", to_marker)
         try:
-            parsed = sqlglot.parse_one(condition, dialect=self.dialect)
+            parsed = _parse_fragment(condition, self.dialect)
         except Exception as exc:
             raise ValueError(
                 "Could not parse custom relationship SQL for "
@@ -631,6 +719,10 @@ class SQLGenerator:
         segments = segments or []
         parameters = parameters or {}
         aliases = aliases or {}
+
+        # Fail loudly on semi-additive metrics: the generator has no non-additive
+        # handling, so it would silently over-aggregate them (wrong results).
+        self._guard_non_additive(metrics)
 
         # Pre-aggregations are materialized with UTC time buckets, so a timezone-bucketed
         # query cannot be served from a rollup without returning wrong (UTC) buckets. Force a
@@ -888,7 +980,7 @@ class SQLGenerator:
         # Also check main query filters
         for filter_expr in main_query_filters:
             try:
-                parsed = sqlglot.parse_one(filter_expr, dialect=self.dialect)
+                parsed = _parse_fragment(filter_expr, self.dialect)
                 for column in parsed.find_all(exp.Column):
                     if column.table:
                         # Remove _cte suffix if present
@@ -907,7 +999,7 @@ class SQLGenerator:
         # are included in the relevant CTE SELECT lists.
         for filter_expr in main_query_filters:
             try:
-                parsed = sqlglot.parse_one(filter_expr, dialect=self.dialect)
+                parsed = _parse_fragment(filter_expr, self.dialect)
                 for column in parsed.find_all(exp.Column):
                     if column.table:
                         model_name = column.table.replace("_cte", "")
@@ -1005,7 +1097,7 @@ class SQLGenerator:
         def qualify_unaliased_columns(filter_sql: str, model_alias: str) -> str:
             """Qualify unaliased columns in segment filters with model alias."""
             try:
-                parsed = sqlglot.parse_one(filter_sql, dialect=self.dialect)
+                parsed = _parse_fragment(filter_sql, self.dialect)
             except Exception:
                 return filter_sql
 
@@ -1055,7 +1147,7 @@ class SQLGenerator:
         """Extract referenced model names from qualified column references."""
         models: set[str] = set()
         try:
-            parsed = sqlglot.parse_one(sql_expr, dialect=self.dialect)
+            parsed = _parse_fragment(sql_expr, self.dialect)
             for column in parsed.find_all(exp.Column):
                 if not column.table:
                     continue
@@ -1151,7 +1243,7 @@ class SQLGenerator:
             for filter_expr in filters:
                 # Parse filter to find model references
                 try:
-                    parsed = sqlglot.parse_one(filter_expr, dialect=self.dialect)
+                    parsed = _parse_fragment(filter_expr, self.dialect)
                     # Find all column references in the filter
                     for column in parsed.find_all(exp.Column):
                         if column.table:
@@ -1196,7 +1288,7 @@ class SQLGenerator:
         flat_parts: list[str] = []
         for filter_expr in filters:
             try:
-                parsed = sqlglot.parse_one(filter_expr, dialect=self.dialect)
+                parsed = _parse_fragment(filter_expr, self.dialect)
                 conjuncts = list(parsed.flatten() if isinstance(parsed, exp.And) else [parsed])
                 for c in conjuncts:
                     # A flattened conjunct that is itself an OR (lower precedence than the
@@ -1213,7 +1305,7 @@ class SQLGenerator:
         for filter_expr in flat_parts:
             # Parse filter expression with SQLGlot
             try:
-                parsed = sqlglot.parse_one(filter_expr, dialect=self.dialect)
+                parsed = _parse_fragment(filter_expr, self.dialect)
             except Exception:
                 # If parsing fails, keep in main query to be safe
                 main_query_filters.append(filter_expr)
@@ -1297,7 +1389,7 @@ class SQLGenerator:
             for f in filters:
                 aliased_filter = f.replace("{model}", f"{model_name}_cte")
                 try:
-                    parsed = sqlglot.parse_one(aliased_filter, dialect=self.dialect)
+                    parsed = _parse_fragment(aliased_filter, self.dialect)
                     for col in parsed.find_all(exp.Column):
                         if col.table and col.table.replace("_cte", "") == model_name:
                             columns_by_model[model_name].add(col.name)
@@ -1309,7 +1401,7 @@ class SQLGenerator:
         def add_sql_columns(sql_expr: str, default_model_name: str | None = None):
             """Extract column refs from SQL and track them per model."""
             try:
-                parsed = sqlglot.parse_one(sql_expr, dialect=self.dialect)
+                parsed = _parse_fragment(sql_expr, self.dialect)
                 for col in parsed.find_all(exp.Column):
                     if col.table:
                         model_name = col.table.replace("_cte", "")
@@ -1387,7 +1479,7 @@ class SQLGenerator:
                 # the CTE and the CASE WHEN filter references a missing column.
                 if filter_model_name is None and metric.agg and metric.sql:
                     try:
-                        parsed = sqlglot.parse_one(metric.sql, dialect=self.dialect)
+                        parsed = _parse_fragment(metric.sql, self.dialect)
                         for col in parsed.find_all(exp.Column):
                             candidate = col.table.replace("_cte", "") if col.table else None
                             if candidate and candidate in self.graph.models:
@@ -1470,7 +1562,7 @@ class SQLGenerator:
         if filters:
             for filter_expr in filters:
                 try:
-                    parsed = sqlglot.parse_one(filter_expr, dialect=self.dialect)
+                    parsed = _parse_fragment(filter_expr, self.dialect)
                     for col in parsed.find_all(exp.Column):
                         if col.table and col.table.replace("_cte", "") == model_name:
                             needed.add(col.name)
@@ -1700,7 +1792,7 @@ class SQLGenerator:
             # a real column named "model" (e.g. PERCENTILE_CONT(... {model}.amount)).
             sql_expr = sql_expr.replace("{model}.", "").replace("{model}", "")
             try:
-                parsed = sqlglot.parse_one(sql_expr, dialect=self.dialect)
+                parsed = _parse_fragment(sql_expr, self.dialect)
                 for col in parsed.find_all(exp.Column):
                     if col.table and col.table.replace("_cte", "") != model_name:
                         continue
@@ -1912,7 +2004,7 @@ class SQLGenerator:
             processed_filters = []
             for f in filters:
                 try:
-                    parsed = sqlglot.parse_one(f, dialect=self.dialect)
+                    parsed = _parse_fragment(f, self.dialect)
                     # Remove table qualifiers (model_name_cte. or model_name.)
                     for col in parsed.find_all(exp.Column):
                         if col.table:
@@ -2327,7 +2419,7 @@ class SQLGenerator:
             rewritten = []
             for f in shared_filters:
                 try:
-                    parsed = sqlglot.parse_one(f, dialect=self.dialect)
+                    parsed = _parse_fragment(f, self.dialect)
                     for col in parsed.find_all(exp.Column):
                         if col.table and col.table in preagg_table_map:
                             col.set("table", exp.to_identifier(preagg_table_map[col.table]))
@@ -2969,7 +3061,7 @@ class SQLGenerator:
         columns: list[str] = []
         seen: set[str] = set()
         try:
-            parsed = sqlglot.parse_one(sql_expr, dialect=self.dialect)
+            parsed = _parse_fragment(sql_expr, self.dialect)
             for col in parsed.find_all(exp.Column):
                 if col.name in seen:
                     continue
@@ -2991,7 +3083,7 @@ class SQLGenerator:
         expr = (measure.sql or "").replace("{model}", cte_alias)
 
         try:
-            parsed = sqlglot.parse_one(expr, dialect=self.dialect)
+            parsed = _parse_fragment(expr, self.dialect)
             for col in parsed.find_all(exp.Column):
                 raw_alias = self._complete_sql_raw_alias(measure.name, col.name)
                 col.set("this", exp.to_identifier(raw_alias, quoted=not self._is_simple_identifier(raw_alias)))
@@ -3013,7 +3105,7 @@ class SQLGenerator:
     def _rewrite_model_refs_to_ctes(self, sql_expr: str) -> str:
         """Rewrite qualified model refs (model.col) to CTE refs (model_cte.col)."""
         try:
-            parsed = sqlglot.parse_one(sql_expr, dialect=self.dialect)
+            parsed = _parse_fragment(sql_expr, self.dialect)
             for col in parsed.find_all(exp.Column):
                 if not col.table:
                     continue
@@ -3042,7 +3134,7 @@ class SQLGenerator:
             return model_context
         if metric.sql:
             try:
-                parsed = sqlglot.parse_one(metric.sql, dialect=self.dialect)
+                parsed = _parse_fragment(metric.sql, self.dialect)
                 for col in parsed.find_all(exp.Column):
                     candidate = col.table.replace("_cte", "") if col.table else None
                     if candidate and candidate in self.graph.models:
@@ -3064,7 +3156,7 @@ class SQLGenerator:
         cte_name = self._cte_name(model_name)
         cte_identifier = exp.to_identifier(cte_name, quoted=not self._is_simple_identifier(cte_name))
         try:
-            parsed = sqlglot.parse_one(filter_expr, dialect=self.dialect)
+            parsed = _parse_fragment(filter_expr, self.dialect)
         except Exception:
             return self._rewrite_model_refs_to_ctes(filter_expr)
         for col in parsed.find_all(exp.Column):
@@ -4288,7 +4380,7 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
             # Rewrite column references via sqlglot to avoid corrupting string
             # literals (e.g. "events.signup" inside a quoted value).
             try:
-                parsed = sqlglot.parse_one(result, dialect=self.dialect)
+                parsed = _parse_fragment(result, self.dialect)
                 for col in parsed.find_all(exp.Column):
                     if col.table == model.name:
                         # Strip model-name qualifier (e.g. events.col -> col)
@@ -5243,7 +5335,7 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
 
     def _filter_references_model_metric(self, model, filter_expr: str) -> bool:
         try:
-            parsed = sqlglot.parse_one(filter_expr, dialect=self.dialect)
+            parsed = _parse_fragment(filter_expr, self.dialect)
         except Exception:
             return False
 
@@ -5285,7 +5377,7 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
         if not metric.sql:
             return f"SUM({metric.name}_raw)"
         try:
-            expression = sqlglot.parse_one(metric.sql, dialect=self.dialect)
+            expression = _parse_fragment(metric.sql, self.dialect)
         except Exception:
             return metric.sql
 
@@ -5294,9 +5386,9 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
                 return node
             field_name = node.name
             if model.get_metric(field_name):
-                return sqlglot.parse_one(
+                return _parse_fragment(
                     self._preaggregation_metric_expression(model, preagg, field_name),
-                    dialect=self.dialect,
+                    self.dialect,
                 )
             return node
 
@@ -5304,7 +5396,7 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
 
     def _rewrite_preaggregation_aggregate_filter(self, model, preagg, filter_expr: str) -> str:
         try:
-            parsed = sqlglot.parse_one(filter_expr, dialect=self.dialect)
+            parsed = _parse_fragment(filter_expr, self.dialect)
         except Exception:
             return filter_expr.replace(f"{model.name}_cte.", "").replace(f"{model.name}.", "")
 
@@ -5318,9 +5410,9 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
 
             field_name = node.name.rsplit("__", 1)[0] if "__" in node.name else node.name
             if model.get_metric(field_name):
-                return sqlglot.parse_one(
+                return _parse_fragment(
                     self._preaggregation_metric_expression(model, preagg, field_name),
-                    dialect=self.dialect,
+                    self.dialect,
                 )
 
             if preagg.time_dimension and preagg.granularity and field_name == preagg.time_dimension:
@@ -5596,7 +5688,7 @@ LEFT JOIN {preagg_table} AS {rollup_alias}
     def _qualify_model_expression(self, expression_sql: str, model_name: str, alias: str) -> str:
         expression_sql = expression_sql.replace("{model}", alias)
         try:
-            expression = sqlglot.parse_one(expression_sql, dialect=self.dialect)
+            expression = _parse_fragment(expression_sql, self.dialect)
         except Exception:
             if self._is_simple_identifier(expression_sql):
                 return f"{alias}.{self._quote_identifier(expression_sql)}"

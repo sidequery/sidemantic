@@ -1,56 +1,136 @@
 import { describe, expect, test } from "bun:test";
 import { NULL_TOKEN } from "../data/types";
-import { filterExprs } from "./queries";
+import { filterExprs, includeFilter, isEmptyFilter, likeEscape, type DimFilter } from "./queries";
 
-describe("filterExprs", () => {
+// Shorthands so the existing include-mode cases read the same as before the mode refactor.
+const inc = (values: string[]): DimFilter => includeFilter(values);
+const exc = (values: string[]): DimFilter => ({ mode: "exclude", values });
+const has = (pattern: string): DimFilter => ({ mode: "contains", values: [], pattern });
+
+describe("filterExprs (include mode — preserved behavior)", () => {
   test("no filters (or empty value lists) yields no expressions", () => {
     expect(filterExprs({})).toEqual([]);
-    expect(filterExprs({ "orders.status": [] })).toEqual([]);
+    expect(filterExprs({ "orders.status": inc([]) })).toEqual([]);
   });
 
   test("a single string value is a quoted equality", () => {
-    expect(filterExprs({ "orders.status": ["completed"] })).toEqual(["orders.status = 'completed'"]);
+    expect(filterExprs({ "orders.status": inc(["completed"]) })).toEqual(["orders.status = 'completed'"]);
   });
 
   test("multiple string values become an IN list", () => {
-    expect(filterExprs({ "orders.status": ["a", "b"] })).toEqual(["orders.status IN ('a', 'b')"]);
+    expect(filterExprs({ "orders.status": inc(["a", "b"]) })).toEqual(["orders.status IN ('a', 'b')"]);
   });
 
   test("string literals are single-quote escaped", () => {
-    expect(filterExprs({ "customers.name": ["O'Brien"] })).toEqual(["customers.name = 'O''Brien'"]);
+    expect(filterExprs({ "customers.name": inc(["O'Brien"]) })).toEqual(["customers.name = 'O''Brien'"]);
   });
 
   test("numeric and boolean dimensions are not quoted", () => {
     const types = { "orders.amount": "numeric", "orders.is_paid": "boolean" };
-    expect(filterExprs({ "orders.amount": ["5"] }, { types })).toEqual(["orders.amount = 5"]);
-    expect(filterExprs({ "orders.is_paid": ["true"] }, { types })).toEqual(["orders.is_paid = true"]);
+    expect(filterExprs({ "orders.amount": inc(["5"]) }, { types })).toEqual(["orders.amount = 5"]);
+    expect(filterExprs({ "orders.is_paid": inc(["true"]) }, { types })).toEqual(["orders.is_paid = true"]);
   });
 
   test("a non-numeric value on a numeric dimension still quotes (no silent bad SQL)", () => {
-    expect(filterExprs({ "orders.amount": ["n/a"] }, { types: { "orders.amount": "numeric" } })).toEqual([
+    expect(filterExprs({ "orders.amount": inc(["n/a"]) }, { types: { "orders.amount": "numeric" } })).toEqual([
       "orders.amount = 'n/a'",
     ]);
   });
 
   test("the NULL token becomes IS NULL", () => {
-    expect(filterExprs({ "orders.status": [NULL_TOKEN] })).toEqual(["orders.status IS NULL"]);
+    expect(filterExprs({ "orders.status": inc([NULL_TOKEN]) })).toEqual(["orders.status IS NULL"]);
   });
 
   test("present values OR with a null selection in the same dimension", () => {
-    expect(filterExprs({ "orders.status": ["a", NULL_TOKEN] })).toEqual([
+    expect(filterExprs({ "orders.status": inc(["a", NULL_TOKEN]) })).toEqual([
       "(orders.status = 'a' OR orders.status IS NULL)",
     ]);
   });
 
   test("dimensions are emitted independently (ANDed by the caller)", () => {
-    expect(filterExprs({ "orders.status": ["a"], "orders.country": ["US"] })).toEqual([
+    expect(filterExprs({ "orders.status": inc(["a"]), "orders.country": inc(["US"]) })).toEqual([
       "orders.status = 'a'",
       "orders.country = 'US'",
     ]);
   });
 
   test("excludeDim drops only that dimension's own selection", () => {
-    const filters = { "orders.status": ["a"], "orders.country": ["US"] };
+    const filters = { "orders.status": inc(["a"]), "orders.country": inc(["US"]) };
     expect(filterExprs(filters, { excludeDim: "orders.status" })).toEqual(["orders.country = 'US'"]);
+  });
+});
+
+describe("filterExprs (exclude mode)", () => {
+  test("a single value negates with !=", () => {
+    expect(filterExprs({ "orders.status": exc(["US"]) })).toEqual(["orders.status != 'US'"]);
+  });
+
+  test("multiple values become a NOT IN list", () => {
+    expect(filterExprs({ "orders.status": exc(["a", "b"]) })).toEqual(["orders.status NOT IN ('a', 'b')"]);
+  });
+
+  test("the NULL token becomes IS NOT NULL", () => {
+    expect(filterExprs({ "orders.status": exc([NULL_TOKEN]) })).toEqual(["orders.status IS NOT NULL"]);
+  });
+
+  test("present values AND with a null exclusion (row must match none of the excluded set)", () => {
+    expect(filterExprs({ "orders.status": exc(["a", NULL_TOKEN]) })).toEqual([
+      "(orders.status != 'a' AND orders.status IS NOT NULL)",
+    ]);
+  });
+
+  test("numeric exclusions are not quoted", () => {
+    expect(filterExprs({ "orders.amount": exc(["5", "6"]) }, { types: { "orders.amount": "numeric" } })).toEqual([
+      "orders.amount NOT IN (5, 6)",
+    ]);
+  });
+});
+
+describe("filterExprs (contains mode)", () => {
+  test("emits a case-insensitive substring ILIKE with an ESCAPE clause", () => {
+    expect(filterExprs({ "customers.name": has("acme") })).toEqual([
+      "customers.name ILIKE '%acme%' ESCAPE '\\'",
+    ]);
+  });
+
+  test("LIKE metacharacters in the pattern are neutralized", () => {
+    expect(filterExprs({ "customers.name": has("50%_off") })).toEqual([
+      "customers.name ILIKE '%50\\%\\_off%' ESCAPE '\\'",
+    ]);
+  });
+
+  test("single quotes in the pattern are still SQL-escaped", () => {
+    expect(filterExprs({ "customers.name": has("O'Brien") })).toEqual([
+      "customers.name ILIKE '%O''Brien%' ESCAPE '\\'",
+    ]);
+  });
+
+  test("an empty pattern emits nothing", () => {
+    expect(filterExprs({ "customers.name": has("") })).toEqual([]);
+  });
+});
+
+describe("likeEscape", () => {
+  test("escapes backslash first, then LIKE metacharacters", () => {
+    expect(likeEscape("a")).toBe("a");
+    expect(likeEscape("100%")).toBe("100\\%");
+    expect(likeEscape("a_b")).toBe("a\\_b");
+    expect(likeEscape("c:\\path")).toBe("c:\\\\path");
+    expect(likeEscape("50%_\\")).toBe("50\\%\\_\\\\");
+  });
+});
+
+describe("isEmptyFilter", () => {
+  test("include/exclude with no values are empty; with values are not", () => {
+    expect(isEmptyFilter(inc([]))).toBe(true);
+    expect(isEmptyFilter(exc([]))).toBe(true);
+    expect(isEmptyFilter(inc(["a"]))).toBe(false);
+  });
+
+  test("contains is empty only with a blank pattern", () => {
+    expect(isEmptyFilter(has(""))).toBe(true);
+    expect(isEmptyFilter(has("x"))).toBe(false);
+    // A contains filter ignores its (inert) values for emptiness.
+    expect(isEmptyFilter({ mode: "contains", values: ["a"], pattern: "" })).toBe(true);
   });
 });

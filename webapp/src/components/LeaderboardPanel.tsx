@@ -33,6 +33,11 @@ export function LeaderboardPanel({
     dimensionLeaderboard(rankMetric.ref, dim.ref, filters, limit),
   );
 
+  // Only an include-mode selection is a "checked" row; exclude/contains filters don't highlight
+  // rows (their meaning is inversion/substring, not row selection).
+  const own = state.filters[dim.ref];
+  const selectedValues = own?.mode === "include" ? own.values : undefined;
+
   const dimAlias = aliasOf(dim.ref);
   const metricAlias = aliasOf(rankMetric.ref);
   // While a slow reload is in flight, useQueryResult keeps the *previous* result visible. If the
@@ -57,7 +62,7 @@ export function LeaderboardPanel({
       metricLabel={rankMetric.label}
       rows={rows}
       loading={loading || stale}
-      selectedValues={state.filters[dim.ref]}
+      selectedValues={selectedValues}
       formatMetric={(value) => formatCompact(value, { format: rankMetric.format, type: rankMetric.type })}
       onToggle={(value) => dispatch({ type: "toggleFilter", dim: dim.ref, value })}
     />

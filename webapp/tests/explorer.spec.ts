@@ -18,7 +18,10 @@ test("crossfilter, reset, and metric re-rank change rendered data", async ({ pag
 
   // Click a country leaderboard row -> crossfilter. KPI must recompute downward.
   await page.locator('button[data-dimension="customers.country"][data-value="CA"]').click();
-  await expect(page.locator('span[data-dimension="customers.country"][data-value="CA"]')).toBeVisible();
+  // A per-dimension filter pill now summarizes the include selection ("Country is CA").
+  const countryPill = page.locator('span[data-dimension="customers.country"][data-mode]');
+  await expect(countryPill).toBeVisible();
+  await expect(countryPill).toContainText("CA");
   await expect.poll(async () => number(await kpi.textContent())).toBeLessThan(baseline);
 
   // The country leaderboard still lists every country (its own filter is excluded).
@@ -26,7 +29,7 @@ test("crossfilter, reset, and metric re-rank change rendered data", async ({ pag
 
   // Remove the filter -> KPI restores.
   await page.getByRole("button", { name: "Clear" }).click();
-  await expect(page.locator('span[data-dimension="customers.country"][data-value="CA"]')).toHaveCount(0);
+  await expect(countryPill).toHaveCount(0);
   await expect.poll(async () => number(await kpi.textContent())).toBe(baseline);
 
   // Re-rank leaderboards by a different metric.
@@ -50,6 +53,48 @@ test("brush-to-zoom on the chart sets a date range and shows the comparison over
 
   await expect.poll(() => new URL(page.url()).searchParams.get("from")).not.toBeNull();
   await expect(page.getByText("Prev period")).toBeVisible();
+});
+
+test("filter editor: open, search, exclude a value, persist to URL, and restore on reload", async ({ page }) => {
+  await page.goto("/?model=customers&metric=customers.customer_count");
+
+  const kpi = page.locator('button[data-metric="customers.customer_count"]');
+  await expect.poll(async () => number(await kpi.textContent())).toBeGreaterThan(0);
+  const baseline = number(await kpi.textContent());
+
+  // Open the editor from the "+ Filter" affordance and pick the country dimension.
+  await page.getByRole("button", { name: "+ Filter" }).click();
+  await page.getByRole("menuitem", { name: "Country" }).click();
+  const editor = page.getByRole("dialog");
+  await expect(editor).toBeVisible();
+
+  // Switch to Exclude mode, search to narrow the distinct list (server-side ILIKE), then check
+  // the CA value off. The list is debounced, so wait for it to narrow to a single row.
+  await editor.getByRole("button", { name: "Exclude" }).click();
+  await editor.getByRole("textbox").fill("CA");
+  await expect(editor.getByRole("checkbox")).toHaveCount(1);
+  const caRow = editor.locator("label", { hasText: "CA" }).getByRole("checkbox");
+  await caRow.check();
+
+  // The exclude filter drops those rows, so the KPI recomputes downward.
+  await expect.poll(async () => number(await kpi.textContent())).toBeLessThan(baseline);
+
+  // The filter is serialized to the URL in the new object form (mode=exclude).
+  await expect
+    .poll(() => decodeURIComponent(new URL(page.url()).searchParams.get("filters") ?? ""))
+    .toContain('"mode":"exclude"');
+
+  // Escape closes the popover; the pill summarizes the exclude filter.
+  await page.keyboard.press("Escape");
+  await expect(editor).toHaveCount(0);
+  const pill = page.locator('span[data-dimension="customers.country"][data-mode="exclude"]');
+  await expect(pill).toContainText("is not");
+
+  // A full reload restores the exclude filter from the URL (deep-linkable state contract).
+  const url = page.url();
+  await page.goto(url);
+  await expect(page.locator('span[data-dimension="customers.country"][data-mode="exclude"]')).toContainText("is not");
+  await expect.poll(async () => number(await kpi.textContent())).toBeLessThan(baseline);
 });
 
 test("pivot view renders a grouped table", async ({ page }) => {

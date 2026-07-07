@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { HttpBackend } from "./data/httpAdapter";
 import type { Catalog } from "./data/types";
 import { AppShell } from "./components/AppShell";
+import { AddFilter } from "./components/AddFilter";
 import { Catalog as CatalogRail } from "./components/Catalog";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { DateRangeControl } from "./components/DateRangeControl";
@@ -79,23 +80,28 @@ function Shell() {
   const dirty = state.dateRange != null || Object.keys(state.filters).length > 0;
   const hasTime = Boolean(model?.timeDimension);
   const grains = grainOptions(model?.timeDimension?.supportedGranularities);
+  // Resolve a filtered dimension's ref back to its catalog dimension + owning model, so a pill can
+  // open the editor. Filters target the active model's dimensions in practice.
   const dimByRef = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const m of catalog.models) for (const dim of m.dimensions) map.set(dim.ref, dim.label);
+    const map = new Map<string, { dim: (typeof catalog.models)[number]["dimensions"][number]; model: (typeof catalog.models)[number] }>();
+    for (const m of catalog.models) for (const dim of m.dimensions) map.set(dim.ref, { dim, model: m });
     return map;
   }, [catalog]);
 
-  const pills = Object.entries(state.filters).flatMap(([dim, values]) =>
-    values.map((value) => (
+  // One pill per filtered dimension, showing a mode-aware summary; clicking opens the editor.
+  const pills = Object.entries(state.filters).flatMap(([dimRef, filter]) => {
+    const entry = dimByRef.get(dimRef);
+    if (!entry) return [];
+    return [
       <FilterPill
-        key={`${dim}:${value}`}
-        dimension={dim}
-        dimensionLabel={dimByRef.get(dim) ?? dim}
-        value={value}
-        onRemove={() => dispatch({ type: "removeFilterValue", dim, value })}
-      />
-    )),
-  );
+        key={dimRef}
+        dim={entry.dim}
+        model={entry.model}
+        filter={filter}
+        onRemove={() => dispatch({ type: "removeFilterDim", dim: dimRef })}
+      />,
+    ];
+  });
 
   const brand = (
     <div className="flex min-w-0 items-baseline gap-2">
@@ -128,20 +134,21 @@ function Shell() {
     </>
   );
 
-  const filters = pills.length ? (
+  const filters = (
     <>
       <span className="shrink-0 text-2xs font-semibold uppercase tracking-wide text-faint">Filters</span>
-      {pills}
-      <button
-        type="button"
-        onClick={() => dispatch({ type: "clearFilters" })}
-        className="shrink-0 text-2xs text-muted underline-offset-2 hover:text-ink hover:underline"
-      >
-        Clear
-      </button>
+      {pills.length ? pills : <span className="text-2xs text-faint">None</span>}
+      {model ? <AddFilter model={model} /> : null}
+      {pills.length ? (
+        <button
+          type="button"
+          onClick={() => dispatch({ type: "clearFilters" })}
+          className="shrink-0 text-2xs text-muted underline-offset-2 hover:text-ink hover:underline"
+        >
+          Clear
+        </button>
+      ) : null}
     </>
-  ) : (
-    <span className="text-2xs text-faint">No filters</span>
   );
 
   return (

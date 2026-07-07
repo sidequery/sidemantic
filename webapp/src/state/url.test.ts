@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { includeFilter } from "../lib/queries";
 import type { ExplorerState } from "./explorerState";
 import { decodeState, encodeState } from "./url";
 
@@ -12,6 +13,8 @@ const base: ExplorerState = {
   pivotDims: [],
   pivotMetrics: [],
 };
+
+const filtersParam = (value: unknown) => `filters=${encodeURIComponent(JSON.stringify(value))}`;
 
 describe("decodeState", () => {
   test("an empty search returns the base state", () => {
@@ -31,15 +34,49 @@ describe("decodeState", () => {
     expect(next.grain).toBe("month");
   });
 
-  test("accepts a well-formed filter map", () => {
-    const filters = { "orders.status": ["a", "b"] };
-    const next = decodeState(`filters=${encodeURIComponent(JSON.stringify(filters))}`, base);
-    expect(next.filters).toEqual(filters);
+  test("old-format bare value arrays deserialize as include filters (backward compatible)", () => {
+    const next = decodeState(filtersParam({ "orders.status": ["a", "b"] }), base);
+    expect(next.filters).toEqual({ "orders.status": { mode: "include", values: ["a", "b"] } });
   });
 
-  test("rejects a malformed filter map (values must be string arrays)", () => {
-    const next = decodeState(`filters=${encodeURIComponent(JSON.stringify({ "orders.status": "CA" }))}`, base);
-    expect(next.filters).toEqual({});
+  test("new-format include filter round-trips through a bare array in the URL", () => {
+    const state = { ...base, filters: { "orders.status": includeFilter(["a"]) } };
+    // Include filters serialize to a bare array (short links); decode restores the object form.
+    expect(encodeState(state)).toContain(encodeURIComponent(JSON.stringify({ "orders.status": ["a"] })));
+    expect(decodeState(encodeState(state), base).filters).toEqual(state.filters);
+  });
+
+  test("new-format exclude filter round-trips as an object", () => {
+    const next = decodeState(filtersParam({ "orders.status": { mode: "exclude", values: ["US"] } }), base);
+    expect(next.filters).toEqual({ "orders.status": { mode: "exclude", values: ["US"] } });
+  });
+
+  test("new-format contains filter round-trips its pattern", () => {
+    const next = decodeState(filtersParam({ "customers.name": { mode: "contains", values: [], pattern: "acme" } }), base);
+    expect(next.filters).toEqual({ "customers.name": { mode: "contains", values: [], pattern: "acme" } });
+  });
+
+  test("drops filters with an unknown mode but keeps valid siblings", () => {
+    const next = decodeState(
+      filtersParam({ "orders.a": { mode: "wat", values: ["x"] }, "orders.b": ["y"] }),
+      base,
+    );
+    expect(next.filters).toEqual({ "orders.b": { mode: "include", values: ["y"] } });
+  });
+
+  test("drops a filter that would emit no SQL (empty include list)", () => {
+    expect(decodeState(filtersParam({ "orders.status": { mode: "include", values: [] } }), base).filters).toEqual({});
+    expect(decodeState(filtersParam({ "orders.status": { mode: "contains", values: [], pattern: "" } }), base).filters).toEqual({});
+  });
+
+  test("rejects a wholly malformed filter map (not an object)", () => {
+    expect(decodeState(filtersParam(["not", "a", "map"]), base).filters).toEqual({});
+    expect(decodeState(filtersParam("scalar"), base).filters).toEqual({});
+  });
+
+  test("rejects a malformed dimension entry (scalar value) but keeps the map otherwise valid", () => {
+    const next = decodeState(filtersParam({ "orders.status": 42, "orders.country": ["US"] }), base);
+    expect(next.filters).toEqual({ "orders.country": { mode: "include", values: ["US"] } });
   });
 
   test("rejects non-JSON filters without throwing", () => {
@@ -64,7 +101,11 @@ describe("decodeState", () => {
       view: "pivot",
       grain: "week",
       dateRange: { from: "2024-01-01", to: "2024-03-31" },
-      filters: { "orders.status": ["completed"] },
+      filters: {
+        "orders.status": includeFilter(["completed"]),
+        "orders.country": { mode: "exclude", values: ["US"] },
+        "customers.name": { mode: "contains", values: [], pattern: "acme" },
+      },
       pivotDims: ["orders.country"],
       pivotMetrics: ["orders.revenue"],
     };

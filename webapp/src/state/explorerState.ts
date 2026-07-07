@@ -1,6 +1,6 @@
 import type { Catalog, CatalogModel, Grain } from "../data/types";
 import { graphMetricsForModel } from "../lib/catalog";
-import type { FilterState } from "../lib/queries";
+import { isEmptyFilter, type FilterMode, type FilterState } from "../lib/queries";
 import type { DateRange } from "../lib/time";
 
 export type ViewKind = "explore" | "pivot";
@@ -21,7 +21,11 @@ export type ExplorerAction =
   | { type: "setView"; view: ViewKind }
   | { type: "setModel"; model: string; metric: string; grain: Grain }
   | { type: "setMetric"; metric: string }
-  | { type: "toggleFilter"; dim: string; value: string }
+  // `mode` forces include/exclude when toggling from the editor; the leaderboard omits it (keeping
+  // the dimension's current mode, defaulting to include).
+  | { type: "toggleFilter"; dim: string; value: string; mode?: FilterMode }
+  | { type: "setFilterMode"; dim: string; mode: FilterMode }
+  | { type: "setFilterPattern"; dim: string; pattern: string }
   | { type: "removeFilterValue"; dim: string; value: string }
   | { type: "removeFilterDim"; dim: string }
   | { type: "clearFilters" }
@@ -34,6 +38,15 @@ export type ExplorerAction =
 function toggle(values: string[] | undefined, value: string): string[] {
   const list = values ?? [];
   return list.includes(value) ? list.filter((v) => v !== value) : [...list, value];
+}
+
+/** Write `filter` at `dim`, dropping the key when the filter would emit no SQL (keeps state minimal
+ *  and the URL short, and lets `dirty`/pill rendering treat "no filters" as an empty map). */
+function putFilter(filters: FilterState, dim: string, filter: FilterState[string]): FilterState {
+  const next = { ...filters };
+  if (isEmptyFilter(filter)) delete next[dim];
+  else next[dim] = filter;
+  return next;
 }
 
 export function explorerReducer(state: ExplorerState, action: ExplorerAction): ExplorerState {
@@ -56,18 +69,34 @@ export function explorerReducer(state: ExplorerState, action: ExplorerAction): E
     case "setMetric":
       return { ...state, selectedMetric: action.metric };
     case "toggleFilter": {
-      const next = toggle(state.filters[action.dim], action.value);
-      const filters = { ...state.filters };
-      if (next.length) filters[action.dim] = next;
-      else delete filters[action.dim];
-      return { ...state, filters };
+      // Toggle a value within the dimension's selection. The editor passes an explicit `mode`;
+      // a leaderboard click keeps the current include/exclude mode (contains falls back to include,
+      // which has discrete values).
+      const current = state.filters[action.dim];
+      const mode = action.mode ?? (current && current.mode !== "contains" ? current.mode : "include");
+      // Reuse the existing value list only when its mode matches the target; otherwise start fresh
+      // (a contains filter's values are inert and must not leak into an include/exclude toggle).
+      const prior = current && current.mode === mode ? current.values : [];
+      const values = toggle(prior, action.value);
+      return { ...state, filters: putFilter(state.filters, action.dim, { mode, values }) };
+    }
+    case "setFilterMode": {
+      // Preserve the value list across include<->exclude; contains keeps its pattern but its values
+      // are inert. A dimension with no prior filter starts empty in the chosen mode.
+      const current = state.filters[action.dim];
+      const filter = { mode: action.mode, values: current?.values ?? [], pattern: current?.pattern };
+      return { ...state, filters: putFilter(state.filters, action.dim, filter) };
+    }
+    case "setFilterPattern": {
+      const current = state.filters[action.dim];
+      const filter = { mode: "contains" as const, values: current?.values ?? [], pattern: action.pattern };
+      return { ...state, filters: putFilter(state.filters, action.dim, filter) };
     }
     case "removeFilterValue": {
-      const next = (state.filters[action.dim] ?? []).filter((v) => v !== action.value);
-      const filters = { ...state.filters };
-      if (next.length) filters[action.dim] = next;
-      else delete filters[action.dim];
-      return { ...state, filters };
+      const current = state.filters[action.dim];
+      if (!current) return state;
+      const values = current.values.filter((v) => v !== action.value);
+      return { ...state, filters: putFilter(state.filters, action.dim, { ...current, values }) };
     }
     case "removeFilterDim": {
       const filters = { ...state.filters };

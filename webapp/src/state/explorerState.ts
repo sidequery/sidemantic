@@ -5,6 +5,15 @@ import type { DateRange } from "../lib/time";
 
 export type ViewKind = "explore" | "pivot";
 
+// Extra per-row figure shown in each leaderboard, relative to the ranking metric. `none` keeps the
+// bare ranked value (the pre-E2 behavior).
+export type ContextColumn = "none" | "pctTotal" | "delta" | "deltaPct";
+
+// Which window the current period is compared against. `previous` is the immediately-preceding
+// equal window (the pre-E3 behavior); `off` disables comparison entirely; `custom` uses an
+// explicit comparisonRange.
+export type ComparisonMode = "off" | "previous" | "year" | "custom";
+
 export type ExplorerState = {
   view: ViewKind;
   model: string; // primary fact model name
@@ -12,6 +21,9 @@ export type ExplorerState = {
   filters: FilterState; // dimRef -> selected values
   grain: Grain;
   dateRange?: DateRange; // undefined = all time
+  contextColumn: ContextColumn; // leaderboard context column (E2)
+  comparison: ComparisonMode; // comparison window for deltas/overlay (E3)
+  comparisonRange?: DateRange; // explicit window when comparison === "custom"
   pivotDims: string[];
   pivotMetrics: string[];
 };
@@ -31,6 +43,8 @@ export type ExplorerAction =
   | { type: "clearFilters" }
   | { type: "setGrain"; grain: Grain }
   | { type: "setDateRange"; range?: DateRange }
+  | { type: "setContextColumn"; column: ContextColumn }
+  | { type: "setComparison"; comparison: ComparisonMode; range?: DateRange }
   | { type: "setPivotDims"; dims: string[] }
   | { type: "setPivotMetrics"; metrics: string[] }
   | { type: "reset"; initial: ExplorerState };
@@ -109,6 +123,16 @@ export function explorerReducer(state: ExplorerState, action: ExplorerAction): E
       return { ...state, grain: action.grain };
     case "setDateRange":
       return { ...state, dateRange: action.range };
+    case "setContextColumn":
+      return { ...state, contextColumn: action.column };
+    case "setComparison":
+      // A custom window is only meaningful with an explicit range; drop a stale one otherwise so
+      // switching back to "previous"/"year" doesn't carry the old custom bounds around.
+      return {
+        ...state,
+        comparison: action.comparison,
+        comparisonRange: action.comparison === "custom" ? action.range : undefined,
+      };
     case "setPivotDims":
       return { ...state, pivotDims: action.dims };
     case "setPivotMetrics":
@@ -141,6 +165,9 @@ export function initialStateFromCatalog(catalog: Catalog): ExplorerState {
     filters: {},
     grain: (model?.defaultGrain as Grain) ?? "month",
     dateRange: undefined,
+    contextColumn: "none",
+    comparison: "previous", // preserve the pre-E3 previous-period comparison as the default
+    comparisonRange: undefined,
     pivotDims: [],
     // Left empty so the pivot falls back to the active metric for whatever model is selected,
     // rather than pinning the primary model's first metric across model switches.

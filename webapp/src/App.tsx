@@ -117,6 +117,9 @@ function Shell() {
         range={state.dateRange}
         disabled={!hasTime}
         onChange={(range) => dispatch({ type: "setDateRange", range })}
+        comparison={state.comparison}
+        comparisonRange={state.comparisonRange}
+        onComparisonChange={(comparison, range) => dispatch({ type: "setComparison", comparison, range })}
       />
       <GrainSelect grain={state.grain} options={grains} disabled={!hasTime} onChange={(grain) => dispatch({ type: "setGrain", grain })} />
       {dirty ? (

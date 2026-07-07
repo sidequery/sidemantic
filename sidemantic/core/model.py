@@ -9,6 +9,7 @@ from sidemantic.core.freshness import Freshness
 from sidemantic.core.metric import Metric
 from sidemantic.core.pre_aggregation import PreAggregation
 from sidemantic.core.relationship import Relationship
+from sidemantic.core.security import SecurityPolicy
 from sidemantic.core.segment import Segment
 
 
@@ -47,6 +48,11 @@ class Model(BaseModel):
     segments: list[Segment] = Field(default_factory=list, description="Segment (named filter) definitions")
     pre_aggregations: list[PreAggregation] = Field(
         default_factory=list, description="Pre-aggregation definitions for query optimization"
+    )
+
+    # Security policy (data model only - enforcement is a separate work item, not wired in yet)
+    security: SecurityPolicy | None = Field(
+        None, description="Security policy: model access expression and row-level filters (not yet enforced)"
     )
 
     # Default time dimension for all metrics in this model

@@ -1550,6 +1550,34 @@
       "title": "Relationship",
       "type": "object"
     },
+    "SecurityPolicy": {
+      "description": "Security policy attached to a model via ``Model.security``.\n\nA security policy declares who may query a model (``access``) and how the\nmodel's rows must be filtered per user (``row_filters``). Both use Jinja\ntemplates whose only namespace is ``user`` - a mapping of the querying user's\nattributes (e.g. ``{{ user.region }}``, ``{{ user.role }}``).\n\nIntended enforcement semantics (implemented by the future enforcement layer,\nNOT here):\n\n- ``access`` is evaluated as a Jinja expression over the ``user`` namespace.\n  A falsy result means the model is not queryable by that user. A plain bool\n  is allowed as a constant (``True`` = always allowed, ``False`` = never).\n- Each entry in ``row_filters`` is a SQL fragment template. At query time the\n  rendered fragments are ANDed together and injected into the model's WHERE\n  clause *inside that model's CTE*, so they scope the model's own rows before\n  any join or aggregation.\n- ``user`` is the ONLY template namespace exposed to these templates.\n- Deny-by-default: if a model carries a ``security`` block and a query supplies\n  no user attributes, the enforcement layer raises (a query cannot silently\n  bypass a declared policy). Undefined attribute references likewise raise.\n\nExample:\n    SecurityPolicy(\n        access=\"user.role in ['analyst', 'admin']\",\n        row_filters=[\"region = '{{ user.region }}'\"],\n    )",
+      "properties": {
+        "access": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "boolean"
+            }
+          ],
+          "default": true,
+          "description": "Jinja expression over the `user` namespace deciding model queryability; a falsy result means the model is not queryable. A plain bool is a constant (True = always allowed, False = never).",
+          "title": "Access"
+        },
+        "row_filters": {
+          "description": "SQL fragment templates with Jinja `user` refs (e.g. \"region = '{{ user.region }}'\"). Rendered fragments are ANDed into the model's WHERE clause inside its CTE at query time.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Row Filters",
+          "type": "array"
+        }
+      },
+      "title": "SecurityPolicy",
+      "type": "object"
+    },
     "Segment": {
       "description": "Segment definition - predefined reusable filter.\n\nSegments are named filters that can be applied to queries to consistently\nfilter data according to business definitions.\n\nExample:\n    active_users = Segment(\n        name=\"active_users\",\n        sql=\"{model}.status = 'active' AND {model}.last_login > CURRENT_DATE - 30\"\n    )",
       "properties": {
@@ -3712,6 +3740,34 @@
             "title": "Relationship",
             "type": "object"
           },
+          "SecurityPolicy": {
+            "description": "Security policy attached to a model via ``Model.security``.\n\nA security policy declares who may query a model (``access``) and how the\nmodel's rows must be filtered per user (``row_filters``). Both use Jinja\ntemplates whose only namespace is ``user`` - a mapping of the querying user's\nattributes (e.g. ``{{ user.region }}``, ``{{ user.role }}``).\n\nIntended enforcement semantics (implemented by the future enforcement layer,\nNOT here):\n\n- ``access`` is evaluated as a Jinja expression over the ``user`` namespace.\n  A falsy result means the model is not queryable by that user. A plain bool\n  is allowed as a constant (``True`` = always allowed, ``False`` = never).\n- Each entry in ``row_filters`` is a SQL fragment template. At query time the\n  rendered fragments are ANDed together and injected into the model's WHERE\n  clause *inside that model's CTE*, so they scope the model's own rows before\n  any join or aggregation.\n- ``user`` is the ONLY template namespace exposed to these templates.\n- Deny-by-default: if a model carries a ``security`` block and a query supplies\n  no user attributes, the enforcement layer raises (a query cannot silently\n  bypass a declared policy). Undefined attribute references likewise raise.\n\nExample:\n    SecurityPolicy(\n        access=\"user.role in ['analyst', 'admin']\",\n        row_filters=[\"region = '{{ user.region }}'\"],\n    )",
+            "properties": {
+              "access": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "boolean"
+                  }
+                ],
+                "default": true,
+                "description": "Jinja expression over the `user` namespace deciding model queryability; a falsy result means the model is not queryable. A plain bool is a constant (True = always allowed, False = never).",
+                "title": "Access"
+              },
+              "row_filters": {
+                "description": "SQL fragment templates with Jinja `user` refs (e.g. \"region = '{{ user.region }}'\"). Rendered fragments are ANDed into the model's WHERE clause inside its CTE at query time.",
+                "items": {
+                  "type": "string"
+                },
+                "title": "Row Filters",
+                "type": "array"
+              }
+            },
+            "title": "SecurityPolicy",
+            "type": "object"
+          },
           "Segment": {
             "description": "Segment definition - predefined reusable filter.\n\nSegments are named filters that can be applied to queries to consistently\nfilter data according to business definitions.\n\nExample:\n    active_users = Segment(\n        name=\"active_users\",\n        sql=\"{model}.status = 'active' AND {model}.last_login > CURRENT_DATE - 30\"\n    )",
             "properties": {
@@ -3948,6 +4004,18 @@
             },
             "title": "Relationships",
             "type": "array"
+          },
+          "security": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/SecurityPolicy"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Security policy: model access expression and row-level filters (not yet enforced)"
           },
           "segments": {
             "description": "Segment (named filter) definitions",

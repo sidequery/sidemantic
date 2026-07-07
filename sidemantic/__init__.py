@@ -13,6 +13,7 @@ from sidemantic.core.pre_aggregation import PreAggregation, RefreshKey, RefreshR
 from sidemantic.core.preagg_recommender import PreAggRecommendation, PreAggregationRecommender, QueryPattern
 from sidemantic.core.query_plan import PreaggCandidate, PreaggCheck, QueryPlan
 from sidemantic.core.relationship import Relationship
+from sidemantic.core.security import SecurityPolicy
 from sidemantic.core.segment import Segment
 
 # Backwards compatibility alias
@@ -37,6 +38,7 @@ __all__ = [
     "RefreshKey",
     "RefreshResult",
     "Relationship",
+    "SecurityPolicy",
     "Segment",
     "SemanticLayer",
     "load_from_directory",

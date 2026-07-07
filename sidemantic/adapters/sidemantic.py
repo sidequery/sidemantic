@@ -55,11 +55,16 @@ MODEL_FIELDS = {
     "relationships",
     "segments",
     "pre_aggregations",
+    "security",
     "default_time_dimension",
     "default_grain",
     "freshness",
     "sql_metrics",
     "sql_segments",
+}
+SECURITY_FIELDS = {
+    "access",
+    "row_filters",
 }
 FRESHNESS_FIELDS = {
     "watermark",
@@ -741,6 +746,29 @@ class SidemanticAdapter(BaseAdapter):
                     ttl_seconds=freshness_def.get("ttl_seconds", freshness_def.get("ttlSeconds")),
                 )
 
+        if "security" in model_def:
+            security_def = model_def.get("security")
+            if security_def is None:
+                model_kwargs["security"] = None
+            elif not isinstance(security_def, dict):
+                location = f"{source_path}: " if source_path else ""
+                raise ValueError(f"{location}model '{name}' security must be a mapping")
+            else:
+                reject_unknown_fields(
+                    security_def,
+                    SECURITY_FIELDS,
+                    f"model '{name}' security",
+                    source_path=source_path,
+                )
+                from sidemantic.core.security import SecurityPolicy
+
+                security_kwargs = {}
+                if "access" in security_def:
+                    security_kwargs["access"] = security_def.get("access")
+                if "row_filters" in security_def:
+                    security_kwargs["row_filters"] = security_def.get("row_filters") or []
+                model_kwargs["security"] = SecurityPolicy(**security_kwargs)
+
         if "primary_key_columns" in model_def:
             model_kwargs["primary_key"] = model_def.get("primary_key_columns")
         elif "primary_key" in model_def:
@@ -1100,6 +1128,16 @@ class SidemanticAdapter(BaseAdapter):
             result["pre_aggregations"] = [
                 self._export_pre_aggregation(pre_aggregation) for pre_aggregation in model.pre_aggregations
             ]
+
+        # Export security policy
+        if model.security is not None:
+            security_def = {}
+            # access defaults to True; only export when non-default
+            if model.security.access is not True:
+                security_def["access"] = model.security.access
+            if model.security.row_filters:
+                security_def["row_filters"] = model.security.row_filters
+            result["security"] = security_def
 
         return result
 

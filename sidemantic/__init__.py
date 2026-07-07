@@ -2,7 +2,7 @@
 
 from typing import TYPE_CHECKING
 
-__version__ = "0.10.1"
+__version__ = "0.10.2"
 
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.freshness import Freshness
@@ -13,6 +13,7 @@ from sidemantic.core.pre_aggregation import PreAggregation, RefreshKey, RefreshR
 from sidemantic.core.preagg_recommender import PreAggRecommendation, PreAggregationRecommender, QueryPattern
 from sidemantic.core.query_plan import PreaggCandidate, PreaggCheck, QueryPlan
 from sidemantic.core.relationship import Relationship
+from sidemantic.core.security import SecurityPolicy
 from sidemantic.core.segment import Segment
 
 # Backwards compatibility alias
@@ -37,6 +38,7 @@ __all__ = [
     "RefreshKey",
     "RefreshResult",
     "Relationship",
+    "SecurityPolicy",
     "Segment",
     "SemanticLayer",
     "load_from_directory",

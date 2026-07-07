@@ -22,6 +22,15 @@ class PreaggregationStrictError(RuntimeError):
     """Raised in strict (rollup-only) mode when a query cannot be served from a pre-aggregation."""
 
 
+class SecurityError(Exception):
+    """Raised by the security enforcement layer when a query violates a model's SecurityPolicy.
+
+    Covers denied model access (falsy ``access`` expression), missing user attributes under
+    deny-by-default, and failures rendering a row-filter template (e.g. an undefined ``user``
+    attribute reference). Not raised anywhere yet - enforcement is a separate work item.
+    """
+
+
 # Substrings that identify a "missing relation/table" execution error across
 # database adapters (DuckDB, Postgres, BigQuery, Snowflake, ClickHouse, ...).
 # Used to decide whether a routed-but-unbuilt pre-aggregation table should fall

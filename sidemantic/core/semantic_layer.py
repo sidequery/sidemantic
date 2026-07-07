@@ -103,6 +103,10 @@ class SemanticLayer:
         self.graph = SemanticGraph()
         self._sql_rewrite_cache: dict[tuple[object, ...], str] = {}
         self._sql_rewrite_cache_limit = 256
+        # Monotonic counter bumped whenever the model/metric graph or query-affecting
+        # config mutates. Included in result-cache keys so cached Arrow results are
+        # invalidated the moment the layer definition changes.
+        self._generation = 0
         self.use_preaggregations = use_preaggregations
         self.preagg_strict = preagg_strict
         self.preagg_database = preagg_database
@@ -271,6 +275,44 @@ class SemanticLayer:
         # Update the adapter's connection
         self.adapter.conn = value
 
+    @property
+    def connection_fingerprint(self) -> str:
+        """Stable string identifying which database this layer talks to.
+
+        Included in result-cache keys so identical SQL against different
+        databases (or different connection strings) never shares a cached
+        Arrow result. Uses the adapter dialect plus the connection string when
+        available; falls back to the adapter's identity for custom adapters.
+        """
+        connection_string = getattr(self, "connection_string", None) or f"custom:{id(self.adapter)}"
+        return f"{self.dialect}|{connection_string}"
+
+    def build_result_key(
+        self,
+        compiled_sql: str,
+        user_attributes: dict | None = None,
+    ) -> str:
+        """Build a content-addressed result-cache key for a compiled query.
+
+        Servers call this to key cached Arrow results. The key covers the
+        compiled (post pre-agg-routing) SQL, the dialect + connection
+        fingerprint, the layer generation counter (bumped on model/metric/config
+        mutations), and the caller's security-scoped ``user_attributes`` (may be
+        None today; A2 will populate it) so results never collide across users.
+        """
+        from sidemantic.core.result_cache import build_result_key
+
+        # Combine the layer-level generation with the graph's own mutation
+        # counter so any direct graph mutation also invalidates cached results.
+        generation = self._generation + getattr(self.graph, "_version", 0)
+        return build_result_key(
+            compiled_sql=compiled_sql,
+            dialect=self.dialect,
+            connection_fingerprint=self.connection_fingerprint,
+            generation=generation,
+            user_attributes=user_attributes,
+        )
+
     def add_model(self, model: Model) -> None:
         """Add a model to the semantic layer.
 
@@ -322,6 +364,7 @@ class SemanticLayer:
 
         self.graph.add_model(model)
         self._sql_rewrite_cache.clear()
+        self._generation += 1
 
     def _normalize_model_table(self, model: Model) -> None:
         """Normalize model.table for the active dialect when needed."""
@@ -539,6 +582,7 @@ class SemanticLayer:
 
         self.graph.add_metric(measure)
         self._sql_rewrite_cache.clear()
+        self._generation += 1
 
     def query(
         self,

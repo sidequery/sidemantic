@@ -1157,6 +1157,12 @@ def api_serve(
     max_request_body_bytes: int = typer.Option(
         None, "--max-request-body-bytes", help="Maximum request body size in bytes"
     ),
+    result_cache_mb: int = typer.Option(
+        None, "--result-cache-mb", help="Result cache size in MB (0 disables; default 0)"
+    ),
+    result_cache_ttl: float = typer.Option(
+        None, "--result-cache-ttl", help="Result cache entry TTL in seconds (default 60)"
+    ),
     ui: bool = typer.Option(True, "--ui/--no-ui", help="Serve the embedded web UI at the root path"),
 ):
     """
@@ -1221,6 +1227,16 @@ def api_serve(
         max_request_body_bytes
         if max_request_body_bytes is not None
         else (_loaded_config.api_server.max_request_body_bytes if _loaded_config else 1024 * 1024)
+    )
+    result_cache_mb_resolved = (
+        result_cache_mb
+        if result_cache_mb is not None
+        else (_loaded_config.api_server.result_cache_mb if _loaded_config else 0)
+    )
+    result_cache_ttl_resolved = (
+        result_cache_ttl
+        if result_cache_ttl is not None
+        else (_loaded_config.api_server.result_cache_ttl if _loaded_config else 60.0)
     )
 
     preagg_db = _loaded_config.preagg_database if _loaded_config else None
@@ -1290,6 +1306,8 @@ def api_serve(
         cors_origins=cors_origins_resolved,
         max_request_body_bytes=max_body_bytes_resolved,
         serve_ui=serve_ui,
+        result_cache_mb=result_cache_mb_resolved,
+        result_cache_ttl=result_cache_ttl_resolved,
     )
 
 

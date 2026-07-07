@@ -363,6 +363,14 @@ class Metric(BaseModel):
         None,
         description="Dimension across which this metric cannot be summed (e.g., time for averages)",
     )
+    non_additive_window: Literal["min", "max"] = Field(
+        "max",
+        description=(
+            "Which value of non_additive_dimension to keep per group when computing a "
+            "semi-additive metric. 'max' (default) keeps the last snapshot (MetricFlow "
+            "default); 'min' keeps the first."
+        ),
+    )
 
     # Arbitrary metadata (ai_context, custom_extensions, etc.)
     meta: dict[str, Any] | None = Field(None, description="Arbitrary metadata for extensions")

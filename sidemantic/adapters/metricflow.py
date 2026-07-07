@@ -570,11 +570,17 @@ class MetricFlowAdapter(BaseAdapter):
         value_format_name = meta.get("value_format_name")
         drill_fields = meta.get("drill_fields")
 
-        # Parse non_additive_dimension
+        # Parse non_additive_dimension. MetricFlow allows a window_choice of
+        # "min"/"max" (default "max" = keep the last snapshot); window_groupings are
+        # not modeled here (we partition by the query's non-time grouping dimensions).
         non_additive = measure_def.get("non_additive_dimension")
         non_additive_dimension = None
+        non_additive_window = "max"
         if non_additive and isinstance(non_additive, dict):
             non_additive_dimension = non_additive.get("name")
+            window_choice = non_additive.get("window_choice")
+            if window_choice in ("min", "max"):
+                non_additive_window = window_choice
 
         # Convert expr to string if it's not None (can be int, like 1 for count)
         expr = measure_def.get("expr")
@@ -591,6 +597,7 @@ class MetricFlowAdapter(BaseAdapter):
             value_format_name=value_format_name,
             drill_fields=drill_fields,
             non_additive_dimension=non_additive_dimension,
+            non_additive_window=non_additive_window,
         )
 
     @staticmethod
@@ -1031,7 +1038,12 @@ class MetricFlowAdapter(BaseAdapter):
                     measure_def["meta"] = measure_def.get("meta", {})
                     measure_def["meta"]["drill_fields"] = measure.drill_fields
                 if measure.non_additive_dimension:
-                    measure_def["non_additive_dimension"] = {"name": measure.non_additive_dimension}
+                    non_additive_def = {"name": measure.non_additive_dimension}
+                    # Only emit window_choice when it differs from the MetricFlow default
+                    # ("max" = keep the last snapshot), to keep exports minimal.
+                    if getattr(measure, "non_additive_window", "max") == "min":
+                        non_additive_def["window_choice"] = "min"
+                    measure_def["non_additive_dimension"] = non_additive_def
 
                 result["measures"].append(measure_def)
 

@@ -13,6 +13,7 @@ from sidemantic.core.pre_aggregation import PreAggregation, RefreshKey, RefreshR
 from sidemantic.core.preagg_recommender import PreAggRecommendation, PreAggregationRecommender, QueryPattern
 from sidemantic.core.query_plan import PreaggCandidate, PreaggCheck, QueryPlan
 from sidemantic.core.relationship import Relationship
+from sidemantic.core.security import SecurityPolicy
 from sidemantic.core.segment import Segment
 
 # Backwards compatibility alias
@@ -37,6 +38,8 @@ __all__ = [
     "RefreshKey",
     "RefreshResult",
     "Relationship",
+    "SecurityError",
+    "SecurityPolicy",
     "Segment",
     "SemanticLayer",
     "load_from_directory",
@@ -64,4 +67,8 @@ def __getattr__(name):  # Lazy import to avoid importing duckdb on package impor
         from sidemantic.dashboard import DashboardSpecError  # type: ignore
 
         return DashboardSpecError
+    if name == "SecurityError":
+        from sidemantic.core.semantic_layer import SecurityError  # type: ignore
+
+        return SecurityError
     raise AttributeError(name)

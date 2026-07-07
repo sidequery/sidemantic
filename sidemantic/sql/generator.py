@@ -91,6 +91,24 @@ class SQLGenerator:
         self._dialect_instance = _cached_dialect(dialect)
         self._generate_cache: dict[tuple[object, ...], str] = {}
         self._generate_cache_limit = 256
+        self._fragment_cache: dict[tuple[str, str], exp.Expression] = {}
+        self._fragment_cache_limit = 256
+
+    def _parse_fragment(self, sql: str, dialect: str) -> exp.Expression:
+        """Parse a SQL fragment into a sqlglot expression, memoized by (sql, dialect).
+
+        Shared parsing entry point for reused fragments (e.g. security row filters) so the
+        same fragment is not re-parsed repeatedly within a compile. Returns a copy of the
+        cached expression so callers may mutate the AST in place without corrupting the cache.
+        """
+        key = (sql, dialect)
+        parsed = self._fragment_cache.get(key)
+        if parsed is None:
+            parsed = sqlglot.parse_one(sql, dialect=dialect)
+            if len(self._fragment_cache) >= self._fragment_cache_limit:
+                self._fragment_cache.pop(next(iter(self._fragment_cache)))
+            self._fragment_cache[key] = parsed
+        return parsed.copy()
 
     @staticmethod
     def _agg_sql_name(agg: str) -> str:
@@ -159,6 +177,7 @@ class SQLGenerator:
         aliases,
         skip_default_time_dimensions,
         with_totals,
+        user_attributes=None,
     ) -> tuple[object, ...]:
         return (
             getattr(self.graph, "_version", 0),
@@ -178,6 +197,9 @@ class SQLGenerator:
             self._freeze_cache_value(aliases),
             skip_default_time_dimensions,
             with_totals,
+            # user_attributes affects rendered row filters and access outcome, so it MUST be
+            # part of the cache key; otherwise one user's scoped SQL could be served to another.
+            self._freeze_cache_value(user_attributes),
         )
 
     def _cache_generate_result(self, cache_key: tuple[object, ...], sql: str) -> str:
@@ -563,6 +585,7 @@ class SQLGenerator:
         filters: list[str] | None = None,
         order_by: list[str] | None = None,
         limit: int | None = None,
+        user_attributes: dict | None = None,
     ) -> str:
         """Generate CREATE VIEW statement for a semantic query.
 
@@ -575,6 +598,9 @@ class SQLGenerator:
             filters: List of filter expressions
             order_by: List of fields to order by
             limit: Maximum number of rows
+            user_attributes: Per-request attributes bound to the ``user`` namespace when
+                enforcing model security policies (access gates and row filters). A model
+                with a declared security policy but no ``user_attributes`` is denied.
 
         Returns:
             CREATE VIEW SQL statement
@@ -583,8 +609,107 @@ class SQLGenerator:
 
         if not re.match(r"^[a-zA-Z_][a-zA-Z0-9_.]*$", view_name):
             raise ValueError(f"Invalid view name: {view_name}")
-        query_sql = self.generate(metrics, dimensions, filters, order_by, limit)
+        query_sql = self.generate(
+            metrics,
+            dimensions,
+            filters,
+            order_by=order_by,
+            limit=limit,
+            user_attributes=user_attributes,
+        )
         return f"CREATE VIEW {view_name} AS\n{query_sql}"
+
+    def _participating_models(self, model_names: list[str]) -> set[str]:
+        """Compute the full set of models a query touches, including intermediate join models.
+
+        This mirrors the ``all_models`` derivation used by the main grouped-query path so the
+        security enforcement, filter classification, and CTE build all see the identical set.
+        """
+        all_models = set(model_names)
+        names = list(model_names)
+        for i, model_a in enumerate(names):
+            for model_b in names[i + 1 :]:
+                try:
+                    join_path = self.graph.find_relationship_path(model_a, model_b)
+                    for jp in join_path:
+                        all_models.add(jp.from_model)
+                        all_models.add(jp.to_model)
+                except ValueError:
+                    # No join path found between these two models.
+                    pass
+        return all_models
+
+    def _enforce_security(self, models_in_query: set[str], user_attributes: dict | None) -> dict[str, list[str]]:
+        """Enforce model security policies for a compile, once per query.
+
+        For every participating model with a ``security`` policy:
+          - Access check: evaluate ``access`` (bool or Jinja boolean expression over ``user``);
+            a falsy result raises ``SecurityError`` naming the model.
+          - Deny-by-default: if the model declares a security policy and ``user_attributes is
+            None`` the query is denied (it cannot bypass a declared policy). ``{}`` counts as
+            "attributes provided but empty".
+          - Row filters: each ``row_filters`` entry is rendered against ``user_attributes`` and
+            returned, keyed by model, so the caller can AND it into that model's own CTE.
+
+        Args:
+            models_in_query: Full set of participating model names (base + joined + intermediate).
+            user_attributes: Per-request ``user`` attributes, or ``None``.
+
+        Returns:
+            Dict mapping model name to the list of rendered row-filter SQL fragments (columns
+            qualified with the model name so classification pushes them into that model's CTE).
+
+        Raises:
+            SecurityError: On access denial, deny-by-default, undefined attributes, or a row
+                filter that fails to parse.
+        """
+        from sidemantic.core.security import evaluate_access, render_row_filter
+        from sidemantic.core.semantic_layer import SecurityError
+
+        row_filters_by_model: dict[str, list[str]] = {}
+
+        for model_name in sorted(models_in_query):
+            model = self.graph.get_model(model_name)
+            if model is None or model.security is None:
+                continue
+
+            policy = model.security
+
+            # Deny-by-default: a declared policy cannot be bypassed by omitting attributes.
+            if user_attributes is None:
+                raise SecurityError(
+                    f"Model '{model_name}' declares a security policy but the query supplied no "
+                    "user_attributes; pass user_attributes to query()/compile() (use {} for an "
+                    "empty attribute set)."
+                )
+
+            # Access gate.
+            if not evaluate_access(policy.access, user_attributes):
+                raise SecurityError(f"Access denied to model '{model_name}' by its security policy.")
+
+            # Row-level filters: render, parse (via the memoized fragment parser to validate),
+            # then qualify bare columns with the model name so _classify_filters_for_pushdown
+            # routes them into this model's CTE (scoping rows before joins/aggregation).
+            rendered_filters: list[str] = []
+            for filter_template in policy.row_filters:
+                rendered = render_row_filter(filter_template, user_attributes)
+                try:
+                    parsed = self._parse_fragment(rendered, self.dialect)
+                except Exception as exc:
+                    raise SecurityError(
+                        f"Row filter for model '{model_name}' failed to parse as SQL: {rendered!r}"
+                    ) from exc
+                # Qualify unqualified columns with the model name so the filter is pushed into
+                # this model's CTE rather than the outer (post-join) WHERE.
+                for column in parsed.find_all(exp.Column):
+                    if not column.table:
+                        column.set("table", model_name)
+                rendered_filters.append(parsed.sql(dialect=self.dialect))
+
+            if rendered_filters:
+                row_filters_by_model[model_name] = rendered_filters
+
+        return row_filters_by_model
 
     def generate(
         self,
@@ -601,6 +726,7 @@ class SQLGenerator:
         aliases: dict[str, str] | None = None,
         skip_default_time_dimensions: bool = False,
         with_totals: bool = False,
+        user_attributes: dict | None = None,
     ) -> str:
         """Generate SQL query from semantic layer query.
 
@@ -621,6 +747,10 @@ class SQLGenerator:
                 trailing _is_total column (1 for the grand total, 0 for detail rows) so it
                 is distinguishable from a real all-NULL dimension group. Cannot be combined
                 with ungrouped, limit, or offset
+            user_attributes: Per-request attributes bound to the ``user`` namespace when
+                enforcing model security policies (access gates and row-level filters). A
+                model with a declared security policy but ``user_attributes is None`` is
+                denied (deny-by-default); ``{}`` is treated as "provided but empty".
 
         Returns:
             SQL query string
@@ -653,6 +783,7 @@ class SQLGenerator:
             aliases,
             skip_default_time_dimensions,
             with_totals,
+            user_attributes,
         )
         cached = self._generate_cache.get(cache_key)
         if cached is not None:
@@ -716,6 +847,21 @@ class SQLGenerator:
                 processed_filters.append(f)
 
         filters = processed_filters
+
+        # Enforce model security policies once per compile, BEFORE any SQL is assembled or any
+        # query-shape early-return path (window functions, symmetric-aggregate fanout, pre-agg
+        # routing) fires. The participating model set is derived the same way as the main
+        # grouped-query path (base + joined + intermediate join models) so access checks and
+        # row filters cover every model the query actually touches. Rendered row filters are
+        # qualified with their model name and appended to `filters`, so downstream filter
+        # classification/pushdown injects them into each model's own CTE (scoping rows before
+        # joins and aggregation, which is what makes them fan-out-safe).
+        security_model_names = self._find_required_models(metrics, dimensions, filters)
+        if security_model_names:
+            participating_models = self._participating_models(security_model_names)
+            security_row_filters = self._enforce_security(participating_models, user_attributes)
+            for model_name in sorted(security_row_filters):
+                filters = filters + security_row_filters[model_name]
 
         # Check if any metrics need window functions (cumulative or time_comparison)
         def metric_needs_window(m):

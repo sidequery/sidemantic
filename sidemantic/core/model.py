@@ -9,6 +9,7 @@ from sidemantic.core.freshness import Freshness
 from sidemantic.core.metric import Metric
 from sidemantic.core.pre_aggregation import PreAggregation
 from sidemantic.core.relationship import Relationship
+from sidemantic.core.security import SecurityPolicy
 from sidemantic.core.segment import Segment
 
 
@@ -69,6 +70,12 @@ class Model(BaseModel):
 
     # Arbitrary metadata (ai_context, custom_extensions, etc.)
     meta: dict[str, Any] | None = Field(None, description="Arbitrary metadata for extensions")
+
+    # Access control and row-level security policy. When set, queries touching this model are
+    # subject to an access gate and per-request row filters enforced in the compile/query path.
+    security: SecurityPolicy | None = Field(
+        None, description="Model-level access control and row-level security policy"
+    )
 
     def __init__(self, **data):
         super().__init__(**data)

@@ -1550,6 +1550,34 @@
       "title": "Relationship",
       "type": "object"
     },
+    "SecurityPolicy": {
+      "description": "Model-level security policy: access gate plus row-level filters.\n\nAttributes:\n    access: Whether the model may be queried. A literal ``bool`` or a Jinja\n        boolean expression over ``user`` (rendered as ``{{ (EXPR) }}`` and\n        interpreted truthy/falsy). Defaults to ``True`` (no access restriction).\n    row_filters: SQL filter templates rendered per-request over ``user`` and\n        AND-ed into the model's CTE (row-level security). Defaults to empty.",
+      "properties": {
+        "access": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "boolean"
+            }
+          ],
+          "default": true,
+          "description": "Access gate: bool or Jinja boolean expression over `user`",
+          "title": "Access"
+        },
+        "row_filters": {
+          "description": "Row-level filter templates rendered over `user` and AND-ed into the model CTE",
+          "items": {
+            "type": "string"
+          },
+          "title": "Row Filters",
+          "type": "array"
+        }
+      },
+      "title": "SecurityPolicy",
+      "type": "object"
+    },
     "Segment": {
       "description": "Segment definition - predefined reusable filter.\n\nSegments are named filters that can be applied to queries to consistently\nfilter data according to business definitions.\n\nExample:\n    active_users = Segment(\n        name=\"active_users\",\n        sql=\"{model}.status = 'active' AND {model}.last_login > CURRENT_DATE - 30\"\n    )",
       "properties": {
@@ -3712,6 +3740,34 @@
             "title": "Relationship",
             "type": "object"
           },
+          "SecurityPolicy": {
+            "description": "Model-level security policy: access gate plus row-level filters.\n\nAttributes:\n    access: Whether the model may be queried. A literal ``bool`` or a Jinja\n        boolean expression over ``user`` (rendered as ``{{ (EXPR) }}`` and\n        interpreted truthy/falsy). Defaults to ``True`` (no access restriction).\n    row_filters: SQL filter templates rendered per-request over ``user`` and\n        AND-ed into the model's CTE (row-level security). Defaults to empty.",
+            "properties": {
+              "access": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "boolean"
+                  }
+                ],
+                "default": true,
+                "description": "Access gate: bool or Jinja boolean expression over `user`",
+                "title": "Access"
+              },
+              "row_filters": {
+                "description": "Row-level filter templates rendered over `user` and AND-ed into the model CTE",
+                "items": {
+                  "type": "string"
+                },
+                "title": "Row Filters",
+                "type": "array"
+              }
+            },
+            "title": "SecurityPolicy",
+            "type": "object"
+          },
           "Segment": {
             "description": "Segment definition - predefined reusable filter.\n\nSegments are named filters that can be applied to queries to consistently\nfilter data according to business definitions.\n\nExample:\n    active_users = Segment(\n        name=\"active_users\",\n        sql=\"{model}.status = 'active' AND {model}.last_login > CURRENT_DATE - 30\"\n    )",
             "properties": {
@@ -3948,6 +4004,18 @@
             },
             "title": "Relationships",
             "type": "array"
+          },
+          "security": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/SecurityPolicy"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Model-level access control and row-level security policy"
           },
           "segments": {
             "description": "Segment (named filter) definitions",

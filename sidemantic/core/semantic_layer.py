@@ -112,10 +112,13 @@ class SemanticLayer:
                 full-table scans.
             max_limit: Opt-in maximum row limit; an explicit (or defaulted) limit larger
                 than this is capped to it (default: None, i.e. uncapped).
-            allow_non_additive_unsafe: When True, suppress the UnsupportedMetricError raised
-                at query time for metrics that declare a non_additive_dimension. The generator
-                has no semi-additive handling, so such metrics are over-aggregated (wrong)
-                results; this flag opts into that behavior explicitly (default: False).
+            allow_non_additive_unsafe: When True, skip the generator's semi-additive
+                (non_additive_dimension) rewrite entirely and aggregate such metrics naively
+                over ALL snapshots -- i.e. over-aggregated (wrong) results. By default the
+                generator implements semi-additive handling correctly (QUALIFY last/first
+                snapshot per group) for QUALIFY dialects and raises UnsupportedMetricError
+                only for cases it does not implement; this flag opts back into the old,
+                naive behavior explicitly (default: False).
             enforce_visibility: When True, requesting a dimension/metric whose ``public=False``
                 raises during compile, and catalog/introspection listings omit non-public
                 fields. Defaults to False so library users are unaffected.

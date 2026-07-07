@@ -14,6 +14,13 @@ from sidemantic.core.symmetric_aggregate import build_symmetric_aggregate_sql
 from sidemantic.sql.aggregation_detection import sql_has_aggregate
 from sidemantic.validation import QueryValidationError
 
+# Dialects whose SQL supports the QUALIFY clause natively. Semi-additive
+# (non_additive_dimension) handling emits a QUALIFY into each affected model's CTE
+# to keep only the last (or first) snapshot per group; dialects without QUALIFY
+# (e.g. postgres, mysql) are rejected rather than served an equivalent subquery in
+# this first cut. See SQLGenerator._plan_semi_additive.
+_QUALIFY_DIALECTS = frozenset({"duckdb", "snowflake", "bigquery", "databricks", "spark", "clickhouse"})
+
 
 @lru_cache(maxsize=4096)
 def _quote_identifier_cached(name: str, dialect: str, is_simple: bool) -> str:
@@ -111,10 +118,11 @@ class SQLGenerator:
             preagg_schema: Optional schema name for pre-aggregation tables
             timezone: Optional IANA timezone; when set, time dimensions are bucketed
                 in this timezone (UTC-stored timestamps converted before truncation)
-            allow_non_additive_unsafe: When True, do not raise for metrics that declare
-                a non_additive_dimension. The generator has no semi-additive handling, so
-                such metrics are over-aggregated (wrong) results; this flag opts into that
-                behavior explicitly (default: False)
+            allow_non_additive_unsafe: When True, skip the semi-additive rewrite for
+                metrics that declare a non_additive_dimension and aggregate them naively
+                over ALL snapshots (over-aggregated, wrong results). By default the generator
+                implements semi-additive handling (QUALIFY last/first snapshot per group);
+                this flag opts back into the old, naive behavior explicitly (default: False)
         """
         self.graph = graph
         self.dialect = dialect
@@ -156,29 +164,121 @@ class SQLGenerator:
                         break
         return metric
 
-    def _guard_non_additive(self, metrics: list[str]) -> None:
-        """Raise if any queried metric declares a non_additive_dimension.
+    def _plan_semi_additive(
+        self,
+        metrics: list[str],
+        base_model_name: str,
+        model_names: list[str],
+        parsed_dims: list[tuple[str, str | None]] | None = None,
+    ) -> dict[str, tuple[str, str]]:
+        """Plan semi-additive (non_additive_dimension) handling for a grouped query.
 
-        The generator has no semi-additive handling, so such a metric would be
-        summed across the dimension it must not be summed across, producing wrong
-        (over-aggregated) results. Opt out with allow_non_additive_unsafe.
+        A measure with ``non_additive_dimension`` must be aggregated over only the
+        rows at the last (max) — or first (min) — value of that time dimension per
+        group, so an account-balance snapshot is summed across accounts but NOT
+        double-counted across days. We implement this by emitting a QUALIFY into the
+        owning model's CTE (see ``_build_model_cte``) that keeps only those rows.
+
+        Returns a mapping ``model_name -> (non_additive_dimension_name, window)`` for
+        the models that need a semi-additive QUALIFY. ``window`` is "min" or "max".
+
+        Raises ``UnsupportedMetricError`` only for cases we do NOT implement:
+
+        - a dialect without QUALIFY (postgres, mysql, ...), since we don't emit the
+          equivalent subquery/self-join in this first cut; and
+        - the combination of semi-additive handling with fan-out symmetric aggregation
+          for the SAME model. These two rewrites don't compose safely: symmetric
+          aggregation deduplicates fan-out rows via SUM(DISTINCT hash+value) at the
+          OUTER aggregation, while semi-additive filtering must happen at the INNER
+          (pre-join) grain. Applying the QUALIFY to the fanned-out CTE would filter on
+          a post-fan-out max and the two corrections would silently interfere, so we
+          refuse rather than emit wrong SQL.
+
+        When ``allow_non_additive_unsafe`` is set we skip the rewrite entirely and
+        return an empty plan — the measure is then aggregated naively (over ALL
+        snapshots, i.e. the old, incorrect behavior). This is the documented escape
+        hatch: it now means "skip correct handling, aggregate naively", not "opt out
+        of a guard".
         """
-        if self.allow_non_additive_unsafe:
-            return
+        plan: dict[str, tuple[str, str]] = {}
+
+        # Collect requested semi-additive measures and their owning models.
+        semi_additive: list[tuple[str, object]] = []  # (reference, metric_obj)
         for reference in metrics:
             metric = self._resolve_metric_obj(reference)
             if metric is not None and getattr(metric, "non_additive_dimension", None):
-                # Lazy import to avoid a circular import (semantic_layer imports this module).
-                from sidemantic.core.semantic_layer import UnsupportedMetricError
+                semi_additive.append((reference, metric))
 
+        if not semi_additive:
+            return plan
+
+        # Escape hatch: skip the rewrite entirely (naive, incorrect aggregation).
+        if self.allow_non_additive_unsafe:
+            return plan
+
+        # Lazy import to avoid a circular import (semantic_layer imports this module).
+        from sidemantic.core.semantic_layer import UnsupportedMetricError
+
+        if self.dialect not in _QUALIFY_DIALECTS:
+            reference = semi_additive[0][0]
+            raise UnsupportedMetricError(
+                f"Metric '{reference}' declares non_additive_dimension, which is handled "
+                f"with a QUALIFY clause, but dialect '{self.dialect}' has no QUALIFY support. "
+                "Semi-additive handling is currently implemented only for "
+                f"{sorted(_QUALIFY_DIALECTS)}. Pre-aggregate this metric upstream, or pass "
+                "allow_non_additive_unsafe=True to query it anyway (naive, over-aggregated)."
+            )
+
+        # Fan-out detection: a model whose measures are computed with symmetric
+        # aggregation cannot also carry a semi-additive QUALIFY (see docstring).
+        fanout = self._has_fanout_joins(base_model_name, [m for m in model_names if m != base_model_name])
+
+        for reference, metric in semi_additive:
+            # Resolve the owning model of this measure.
+            try:
+                owning_model, _ = self.graph.resolve_metric_reference(reference)
+            except KeyError:
+                owning_model = None
+            if owning_model is None:
+                # Fall back to the model that actually defines this measure.
+                for model_name in model_names:
+                    model = self.graph.get_model(model_name)
+                    if model.get_metric(reference) or ("." in reference and reference.split(".", 1)[0] == model_name):
+                        owning_model = model_name
+                        break
+            if owning_model is None:
+                owning_model = base_model_name
+
+            if fanout.get(owning_model, False):
                 raise UnsupportedMetricError(
                     f"Metric '{reference}' declares non_additive_dimension "
-                    f"'{metric.non_additive_dimension}', but the SQL generator has no "
-                    "semi-additive handling and would over-aggregate it across that "
-                    "dimension (wrong results). Pre-aggregate this metric upstream, or "
-                    "pass allow_non_additive_unsafe=True to SemanticLayer to query it "
-                    "anyway (accepting incorrect aggregation)."
+                    f"'{metric.non_additive_dimension}' and is also computed under a fan-out "
+                    "(one-to-many) join that requires symmetric aggregation. These two "
+                    "corrections operate at different grains (semi-additive filters rows "
+                    "before the join; symmetric aggregation deduplicates after it) and do not "
+                    "compose safely, so this combination is unsupported. Query the "
+                    "semi-additive metric without the fan-out join, pre-aggregate it upstream, "
+                    "or pass allow_non_additive_unsafe=True (naive, incorrect)."
                 )
+
+            # If the query already groups by the non-additive dimension itself, the
+            # measure is additive within each requested time bucket, so no QUALIFY is
+            # needed (and applying one would wrongly collapse to a single bucket). Skip.
+            grouped_by_non_additive = False
+            for dim_ref, _gran in parsed_dims or []:
+                if "." not in dim_ref:
+                    continue
+                dim_model, dim_name = dim_ref.split(".", 1)
+                if dim_model == owning_model and dim_name == metric.non_additive_dimension:
+                    grouped_by_non_additive = True
+                    break
+            if grouped_by_non_additive:
+                continue
+
+            window = getattr(metric, "non_additive_window", "max") or "max"
+            plan[owning_model] = (metric.non_additive_dimension, window)
+
+        return plan
 
     @staticmethod
     def _agg_sql_name(agg: str) -> str:
@@ -832,9 +932,12 @@ class SQLGenerator:
         parameters = parameters or {}
         aliases = aliases or {}
 
-        # Fail loudly on semi-additive metrics: the generator has no non-additive
-        # handling, so it would silently over-aggregate them (wrong results).
-        self._guard_non_additive(metrics)
+        # Semi-additive (non_additive_dimension) metrics are handled below by injecting
+        # a QUALIFY into the owning model's CTE (see _plan_semi_additive / _build_model_cte).
+        # The plan (and any UnsupportedMetricError for unimplemented dialects or the
+        # semi-additive + symmetric-aggregate combination) is computed once model_names
+        # is known; a non-empty plan also forces the live CTE path (pre-aggregations do
+        # not model per-group last-snapshot filtering).
 
         # Pre-aggregations are materialized with UTC time buckets, so a timezone-bucketed
         # query cannot be served from a rollup without returning wrong (UTC) buckets. Force a
@@ -1009,6 +1112,16 @@ class SQLGenerator:
         # Find all models needed for the query
         model_names = self._find_required_models(metrics, dimensions, filters)
 
+        # Plan semi-additive handling. Raises for unimplemented cases (non-QUALIFY
+        # dialect, or semi-additive combined with fan-out symmetric aggregation on the
+        # same model). A non-empty plan forces the live CTE path (below) so the QUALIFY
+        # can be injected; pre-aggregation routing is skipped for these queries.
+        semi_additive_plan = (
+            self._plan_semi_additive(metrics, model_names[0], model_names, parsed_dims) if model_names else {}
+        )
+        if semi_additive_plan:
+            use_preaggregations = False
+
         if with_totals and (use_preaggregations or self._needs_preaggregation_for_fanout(metrics, dimensions)):
             raise NotImplementedError(
                 "with_totals is not yet supported for pre-aggregated or fanout (symmetric-aggregate) queries"
@@ -1031,8 +1144,11 @@ class SQLGenerator:
                 return self._cache_generate_result(cache_key, join_key_preagg_sql + "\n" + instrumentation)
 
         # Check if we need symmetric aggregation (pre-aggregation approach)
-        # This is needed when metrics come from different models at different join levels
-        if self._needs_preaggregation_for_fanout(metrics, dimensions):
+        # This is needed when metrics come from different models at different join levels.
+        # Skip this fan-out path for semi-additive queries: _plan_semi_additive already
+        # rejected any semi-additive measure whose owning model is fanned out, so a
+        # surviving plan must be served by the standard CTE path (which injects QUALIFY).
+        if not semi_additive_plan and self._needs_preaggregation_for_fanout(metrics, dimensions):
             return self._cache_generate_result(
                 cache_key,
                 self._generate_with_preaggregation(
@@ -1156,6 +1272,7 @@ class SQLGenerator:
                 all_models=all_models,
                 metric_filter_columns=metric_filter_cols,
                 ungrouped=ungrouped,
+                semi_additive=semi_additive_plan.get(model_name),
             )
             cte_sqls.append(cte_sql)
 
@@ -1723,6 +1840,7 @@ class SQLGenerator:
         all_models: set[str] | None = None,
         metric_filter_columns: set[str] | None = None,
         ungrouped: bool = False,
+        semi_additive: tuple[str, str] | None = None,
     ) -> str:
         """Build CTE SQL for a model with optional filter pushdown.
 
@@ -1735,6 +1853,10 @@ class SQLGenerator:
             all_models: All models in query (for determining if joins needed)
             metric_filter_columns: Columns needed for metric-level filters
             ungrouped: Whether the query is returning raw ungrouped rows
+            semi_additive: Optional ``(non_additive_dimension_name, window)`` for a
+                semi-additive measure owned by this model. When set, a QUALIFY is added
+                so only rows at the last (window="max") or first ("min") value of that
+                time dimension per group survive. See ``_plan_semi_additive``.
 
         Returns:
             CTE SQL string
@@ -1748,6 +1870,12 @@ class SQLGenerator:
         needed_dimensions = self._find_needed_dimensions(
             model_name, dimensions, filters, order_by, metric_filter_columns
         )
+
+        # Semi-additive handling needs the non_additive_dimension column projected into
+        # this CTE (aliased to its dimension name) so the QUALIFY below can reference it,
+        # even when the query does not group by it.
+        if semi_additive is not None:
+            needed_dimensions.add(semi_additive[0])
 
         # Build SELECT columns
         select_cols = []
@@ -2147,11 +2275,47 @@ class SQLGenerator:
 
             where_clause = f"\n  WHERE {' AND '.join(processed_filters)}"
 
+        # Build QUALIFY clause for semi-additive (non_additive_dimension) measures.
+        # Keep only the rows at the last (window="max") or first ("min") value of the
+        # non-additive time dimension per group. The partition is the query's other
+        # grouping dimensions for THIS model (e.g. account/region); the time dimension
+        # itself is excluded. Referencing the CTE's own SELECT aliases here is valid
+        # under QUALIFY in DuckDB and the other _QUALIFY_DIALECTS.
+        qualify_clause = ""
+        if semi_additive is not None:
+            non_additive_dim, window = semi_additive
+            time_col = self._quote_identifier(non_additive_dim)
+
+            # Partition over the other grouping dimensions requested for this model.
+            partition_aliases: list[str] = []
+            seen_partition: set[str] = set()
+            for dim_ref, gran in dimensions:
+                if not dim_ref.startswith(model_name + "."):
+                    continue
+                dim_name = dim_ref.split(".", 1)[1]
+                if dim_name == non_additive_dim:
+                    # The non-additive time dim is the window axis, never a partition key.
+                    continue
+                cte_alias = f"{dim_name}__{gran}" if gran else dim_name
+                if cte_alias in seen_partition:
+                    continue
+                seen_partition.add(cte_alias)
+                partition_aliases.append(self._quote_identifier(cte_alias))
+
+            agg = "MAX" if window == "max" else "MIN"
+            if partition_aliases:
+                partition_sql = ", ".join(partition_aliases)
+                window_expr = f"{agg}({time_col}) OVER (PARTITION BY {partition_sql})"
+            else:
+                # No other grouping dimensions: one global last/first snapshot.
+                window_expr = f"{agg}({time_col}) OVER ()"
+            qualify_clause = f"\n  QUALIFY {time_col} = {window_expr}"
+
         # Build CTE
         select_str = ",\n    ".join(select_cols)
         cte_sql = (
             f"{self._quote_identifier(self._cte_name(model_name))} AS "
-            f"(\n  SELECT\n    {select_str}\n  FROM {from_clause}{where_clause}\n)"
+            f"(\n  SELECT\n    {select_str}\n  FROM {from_clause}{where_clause}{qualify_clause}\n)"
         )
 
         return cte_sql

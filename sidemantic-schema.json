@@ -766,6 +766,16 @@
           "description": "Dimension across which this metric cannot be summed (e.g., time for averages)",
           "title": "Non Additive Dimension"
         },
+        "non_additive_window": {
+          "default": "max",
+          "description": "Which value of non_additive_dimension to keep per group when computing a semi-additive metric. 'max' (default) keeps the last snapshot (MetricFlow default); 'min' keeps the first.",
+          "enum": [
+            "min",
+            "max"
+          ],
+          "title": "Non Additive Window",
+          "type": "string"
+        },
         "numerator": {
           "anyOf": [
             {
@@ -2042,6 +2052,16 @@
             "description": "Dimension across which this metric cannot be summed (e.g., time for averages)",
             "title": "Non Additive Dimension"
           },
+          "non_additive_window": {
+            "default": "max",
+            "description": "Which value of non_additive_dimension to keep per group when computing a semi-additive metric. 'max' (default) keeps the last snapshot (MetricFlow default); 'min' keeps the first.",
+            "enum": [
+              "min",
+              "max"
+            ],
+            "title": "Non Additive Window",
+            "type": "string"
+          },
           "numerator": {
             "anyOf": [
               {
@@ -3034,6 +3054,16 @@
                 "default": null,
                 "description": "Dimension across which this metric cannot be summed (e.g., time for averages)",
                 "title": "Non Additive Dimension"
+              },
+              "non_additive_window": {
+                "default": "max",
+                "description": "Which value of non_additive_dimension to keep per group when computing a semi-additive metric. 'max' (default) keeps the last snapshot (MetricFlow default); 'min' keeps the first.",
+                "enum": [
+                  "min",
+                  "max"
+                ],
+                "title": "Non Additive Window",
+                "type": "string"
               },
               "numerator": {
                 "anyOf": [

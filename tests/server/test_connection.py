@@ -70,9 +70,14 @@ def test_handle_system_queries():
     conn = SemanticLayerConnection(connection_id=1, executor=None, layer=layer)
     conn.send_reader = send_reader
 
+    cursor = layer.adapter.cursor()
+
     assert (
         conn._try_handle_system_query(
-            "SELECT * FROM information_schema.tables", "select * from information_schema.tables", lambda *_: None
+            "SELECT * FROM information_schema.tables",
+            "select * from information_schema.tables",
+            lambda *_: None,
+            cursor,
         )
         is True
     )
@@ -84,7 +89,10 @@ def test_handle_system_queries():
     captured.clear()
     assert (
         conn._try_handle_system_query(
-            "SELECT * FROM pg_catalog.pg_namespace", "select * from pg_catalog.pg_namespace", lambda *_: None
+            "SELECT * FROM pg_catalog.pg_namespace",
+            "select * from pg_catalog.pg_namespace",
+            lambda *_: None,
+            cursor,
         )
         is True
     )
@@ -122,7 +130,8 @@ def test_query_error_raises_exception():
     from sidemantic.server.connection import SemanticLayerConnection
 
     mock_layer = MagicMock()
-    mock_layer.adapter.execute.side_effect = Exception("test error")
+    # Query work now runs on a per-request cursor obtained from the adapter.
+    mock_layer.adapter.cursor.return_value.execute.side_effect = Exception("test error")
     mock_layer.graph = SemanticGraph()
     mock_layer.dialect = "duckdb"
 

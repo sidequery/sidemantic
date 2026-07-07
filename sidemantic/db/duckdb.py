@@ -41,6 +41,18 @@ class DuckDBAdapter(BaseDatabaseAdapter):
             for stmt in init_sql:
                 self.conn.execute(stmt)
 
+    def cursor(self) -> Any:
+        """Return an independent DuckDB cursor for concurrent reads.
+
+        In duckdb-python, ``conn.cursor()`` creates a new connection that shares
+        the same underlying database. This is the sanctioned pattern for
+        multithreaded reads: each thread gets its own handle, so concurrent
+        ``execute`` calls do not serialize on a single connection. The returned
+        cursor exposes ``execute`` returning a relation with ``fetch_record_batch``
+        and ``fetchone``, matching the result API used across the codebase.
+        """
+        return self.conn.cursor()
+
     def execute(self, sql: str) -> Any:
         """Execute SQL and return DuckDB relation."""
         return self.conn.execute(sql)

@@ -144,6 +144,10 @@ def create_app(
     """Create a FastAPI app for a loaded semantic layer."""
     app = FastAPI(title="Sidemantic API", version=__version__)
     app.state.layer = layer
+    # Reentrant lock reserved for layer-MUTATION endpoints (model registration,
+    # config reload). Read-only query/compile/metadata handlers do NOT take it:
+    # they read the immutable in-memory graph and execute queries on a fresh
+    # per-request adapter.cursor(), so HTTP reads run concurrently.
     app.state.lock = threading.RLock()
     app.state.auth_token = auth_token
 
@@ -181,106 +185,107 @@ def create_app(
 
     @app.get("/health", dependencies=[Depends(require_auth)])
     def health() -> dict[str, Any]:
-        with app.state.lock:
-            current_layer = app.state.layer
-            return {
-                "status": "ok",
-                "version": __version__,
-                "dialect": current_layer.dialect,
-                "model_count": len(current_layer.graph.models),
-            }
+        # Read-only metadata: reads the in-memory graph, never mutates layer
+        # state and never touches the database, so it needs no lock.
+        current_layer = app.state.layer
+        return {
+            "status": "ok",
+            "version": __version__,
+            "dialect": current_layer.dialect,
+            "model_count": len(current_layer.graph.models),
+        }
 
     @app.get("/models", dependencies=[Depends(require_auth)])
     def list_models() -> list[dict[str, Any]]:
-        with app.state.lock:
-            current_layer = app.state.layer
-            models = []
-            for model_name, model in current_layer.graph.models.items():
-                models.append(
-                    {
-                        "name": model_name,
-                        "table": model.table,
-                        "dimensions": [d.name for d in model.dimensions],
-                        "metrics": [m.name for m in model.metrics],
-                        "relationships": len(model.relationships),
-                    }
-                )
-            return models
-
-    @app.get("/graph", dependencies=[Depends(require_auth)])
-    def graph() -> dict[str, Any]:
-        with app.state.lock:
-            current_layer = app.state.layer
-            graph_obj = current_layer.graph
-
-            models = []
-            for model_name, model in graph_obj.models.items():
-                model_info = {
+        # Read-only metadata over the in-memory graph.
+        current_layer = app.state.layer
+        models = []
+        for model_name, model in current_layer.graph.models.items():
+            models.append(
+                {
                     "name": model_name,
                     "table": model.table,
                     "dimensions": [d.name for d in model.dimensions],
                     "metrics": [m.name for m in model.metrics],
-                    "relationships": [{"name": rel.name, "type": rel.type} for rel in model.relationships],
+                    "relationships": len(model.relationships),
                 }
-                if model.segments:
-                    model_info["segments"] = [segment.name for segment in model.segments]
-                models.append(model_info)
+            )
+        return models
 
-            graph_metrics = []
-            for metric_name, metric in graph_obj.metrics.items():
-                metric_info = {"name": metric_name}
-                if metric.type:
-                    metric_info["type"] = metric.type
-                if metric.description:
-                    metric_info["description"] = metric.description
-                if metric.base_metric:
-                    metric_info["base_metric"] = metric.base_metric
-                graph_metrics.append(metric_info)
+    @app.get("/graph", dependencies=[Depends(require_auth)])
+    def graph() -> dict[str, Any]:
+        # Read-only metadata over the in-memory graph.
+        current_layer = app.state.layer
+        graph_obj = current_layer.graph
 
-            joinable_pairs = []
-            model_names = list(graph_obj.models.keys())
-            for index, left_name in enumerate(model_names):
-                for right_name in model_names[index + 1 :]:
-                    try:
-                        path = graph_obj.find_relationship_path(left_name, right_name)
-                    except (KeyError, ValueError):
-                        continue
-                    joinable_pairs.append({"from": left_name, "to": right_name, "hops": len(path)})
+        models = []
+        for model_name, model in graph_obj.models.items():
+            model_info = {
+                "name": model_name,
+                "table": model.table,
+                "dimensions": [d.name for d in model.dimensions],
+                "metrics": [m.name for m in model.metrics],
+                "relationships": [{"name": rel.name, "type": rel.type} for rel in model.relationships],
+            }
+            if model.segments:
+                model_info["segments"] = [segment.name for segment in model.segments]
+            models.append(model_info)
 
-            payload: dict[str, Any] = {"models": models, "joinable_pairs": joinable_pairs}
-            if graph_metrics:
-                payload["graph_metrics"] = graph_metrics
-            return payload
+        graph_metrics = []
+        for metric_name, metric in graph_obj.metrics.items():
+            metric_info = {"name": metric_name}
+            if metric.type:
+                metric_info["type"] = metric.type
+            if metric.description:
+                metric_info["description"] = metric.description
+            if metric.base_metric:
+                metric_info["base_metric"] = metric.base_metric
+            graph_metrics.append(metric_info)
+
+        joinable_pairs = []
+        model_names = list(graph_obj.models.keys())
+        for index, left_name in enumerate(model_names):
+            for right_name in model_names[index + 1 :]:
+                try:
+                    path = graph_obj.find_relationship_path(left_name, right_name)
+                except (KeyError, ValueError):
+                    continue
+                joinable_pairs.append({"from": left_name, "to": right_name, "hops": len(path)})
+
+        payload: dict[str, Any] = {"models": models, "joinable_pairs": joinable_pairs}
+        if graph_metrics:
+            payload["graph_metrics"] = graph_metrics
+        return payload
 
     @app.get("/describe", dependencies=[Depends(require_auth)])
     def describe() -> dict[str, Any]:
         """Rich UI/FFI model metadata (dimension types, granularities, labels, formats)."""
-        with app.state.lock:
-            current_layer = app.state.layer
-            payload = current_layer.describe_models()
-            payload["dialect"] = current_layer.dialect
-            return payload
+        # Read-only metadata over the in-memory graph.
+        current_layer = app.state.layer
+        payload = current_layer.describe_models()
+        payload["dialect"] = current_layer.dialect
+        return payload
 
     @app.post("/compile", dependencies=[Depends(require_auth)])
     def compile_query(payload: StructuredQueryRequest) -> dict[str, str]:
-        with app.state.lock:
-            current_layer = app.state.layer
-            filters = payload.resolved_filters()
-            for filter_str in filters:
-                validate_filter_expression(filter_str, dialect=current_layer.dialect)
-            sql = current_layer.compile(
-                dimensions=payload.dimensions,
-                metrics=payload.metrics,
-                filters=filters,
-                segments=payload.segments or None,
-                order_by=payload.order_by or None,
-                limit=payload.limit,
-                offset=payload.offset,
-                ungrouped=payload.ungrouped,
-                parameters=payload.parameters,
-                use_preaggregations=payload.use_preaggregations,
-            )
-            return {"sql": sql}
+        # Pure CPU: compiles SQL from the in-memory graph, no DB access, no lock.
+        current_layer = app.state.layer
+        filters = payload.resolved_filters()
+        for filter_str in filters:
+            validate_filter_expression(filter_str, dialect=current_layer.dialect)
+        sql = current_layer.compile(
+            dimensions=payload.dimensions,
+            metrics=payload.metrics,
+            filters=filters,
+            segments=payload.segments or None,
+            order_by=payload.order_by or None,
+            limit=payload.limit,
+            offset=payload.offset,
+            ungrouped=payload.ungrouped,
+            parameters=payload.parameters,
+            use_preaggregations=payload.use_preaggregations,
+        )
+        return {"sql": sql}
 
     @app.post("/query", dependencies=[Depends(require_auth)])
     def run_query(
@@ -288,33 +293,35 @@ def create_app(
         request: Request,
         format: Literal["json", "arrow"] | None = Query(default=None),
     ):
-        with app.state.lock:
-            current_layer = app.state.layer
-            filters = payload.resolved_filters()
-            for filter_str in filters:
-                validate_filter_expression(filter_str, dialect=current_layer.dialect)
-            sql = current_layer.compile(
-                dimensions=payload.dimensions,
-                metrics=payload.metrics,
-                filters=filters,
-                segments=payload.segments or None,
-                order_by=payload.order_by or None,
-                limit=payload.limit,
-                offset=payload.offset,
-                ungrouped=payload.ungrouped,
-                parameters=payload.parameters,
-                use_preaggregations=payload.use_preaggregations,
-            )
-            result = current_layer.adapter.execute(sql)
-            return _build_query_response(request, current_layer, result, sql=sql, format_override=format)
+        # Read-only query: compile (pure CPU) then execute on a fresh per-request
+        # cursor so concurrent reads do not serialize on one connection.
+        current_layer = app.state.layer
+        filters = payload.resolved_filters()
+        for filter_str in filters:
+            validate_filter_expression(filter_str, dialect=current_layer.dialect)
+        sql = current_layer.compile(
+            dimensions=payload.dimensions,
+            metrics=payload.metrics,
+            filters=filters,
+            segments=payload.segments or None,
+            order_by=payload.order_by or None,
+            limit=payload.limit,
+            offset=payload.offset,
+            ungrouped=payload.ungrouped,
+            parameters=payload.parameters,
+            use_preaggregations=payload.use_preaggregations,
+        )
+        cursor = current_layer.adapter.cursor()
+        result = cursor.execute(sql)
+        return _build_query_response(request, current_layer, result, sql=sql, format_override=format)
 
     @app.post("/sql/compile", dependencies=[Depends(require_auth)])
     def compile_sql(payload: SQLRequest) -> dict[str, str]:
-        with app.state.lock:
-            current_layer = app.state.layer
-            query = _normalize_sql_query(payload.query)
-            rewritten_sql = QueryRewriter(current_layer.graph, dialect=current_layer.dialect).rewrite(query)
-            return {"sql": rewritten_sql}
+        # Pure CPU: rewrites SQL from the in-memory graph, no DB access, no lock.
+        current_layer = app.state.layer
+        query = _normalize_sql_query(payload.query)
+        rewritten_sql = QueryRewriter(current_layer.graph, dialect=current_layer.dialect).rewrite(query)
+        return {"sql": rewritten_sql}
 
     @app.post("/sql", dependencies=[Depends(require_auth)])
     def run_sql(
@@ -322,19 +329,20 @@ def create_app(
         request: Request,
         format: Literal["json", "arrow"] | None = Query(default=None),
     ):
-        with app.state.lock:
-            current_layer = app.state.layer
-            query = _normalize_sql_query(payload.query)
-            rewritten_sql = QueryRewriter(current_layer.graph, dialect=current_layer.dialect).rewrite(query)
-            result = current_layer.adapter.execute(rewritten_sql)
-            return _build_query_response(
-                request,
-                current_layer,
-                result,
-                sql=rewritten_sql,
-                original_sql=query,
-                format_override=format,
-            )
+        # Read-only query: rewrite (pure CPU) then execute on a fresh per-request cursor.
+        current_layer = app.state.layer
+        query = _normalize_sql_query(payload.query)
+        rewritten_sql = QueryRewriter(current_layer.graph, dialect=current_layer.dialect).rewrite(query)
+        cursor = current_layer.adapter.cursor()
+        result = cursor.execute(rewritten_sql)
+        return _build_query_response(
+            request,
+            current_layer,
+            result,
+            sql=rewritten_sql,
+            original_sql=query,
+            format_override=format,
+        )
 
     @app.post("/raw", dependencies=[Depends(require_auth)])
     def run_raw_sql(
@@ -343,18 +351,19 @@ def create_app(
         format: Literal["json", "arrow"] | None = Query(default=None),
     ):
         """Execute raw SQL directly on the underlying database, bypassing the semantic rewriter."""
-        with app.state.lock:
-            current_layer = app.state.layer
-            query = _normalize_sql_query(payload.query)
-            _require_select_statement(query)
-            result = current_layer.adapter.execute(query)
-            return _build_query_response(
-                request,
-                current_layer,
-                result,
-                sql=query,
-                format_override=format,
-            )
+        # Read-only query (SELECT enforced) on a fresh per-request cursor.
+        current_layer = app.state.layer
+        query = _normalize_sql_query(payload.query)
+        _require_select_statement(query)
+        cursor = current_layer.adapter.cursor()
+        result = cursor.execute(query)
+        return _build_query_response(
+            request,
+            current_layer,
+            result,
+            sql=query,
+            format_override=format,
+        )
 
     if serve_ui:
         ui_dir = ui_static_dir()

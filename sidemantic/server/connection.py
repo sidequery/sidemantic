@@ -1,6 +1,7 @@
 """PostgreSQL wire protocol connection handler for semantic layer."""
 
 import logging
+import re
 
 import riffq
 
@@ -12,15 +13,44 @@ class SemanticLayerConnection(riffq.BaseConnection):
     """Connection handler that translates PostgreSQL queries to semantic layer queries."""
 
     def __init__(
-        self, connection_id, executor, layer: SemanticLayer, username: str | None = None, password: str | None = None
+        self,
+        connection_id,
+        executor,
+        layer: SemanticLayer,
+        username: str | None = None,
+        password: str | None = None,
+        user_attrs_map: dict[str, dict] | None = None,
     ):
         super().__init__(connection_id, executor)
         self.layer = layer
         self.username = username
         self.password = password
+        # Maps the Postgres startup ``user`` to a security ``user_attributes``
+        # dict (loaded from --user-attrs-file at startup). riffq does not cleanly
+        # expose the full per-session startup parameters to the query handler, so
+        # we key security attributes off the authenticated username only. The
+        # connecting username is captured in handle_auth and looked up here.
+        self.user_attrs_map = user_attrs_map or {}
+        self.session_user: str | None = None
+
+    def _user_attributes(self) -> dict | None:
+        """Resolve security user attributes for the current session.
+
+        Looks up the connecting Postgres username in the startup-loaded
+        user-attrs map. Returns None when no mapping is configured for the user
+        (the semantic layer then denies any query touching a secured model).
+        """
+        user_attrs_map = getattr(self, "user_attrs_map", None)
+        session_user = getattr(self, "session_user", None)
+        if not user_attrs_map or session_user is None:
+            return None
+        return user_attrs_map.get(session_user)
 
     def handle_auth(self, user, pwd, host, database=None, callback=callable):
         """Handle authentication."""
+        # Capture the connecting username so query handling can map it to
+        # security user attributes, regardless of whether password auth is on.
+        self.session_user = user
         if self.username is None and self.password is None:
             # No auth required
             callback(True)
@@ -42,6 +72,15 @@ class SemanticLayerConnection(riffq.BaseConnection):
         """Handle a SQL query."""
         try:
             sql_lower = sql.lower().strip()
+
+            # Resolve per-session security attributes from the connecting user.
+            # NOTE: the PG path rewrites arbitrary SQL through QueryRewriter, which
+            # does not currently bake in row-level filters. When user attributes
+            # are configured we route the semantic-query path through
+            # ``layer.compile(user_attributes=...)`` so access gates and row
+            # filters are enforced; system/passthrough queries (SET, SHOW,
+            # information_schema, pg_catalog) are unaffected.
+            user_attributes = self._user_attributes()
 
             # Each executor thread gets its own cursor so concurrent reads do not
             # serialize on a single shared connection. For DuckDB this is an
@@ -69,6 +108,16 @@ class SemanticLayerConnection(riffq.BaseConnection):
             # Use non-strict mode to pass through system queries (SHOW, SET, etc.)
             rendered_sql = rewriter.rewrite(sql, strict=False)
 
+            # LIMITATION: QueryRewriter does not accept user_attributes, so the
+            # SQL-first PG path cannot bake row-level filters into rendered_sql
+            # today. When a user-attrs map is configured, enforce the coarse-
+            # grained access gate here: deny queries that touch a secured model
+            # if the connecting user has no attributes mapping. Fine-grained row
+            # filtering over the PG wire path is deferred to a future rewriter
+            # security hook.
+            if getattr(self, "user_attrs_map", None):
+                self._enforce_pg_access(rendered_sql, user_attributes)
+
             # Execute the query
             result = cursor.execute(rendered_sql)
 
@@ -81,6 +130,46 @@ class SemanticLayerConnection(riffq.BaseConnection):
             # Raise to let riffq send a proper PG ErrorResponse to the client.
             # Returning errors as data rows confuses BI tools that expect PG protocol errors.
             raise
+
+    def _enforce_pg_access(self, rendered_sql: str, user_attributes: dict | None) -> None:
+        """Enforce model access gates for the PG wire path.
+
+        Parses ``rendered_sql`` for referenced model names and, for any model with
+        a declared security policy, evaluates its access gate. A secured model
+        queried with no user attributes is denied (deny-by-default); a falsy access
+        gate is denied. Row-level filters are NOT applied here (see the caller's
+        LIMITATION note).
+
+        Raises:
+            SecurityError: If access to a touched secured model is denied.
+        """
+        from sidemantic.core.security import evaluate_access
+        from sidemantic.core.semantic_layer import SecurityError
+
+        secured = {
+            name: model
+            for name, model in self.layer.graph.models.items()
+            if getattr(model, "security", None) is not None
+        }
+        if not secured:
+            return
+
+        lowered = rendered_sql.lower()
+        for name, model in secured.items():
+            # Match the model name (and its underlying table) as a whole word so a
+            # substring of another identifier does not trigger a false positive.
+            candidates = {name.lower()}
+            if getattr(model, "table", None):
+                candidates.add(str(model.table).lower())
+            if not any(re.search(rf"\b{re.escape(c)}\b", lowered) for c in candidates):
+                continue
+            if user_attributes is None:
+                raise SecurityError(
+                    f"Model '{name}' has a security policy but no user attributes were provided "
+                    f"for this session. Configure the connecting user in --user-attrs-file."
+                )
+            if not evaluate_access(model.security.access, user_attributes):
+                raise SecurityError(f"Access to model '{name}' denied for the current user.")
 
     def _try_handle_system_query(self, sql: str, sql_lower: str, callback, cursor) -> bool:
         """Try to handle PostgreSQL system queries. Returns True if handled."""

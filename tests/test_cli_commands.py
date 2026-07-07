@@ -448,7 +448,7 @@ def test_serve_calls_start_server(monkeypatch, tmp_path):
     ensure_fake_riffq()
     called = {}
 
-    def fake_start_server(layer, host, port, username, password):
+    def fake_start_server(layer, host, port, username, password, user_attrs_map=None):
         called["layer"] = layer
         called["host"] = host
         called["port"] = port
@@ -523,7 +523,7 @@ pg_server:
 """
     )
 
-    def fake_start_server(layer, host, port, username, password):
+    def fake_start_server(layer, host, port, username, password, user_attrs_map=None):
         called["layer"] = layer
         called["host"] = host
         called["port"] = port
@@ -624,6 +624,9 @@ def test_api_serve_calls_start_server(monkeypatch, tmp_path):
         serve_ui=True,
         result_cache_mb=0,
         result_cache_ttl=60.0,
+        require_user_attrs=False,
+        enforce_visibility=False,
+        user_header="X-Sidemantic-User",
     ):
         called["layer"] = layer
         called["host"] = host
@@ -634,6 +637,9 @@ def test_api_serve_calls_start_server(monkeypatch, tmp_path):
         called["serve_ui"] = serve_ui
         called["result_cache_mb"] = result_cache_mb
         called["result_cache_ttl"] = result_cache_ttl
+        called["require_user_attrs"] = require_user_attrs
+        called["enforce_visibility"] = enforce_visibility
+        called["user_header"] = user_header
 
     monkeypatch.setattr("sidemantic.api_server.start_api_server", fake_start_api_server)
 

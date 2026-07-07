@@ -1031,6 +1031,11 @@ def serve(
     port: int = typer.Option(None, "--port", "-p", help="Port to listen on (overrides config)"),
     username: str = typer.Option(None, "--username", "-u", help="Username for authentication (overrides config)"),
     password: str = typer.Option(None, "--password", help="Password for authentication (overrides config)"),
+    user_attrs_file: Path = typer.Option(
+        None,
+        "--user-attrs-file",
+        help="Path to a JSON file mapping usernames -> user-attribute dicts for row/access security",
+    ),
 ):
     """
     Start a PostgreSQL-compatible server for the semantic layer.
@@ -1154,8 +1159,33 @@ def serve(
                 placeholders = ", ".join(["?" for _ in columns])
                 layer.conn.executemany(f"INSERT INTO {table} VALUES ({placeholders})", rows)
 
+    # Load the optional username -> user-attributes map for security enforcement.
+    user_attrs_map = None
+    if user_attrs_file is not None:
+        import json
+
+        if not user_attrs_file.exists():
+            typer.echo(f"Error: user-attrs file {user_attrs_file} does not exist", err=True)
+            raise typer.Exit(1)
+        try:
+            loaded = json.loads(user_attrs_file.read_text())
+        except json.JSONDecodeError as exc:
+            typer.echo(f"Error: failed to parse user-attrs file {user_attrs_file}: {exc}", err=True)
+            raise typer.Exit(1)
+        if not isinstance(loaded, dict) or not all(isinstance(v, dict) for v in loaded.values()):
+            typer.echo(f"Error: user-attrs file {user_attrs_file} must map usernames to attribute objects", err=True)
+            raise typer.Exit(1)
+        user_attrs_map = loaded
+
     # Start the server
-    start_server(layer, host=host_resolved, port=port_resolved, username=username_resolved, password=password_resolved)
+    start_server(
+        layer,
+        host=host_resolved,
+        port=port_resolved,
+        username=username_resolved,
+        password=password_resolved,
+        user_attrs_map=user_attrs_map,
+    )
 
 
 @app.command()
@@ -1178,6 +1208,21 @@ def api_serve(
     ),
     result_cache_ttl: float = typer.Option(
         None, "--result-cache-ttl", help="Result cache entry TTL in seconds (default 60)"
+    ),
+    require_user_attrs: bool = typer.Option(
+        False,
+        "--require-user-attrs",
+        help="Require the user-attributes header on data endpoints (reject with 400 if missing)",
+    ),
+    enforce_visibility: bool = typer.Option(
+        False,
+        "--enforce-visibility",
+        help="Reject requests for non-public dimensions/metrics",
+    ),
+    user_header: str = typer.Option(
+        "X-Sidemantic-User",
+        "--user-header",
+        help="Trusted request header carrying JSON user attributes",
     ),
     ui: bool = typer.Option(True, "--ui/--no-ui", help="Serve the embedded web UI at the root path"),
 ):
@@ -1324,6 +1369,9 @@ def api_serve(
         serve_ui=serve_ui,
         result_cache_mb=result_cache_mb_resolved,
         result_cache_ttl=result_cache_ttl_resolved,
+        require_user_attrs=require_user_attrs,
+        enforce_visibility=enforce_visibility,
+        user_header=user_header,
     )
 
 

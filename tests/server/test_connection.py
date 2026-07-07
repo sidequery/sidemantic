@@ -144,3 +144,66 @@ def test_query_error_raises_exception():
         conn._handle_query("SELECT invalid_col FROM nonexistent", callback)
 
     callback.assert_not_called()
+
+
+def test_user_attributes_lookup_by_session_user():
+    """The connecting username is mapped to its security user attributes."""
+    pytest.importorskip("riffq")
+    pytest.importorskip("pyarrow")
+    from sidemantic.server.connection import SemanticLayerConnection
+
+    layer = SemanticLayer(connection="duckdb:///:memory:")
+    attrs_map = {"alice": {"tenant_id": 1}, "bob": {"tenant_id": 2}}
+    conn = SemanticLayerConnection(connection_id=1, executor=None, layer=layer, user_attrs_map=attrs_map)
+
+    # Before auth, no session user -> None.
+    assert conn._user_attributes() is None
+
+    conn.handle_auth("alice", "", "localhost", callback=lambda _r: None)
+    assert conn._user_attributes() == {"tenant_id": 1}
+
+    conn.handle_auth("bob", "", "localhost", callback=lambda _r: None)
+    assert conn._user_attributes() == {"tenant_id": 2}
+
+    # Unknown user with a configured map -> None (deny-by-default upstream).
+    conn.handle_auth("mallory", "", "localhost", callback=lambda _r: None)
+    assert conn._user_attributes() is None
+
+
+def test_enforce_pg_access_denies_secured_model_without_attrs():
+    """A secured model touched with no user attributes is denied."""
+    pytest.importorskip("riffq")
+    pytest.importorskip("pyarrow")
+
+    from sidemantic import SecurityPolicy
+    from sidemantic.core.semantic_layer import SecurityError
+    from sidemantic.server.connection import SemanticLayerConnection
+
+    layer = SemanticLayer(connection="duckdb:///:memory:")
+    layer.add_model(
+        Model(
+            name="orders",
+            table="orders",
+            primary_key="id",
+            dimensions=[Dimension(name="status", sql="status", type="categorical")],
+            metrics=[Metric(name="order_count", agg="count")],
+            security=SecurityPolicy(access="{{ user.role == 'admin' }}"),
+        )
+    )
+    conn = SemanticLayerConnection(
+        connection_id=1, executor=None, layer=layer, user_attrs_map={"alice": {"role": "admin"}}
+    )
+
+    # No attributes for a secured model -> denied.
+    with pytest.raises(SecurityError):
+        conn._enforce_pg_access("SELECT * FROM orders", None)
+
+    # Non-admin -> access gate falsy -> denied.
+    with pytest.raises(SecurityError):
+        conn._enforce_pg_access("SELECT * FROM orders", {"role": "viewer"})
+
+    # Admin -> allowed (no raise).
+    conn._enforce_pg_access("SELECT * FROM orders", {"role": "admin"})
+
+    # A query not touching the secured model is unaffected.
+    conn._enforce_pg_access("SELECT 1", None)

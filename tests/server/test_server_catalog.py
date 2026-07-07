@@ -71,13 +71,14 @@ def test_start_server_registers_metrics_table_and_binds_connection(monkeypatch):
     calls = {"tables": [], "start": None, "bound": None}
 
     class FakeSemanticLayerConnection:
-        def __init__(self, connection_id, executor, layer, username, password):
+        def __init__(self, connection_id, executor, layer, username, password, user_attrs_map=None):
             calls["bound"] = {
                 "connection_id": connection_id,
                 "executor": executor,
                 "layer": layer,
                 "username": username,
                 "password": password,
+                "user_attrs_map": user_attrs_map,
             }
 
     class FakeInnerServer:

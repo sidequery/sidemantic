@@ -41,6 +41,7 @@ def start_server(
     port: int = 5433,
     username: str | None = None,
     password: str | None = None,
+    user_attrs_map: dict[str, dict] | None = None,
 ):
     """Start PostgreSQL-compatible server for the semantic layer.
 
@@ -50,6 +51,9 @@ def start_server(
         port: Port to listen on
         username: Username for authentication (optional)
         password: Password for authentication (optional)
+        user_attrs_map: Optional mapping of Postgres startup username -> security
+            ``user_attributes`` dict. Loaded from --user-attrs-file at startup and
+            used to enforce model access gates per connecting user.
     """
     if (username is None) != (password is None):
         raise ValueError("Both username and password must be provided together")
@@ -57,7 +61,7 @@ def start_server(
     # Create connection class with layer injected
     class BoundConnection(SemanticLayerConnection):
         def __init__(self, connection_id, executor):
-            super().__init__(connection_id, executor, layer, username, password)
+            super().__init__(connection_id, executor, layer, username, password, user_attrs_map=user_attrs_map)
 
     # Start server
     server = riffq.RiffqServer(f"{host}:{port}", connection_cls=BoundConnection)

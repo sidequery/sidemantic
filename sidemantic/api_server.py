@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import threading
 from pathlib import Path
 from typing import Any, Literal
@@ -114,6 +115,9 @@ def start_api_server(
     serve_ui: bool = True,
     result_cache_mb: int = 0,
     result_cache_ttl: float = 60.0,
+    require_user_attrs: bool = False,
+    enforce_visibility: bool = False,
+    user_header: str = "X-Sidemantic-User",
 ) -> None:
     """Start the HTTP API server."""
     try:
@@ -129,6 +133,9 @@ def start_api_server(
         serve_ui=serve_ui,
         result_cache_mb=result_cache_mb,
         result_cache_ttl=result_cache_ttl,
+        require_user_attrs=require_user_attrs,
+        enforce_visibility=enforce_visibility,
+        user_header=user_header,
     )
     uvicorn.run(app, host=host, port=port, log_level="info")
 
@@ -146,15 +153,36 @@ def create_app(
     serve_ui: bool = False,
     result_cache_mb: int = 0,
     result_cache_ttl: float = 60.0,
+    require_user_attrs: bool = False,
+    enforce_visibility: bool = False,
+    user_header: str = "X-Sidemantic-User",
 ) -> FastAPI:
     """Create a FastAPI app for a loaded semantic layer.
 
     When ``result_cache_mb`` > 0, read-only query handlers serve identical
     repeated queries from a content-keyed Arrow result cache (opt-in; the
     library ``SemanticLayer.query()`` is never cached by default).
+
+    Security integration:
+    - Per-request user attributes are read from the trusted ``user_header``
+      (default ``X-Sidemantic-User``) whose value is a JSON object. They are
+      threaded into the layer's compile/query path so access gates and row
+      filters are enforced, and into the result-cache key so cached results
+      never leak across users.
+    - ``require_user_attrs`` rejects data-endpoint requests lacking a valid
+      header with HTTP 400 before executing.
+    - ``enforce_visibility`` is applied to the layer so requesting a non-public
+      field is rejected.
     """
     app = FastAPI(title="Sidemantic API", version=__version__)
+    # enforce_visibility is a SemanticLayer.__init__ arg; the layer is passed in
+    # pre-built here, so set it on the instance (least invasive) rather than
+    # reconstructing the layer and re-loading its models.
+    if enforce_visibility:
+        layer.enforce_visibility = True
     app.state.layer = layer
+    app.state.require_user_attrs = require_user_attrs
+    app.state.user_header = user_header
     # Reentrant lock reserved for layer-MUTATION endpoints (model registration,
     # config reload). Read-only query/compile/metadata handlers do NOT take it:
     # they read the immutable in-memory graph and execute queries on a fresh
@@ -199,6 +227,45 @@ def create_app(
     @app.exception_handler(ValueError)
     async def handle_value_error(_request: Request, exc: ValueError):
         return JSONResponse({"error": str(exc)}, status_code=400)
+
+    from sidemantic.core.semantic_layer import SecurityError
+
+    @app.exception_handler(SecurityError)
+    async def handle_security_error(_request: Request, exc: SecurityError):
+        # A secured model was queried without sufficient user attributes (or an
+        # access gate denied the request). Map to 403 Forbidden.
+        return JSONResponse({"error": str(exc)}, status_code=403)
+
+    def resolve_user_attributes(request: Request) -> dict | None:
+        """Parse per-request user attributes from the trusted user header.
+
+        The header value is a JSON object bound to the ``user`` namespace when
+        enforcing security policies. Returns ``None`` when the header is absent.
+        Raises HTTP 400 when ``require_user_attrs`` is set and the header is
+        missing, or whenever the header is present but not a JSON object.
+        """
+        header_name = app.state.user_header
+        raw = request.headers.get(header_name)
+        if raw is None or raw.strip() == "":
+            if app.state.require_user_attrs:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Missing required user-attributes header {header_name!r}",
+                )
+            return None
+        try:
+            parsed = json.loads(raw)
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Malformed JSON in {header_name!r} header: {exc}",
+            ) from exc
+        if not isinstance(parsed, dict):
+            raise HTTPException(
+                status_code=400,
+                detail=f"{header_name!r} header must be a JSON object",
+            )
+        return parsed
 
     @app.get("/readyz")
     def readyz() -> dict[str, str]:
@@ -288,9 +355,13 @@ def create_app(
         return payload
 
     @app.post("/compile", dependencies=[Depends(require_auth)])
-    def compile_query(payload: StructuredQueryRequest) -> dict[str, str]:
+    def compile_query(payload: StructuredQueryRequest, request: Request) -> dict[str, str]:
         # Pure CPU: compiles SQL from the in-memory graph, no DB access, no lock.
+        # User attributes are threaded in so access gates and row filters are
+        # baked into the compiled SQL (a secured model with no attrs raises
+        # SecurityError -> 403).
         current_layer = app.state.layer
+        user_attributes = resolve_user_attributes(request)
         filters = payload.resolved_filters()
         for filter_str in filters:
             validate_filter_expression(filter_str, dialect=current_layer.dialect)
@@ -305,6 +376,7 @@ def create_app(
             ungrouped=payload.ungrouped,
             parameters=payload.parameters,
             use_preaggregations=payload.use_preaggregations,
+            user_attributes=user_attributes,
         )
         return {"sql": sql}
 
@@ -318,6 +390,7 @@ def create_app(
         # cursor so concurrent reads do not serialize on one connection. Execution
         # flows through _query_table so the opt-in result cache can serve repeats.
         current_layer = app.state.layer
+        user_attributes = resolve_user_attributes(request)
         filters = payload.resolved_filters()
         for filter_str in filters:
             validate_filter_expression(filter_str, dialect=current_layer.dialect)
@@ -332,8 +405,9 @@ def create_app(
             ungrouped=payload.ungrouped,
             parameters=payload.parameters,
             use_preaggregations=payload.use_preaggregations,
+            user_attributes=user_attributes,
         )
-        table = _query_table(app, current_layer, sql)
+        table = _query_table(app, current_layer, sql, user_attributes=user_attributes)
         return _build_query_response(request, current_layer, table, sql=sql, format_override=format)
 
     @app.post("/sql/compile", dependencies=[Depends(require_auth)])
@@ -353,9 +427,10 @@ def create_app(
         # Read-only query: rewrite (pure CPU) then execute on a fresh per-request
         # cursor, routed through _query_table for opt-in result caching.
         current_layer = app.state.layer
+        user_attributes = resolve_user_attributes(request)
         query = _normalize_sql_query(payload.query)
         rewritten_sql = QueryRewriter(current_layer.graph, dialect=current_layer.dialect).rewrite(query)
-        table = _query_table(app, current_layer, rewritten_sql)
+        table = _query_table(app, current_layer, rewritten_sql, user_attributes=user_attributes)
         return _build_query_response(
             request,
             current_layer,
@@ -375,9 +450,10 @@ def create_app(
         # Read-only query (SELECT enforced) on a fresh per-request cursor,
         # routed through _query_table for opt-in result caching.
         current_layer = app.state.layer
+        user_attributes = resolve_user_attributes(request)
         query = _normalize_sql_query(payload.query)
         _require_select_statement(query)
-        table = _query_table(app, current_layer, query)
+        table = _query_table(app, current_layer, query, user_attributes=user_attributes)
         return _build_query_response(
             request,
             current_layer,
@@ -429,19 +505,20 @@ def _execute_to_table(layer: SemanticLayer, sql: str) -> Any:
     return record_batch_reader_to_table(reader)
 
 
-def _query_table(app: FastAPI, layer: SemanticLayer, sql: str) -> Any:
+def _query_table(app: FastAPI, layer: SemanticLayer, sql: str, user_attributes: dict | None = None) -> Any:
     """Return the Arrow table for ``sql``, served from the result cache if enabled.
 
     The cache is opt-in (``result_cache_mb`` > 0). The key covers the compiled
-    SQL, dialect + connection fingerprint, layer generation, and user attributes
-    (None today; A2 will populate them). Singleflight in ResultCache ensures a
-    duplicate in-flight query runs the underlying execute exactly once.
+    SQL, dialect + connection fingerprint, layer generation, and the caller's
+    security-scoped ``user_attributes`` so cached results never leak across
+    users. Singleflight in ResultCache ensures a duplicate in-flight query runs
+    the underlying execute exactly once.
     """
     cache = getattr(app.state, "result_cache", None)
     if cache is None:
         return _execute_to_table(layer, sql)
 
-    key = layer.build_result_key(sql, user_attributes=None)
+    key = layer.build_result_key(sql, user_attributes=user_attributes)
     return cache.get_or_compute(key, lambda: _execute_to_table(layer, sql))
 
 

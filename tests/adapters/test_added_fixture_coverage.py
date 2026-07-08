@@ -348,7 +348,15 @@ def _assert_graph_integrity(fixture_path: str, graph) -> None:
 
 @cache
 def _parse_graph(adapter_cls: type, fixture_path: str):
-    return adapter_cls().parse(fixture_path)
+    graph = adapter_cls().parse(fixture_path)
+    # These contract tests validate parse/graph/execution structure, not access control.
+    # Some fixtures now import an enforced SecurityPolicy (Cube access_policy, Rill security:),
+    # which would otherwise trip deny-by-default when queries run without user attributes.
+    # Security import itself is covered by tests/adapters/test_security_import.py.
+    for model in graph.models.values():
+        if getattr(model, "security", None) is not None:
+            model.security = None
+    return graph
 
 
 def _pick_compile_query(graph):
@@ -859,14 +867,25 @@ def _assert_execution_result_contract(query_spec: dict, rows: list[tuple], fixtu
 
 
 def _prepare_graph_for_execution(graph, query_spec: dict):
-    if not (
+    needs_override = (
         query_spec.get("requires_table_override")
         or query_spec.get("requires_model_override")
         or query_spec.get("requires_sql_override")
-    ):
+    )
+    # Some fixtures now import an enforced SecurityPolicy (e.g. Cube access_policy). These
+    # execution-semantics tests validate query generation, not access control, so strip
+    # security here to avoid deny-by-default; enforcement is covered by
+    # tests/core/test_security_enforcement.py.
+    has_security = any(getattr(model, "security", None) is not None for model in graph.models.values())
+    if not needs_override and not has_security:
         return graph
 
     graph_for_query = deepcopy(graph)
+    for model in graph_for_query.models.values():
+        if getattr(model, "security", None) is not None:
+            model.security = None
+    if not needs_override:
+        return graph_for_query
     source_model_name = query_spec["model_name"]
     execution_model_name = query_spec["execution_model_name"]
     sql_expression_qualifier = query_spec.get("sql_expression_qualifier")

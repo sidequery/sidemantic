@@ -125,6 +125,24 @@ def test_metric_with_filter(semantic_layer):
     assert rows[0]["revenue"] == 250.00
 
 
+def test_rewrite_not_equal_relative_date(semantic_layer):
+    """!= against a relative date must not crash the rewriter (regression)."""
+    sql = "SELECT orders.revenue FROM orders WHERE orders.order_date != 'today'"
+
+    rewritten = QueryRewriter(semantic_layer.graph).rewrite(sql)
+
+    assert "'today'" not in rewritten
+
+
+def test_rewrite_less_than_relative_date(semantic_layer):
+    """< against a relative date is converted, not passed through raw."""
+    sql = "SELECT orders.revenue FROM orders WHERE orders.order_date < 'this month'"
+
+    rewritten = QueryRewriter(semantic_layer.graph).rewrite(sql)
+
+    assert "'this month'" not in rewritten
+
+
 def test_multiple_filters(semantic_layer):
     """Test rewriting query with multiple AND filters."""
     sql = """

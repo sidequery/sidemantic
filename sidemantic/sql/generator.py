@@ -9,7 +9,7 @@ from sqlglot import exp, select
 from sqlglot.dialects.dialect import Dialect
 
 from sidemantic.core.preagg_matcher import PreAggregationMatcher
-from sidemantic.core.semantic_graph import SemanticGraph
+from sidemantic.core.semantic_graph import SemanticGraph, _relationship_local_key_columns
 from sidemantic.core.symmetric_aggregate import build_symmetric_aggregate_sql
 from sidemantic.sql.aggregation_detection import sql_has_aggregate
 from sidemantic.validation import QueryValidationError
@@ -61,6 +61,7 @@ class SQLGenerator:
         dialect: str = "duckdb",
         preagg_database: str | None = None,
         preagg_schema: str | None = None,
+        timezone: str | None = None,
     ):
         """Initialize SQL generator.
 
@@ -69,11 +70,24 @@ class SQLGenerator:
             dialect: SQL dialect for generation (default: duckdb)
             preagg_database: Optional database name for pre-aggregation tables
             preagg_schema: Optional schema name for pre-aggregation tables
+            timezone: Optional IANA timezone; when set, time dimensions are bucketed
+                in this timezone (UTC-stored timestamps converted before truncation)
         """
         self.graph = graph
         self.dialect = dialect
         self.preagg_database = preagg_database
         self.preagg_schema = preagg_schema
+        # The timezone is interpolated into SQL string literals (AT TIME ZONE '...', etc.),
+        # so it must not contain quote/escape characters. Restrict to IANA-name characters
+        # to prevent SQL injection from a request- or preference-supplied value; the database
+        # validates that the zone actually exists at execution time.
+        if timezone is not None and not all(c.isalnum() or c in "_+-/" for c in timezone):
+            raise ValueError(
+                f"Invalid timezone {timezone!r}: expected an IANA timezone name like "
+                "'America/New_York' (letters, digits, '_', '/', '+', '-'). The value is "
+                "embedded into generated SQL, so other characters are rejected."
+            )
+        self.timezone = timezone
         self._dialect_instance = _cached_dialect(dialect)
         self._generate_cache: dict[tuple[object, ...], str] = {}
         self._generate_cache_limit = 256
@@ -81,7 +95,11 @@ class SQLGenerator:
     @staticmethod
     def _agg_sql_name(agg: str) -> str:
         """Return the SQL function name for a normalized metric aggregation."""
-        return {"variance_pop": "VAR_POP", "var_pop": "VAR_POP"}.get(agg, agg.upper())
+        return {
+            "variance_pop": "VAR_POP",
+            "var_pop": "VAR_POP",
+            "approx_count_distinct": "APPROX_COUNT_DISTINCT",
+        }.get(agg, agg.upper())
 
     @staticmethod
     def _model_from_clause(model) -> str:
@@ -140,6 +158,7 @@ class SQLGenerator:
         use_preaggregations,
         aliases,
         skip_default_time_dimensions,
+        with_totals,
     ) -> tuple[object, ...]:
         return (
             getattr(self.graph, "_version", 0),
@@ -158,6 +177,7 @@ class SQLGenerator:
             use_preaggregations,
             self._freeze_cache_value(aliases),
             skip_default_time_dimensions,
+            with_totals,
         )
 
     def _cache_generate_result(self, cache_key: tuple[object, ...], sql: str) -> str:
@@ -165,6 +185,28 @@ class SQLGenerator:
             self._generate_cache.pop(next(iter(self._generate_cache)))
         self._generate_cache[cache_key] = sql
         return sql
+
+    def _localize_to_timezone(self, column_expr: str) -> str:
+        """Convert a UTC-stored timestamp to wall-clock time in ``self.timezone``.
+
+        Returns the dialect-appropriate expression so that a subsequent DATE_TRUNC
+        buckets on local-time boundaries. Raises for dialects without timezone support.
+        """
+        tz = self.timezone
+        if self.dialect in {"duckdb", "postgres"}:
+            return f"((({column_expr}) AT TIME ZONE 'UTC') AT TIME ZONE '{tz}')"
+        if self.dialect == "snowflake":
+            return f"CONVERT_TIMEZONE('UTC', '{tz}', {column_expr})"
+        if self.dialect == "bigquery":
+            return f"DATETIME({column_expr}, '{tz}')"
+        if self.dialect in {"spark", "databricks"}:
+            return f"from_utc_timestamp({column_expr}, '{tz}')"
+        if self.dialect == "clickhouse":
+            return f"toTimeZone({column_expr}, '{tz}')"
+        raise ValueError(
+            f"Query timezone is not supported for dialect '{self.dialect}'. "
+            "Supported: duckdb, postgres, snowflake, bigquery, spark, databricks, clickhouse."
+        )
 
     def _date_trunc(self, granularity: str, column_expr: str) -> str:
         """Generate dialect-specific time truncation expression.
@@ -176,6 +218,9 @@ class SQLGenerator:
         Returns:
             Time truncation SQL expression appropriate for the dialect
         """
+        if self.timezone:
+            column_expr = self._localize_to_timezone(column_expr)
+
         if self.dialect == "bigquery":
             return f"DATE_TRUNC({column_expr}, {granularity.upper()})"
 
@@ -334,6 +379,34 @@ class SQLGenerator:
         and special characters automatically.
         """
         return _quote_identifier_cached(name, self.dialect, self._is_simple_identifier(name))
+
+    def _dimension_base_expr(self, dimension, *, window: bool = False) -> str:
+        """Row-level SQL expression for a dimension, with bare column names quoted.
+
+        When a dimension carries no custom ``sql``/``window`` expression its row-level form is just
+        its name, which must be quoted so identifiers containing spaces or special characters
+        (common in imported Power BI / TMDL models, e.g. ``Order Date``) are valid SQL. A custom
+        expression is assumed to be valid SQL already and is returned unchanged.
+        """
+        expr = dimension.window_sql_expr if window else dimension.sql_expr
+        if expr == dimension.name:
+            return self._quote_identifier(dimension.name)
+        return expr
+
+    def _require_primary_key(self, model_name: str, pk_cols: list[str], reason: str) -> None:
+        """Raise a clear error when a primary key is required but missing.
+
+        Symmetric (fan-out-safe) aggregation and primary-key count-distinct de-duplicate rows by the
+        model's primary key. A model with no primary key (e.g. a keyless TMDL table reachable only
+        through a many-to-many relationship) cannot be de-duplicated, so fail loudly here instead of
+        emitting an empty ``CONCAT()`` that crashes the SQL parser downstream.
+        """
+        if not pk_cols:
+            raise QueryValidationError(
+                f"Cannot compute a fan-out-safe aggregate for model '{model_name}' {reason}: it has "
+                "no primary key. Declare a primary key (for a TMDL model, mark a unique column with "
+                "isKey) so rows can be de-duplicated across the join."
+            )
 
     def _cte_name(self, model_name: str) -> str:
         """Get the CTE identifier name for a model."""
@@ -527,6 +600,7 @@ class SQLGenerator:
         use_preaggregations: bool = False,
         aliases: dict[str, str] | None = None,
         skip_default_time_dimensions: bool = False,
+        with_totals: bool = False,
     ) -> str:
         """Generate SQL query from semantic layer query.
 
@@ -543,6 +617,10 @@ class SQLGenerator:
             use_preaggregations: Enable automatic pre-aggregation routing (default: False)
             aliases: Custom aliases for fields (dict mapping field reference to alias)
             skip_default_time_dimensions: If True, don't auto-include default_time_dimension
+            with_totals: If True, add a grand-total row via GROUPING SETS, marked with a
+                trailing _is_total column (1 for the grand total, 0 for detail rows) so it
+                is distinguishable from a real all-NULL dimension group. Cannot be combined
+                with ungrouped, limit, or offset
 
         Returns:
             SQL query string
@@ -553,6 +631,14 @@ class SQLGenerator:
         segments = segments or []
         parameters = parameters or {}
         aliases = aliases or {}
+
+        # Pre-aggregations are materialized with UTC time buckets, so a timezone-bucketed
+        # query cannot be served from a rollup without returning wrong (UTC) buckets. Force a
+        # live query whenever a timezone is set; this covers direct SQLGenerator use as well
+        # as the SemanticLayer.compile() path. (Computed before the cache key below.)
+        if self.timezone:
+            use_preaggregations = False
+
         cache_key = self._generate_cache_key(
             metrics,
             dimensions,
@@ -566,10 +652,14 @@ class SQLGenerator:
             use_preaggregations,
             aliases,
             skip_default_time_dimensions,
+            with_totals,
         )
         cached = self._generate_cache.get(cache_key)
         if cached is not None:
             return cached
+
+        if with_totals and ungrouped:
+            raise ValueError("with_totals cannot be combined with ungrouped")
 
         # Auto-include default_time_dimension from metrics if not already present
         if not skip_default_time_dimensions:
@@ -595,13 +685,13 @@ class SQLGenerator:
             # e.g., "created_at >= 'last 7 days'"
             import re
 
-            match = re.match(r"^(.+?)\s*(>=|<=|>|<|=)\s*['\"](.+?)['\"]$", f)
+            match = re.match(r"^(.+?)\s*(>=|<=|<>|!=|>|<|=)\s*['\"](.+?)['\"]$", f)
             if match:
                 column, operator, value = match.groups()
                 if RelativeDateRange.is_relative_date(value):
                     # Convert relative date to SQL expression
-                    if operator in [">=", ">"]:
-                        # For >= or >, just use the start date
+                    if operator in [">=", ">", "<", "<="]:
+                        # For inequality comparisons, compare against the period start
                         sql_expr = RelativeDateRange.parse(value, self.dialect)
                         processed_filters.append(f"{column} {operator} {sql_expr}")
                     elif operator == "=":
@@ -612,7 +702,14 @@ class SQLGenerator:
                         else:
                             processed_filters.append(f)
                     else:
-                        processed_filters.append(f)
+                        # For != / <>, negate the full range when available
+                        range_expr = RelativeDateRange.to_range(value, column.strip(), self.dialect)
+                        if range_expr is not None:
+                            processed_filters.append(f"NOT ({range_expr})")
+                        else:
+                            # Fall back to a point comparison against the period start
+                            sql_expr = RelativeDateRange.parse(value, self.dialect)
+                            processed_filters.append(f"{column.strip()} <> {sql_expr}")
                 else:
                     processed_filters.append(f)
             else:
@@ -665,6 +762,12 @@ class SQLGenerator:
 
         needs_window_functions = any(metric_needs_window(m) for m in metrics)
 
+        if with_totals and needs_window_functions:
+            raise NotImplementedError(
+                "with_totals is not yet supported for window-function "
+                "(cumulative / time_comparison / conversion / retention / cohort) queries"
+            )
+
         if needs_window_functions:
             return self._cache_generate_result(
                 cache_key,
@@ -685,6 +788,11 @@ class SQLGenerator:
 
         # Find all models needed for the query
         model_names = self._find_required_models(metrics, dimensions, filters)
+
+        if with_totals and (use_preaggregations or self._needs_preaggregation_for_fanout(metrics, dimensions)):
+            raise NotImplementedError(
+                "with_totals is not yet supported for pre-aggregated or fanout (symmetric-aggregate) queries"
+            )
 
         if use_preaggregations and not ungrouped:
             join_key_preagg_sql = self._try_use_join_key_preaggregation(
@@ -720,8 +828,11 @@ class SQLGenerator:
                 ),
             )
 
-        # Try to use pre-aggregation if enabled (single model queries only)
-        if use_preaggregations and len(model_names) == 1 and not ungrouped:
+        # Try to use pre-aggregation if enabled (single model queries only).
+        # Ungrouped (drill-to-detail) queries can be served only from a rollup
+        # that stores the model's primary key (rows are then unique); the PK
+        # check lives in _try_use_preaggregation.
+        if use_preaggregations and len(model_names) == 1:
             preagg_sql = self._try_use_preaggregation(
                 model_name=model_names[0],
                 metrics=metrics,
@@ -731,6 +842,7 @@ class SQLGenerator:
                 limit=limit,
                 offset=offset,
                 aliases=aliases,
+                ungrouped=ungrouped,
             )
             if preagg_sql:
                 # Add instrumentation comment
@@ -840,6 +952,7 @@ class SQLGenerator:
             offset=offset,
             ungrouped=ungrouped,
             aliases=aliases,
+            with_totals=with_totals,
         )
 
         # Combine CTEs and main query
@@ -1085,7 +1198,15 @@ class SQLGenerator:
             try:
                 parsed = sqlglot.parse_one(filter_expr, dialect=self.dialect)
                 conjuncts = list(parsed.flatten() if isinstance(parsed, exp.And) else [parsed])
-                flat_parts.extend(c.sql(dialect=self.dialect) for c in conjuncts)
+                for c in conjuncts:
+                    # A flattened conjunct that is itself an OR (lower precedence than the
+                    # surrounding AND) must keep grouping parens, otherwise the later
+                    # ' AND '.join() rejoin in _build_model_cte / the WHERE builder changes
+                    # precedence: (A OR B) AND C would become A OR B AND C.
+                    rendered = (
+                        exp.paren(c).sql(dialect=self.dialect) if isinstance(c, exp.Or) else c.sql(dialect=self.dialect)
+                    )
+                    flat_parts.append(rendered)
             except Exception:
                 flat_parts.append(filter_expr)
 
@@ -1445,9 +1566,25 @@ class SQLGenerator:
                 and relationship.name in all_models
                 and relationship.type in ("one_to_one", "one_to_many")
             ):
-                local_keys = relationship.primary_key_columns if relationship.primary_key else model.primary_key_columns
+                # Project the SAME local key the join uses (build_adjacency calls this helper too):
+                # a TMDL one-to-one/one-to-many joins on its fromColumn, which need not be this
+                # model's declared primary key, so projecting the model PK alone would omit it.
+                local_keys = _relationship_local_key_columns(model, relationship)
                 for pk in local_keys:
                     add_passthrough_column(pk)
+            elif (
+                needs_keyed_joins
+                and relationship.name in all_models
+                and relationship.type == "many_to_many"
+                and relationship.primary_key
+                and (not relationship.through or relationship.through not in self.graph.models)
+            ):
+                # Direct (no-bridge) many-to-many source side carrying an explicit target key: this
+                # model joins on the relationship's own from-column (a TMDL fromColumn that need not
+                # be its declared primary key), so that exact column must be projected. The legacy
+                # shape (no target key) joins on the model primary key, already projected above.
+                for fk in relationship.foreign_key_columns:
+                    add_passthrough_column(fk)
 
         # Check if other models have has_many/has_one pointing to this model
         if needs_keyed_joins:
@@ -1472,6 +1609,19 @@ class SQLGenerator:
                             other_join.primary_key_columns if other_join.primary_key else model.primary_key_columns
                         )
                         for pk in target_keys:
+                            add_passthrough_column(pk)
+                    elif (
+                        other_join.name == model_name
+                        and other_join.type == "many_to_many"
+                        and (not other_join.through or other_join.through not in self.graph.models)
+                    ):
+                        # Direct (no-bridge) many-to-many: this model is the related side, joined on
+                        # the relationship's recorded target key (a TMDL toColumn that need not be
+                        # this model's declared primary key), so that exact column must be projected.
+                        related_keys = (
+                            other_join.primary_key_columns if other_join.primary_key else model.primary_key_columns
+                        )
+                        for pk in related_keys:
                             add_passthrough_column(pk)
 
             for other_model_name, other_model in self.graph.models.items():
@@ -1505,7 +1655,7 @@ class SQLGenerator:
                 # For time dimensions with granularity, apply DATE_TRUNC
                 # Use window_sql_expr for CTE projection so window functions
                 # (LEAD, LAG, etc.) are evaluated here.
-                base_expr = dimension.window_sql_expr
+                base_expr = self._dimension_base_expr(dimension, window=True)
                 if dimension.type == "time" and dimension.granularity:
                     dim_sql = self._date_trunc(dimension.granularity, base_expr)
                 else:
@@ -1529,7 +1679,7 @@ class SQLGenerator:
 
             if gran and dimension.type == "time":
                 # Apply time granularity (in addition to base column)
-                dim_sql = self._date_trunc(gran, replace_model_placeholder(dimension.sql_expr))
+                dim_sql = self._date_trunc(gran, replace_model_placeholder(self._dimension_base_expr(dimension)))
                 alias = f"{dim_name}__{gran}"
                 if alias not in columns_added:
                     select_cols.append(f"{dim_sql} AS {self._quote_alias(alias)}")
@@ -1692,8 +1842,9 @@ class SQLGenerator:
                 # Build the base SQL expression for the measure
                 if measure.agg == "count" and (not measure.sql or measure.sql == "*"):
                     base_sql = "1"
-                elif measure.agg == "count_distinct" and not measure.sql:
+                elif measure.agg in ("count_distinct", "approx_count_distinct") and not measure.sql:
                     pk_cols = model.primary_key_columns
+                    self._require_primary_key(model.name, pk_cols, "for a primary-key count-distinct")
                     if len(pk_cols) == 1:
                         base_sql = self._quote_identifier(pk_cols[0])
                     else:
@@ -2374,6 +2525,7 @@ class SQLGenerator:
         offset: int | None = None,
         ungrouped: bool = False,
         aliases: dict[str, str] | None = None,
+        with_totals: bool = False,
     ) -> str:
         """Build main SELECT using SQLGlot builder API.
 
@@ -2389,6 +2541,7 @@ class SQLGenerator:
             offset: Row offset
             ungrouped: If True, return raw rows without aggregation
             aliases: Custom aliases for fields (dict mapping field reference to alias)
+            with_totals: If True, add a grand-total row (all dims NULL) via GROUPING SETS
 
         Returns:
             SQL SELECT statement
@@ -2556,6 +2709,9 @@ class SQLGenerator:
                             # Get primary key for this model
                             model_obj = self.graph.get_model(model_name)
                             pk_cols = model_obj.primary_key_columns
+                            self._require_primary_key(
+                                model_name, pk_cols, "across a fan-out (many-to-many or one-to-many) join"
+                            )
                             # For composite keys, concatenate columns for hashing
                             if len(pk_cols) == 1:
                                 pk = self._cte_ref(model_name, pk_cols[0])
@@ -2606,6 +2762,16 @@ class SQLGenerator:
         else:
             self._bsl_all_query_context = previous_bsl_all_context
 
+        # Mark the GROUPING SETS grand-total row so consumers can tell it apart from a real
+        # all-NULL dimension group. GROUPING(<dim>) is 1 for the super-aggregate (total) row
+        # and 0 for detail rows; any single grouped dimension works because the total grouping
+        # set drops them all.
+        if with_totals and parsed_dims and not ungrouped:
+            first_ref, first_gran = parsed_dims[0]
+            first_model_name, first_dim_name = first_ref.split(".")
+            first_col_name = f"{first_dim_name}__{first_gran}" if first_gran else first_dim_name
+            select_exprs.append(f"GROUPING({self._cte_ref(first_model_name, first_col_name)}) AS _is_total")
+
         # Build query using builder API
         query = select(*select_exprs).from_(self._quote_identifier(self._cte_name(base_model_name)))
 
@@ -2627,8 +2793,15 @@ class SQLGenerator:
         # Add GROUP BY (all dimensions by position)
         # Skip GROUP BY for ungrouped queries
         if parsed_dims and not ungrouped:
-            group_by_positions = list(range(1, len(parsed_dims) + 1))
-            query = query.group_by(*group_by_positions)
+            if with_totals:
+                # GROUPING SETS ((1, 2, ..., n), ()) adds one grand-total row (all dims
+                # NULL) whose aggregates are recomputed over the full raw dataset, so
+                # COUNT(DISTINCT) and composite measures stay correct.
+                positions = ", ".join(str(i) for i in range(1, len(parsed_dims) + 1))
+                query = query.group_by(f"GROUPING SETS (({positions}), ())")
+            else:
+                group_by_positions = list(range(1, len(parsed_dims) + 1))
+                query = query.group_by(*group_by_positions)
 
         # Add HAVING clause (metric filters applied after aggregation)
         if having_filters:
@@ -2731,6 +2904,34 @@ class SQLGenerator:
             return offset_map[comparison_type].get(time_granularity, 1)
 
         return 1
+
+    def _offset_window_to_lag_rows(self, offset_window: str | None, time_granularity: str | None) -> int:
+        """Convert a ratio offset_window (e.g. '3 months') to a row-based LAG offset.
+
+        Row-based, like _calculate_lag_offset: scale the window onto the result-set
+        grain. When the time dimension granularity is known it is used directly;
+        otherwise month grain is assumed (matching _calculate_lag_offset, which
+        defaults YoY to 12 rows on the assumption of monthly data). So '3 months'
+        -> 3 rows and '1 year' -> 12 rows. This is an approximation that assumes one
+        row per grain period with no gaps; sparse/irregular time series will be off
+        (same limitation as _calculate_lag_offset).
+        """
+        if not offset_window:
+            return 1
+        parts = offset_window.split()
+        if len(parts) != 2:
+            return 1
+        num_s, unit = parts
+        try:
+            num = int(num_s)
+        except ValueError:
+            return 1
+        unit = unit.lower().rstrip("s")
+        grain_days = {"day": 1, "week": 7, "month": 30, "quarter": 90, "year": 365}
+        if unit not in grain_days:
+            return 1
+        grain = time_granularity if time_granularity in grain_days else "month"
+        return max(round(num * grain_days[unit] / grain_days[grain]), 1)
 
     def _wrap_with_fill_nulls(self, sql_expr: str, metric) -> str:
         """Wrap SQL expression with COALESCE if fill_nulls_with is specified.
@@ -2930,7 +3131,7 @@ class SQLGenerator:
         agg_func = measure.agg.upper()
         raw_col = self._cte_ref(model_name, f"{measure.name}_raw")
 
-        if agg_func == "COUNT_DISTINCT":
+        if agg_func in ("COUNT_DISTINCT", "APPROX_COUNT_DISTINCT"):
             return self._build_bsl_count_distinct_total_sql(model_name, measure)
         if agg_func == "COUNT":
             return f"SUM(COUNT({raw_col})) OVER ()"
@@ -2953,6 +3154,8 @@ class SQLGenerator:
 
         if agg_func == "COUNT_DISTINCT":
             expr = f"COUNT(DISTINCT {raw_col})"
+        elif agg_func == "APPROX_COUNT_DISTINCT":
+            expr = f"APPROX_COUNT_DISTINCT({raw_col})"
         else:
             expr = self._build_measure_aggregation_sql(model_name, measure)
             expr = expr.replace(self._cte_ref(model_name, f"{measure.name}_raw"), raw_col)
@@ -2974,9 +3177,13 @@ class SQLGenerator:
         if model_name not in query_model_names:
             return self._build_measure_total_subquery_sql(model_name, measure)
 
-        query = select(f"COUNT(DISTINCT {self._cte_ref(model_name, f'{measure.name}_raw')})").from_(
-            self._quote_identifier(self._cte_name(base_model_name))
+        raw_ref = self._cte_ref(model_name, f"{measure.name}_raw")
+        distinct_expr = (
+            f"APPROX_COUNT_DISTINCT({raw_ref})"
+            if measure.agg == "approx_count_distinct"
+            else f"COUNT(DISTINCT {raw_ref})"
         )
+        query = select(distinct_expr).from_(self._quote_identifier(self._cte_name(base_model_name)))
         query = self._add_join_paths_to_query(query, base_model_name, other_models, models_with_filters)
         where_filters, _ = self._split_where_having_filters(filters, query_model_names)
         query = self._add_where_filters_to_query(query, where_filters, query_model_names)
@@ -4891,6 +5098,7 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
 
                 # Find time dimension
                 time_dim = None
+                time_dim_gran = None
                 for dim_ref, gran in parsed_dims:
                     dim_name = dim_ref.split(".")[1] if "." in dim_ref else dim_ref
                     model_name = dim_ref.split(".")[0] if "." in dim_ref else None
@@ -4902,6 +5110,10 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
                                 time_dim = f"base.{dim_name}"
                                 if gran:
                                     time_dim = f"base.{dim_name}__{gran}"
+                                # Fall back to the dimension's own base granularity when the
+                                # query did not request an explicit __gran suffix, so an
+                                # offset_window like "7 days" maps to the right number of rows.
+                                time_dim_gran = gran or dim.granularity
                                 break
 
                 if not time_dim:
@@ -4928,9 +5140,10 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
 
                 # Add LAG for denominator - reference base.denom_alias since it's from inner query
                 # Quote alias to handle dotted names
+                lag_rows = self._offset_window_to_lag_rows(metric.offset_window, time_dim_gran)
                 prev_denom_alias = self._quote_alias(f"{m}_prev_denom")
                 lag_selects.append(
-                    f"LAG(base.{sql_identifier(denom_alias)}) OVER ({partition_clause}ORDER BY {time_dim}) AS {prev_denom_alias}"
+                    f"LAG(base.{sql_identifier(denom_alias)}, {lag_rows}) OVER ({partition_clause}ORDER BY {time_dim}) AS {prev_denom_alias}"
                 )
 
             # Build intermediate CTE - inner_query already has all the columns we need
@@ -5406,6 +5619,7 @@ LEFT JOIN {preagg_table} AS {rollup_alias}
         limit: int | None = None,
         offset: int | None = None,
         aliases: dict[str, str] | None = None,
+        ungrouped: bool = False,
     ) -> str | None:
         """Try to generate query using a pre-aggregation.
 
@@ -5417,6 +5631,9 @@ LEFT JOIN {preagg_table} AS {rollup_alias}
             order_by: List of fields to order by
             limit: Maximum number of rows
             offset: Number of rows to skip
+            ungrouped: If True, serve raw rows (no re-aggregation, no GROUP BY)
+                directly from a rollup; only rollups carrying the model's
+                primary key qualify (rows are unique).
 
         Returns:
             SQL query string if pre-aggregation found, None otherwise
@@ -5464,6 +5681,26 @@ LEFT JOIN {preagg_table} AS {rollup_alias}
                 filter_expr = f.replace(f"{model_name}.", "").replace(f"{model_name}_cte.", "")
                 filter_exprs.append(filter_expr)
 
+        if ungrouped:
+            # Metric-stage (HAVING) filters are an aggregation concept the ungrouped
+            # path cannot apply; bail to raw rather than silently dropping them.
+            if aggregate_filters:
+                return None
+            # Ungrouped (drill-to-detail) reads stored rows verbatim, so the
+            # requested metrics must map to a per-row stored value. Re-derivable
+            # aggregates (avg / ratio / derived) are only meaningful after a
+            # GROUP BY, so bail to raw rather than emit a per-row state column.
+            for metric_name in metric_names:
+                metric = model.get_metric(metric_name)
+                if metric is None:
+                    return None
+                if metric.type in {"ratio", "derived"} or metric.agg in {
+                    "avg",
+                    "count_distinct",
+                    "approx_count_distinct",
+                }:
+                    return None
+
         matcher = PreAggregationMatcher(model)
         preagg = matcher.find_matching_preagg(
             metrics=metric_names,
@@ -5474,6 +5711,14 @@ LEFT JOIN {preagg_table} AS {rollup_alias}
 
         if not preagg:
             return None
+
+        if ungrouped:
+            # Rows are unique only if the rollup stores the full primary key as
+            # dimensions; otherwise the stored rows are aggregated and must not
+            # be served ungrouped. Fall through to raw tables.
+            preagg_dims = set(preagg.dimensions or [])
+            if not set(model.primary_key_columns).issubset(preagg_dims):
+                return None
 
         # Generate SQL against pre-aggregation table
         return self._generate_from_preaggregation(
@@ -5487,6 +5732,7 @@ LEFT JOIN {preagg_table} AS {rollup_alias}
             limit=limit,
             offset=offset,
             aliases=aliases,
+            ungrouped=ungrouped,
         )
 
     def _generate_from_preaggregation(
@@ -5501,6 +5747,7 @@ LEFT JOIN {preagg_table} AS {rollup_alias}
         limit: int | None = None,
         offset: int | None = None,
         aliases: dict[str, str] | None = None,
+        ungrouped: bool = False,
     ) -> str:
         """Generate SQL query from a pre-aggregation.
 
@@ -5514,6 +5761,8 @@ LEFT JOIN {preagg_table} AS {rollup_alias}
             order_by: List of fields to order by
             limit: Maximum number of rows
             offset: Number of rows to skip
+            ungrouped: If True, select the stored raw measure columns directly
+                with no re-aggregation, GROUP BY, or HAVING (drill-to-detail).
 
         Returns:
             SQL query string
@@ -5594,11 +5843,54 @@ LEFT JOIN {preagg_table} AS {rollup_alias}
             canonical_ref = metric_ref if "." in metric_ref else f"{model.name}.{metric_ref}"
             register_output_name(output_name, metric_ref, canonical_ref, metric_name, output_name)
 
-            metric_expr = self._preaggregation_metric_expression(model, preagg, metric_name)
+            if ungrouped:
+                # Drill-to-detail: emit the stored per-row value with no
+                # re-aggregation (rows are unique via the PK in the rollup).
+                metric_expr = f"{metric_name}_raw"
+            else:
+                metric_expr = self._preaggregation_metric_expression(model, preagg, metric_name)
             select_exprs.append(f"{metric_expr} AS {self._quote_alias(output_name)}")
 
-        # Build FROM clause
+        # Build FROM clause.
+        #
+        # Lambda (rollupLambda) pre-aggregations with union_with_source_data serve a
+        # query as the UNION of two disjoint, union-compatible legs split at
+        # build_range_end (a raw SQL expression, interpolated verbatim like the
+        # build_range/partition_filter predicates in build_partitions):
+        #   - BATCH leg: the materialized rollup table, restricted to buckets entirely
+        #     before the build_range_end bucket.
+        #   - FRESH leg: a live aggregation of source rows from the build_range_end bucket onward,
+        #     produced by generate_materialization_sql (identical {time}_{gran}, dim,
+        #     and {measure}_raw columns), so the legs are union-compatible by
+        #     construction.
+        # The outer SELECT/GROUP BY (built below from the same partial-state columns)
+        # re-aggregates the union rows to the query grain. Without a build_range_end
+        # there is no split point, so it degrades to a plain rollup read (unioning an
+        # unbounded source would double-count).
         from_clause = preagg_table
+        if (
+            preagg.type == "lambda"
+            and getattr(preagg, "union_with_source_data", False)
+            and preagg.build_range_end
+            and preagg.time_dimension
+            and preagg.granularity
+        ):
+            time_col = f"{preagg.time_dimension}_{preagg.granularity}"
+            build_range_end = preagg.build_range_end
+            time_dim = model.get_dimension(preagg.time_dimension)
+            # Split at the bucket BOUNDARY, not the raw build_range_end. The batch
+            # rollup row for the boundary bucket aggregates the whole bucket (refresh
+            # does not bound materialization), so a mid-bucket split would double-count:
+            # the batch leg would keep the full bucket while the fresh leg re-adds its
+            # >= build_range_end rows. Excluding the whole boundary bucket from the
+            # batch leg and re-aggregating it from source in the fresh leg keeps the
+            # two legs disjoint.
+            boundary = f"DATE_TRUNC('{preagg.granularity}', CAST(({build_range_end}) AS TIMESTAMP))"
+            batch_leg = f"SELECT * FROM {preagg_table} WHERE {time_col} < {boundary}"
+            fresh_leg = preagg.generate_materialization_sql(
+                model, partition_filter=f"{time_dim.sql_expr} >= {boundary}"
+            )
+            from_clause = f"(\n{batch_leg}\nUNION ALL\n{fresh_leg}\n) AS t"
 
         # Build WHERE clause if filters exist
         where_clause = ""
@@ -5624,18 +5916,18 @@ LEFT JOIN {preagg_table} AS {rollup_alias}
 
             where_clause = f"\nWHERE {' AND '.join(rewritten_filters)}"
 
-        # Build GROUP BY clause
-        group_by_exprs = []
-        for i in range(1, len(parsed_dims) + 1):
-            group_by_exprs.append(str(i))
-
+        # Build GROUP BY clause (skipped for ungrouped drill-to-detail: rows are
+        # stored uniquely and selected verbatim, so no aggregation occurs).
         group_by_clause = ""
-        if group_by_exprs:
-            group_by_clause = f"\nGROUP BY {', '.join(group_by_exprs)}"
+        if not ungrouped:
+            group_by_exprs = [str(i) for i in range(1, len(parsed_dims) + 1)]
+            if group_by_exprs:
+                group_by_clause = f"\nGROUP BY {', '.join(group_by_exprs)}"
 
-        # Build HAVING clause for aggregate-stage metric filters
+        # Build HAVING clause for aggregate-stage metric filters. Aggregate-stage
+        # filters are an aggregation concept and do not apply to ungrouped rows.
         having_clause = ""
-        if aggregate_filters:
+        if aggregate_filters and not ungrouped:
             rewritten_having_filters = [
                 self._rewrite_preaggregation_aggregate_filter(model, preagg, f) for f in aggregate_filters
             ]

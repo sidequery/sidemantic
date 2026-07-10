@@ -92,6 +92,18 @@ class TMDLAdapter(BaseAdapter):
             ]
             if database_children:
                 graph._tmdl_database_child_nodes = database_children
+            # Record how many non-model children precede the model declaration so export can keep
+            # the model line in its original position rather than forcing it ahead of sibling
+            # annotations.
+            if model_ref_node is not None:
+                preceding_non_model = sum(
+                    1
+                    for child in database_passthrough_node.children[
+                        : database_passthrough_node.children.index(model_ref_node)
+                    ]
+                    if child.type.lower() != "model"
+                )
+                graph._tmdl_database_model_index = preceding_non_model
 
         if model_passthrough_node is not None:
             if model_passthrough_node.name:
@@ -191,7 +203,18 @@ def _export_table_file_path(tables_dir: Path, model: Model) -> Path:
         source_path = Path(source_file)
         if source_path.suffix.lower() == ".tmdl" and source_path.parent == Path("tables"):
             return tables_dir / source_path.name
-    return tables_dir / f"{_safe_filename(model.name)}.tmdl"
+    # When the recorded source file is missing or collapsed to model.tmdl (a known artifact of
+    # merging the top-level ``ref table`` declaration with the real table body), fall back to the
+    # table name verbatim. Power BI names the file after the table, so "Dynamic Measure" must stay
+    # "Dynamic Measure.tmdl" rather than being mangled to "Dynamic_Measure.tmdl".
+    return tables_dir / f"{_table_file_stem(model.name)}.tmdl"
+
+
+def _table_file_stem(name: str) -> str:
+    # Preserve the table name as-is for the filename, only neutralizing characters that are not
+    # legal in a path component (path separators / NUL). Spaces, hyphens and parentheses are kept.
+    cleaned = "".join("_" if ch in ("/", "\\", "\x00") else ch for ch in name).strip()
+    return cleaned or "table"
 
 
 def _find_nodes(nodes: list[TmdlNode], types: set[str]) -> list[TmdlNode]:
@@ -326,6 +349,9 @@ def _table_to_model(
     dimensions: list[Dimension] = []
     metrics: list[Metric] = []
     passthrough_children: list[TmdlNode] = []
+    # Record the original declaration order of members (columns, measures, passthrough nodes) so the
+    # exporter can reproduce source interleaving instead of forcing columns-then-measures-then-rest.
+    member_order: list[tuple[str, int]] = []
     primary_key = None
     original_expression: str | None = None
 
@@ -341,6 +367,7 @@ def _table_to_model(
                 time_dimensions_by_table,
                 warnings,
             )
+            member_order.append(("dimension", len(dimensions)))
             dimensions.append(dim)
             if _is_true(_props(child).get("iskey")):
                 primary_key = dim.name
@@ -356,8 +383,11 @@ def _table_to_model(
                 warnings,
             )
             if parsed_metrics:
-                metrics.extend(parsed_metrics)
+                for parsed_metric in parsed_metrics:
+                    member_order.append(("metric", len(metrics)))
+                    metrics.append(parsed_metric)
         else:
+            member_order.append(("passthrough", len(passthrough_children)))
             passthrough_children.append(_clone_tmdl_node(child))
 
     model_sql = None
@@ -397,6 +427,10 @@ def _table_to_model(
             if dax_expr is not None:
                 model_sql = None
 
+    # When no column declares isKey, set primary_key to None (not a fabricated "id") so the model
+    # contributes no phantom key to joins. A real key is recovered later from relationships in
+    # _apply_relationships; the marker below records that this PK was not explicitly declared, and
+    # any model still left without one (a fact or disconnected table) keeps primary_key=None.
     model = Model(
         name=node.name or "",
         table=model_table,
@@ -404,12 +438,14 @@ def _table_to_model(
         dax=model_dax,
         expression_language=model_expression_language,
         description=description,
-        primary_key=primary_key or "id",
+        primary_key=primary_key,
         dimensions=dimensions,
         metrics=metrics,
         default_time_dimension=_find_default_time_dimension(dimensions),
         default_grain=_find_default_grain(dimensions),
     )
+    if primary_key is None:
+        model._tmdl_primary_key_inferred = True
     if node.name_raw:
         model._tmdl_name_raw = node.name_raw
     if node.leading_comments:
@@ -438,6 +474,8 @@ def _table_to_model(
         model._tmdl_raw_value_properties = raw_value_props
     if passthrough_children:
         model._tmdl_child_nodes = passthrough_children
+    if member_order:
+        model._tmdl_member_order = member_order
 
     return model
 
@@ -576,8 +614,26 @@ def _measure_to_metric(
             model_name=table_name,
         )
         dax_expr = None
-    agg, sql = _extract_dax_agg(expression, table_name, dax_expr)
+    agg, sql = _extract_dax_agg(
+        expression,
+        table_name,
+        dax_expr,
+        column_sql_by_table,
+        measure_names_by_table,
+    )
     metric_type = None if agg else "derived"
+    if agg is None and sql is None and dax_expr is not None:
+        _append_import_warning(
+            warnings,
+            node,
+            code="dax_not_translated",
+            context="measure",
+            message=(
+                f"Measure '{node.name or '<unnamed>'}' could not be translated to a native aggregation; "
+                "its DAX is preserved but not queryable."
+            ),
+            model_name=table_name,
+        )
     metric = Metric(
         name=node.name or "",
         agg=agg,
@@ -624,6 +680,18 @@ def _measure_to_metric(
 def _apply_relationships(
     graph: SemanticGraph, nodes: list[TmdlNode], root: Path, warnings: list[TmdlImportWarning] | None = None
 ) -> None:
+    # Track, for each model referenced as the one-side (PK side) of a relationship, the candidate
+    # key columns recovered from the relationship's target column. Used below to backfill a real
+    # primary key for tables that did not declare an explicit isKey column.
+    pk_candidates: dict[str, set[str]] = {}
+    pk_target_nodes: dict[str, TmdlNode] = {}
+    # Unique source-side keys recovered only for an otherwise-keyless table: the source (from) side
+    # of a one-to-one, which is unique on both sides. Many-to-many endpoints are deliberately NOT
+    # recovered -- they sit on the "many" side and can repeat, so using one as a primary key would
+    # make symmetric aggregates silently undercount. A direct many-to-many join does not need this:
+    # build_adjacency joins (and the model CTEs project) on the relationship's own from/to columns.
+    one_to_one_source_keys: dict[str, set[str]] = {}
+
     for node in nodes:
         props = _props(node)
         active = not _is_false(props.get("isactive"))
@@ -687,6 +755,29 @@ def _apply_relationships(
             foreign_key = None
             primary_key = None
 
+        # Record the authoritative one-side (PK side) key of this relationship so a table that
+        # omitted its isKey column can recover a real primary key below. one_to_many points at the
+        # from-side's key; many_to_one and one_to_one point at the to-side's key. The one_to_one
+        # *source* (from) side is intentionally NOT recorded here: it may be an alternate key, so it
+        # must not compete with -- and make ambiguous -- a real one-side key the same table receives
+        # from another relationship. It is recovered as a fallback only when the table is otherwise
+        # keyless (below).
+        if rel_type == "one_to_many":
+            pk_target, pk_column = from_table, from_column
+        elif rel_type in ("many_to_one", "one_to_one"):
+            pk_target, pk_column = to_table, to_column
+        else:
+            pk_target, pk_column = None, None
+        if pk_target is not None:
+            pk_target_nodes.setdefault(pk_target, node)
+            if pk_column:
+                pk_candidates.setdefault(pk_target, set()).add(pk_column)
+        # A one-to-one is unique on both sides, so its source (from) column is a real unique key to
+        # fall back on for an otherwise-keyless source table. Many-to-many endpoints are not unique
+        # and are intentionally not recovered here.
+        if rel_type == "one_to_one" and from_column:
+            one_to_one_source_keys.setdefault(from_table, set()).add(from_column)
+
         relationship_props = _relationship_passthrough_properties(node)
         relationship = Relationship(
             name=to_table,
@@ -733,6 +824,56 @@ def _apply_relationships(
             for existing in model.relationships
         ):
             model.relationships.append(relationship)
+
+    # Backfill primary keys for join targets that did not declare an explicit isKey column. A real
+    # key (e.g. DateKey/ProductKey) is recovered only when the relationships referencing a model as
+    # the one-side agree on a single key column. If a target is left without a resolvable key, emit
+    # a warning naming the model so the ambiguity is surfaced rather than silently fabricated.
+    # Tables referenced as a one-side join target whose authoritative key could not be resolved to a
+    # single column (ambiguous across relationships, or unavailable). Their key stays unresolved, and
+    # the endpoint fallback below must NOT substitute a non-authoritative many-to-many / one-to-one
+    # endpoint for them -- that would mask the ambiguity with a misleading row identity.
+    ambiguous_pk_targets: set[str] = set()
+    for target_name, node in pk_target_nodes.items():
+        target_model = graph.models.get(target_name)
+        # Only backfill tables that did not declare an explicit isKey column. Tables with a real
+        # declared primary key keep it untouched.
+        if target_model is None or not getattr(target_model, "_tmdl_primary_key_inferred", False):
+            continue
+        candidates = pk_candidates.get(target_name) or set()
+        if len(candidates) == 1:
+            target_model.primary_key = next(iter(candidates))
+        else:
+            ambiguous_pk_targets.add(target_name)
+            if warnings is not None:
+                _append_import_warning(
+                    warnings,
+                    node,
+                    code="primary_key_unresolved",
+                    context="relationship",
+                    message=(
+                        f"Could not resolve a primary key for model '{target_name}': it is referenced as a "
+                        "join target but declares no isKey column and the relationship key columns are "
+                        f"{'ambiguous' if candidates else 'unavailable'}."
+                    ),
+                    model_name=target_name,
+                )
+
+    # Fallback recovery for tables the cardinality-aware backfill could not key: a one-to-one source
+    # side adopts its own unambiguous unique endpoint column. This runs only for tables still keyless
+    # (so an authoritative one-side key always wins), only when the column is unambiguous, and never
+    # for a table whose one-side keys were ambiguous, so it cannot substitute a non-authoritative or
+    # non-unique key for a real primary key.
+    for model in graph.models.values():
+        if not getattr(model, "_tmdl_primary_key_inferred", False) or model.primary_key is not None:
+            continue
+        if model.name in ambiguous_pk_targets:
+            # An authoritative one-side key existed but was ambiguous/unresolvable; leave the key
+            # unresolved rather than substituting a non-authoritative endpoint.
+            continue
+        own_endpoints = one_to_one_source_keys.get(model.name, set()) & {dim.name for dim in model.dimensions}
+        if len(own_endpoints) == 1:
+            model.primary_key = next(iter(own_endpoints))
 
 
 def _node_passthrough_properties(node: TmdlNode, excluded_keys: set[str]) -> list[dict[str, Any]]:
@@ -970,11 +1111,35 @@ def _append_export_warning(
     warnings.append(warning)
 
 
+def _is_known_column(
+    name: str,
+    table_name: str,
+    column_sql_by_table: dict[str, dict[str, str]] | None,
+    measure_names_by_table: dict[str, set[str]] | None,
+) -> bool:
+    """Validate that ``name`` resolves to a real column (not a measure) of ``table_name``.
+
+    When the metadata dicts are unavailable (e.g. the pre-pass that builds them), validation
+    is skipped and the candidate is accepted, preserving best-effort classification.
+    """
+    if column_sql_by_table is None:
+        return True
+    columns = column_sql_by_table.get(table_name) or {}
+    if name not in columns:
+        return False
+    measures = (measure_names_by_table or {}).get(table_name) or set()
+    return name not in measures
+
+
 def _extract_dax_agg(
-    expression: str, table_name: str, dax_expr: DaxExpr | None = None
+    expression: str,
+    table_name: str,
+    dax_expr: DaxExpr | None = None,
+    column_sql_by_table: dict[str, dict[str, str]] | None = None,
+    measure_names_by_table: dict[str, set[str]] | None = None,
 ) -> tuple[str | None, str | None]:
     if dax_expr is not None:
-        parsed = _extract_dax_agg_from_ast(dax_expr, table_name)
+        parsed = _extract_dax_agg_from_ast(dax_expr, table_name, column_sql_by_table, measure_names_by_table)
         if parsed is not None:
             return parsed
     expr = " ".join(part.strip() for part in expression.splitlines() if part.strip())
@@ -990,12 +1155,9 @@ def _extract_dax_agg(
     agg = {
         "sum": "sum",
         "average": "avg",
-        "averagea": "avg",
         "avg": "avg",
         "min": "min",
-        "mina": "min",
         "max": "max",
-        "maxa": "max",
         "minx": "min",
         "maxx": "max",
         "median": "median",
@@ -1003,7 +1165,6 @@ def _extract_dax_agg(
         "count": "count",
         "countrows": "count",
         "counta": "count",
-        "countblank": "count",
         "countx": "count",
         "countax": "count",
         "distinctcount": "count_distinct",
@@ -1028,10 +1189,17 @@ def _extract_dax_agg(
         return agg, column
     if table:
         return None, None
+    if not _is_known_column(column, table_name, column_sql_by_table, measure_names_by_table):
+        return None, None
     return agg, column
 
 
-def _extract_dax_agg_from_ast(expr: Any, table_name: str) -> tuple[str | None, str | None] | None:
+def _extract_dax_agg_from_ast(
+    expr: Any,
+    table_name: str,
+    column_sql_by_table: dict[str, dict[str, str]] | None = None,
+    measure_names_by_table: dict[str, set[str]] | None = None,
+) -> tuple[str | None, str | None] | None:
     try:
         from sidemantic_dax import ast as dax_ast
     except Exception:
@@ -1050,12 +1218,9 @@ def _extract_dax_agg_from_ast(expr: Any, table_name: str) -> tuple[str | None, s
     agg = {
         "sum": "sum",
         "average": "avg",
-        "averagea": "avg",
         "avg": "avg",
         "min": "min",
-        "mina": "min",
         "max": "max",
-        "maxa": "max",
         "minx": "min",
         "maxx": "max",
         "median": "median",
@@ -1063,7 +1228,6 @@ def _extract_dax_agg_from_ast(expr: Any, table_name: str) -> tuple[str | None, s
         "count": "count",
         "countrows": "count",
         "counta": "count",
-        "countblank": "count",
         "countx": "count",
         "countax": "count",
         "distinctcount": "count_distinct",
@@ -1097,12 +1261,21 @@ def _extract_dax_agg_from_ast(expr: Any, table_name: str) -> tuple[str | None, s
     elif isinstance(arg, dax_ast.Identifier):
         table = None
         column = arg.name
+        if "." in column:
+            prefix, _, remainder = column.partition(".")
+            if prefix.lower() == table_name.lower():
+                column = remainder
+            else:
+                # Unbracketed dotted identifier whose prefix is not the current table.
+                return None
     else:
         return None
 
     if table and table.lower() == table_name.lower():
         return agg, column
     if table:
+        return None
+    if not _is_known_column(column, table_name, column_sql_by_table, measure_names_by_table):
         return None
     return agg, column
 
@@ -1236,7 +1409,9 @@ def _map_relationship_type(from_cardinality: str | None, to_cardinality: str | N
     if not from_card and to_card == "one":
         return "many_to_one"
     if from_card == "one" and not to_card:
-        return "one_to_one"
+        # TMDL defaults an omitted toCardinality to "many", so a lone
+        # fromCardinality:one is one-to-many (not one-to-one).
+        return "one_to_many"
     if not from_card and to_card == "many":
         return "one_to_many"
     if from_card == "many" and to_card == "one":
@@ -1269,9 +1444,20 @@ def _export_database(graph: SemanticGraph, name: str) -> str:
         lines.extend(_format_description(database_description))
     lines.append(f"database {_format_identifier_with_raw(database_name, database_name_raw)}")
     _export_passthrough_properties(lines, getattr(graph, "_tmdl_database_properties", None), set(), indent="    ")
-    lines.append(f"    model {_format_identifier_with_raw(model_name, model_name_raw)}")
-    for node in _coerce_tmdl_nodes(getattr(graph, "_tmdl_database_child_nodes", None)):
+    model_line = f"    model {_format_identifier_with_raw(model_name, model_name_raw)}"
+    child_nodes = _coerce_tmdl_nodes(getattr(graph, "_tmdl_database_child_nodes", None))
+    # Emit the model declaration at its recorded position among the database's sibling children so a
+    # ``model`` that followed an annotation in the source is not hoisted in front of it. With no
+    # recorded index (in-memory export) the model line stays first, matching prior behavior.
+    model_index = getattr(graph, "_tmdl_database_model_index", None)
+    if not isinstance(model_index, int) or model_index < 0 or model_index > len(child_nodes):
+        model_index = 0
+    for idx, node in enumerate(child_nodes):
+        if idx == model_index:
+            lines.append(model_line)
         lines.extend(_render_passthrough_node(node, indent="    "))
+    if model_index >= len(child_nodes):
+        lines.append(model_line)
     return "\n".join(lines) + "\n"
 
 
@@ -1338,19 +1524,75 @@ def _export_table(model: Model) -> str:
         emitted_keys.add("expression")
     _export_passthrough_properties(lines, getattr(model, "_tmdl_properties", None), emitted_keys, indent="    ")
 
-    for dim in model.dimensions:
-        dim_lines = _export_dimension(model, dim)
-        lines.extend(["    " + line for line in dim_lines])
+    child_nodes = _coerce_tmdl_nodes(getattr(model, "_tmdl_child_nodes", None))
 
-    for metric in model.metrics:
+    def emit_dimension(dim: Dimension) -> None:
+        for line in _export_dimension(model, dim):
+            lines.append("    " + line)
+
+    def emit_metric(metric: Metric) -> None:
         metric_lines = _export_metric(model, metric)
         if metric_lines:
-            lines.extend(["    " + line for line in metric_lines])
+            for line in metric_lines:
+                lines.append("    " + line)
 
-    for node in _coerce_tmdl_nodes(getattr(model, "_tmdl_child_nodes", None)):
+    def emit_passthrough(node: TmdlNode) -> None:
         lines.extend(_render_passthrough_node(node, indent="    "))
 
+    member_order = _coerce_member_order(
+        getattr(model, "_tmdl_member_order", None),
+        dimensions=len(model.dimensions),
+        metrics=len(model.metrics),
+        passthrough=len(child_nodes),
+    )
+    if member_order is not None:
+        # Reproduce the source declaration order so a measure declared before columns (or an
+        # annotation interleaved between members) keeps its original position.
+        for kind, index in member_order:
+            if kind == "dimension":
+                emit_dimension(model.dimensions[index])
+            elif kind == "metric":
+                emit_metric(model.metrics[index])
+            else:
+                emit_passthrough(child_nodes[index])
+    else:
+        for dim in model.dimensions:
+            emit_dimension(dim)
+        for metric in model.metrics:
+            emit_metric(metric)
+        for node in child_nodes:
+            emit_passthrough(node)
+
     return "\n".join(lines) + "\n"
+
+
+def _coerce_member_order(
+    value: Any, *, dimensions: int, metrics: int, passthrough: int
+) -> list[tuple[str, int]] | None:
+    """Validate recorded member order against the current member counts.
+
+    Returns the order only when every recorded index is in range and the per-kind counts match
+    the model's current members, so a mutated or in-memory model safely falls back to the default
+    columns-then-measures-then-passthrough emission.
+    """
+    if not isinstance(value, list) or not value:
+        return None
+    counts = {"dimension": 0, "metric": 0, "passthrough": 0}
+    limits = {"dimension": dimensions, "metric": metrics, "passthrough": passthrough}
+    order: list[tuple[str, int]] = []
+    for entry in value:
+        if not isinstance(entry, (tuple, list)) or len(entry) != 2:
+            return None
+        kind, index = entry
+        if kind not in limits or not isinstance(index, int):
+            return None
+        if index < 0 or index >= limits[kind]:
+            return None
+        counts[kind] += 1
+        order.append((kind, index))
+    if counts != limits:
+        return None
+    return order
 
 
 def _export_dimension(model: Model, dim: Dimension) -> list[str]:
@@ -1448,7 +1690,7 @@ def _export_dimension(model: Model, dim: Dimension) -> list[str]:
             )
         elif "\n" in expression_sql:
             lines.append("    expression =")
-            for expr_line in expression_sql.splitlines():
+            for expr_line in _normalize_block_body(expression_sql):
                 lines.append(f"        {expr_line}")
         else:
             lines.append(f"    expression = {expression_sql}")
@@ -1655,8 +1897,24 @@ def _export_relationships(graph: SemanticGraph, warnings: list[TmdlExportWarning
                 to_table,
                 to_column,
             )
-            from_cardinality_value = _raw_value_for_key(raw_value_props, "fromcardinality") or from_card
-            to_cardinality_value = _raw_value_for_key(raw_value_props, "tocardinality") or to_card
+            raw_from_cardinality = _raw_value_for_key(raw_value_props, "fromcardinality")
+            raw_to_cardinality = _raw_value_for_key(raw_value_props, "tocardinality")
+            # Only relationships imported from TMDL carry a recorded property order; for those we
+            # know exactly which cardinalities were present in the source. A cardinality that was
+            # omitted in the source must stay omitted on re-export (TMDL defaults it), so we do not
+            # inject a derived cardinality line. In-memory relationships (no recorded order) keep the
+            # derived cardinality so a plain export still emits both cardinalities.
+            source_property_order = getattr(rel, "_tmdl_property_order", None)
+            has_source_order = isinstance(source_property_order, list)
+            source_keys = {str(key).lower() for key in source_property_order} if has_source_order else set()
+            from_cardinality_omitted_in_source = (
+                raw_from_cardinality is None and has_source_order and "fromcardinality" not in source_keys
+            )
+            to_cardinality_omitted_in_source = (
+                raw_to_cardinality is None and has_source_order and "tocardinality" not in source_keys
+            )
+            from_cardinality_value = raw_from_cardinality or from_card
+            to_cardinality_value = raw_to_cardinality or to_card
             emitted_keys: set[str] = set()
 
             def _emit_from_column() -> None:
@@ -1668,12 +1926,16 @@ def _export_relationships(graph: SemanticGraph, warnings: list[TmdlExportWarning
                 emitted_keys.add("tocolumn")
 
             def _emit_from_cardinality() -> None:
-                lines.append(f"    fromCardinality: {from_cardinality_value}")
                 emitted_keys.add("fromcardinality")
+                if from_cardinality_omitted_in_source:
+                    return
+                lines.append(f"    fromCardinality: {from_cardinality_value}")
 
             def _emit_to_cardinality() -> None:
-                lines.append(f"    toCardinality: {to_cardinality_value}")
                 emitted_keys.add("tocardinality")
+                if to_cardinality_omitted_in_source:
+                    return
+                lines.append(f"    toCardinality: {to_cardinality_value}")
 
             def _emit_is_active() -> None:
                 raw_is_active = _raw_value_for_key(raw_value_props, "isactive")
@@ -1759,6 +2021,10 @@ def _export_passthrough_properties(
             raw_value = prop.get("raw")
             if isinstance(raw_value, str):
                 lines.append(f"{indent}{name}: {raw_value}")
+            elif value is True:
+                # A bare boolean flag (e.g. ``discourageImplicitMeasures``) parses to value=True
+                # with no raw text. Re-emit it bare rather than rewriting it as ``name: true``.
+                lines.append(f"{indent}{name}")
             else:
                 lines.append(f"{indent}{name}: {_format_value(value)}")
         emitted_keys.add(key)
@@ -1768,17 +2034,46 @@ def _append_expression_assignment(lines: list[str], lhs: str, expression: TmdlEx
     meta = _format_expression_meta(expression)
     is_block = expression.is_block or "\n" in expression.text
     if is_block:
+        body_lines = _normalize_block_body(expression.text)
         if expression.block_delimiter == "```" and not meta:
             lines.append(f"{lhs} = ```")
-            for expr_line in expression.text.splitlines():
+            for expr_line in body_lines:
                 lines.append(f"{block_indent}{expr_line}")
             lines.append(f"{block_indent}```")
             return
         lines.append(f"{lhs} ={meta}")
-        for expr_line in expression.text.splitlines():
+        for expr_line in body_lines:
             lines.append(f"{block_indent}{expr_line}")
         return
     lines.append(f"{lhs} = {expression.text}{meta}")
+
+
+def _normalize_block_body(text: str) -> list[str]:
+    """Strip any common leading indentation from a stored expression body.
+
+    Some import paths capture body text with a residual leading indent (a fixed-prefix strip can
+    leave a stray tab when the body was nested deeper than the declaration). Re-prefixing fresh
+    spaces on export then yields mixed space+tab indentation. Removing the common leading indent
+    here makes export re-indent consistently with no residual tabs, while preserving the relative
+    indentation between body lines. For bodies that are already clean this is a no-op.
+    """
+    body_lines = text.splitlines()
+    min_indent: int | None = None
+    for line in body_lines:
+        if not line.strip():
+            continue
+        indent = len(line) - len(line.lstrip(" \t"))
+        if min_indent is None or indent < min_indent:
+            min_indent = indent
+    if not min_indent:
+        return body_lines
+    normalized: list[str] = []
+    for line in body_lines:
+        if not line.strip():
+            normalized.append("")
+        else:
+            normalized.append(line[min_indent:])
+    return normalized
 
 
 def _format_expression_meta(expression: TmdlExpression) -> str:
@@ -1840,6 +2135,10 @@ def _render_passthrough_property(lines: list[str], prop: TmdlProperty, *, indent
         return
     if isinstance(prop.raw, str):
         lines.append(f"{indent}{prop.name}: {prop.raw}")
+        return
+    if prop.value is True:
+        # Preserve a bare boolean flag (e.g. ``legacyRedirects``) instead of emitting ``: true``.
+        lines.append(f"{indent}{prop.name}")
         return
     lines.append(f"{indent}{prop.name}: {_format_value(prop.value)}")
 
@@ -2023,13 +2322,34 @@ def _format_value(value: Any) -> str:
         return str(value)
 
     text = str(value)
+    # A numeric literal that arrives as a string (e.g. "1.5") must stay a bare number. Without
+    # this guard the dotted form is misread as a Table.Column reference and rewritten to "1[5]".
+    if _is_numeric_literal(text):
+        return text
     table_ref, column_ref = _parse_column_reference(text)
-    if table_ref and column_ref:
+    # Only treat a dotted token as a Table.Column reference when neither side is numeric; this
+    # keeps decimals like "1.5" from being mangled into "1[5]".
+    if table_ref and column_ref and not _is_numeric_literal(table_ref) and not _is_numeric_literal(column_ref):
         return _format_column_ref(table_ref, column_ref)
     if _is_simple_identifier(text):
         return text
     escaped = text.replace('"', '""')
     return f'"{escaped}"'
+
+
+def _is_numeric_literal(text: str) -> bool:
+    candidate = text.strip()
+    if not candidate:
+        return False
+    if candidate[0] in "+-":
+        candidate = candidate[1:]
+    if not candidate:
+        return False
+    # Accept integers and simple decimals (one dot). Scientific notation and other forms fall
+    # through to the regular string handling.
+    if candidate.count(".") > 1:
+        return False
+    return candidate.replace(".", "", 1).isdigit()
 
 
 def _format_column_ref(table: str, column: str | None) -> str:

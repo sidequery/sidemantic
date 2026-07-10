@@ -2,7 +2,7 @@
 
 from typing import TYPE_CHECKING
 
-__version__ = "0.10.1"
+__version__ = "0.10.2"
 
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.freshness import Freshness

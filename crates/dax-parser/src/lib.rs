@@ -310,6 +310,10 @@ impl<'a> Lexer<'a> {
 
             // comments (ASCII-only starters, but idx is always at char boundary)
             match (self.peek_byte(), self.peek_byte_n(1)) {
+                // `--` is a canonical DAX single-line comment (runs to end of line), like `//`.
+                // It is always a comment regardless of the following character, matching Power BI /
+                // Tabular's documented lexing; the rare contiguous double-unary-minus idiom is left
+                // to the comment rather than guessed at.
                 (Some(b'-'), Some(b'-')) if self.dialect.allow_dash_dash_comments => {
                     self.skip_line_comment();
                     continue;
@@ -939,10 +943,21 @@ pub struct EvaluateStmt {
     pub start_at: Option<Vec<Expr>>,
 }
 
+/// Maximum recursion depth for the recursive-descent expression parser.
+///
+/// The mutually-recursive cycle (parse_expr_bp -> parse_prefix -> parse_primary ->
+/// {Paren / parse_arg_list / parse_table_constructor / parse_var_block} -> parse_expr_bp)
+/// has no natural bound, so pathological input (deeply nested parens/args/unary ops or
+/// right-associative `^` chains) would overflow the native stack — a hardware fault that
+/// PyO3 cannot convert into a catchable Python exception. We cap the depth and surface a
+/// normal `ParseError` instead. 256 is far beyond any real-world formula nesting.
+const MAX_PARSE_DEPTH: usize = 256;
+
 pub struct Parser {
     tokens: Vec<Token>,
     i: usize,
     dialect: Dialect,
+    depth: usize,
 }
 impl Parser {
     pub fn new(tokens: Vec<Token>, dialect: Dialect) -> Self {
@@ -950,6 +965,7 @@ impl Parser {
             tokens,
             i: 0,
             dialect,
+            depth: 0,
         }
     }
 
@@ -1487,6 +1503,26 @@ impl Parser {
     // ---- expression parsing (Pratt) ----
 
     fn parse_expr_bp(&mut self, min_bp: u8) -> Result<Expr, ParseError> {
+        // Depth guard: every recursion path (parens, arg lists, table constructors, var
+        // blocks, unary prefixes, right-assoc operators) funnels back through this entry,
+        // so guarding here bounds the whole recursive-descent cycle. The result is captured
+        // before decrementing so the counter stays balanced even when the body errors,
+        // which keeps sibling recursions (e.g. left-deep `1+1+...` chains, whose RHS calls
+        // unwind between operators) from falsely tripping the cap.
+        self.depth += 1;
+        if self.depth > MAX_PARSE_DEPTH {
+            self.depth -= 1;
+            return Err(ParseError {
+                message: "expression nesting too deep".into(),
+                span: self.peek().span,
+            });
+        }
+        let result = self.parse_expr_bp_impl(min_bp);
+        self.depth -= 1;
+        result
+    }
+
+    fn parse_expr_bp_impl(&mut self, min_bp: u8) -> Result<Expr, ParseError> {
         let mut lhs = self.parse_prefix()?;
 
         while let Some((op, lbp, rbp)) = self.peek_infix_op() {
@@ -1936,6 +1972,94 @@ mod tests {
                 bin!(BinaryOp::Mul, num!("2"), num!("3"))
             )
         );
+    }
+
+    #[test]
+    fn dash_dash_comment_still_works_at_end_of_line() {
+        // canonical line comment: `--` followed by whitespace stays a comment
+        let e = parse_expression("1 -- trailing\n").unwrap();
+        assert_eq!(e, num!("1"));
+    }
+
+    #[test]
+    fn contiguous_dash_dash_is_a_line_comment() {
+        // `--` always starts a line comment in DAX, even with no following space, so the rest of
+        // the line is elided. `[Sales]--[Cost]` is therefore just `[Sales]`.
+        let e = parse_expression("[Sales]--[Cost]").unwrap();
+        assert_eq!(e, br!("Sales"));
+
+        // `--text` (no space) is still a comment to end of line.
+        let e2 = parse_expression("1 --[Cost]\n").unwrap();
+        assert_eq!(e2, num!("1"));
+    }
+
+    /// Run `f` on a thread with a generous stack. The depth guard's job is to fire
+    /// *before* the native stack is exhausted; production entry threads (e.g. the
+    /// PyO3 main thread, ~8 MB) clear `MAX_PARSE_DEPTH` frames comfortably. cargo's
+    /// default test-thread stack is only ~2 MB, which the deepest (function-call
+    /// arg) path can exhaust at the cap, so we give these guard-logic tests room to
+    /// reach the guarded `Err` instead of flaking on raw frame size.
+    fn with_big_stack(f: impl FnOnce() + Send + 'static) {
+        std::thread::Builder::new()
+            .stack_size(32 * 1024 * 1024)
+            .spawn(f)
+            .expect("spawn test thread")
+            .join()
+            .expect("test thread panicked");
+    }
+
+    #[test]
+    fn deeply_nested_parens_error_instead_of_overflow() {
+        // Pathological nesting must surface a catchable ParseError, not overflow
+        // the native stack (uncatchable across PyO3).
+        with_big_stack(|| {
+            let depth = MAX_PARSE_DEPTH + 50;
+            let src = format!("{}1{}", "(".repeat(depth), ")".repeat(depth));
+            let err = parse_expression(&src).unwrap_err();
+            let msg = err.to_string();
+            assert!(msg.contains("nesting too deep"), "got: {msg}");
+        });
+    }
+
+    #[test]
+    fn deeply_nested_unary_minus_error_instead_of_overflow() {
+        // Space-separated minuses lex as distinct Minus tokens (a contiguous run of
+        // dashes would be a `--` line comment), so each one nests one unary level.
+        with_big_stack(|| {
+            let src = format!("{}1", "- ".repeat(MAX_PARSE_DEPTH + 50));
+            let err = parse_expression(&src).unwrap_err();
+            let msg = err.to_string();
+            assert!(msg.contains("nesting too deep"), "got: {msg}");
+        });
+    }
+
+    #[test]
+    fn left_deep_operator_chain_not_affected_by_depth_guard() {
+        // A long left-associative `+` chain unwinds between operators, so it must
+        // parse fine well past MAX_PARSE_DEPTH (its actual recursion depth is small).
+        with_big_stack(|| {
+            let n = MAX_PARSE_DEPTH * 4;
+            let src = vec!["1"; n].join("+");
+            // Should parse without tripping the depth guard.
+            parse_expression(&src).expect("left-deep chain should not hit depth cap");
+        });
+    }
+
+    #[test]
+    fn deeply_nested_query_args_error_instead_of_overflow() {
+        // The parse_query entry path funnels into parse_expr_bp too; nested args
+        // must error rather than overflow.
+        with_big_stack(|| {
+            let depth = MAX_PARSE_DEPTH + 50;
+            let src = format!(
+                "evaluate {{ {}1{} }}",
+                "f(".repeat(depth),
+                ")".repeat(depth)
+            );
+            let err = parse_query(&src).unwrap_err();
+            let msg = err.to_string();
+            assert!(msg.contains("nesting too deep"), "got: {msg}");
+        });
     }
 
     #[test]

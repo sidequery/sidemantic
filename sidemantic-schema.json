@@ -371,6 +371,7 @@
                 "sum",
                 "count",
                 "count_distinct",
+                "approx_count_distinct",
                 "avg",
                 "min",
                 "max",
@@ -1114,6 +1115,8 @@
           "anyOf": [
             {
               "enum": [
+                "second",
+                "minute",
                 "hour",
                 "day",
                 "week",
@@ -1214,6 +1217,22 @@
           "default": null,
           "description": "Refresh strategy configuration"
         },
+        "rollups": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "For type='lambda' (Cube rollupLambda): the constituent rollups this lambda unions. Stored for round-trip; query routing matches this lambda directly on its own measures/dimensions/granularity.",
+          "title": "Rollups"
+        },
         "scheduled_refresh": {
           "default": true,
           "description": "Whether to enable scheduled refresh",
@@ -1257,6 +1276,12 @@
           ],
           "title": "Type",
           "type": "string"
+        },
+        "union_with_source_data": {
+          "default": false,
+          "description": "For type='lambda': when True (and build_range_end is set), serve a query as a UNION of the batch rollup table (buckets before build_range_end) with a fresh aggregation of source rows at/after build_range_end, re-aggregated at the query grain.",
+          "title": "Union With Source Data",
+          "type": "boolean"
         }
       },
       "required": [
@@ -1594,6 +1619,7 @@
                   "sum",
                   "count",
                   "count_distinct",
+                  "approx_count_distinct",
                   "avg",
                   "min",
                   "max",
@@ -2586,6 +2612,7 @@
                       "sum",
                       "count",
                       "count_distinct",
+                      "approx_count_distinct",
                       "avg",
                       "min",
                       "max",
@@ -3250,6 +3277,8 @@
                 "anyOf": [
                   {
                     "enum": [
+                      "second",
+                      "minute",
                       "hour",
                       "day",
                       "week",
@@ -3350,6 +3379,22 @@
                 "default": null,
                 "description": "Refresh strategy configuration"
               },
+              "rollups": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "For type='lambda' (Cube rollupLambda): the constituent rollups this lambda unions. Stored for round-trip; query routing matches this lambda directly on its own measures/dimensions/granularity.",
+                "title": "Rollups"
+              },
               "scheduled_refresh": {
                 "default": true,
                 "description": "Whether to enable scheduled refresh",
@@ -3393,6 +3438,12 @@
                 ],
                 "title": "Type",
                 "type": "string"
+              },
+              "union_with_source_data": {
+                "default": false,
+                "description": "For type='lambda': when True (and build_range_end is set), serve a query as a UNION of the batch rollup table (buckets before build_range_end) with a fresh aggregation of source rows at/after build_range_end, re-aggregated at the query grain.",
+                "title": "Union With Source Data",
+                "type": "boolean"
               }
             },
             "required": [
@@ -3881,6 +3932,9 @@
                   "type": "string"
                 },
                 "type": "array"
+              },
+              {
+                "type": "null"
               }
             ],
             "default": "id",

@@ -18,6 +18,24 @@ from sidemantic.sql.generator import SQLGenerator
 _RUST_SQL_OUTPUT_DIALECT = "duckdb"
 
 
+class PreaggregationStrictError(RuntimeError):
+    """Raised in strict (rollup-only) mode when a query cannot be served from a pre-aggregation."""
+
+
+# Substrings that identify a "missing relation/table" execution error across
+# database adapters (DuckDB, Postgres, BigQuery, Snowflake, ClickHouse, ...).
+# Used to decide whether a routed-but-unbuilt pre-aggregation table should fall
+# back to the raw tables (which always produce correct results).
+_MISSING_RELATION_MARKERS = (
+    "does not exist",
+    "doesn't exist",
+    "no such table",
+    "unknown table",
+    "table or view",
+    "not found",  # BigQuery surfaces missing tables as "404 Not found: Table ..."
+)
+
+
 class SemanticLayer:
     """Main semantic layer interface.
 
@@ -30,11 +48,14 @@ class SemanticLayer:
         dialect: str | None = None,
         auto_register: bool = True,
         use_preaggregations: bool = False,
+        preagg_strict: bool = False,
         preagg_database: str | None = None,
         preagg_schema: str | None = None,
         init_sql: list[str] | None = None,
         engine: str | None = None,
         fallback: bool | None = None,
+        default_limit: int | None = None,
+        max_limit: int | None = None,
     ):
         """Initialize semantic layer.
 
@@ -54,6 +75,9 @@ class SemanticLayer:
             dialect: SQL dialect for query generation (optional, inferred from adapter)
             auto_register: Set as current layer for auto-registration (default: True)
             use_preaggregations: Enable automatic pre-aggregation routing (default: False)
+            preagg_strict: Rollup-only mode. When True, queries must be served from a
+                pre-aggregation; if none matches or its table is not built, raise
+                PreaggregationStrictError instead of falling back to raw tables (default: False)
             preagg_database: Optional database name for pre-aggregation tables
             preagg_schema: Optional schema name for pre-aggregation tables
             init_sql: SQL statements to run after connecting (DuckDB only, e.g.,
@@ -63,6 +87,11 @@ class SemanticLayer:
                 legacy SIDEMANTIC_RS_* environment flags are honored.
             fallback: Whether explicit Rust/auto engine mode may fall back to Python.
                 Defaults to False for engine="rust" and True for engine="auto".
+            default_limit: Opt-in row limit applied when a query specifies no explicit
+                limit (default: None, i.e. unlimited). Safety cap to avoid accidental
+                full-table scans.
+            max_limit: Opt-in maximum row limit; an explicit (or defaulted) limit larger
+                than this is capped to it (default: None, i.e. uncapped).
         """
         from sidemantic.db.base import BaseDatabaseAdapter
 
@@ -75,9 +104,12 @@ class SemanticLayer:
         self._sql_rewrite_cache: dict[tuple[object, ...], str] = {}
         self._sql_rewrite_cache_limit = 256
         self.use_preaggregations = use_preaggregations
+        self.preagg_strict = preagg_strict
         self.preagg_database = preagg_database
         self.preagg_schema = preagg_schema
         self.engine = engine or "python"
+        self.default_limit = default_limit
+        self.max_limit = max_limit
         self._strict_rust_sql_generator_entrypoint = is_strict_for("sql_generator_entrypoint")
         self._strict_rust_query_validation = is_strict_for("semantic_core_query_validation")
         if engine == "python":
@@ -516,10 +548,14 @@ class SemanticLayer:
         segments: list[str] | None = None,
         order_by: list[str] | None = None,
         limit: int | None = None,
+        offset: int | None = None,
         ungrouped: bool = False,
         parameters: dict[str, any] | None = None,
         use_preaggregations: bool | None = None,
+        preagg_strict: bool | None = None,
         post_process: str | None = None,
+        timezone: str | None = None,
+        with_totals: bool = False,
     ):
         """Execute a query against the semantic layer.
 
@@ -530,30 +566,125 @@ class SemanticLayer:
             segments: List of segment references (e.g., ["orders.active_users"])
             order_by: List of fields to order by
             limit: Maximum number of rows to return
+            offset: Number of rows to skip
             ungrouped: If True, return raw rows without aggregation (no GROUP BY)
             parameters: Template parameters for Jinja2 rendering
             use_preaggregations: Override pre-aggregation routing setting for this query
+            preagg_strict: Override rollup-only mode for this query. When True, raise
+                PreaggregationStrictError if no rollup matches or its table is missing,
+                instead of falling back to raw tables.
             post_process: Optional SQL to wrap around the semantic query result.
                 Use {inner} as a placeholder for the compiled semantic query, e.g.:
                 "SELECT *, revenue / count AS avg_value FROM ({inner})"
+            timezone: Optional query timezone applied to time-dimension truncation
+            with_totals: If True, add a grand-total row via GROUPING SETS, marked with a
+                trailing _is_total column (1 for the grand total, 0 for detail rows) so it
+                is distinguishable from a real all-NULL dimension group. Cannot be combined
+                with ungrouped, limit, or offset
 
         Returns:
             DuckDB relation object (can convert to DataFrame with .df() or .to_df())
         """
-        sql = self.compile(
+        use_preaggs = use_preaggregations if use_preaggregations is not None else self.use_preaggregations
+        strict = preagg_strict if preagg_strict is not None else self.preagg_strict
+
+        # Detect pre-aggregation routing from the un-post-processed compile: post_process
+        # wraps the query and strips the `-- sidemantic ... used_preagg=true` marker.
+        routing_sql = self.compile(
             metrics=metrics,
             dimensions=dimensions,
             filters=filters,
             segments=segments,
             order_by=order_by,
             limit=limit,
+            offset=offset,
             ungrouped=ungrouped,
             parameters=parameters,
             use_preaggregations=use_preaggregations,
-            post_process=post_process,
+            timezone=timezone,
+            with_totals=with_totals,
+        )
+        used_preagg = "used_preagg=true" in routing_sql
+
+        if post_process:
+            sql = self.compile(
+                metrics=metrics,
+                dimensions=dimensions,
+                filters=filters,
+                segments=segments,
+                order_by=order_by,
+                limit=limit,
+                ungrouped=ungrouped,
+                parameters=parameters,
+                use_preaggregations=use_preaggregations,
+                post_process=post_process,
+                timezone=timezone,
+            )
+        else:
+            sql = routing_sql
+
+        def recompile_raw():
+            return self.compile(
+                metrics=metrics,
+                dimensions=dimensions,
+                filters=filters,
+                segments=segments,
+                order_by=order_by,
+                limit=limit,
+                ungrouped=ungrouped,
+                parameters=parameters,
+                use_preaggregations=False,
+                post_process=post_process,
+                timezone=timezone,
+            )
+
+        return self._execute_with_preagg_fallback(
+            sql, recompile_raw, use_preaggs=use_preaggs, strict=strict, used_preagg=used_preagg
         )
 
-        return self.adapter.execute(sql)
+    def _execute_with_preagg_fallback(
+        self, primary_sql, recompile_raw, *, use_preaggs: bool, strict: bool, used_preagg: bool
+    ):
+        """Execute primary_sql, falling back to raw tables when a routed rollup is missing.
+
+        Shared by query() and sql() so both the Python API and the SQL/CLI path get
+        identical missing-rollup behavior. ``used_preagg`` says whether routing selected
+        a rollup (the caller detects it before any post-processing strips the marker):
+        - if no rollup matched and strict is set, raise (rollup-only mode);
+        - if the routed rollup table does not exist, fall back to recompile_raw() (or
+          raise in strict mode). Any other error surfaces unchanged.
+        """
+        if not use_preaggs:
+            return self.adapter.execute(primary_sql)
+
+        # Rollup-only: a query no rollup can serve must error rather than scan raw tables.
+        if strict and not used_preagg:
+            raise PreaggregationStrictError(
+                "Strict pre-aggregation mode: no pre-aggregation matched this query "
+                "(its metrics/dimensions/granularity are not covered by any rollup)."
+            )
+
+        try:
+            return self.adapter.execute(primary_sql)
+        except Exception as exc:
+            # Only intervene when a routed pre-aggregation table is missing; every
+            # other error surfaces unchanged.
+            if not used_preagg or not self._is_missing_relation_error(exc):
+                raise
+            if strict:
+                raise PreaggregationStrictError(
+                    "Strict pre-aggregation mode: the matching pre-aggregation table is not built. "
+                    "Materialize it (e.g. `sidemantic preagg refresh`) before querying."
+                ) from exc
+            # A pure optimization fell through: recompile against raw tables so the
+            # query still returns correct results.
+            return self.adapter.execute(recompile_raw())
+
+    @staticmethod
+    def _is_missing_relation_error(error: Exception) -> bool:
+        """Heuristic: does this execution error indicate a missing table/relation?"""
+        message = str(error).lower()
+        return any(marker in message for marker in _MISSING_RELATION_MARKERS)
 
     def get_import_warnings(self) -> list[dict[str, object]]:
         """Return structured warnings produced while importing model definitions."""
@@ -600,6 +731,21 @@ class SemanticLayer:
             use_preaggregations=use_preaggregations,
         )
 
+    def _resolve_row_limit(self, limit: int | None) -> int | None:
+        """Apply opt-in default/max row-limit safety caps.
+
+        - When no explicit limit is given, fall back to ``default_limit`` (if set).
+        - When an explicit (or defaulted) limit exceeds ``max_limit`` (if set), cap it.
+
+        Both ``default_limit`` and ``max_limit`` default to ``None`` so behavior is
+        unchanged unless configured on the ``SemanticLayer``.
+        """
+        if limit is None and self.default_limit is not None:
+            limit = self.default_limit
+        if self.max_limit is not None and limit is not None and limit > self.max_limit:
+            limit = self.max_limit
+        return limit
+
     def compile(
         self,
         metrics: list[str] | None = None,
@@ -615,6 +761,8 @@ class SemanticLayer:
         use_preaggregations: bool | None = None,
         aliases: dict[str, str] | None = None,
         post_process: str | None = None,
+        timezone: str | None = None,
+        with_totals: bool = False,
     ) -> str:
         """Compile a query to SQL without executing.
 
@@ -633,6 +781,14 @@ class SemanticLayer:
             post_process: Optional SQL to wrap around the semantic query result.
                 Use {inner} as a placeholder for the compiled semantic query, e.g.:
                 "SELECT *, revenue / count AS avg_value FROM ({inner})"
+            timezone: Optional query timezone. When set, time-dimension expressions are
+                converted to this timezone before truncation. Most meaningful on
+                TIMESTAMPTZ columns. Truncation-side only: time-dimension filter
+                comparisons are not timezone-shifted.
+            with_totals: If True, add a grand-total row via GROUPING SETS, marked with a
+                trailing _is_total column (1 for the grand total, 0 for detail rows) so it
+                is distinguishable from a real all-NULL dimension group. Cannot be combined
+                with ungrouped, limit, or offset
 
         Returns:
             SQL query string
@@ -645,6 +801,19 @@ class SemanticLayer:
         metrics = metrics or []
         dimensions = dimensions or []
 
+        if with_totals and (limit is not None or offset is not None):
+            raise ValueError(
+                "with_totals cannot be combined with limit/offset: the grand-total row shares "
+                "the grouped result set with the detail rows, so pagination could page it out. "
+                "Paginate in a wrapper (post_process) or omit with_totals."
+            )
+
+        # Apply opt-in default/max row-limit caps before engine dispatch so both the Rust and
+        # Python compile paths see the resolved limit. Skip the caps when with_totals is set so
+        # a configured default_limit/max_limit cannot page out the grand-total row.
+        if not with_totals:
+            limit = self._resolve_row_limit(limit)
+
         # Validate query
         errors = self._validate_query(metrics, dimensions, validate_query)
         if errors:
@@ -654,7 +823,10 @@ class SemanticLayer:
         use_preaggs = use_preaggregations if use_preaggregations is not None else self.use_preaggregations
 
         inner_sql = None
-        if self._use_rust_sql_generator:
+        # The Rust generator implements neither query-timezone bucketing nor with_totals
+        # GROUPING SETS, so use the Python path when either is requested.
+        # (Pre-agg bypass for timezone queries is enforced inside SQLGenerator.generate.)
+        if self._use_rust_sql_generator and not timezone and not with_totals:
             inner_sql = self._compile_with_rust(
                 metrics=metrics,
                 dimensions=dimensions,
@@ -705,6 +877,8 @@ class SemanticLayer:
                 parameters=parameters,
                 use_preaggregations=use_preaggs,
                 aliases=aliases,
+                timezone=timezone,
+                with_totals=with_totals,
             )
 
         return self._apply_post_process(inner_sql, post_process)
@@ -742,12 +916,15 @@ class SemanticLayer:
         parameters: dict[str, any] | None,
         use_preaggregations: bool,
         aliases: dict[str, str] | None,
+        timezone: str | None = None,
+        with_totals: bool = False,
     ) -> str:
         generator = SQLGenerator(
             self.graph,
             dialect=dialect or self.dialect,
             preagg_database=self.preagg_database,
             preagg_schema=self.preagg_schema,
+            timezone=timezone,
         )
 
         return generator.generate(
@@ -762,6 +939,7 @@ class SemanticLayer:
             parameters=parameters,
             use_preaggregations=use_preaggregations,
             aliases=aliases,
+            with_totals=with_totals,
         )
 
     def _compile_with_rust(
@@ -969,16 +1147,6 @@ class SemanticLayer:
                 routing_reason=f"multi-model query ({', '.join(sorted(model_names))}), preaggs only work for single-model queries",
             )
 
-        if ungrouped:
-            return QueryPlan(
-                sql=sql,
-                model=model_names[0],
-                metrics=bare_metrics,
-                dimensions=bare_dims,
-                used_preaggregation=False,
-                routing_reason="ungrouped query, preaggs require aggregation",
-            )
-
         model_name = model_names[0]
         try:
             model = self.get_model(model_name)
@@ -1010,6 +1178,46 @@ class SemanticLayer:
             time_granularity=time_granularity,
             filters=bare_filters,
         )
+
+        if ungrouped:
+            # Drill-to-detail can only be served from a rollup that stores the
+            # full primary key (rows are unique) and only for metrics whose raw
+            # column is the per-row value. Mirror the routing gate in
+            # _try_use_preaggregation so explain reflects actual routing.
+            non_derivable = [
+                m
+                for m in bare_metrics
+                if (metric := model.get_metric(m)) is None
+                or metric.type in {"ratio", "derived"}
+                or metric.agg in {"avg", "count_distinct", "approx_count_distinct"}
+            ]
+            if non_derivable:
+                return QueryPlan(
+                    sql=sql,
+                    model=model_name,
+                    metrics=bare_metrics,
+                    dimensions=bare_dims,
+                    used_preaggregation=False,
+                    routing_reason=(
+                        f"ungrouped query, metric(s) {', '.join(non_derivable)} are not derivable from stored rows"
+                    ),
+                    candidates=candidates,
+                )
+            pk_columns = set(model.primary_key_columns)
+            for candidate in candidates:
+                preagg = next((p for p in model.pre_aggregations if p.name == candidate.name), None)
+                if candidate.selected and (preagg is None or not pk_columns.issubset(set(preagg.dimensions or []))):
+                    candidate.selected = False
+            if not any(c.selected for c in candidates):
+                return QueryPlan(
+                    sql=sql,
+                    model=model_name,
+                    metrics=bare_metrics,
+                    dimensions=bare_dims,
+                    used_preaggregation=False,
+                    routing_reason="ungrouped query, no rollup carries the primary key for unique rows",
+                    candidates=candidates,
+                )
 
         selected = next((c for c in candidates if c.selected), None)
         if selected:
@@ -1352,7 +1560,16 @@ class SemanticLayer:
                 self._sql_rewrite_cache.pop(next(iter(self._sql_rewrite_cache)))
             self._sql_rewrite_cache[cache_key] = rewritten_sql
 
-        return self.adapter.execute(rewritten_sql)
+        def recompile_raw():
+            return QueryRewriter(self.graph, dialect=self.dialect, use_preaggregations=False).rewrite(query)
+
+        return self._execute_with_preagg_fallback(
+            rewritten_sql,
+            recompile_raw,
+            use_preaggs=self.use_preaggregations,
+            strict=self.preagg_strict,
+            used_preagg="used_preagg=true" in rewritten_sql,
+        )
 
     def explain_sql(self, query: str, strict: bool = True):
         """Explain semantic SQL rewrite planning without executing the query.

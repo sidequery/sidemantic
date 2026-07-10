@@ -131,7 +131,10 @@ pub fn build_symmetric_aggregate_sql_with_key_expr(
     };
 
     let symmetric_base_expr = format!("({hash_expr} * {multiplier})");
-    let symmetric_measure_expr = measure_col.clone();
+    // COALESCE the measure to 0 so a NULL value doesn't drop the row from the
+    // value-bearing SUM while its hash term survives in the subtractor SUM, which
+    // would break the cancellation and leave a huge HASH*multiplier in the result.
+    let symmetric_measure_expr = format!("COALESCE({measure_col}, 0)");
 
     match agg_type {
         SymmetricAggType::Sum => {
@@ -142,16 +145,27 @@ pub fn build_symmetric_aggregate_sql_with_key_expr(
             )
         }
         SymmetricAggType::Avg => {
-            // Sum divided by distinct count
+            // Sum (NULL-coalesced for the hash trick) divided by the count of entities
+            // that actually have a value. SQL AVG ignores NULLs, so NULL-measure rows
+            // must be excluded from the denominator too, else the coalesced 0 in the
+            // numerator would drag the average down ({10, NULL} -> 5 not 10).
             let sum_expr = format!(
                 "(SUM(DISTINCT {symmetric_base_expr} + {symmetric_measure_expr}) - \
                  SUM(DISTINCT {symmetric_base_expr}))"
             );
-            format!("{sum_expr} / NULLIF(COUNT(DISTINCT {pk_col}), 0)")
+            format!(
+                "{sum_expr} / NULLIF(COUNT(DISTINCT CASE WHEN {measure_col} IS NOT NULL THEN {pk_col} END), 0)"
+            )
         }
         SymmetricAggType::Count => {
-            // Count distinct primary keys
-            format!("COUNT(DISTINCT {pk_col})")
+            // COUNT(*) has no per-row value to gate on, so count distinct PKs directly.
+            // Otherwise honor any metric-level filter baked into the raw measure column
+            // (NULL for non-matching rows).
+            if measure_expr == "*" {
+                format!("COUNT(DISTINCT {pk_col})")
+            } else {
+                format!("COUNT(DISTINCT CASE WHEN {measure_col} IS NOT NULL THEN {pk_col} END)")
+            }
         }
         SymmetricAggType::CountDistinct => {
             // Count distinct on the measure itself - no symmetric aggregate needed
@@ -187,7 +201,7 @@ mod tests {
         );
         assert!(sql.contains("SUM(DISTINCT"));
         assert!(sql.contains("HASH(order_id)::HUGEINT"));
-        assert!(sql.contains("+ amount"));
+        assert!(sql.contains("+ COALESCE(amount, 0)"));
         assert!(sql.contains("(1::HUGEINT << 40)"));
     }
 
@@ -209,6 +223,21 @@ mod tests {
     fn test_symmetric_count() {
         let sql = build_symmetric_aggregate_sql(
             "amount",
+            "order_id",
+            SymmetricAggType::Count,
+            None,
+            SqlDialect::DuckDB,
+        );
+        assert_eq!(
+            sql,
+            "COUNT(DISTINCT CASE WHEN amount IS NOT NULL THEN order_id END)"
+        );
+    }
+
+    #[test]
+    fn test_symmetric_count_star_is_unfiltered() {
+        let sql = build_symmetric_aggregate_sql(
+            "*",
             "order_id",
             SymmetricAggType::Count,
             None,
@@ -275,6 +304,6 @@ mod tests {
             SqlDialect::DuckDB,
         );
         assert!(sql.contains("HASH(CONCAT("));
-        assert!(sql.contains("+ o.amount"));
+        assert!(sql.contains("+ COALESCE(o.amount, 0)"));
     }
 }

@@ -88,6 +88,72 @@ def test_cube_adapter_pre_aggregations():
     assert created_at.type == "time"
 
 
+def test_cube_rollup_lambda_round_trips_rollups_and_union_flag(tmp_path):
+    """rollupLambda's rollups list and unionWithSourceData flag survive Cube round-trip.
+
+    Cube previously dropped the rollups list; it is now stored on PreAggregation and
+    re-emitted (CUBE.-prefixed) on export, alongside union_with_source_data.
+    """
+    cube_yaml = tmp_path / "orders.yml"
+    cube_yaml.write_text(
+        """
+cubes:
+  - name: orders
+    sql_table: public.orders
+    measures:
+      - name: revenue
+        type: sum
+        sql: amount
+    dimensions:
+      - name: status
+        sql: status
+        type: string
+      - name: created_at
+        sql: created_at
+        type: time
+    pre_aggregations:
+      - name: lambda_rollup
+        type: rollupLambda
+        rollups:
+          - CUBE.main
+          - CUBE.realtime
+        unionWithSourceData: true
+        measures:
+          - CUBE.revenue
+        dimensions:
+          - CUBE.status
+        time_dimension: CUBE.created_at
+        granularity: day
+        build_range_end:
+          sql: "SELECT '2024-04-01'"
+"""
+    )
+
+    adapter = CubeAdapter()
+    graph = adapter.parse(cube_yaml)
+
+    preagg = graph.get_model("orders").pre_aggregations[0]
+    # rollupLambda normalizes to 'lambda'; prefixes are stripped from rollups.
+    assert preagg.type == "lambda"
+    assert preagg.rollups == ["main", "realtime"]
+    assert preagg.union_with_source_data is True
+
+    # Export and re-parse: both survive, and the YAML re-prefixes rollups with CUBE.
+    out_path = tmp_path / "out.yml"
+    adapter.export(graph, out_path)
+
+    import yaml
+
+    exported = yaml.safe_load(out_path.read_text())
+    exported_preagg = exported["cubes"][0]["pre_aggregations"][0]
+    assert exported_preagg["rollups"] == ["CUBE.main", "CUBE.realtime"]
+    assert exported_preagg["union_with_source_data"] is True
+
+    reparsed = adapter.parse(out_path).get_model("orders").pre_aggregations[0]
+    assert reparsed.rollups == ["main", "realtime"]
+    assert reparsed.union_with_source_data is True
+
+
 def test_cube_adapter_multi_cube():
     """Test Cube adapter with multiple related cubes."""
     adapter = CubeAdapter()
@@ -400,7 +466,8 @@ def test_cube_financial_analytics():
 
     is_recurring_dim = transactions.get_dimension("is_recurring")
     assert is_recurring_dim is not None
-    assert is_recurring_dim.type == "categorical"
+    # Cube boolean now maps to sidemantic boolean (round-trips back to Cube boolean)
+    assert is_recurring_dim.type == "boolean"
 
     # Check transaction measures with filters
     credit_amount = transactions.get_metric("credit_amount")

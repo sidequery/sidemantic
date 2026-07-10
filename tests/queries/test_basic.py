@@ -267,6 +267,66 @@ def test_sql_compilation_preserves_zero_limit_and_offset(layer):
     assert "\nOFFSET 0" in sql
 
 
+def test_query_offset_pages_results(layer):
+    layer.conn.execute("CREATE TABLE orders (order_id INTEGER, status VARCHAR)")
+    layer.conn.execute("INSERT INTO orders VALUES (1,'a'),(2,'b'),(3,'c'),(4,'d'),(5,'e')")
+    layer.add_model(
+        Model(
+            name="orders",
+            table="orders",
+            primary_key="order_id",
+            dimensions=[Dimension(name="status", type="categorical")],
+            metrics=[Metric(name="count", agg="count")],
+        )
+    )
+
+    # query() now accepts offset and pages correctly
+    rows = df_rows(
+        layer.query(
+            dimensions=["orders.status"],
+            order_by=["orders.status"],
+            limit=2,
+            offset=2,
+        )
+    )
+    assert rows == [("c",), ("d",)]
+
+    # offset matches what compile() emits
+    sql = layer.compile(dimensions=["orders.status"], order_by=["orders.status"], limit=2, offset=2)
+    assert "\nOFFSET 2" in sql
+
+
+@pytest.mark.parametrize(
+    "default_limit,max_limit,explicit_limit,expected_limit",
+    [
+        (None, None, None, None),  # off: no cap, no default
+        (None, None, 5, 5),  # off: explicit limit untouched
+        (100, None, None, 100),  # default applies when no explicit limit
+        (100, None, 5, 5),  # explicit limit overrides default
+        (None, 50, 1000, 50),  # max caps an explicit limit
+        (None, 50, 10, 10),  # max leaves a below-cap limit alone
+        (100, 50, None, 50),  # default applies then is capped by max
+    ],
+)
+def test_row_limit_cap(default_limit, max_limit, explicit_limit, expected_limit):
+    """Opt-in default_limit/max_limit row caps; defaults of None keep behavior unchanged."""
+    layer = SemanticLayer(default_limit=default_limit, max_limit=max_limit)
+    layer.add_model(
+        Model(
+            name="orders",
+            table="orders",
+            primary_key="order_id",
+            dimensions=[Dimension(name="status", type="categorical")],
+            metrics=[Metric(name="count", agg="count")],
+        )
+    )
+    sql = layer.compile(dimensions=["orders.status"], limit=explicit_limit)
+    if expected_limit is None:
+        assert "LIMIT" not in sql.upper()
+    else:
+        assert f"LIMIT {expected_limit}" in sql
+
+
 def test_multi_model_query(layer):
     """Test query across multiple models."""
     orders = Model(
@@ -457,6 +517,59 @@ def test_custom_join_sql_projects_extra_predicate_columns():
         layer.query(metrics=["orders.revenue"], dimensions=["customers.country"], order_by=["customers.country"])
     )
     assert rows == [("Expired", None), ("US", 50)]
+
+
+def test_compiles_and_executes_columns_with_spaces():
+    """Regression: dimensions whose names contain spaces (common in imported Power BI / TMDL
+    models, e.g. "Order Date") must be quoted in generated SQL so queries parse and execute,
+    rather than failing with a sqlglot ParseError on the unquoted identifier."""
+    from datetime import date
+
+    conn = duckdb.connect(":memory:")
+    conn.execute('CREATE TABLE sales (id INTEGER, "Order Date" DATE, "Order Status" VARCHAR, quantity INTEGER)')
+    conn.execute(
+        "INSERT INTO sales VALUES "
+        "(1, DATE '2024-01-15', 'shipped', 5), "
+        "(2, DATE '2024-01-15', 'pending', 3), "
+        "(3, DATE '2024-02-10', 'shipped', 7)"
+    )
+
+    layer = SemanticLayer()
+    layer.conn = conn
+    layer.add_model(
+        Model(
+            name="Sales",
+            table="sales",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="Order Date", type="time", granularity="month"),
+                Dimension(name="Order Status", type="categorical"),
+            ],
+            metrics=[Metric(name="qty", agg="sum", sql="quantity")],
+        )
+    )
+
+    # Group by a spaced time dimension with a grain -- the original crash path (_date_trunc).
+    by_month = df_rows(
+        layer.query(metrics=["Sales.qty"], dimensions=["Sales.Order Date"], order_by=["Sales.Order Date"])
+    )
+    assert by_month == [(date(2024, 1, 1), 8), (date(2024, 2, 1), 7)]
+
+    # Group by a spaced categorical dimension, ordered by it.
+    by_status = df_rows(
+        layer.query(metrics=["Sales.qty"], dimensions=["Sales.Order Status"], order_by=["Sales.Order Status"])
+    )
+    assert by_status == [("pending", 3), ("shipped", 12)]
+
+    # Filter on a spaced column (the raw-SQL filter quotes the identifier).
+    shipped = df_rows(
+        layer.query(
+            metrics=["Sales.qty"],
+            dimensions=["Sales.Order Status"],
+            filters=["Sales.\"Order Status\" = 'shipped'"],
+        )
+    )
+    assert shipped == [("shipped", 12)]
 
 
 def test_dotted_graph_metric_projects_sql_column_and_orders_by_alias(layer):
@@ -651,6 +764,41 @@ def test_count_distinct_with_actual_data(layer):
     counts = {row[0]: row[1] for row in rows}
     assert counts["New York"] == 2
     assert counts["Los Angeles"] == 3
+
+
+def test_direct_many_to_many_without_target_key_joins_on_model_pk():
+    """Regression: a direct (no-bridge) many_to_many that records only a foreign_key (the related
+    side's column) and no target primary_key must join the local side on the model's primary key.
+
+    Treating foreign_key as the local column too would emit a join on a column the source CTE does
+    not have. (A TMDL many-to-many records both endpoints via primary_key and is handled separately.)
+    """
+    import re
+
+    layer = SemanticLayer()
+    layer.add_model(
+        Model(
+            name="a",
+            table="a",
+            primary_key="id",
+            dimensions=[Dimension(name="id", type="numeric")],
+            metrics=[Metric(name="cnt", agg="count")],
+            relationships=[Relationship(name="b", type="many_to_many", foreign_key="a_id")],
+        )
+    )
+    layer.add_model(
+        Model(
+            name="b",
+            table="b",
+            primary_key="a_id",
+            dimensions=[Dimension(name="a_id", type="numeric"), Dimension(name="label", type="categorical")],
+        )
+    )
+
+    sql = layer.compile(metrics=["a.cnt"], dimensions=["b.label"])
+    # Local side joins on A's primary key; it never references a raw a_id column (A has none).
+    assert re.search(r"a_cte\.id\b", sql)
+    assert "a_cte.a_id" not in sql
 
 
 if __name__ == "__main__":

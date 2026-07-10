@@ -1,0 +1,137 @@
+"""Opt-in query-level timezone bucketing for time dimensions."""
+
+import duckdb
+import pytest
+
+from sidemantic import Dimension, Metric, Model, SemanticLayer
+from sidemantic.core.semantic_graph import SemanticGraph
+from sidemantic.sql.generator import SQLGenerator
+
+
+def _layer():
+    conn = duckdb.connect(":memory:")
+    conn.execute("create table ev as select 1 as id, TIMESTAMP '2024-01-02 02:00:00' as ts, 5 as amt")
+    layer = SemanticLayer()
+    layer.conn = conn
+    layer.add_model(
+        Model(
+            name="ev",
+            table="ev",
+            primary_key="id",
+            dimensions=[Dimension(name="ts", type="time", sql="ts", granularity="day")],
+            metrics=[Metric(name="total", agg="sum", sql="amt")],
+        )
+    )
+    return layer
+
+
+def test_no_timezone_is_unchanged():
+    """Without a timezone, generation is identical to before (no tz conversion)."""
+    layer = _layer()
+    sql = layer.compile(metrics=["ev.total"], dimensions=["ev.ts__day"])
+    assert "AT TIME ZONE" not in sql
+
+
+def test_timezone_shifts_day_boundary():
+    """2024-01-02 02:00 UTC buckets to Jan 2 in UTC but Jan 1 in America/New_York (UTC-5)."""
+    layer = _layer()
+    sql = layer.compile(metrics=["ev.total"], dimensions=["ev.ts__day"], timezone="America/New_York")
+    assert "AT TIME ZONE" in sql
+
+    utc = layer.query(metrics=["ev.total"], dimensions=["ev.ts__day"]).fetchall()
+    ny = layer.query(metrics=["ev.total"], dimensions=["ev.ts__day"], timezone="America/New_York").fetchall()
+    assert str(utc[0][0]).startswith("2024-01-02")
+    assert str(ny[0][0]).startswith("2024-01-01")
+
+
+def test_timezone_dialect_specific_sql():
+    """Each supported dialect gets its own localization idiom; unsupported dialects raise."""
+    g = SemanticGraph()
+    assert "CONVERT_TIMEZONE('UTC', 'America/New_York'" in (
+        SQLGenerator(g, dialect="snowflake", timezone="America/New_York")._date_trunc("day", "ts")
+    )
+    assert "DATETIME(ts, 'America/New_York')" in (
+        SQLGenerator(g, dialect="bigquery", timezone="America/New_York")._date_trunc("day", "ts")
+    )
+    assert "from_utc_timestamp(ts, 'America/New_York')" in (
+        SQLGenerator(g, dialect="spark", timezone="America/New_York")._date_trunc("day", "ts")
+    )
+    with pytest.raises(ValueError, match="not supported"):
+        SQLGenerator(g, dialect="mysql", timezone="UTC")._date_trunc("day", "ts")
+
+
+def test_timezone_bypasses_preaggregation():
+    """Pre-aggs are materialized in UTC, so a timezone query must not route to them."""
+    from sidemantic.core.pre_aggregation import PreAggregation
+
+    conn = duckdb.connect(":memory:")
+    conn.execute("create table ev as select 1 as id, TIMESTAMP '2024-01-02 02:00:00' as ts, 5 as amt")
+    layer = SemanticLayer()
+    layer.conn = conn
+    layer.add_model(
+        Model(
+            name="ev",
+            table="ev",
+            primary_key="id",
+            dimensions=[Dimension(name="ts", type="time", sql="ts", granularity="day")],
+            metrics=[Metric(name="total", agg="sum", sql="amt")],
+            pre_aggregations=[
+                PreAggregation(name="daily", measures=["total"], dimensions=[], time_dimension="ts", granularity="day")
+            ],
+        )
+    )
+    # Without a timezone, an exact-grain query routes to the (UTC-bucketed) rollup table.
+    routed = layer.compile(metrics=["ev.total"], dimensions=["ev.ts__day"], use_preaggregations=True)
+    assert "preagg" in routed.lower()
+
+    # With a timezone, it must bypass the UTC rollup and bucket live in the requested zone,
+    # otherwise it would silently return UTC day buckets (the P1 the reviewer flagged).
+    tz = layer.compile(
+        metrics=["ev.total"], dimensions=["ev.ts__day"], use_preaggregations=True, timezone="America/New_York"
+    )
+    assert "preagg" not in tz.lower()
+    assert "AT TIME ZONE" in tz
+
+
+def test_generator_timezone_bypasses_preagg_routing():
+    """The bypass is enforced in SQLGenerator itself, covering direct (non-compile) use."""
+    from sidemantic.core.pre_aggregation import PreAggregation
+
+    g = SemanticGraph()
+    g.add_model(
+        Model(
+            name="ev",
+            table="ev",
+            primary_key="id",
+            dimensions=[Dimension(name="ts", type="time", sql="ts", granularity="day")],
+            metrics=[Metric(name="total", agg="sum", sql="amt")],
+            pre_aggregations=[
+                PreAggregation(name="daily", measures=["total"], dimensions=[], time_dimension="ts", granularity="day")
+            ],
+        )
+    )
+    routed = SQLGenerator(g).generate(metrics=["ev.total"], dimensions=["ev.ts__day"], use_preaggregations=True)
+    assert "preagg" in routed.lower()
+
+    tz = SQLGenerator(g, timezone="America/New_York").generate(
+        metrics=["ev.total"], dimensions=["ev.ts__day"], use_preaggregations=True
+    )
+    assert "preagg" not in tz.lower()
+    assert "AT TIME ZONE" in tz
+
+
+def test_timezone_value_is_validated_against_injection():
+    """The timezone is embedded into SQL literals, so non-IANA characters are rejected."""
+    g = SemanticGraph()
+    with pytest.raises(ValueError, match="Invalid timezone"):
+        SQLGenerator(g, timezone="UTC'; DROP TABLE x; --")
+    with pytest.raises(ValueError, match="Invalid timezone"):
+        SQLGenerator(g, timezone="America/New York")  # space is not allowed
+    # Valid IANA-style names (including multi-level and Etc/GMT offsets) are accepted.
+    SQLGenerator(g, timezone="America/Argentina/Buenos_Aires")
+    SQLGenerator(g, timezone="Etc/GMT+5")
+
+    # The public query API rejects it too (validated when the generator is built).
+    layer = _layer()
+    with pytest.raises(ValueError, match="Invalid timezone"):
+        layer.compile(metrics=["ev.total"], dimensions=["ev.ts__day"], timezone="x'; --")

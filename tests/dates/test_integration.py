@@ -85,6 +85,96 @@ def test_this_month_filter(layer):
     assert "INTERVAL" in sql_upper and "MONTH" in sql_upper
 
 
+def test_less_than_relative_date(layer):
+    """Test < against a relative date uses the period start, not the raw literal."""
+    orders = Model(
+        name="orders",
+        table="orders_table",
+        primary_key="order_id",
+        dimensions=[
+            Dimension(name="created_at", type="time", granularity="day"),
+        ],
+        metrics=[
+            Metric(name="revenue", agg="sum", sql="amount"),
+        ],
+    )
+
+    layer.add_model(orders)
+
+    sql = layer.compile(metrics=["orders.revenue"], filters=["orders_cte.created_at < 'this month'"])
+
+    assert "DATE_TRUNC" in sql.upper()
+    assert "'this month'" not in sql
+
+
+def test_less_equal_relative_date(layer):
+    """Test <= against a relative date is converted, not passed through raw."""
+    orders = Model(
+        name="orders",
+        table="orders_table",
+        primary_key="order_id",
+        dimensions=[
+            Dimension(name="created_at", type="time", granularity="day"),
+        ],
+        metrics=[
+            Metric(name="revenue", agg="sum", sql="amount"),
+        ],
+    )
+
+    layer.add_model(orders)
+
+    sql = layer.compile(metrics=["orders.revenue"], filters=["orders_cte.created_at <= 'last month'"])
+
+    assert "DATE_TRUNC" in sql.upper()
+    assert "'last month'" not in sql
+
+
+def test_not_equal_relative_date_single_day(layer):
+    """Test != against a single-day relative date negates the point comparison."""
+    orders = Model(
+        name="orders",
+        table="orders_table",
+        primary_key="order_id",
+        dimensions=[
+            Dimension(name="created_at", type="time", granularity="day"),
+        ],
+        metrics=[
+            Metric(name="revenue", agg="sum", sql="amount"),
+        ],
+    )
+
+    layer.add_model(orders)
+
+    sql = layer.compile(metrics=["orders.revenue"], filters=["orders_cte.created_at != 'today'"])
+
+    assert "CURRENT_DATE" in sql
+    assert "'today'" not in sql
+    assert "NOT" in sql.upper() or "<>" in sql
+
+
+def test_not_equal_relative_date_range(layer):
+    """Test <> against a ranged relative date negates the full range."""
+    orders = Model(
+        name="orders",
+        table="orders_table",
+        primary_key="order_id",
+        dimensions=[
+            Dimension(name="created_at", type="time", granularity="day"),
+        ],
+        metrics=[
+            Metric(name="revenue", agg="sum", sql="amount"),
+        ],
+    )
+
+    layer.add_model(orders)
+
+    sql = layer.compile(metrics=["orders.revenue"], filters=["orders_cte.created_at <> 'this month'"])
+
+    assert "NOT (" in sql.upper()
+    assert "DATE_TRUNC" in sql.upper()
+    assert "'this month'" not in sql
+
+
 def test_non_relative_date_unchanged(layer):
     """Test that non-relative date expressions are unchanged."""
     orders = Model(

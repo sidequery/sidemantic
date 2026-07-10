@@ -111,6 +111,48 @@ PRE_RUN_XFAILS = {
 
 
 EXPECTED_GAPS = {
+    "tests.queries.test_ungrouped_queries::test_with_totals_single_dimension": (
+        "Rust adapter does not yet support the with_totals (GROUPING SETS grand-total) compile kwarg"
+    ),
+    "tests.queries.test_ungrouped_queries::test_with_totals_count_distinct_recomputed": (
+        "Rust adapter does not yet support the with_totals (GROUPING SETS grand-total) compile kwarg"
+    ),
+    "tests.queries.test_ungrouped_queries::test_with_totals_count_distinct_not_sum_of_groups": (
+        "Rust adapter does not yet support the with_totals (GROUPING SETS grand-total) compile kwarg"
+    ),
+    "tests.queries.test_ungrouped_queries::test_with_totals_two_dimensions": (
+        "Rust adapter does not yet support the with_totals (GROUPING SETS grand-total) compile kwarg"
+    ),
+    "tests.queries.test_ungrouped_queries::test_with_totals_default_off_unchanged": (
+        "Rust adapter does not yet support the with_totals (GROUPING SETS grand-total) compile kwarg"
+    ),
+    "tests.queries.test_ungrouped_queries::test_with_totals_and_ungrouped_raises": (
+        "Rust adapter does not yet support the with_totals (GROUPING SETS grand-total) compile kwarg"
+    ),
+    "tests.queries.test_ungrouped_queries::test_with_totals_unsupported_window_path_raises": (
+        "Rust adapter does not yet support the with_totals (GROUPING SETS grand-total) compile kwarg"
+    ),
+    "tests.queries.test_ungrouped_queries::test_with_totals_with_limit_raises": (
+        "Rust adapter does not yet support the with_totals (GROUPING SETS grand-total) compile kwarg"
+    ),
+    "tests.queries.test_ungrouped_queries::test_with_totals_ignores_configured_default_limit": (
+        "Rust adapter does not yet support the with_totals (GROUPING SETS grand-total) compile kwarg"
+    ),
+    "tests.queries.test_ungrouped_queries::test_with_totals_marks_total_row_when_dimension_has_nulls": (
+        "Rust adapter does not yet support the with_totals (GROUPING SETS grand-total) compile kwarg"
+    ),
+    "tests.dates.test_integration::test_not_equal_relative_date_single_day": (
+        "Rust SQL generator does not yet support the extended relative-date operators (!=/<>, </<=)"
+    ),
+    "tests.dates.test_integration::test_not_equal_relative_date_range": (
+        "Rust SQL generator does not yet support the extended relative-date operators (!=/<>, </<=)"
+    ),
+    "tests.queries.test_sql_rewriter::test_rewrite_not_equal_relative_date": (
+        "Rust SQL generator does not yet support the extended relative-date operators (!=/<>, </<=)"
+    ),
+    "tests.queries.test_sql_rewriter::test_rewrite_less_than_relative_date": (
+        "Rust SQL generator does not yet support the extended relative-date operators (!=/<>, </<=)"
+    ),
     "tests.core.test_auto_dimensions::test_auto_dimensions_from_table": (
         "Rust adapter does not yet support Python auto-dimension DB introspection"
     ),
@@ -164,6 +206,36 @@ EXPECTED_GAPS = {
     ),
     "tests.optimizations.test_pre_aggregations::test_ratio_metric_preaggregation_rejects_count_distinct_leaf": (
         "Rust adapter does not yet support Python pre-aggregation routing"
+    ),
+    "tests.optimizations.test_pre_aggregations::test_ungrouped_composite_pk_partial_rollup_falls_to_raw": (
+        "Rust adapter does not yet support Python pre-aggregation routing (ungrouped drill-to-detail)"
+    ),
+    "tests.optimizations.test_pre_aggregations::test_ungrouped_avg_metric_bails_to_raw": (
+        "Rust adapter does not yet support Python pre-aggregation routing (ungrouped drill-to-detail)"
+    ),
+    "tests.optimizations.test_pre_aggregations::test_ungrouped_strict_without_pk_rollup_raises": (
+        "Rust adapter does not yet support Python pre-aggregation routing (strict rollup-only mode)"
+    ),
+    "tests.optimizations.test_pre_aggregations::test_ungrouped_routes_to_pk_carrying_rollup": (
+        "Rust adapter does not yet support Python pre-aggregation routing (ungrouped drill-to-detail)"
+    ),
+    "tests.optimizations.test_pre_aggregations::test_ungrouped_preagg_sql_has_no_group_by": (
+        "Rust adapter does not yet support Python pre-aggregation routing (ungrouped drill-to-detail)"
+    ),
+    "tests.optimizations.test_pre_aggregations::test_ungrouped_explain_reports_pk_rollup_match": (
+        "Rust adapter does not yet support Python pre-aggregation routing (ungrouped drill-to-detail)"
+    ),
+    "tests.optimizations.test_pre_aggregations::test_ungrouped_rollup_without_pk_falls_to_raw": (
+        "Rust adapter does not yet support Python pre-aggregation routing (ungrouped drill-to-detail)"
+    ),
+    "tests.optimizations.test_pre_aggregations::test_lambda_preaggregation_unions_batch_rollup_with_fresh_source": (
+        "Rust adapter does not yet support Python pre-aggregation routing (lambda union)"
+    ),
+    "tests.optimizations.test_pre_aggregations::test_lambda_preaggregation_unions_with_granularity_rollup": (
+        "Rust adapter does not yet support Python pre-aggregation routing (lambda union)"
+    ),
+    "tests.optimizations.test_pre_aggregations::test_lambda_preaggregation_without_build_range_end_is_plain_rollup": (
+        "Rust adapter does not yet support Python pre-aggregation routing (lambda union)"
     ),
     "tests.optimizations.test_preagg_recommender::test_query_instrumentation": (
         "Rust SQL generator does not yet emit Python query instrumentation contracts"

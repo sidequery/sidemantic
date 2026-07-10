@@ -34,7 +34,7 @@ from tests.adapters.test_added_fixture_coverage import (
     _prepare_graph_for_execution,
 )
 
-ALLOWED_RELATIONSHIP_TYPES = {"many_to_one", "one_to_many", "one_to_one", "many_to_many"}
+ALLOWED_RELATIONSHIP_TYPES = {"many_to_one", "one_to_many", "one_to_one", "many_to_many", "cross"}
 
 ADAPTER_FIXTURE_ROOTS = [
     ("atscale_sml", AtScaleSMLAdapter, {".yml", ".yaml"}),

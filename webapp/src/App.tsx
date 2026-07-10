@@ -15,6 +15,7 @@ import { ViewSwitcher } from "./components/ViewSwitcher";
 import { grainOptions } from "./lib/time";
 import { ExplorerProvider, useExplorer } from "./state/ExplorerContext";
 import { useQueryActive } from "./state/queryActivity";
+import { ExploreIndexView } from "./views/ExploreIndexView";
 import { ExplorerView } from "./views/ExplorerView";
 import { PivotView } from "./views/PivotView";
 
@@ -77,6 +78,7 @@ function FullScreen({ children }: { children: React.ReactNode }) {
 
 function Shell() {
   const { state, dispatch, catalog, initial } = useExplorer();
+  const isHome = state.view === "home";
   const model = catalog.models.find((m) => m.name === state.model);
   const dirty = state.dateRange != null || Object.keys(state.filters).length > 0;
   const hasTime = Boolean(model?.timeDimension);
@@ -105,13 +107,24 @@ function Shell() {
   });
 
   const brand = (
-    <div className="flex min-w-0 items-baseline gap-2">
+    <button
+      type="button"
+      onClick={() => dispatch({ type: "setView", view: "home" })}
+      aria-label="Home"
+      className="flex min-w-0 items-baseline gap-2"
+    >
       <span className="text-sm font-semibold text-ink">Sidemantic</span>
-      <span className="truncate text-2xs text-faint">{model?.label}</span>
-    </div>
+      {!isHome && model?.label ? <span className="truncate text-2xs text-faint">{model.label}</span> : null}
+    </button>
   );
 
-  const toolbar = (
+  // On the home/index view the model-scoped controls (view switcher, date/grain, filters) don't apply.
+  const toolbar = isHome ? (
+    <>
+      <ThemeToggle />
+      <QueryStatus />
+    </>
+  ) : (
     <>
       <ViewSwitcher view={state.view} onChange={(view) => dispatch({ type: "setView", view })} />
       <DateRangeControl
@@ -157,8 +170,15 @@ function Shell() {
   );
 
   return (
-    <AppShell brand={brand} toolbar={toolbar} filters={filters} rail={<CatalogRail />}>
+    <AppShell
+      brand={brand}
+      toolbar={toolbar}
+      filters={isHome ? undefined : filters}
+      rail={<CatalogRail />}
+      showRail={!isHome}
+    >
       <ErrorBoundary key={state.view}>
+        {state.view === "home" ? <ExploreIndexView /> : null}
         {state.view === "explore" ? <ExplorerView /> : null}
         {state.view === "pivot" ? <PivotView /> : null}
       </ErrorBoundary>

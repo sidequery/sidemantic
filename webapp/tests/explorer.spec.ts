@@ -7,8 +7,20 @@ function number(text: string | null): number {
   return Number((text ?? "").replace(/[^0-9.-]/g, ""));
 }
 
-test("crossfilter, reset, and metric re-rank change rendered data", async ({ page }) => {
+test("the home index lists models and opens one into Explore", async ({ page }) => {
   await page.goto("/");
+  const cards = page.locator('[data-testid="explore-card"]');
+  await expect(cards.first()).toBeVisible();
+  await expect(cards).not.toHaveCount(0);
+
+  // Opening a model card enters its Explore view.
+  await page.locator('[data-testid="explore-card"][data-model="customers"]').click();
+  await expect.poll(() => new URL(page.url()).searchParams.get("view")).toBe("explore");
+  await expect(page.locator('button[data-metric="customers.customer_count"]')).toBeVisible();
+});
+
+test("crossfilter, reset, and metric re-rank change rendered data", async ({ page }) => {
+  await page.goto("/?view=explore");
 
   const kpi = page.locator('button[data-metric="customers.customer_count"]');
   await expect(kpi).toBeVisible();

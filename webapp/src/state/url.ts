@@ -5,7 +5,7 @@ import type { ComparisonMode, ContextColumn, ExplorerState, ViewKind } from "./e
 // Only selections + filters live in the URL — never result rows. This keeps shared links small
 // and reproducible (the approved state contract).
 
-const VIEWS: ViewKind[] = ["explore", "pivot"];
+const VIEWS: ViewKind[] = ["home", "explore", "pivot"];
 const GRAINS = new Set<string>(ALL_GRAINS);
 const CONTEXT_COLUMNS = new Set<ContextColumn>(["none", "pctTotal", "delta", "deltaPct"]);
 const COMPARISONS = new Set<ComparisonMode>(["off", "previous", "year", "custom"]);

@@ -3,7 +3,7 @@ import { graphMetricsForModel } from "../lib/catalog";
 import { isEmptyFilter, type FilterMode, type FilterState } from "../lib/queries";
 import type { DateRange } from "../lib/time";
 
-export type ViewKind = "explore" | "pivot";
+export type ViewKind = "home" | "explore" | "pivot";
 
 // Extra per-row figure shown in each leaderboard, relative to the ranking metric. `none` keeps the
 // bare ranked value (the pre-E2 behavior).
@@ -142,7 +142,10 @@ export function explorerReducer(state: ExplorerState, action: ExplorerAction): E
     case "setPivotMetrics":
       return { ...state, pivotMetrics: action.metrics };
     case "reset":
-      return action.initial;
+      // Reset clears the scoped controls (filters, date range, ...) but stays on the current view.
+      // The catalog-derived `initial` lands on "home", which would otherwise eject Explore/Pivot
+      // to the index on every Reset.
+      return { ...action.initial, view: state.view };
     default:
       return state;
   }
@@ -163,7 +166,8 @@ export function initialStateFromCatalog(catalog: Catalog): ExplorerState {
   const model = primaryModel(catalog);
   const metric = defaultMetric(model, catalog);
   return {
-    view: "explore",
+    // Land on the explore index (a card per model) so the app opens to "what can I explore?".
+    view: "home",
     model: model?.name ?? "",
     selectedMetric: metric,
     filters: {},

@@ -170,7 +170,10 @@ class LookMLAdapter(BaseAdapter):
         def fix(value):
             return pat.sub(r"${\1}", value) if isinstance(value, str) else value
 
-        for key in ("dimensions", "dimension_groups", "measures"):
+        # `filters` are view-level segments; their `sql` can self-qualify a field the same way
+        # (`sql: ${orders.status} = 'completed' ;;`) and must be normalized too, else the leaked
+        # ${orders.status} reaches the WHERE clause and the database rejects it.
+        for key in ("dimensions", "dimension_groups", "measures", "filters"):
             for item in view_def.get(key) or []:
                 if not isinstance(item, dict):
                     continue
@@ -1123,6 +1126,12 @@ class LookMLAdapter(BaseAdapter):
             segment_name = segment_def.get("name")
             segment_sql = segment_def.get("sql")
             if segment_name and segment_sql:
+                # Resolve ${field} references (incl. self-qualified ones normalized above) through
+                # the dimension SQL, exactly like dimensions/measures -- otherwise a segment such as
+                # `${orders.status} = 'completed'` leaks an unresolved ${...} into the WHERE clause.
+                segment_sql = self._resolve_dimension_references(
+                    segment_sql, resolved_dimension_sql, dimension_names=declared_dim_names
+                )
                 # Replace ${TABLE} with {model} placeholder
                 segment_sql = segment_sql.replace("${TABLE}", "{model}")
                 segments.append(

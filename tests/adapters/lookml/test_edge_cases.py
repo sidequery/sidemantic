@@ -745,6 +745,45 @@ def test_lookml_segments():
     assert "successful_transactions" in segment_names
 
 
+def test_lookml_segment_resolves_self_qualified_and_bare_field_refs():
+    """A `filter:` segment's ${...} field refs must resolve, not leak into the WHERE clause.
+
+    A self-qualified ${orders.status} (and a bare ${status}) reference a dimension; like
+    dimensions and measures, they must resolve through the dimension SQL. Otherwise the literal
+    ${...} reaches the generated WHERE clause and the database rejects it.
+    """
+    import tempfile
+
+    from sidemantic import SemanticLayer
+
+    src = """view: orders {
+      sql_table_name: raw_orders ;;
+      dimension: id { primary_key: yes sql: ${TABLE}.id ;; }
+      dimension: status { sql: ${TABLE}.order_status ;; }
+      filter: completed_seg { sql: ${orders.status} = 'completed' ;; }
+      filter: bare_seg { sql: ${status} = 'x' ;; }
+      measure: total { type: sum sql: ${TABLE}.amount ;; }
+    }
+    """
+    path = tempfile.mktemp(suffix=".lkml")
+    with open(path, "w") as f:
+        f.write(src)
+    graph = LookMLAdapter().parse(Path(path))
+    model = graph.get_model("orders")
+    by_name = {s.name: s.sql for s in model.segments}
+    # The self-qualified reference resolves to the real column (order_status), no leaked ${...}.
+    assert by_name["completed_seg"] == "({model}.order_status) = 'completed'", by_name
+    assert by_name["bare_seg"] == "({model}.order_status) = 'x'", by_name
+
+    # End-to-end: querying with the segment must produce valid SQL (no ${...}).
+    layer = SemanticLayer()
+    for mdl in graph.models.values():
+        layer.add_model(mdl)
+    sql = layer.compile(metrics=["orders.total"], segments=["orders.completed_seg"])
+    assert "${" not in sql
+    assert "order_status" in sql and "completed" in sql
+
+
 # =============================================================================
 # COMPLEX SQL TESTS
 # =============================================================================

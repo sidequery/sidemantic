@@ -3045,6 +3045,25 @@ class LookMLAdapter(BaseAdapter):
 
         return " AND ".join("(" + _resolve(f).replace("{model}", "${TABLE}") + ")" for f in filters)
 
+    @staticmethod
+    def _aggregate_references_column(sql: str) -> bool:
+        """True if ``sql`` references at least one COLUMN (not just constants/functions).
+
+        A zero-column aggregate (``COUNT(NULL)``, ``COUNT(DISTINCT 1)``, ``SUM(1)``) exported as a
+        LookML ``type: number`` re-imports as an opaque complete-SQL metric whose referenced-column
+        set is empty, so compiling it builds an empty model CTE (``SELECT ... FROM`` with no select
+        list). Callers use this to skip such measures. On a parse failure assume it DOES reference a
+        column, so a genuine (unparseable) column expression is not wrongly dropped.
+        """
+        import sqlglot
+        from sqlglot import expressions as exp
+
+        try:
+            tree = sqlglot.parse_one(sql.replace("{model}", "__m__").replace("${TABLE}", "__m__"))
+        except Exception:
+            return True
+        return any(True for _ in tree.find_all(exp.Column))
+
     @classmethod
     def _fold_filters_into_aggregate(cls, agg_sql: str, filters: list[str], model: Model) -> str | None:
         """Fold ``filters`` into a single-outer-aggregate SQL expression.
@@ -3399,6 +3418,22 @@ class LookMLAdapter(BaseAdapter):
                             # derived metric over an empty CTE (SELECT FROM ...), which the
                             # compiler rejects. Native type: count round-trips cleanly.
                             measure_def["type"] = "count"
+                        elif not metric.filters and not self._aggregate_references_column(col_sql):
+                            # ANY OTHER zero-column aggregate -- COUNT(NULL), COUNT(DISTINCT 1),
+                            # SUM(1), MAX('x') -- has the same fate as a bare constant count: a
+                            # type: number re-imports as an opaque complete-SQL metric whose
+                            # referenced-column set is empty, so compiling it builds an empty model
+                            # CTE (SELECT ... FROM with no select list). Unlike a plain row count it
+                            # has no faithful native form, so skip it with a warning. (A FILTERED
+                            # one falls through: folding the filter in makes it reference the
+                            # filter's columns, e.g. COUNT(*) -> COUNT(CASE WHEN ... THEN 1 END).)
+                            logger.warning(
+                                "Metric %r has a zero-column aggregate SQL (%r) with no LookML "
+                                "equivalent that round-trips; skipping on export.",
+                                metric.name,
+                                col_sql,
+                            )
+                            continue
                         else:
                             measure_def["type"] = "number"
                             if metric.filters:

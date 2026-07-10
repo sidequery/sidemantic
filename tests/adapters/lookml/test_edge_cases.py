@@ -4930,8 +4930,9 @@ def test_lookml_export_count_constant_uses_native_count_type():
 
     COUNT(1)/COUNT(0), plus COUNT(TRUE), COUNT('x'), COUNT(1.0), COUNT(.5) all count every row.
     Exporting them as type: number would re-import as a zero-column complete-SQL metric whose
-    query hits an empty model CTE (SELECT FROM ...). COUNT(NULL) is NOT a row count (always 0), so
-    it must stay a type: number.
+    query hits an empty model CTE (SELECT FROM ...). Every OTHER zero-column aggregate that is NOT
+    a plain row count -- COUNT(NULL), COUNT(DISTINCT 1), SUM(1), MAX('x') -- has no faithful native
+    form, so it is SKIPPED (not emitted as a broken type: number).
     """
     import re
     import tempfile
@@ -4952,15 +4953,16 @@ def test_lookml_export_count_constant_uses_native_count_type():
         )
         out = tempfile.mktemp(suffix=".lkml")
         LookMLAdapter().export(graph, out)
-        return re.search(r"measure: c \{.*?\n  \}", open(out).read(), re.S).group(0)
+        m = re.search(r"measure: c \{.*?\n  \}", open(out).read(), re.S)
+        return m.group(0) if m else None
 
     for expr in ("COUNT(1)", "COUNT(0)", "COUNT(TRUE)", "COUNT('x')", "COUNT(1.0)", "COUNT(.5)"):
         block = export_measure(expr)
-        assert "type: count" in block and expr not in block, f"{expr} -> {block}"
+        assert block and "type: count" in block and expr not in block, f"{expr} -> {block}"
 
-    # COUNT(NULL) is always 0, not a row count: it must NOT be flattened to type: count.
-    null_block = export_measure("COUNT(NULL)")
-    assert "type: number" in null_block and "COUNT(NULL)" in null_block
+    # Zero-column aggregates that are NOT plain row counts have no round-trippable form -> skipped.
+    for expr in ("COUNT(NULL)", "COUNT(DISTINCT 1)", "SUM(1)", "MAX('x')"):
+        assert export_measure(expr) is None, f"{expr} should be skipped, not exported"
 
 
 def test_lookml_export_spaced_count_star_maps_to_native_count():

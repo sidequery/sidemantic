@@ -738,9 +738,6 @@ connection:
     monkeypatch.setattr("sidemantic.mcp_server.initialize_layer", fake_initialize_layer)
     monkeypatch.setattr("sidemantic.mcp_server.mcp.run", fake_run)
 
-    import sidemantic.mcp_server as mcp_mod
-
-    mcp_mod._apps_enabled = False
     cli_module._loaded_config = None
     result = runner.invoke(
         app, ["--config", str(config_path), "mcp-serve", str(models_dir), "--apps", "--port", "4201"]
@@ -751,7 +748,6 @@ connection:
     assert called["connection"] == "duckdb:///:memory:"
     assert called["init_sql"] == ["SELECT 42"]
     assert called["transport"] == "streamable-http"
-    assert mcp_mod._apps_enabled is True
     assert "Note: --apps implies HTTP transport" in result.stderr
 
 

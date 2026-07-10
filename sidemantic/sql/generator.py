@@ -202,12 +202,29 @@ class SQLGenerator:
         """
         plan: dict[str, tuple[str, str]] = {}
 
-        # Collect requested semi-additive measures and their owning models.
+        # Collect requested semi-additive measures and their owning models. Traverse metric
+        # dependencies so a graph-level/derived metric that WRAPS a model measure declaring
+        # non_additive_dimension (the common MetricFlow-import shape) is still planned -- the
+        # outer metric object has no non_additive_dimension itself.
+        from sidemantic.core.dependency_analyzer import extract_metric_dependencies
+
         semi_additive: list[tuple[str, object]] = []  # (reference, metric_obj)
-        for reference in metrics:
+        seen_refs: set[str] = set()
+
+        def _collect_semi_additive(reference: str) -> None:
+            if reference in seen_refs:
+                return
+            seen_refs.add(reference)
             metric = self._resolve_metric_obj(reference)
-            if metric is not None and getattr(metric, "non_additive_dimension", None):
+            if metric is None:
+                return
+            if getattr(metric, "non_additive_dimension", None):
                 semi_additive.append((reference, metric))
+            for dep in extract_metric_dependencies(metric, self.graph):
+                _collect_semi_additive(dep)
+
+        for reference in metrics:
+            _collect_semi_additive(reference)
 
         if not semi_additive:
             return plan

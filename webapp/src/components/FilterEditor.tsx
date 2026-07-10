@@ -101,7 +101,10 @@ export function FilterEditor({
   const valueFilters = useMemo(() => {
     const base = composeFilters(state.filters, { timeRef, range: state.dateRange, excludeDim: dim.ref });
     if (debouncedSearch.trim()) {
-      base.push(`${dim.ref} ILIKE ${sqlLiteral(`%${likeEscape(debouncedSearch.trim())}%`)} ESCAPE '\\'`);
+      // Cast to text so the search works on numeric/boolean dimensions too: DuckDB and
+      // Postgres reject ILIKE on non-text operands.
+      const pat = sqlLiteral(`%${likeEscape(debouncedSearch.trim())}%`);
+      base.push(`CAST(${dim.ref} AS VARCHAR) ILIKE ${pat} ESCAPE '\\'`);
     }
     return base;
   }, [state.filters, timeRef, state.dateRange, dim.ref, debouncedSearch]);

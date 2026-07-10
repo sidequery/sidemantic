@@ -169,6 +169,15 @@ class SemanticLayerConnection(riffq.BaseConnection):
                 )
             if not evaluate_access(model.security.access, user_attributes):
                 raise SecurityError(f"Access to model '{name}' denied for the current user.")
+            # The SQL-first PG path cannot inject per-user row filters into the rewritten SQL,
+            # so a model with row_filters would otherwise return unfiltered rows to any user who
+            # passes the access gate. Deny it here (matching /sql, MCP run_sql, and .sql()).
+            if model.security.row_filters:
+                raise SecurityError(
+                    f"Model '{name}' has row-level filters that the SQL-first PostgreSQL path "
+                    "cannot apply. Query it through the structured HTTP /query API, which enforces "
+                    "row filters per user."
+                )
 
     def _try_handle_system_query(self, sql: str, sql_lower: str, callback, cursor) -> bool:
         """Try to handle PostgreSQL system queries. Returns True if handled."""

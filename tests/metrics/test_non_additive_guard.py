@@ -334,3 +334,33 @@ def test_conflicting_semi_additive_metrics_raise():
     )
     with pytest.raises(UnsupportedMetricError, match="conflicting"):
         layer.compile(metrics=["bal.closing", "bal.opening"])
+
+
+def test_graph_metric_wrapping_semi_additive_measure_is_planned():
+    """PR review: a graph metric wrapping a non_additive measure must still emit the QUALIFY."""
+    from sidemantic import Dimension, Metric, Model, SemanticLayer
+
+    layer = SemanticLayer()
+    con = layer.adapter.conn
+    con.execute("CREATE TABLE bal (account VARCHAR, day DATE, balance INT)")
+    con.execute(
+        """INSERT INTO bal VALUES
+        ('A','2026-01-10',100),('A','2026-01-31',110),
+        ('B','2026-01-10',200),('B','2026-01-31',210)"""
+    )
+    layer.add_model(
+        Model(
+            name="bal",
+            table="bal",
+            primary_key="account",
+            dimensions=[
+                Dimension(name="account", type="categorical"),
+                Dimension(name="day", type="time", granularity="day"),
+            ],
+            metrics=[Metric(name="total_balance", agg="sum", sql="balance", non_additive_dimension="day")],
+        )
+    )
+    layer.add_metric(Metric(name="wrapped_balance", sql="bal.total_balance"))
+    sql = layer.compile(metrics=["wrapped_balance"], dimensions=["bal.account"])
+    assert "QUALIFY" in sql
+    assert dict(layer.query(metrics=["wrapped_balance"], dimensions=["bal.account"]).fetchall()) == {"A": 110, "B": 210}

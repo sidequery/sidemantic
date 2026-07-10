@@ -4264,12 +4264,22 @@ class LookMLAdapter(BaseAdapter):
             _time_names = {d.name for d in time_dims}
             used_names: set[str] = {d.name for d in model.dimensions if d.name not in _time_names}
             used_names |= {m.name for m in model.metrics}
-            # Within a colliding base, let a clean (non-DATE_TRUNC) source win the
-            # dimension_group slot so the choice is stable across repeated round-trips
-            # (a DATE_TRUNC-sourced winner would otherwise nest truncations).
+            # Choose the dimension_group winner within a colliding base so field names map to
+            # the RIGHT source: (1) DEPRIORITIZE a suffixless representative -- a suffixless
+            # `started` winning the group generates `started_<grain>` (e.g. started_hour) from
+            # ITS OWN sql, mis-mapping the field that an existing sibling `started_hour` should
+            # own; letting the suffixed sibling win means the group's generated `started_hour`
+            # comes from that dim's source (and the suffixless one goes standalone, renamed into
+            # its stem, e.g. started_2_hour). (2) Prefer a clean (non-DATE_TRUNC) source so
+            # repeated round-trips don't nest truncations. (3) SQL order for stability.
             ordered_groups = sorted(
                 base_name_groups.items(),
-                key=lambda kv: (kv[0][0], 1 if self._DATE_TRUNC_RE.match(kv[0][1] or "") else 0, kv[0][1] or ""),
+                key=lambda kv: (
+                    kv[0][0],
+                    1 if any(d.name == kv[0][0] for d in kv[1]) else 0,
+                    1 if self._DATE_TRUNC_RE.match(kv[0][1] or "") else 0,
+                    kv[0][1] or "",
+                ),
             )
 
             def _group_timeframes(dims):

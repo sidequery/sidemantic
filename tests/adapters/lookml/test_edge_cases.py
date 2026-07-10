@@ -4530,6 +4530,44 @@ def test_lookml_suffixless_collision_no_dimension_group_field_duplicate():
     assert not dups, f"duplicate generated field names: {dups}"
 
 
+def test_lookml_suffixless_collision_group_field_maps_to_owning_source():
+    """The generated group field must map to the source that ORIGINALLY owned that field name.
+
+    `started` (hour, source A) + `started_hour` (hour, source B): the `dimension_group` slot must
+    go to the suffixed `started_hour` so the group's generated `started_hour` field comes from
+    source B (its own source). If the suffixless `started` won the slot, the group would generate
+    `started_hour` from source A while the real `started_hour` got renamed to `started_2_hour` --
+    so a round-tripped query for `started_hour` would silently read the WRONG column.
+    """
+    import tempfile
+
+    from sidemantic import Dimension, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="ev",
+            table="t",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(name="started", type="time", granularity="hour", sql="src_suffixless"),
+                Dimension(name="started_hour", type="time", granularity="hour", sql="src_started_hour"),
+            ],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    reloaded = LookMLAdapter().parse(out).get_model("ev")
+    by_name = {d.name: d.sql for d in reloaded.dimensions}
+    # started_hour must still resolve to its own source, not the suffixless dim's source.
+    assert "src_started_hour" in (by_name.get("started_hour") or ""), by_name
+    assert "src_suffixless" not in (by_name.get("started_hour") or ""), by_name
+    # The suffixless dim's source survives under a distinct, time-recoverable name.
+    assert any("src_suffixless" in (s or "") for n, s in by_name.items() if n != "started_hour"), by_name
+
+
 def test_lookml_suffixless_collision_synth_name_avoids_duplicate():
     """Synthesizing a recoverable suffix must not duplicate an existing field name.
 

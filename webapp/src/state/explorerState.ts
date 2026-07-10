@@ -85,7 +85,10 @@ export function explorerReducer(state: ExplorerState, action: ExplorerAction): E
     case "setPivotMetrics":
       return { ...state, pivotMetrics: action.metrics };
     case "reset":
-      return action.initial;
+      // Reset clears the scoped controls (filters, date range, ...) but stays on the current view.
+      // The catalog-derived `initial` lands on "home", which would otherwise eject Explore/Pivot
+      // to the index on every Reset.
+      return { ...action.initial, view: state.view };
     default:
       return state;
   }

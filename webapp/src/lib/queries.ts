@@ -103,7 +103,10 @@ export function filterExprs(filters: FilterState, opts: { types?: DimTypes; excl
     if (dimRef === opts.excludeDim || isEmptyFilter(filter)) continue;
     const type = opts.types?.[dimRef];
     if (filter.mode === "contains") {
-      out.push(`${dimRef} ILIKE ${sqlLiteral(`%${likeEscape(filter.pattern ?? "")}%`)} ESCAPE '\\'`);
+      // Cast to text so contains works on numeric/boolean dimensions: DuckDB and Postgres
+      // reject ILIKE on non-text operands.
+      const pat = sqlLiteral(`%${likeEscape(filter.pattern ?? "")}%`);
+      out.push(`CAST(${dimRef} AS VARCHAR) ILIKE ${pat} ESCAPE '\\'`);
       continue;
     }
     const expr = membershipExpr(dimRef, filter, type);

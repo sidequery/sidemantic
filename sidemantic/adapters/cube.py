@@ -187,8 +187,17 @@ def _cube_filter_to_sql(member: str, operator: str, values: list) -> str | None:
     # Strip a leading Cube self-reference (``{CUBE}.col`` / ``{cube_name}.col``) and any prefix.
     col = re.sub(r"^\{[^}]*\}\.", "", member or "")
     col = col.split(".")[-1] if "." in col else col
-    vals = values or []
     op = (operator or "").strip()
+    # Operators without operands still map (set/notSet); everything else needs LITERAL values.
+    # Cube also allows dynamic values (e.g. ``values: security_context.auth.userAttributes.x``),
+    # which arrive as a string, not a list. Those cannot be translated to static SQL -- treat the
+    # filter as unmapped rather than iterating the string character by character.
+    if op in ("set", "notSet"):
+        vals: list = []
+    elif isinstance(values, (list, tuple)):
+        vals = list(values)
+    else:
+        return None
     if op in ("equals", "in"):
         if len(vals) == 1:
             return f"{col} = {_sql_literal(vals[0])}"
@@ -252,9 +261,16 @@ def _access_policy_to_security(access_policy: object) -> tuple[SecurityPolicy | 
                 fragments.append(f"({sql})" if " OR " in sql or " AND " in sql else sql)
         if not fragments:
             continue
-        # Multiple filters within one policy combine per filters_type (default AND).
-        joiner = " OR " if combine == "or" else " AND "
-        row_filters.append(joiner.join(fragments) if len(fragments) > 1 else fragments[0])
+        # Multiple filters within one policy combine per filters_type (default AND). An OR
+        # group MUST be parenthesized: each policy becomes a separate row filter that the
+        # generator later ANDs together, and `A OR B AND C` binds as `A OR (B AND C)`, letting
+        # rows matching A bypass the other predicates. AND groups need no extra wrapping.
+        if len(fragments) == 1:
+            row_filters.append(fragments[0])
+        elif combine == "or":
+            row_filters.append("(" + " OR ".join(fragments) + ")")
+        else:
+            row_filters.append(" AND ".join(fragments))
     if not row_filters:
         return None, unmapped
     return SecurityPolicy(row_filters=row_filters), unmapped

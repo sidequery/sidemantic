@@ -199,3 +199,25 @@ def test_row_filter_boolean_control_flow_preserves_truthiness():
     assert render_row_filter(cmp_tmpl, {"role": "analyst", "region": "US"}) == "region = 'US'"
     # Injection is still neutralized because the interpolated OUTPUT is finalized to a literal.
     assert render_row_filter("tid = {{ user.tid }}", {"tid": "1 OR 1=1"}) == "tid = '1 OR 1=1'"
+
+
+def test_visibility_blocks_non_public_segment():
+    """enforce_visibility must reject a public=False segment referenced in a query."""
+    from sidemantic.core.segment import Segment
+
+    layer = SemanticLayer(enforce_visibility=True)
+    con = layer.adapter.conn
+    con.execute("CREATE TABLE orders (id INTEGER, status VARCHAR)")
+    con.execute("INSERT INTO orders VALUES (1,'internal'),(2,'shipped')")
+    layer.add_model(
+        Model(
+            name="orders",
+            table="orders",
+            primary_key="id",
+            dimensions=[Dimension(name="status", type="categorical")],
+            metrics=[Metric(name="cnt", agg="count")],
+            segments=[Segment(name="internal", sql="status = 'internal'", public=False)],
+        )
+    )
+    with pytest.raises(SecurityError, match="internal"):
+        layer.compile(metrics=["orders.cnt"], segments=["orders.internal"])

@@ -144,3 +144,34 @@ def test_native_roundtrip_uri_and_non_additive_window(tmp_path):
     model = reloaded.get_model("orders")
     assert model.get_dimension("homepage").uri is True
     assert model.get_metric("bal").non_additive_window == "min"
+
+
+def test_cube_or_policy_is_parenthesized():
+    """OR-combined Cube row filters must be wrapped so later AND-ing keeps precedence."""
+    from sidemantic.adapters.cube import _access_policy_to_security
+
+    policy, _ = _access_policy_to_security(
+        [
+            {
+                "row_level": {
+                    "filters_type": "or",
+                    "filters": [
+                        {"member": "a", "operator": "equals", "values": ["1"]},
+                        {"member": "b", "operator": "equals", "values": ["2"]},
+                    ],
+                }
+            }
+        ]
+    )
+    assert policy.row_filters == ["(a = '1' OR b = '2')"]
+
+
+def test_cube_dynamic_values_are_unmapped():
+    """A dynamic (non-list) Cube values reference must not be iterated char-by-char."""
+    from sidemantic.adapters.cube import _access_policy_to_security
+
+    policy, unmapped = _access_policy_to_security(
+        [{"row_level": {"filters": [{"member": "city", "operator": "in", "values": "security_context.x"}]}}]
+    )
+    assert policy is None
+    assert "operator:in" in unmapped

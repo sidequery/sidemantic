@@ -444,6 +444,13 @@ class SQLGenerator:
         Returns:
             Time truncation SQL expression appropriate for the dialect
         """
+        # LIMITATION: query-timezone localization assumes a TIMESTAMP-backed time dimension.
+        # It correctly shifts timestamps into the requested zone (an event at 02:00 UTC falls on
+        # the previous local day), which is a required, tested behavior. It cannot, however,
+        # detect a DATE-backed column at compile time (the semantic model does not track column
+        # storage types), and localizing a bare DATE shifts it to the previous day/month in a
+        # negative-offset zone. Do NOT set a query timezone for DATE-backed time dimensions;
+        # cast them to TIMESTAMP in the dimension SQL if zone-aware bucketing is needed.
         if self.timezone:
             column_expr = self._localize_to_timezone(column_expr)
 

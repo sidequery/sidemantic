@@ -91,21 +91,23 @@ describe("filterExprs (exclude mode)", () => {
 });
 
 describe("filterExprs (contains mode)", () => {
-  test("emits a case-insensitive substring ILIKE with an ESCAPE clause", () => {
+  // The dimension is cast to text so contains works on numeric/boolean dimensions too
+  // (DuckDB/Postgres reject ILIKE on non-text operands).
+  test("emits a case-insensitive substring ILIKE with an ESCAPE clause, cast to text", () => {
     expect(filterExprs({ "customers.name": has("acme") })).toEqual([
-      "customers.name ILIKE '%acme%' ESCAPE '\\'",
+      "CAST(customers.name AS VARCHAR) ILIKE '%acme%' ESCAPE '\\'",
     ]);
   });
 
   test("LIKE metacharacters in the pattern are neutralized", () => {
     expect(filterExprs({ "customers.name": has("50%_off") })).toEqual([
-      "customers.name ILIKE '%50\\%\\_off%' ESCAPE '\\'",
+      "CAST(customers.name AS VARCHAR) ILIKE '%50\\%\\_off%' ESCAPE '\\'",
     ]);
   });
 
   test("single quotes in the pattern are still SQL-escaped", () => {
     expect(filterExprs({ "customers.name": has("O'Brien") })).toEqual([
-      "customers.name ILIKE '%O''Brien%' ESCAPE '\\'",
+      "CAST(customers.name AS VARCHAR) ILIKE '%O''Brien%' ESCAPE '\\'",
     ]);
   });
 

@@ -1157,12 +1157,25 @@ class SemanticLayer:
             if not self._field_is_public(model_name, field_name):
                 raise SecurityError(f"Field '{model_name}.{field_name}' is not public")
 
+        # Segments are named filters that may themselves be non-public; a segment reference is
+        # `model.segment`, not a dimension/metric, so check them explicitly.
+        for segment_ref in segments or []:
+            if "." not in segment_ref:
+                continue
+            model_name, segment_name = segment_ref.split(".", 1)
+            model = self.graph.models.get(model_name)
+            if model is None:
+                continue
+            segment = model.get_segment(segment_name) if hasattr(model, "get_segment") else None
+            if segment is not None and not getattr(segment, "public", True):
+                raise SecurityError(f"Segment '{model_name}.{segment_name}' is not public")
+
         # filters/order_by can smuggle a hidden field. Scan them for `model.field` tokens
         # (stripping any granularity suffix / sort direction) and reject non-public ones.
         import re as _re
 
         ref_pattern = _re.compile(r"\b([A-Za-z_]\w*)\.([A-Za-z_]\w*)\b")
-        for raw in [*(filters or []), *(order_by or []), *(segments or [])]:
+        for raw in [*(filters or []), *(order_by or [])]:
             for model_name, field_name in ref_pattern.findall(raw):
                 field_name = field_name.rsplit("__", 1)[0] if "__" in field_name else field_name
                 if not self._field_is_public(model_name, field_name):

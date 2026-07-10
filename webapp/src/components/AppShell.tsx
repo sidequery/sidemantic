@@ -6,25 +6,30 @@ type AppShellProps = {
   filters?: ReactNode;
   rail: ReactNode;
   children: ReactNode;
+  /** Whether to show the left catalog rail (and its collapse toggle). The home/index view hides it. */
+  showRail?: boolean;
 };
 
 /** Collapsible rail | stage frame with a top toolbar and an active-filter strip. */
-export function AppShell({ brand, toolbar, filters, rail, children }: AppShellProps) {
+export function AppShell({ brand, toolbar, filters, rail, children, showRail = true }: AppShellProps) {
   const [railOpen, setRailOpen] = useState(true);
+  const railVisible = showRail && railOpen;
 
   return (
     <div className="flex h-screen flex-col bg-bg text-ink">
       <header className="flex items-center justify-between gap-3 border-b border-line bg-surface px-3 py-2">
         <div className="flex min-w-0 items-center gap-2">
-          <button
-            type="button"
-            aria-label={railOpen ? "Collapse sidebar" : "Expand sidebar"}
-            aria-expanded={railOpen}
-            onClick={() => setRailOpen((open) => !open)}
-            className="grid size-7 shrink-0 place-items-center border border-line text-faint hover:border-faint hover:text-ink"
-          >
-            {railOpen ? "‹" : "›"}
-          </button>
+          {showRail ? (
+            <button
+              type="button"
+              aria-label={railOpen ? "Collapse sidebar" : "Expand sidebar"}
+              aria-expanded={railOpen}
+              onClick={() => setRailOpen((open) => !open)}
+              className="grid size-7 shrink-0 place-items-center border border-line text-faint hover:border-faint hover:text-ink"
+            >
+              {railOpen ? "‹" : "›"}
+            </button>
+          ) : null}
           {brand}
         </div>
         <div className="flex shrink-0 items-center gap-2">{toolbar}</div>
@@ -37,10 +42,12 @@ export function AppShell({ brand, toolbar, filters, rail, children }: AppShellPr
         </div>
       ) : null}
 
-      <div className={`grid min-h-0 flex-1 ${railOpen ? "grid-cols-[260px_1fr]" : "grid-cols-[0_1fr]"}`}>
-        <aside className={`min-h-0 overflow-y-auto border-r border-line bg-surface ${railOpen ? "" : "hidden"}`}>
-          {rail}
-        </aside>
+      <div className={`grid min-h-0 flex-1 ${railVisible ? "grid-cols-[260px_1fr]" : "grid-cols-[1fr]"}`}>
+        {showRail ? (
+          <aside className={`min-h-0 overflow-y-auto border-r border-line bg-surface ${railVisible ? "" : "hidden"}`}>
+            {rail}
+          </aside>
+        ) : null}
         <main className="min-h-0 overflow-y-auto">{children}</main>
       </div>
     </div>

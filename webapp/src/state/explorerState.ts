@@ -3,7 +3,7 @@ import { graphMetricsForModel } from "../lib/catalog";
 import type { FilterState } from "../lib/queries";
 import type { DateRange } from "../lib/time";
 
-export type ViewKind = "explore" | "pivot";
+export type ViewKind = "home" | "explore" | "pivot";
 
 export type ExplorerState = {
   view: ViewKind;
@@ -106,7 +106,8 @@ export function initialStateFromCatalog(catalog: Catalog): ExplorerState {
   const model = primaryModel(catalog);
   const metric = defaultMetric(model, catalog);
   return {
-    view: "explore",
+    // Land on the explore index (a card per model) so the app opens to "what can I explore?".
+    view: "home",
     model: model?.name ?? "",
     selectedMetric: metric,
     filters: {},

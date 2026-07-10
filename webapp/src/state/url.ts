@@ -5,7 +5,7 @@ import type { ExplorerState, ViewKind } from "./explorerState";
 // Only selections + filters live in the URL — never result rows. This keeps shared links small
 // and reproducible (the approved state contract).
 
-const VIEWS: ViewKind[] = ["explore", "pivot"];
+const VIEWS: ViewKind[] = ["home", "explore", "pivot"];
 const GRAINS = new Set<string>(ALL_GRAINS);
 
 function parseJson(value: string | null): unknown {

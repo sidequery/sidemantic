@@ -110,13 +110,12 @@ class SemanticLayerConnection(riffq.BaseConnection):
 
             # LIMITATION: QueryRewriter does not accept user_attributes, so the
             # SQL-first PG path cannot bake row-level filters into rendered_sql
-            # today. When a user-attrs map is configured, enforce the coarse-
-            # grained access gate here: deny queries that touch a secured model
-            # if the connecting user has no attributes mapping. Fine-grained row
-            # filtering over the PG wire path is deferred to a future rewriter
-            # security hook.
-            if getattr(self, "user_attrs_map", None):
-                self._enforce_pg_access(rendered_sql, user_attributes)
+            # today. Enforce the coarse-grained access gate here regardless of
+            # whether a user-attrs map is configured: a query touching a secured
+            # model with no attributes is denied (deny-by-default), matching
+            # SemanticLayer.compile(). Fine-grained row filtering over the PG wire
+            # path is deferred to a future rewriter security hook.
+            self._enforce_pg_access(rendered_sql, user_attributes)
 
             # Execute the query
             result = cursor.execute(rendered_sql)

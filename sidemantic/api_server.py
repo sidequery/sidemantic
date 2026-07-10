@@ -302,9 +302,20 @@ def create_app(
             "model_count": len(current_layer.graph.models),
         }
 
+    def _visible_dimensions(layer, model) -> list:
+        if getattr(layer, "enforce_visibility", False):
+            return [d for d in model.dimensions if getattr(d, "public", True)]
+        return list(model.dimensions)
+
+    def _visible_metrics(layer, model) -> list:
+        if getattr(layer, "enforce_visibility", False):
+            return [m for m in model.metrics if getattr(m, "public", True)]
+        return list(model.metrics)
+
     @app.get("/models", dependencies=[Depends(require_auth)])
     def list_models() -> list[dict[str, Any]]:
-        # Read-only metadata over the in-memory graph.
+        # Read-only metadata over the in-memory graph. Non-public fields are omitted
+        # when the layer enforces visibility, so this catalog cannot enumerate them.
         current_layer = app.state.layer
         models = []
         for model_name, model in current_layer.graph.models.items():
@@ -312,8 +323,8 @@ def create_app(
                 {
                     "name": model_name,
                     "table": model.table,
-                    "dimensions": [d.name for d in model.dimensions],
-                    "metrics": [m.name for m in model.metrics],
+                    "dimensions": [d.name for d in _visible_dimensions(current_layer, model)],
+                    "metrics": [m.name for m in _visible_metrics(current_layer, model)],
                     "relationships": len(model.relationships),
                 }
             )
@@ -330,8 +341,8 @@ def create_app(
             model_info = {
                 "name": model_name,
                 "table": model.table,
-                "dimensions": [d.name for d in model.dimensions],
-                "metrics": [m.name for m in model.metrics],
+                "dimensions": [d.name for d in _visible_dimensions(current_layer, model)],
+                "metrics": [m.name for m in _visible_metrics(current_layer, model)],
                 "relationships": [{"name": rel.name, "type": rel.type} for rel in model.relationships],
             }
             if model.segments:
@@ -340,6 +351,8 @@ def create_app(
 
         graph_metrics = []
         for metric_name, metric in graph_obj.metrics.items():
+            if getattr(current_layer, "enforce_visibility", False) and not getattr(metric, "public", True):
+                continue
             metric_info = {"name": metric_name}
             if metric.type:
                 metric_info["type"] = metric.type

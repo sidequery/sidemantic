@@ -260,3 +260,22 @@ def test_sql_endpoint_allowed_without_security():
     resp = client.post("/raw", json={"query": "SELECT count(*) AS n FROM t"}, headers=_headers())
     assert resp.status_code == 200, resp.text
     assert resp.json()["rows"] == [{"n": 2}]
+
+
+def test_models_catalog_hides_non_public_fields_when_enforcing():
+    """P2: /models must not enumerate public=False fields when enforce_visibility is on."""
+    layer = _make_layer()
+    client = TestClient(create_app(layer, auth_token="secret", enforce_visibility=True))
+    resp = client.get("/models", headers=_headers())
+    assert resp.status_code == 200, resp.text
+    orders = next(m for m in resp.json() if m["name"] == "orders")
+    assert "secret_note" not in orders["dimensions"]
+    assert "status" in orders["dimensions"]
+
+
+def test_models_catalog_shows_all_fields_without_enforcement():
+    layer = _make_layer()
+    client = TestClient(create_app(layer, auth_token="secret"))
+    resp = client.get("/models", headers=_headers())
+    orders = next(m for m in resp.json() if m["name"] == "orders")
+    assert "secret_note" in orders["dimensions"]

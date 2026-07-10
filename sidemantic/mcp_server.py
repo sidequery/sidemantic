@@ -610,9 +610,15 @@ def run_sql(query: str) -> dict[str, Any]:
     from sidemantic.sql.query_rewriter import QueryRewriter
 
     layer = get_layer()
-    # NOTE: QueryRewriter does not accept user_attributes, so this SQL-first path
-    # does not bake in per-user row filters. Security enforcement via user
-    # attributes applies to the structured run_query/create_chart tools.
+    # This SQL-first path cannot apply per-user row filters (QueryRewriter does not
+    # accept user_attributes). Rather than return unscoped rows for a secured model,
+    # refuse this tool when any model declares a security policy -- mirroring the HTTP
+    # /sql endpoint. Use the structured run_query tool, which enforces access + filters.
+    if any(getattr(model, "security", None) is not None for model in layer.graph.models.values()):
+        raise ValueError(
+            "run_sql is disabled because a model declares a security policy; it cannot apply "
+            "row-level security. Use run_query (structured), which enforces access gates and row filters."
+        )
     rewriter = QueryRewriter(layer.graph, dialect=layer.dialect)
     rewritten_sql = rewriter.rewrite(query)
 

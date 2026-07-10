@@ -116,3 +116,31 @@ def test_uri_dimension_flag():
     # Default is False and round-trips through model_dump.
     assert Dimension(name="x", type="categorical").uri is False
     assert d.model_dump()["uri"] is True
+
+
+def test_native_roundtrip_uri_and_non_additive_window(tmp_path):
+    """uri and non_additive_window survive native YAML round-trip (PR review P2)."""
+    from sidemantic.adapters.sidemantic import SidemanticAdapter
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    from sidemantic.core.metric import Metric
+    from sidemantic.core.model import Model
+
+    graph.add_model(
+        Model(
+            name="orders",
+            table="orders",
+            primary_key="id",
+            dimensions=[Dimension(name="homepage", type="categorical", uri=True)],
+            metrics=[
+                Metric(name="bal", agg="sum", sql="amount", non_additive_dimension="day", non_additive_window="min")
+            ],
+        )
+    )
+    out = tmp_path / "m.yml"
+    SidemanticAdapter().export(graph, out)
+    reloaded = SidemanticAdapter().parse(out)
+    model = reloaded.get_model("orders")
+    assert model.get_dimension("homepage").uri is True
+    assert model.get_metric("bal").non_additive_window == "min"

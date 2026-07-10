@@ -93,6 +93,7 @@ DIMENSION_FIELDS = {
     "parent",
     "window",
     "public",
+    "uri",
 }
 METRIC_FIELDS = {
     "name",
@@ -136,6 +137,7 @@ METRIC_FIELDS = {
     "value_format_name",
     "drill_fields",
     "non_additive_dimension",
+    "non_additive_window",
     "filters",
     "description",
     "label",
@@ -596,6 +598,7 @@ class SidemanticAdapter(BaseAdapter):
                 sample_values=dim_def.get("sample_values"),
                 cortex_search_service_name=dim_def.get("cortex_search_service_name"),
                 window=dim_def.get("window"),
+                uri=dim_def.get("uri", False),
             )
             dimensions.append(dimension)
 
@@ -838,6 +841,7 @@ class SidemanticAdapter(BaseAdapter):
             "value_format_name",
             "drill_fields",
             "non_additive_dimension",
+            "non_additive_window",
             "synonyms",
             "meta",
             "public",
@@ -1002,6 +1006,8 @@ class SidemanticAdapter(BaseAdapter):
                     dim_def["window"] = dim.window
                 if not dim.public:
                     dim_def["public"] = dim.public
+                if getattr(dim, "uri", False):
+                    dim_def["uri"] = dim.uri
                 result["dimensions"].append(dim_def)
 
         # Export metrics (model-level aggregations)
@@ -1042,6 +1048,10 @@ class SidemanticAdapter(BaseAdapter):
                     measure_def["drill_fields"] = measure.drill_fields
                 if measure.non_additive_dimension:
                     measure_def["non_additive_dimension"] = measure.non_additive_dimension
+                    # Only emit the window when it differs from the default ("max"),
+                    # so existing files stay byte-stable but "min" round-trips.
+                    if getattr(measure, "non_additive_window", "max") != "max":
+                        measure_def["non_additive_window"] = measure.non_additive_window
                 if measure.type:
                     measure_def["type"] = measure.type
                 if measure.base_metric:

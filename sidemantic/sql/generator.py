@@ -279,7 +279,21 @@ class SQLGenerator:
                 continue
 
             window = getattr(metric, "non_additive_window", "max") or "max"
-            plan[owning_model] = (metric.non_additive_dimension, window)
+            groupings = getattr(metric, "non_additive_window_groupings", None)
+            proposed = (metric.non_additive_dimension, window, tuple(groupings) if groupings else None)
+            existing = plan.get(owning_model)
+            if existing is not None and existing != proposed:
+                # A single model CTE carries one QUALIFY, so two semi-additive metrics on the
+                # same model that need different (dimension, window) snapshots cannot both be
+                # served correctly here (e.g. opening balance with min and closing with max).
+                # Refuse rather than silently applying only the last plan.
+                raise UnsupportedMetricError(
+                    f"Model '{owning_model}' is queried with conflicting semi-additive metrics: "
+                    f"one needs non_additive ({existing[0]!r}, window={existing[1]!r}) and another "
+                    f"needs ({proposed[0]!r}, window={proposed[1]!r}). A single model CTE can carry "
+                    "only one snapshot rule. Query them in separate requests, or pre-aggregate upstream."
+                )
+            plan[owning_model] = proposed
 
         return plan
 
@@ -1876,9 +1890,12 @@ class SQLGenerator:
 
         # Semi-additive handling needs the non_additive_dimension column projected into
         # this CTE (aliased to its dimension name) so the QUALIFY below can reference it,
-        # even when the query does not group by it.
+        # even when the query does not group by it. Declared window_groupings must also be
+        # projected so the QUALIFY can partition per those dimensions.
         if semi_additive is not None:
             needed_dimensions.add(semi_additive[0])
+            for grouping_col in semi_additive[2] or ():
+                needed_dimensions.add(grouping_col)
 
         # Build SELECT columns
         select_cols = []
@@ -2280,32 +2297,43 @@ class SQLGenerator:
 
         # Build QUALIFY clause for semi-additive (non_additive_dimension) measures.
         # Keep only the rows at the last (window="max") or first ("min") value of the
-        # non-additive time dimension per group. The partition is the query's other
-        # grouping dimensions for THIS model (e.g. account/region); the time dimension
-        # itself is excluded. Referencing the CTE's own SELECT aliases here is valid
-        # under QUALIFY in DuckDB and the other _QUALIFY_DIALECTS.
+        # non-additive time dimension per group. Referencing the CTE's own SELECT aliases
+        # here is valid under QUALIFY in DuckDB and the other _QUALIFY_DIALECTS.
         qualify_clause = ""
         if semi_additive is not None:
-            non_additive_dim, window = semi_additive
+            non_additive_dim, window, groupings = semi_additive
             time_col = self._quote_identifier(non_additive_dim)
 
-            # Partition over the other grouping dimensions requested for this model.
             partition_aliases: list[str] = []
             seen_partition: set[str] = set()
-            for dim_ref, gran in dimensions:
-                if not dim_ref.startswith(model_name + "."):
-                    continue
-                dim_name = dim_ref.split(".", 1)[1]
-                if dim_name == non_additive_dim and gran is None:
-                    # The non-additive time dim at its RAW grain is the window axis, never a
-                    # partition key. A coarser grain of it (e.g. day__month) IS a partition key:
-                    # the QUALIFY then keeps the last raw snapshot within each (other dims, bucket).
-                    continue
-                cte_alias = f"{dim_name}__{gran}" if gran else dim_name
-                if cte_alias in seen_partition:
-                    continue
-                seen_partition.add(cte_alias)
-                partition_aliases.append(self._quote_identifier(cte_alias))
+
+            def _add_partition(alias: str) -> None:
+                if alias not in seen_partition:
+                    seen_partition.add(alias)
+                    partition_aliases.append(self._quote_identifier(alias))
+
+            if groupings:
+                # Declared window_groupings (MetricFlow): the snapshot is taken per these
+                # dimensions regardless of the query's grouping (e.g. balance-per-user).
+                for grouping_col in groupings:
+                    _add_partition(grouping_col)
+                # A coarser grain of the non-additive dim requested by the query still scopes
+                # the snapshot to that bucket (month-end balance per user).
+                for dim_ref, gran in dimensions:
+                    if dim_ref == f"{model_name}.{non_additive_dim}" and gran is not None:
+                        _add_partition(f"{non_additive_dim}__{gran}")
+            else:
+                # No declared groupings: partition by the query's other grouping dimensions
+                # for THIS model (e.g. account/region), excluding the raw non-additive axis.
+                for dim_ref, gran in dimensions:
+                    if not dim_ref.startswith(model_name + "."):
+                        continue
+                    dim_name = dim_ref.split(".", 1)[1]
+                    if dim_name == non_additive_dim and gran is None:
+                        # The non-additive time dim at its RAW grain is the window axis, never a
+                        # partition key. A coarser grain of it (day__month) IS a partition key.
+                        continue
+                    _add_partition(f"{dim_name}__{gran}" if gran else dim_name)
 
             agg = "MAX" if window == "max" else "MIN"
             if partition_aliases:

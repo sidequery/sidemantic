@@ -265,3 +265,72 @@ def test_adapter_round_trips_non_additive_dimension():
     metric = reparsed.models["accounts"].get_metric("balance")
     assert metric is not None
     assert metric.non_additive_dimension == "snapshot_date"
+
+
+def test_semi_additive_window_groupings_partition(monkeypatch):
+    """window_groupings scope the snapshot per declared dims even when the query does not group by them."""
+
+    from sidemantic import Dimension, Metric, Model, SemanticLayer
+
+    layer = SemanticLayer()
+    con = layer.adapter.conn
+    con.execute("CREATE TABLE bal (account VARCHAR, region VARCHAR, day DATE, balance INTEGER)")
+    con.execute(
+        """INSERT INTO bal VALUES
+        ('A','east','2026-01-10',100),('A','east','2026-01-31',110),
+        ('B','west','2026-01-10',200),('B','west','2026-01-31',210)"""
+    )
+    layer.add_model(
+        Model(
+            name="bal",
+            table="bal",
+            primary_key="account",
+            dimensions=[
+                Dimension(name="account", type="categorical"),
+                Dimension(name="region", type="categorical"),
+                Dimension(name="day", type="time", granularity="day"),
+            ],
+            metrics=[
+                Metric(
+                    name="total_balance",
+                    agg="sum",
+                    sql="balance",
+                    non_additive_dimension="day",
+                    non_additive_window_groupings=["account"],
+                )
+            ],
+        )
+    )
+    # Ungrouped total: last snapshot PER ACCOUNT summed = 110 + 210 = 320 (not global-max 210*? nor 620).
+    assert layer.query(metrics=["bal.total_balance"]).fetchall() == [(320,)]
+    # Grouped by region (not by account): still last-per-account within each region.
+    rows = dict(layer.query(metrics=["bal.total_balance"], dimensions=["bal.region"]).fetchall())
+    assert rows == {"east": 110, "west": 210}
+
+
+def test_conflicting_semi_additive_metrics_raise():
+    from sidemantic import Dimension, Metric, Model, SemanticLayer
+    from sidemantic.core.semantic_layer import UnsupportedMetricError
+
+    layer = SemanticLayer()
+    con = layer.adapter.conn
+    con.execute("CREATE TABLE bal (account VARCHAR, day DATE, balance INTEGER)")
+    con.execute("INSERT INTO bal VALUES ('A','2026-01-10',100),('A','2026-01-31',110)")
+    layer.add_model(
+        Model(
+            name="bal",
+            table="bal",
+            primary_key="account",
+            dimensions=[Dimension(name="day", type="time", granularity="day")],
+            metrics=[
+                Metric(
+                    name="closing", agg="sum", sql="balance", non_additive_dimension="day", non_additive_window="max"
+                ),
+                Metric(
+                    name="opening", agg="sum", sql="balance", non_additive_dimension="day", non_additive_window="min"
+                ),
+            ],
+        )
+    )
+    with pytest.raises(UnsupportedMetricError, match="conflicting"):
+        layer.compile(metrics=["bal.closing", "bal.opening"])

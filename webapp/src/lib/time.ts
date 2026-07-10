@@ -79,36 +79,20 @@ export function previousYearRange(range: DateRange): DateRange {
 // non-UTC zone selected, the backend already truncates in that zone, but the labels it returns are
 // still wall-clock strings without an offset. We render them via Intl in the selected zone so an
 // hour bucket shows the local hour and a day/week/month label shows the local calendar boundary.
-
-// Reuse formatters (constructing Intl.DateTimeFormat is comparatively expensive) keyed by zone+grain.
-const bucketFormatters = new Map<string, Intl.DateTimeFormat>();
-
-function bucketFormatter(timeZone: string, grain: Grain): Intl.DateTimeFormat {
-  const cacheKey = `${timeZone}|${grain}`;
-  const cached = bucketFormatters.get(cacheKey);
-  if (cached) return cached;
-  // Hour grain needs the clock time; coarser grains only need the date part (in-zone).
-  const options: Intl.DateTimeFormatOptions =
-    grain === "hour"
-      ? { timeZone, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }
-      : { timeZone, year: "numeric", month: "2-digit", day: "2-digit" };
-  const formatter = new Intl.DateTimeFormat("en-CA", options); // en-CA => ISO-ish YYYY-MM-DD ordering
-  bucketFormatters.set(cacheKey, formatter);
-  return formatter;
-}
-
-/** Render a UTC bucket label into `timeZone` for axis ticks / tooltips. UTC (or an unparseable
- *  label) passes through unchanged so nothing regresses in the default case. Uses Intl only — no
- *  date library. */
-export function formatBucketLabel(label: string, grain: Grain, timeZone: string): string {
-  if (!timeZone || timeZone === "UTC") return label;
-  const instant = new Date(normalizeBucketLabel(label));
-  if (Number.isNaN(instant.getTime())) return label;
-  const parts = bucketFormatter(timeZone, grain).formatToParts(instant);
-  const get = (type: string) => parts.find((part) => part.type === type)?.value ?? "";
-  const date = `${get("year")}-${get("month")}-${get("day")}`;
-  if (grain !== "hour") return date;
-  return `${date} ${get("hour")}:${get("minute")}`;
+/** Format a bucket label for axis ticks / tooltips.
+ *
+ *  The backend truncates in the query's selected timezone and returns local wall-clock bucket
+ *  labels (a New York day bucket comes back as "2024-01-01", not a UTC instant). We therefore
+ *  present the label as-is and only trim it for display -- re-interpreting it through Intl with a
+ *  timeZone would double-shift it and, for negative-offset zones, move the date to the previous
+ *  day. No timezone math and no date library. */
+export function formatBucketLabel(label: string, grain: Grain): string {
+  const trimmed = label.trim();
+  const date = trimmed.slice(0, 10);
+  if (grain !== "hour") return date || label;
+  // Pull HH:MM out of "YYYY-MM-DD[ T]HH:MM(:SS)?" when the label carries a clock time.
+  const time = trimmed.slice(10).match(/(\d{2}):(\d{2})/);
+  return time ? `${date} ${time[1]}:${time[2]}` : date || label;
 }
 
 export type DatePreset = { key: string; label: string; days: number };

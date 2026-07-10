@@ -371,6 +371,15 @@ class Metric(BaseModel):
             "default); 'min' keeps the first."
         ),
     )
+    non_additive_window_groupings: list[str] | None = Field(
+        None,
+        description=(
+            "Dimensions the semi-additive snapshot is taken per (MetricFlow window_groupings). "
+            "When set, the last/first snapshot is computed per these groupings regardless of the "
+            "query's grouping (e.g. balance-per-user). When unset, the snapshot partitions by the "
+            "query's own non-time grouping dimensions."
+        ),
+    )
 
     # Arbitrary metadata (ai_context, custom_extensions, etc.)
     meta: dict[str, Any] | None = Field(None, description="Arbitrary metadata for extensions")

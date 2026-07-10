@@ -138,6 +138,7 @@ METRIC_FIELDS = {
     "drill_fields",
     "non_additive_dimension",
     "non_additive_window",
+    "non_additive_window_groupings",
     "filters",
     "description",
     "label",
@@ -842,6 +843,7 @@ class SidemanticAdapter(BaseAdapter):
             "drill_fields",
             "non_additive_dimension",
             "non_additive_window",
+            "non_additive_window_groupings",
             "synonyms",
             "meta",
             "public",
@@ -1052,6 +1054,8 @@ class SidemanticAdapter(BaseAdapter):
                     # so existing files stay byte-stable but "min" round-trips.
                     if getattr(measure, "non_additive_window", "max") != "max":
                         measure_def["non_additive_window"] = measure.non_additive_window
+                    if getattr(measure, "non_additive_window_groupings", None):
+                        measure_def["non_additive_window_groupings"] = list(measure.non_additive_window_groupings)
                 if measure.type:
                     measure_def["type"] = measure.type
                 if measure.base_metric:

@@ -372,6 +372,7 @@ Initial native-runtime rule:
 | `drill_fields` | Suggested drill fields. |
 | `non_additive_dimension` | Semi-additive time dimension. The measure is aggregated over only the last (or first) snapshot per group — implemented with a `QUALIFY` on QUALIFY-capable engines (DuckDB, Snowflake, BigQuery, Databricks, Spark, ClickHouse). Raises `UnsupportedMetricError` on other dialects or when combined with a fan-out (symmetric-aggregate) join, unless `SemanticLayer(allow_non_additive_unsafe=True)`. |
 | `non_additive_window` | `"max"` (default, last value) or `"min"` (first value) for `non_additive_dimension`. |
+| `non_additive_window_groupings` | Dimensions the semi-additive snapshot is taken per (MetricFlow `window_groupings`, e.g. balance-per-user). When set, the last/first snapshot partitions by these regardless of the query's grouping; when unset, it partitions by the query's own non-time grouping dimensions. |
 
 ## Relationships
 

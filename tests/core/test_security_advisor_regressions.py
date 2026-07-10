@@ -159,4 +159,6 @@ def test_visibility_blocks_hidden_field_in_order_by():
 
 def test_visibility_allows_public_fields():
     layer = _visibility_layer()
-    assert layer.query(metrics=["orders.cnt"], dimensions=["orders.region"]).fetchall() == [("US", 1), ("EU", 1)]
+    # Order-independent: the query has no ORDER BY, so row order is not guaranteed.
+    rows = layer.query(metrics=["orders.cnt"], dimensions=["orders.region"]).fetchall()
+    assert dict(rows) == {"US": 1, "EU": 1}

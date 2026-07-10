@@ -782,6 +782,22 @@
           "title": "Non Additive Window",
           "type": "string"
         },
+        "non_additive_window_groupings": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Dimensions the semi-additive snapshot is taken per (MetricFlow window_groupings). When set, the last/first snapshot is computed per these groupings regardless of the query's grouping (e.g. balance-per-user). When unset, the snapshot partitions by the query's own non-time grouping dimensions.",
+          "title": "Non Additive Window Groupings"
+        },
         "numerator": {
           "anyOf": [
             {
@@ -2068,6 +2084,22 @@
             "title": "Non Additive Window",
             "type": "string"
           },
+          "non_additive_window_groupings": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Dimensions the semi-additive snapshot is taken per (MetricFlow window_groupings). When set, the last/first snapshot is computed per these groupings regardless of the query's grouping (e.g. balance-per-user). When unset, the snapshot partitions by the query's own non-time grouping dimensions.",
+            "title": "Non Additive Window Groupings"
+          },
           "numerator": {
             "anyOf": [
               {
@@ -3076,6 +3108,22 @@
                 ],
                 "title": "Non Additive Window",
                 "type": "string"
+              },
+              "non_additive_window_groupings": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Dimensions the semi-additive snapshot is taken per (MetricFlow window_groupings). When set, the last/first snapshot is computed per these groupings regardless of the query's grouping (e.g. balance-per-user). When unset, the snapshot partitions by the query's own non-time grouping dimensions.",
+                "title": "Non Additive Window Groupings"
               },
               "numerator": {
                 "anyOf": [

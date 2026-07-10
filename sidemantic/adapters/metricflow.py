@@ -570,17 +570,21 @@ class MetricFlowAdapter(BaseAdapter):
         value_format_name = meta.get("value_format_name")
         drill_fields = meta.get("drill_fields")
 
-        # Parse non_additive_dimension. MetricFlow allows a window_choice of
-        # "min"/"max" (default "max" = keep the last snapshot); window_groupings are
-        # not modeled here (we partition by the query's non-time grouping dimensions).
+        # Parse non_additive_dimension. MetricFlow allows a window_choice of "min"/"max"
+        # (default "max" = keep the last snapshot) and window_groupings (the dimensions the
+        # snapshot is taken per, e.g. balance-per-user).
         non_additive = measure_def.get("non_additive_dimension")
         non_additive_dimension = None
         non_additive_window = "max"
+        non_additive_window_groupings = None
         if non_additive and isinstance(non_additive, dict):
             non_additive_dimension = non_additive.get("name")
             window_choice = non_additive.get("window_choice")
             if window_choice in ("min", "max"):
                 non_additive_window = window_choice
+            groupings = non_additive.get("window_groupings")
+            if groupings:
+                non_additive_window_groupings = list(groupings)
 
         # Convert expr to string if it's not None (can be int, like 1 for count)
         expr = measure_def.get("expr")
@@ -598,6 +602,7 @@ class MetricFlowAdapter(BaseAdapter):
             drill_fields=drill_fields,
             non_additive_dimension=non_additive_dimension,
             non_additive_window=non_additive_window,
+            non_additive_window_groupings=non_additive_window_groupings,
         )
 
     @staticmethod

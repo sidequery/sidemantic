@@ -1535,7 +1535,7 @@ class SemanticLayer:
         """
         from sidemantic.core.catalog import get_catalog_metadata
 
-        return get_catalog_metadata(self.graph, schema=schema)
+        return get_catalog_metadata(self.graph, schema=schema, enforce_visibility=self.enforce_visibility)
 
     @classmethod
     def from_yaml(

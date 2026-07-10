@@ -180,7 +180,7 @@ export function ExplorerView() {
           hasTime={!!timeRef}
           loading={series.loading}
           comparisonLabel={comparisonLabel}
-          formatLabel={(label) => formatBucketLabel(label, state.grain, tz)}
+          formatLabel={(label) => formatBucketLabel(label, state.grain)}
           onBrush={onBrush}
         />
       ) : null}

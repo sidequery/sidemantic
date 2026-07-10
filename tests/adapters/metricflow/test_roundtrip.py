@@ -141,3 +141,34 @@ def test_metricflow_roundtrip_metric_properties():
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+def test_non_additive_window_groupings_roundtrip(tmp_path):
+    """window_groupings must survive MetricFlow export/import (PR review)."""
+    from sidemantic.adapters.metricflow import MetricFlowAdapter
+    from sidemantic.core.metric import Metric
+    from sidemantic.core.model import Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="accounts",
+            table="accounts",
+            primary_key="id",
+            metrics=[
+                Metric(
+                    name="balance",
+                    agg="sum",
+                    sql="balance",
+                    non_additive_dimension="ds",
+                    non_additive_window_groupings=["user"],
+                )
+            ],
+        )
+    )
+    out = tmp_path / "mf"
+    MetricFlowAdapter().export(graph, out)
+    reloaded = MetricFlowAdapter().parse(out)
+    metric = reloaded.get_model("accounts").get_metric("balance")
+    assert metric.non_additive_window_groupings == ["user"]

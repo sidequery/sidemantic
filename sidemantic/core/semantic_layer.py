@@ -1770,6 +1770,17 @@ class SemanticLayer:
         """
         from sidemantic.sql.query_rewriter import QueryRewriter
 
+        # The SQL-first path rewrites and executes without user attributes, so it cannot
+        # apply per-user row filters or access gates. Rather than return unscoped rows for a
+        # secured model, refuse when any model declares a security policy (mirrors the HTTP
+        # /sql endpoint and MCP run_sql). The structured query()/compile() path enforces.
+        if any(getattr(model, "security", None) is not None for model in self.graph.models.values()):
+            raise SecurityError(
+                "SemanticLayer.sql() cannot enforce row-level security and is disabled because a "
+                "model declares a security policy. Use query()/compile() (structured), which "
+                "applies access gates and row filters per user."
+            )
+
         cache_key = (
             getattr(self.graph, "_version", 0),
             self.dialect,

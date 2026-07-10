@@ -162,3 +162,24 @@ def test_visibility_allows_public_fields():
     # Order-independent: the query has no ORDER BY, so row order is not guaranteed.
     rows = layer.query(metrics=["orders.cnt"], dimensions=["orders.region"]).fetchall()
     assert dict(rows) == {"US": 1, "EU": 1}
+
+
+def test_sql_first_path_denied_for_secured_model():
+    """P1: SemanticLayer.sql() (SQL-first, used by the CLI) cannot scope rows, so it must
+    refuse when any model declares a security policy rather than returning unfiltered rows."""
+    layer = SemanticLayer()
+    con = layer.adapter.conn
+    con.execute("CREATE TABLE t (tenant INTEGER, v INTEGER)")
+    con.execute("INSERT INTO t VALUES (1, 10), (2, 50)")
+    layer.add_model(
+        Model(
+            name="t",
+            table="t",
+            primary_key="tenant",
+            dimensions=[Dimension(name="tenant", type="numeric")],
+            metrics=[Metric(name="total", agg="sum", sql="v")],
+            security=SecurityPolicy(row_filters=["tenant = {{ user.tenant }}"]),
+        )
+    )
+    with pytest.raises(SecurityError, match="sql"):
+        layer.sql("SELECT total FROM t")

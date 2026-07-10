@@ -61,27 +61,31 @@ describe("filterExprs (include mode — preserved behavior)", () => {
 });
 
 describe("filterExprs (exclude mode)", () => {
-  test("a single value negates with !=", () => {
-    expect(filterExprs({ "orders.status": exc(["US"]) })).toEqual(["orders.status != 'US'"]);
+  // `!=` / `NOT IN` are UNKNOWN for NULL rows, which would silently drop them. When the null
+  // token is NOT explicitly excluded, keep NULL rows with an `OR ... IS NULL` branch.
+  test("a single value negates with != and preserves NULLs", () => {
+    expect(filterExprs({ "orders.status": exc(["US"]) })).toEqual(["(orders.status != 'US' OR orders.status IS NULL)"]);
   });
 
-  test("multiple values become a NOT IN list", () => {
-    expect(filterExprs({ "orders.status": exc(["a", "b"]) })).toEqual(["orders.status NOT IN ('a', 'b')"]);
+  test("multiple values become a NOT IN list and preserve NULLs", () => {
+    expect(filterExprs({ "orders.status": exc(["a", "b"]) })).toEqual([
+      "(orders.status NOT IN ('a', 'b') OR orders.status IS NULL)",
+    ]);
   });
 
-  test("the NULL token becomes IS NOT NULL", () => {
+  test("the NULL token alone becomes IS NOT NULL", () => {
     expect(filterExprs({ "orders.status": exc([NULL_TOKEN]) })).toEqual(["orders.status IS NOT NULL"]);
   });
 
-  test("present values AND with a null exclusion (row must match none of the excluded set)", () => {
+  test("excluding a value AND the null token drops both (no OR IS NULL branch)", () => {
     expect(filterExprs({ "orders.status": exc(["a", NULL_TOKEN]) })).toEqual([
       "(orders.status != 'a' AND orders.status IS NOT NULL)",
     ]);
   });
 
-  test("numeric exclusions are not quoted", () => {
+  test("numeric exclusions are not quoted and still preserve NULLs", () => {
     expect(filterExprs({ "orders.amount": exc(["5", "6"]) }, { types: { "orders.amount": "numeric" } })).toEqual([
-      "orders.amount NOT IN (5, 6)",
+      "(orders.amount NOT IN (5, 6) OR orders.amount IS NULL)",
     ]);
   });
 });

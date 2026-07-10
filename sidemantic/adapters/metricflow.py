@@ -1048,6 +1048,8 @@ class MetricFlowAdapter(BaseAdapter):
                     # ("max" = keep the last snapshot), to keep exports minimal.
                     if getattr(measure, "non_additive_window", "max") == "min":
                         non_additive_def["window_choice"] = "min"
+                    if getattr(measure, "non_additive_window_groupings", None):
+                        non_additive_def["window_groupings"] = list(measure.non_additive_window_groupings)
                     measure_def["non_additive_dimension"] = non_additive_def
 
                 result["measures"].append(measure_def)

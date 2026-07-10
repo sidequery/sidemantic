@@ -59,19 +59,35 @@ function membershipExpr(dimRef: FieldRef, filter: DimFilter, type?: string): str
   const negate = filter.mode === "exclude";
   const hasNull = filter.values.includes(NULL_TOKEN);
   const present = filter.values.filter((value) => value !== NULL_TOKEN);
-  const parts: string[] = [];
+
+  let presentExpr: string | null = null;
   if (present.length === 1) {
-    parts.push(`${dimRef} ${negate ? "!=" : "="} ${filterLiteral(present[0], type)}`);
+    presentExpr = `${dimRef} ${negate ? "!=" : "="} ${filterLiteral(present[0], type)}`;
   } else if (present.length > 1) {
     const list = present.map((v) => filterLiteral(v, type)).join(", ");
-    parts.push(`${dimRef} ${negate ? "NOT IN" : "IN"} (${list})`);
+    presentExpr = `${dimRef} ${negate ? "NOT IN" : "IN"} (${list})`;
   }
-  // Null selection mirrors the mode: include -> IS NULL, exclude -> IS NOT NULL.
-  if (hasNull) parts.push(`${dimRef} IS ${negate ? "NOT " : ""}NULL`);
-  if (parts.length === 0) return null;
-  if (parts.length === 1) return parts[0];
-  // Include values OR together (match any); exclude values AND together (match none of them).
-  return `(${parts.join(negate ? " AND " : " OR ")})`;
+
+  if (!negate) {
+    // Include: match any selected value (OR), plus IS NULL if the null token was selected.
+    const parts: string[] = [];
+    if (presentExpr) parts.push(presentExpr);
+    if (hasNull) parts.push(`${dimRef} IS NULL`);
+    if (parts.length === 0) return null;
+    return parts.length === 1 ? parts[0] : `(${parts.join(" OR ")})`;
+  }
+
+  // Exclude. `dim != v` / `dim NOT IN (...)` is UNKNOWN for NULL rows, which would silently
+  // drop them. Only exclude NULLs when the null token was explicitly selected for exclusion;
+  // otherwise keep them with an `OR dim IS NULL` branch.
+  if (hasNull) {
+    const parts: string[] = [];
+    if (presentExpr) parts.push(presentExpr);
+    parts.push(`${dimRef} IS NOT NULL`);
+    return parts.length === 1 ? parts[0] : `(${parts.join(" AND ")})`;
+  }
+  if (!presentExpr) return null;
+  return `(${presentExpr} OR ${dimRef} IS NULL)`;
 }
 
 /**

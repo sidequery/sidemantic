@@ -86,14 +86,47 @@ def validate_query_history_params(
     return days_back_int, limit_int
 
 
+class _MaterializedResult:
+    """A fully-materialized query result served entirely from memory.
+
+    Produced by :class:`_SerializedCursor` so that ALL shared-connection access (execute
+    plus the fetch/drain) happens while the lock is held; downstream consumers then read
+    from the in-memory Arrow table and never touch the shared connection concurrently.
+    """
+
+    __slots__ = ("_table", "_rows", "_pos")
+
+    def __init__(self, table: Any):
+        self._table = table
+        self._rows: list | None = None
+        self._pos = 0
+
+    def fetch_record_batch(self) -> Any:
+        """Return a RecordBatchReader over the materialized table (no connection access).
+
+        ``result_to_record_batch_reader`` prefers this no-arg method over the adapter path.
+        """
+        return self._table.to_reader()
+
+    def fetchone(self) -> tuple | None:
+        if self._rows is None:
+            self._rows = self._table.to_pylist()
+        if self._pos >= len(self._rows):
+            return None
+        row = self._rows[self._pos]
+        self._pos += 1
+        return tuple(row.values())
+
+
 class _SerializedCursor:
     """Fallback cursor that guards the shared adapter connection with a lock.
 
-    Adapters that do not expose an independent concurrent handle fall back to
-    this wrapper. It preserves exactly the pre-existing behavior: query work is
-    serialized on the single shared connection via a per-adapter lock, so
-    callers that switch to ``adapter.cursor()`` for concurrency do not corrupt
-    a driver that cannot support concurrent handles.
+    Adapters that do not expose an independent concurrent handle fall back to this
+    wrapper. It preserves the pre-existing serialized single-connection behavior: the
+    query AND its full result materialization run under a per-adapter lock, so callers
+    that switch to ``adapter.cursor()`` for concurrency cannot interleave fetches on a
+    driver that does not support concurrent handles. The result is returned already
+    materialized so no connection access happens after the lock is released.
     """
 
     def __init__(self, adapter: "BaseDatabaseAdapter", lock: threading.Lock):
@@ -101,16 +134,25 @@ class _SerializedCursor:
         self._lock = lock
 
     def execute(self, sql: str) -> Any:
-        """Execute SQL under the shared-connection lock and return the result."""
+        """Execute SQL and fully materialize the result under the shared-connection lock."""
         with self._lock:
-            return self._adapter.execute(sql)
+            result = self._adapter.execute(sql)
+            # Drain to an in-memory Arrow table WHILE the lock is held so a concurrent
+            # request's execute cannot interleave with this result's fetch on the shared
+            # connection (which would corrupt driver state / stale the cursor).
+            reader = self._adapter.fetch_record_batch(result)
+            table = reader.read_all()
+        return _MaterializedResult(table)
 
     def fetch_record_batch(self, result: Any) -> Any:
-        """Delegate Arrow conversion to the owning adapter."""
+        """Return a RecordBatchReader; results from ``execute`` are already materialized."""
+        if isinstance(result, _MaterializedResult):
+            return result.fetch_record_batch()
         return self._adapter.fetch_record_batch(result)
 
     def fetchone(self, result: Any) -> tuple | None:
-        """Delegate row fetch to the owning adapter."""
+        if isinstance(result, _MaterializedResult):
+            return result.fetchone()
         return self._adapter.fetchone(result)
 
     def close(self) -> None:

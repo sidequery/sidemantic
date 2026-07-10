@@ -2471,6 +2471,80 @@ view: orders {
     assert con.execute(sql).fetchall() == [(0.25,)]  # 10 / (10+30)
 
 
+def test_lookml_number_measure_ref_to_filtered_complete_measure_keeps_filter():
+    """Referencing a FILTERED complete number measure must inline its filter, not drop it.
+
+    `completed_sum` is a type: number inline-aggregate measure filtered to status='completed'.
+    `double_sum = ${completed_sum} * 2` must inline the FILTERED aggregate (completed=130, *2 =
+    260), not expand to an unfiltered SUM(amount)*2 over all rows (360). A chained reference
+    (triple_sum = double_sum + completed_sum) must also stay filtered.
+    """
+    import duckdb
+
+    from sidemantic import SemanticLayer
+
+    graph = _parse_lkml(
+        """
+view: orders {
+  sql_table_name: orders ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: amount { type: number  sql: ${TABLE}.amount ;; }
+  dimension: status { type: string  sql: ${TABLE}.status ;; }
+  measure: completed_sum { type: number  sql: SUM(${amount}) ;; filters: [status: "completed"] }
+  measure: double_sum { type: number  sql: ${completed_sum} * 2 ;; }
+  measure: triple_sum { type: number  sql: ${double_sum} + ${completed_sum} ;; }
+}
+"""
+    )
+    model = graph.get_model("orders")
+    assert model.get_metric("double_sum") is not None  # not dropped
+    layer = SemanticLayer(auto_register=False)
+    layer.add_model(model)
+    con = duckdb.connect()
+    con.execute("create table orders(id int, amount int, status text)")
+    con.execute("insert into orders values (1,100,'completed'),(2,50,'pending'),(3,30,'completed')")
+    assert con.execute(layer.compile(metrics=["orders.completed_sum"])).fetchall() == [(130,)]
+    assert con.execute(layer.compile(metrics=["orders.double_sum"])).fetchall() == [(260,)]  # not 360
+    assert con.execute(layer.compile(metrics=["orders.triple_sum"])).fetchall() == [(390,)]  # 260 + 130
+
+
+def test_lookml_number_measure_expands_chained_derived_ref():
+    """A number measure referencing another DERIVED number measure must be kept, not dropped.
+
+    `gross_margin = ${revenue} - ${cost_total}` is itself derived; `avg_margin =
+    ${gross_margin} / NULLIF(COUNT(*), 0)` has an inline aggregate, so it needs the complete-SQL
+    path. gross_margin must be recursively expandable (else avg_margin is dropped as unexpandable).
+    """
+    import duckdb
+
+    from sidemantic import SemanticLayer
+
+    graph = _parse_lkml(
+        """
+view: orders {
+  sql_table_name: orders ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: amount { type: number  sql: ${TABLE}.amount ;; }
+  dimension: cost { type: number  sql: ${TABLE}.cost ;; }
+  measure: revenue { type: sum  sql: ${amount} ;; }
+  measure: cost_total { type: sum  sql: ${cost} ;; }
+  measure: gross_margin { type: number  sql: ${revenue} - ${cost_total} ;; }
+  measure: avg_margin { type: number  sql: ${gross_margin} / NULLIF(COUNT(*), 0) ;; }
+}
+"""
+    )
+    model = graph.get_model("orders")
+    assert model.get_metric("avg_margin") is not None  # was dropped as unexpandable before
+    layer = SemanticLayer(auto_register=False)
+    layer.add_model(model)
+    con = duckdb.connect()
+    con.execute("create table orders(id int, amount int, cost int)")
+    con.execute("insert into orders values (1,100,10),(2,50,20),(3,30,5)")
+    # gross_margin = (100+50+30) - (10+20+5) = 180 - 35 = 145; avg_margin = 145 / 3
+    assert con.execute(layer.compile(metrics=["orders.gross_margin"])).fetchall() == [(145,)]
+    assert con.execute(layer.compile(metrics=["orders.avg_margin"])).fetchall() == [(145 / 3,)]
+
+
 def test_lookml_number_measure_mixed_filter_clause_kept():
     """A mixed expr using an aggregate FILTER (WHERE ...) clause is aggregate-safe and kept."""
     graph = _parse_lkml(

@@ -253,7 +253,7 @@ class LookMLAdapter(BaseAdapter):
         return resolve(sql, frozenset())
 
     @classmethod
-    def _fold_complete_sql_filters(cls, sql: str, filters: list[str]) -> str | None:
+    def _fold_complete_sql_filters(cls, sql: str, filters: list[str], force: bool = False) -> str | None:
         """Fold measure ``filters`` INTO a complete-SQL aggregate when the generator's
         column-nulling can't apply them safely.
 
@@ -308,8 +308,10 @@ class LookMLAdapter(BaseAdapter):
         unsafe_nulling = tree.find(exp.Is) is not None or tree.find(exp.Coalesce) is not None or "hash(" in sql.lower()
         # Otherwise, if every aggregate already references a column the generator can null
         # (nulling the value/ORDER-BY column filters it; aggregates ignore NULLs), the
-        # existing path is correct AND consistent -> don't rewrite.
-        if not unsafe_nulling and all(any(True for _ in _scope(a).find_all(exp.Column)) for a in aggs):
+        # existing path is correct AND consistent -> don't rewrite. `force` skips this: a caller
+        # INLINING this SQL into another measure has no generator column-nulling step, so the
+        # filter must always be baked into a CASE here.
+        if not force and not unsafe_nulling and all(any(True for _ in _scope(a).find_all(exp.Column)) for a in aggs):
             return None
 
         def _combined():
@@ -1102,6 +1104,77 @@ class LookMLAdapter(BaseAdapter):
                     if dm and dm.sql:
                         measure_full_sql_lookup[m_name] = dm.sql
 
+        # Second pass: also expand `type: number` measures into measure_full_sql_lookup so a
+        # LATER number measure that references them can go through the complete-SQL path. Covers
+        # (a) inline-aggregate "complete" measures (SUM(${amount}) with filters) and (b) pure
+        # derived metric-of-metrics (${revenue} - ${cost}). Without this, referencing them either
+        # drops the measure as unexpandable or silently loses a referenced measure's filter.
+        # Iterate to a fixpoint so chains (avg_margin -> gross_margin -> revenue/cost) resolve
+        # regardless of declaration order. filter_sensitive_measures tracks measures whose folded
+        # filter a plain derived reference would drop -- a referencing expr must INLINE them.
+        from sidemantic.sql.aggregation_detection import sql_has_aggregate
+
+        number_measure_defs = {
+            m["name"]: m
+            for m in (view_def.get("measures") or [])
+            if m.get("name") and m.get("type") == "number" and m.get("sql")
+        }
+        filter_sensitive_measures: set[str] = set()
+
+        def _expand_number_measure(m_def):
+            """Return (complete_sql, is_filter_sensitive) or None if not (yet) expandable."""
+            raw = m_def["sql"].replace("${TABLE}", "{model}")
+            refs = [(mm.group(1), mm.group(2)) for mm in self._REF_RE.finditer(raw)]
+            # Cross-view refs and subqueries have no inline complete-SQL form.
+            if any(v is not None and rn != "TABLE" for v, rn in refs) or re.search(r"(?is)\bselect\b", raw):
+                return None
+            # Every measure ref must already be resolvable (a dim, a compact dim, or already in
+            # the lookup); otherwise retry next round (it may be a later-added number measure).
+            for v, rn in refs:
+                if v is not None or rn == "TABLE" or rn in resolved_dimension_sql or rn in declared_dim_names:
+                    continue
+                if rn not in measure_full_sql_lookup:
+                    return None
+
+            def _sub(mm):
+                v, rn = mm.group(1), mm.group(2)
+                if v is None and rn == "TABLE":
+                    return mm.group(0)
+                if rn in resolved_dimension_sql:
+                    return f"({resolved_dimension_sql[rn]})"
+                if rn in declared_dim_names:
+                    return f"({{model}}.{rn})"
+                return f"({measure_full_sql_lookup[rn]})"
+
+            expanded = self._REF_RE.sub(_sub, raw)
+            # A valid measure-level expression must contain an aggregate (else it is a row-level
+            # dimension expression, handled/skipped by _parse_measure itself).
+            if not sql_has_aggregate(expanded.replace("{model}", "x")):
+                return None
+            joined = _folded_measure_filter(m_def)
+            if joined:
+                # force=True: this SQL will be INLINED into a referencing measure with no
+                # generator column-nulling, so the filter must be baked into a CASE unconditionally.
+                folded = self._fold_complete_sql_filters(expanded, [joined], force=True)
+                if folded is None:
+                    return None  # can't fold the filter safely -> leave unexpandable
+                return folded, True
+            return expanded, False
+
+        _expanding = True
+        while _expanding:
+            _expanding = False
+            for m_name, m_def in number_measure_defs.items():
+                if m_name in measure_full_sql_lookup:
+                    continue
+                result = _expand_number_measure(m_def)
+                if result is None:
+                    continue
+                measure_full_sql_lookup[m_name], _sensitive = result
+                if _sensitive:
+                    filter_sensitive_measures.add(m_name)
+                _expanding = True
+
         # Parse measures with dimension SQL lookup for reference resolution
         measures = []
         for measure_def in view_def.get("measures") or []:
@@ -1113,6 +1186,7 @@ class LookMLAdapter(BaseAdapter):
                 measure_agg_lookup,
                 measure_full_sql_lookup,
                 view_name=name.lstrip("+"),
+                filter_sensitive_measures=filter_sensitive_measures,
             )
             if measure:
                 measures.append(measure)
@@ -1586,6 +1660,7 @@ class LookMLAdapter(BaseAdapter):
         measure_agg_lookup: dict[str, str] | None = None,
         measure_full_sql_lookup: dict[str, str] | None = None,
         view_name: str | None = None,
+        filter_sensitive_measures: set[str] | None = None,
     ) -> Metric | None:
         """Parse LookML measure.
 
@@ -1595,6 +1670,8 @@ class LookMLAdapter(BaseAdapter):
             dimension_sql_lookup: Dict mapping dimension names to their resolved SQL
             measure_names: Set of measure names in this view (for base-measure resolution)
             measure_agg_lookup: Dict mapping base measure names to their SQL aggregate template
+            filter_sensitive_measures: Measures whose folded filter a plain derived reference
+                would drop, so a referencing number measure must INLINE them (complete path).
 
         Returns:
             Metric instance or None
@@ -1607,6 +1684,7 @@ class LookMLAdapter(BaseAdapter):
         dimension_sql_lookup = dimension_sql_lookup or {}
         measure_agg_lookup = measure_agg_lookup or {}
         measure_full_sql_lookup = measure_full_sql_lookup or {}
+        filter_sensitive_measures = filter_sensitive_measures or set()
 
         # Check if type is explicitly set
         has_explicit_type = "type" in measure_def
@@ -1788,7 +1866,17 @@ class LookMLAdapter(BaseAdapter):
                 # aggregates like PERCENTILE_CONT(...) WITHIN GROUP (ORDER BY ${x}). Replacing
                 # every ${...}/{model} with a plain identifier lets sqlglot see the real agg.
                 has_inline_agg = sql_has_aggregate(self._REF_RE.sub("x", sql).replace("{model}", "x"))
-                needs_complete = (referenced_measure and referenced_dimension) or has_inline_agg
+                # A reference to a FILTER-SENSITIVE measure (one whose folded filter a plain
+                # derived dependency would drop) must be inlined through the complete-SQL path,
+                # not left as a bare metric-of-metrics ref -- else e.g. `${completed_sum} * 2`
+                # silently expands to SUM(amount)*2 over ALL rows, ignoring completed_sum's filter.
+                refs_filter_sensitive = any(
+                    _m.group(1) is None and _m.group(2) != "TABLE" and _m.group(2) in filter_sensitive_measures
+                    for _m in self._REF_RE.finditer(sql)
+                )
+                needs_complete = (
+                    (referenced_measure and referenced_dimension) or has_inline_agg or refs_filter_sensitive
+                )
                 expand_measures = needs_complete and referenced_measure
                 if needs_complete:
                     if re.search(r"(?is)\bselect\b", sql):

@@ -486,7 +486,17 @@ class LookMLAdapter(BaseAdapter):
             # "-FOO" dash form, or the word "not" applied to a null/empty/numeric/range/
             # comparison form. Word "not" before a bare STRING ("not started") is a literal
             # value (an include), not an exclusion.
-            if p.startswith("-") and len(p) > 1 and not re.match(r"^-(\d|\.)", p):
+            # Mirror single()'s neg_dash guard EXACTLY so the classifier agrees with what
+            # single() actually negates: a leading dash excludes unless the token is a negative
+            # NUMBER (-5, -.5) -- a value -- or a `-<op>` comparison form. A dot-prefixed string
+            # like `-.csv` (exclude '.csv') IS an exclusion; the old `^-(\d|\.)` guard wrongly
+            # rejected it, so the combiner ORed the exclusion in and admitted almost everything.
+            if (
+                p.startswith("-")
+                and len(p) > 1
+                and not self._filter_is_number(p)
+                and not re.match(r"^-(?:>=|<=|!=|<>|>|<)", p)
+            ):
                 return True
             nm2 = re.match(r"(?i)^not\s+(.+)$", p)
             if not nm2:
@@ -521,7 +531,17 @@ class LookMLAdapter(BaseAdapter):
         # leading-NOT branch -- otherwise "NOT [0,10], 20 to 30" would mis-handle here.
         if "," in value and not re.match(r"(?i)^not\s", value):
             segs = self._split_top_level_commas(value)
-            if any(self._numeric_range_bounds(s) for s in segs):
+
+            def _seg_is_rangeish(s: str) -> bool:
+                # A positive interval ("[0,10]") OR a negated one ("NOT [0,10]"). The latter must
+                # route through this bracket-aware branch too, else the naive split() fallback
+                # below shatters the interval's inner comma into "NOT [0" / "10]" fragments.
+                if self._numeric_range_bounds(s):
+                    return True
+                m = re.match(r"(?i)^not\s+(.+)$", s.strip())
+                return bool(m and self._numeric_range_bounds(m.group(1).strip()))
+
+            if any(_seg_is_rangeish(s) for s in segs):
                 # OR the positive alternatives (ranges + plain values), AND the exclusions
                 # ("NOT 20" / "-x"): Looker numeric lists combine alternatives then exclude.
                 includes, excludes = [], []

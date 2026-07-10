@@ -2171,6 +2171,16 @@ def test_lookml_filter_grammar_conversion():
     # A non-leading FRACTIONAL NOT-comparison is classified as an exclusion (AND), not a match.
     assert conv("f", "1, NOT >.5") == f"({f} = 1 AND {f} <= .5)"
 
+    # A dot-prefixed dash exclusion inside a MIXED LIST must be ANDed (excluded), not ORed.
+    # single("-.csv") already emits `!= '.csv'`; the classifier must agree so the combiner
+    # doesn't OR it in (which would admit almost every value).
+    assert conv("ext", "FOO%,-.csv") == "({model}.ext LIKE 'FOO%' AND {model}.ext != '.csv')"
+
+    # A NEGATED interval in a non-leading list position keeps its inner comma (bracket-aware
+    # split) and is excluded (AND). Previously the naive split shattered it into "NOT [0"/"10]".
+    assert conv("f", "20, NOT [0,10]") == f"({f} = 20 AND ({f} < 0 OR {f} > 10))"
+    assert conv("f", "1 to 10, -.csv") == f"(({f} >= 1 AND {f} <= 10) AND {f} != '.csv')"
+
     # yes/no
     assert conv("f", "yes") == f"{f} = true"
     assert conv("f", "no") == f"{f} = false"

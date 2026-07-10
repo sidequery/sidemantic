@@ -305,11 +305,17 @@ class MetricFlowAdapter(BaseAdapter):
         # Parse entities to extract primary key and relationships
         primary_key = "id"  # default
         relationships = []
+        # Map entity name -> backing SQL column, so semi-additive window_groupings that name an
+        # entity (e.g. `user`, backed by `user_id`) resolve to the real column the generator can
+        # partition by, rather than a non-existent `user` column.
+        entity_column_by_name: dict[str, str] = {}
 
         for entity_def in model_def.get("entities") or []:
             entity_type = entity_def.get("type", "primary")
             entity_name = entity_def.get("name")
             entity_expr = entity_def.get("expr", entity_name)
+            if entity_name:
+                entity_column_by_name[entity_name] = entity_expr
 
             if entity_type == "primary":
                 # Use this as the primary key
@@ -327,9 +333,18 @@ class MetricFlowAdapter(BaseAdapter):
 
         # Parse measures
         measures = []
+        dimension_names = {dim.name for dim in dimensions}
         for measure_def in model_def.get("measures") or []:
             measure = self._parse_measure(measure_def)
             if measure:
+                # Resolve semi-additive window_groupings: an entity name maps to its backing
+                # column; a dimension name is kept as-is. This avoids partitioning by a name
+                # that has no projectable column on the model.
+                if measure.non_additive_window_groupings:
+                    measure.non_additive_window_groupings = [
+                        grouping if grouping in dimension_names else entity_column_by_name.get(grouping, grouping)
+                        for grouping in measure.non_additive_window_groupings
+                    ]
                 measures.append(measure)
 
         # Parse segments from meta

@@ -183,3 +183,19 @@ def test_sql_first_path_denied_for_secured_model():
     )
     with pytest.raises(SecurityError, match="sql"):
         layer.sql("SELECT total FROM t")
+
+
+def test_row_filter_boolean_control_flow_preserves_truthiness():
+    """PR review P1: a false boolean attribute must not render the admin/bypass branch.
+
+    The finalize-based renderer keeps raw values for {% if %}/comparisons while still quoting
+    interpolated {{ }} output, so wrapping no longer makes FALSE look truthy to Jinja.
+    """
+    tmpl = "{% if user.is_admin %}1=1{% else %}tenant_id = {{ user.tenant_id }}{% endif %}"
+    assert render_row_filter(tmpl, {"is_admin": False, "tenant_id": 7}) == "tenant_id = 7"
+    assert render_row_filter(tmpl, {"is_admin": True, "tenant_id": 7}) == "1=1"
+    # Comparisons in control flow use the raw value, not a SQL literal.
+    cmp_tmpl = "{% if user.role == 'admin' %}1=1{% else %}region = {{ user.region }}{% endif %}"
+    assert render_row_filter(cmp_tmpl, {"role": "analyst", "region": "US"}) == "region = 'US'"
+    # Injection is still neutralized because the interpolated OUTPUT is finalized to a literal.
+    assert render_row_filter("tid = {{ user.tid }}", {"tid": "1 OR 1=1"}) == "tid = '1 OR 1=1'"

@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { aliasOf, NULL_TOKEN, type CatalogDimension, type CatalogMetric, type CatalogModel } from "../data/types";
-import { formatCompact, formatDeltaAbs, formatDeltaPct, formatPercentOfTotal, type Tone } from "../lib/format";
+import { formatCompact, formatDeltaAbs, formatDeltaPct, formatPercentOfTotal, sqlLiteral, type Tone } from "../lib/format";
 import { composeFilters, dimTypes, dimensionLeaderboard } from "../lib/queries";
 import type { DateRange } from "../lib/time";
 import type { ContextColumn } from "../state/explorerState";
@@ -58,19 +58,42 @@ export function LeaderboardPanel({
   const own = state.filters[dim.ref];
   const selectedValues = own?.mode === "include" ? own.values : undefined;
 
+  const dimAlias = aliasOf(dim.ref);
   const wantsDelta = contextColumn === "delta" || contextColumn === "deltaPct";
-  // A second ranked query over the comparison window, joined to the rows by dimension value below.
-  // Only issued when a delta column is active AND there's a comparison window to compare against.
+  // Constrain the comparison-period query to EXACTLY the current leaderboard's dimension values.
+  // Ranking the prior period independently (top N) would miss any current row that wasn't also in
+  // the prior top N, rendering a spurious em dash instead of its real prior value.
+  const currentValueConstraint = useMemo(() => {
+    if (!result || !result.columns.includes(dimAlias)) return null;
+    const nonNull: string[] = [];
+    let hasNull = false;
+    for (const row of result.rows) {
+      const raw = row[dimAlias];
+      if (raw === null || raw === undefined) hasNull = true;
+      else nonNull.push(String(raw));
+    }
+    const parts: string[] = [];
+    // Cast to text so the match works on numeric/boolean dimensions too.
+    if (nonNull.length) parts.push(`CAST(${dim.ref} AS VARCHAR) IN (${nonNull.map(sqlLiteral).join(", ")})`);
+    if (hasNull) parts.push(`${dim.ref} IS NULL`);
+    if (!parts.length) return null;
+    return parts.length === 1 ? parts[0] : `(${parts.join(" OR ")})`;
+  }, [result, dimAlias, dim.ref]);
+
+  // A second query over the comparison window, joined to the current rows by dimension value below.
+  // Only issued when a delta column is active, there's a comparison window, and we know the current
+  // value set to constrain to.
   const prevFilters = useMemo(
     () =>
-      wantsDelta && comparisonRange && timeRef
-        ? composeFilters(state.filters, { timeRef, range: comparisonRange, excludeDim: dim.ref, types })
+      wantsDelta && comparisonRange && timeRef && currentValueConstraint
+        ? [
+            ...composeFilters(state.filters, { timeRef, range: comparisonRange, excludeDim: dim.ref, types }),
+            currentValueConstraint,
+          ]
         : null,
-    [wantsDelta, comparisonRange, timeRef, state.filters, dim.ref, types],
+    [wantsDelta, comparisonRange, timeRef, state.filters, dim.ref, types, currentValueConstraint],
   );
   const prev = useQueryResult(backend, prevFilters ? dimensionLeaderboard(rankMetric.ref, dim.ref, prevFilters, limit) : null);
-
-  const dimAlias = aliasOf(dim.ref);
   const metricAlias = aliasOf(rankMetric.ref);
   // While a slow reload is in flight, useQueryResult keeps the *previous* result visible. If the
   // ranking metric just changed, those kept rows carry the old metric's columns — reading the new

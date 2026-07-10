@@ -140,7 +140,7 @@ class QueryRewriter:
                 if self._rust_no_fallback:
                     raise
 
-    def rewrite(self, sql: str, strict: bool = True) -> str:
+    def rewrite(self, sql: str, strict: bool = True, user_attributes: dict | None = None) -> str:
         """Rewrite user SQL to use semantic layer.
 
         Supports:
@@ -152,6 +152,10 @@ class QueryRewriter:
             sql: User SQL query
             strict: If True, raise errors for invalid SQL or non-SELECT queries.
                    If False, pass through queries that can't be rewritten.
+            user_attributes: Optional per-user security attributes threaded into the underlying
+                SQL generation so access gates / deny-by-default are evaluated against the caller.
+                The SQL-first path cannot inject row filters, so callers that require row-level
+                security must deny secured models with row filters before invoking the rewriter.
 
         Returns:
             Rewritten SQL using semantic layer
@@ -161,12 +165,19 @@ class QueryRewriter:
                        Only raised when strict=True
         """
         sql = sql.strip()
+        # Expose the attributes to the internal generate() calls for this rewrite.
+        self._rewrite_user_attributes = user_attributes
+        # Never serve a per-user rewrite from the shared cache (another user's access decision
+        # could be baked in); only cache the attribute-free case.
+        use_cache = user_attributes is None
         cache_key = (getattr(self.graph, "_version", 0), self.dialect, self.use_preaggregations, strict, sql)
-        cached = self._rewrite_cache.get(cache_key)
+        cached = self._rewrite_cache.get(cache_key) if use_cache else None
         if cached is not None:
             return cached
 
         def cache_result(result: str) -> str:
+            if not use_cache:
+                return result
             if len(self._rewrite_cache) >= self._rewrite_cache_limit:
                 self._rewrite_cache.pop(next(iter(self._rewrite_cache)))
             self._rewrite_cache[cache_key] = result
@@ -2919,6 +2930,7 @@ class QueryRewriter:
             offset=plan.offset,
             use_preaggregations=self.use_preaggregations,
             aliases=plan.aliases,
+            user_attributes=getattr(self, "_rewrite_user_attributes", None),
         )
 
     def _dedupe(self, values: list[str]) -> list[str]:
@@ -5763,6 +5775,7 @@ class QueryRewriter:
                 dimensions=dimensions,
                 filters=filters,
                 aliases=aliases,
+                user_attributes=getattr(self, "_rewrite_user_attributes", None),
             )
 
             projection_sql = ",\n  ".join(projection.sql(dialect=self.dialect) for projection in outer_projections)

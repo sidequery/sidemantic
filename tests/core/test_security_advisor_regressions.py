@@ -221,3 +221,93 @@ def test_visibility_blocks_non_public_segment():
     )
     with pytest.raises(SecurityError, match="internal"):
         layer.compile(metrics=["orders.cnt"], segments=["orders.internal"])
+
+
+def test_pg_server_refuses_user_attrs_map_without_auth():
+    """PR review P1: a user-attrs map without password auth lets clients spoof usernames."""
+    import pytest as _pytest
+
+    _pytest.importorskip("riffq")
+    from sidemantic.server.server import start_server
+
+    layer = SemanticLayer()
+    layer.add_model(Model(name="orders", table="orders", primary_key="id", metrics=[Metric(name="cnt", agg="count")]))
+    with _pytest.raises(ValueError, match="requires authentication"):
+        start_server(layer, user_attrs_map={"admin": {"role": "admin"}})
+
+
+def test_segment_only_secured_query_forces_python_and_enforces():
+    """PR review P1: a secured model referenced only via segments must not bypass enforcement."""
+    from sidemantic.core.segment import Segment
+
+    layer = SemanticLayer()
+    con = layer.adapter.conn
+    con.execute("CREATE TABLE orders (id INTEGER, region VARCHAR)")
+    con.execute("INSERT INTO orders VALUES (1,'US'),(2,'EU')")
+    layer.add_model(
+        Model(
+            name="orders",
+            table="orders",
+            primary_key="id",
+            dimensions=[Dimension(name="region", type="categorical")],
+            metrics=[Metric(name="cnt", agg="count")],
+            segments=[Segment(name="us_only", sql="region = 'US'")],
+            security=SecurityPolicy(row_filters=["region = '{{ user.region }}'"]),
+        )
+    )
+    # touches-secured must see the model via the segment reference.
+    assert layer._query_touches_secured_model(["orders.cnt"], None, None, ["orders.us_only"]) is True
+    # deny-by-default still fires for a segment-only query with no attributes.
+    with pytest.raises(SecurityError):
+        layer.compile(metrics=["orders.cnt"], segments=["orders.us_only"])
+
+
+def test_row_filter_subquery_scopes_correctly():
+    """PR review P2: a row filter with a subquery keeps the inner columns unqualified."""
+    layer = SemanticLayer()
+    con = layer.adapter.conn
+    con.execute("CREATE TABLE t (id INTEGER, v INTEGER); CREATE TABLE allowed (id INTEGER)")
+    con.execute("INSERT INTO t VALUES (1,10),(2,20),(3,30); INSERT INTO allowed VALUES (1),(3)")
+    layer.add_model(
+        Model(
+            name="t",
+            table="t",
+            primary_key="id",
+            dimensions=[Dimension(name="id", type="numeric")],
+            metrics=[Metric(name="tot", agg="sum", sql="v")],
+            security=SecurityPolicy(row_filters=["id IN (SELECT id FROM allowed)"]),
+        )
+    )
+    assert layer.query(metrics=["t.tot"], user_attributes={}).fetchall() == [(40,)]
+
+
+def test_rewriter_threads_user_attributes():
+    """PR review P2: SQL-first rewrite evaluates the access gate against the caller's attributes."""
+    from sidemantic.sql.query_rewriter import QueryRewriter
+
+    layer = SemanticLayer()
+    con = layer.adapter.conn
+    con.execute("CREATE TABLE orders (id INTEGER, amount INTEGER)")
+    con.execute("INSERT INTO orders VALUES (1,10),(2,20)")
+    layer.add_model(
+        Model(
+            name="orders",
+            table="orders",
+            primary_key="id",
+            metrics=[Metric(name="total", agg="sum", sql="amount")],
+            security=SecurityPolicy(access="user.role == 'analyst'"),
+        )
+    )
+    # No attributes -> deny-by-default even on the SQL-first path.
+    with pytest.raises(SecurityError):
+        QueryRewriter(layer.graph, dialect=layer.dialect).rewrite("SELECT total FROM orders", strict=False)
+    # Authorized attributes -> access-only model rewrites fine.
+    sql = QueryRewriter(layer.graph, dialect=layer.dialect).rewrite(
+        "SELECT total FROM orders", strict=False, user_attributes={"role": "analyst"}
+    )
+    assert "orders" in sql
+    # Unauthorized -> denied by the access gate.
+    with pytest.raises(SecurityError):
+        QueryRewriter(layer.graph, dialect=layer.dialect).rewrite(
+            "SELECT total FROM orders", strict=False, user_attributes={"role": "guest"}
+        )

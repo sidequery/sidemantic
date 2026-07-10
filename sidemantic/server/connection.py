@@ -103,19 +103,18 @@ class SemanticLayerConnection(riffq.BaseConnection):
                 if handled:
                     return
 
+            # Enforce the coarse-grained access gate BEFORE rewriting. The raw SQL already
+            # names the semantic models, so we can deny deny-by-default (no attributes), a
+            # failing access gate, and any secured model with row_filters (which this SQL-first
+            # path cannot inject) here, before the rewriter's generator runs. Doing it first also
+            # lets an authorized user through: we then thread the attributes into the rewrite so
+            # the generator's deny-by-default does not re-reject an access-only secured model.
+            self._enforce_pg_access(sql, user_attributes)
+
             # Execute through semantic layer
             rewriter = QueryRewriter(self.layer.graph, dialect=self.layer.dialect)
             # Use non-strict mode to pass through system queries (SHOW, SET, etc.)
-            rendered_sql = rewriter.rewrite(sql, strict=False)
-
-            # LIMITATION: QueryRewriter does not accept user_attributes, so the
-            # SQL-first PG path cannot bake row-level filters into rendered_sql
-            # today. Enforce the coarse-grained access gate here regardless of
-            # whether a user-attrs map is configured: a query touching a secured
-            # model with no attributes is denied (deny-by-default), matching
-            # SemanticLayer.compile(). Fine-grained row filtering over the PG wire
-            # path is deferred to a future rewriter security hook.
-            self._enforce_pg_access(rendered_sql, user_attributes)
+            rendered_sql = rewriter.rewrite(sql, strict=False, user_attributes=user_attributes)
 
             # Execute the query
             result = cursor.execute(rendered_sql)

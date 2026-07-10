@@ -927,7 +927,7 @@ class SemanticLayer:
         # The Rust SQL generator does not enforce security policies, so any query touching a
         # model with a security policy (row filters or an access gate) must use the Python path.
         security_forces_python = user_attributes is not None or self._query_touches_secured_model(
-            metrics, dimensions, filters
+            metrics, dimensions, filters, segments
         )
 
         inner_sql = None
@@ -1059,14 +1059,19 @@ class SemanticLayer:
         metrics: list[str] | None,
         dimensions: list[str] | None,
         filters: list[str] | None,
+        segments: list[str] | None = None,
     ) -> set[str]:
         """Resolve the full participating-model set (base + joined + intermediate) for a query.
 
         Delegates to the SQLGenerator so this set matches exactly what the generator's
-        ``_enforce_security`` iterates over.
+        ``_enforce_security`` iterates over. Segments are named filters on a model, so a
+        ``model.segment`` reference also makes that model participate.
         """
         generator = SQLGenerator(self.graph, dialect=self.dialect)
-        model_names = generator._find_required_models(metrics or [], dimensions or [], filters or [])
+        model_names = list(generator._find_required_models(metrics or [], dimensions or [], filters or []))
+        for segment_ref in segments or []:
+            if "." in segment_ref:
+                model_names.append(segment_ref.split(".", 1)[0])
         if not model_names:
             return set()
         return generator._participating_models(model_names)
@@ -1076,9 +1081,10 @@ class SemanticLayer:
         metrics: list[str] | None,
         dimensions: list[str] | None,
         filters: list[str] | None,
+        segments: list[str] | None = None,
     ) -> bool:
         """Whether any participating model declares a security policy."""
-        for model_name in self._security_participating_models(metrics, dimensions, filters):
+        for model_name in self._security_participating_models(metrics, dimensions, filters, segments):
             model = self.graph.models.get(model_name)
             if model is not None and model.security is not None:
                 return True

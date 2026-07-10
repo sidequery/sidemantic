@@ -58,6 +58,15 @@ def start_server(
     if (username is None) != (password is None):
         raise ValueError("Both username and password must be provided together")
 
+    # A user-attrs map selects each session's security attributes from the CLIENT-SUPPLIED
+    # startup username. Without password authentication, a client could connect as any key in
+    # the map (e.g. an admin) and satisfy access gates, so refuse to start in that configuration.
+    if user_attrs_map and username is None:
+        raise ValueError(
+            "A user-attrs map requires authentication: pass --username/--password so the "
+            "connecting username cannot be spoofed to select another user's security attributes."
+        )
+
     # Create connection class with layer injected
     class BoundConnection(SemanticLayerConnection):
         def __init__(self, connection_id, executor):

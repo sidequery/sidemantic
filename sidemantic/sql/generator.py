@@ -910,11 +910,21 @@ class SQLGenerator:
                     raise SecurityError(
                         f"Row filter for model '{model_name}' failed to parse as SQL: {rendered!r}"
                     ) from exc
-                # Qualify unqualified columns with the model name so the filter is pushed into
-                # this model's CTE rather than the outer (post-join) WHERE.
-                for column in parsed.find_all(exp.Column):
-                    if not column.table:
-                        column.set("table", model_name)
+
+                # Qualify unqualified OUTER columns with the model name so the filter is pushed
+                # into this model's CTE rather than the outer (post-join) WHERE. Do NOT descend
+                # into subqueries: a filter like `id IN (SELECT id FROM allowed)` must leave the
+                # inner `id` bound to the subquery, not rewritten to `model.id`.
+                def _qualify_outer(node: exp.Expression) -> None:
+                    if isinstance(node, exp.Subquery):
+                        return
+                    if isinstance(node, exp.Column) and not node.table:
+                        node.set("table", model_name)
+                    for arg in node.args.values():
+                        if isinstance(arg, exp.Expression):
+                            _qualify_outer(arg)
+
+                _qualify_outer(parsed)
                 rendered_filters.append(parsed.sql(dialect=self.dialect))
 
             if rendered_filters:

@@ -4830,6 +4830,59 @@ def test_lookml_collision_time_dim_multiword_timeframe_suffix_recovered():
         assert grains == {"started_date": "day", "started_time_of_day": "hour"}
 
 
+def test_lookml_collision_time_of_day_recovers_timeframe_meta_and_survives_sibling_drop():
+    """A collision-exported `time_of_day` standalone must recover its timeframe into meta.
+
+    time_of_day has no finer SQL form -- its collision export is a PLAIN hour DATE_TRUNC named
+    `*_time_of_day`. On import the recovery guard must still store `lookml_timeframe=time_of_day`
+    (it was wrongly grouped with the exact-form minute-bucket / sub-second timeframes and dropped).
+    Without the meta, a later export WITHOUT a colliding sibling loses the timeframe and renames the
+    field to `*_hour`. This differs from the multiword test above, where the collision itself masks
+    the loss via name preservation.
+    """
+    import re
+    import tempfile
+
+    from sidemantic import Dimension, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    adapter = LookMLAdapter()
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="ev",
+            table="t",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(
+                    name="started", type="time", granularity="hour", sql="a", meta={"lookml_timeframe": "time_of_day"}
+                ),
+                Dimension(name="started_time_of_day", type="time", granularity="hour", sql="b"),
+            ],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    adapter.export(graph, out)
+    reimported = adapter.parse(Path(out)).get_model("ev")
+    tf = {d.name: (d.meta or {}).get("lookml_timeframe") for d in reimported.dimensions}
+    assert tf.get("started_time_of_day") == "time_of_day", tf  # recovered, not dropped
+
+    # Drop the colliding sibling so the time_of_day field exports ALONE: it must keep its name,
+    # NOT fall back to the hour timeframe and rename to started_hour.
+    reimported.dimensions = [d for d in reimported.dimensions if d.name != "started_hour"]
+    solo = SemanticGraph()
+    solo.add_model(reimported)
+    out2 = tempfile.mktemp(suffix=".lkml")
+    adapter.export(solo, out2)
+    text2 = open(out2).read()
+    names = re.findall(r"\n  dimension: (\w+) \{", text2)
+    for base, tfs in re.findall(r"dimension_group: (\w+) \{[^}]*?timeframes:\s*\[([^\]]*)\]", text2, re.S):
+        names += [f"{base}_{x.strip()}" for x in tfs.split(",")]
+    assert "started_time_of_day" in names, names
+    assert "started_hour" not in names, names  # no bogus rename
+
+
 def test_lookml_same_prefix_time_dims_roundtrip_names_and_grains_losslessly():
     """Collision time dims must round-trip with EXACT names AND granularities.
 

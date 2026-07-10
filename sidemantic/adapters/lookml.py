@@ -2244,13 +2244,14 @@ class LookMLAdapter(BaseAdapter):
                     if matched_tf:
                         sidemantic_type = "time"
                         granularity = grain
-                        # Only STORE the timeframe when it's an EXACT one-to-one match for the
-                        # grain. An INEXACT suffix (minute15/30, sub-second, time_of_day) on a
-                        # PLAIN DATE_TRUNC does NOT preserve that timeframe's semantics (the
-                        # explicit bucket/subsecond forms, handled above, do) -- recording it
-                        # would make the next export WIDEN a 1-minute dim into a 15-min bucket.
-                        # Recover as a plain grain time dim (no inexact meta) instead.
-                        if matched_tf not in self._INEXACT_NAME_TF:
+                        # STORE the timeframe unless it is one whose exact semantics live in a
+                        # special SQL form (minute15/30 bucket, sub-second DATE_TRUNC) that a PLAIN
+                        # DATE_TRUNC has already lost -- recording those would make the next export
+                        # WIDEN a 1-minute dim into a 15-min bucket. `time_of_day` is NOT in that
+                        # set: its canonical export IS this plain hour DATE_TRUNC named
+                        # `*_time_of_day`, so it is recoverable only by name -- record it, else the
+                        # next export loses the timeframe and renames the field to `*_hour`.
+                        if matched_tf not in self._EXACT_FORM_TF:
                             recovered_timeframe = matched_tf
 
         # Build meta dict from LookML-specific display properties
@@ -3989,6 +3990,13 @@ class LookMLAdapter(BaseAdapter):
     # data, not 15-minute buckets, so emitting `[minute15]` would silently re-bucket. They only
     # round-trip when preserved in meta['lookml_timeframe'] (the import path).
     _INEXACT_NAME_TF = frozenset(_MINUTE_BUCKET_TF) | _SUBSECOND_TF | {"time_of_day"}
+    # Inexact timeframes whose exact semantics live in a SPECIAL SQL FORM (15/30-min bucket
+    # expression, sub-second DATE_TRUNC unit). If one reaches import recovery as a PLAIN
+    # DATE_TRUNC, that exact form was lost, so its name suffix must NOT be recorded (recording
+    # `minute15` on a plain minute DATE_TRUNC would re-bucket 1-minute data). `time_of_day` is
+    # deliberately EXCLUDED: it has no finer SQL form -- its canonical collision export IS a plain
+    # hour DATE_TRUNC named `*_time_of_day`, so it is recoverable (and only recoverable) by name.
+    _EXACT_FORM_TF = frozenset(_MINUTE_BUCKET_TF) | _SUBSECOND_TF
     # Canonical EXACT LookML timeframe for each sidemantic grain (inverse of the common
     # cases in _TIME_GRANULARITY_TIMEFRAMES). Used to give a suffixless collision time dim
     # a recoverable name on export (e.g. `started` at hour grain -> `started_hour`).

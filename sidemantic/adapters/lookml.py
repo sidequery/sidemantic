@@ -219,12 +219,29 @@ class LookMLAdapter(BaseAdapter):
         for model_name, model in graph.models.items():
             if model.table is not None or model.sql is not None:
                 continue
+            is_template = False
             if model_name in abstract_views:
                 model.meta = {**(model.meta or {}), "extension_required": True, "lookml_template": True}
+                is_template = True
             elif _extends_chain_has(model_name, unsupported_dt_views) or (model.meta or {}).get(
                 "unsupported_derived_table"
             ):
                 model.meta = {**(model.meta or {}), "unsupported_derived_table": True, "lookml_template": True}
+                is_template = True
+            if is_template:
+                # Stamp this template's GRAPH-LEVEL measures (time_comparison/conversion, which
+                # add_model auto-registers into graph.metrics) with a parser-owned provenance
+                # marker. The loader drops orphaned graph metrics by this marker -- proving they
+                # came from a dropped template -- instead of guessing from the base ref, so a
+                # same-named standalone metric from another file (no marker) is never dropped.
+                # Mark BOTH the model's (possibly refinement-reconstructed) metric AND the graph-
+                # registered object (auto-registered pre-refinement, so a different instance).
+                for mt in model.metrics or []:
+                    if mt.type in ("time_comparison", "conversion"):
+                        mt.meta = {**(mt.meta or {}), "_lookml_template_metric": True}
+                        gm = graph.metrics.get(mt.name)
+                        if gm is not None:
+                            gm.meta = {**(gm.meta or {}), "_lookml_template_metric": True}
 
         # Rebuild adjacency graph now that relationships have been added
         graph.build_adjacency()
@@ -2089,10 +2106,13 @@ class LookMLAdapter(BaseAdapter):
         # A LookML view with no sql_table_name/derived_table implicitly uses a table
         # named after the view (Looker's default). A view with a derived_table the
         # adapter cannot turn into SQL must NOT get such a default; mark it so the
-        # post-merge pass skips it (the raw derived_table dict is not retained).
+        # post-merge pass skips it, and RETAIN the raw derived_table dict so export can
+        # re-emit it -- a derived_table with no `sql` keeps the view unsupported on
+        # re-import instead of being defaulted to a physical table named after the view.
         unsupported_derived_table = bool(view_def.get("derived_table")) and sql is None
         if unsupported_derived_table:
             model_meta["unsupported_derived_table"] = True
+            model_meta["_unsupported_derived_table_raw"] = view_def["derived_table"]
 
         # Build kwargs conditionally so that unset scalars don't appear in
         # model_fields_set. This matters for refinements: merge_model treats
@@ -4097,10 +4117,25 @@ class LookMLAdapter(BaseAdapter):
         """
         view = {"name": model.name}
 
+        # Re-emit `extension: required` for an abstract (tableless) base so a round-trip keeps
+        # it non-queryable; otherwise it re-imports as an ordinary tableless view and the
+        # implicit-table default assigns it a physical table named after the view. Only for a
+        # genuinely TABLELESS view: a concrete child INHERITS `extension_required` in meta via
+        # inheritance but has its own table, so emitting the marker would wrongly make the
+        # usable child abstract on round-trip.
+        if (model.meta or {}).get("extension_required") and not model.table and not model.sql:
+            view["extension"] = "required"
+
         if model.sql:
             view["derived_table"] = {"sql": model.sql}
         elif model.table:
             view["sql_table_name"] = model.table
+        elif (model.meta or {}).get("unsupported_derived_table"):
+            # Re-emit the unsupported derived_table (no `sql`) so re-import keeps it marked
+            # unsupported instead of defaulting it to a physical table. Prefer the retained
+            # raw dict; fall back to a minimal non-sql marker.
+            raw = (model.meta or {}).get("_unsupported_derived_table_raw")
+            view["derived_table"] = raw if isinstance(raw, dict) and raw else {"sql_trigger_value": "select 1"}
 
         if model.description:
             view["description"] = model.description

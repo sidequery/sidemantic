@@ -5088,6 +5088,63 @@ def test_lookml_broken_tableless_view_surfaces_error_inside_layer_context():
             LookMLAdapter().parse(path)
 
 
+def test_lookml_export_unsupported_derived_table_stays_tableless_on_reimport():
+    """An unsupported derived_table must round-trip as tableless, not gain a physical table.
+
+    _export_view re-emits the (retained) derived_table with no `sql`, so re-import keeps it
+    marked unsupported instead of the implicit-table default assigning `table = <view name>`.
+    """
+    import tempfile
+
+    d = tempfile.mkdtemp()
+    with open(Path(d) / "v.lkml", "w") as f:
+        f.write(
+            'view: pdt { derived_table: { sql_trigger_value: "SELECT max(id) FROM orders" ;;  persist_for: "24 hours" } '
+            "  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; } }"
+        )
+    graph = LookMLAdapter().parse(Path(d))
+    assert graph.get_model("pdt").table is None
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    text = open(out).read()
+    assert "derived_table" in text and "sql_trigger_value" in text
+    reimported = LookMLAdapter().parse(Path(out))
+    m = reimported.get_model("pdt")
+    assert m.table is None  # stays tableless, not defaulted to 'pdt'
+    assert (m.meta or {}).get("unsupported_derived_table")
+
+
+def test_lookml_export_abstract_view_stays_tableless_on_reimport():
+    """An abstract (extension: required) base must round-trip as tableless, not gain a table.
+
+    _export_view must re-emit `extension: required` so the re-imported base stays non-queryable
+    instead of the implicit-table default assigning it a physical table named after the view.
+    """
+    import tempfile
+
+    d = tempfile.mkdtemp()
+    with open(Path(d) / "v.lkml", "w") as f:
+        f.write(
+            "view: base { extension: required "
+            "  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; } "
+            "  dimension: x { type: number  sql: ${TABLE}.x ;; } } "
+            "view: orders { extends: [base]  dimension: y { type: number  sql: ${TABLE}.y ;; } }"
+        )
+    graph = LookMLAdapter().parse(Path(d))
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    text = open(out).read()
+    import re
+
+    assert "extension: required" in re.search(r"view: base \{.*?\n\}", text, re.S).group(0)  # base abstract
+    # The concrete child INHERITS extension_required in meta but has its own table; it must NOT
+    # re-emit the marker (that would make the usable child abstract on round-trip).
+    assert "extension: required" not in re.search(r"view: orders \{.*?\n\}", text, re.S).group(0)
+    reimported = LookMLAdapter().parse(Path(out))
+    assert reimported.get_model("base").table is None  # base stays tableless, not defaulted
+    assert reimported.get_model("orders").table == "orders"  # child stays usable
+
+
 def test_lookml_abstract_base_does_not_break_directory_load():
     """The CLI path (load_from_directory) must skip the abstract base, not abort the project."""
     import tempfile
@@ -5109,43 +5166,43 @@ def test_lookml_abstract_base_does_not_break_directory_load():
     assert layer.graph.get_model("orders").table == "orders"
 
 
-def test_lookml_drop_metrics_uses_base_resolution_not_identity_or_name():
-    """Orphan-metric drop keys off whether the BASE resolves to a surviving model.
+def test_lookml_drop_metrics_uses_provenance_marker_not_base_ref():
+    """Orphan-metric drop keys off the parser-owned `_lookml_template_metric` PROVENANCE marker.
 
-    NOT object identity (a refinement reconstructs the Metric object) and NOT bare name (a
-    same-named standalone from another file must survive). The orphan is the one whose base
-    measure lives only on dropped models.
+    A metric the LookML parser stamped as coming from a template is dropped; a same-named
+    STANDALONE metric from another file (no marker) is preserved -- regardless of whether the
+    base ref is qualified or unqualified, and regardless of object identity (refinements
+    reconstruct the object but the marker is re-stamped on the graph-registered instance).
     """
     from sidemantic import Metric, Model
     from sidemantic.loaders import _drop_non_registerable_models
 
-    def pop(bm):
+    def pop(bm, template_metric=False):
+        meta = {"_lookml_template_metric": True} if template_metric else None
         return Metric(
-            name="pop", type="time_comparison", base_metric=bm, comparison_type="yoy", calculation="difference"
+            name="pop",
+            type="time_comparison",
+            base_metric=bm,
+            comparison_type="yoy",
+            calculation="difference",
+            meta=meta,
         )
 
-    template = Model(name="base", meta={"lookml_template": True}, metrics=[pop("total")])
-    orders = Model(name="orders", table="orders")
+    template = Model(name="base", meta={"lookml_template": True})
+    orders = Model(name="orders", table="orders", metrics=[Metric(name="total", agg="sum", sql="amt")])
 
-    # A standalone `pop` over a SURVIVING model's measure (qualified ref) must be preserved.
-    standalone = pop("orders.total")
+    # A standalone `pop` (NO provenance marker) is preserved, even with an UNqualified base that
+    # matches a surviving model's `total` -- and even qualified.
+    standalone = pop("total")
     metrics = {"pop": standalone}
     _drop_non_registerable_models({"base": template, "orders": orders}, metrics)
     assert metrics.get("pop") is standalone
 
-    # A refinement reconstructs the template's `pop` (DIFFERENT object than template.metrics[0]),
-    # base `total` resolves to no surviving model -> orphan, must be dropped (identity would miss it).
-    metrics2 = {"pop": pop("total")}
+    # A template's `pop` (marked) is dropped -- unqualified base, same-named surviving `total`
+    # present: the marker (not the base ref) decides.
+    metrics2 = {"pop": pop("total", template_metric=True)}
     _drop_non_registerable_models({"base": template, "orders": orders}, metrics2)
     assert "pop" not in metrics2
-
-    # Even when a SURVIVING model has a same-named `total` measure, the template's `pop` (whose
-    # base `total` is UNQUALIFIED -- pointing at the template's own measure) is still an orphan;
-    # a bare base name existing somewhere must not save it.
-    orders_with_total = Model(name="orders", table="orders", metrics=[Metric(name="total", agg="sum", sql="amt")])
-    metrics3 = {"pop": pop("total")}
-    _drop_non_registerable_models({"base": template, "orders": orders_with_total}, metrics3)
-    assert "pop" not in metrics3
 
 
 def test_lookml_dropped_template_metric_dropped_despite_samename_local_measure():

@@ -56,36 +56,13 @@ def _drop_non_registerable_models(all_models: dict, all_metrics: dict | None = N
     if all_metrics is not None and dropped:
         # add_model auto-registers a model's GRAPH-LEVEL measures (time_comparison/conversion)
         # into the graph; a dropped template's such measure would linger in all_metrics with
-        # its base model gone. Decide orphan-ness by whether the metric's BASE reference proves
-        # it belongs to a surviving source -- NOT object identity (a refinement reconstructs the
-        # Metric object) and NOT a bare base NAME merely existing somewhere. Only a QUALIFIED
-        # ref to a surviving model (e.g. a standalone `${orders.total}`) proves the metric is
-        # legitimate; a template's measure references its base UNqualified (`total`, a measure
-        # on the template itself), so an unqualified base -- even if a surviving model happens
-        # to also have a `total` -- does not save it. Such candidates are dropped as orphans.
-        _ref_fields = ("base_metric", "numerator", "denominator", "base_event", "conversion_event")
-
-        def _resolves_to_surviving(metric) -> bool:
-            for f in _ref_fields:
-                ref = getattr(metric, f, None)
-                if isinstance(ref, str) and "." in ref and ref.split(".", 1)[0] in kept:
-                    return True  # qualified ref to a surviving model
-            return False
-
-        # Names of graph-level measures contributed by dropped templates (orphan candidates).
-        candidates = {
-            mm.name
-            for name in dropped
-            for mm in (getattr(all_models[name], "metrics", None) or [])
-            if mm.type in ("time_comparison", "conversion")
-        }
-        for mn in candidates:
-            m = all_metrics.get(mn)
-            if (
-                m is not None
-                and getattr(m, "type", None) in ("time_comparison", "conversion")
-                and not _resolves_to_surviving(m)
-            ):
+        # its base model gone. Drop by PROVENANCE: the LookML parser stamps a template's graph
+        # measures with `_lookml_template_metric` (surviving even when a refinement reconstructs
+        # the Metric object). That proves the metric came from a dropped template -- unlike a
+        # base-ref heuristic, it never drops a same-named STANDALONE metric from another file
+        # (no marker) nor mistakes an unqualified base that merely exists on a surviving model.
+        for mn in list(all_metrics):
+            if (all_metrics[mn].meta or {}).get("_lookml_template_metric"):
                 all_metrics.pop(mn, None)
     return kept
 

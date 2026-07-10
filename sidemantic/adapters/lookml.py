@@ -622,6 +622,35 @@ class LookMLAdapter(BaseAdapter):
                 # AND them (De Morgan), e.g. "NOT >1, [0,10]" -> (<=1 AND (<0 OR >10)).
                 negated = [negate(p) for p in neg_parts]
                 if neg_parts and all(n is not None for n in negated):
+                    # A self-contradictory all-negated numeric list (e.g. "NOT >1, 2, <100" ->
+                    # <=1 AND >=100, which no value satisfies) is documented by Looker to select
+                    # NULLs instead: it writes `IS NULL`. Detect an EMPTY numeric intersection
+                    # across the simple comparison clauses and emit that, else the always-false
+                    # AND also excludes NULLs and undercounts. Skip when any clause is a
+                    # disjunction (a negated range's `< a OR > b`) -- those need interval-union
+                    # logic; keep the AND-join for them.
+                    if all(" OR " not in n for n in negated):
+                        lo = hi = None  # each: (value, inclusive?)
+                        simple = True
+                        for n in negated:
+                            cm = re.match(rf"^{re.escape(col)}\s+(<=|>=|<|>|!=|<>)\s+(.+)$", n)
+                            if not cm or not is_number(cm.group(2)):
+                                simple = False
+                                break
+                            nop, nval = cm.group(1), float(cm.group(2))
+                            if nop in (">=", ">"):
+                                incl = nop == ">="
+                                if lo is None or nval > lo[0] or (nval == lo[0] and not incl):
+                                    lo = (nval, incl)
+                            elif nop in ("<=", "<"):
+                                incl = nop == "<="
+                                if hi is None or nval < hi[0] or (nval == hi[0] and not incl):
+                                    hi = (nval, incl)
+                            # `!= x` excludes a point but does not bound the interval.
+                        if simple and lo is not None and hi is not None:
+                            empty = lo[0] > hi[0] or (lo[0] == hi[0] and not (lo[1] and hi[1]))
+                            if empty:
+                                return f"{col} IS NULL"
                     return "(" + " AND ".join(negated) + ")"
 
             if parts and all(is_plain(p) for p in parts):

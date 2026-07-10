@@ -2141,8 +2141,17 @@ def test_lookml_filter_grammar_conversion():
     assert conv("f", "[0,30], NOT 20") == f"(({f} >= 0 AND {f} <= 30) AND {f} != 20)"
     # NOT of a range -> the inverted (outside) condition
     assert conv("f", "NOT 3 to 80.44") == f"({f} < 3 OR {f} > 80.44)"
-    # Leading NOT over a comparison list negates each clause (De Morgan)
-    assert conv("f", "NOT >1, 2, <100") == f"({f} <= 1 AND {f} != 2 AND {f} >= 100)"
+    # Leading NOT over a SATISFIABLE comparison list negates each clause (De Morgan).
+    assert conv("f", "NOT >100, 2, <1") == f"({f} <= 100 AND {f} != 2 AND {f} >= 1)"
+    # An IMPOSSIBLE all-negated numeric list (<=1 AND >=100 -> no value) is documented by Looker
+    # to select NULLs: emit `IS NULL`, not an always-false AND that also drops NULL rows.
+    assert conv("f", "NOT >1, 2, <100") == f"{f} IS NULL"
+    assert conv("f", "NOT >=5, <5") == f"{f} IS NULL"  # <5 AND >=5 is empty
+    # A single-point intersection (<=5 AND >=5) is still satisfiable -> keep the AND.
+    assert conv("f", "NOT >5, <5") == f"({f} <= 5 AND {f} >= 5)"
+    # An impossible list that ALSO contains a negated range (OR clause) keeps the AND-join
+    # (interval-union impossibility is not evaluated).
+    assert conv("f", "NOT >1, <100, [0,10]") == f"({f} <= 1 AND {f} >= 100 AND ({f} < 0 OR {f} > 10))"
     # Single NOT comparison flips the operator; NOT of an interval inverts it
     assert conv("f", "NOT >1") == f"{f} <= 1"
     assert conv("f", "NOT (3,12)") == f"({f} <= 3 OR {f} >= 12)"

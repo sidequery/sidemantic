@@ -2983,22 +2983,44 @@ class LookMLAdapter(BaseAdapter):
         ref_re = re.compile(pattern)
 
         def _resolve(fstr: str) -> str:
-            def _one(m):
-                # The bare-dimension alternative (group 2) only exists when names_alt is
-                # non-empty; with no declared dimensions the pattern has a single group, so
-                # read group 2 defensively (m.group(2) would raise IndexError otherwise).
-                bare = m.group(2) if m.re.groups >= 2 else None
-                if bare is not None:
-                    # Bare dimension-name alternative: skip when it sits in a SQL TYPE context
-                    # (a cast target), not a column operand -- e.g. CAST(x AS date) or x::date
-                    # with a `date` dimension. Rewriting the type token to a column would emit
-                    # invalid SQL like CAST(x AS (${TABLE}.order_date)). (Typed literals like
-                    # `date '2024-01-01'` are protected earlier, in the split below.)
-                    pre = m.string[: m.start()]
-                    if re.search(r"(?is)\bAS\s+$", pre) or pre.rstrip().endswith("::"):
-                        return m.group(0)
-                name = m.group(1) or bare
-                return _qualify(dim_sql.get(name, name))
+            def _make_one(base: int):
+                # `base` is this segment's absolute offset into fstr, so context checks can look
+                # at the FULL predicate -- not just the current split segment. A quoted number
+                # (`INTERVAL '7' day`) splits `day` into its own segment, so a segment-local `pre`
+                # would miss the leading INTERVAL and wrongly rewrite the unit keyword.
+                def _one(m):
+                    # The bare-dimension alternative (group 2) only exists when names_alt is
+                    # non-empty; with no declared dimensions the pattern has a single group, so
+                    # read group 2 defensively (m.group(2) would raise IndexError otherwise).
+                    bare = m.group(2) if m.re.groups >= 2 else None
+                    if bare is not None:
+                        # Bare dimension-name alternative: skip when it sits in a SQL TYPE context
+                        # (a cast target), not a column operand -- e.g. CAST(x AS date) or x::date
+                        # with a `date` dimension. Rewriting the type token to a column would emit
+                        # invalid SQL like CAST(x AS (${TABLE}.order_date)). (Typed literals like
+                        # `date '2024-01-01'` are protected earlier, in the split below.)
+                        pre = fstr[: base + m.start()]
+                        if re.search(r"(?is)\bAS\s+$", pre) or pre.rstrip().endswith("::"):
+                            return m.group(0)
+                        # Skip a bare token in a DATE-PART / INTERVAL-UNIT keyword position, not a
+                        # column operand -- e.g. EXTRACT(day FROM ...) or `INTERVAL 7 day` on a
+                        # model with a `day` dimension. Rewriting the keyword to the dimension SQL
+                        # emits invalid SQL like EXTRACT((${TABLE}.order_day) FROM ...). Positions:
+                        # right after EXTRACT(, immediately before an extract's FROM, or as the unit
+                        # following an INTERVAL <number|'literal'>. (Quoted forms like
+                        # DATE_TRUNC('day', ...) and INTERVAL '7 day' are already protected as
+                        # string literals.)
+                        suf = fstr[base + m.end() :]
+                        if (
+                            re.search(r"(?i)\bextract\s*\(\s*$", pre)
+                            or re.match(r"(?is)\s+from\b", suf)
+                            or re.search(r"(?i)\binterval\s+(?:[+-]?\d+(?:\.\d+)?|'(?:[^']|'')*')\s*$", pre)
+                        ):
+                            return m.group(0)
+                    name = m.group(1) or bare
+                    return _qualify(dim_sql.get(name, name))
+
+                return _one
 
             # Split out (and thus protect from rewriting) SQL TYPED LITERALS whose type keyword
             # equals a dimension name (`date '2024-01-01'`, `timestamp '...'`, `interval '...'`)
@@ -3014,8 +3036,11 @@ class LookMLAdapter(BaseAdapter):
                 r"""|'(?:[^']|'')*'|"(?:[^"]|"")*"|`[^`]*`|\[[^\]]*\]|\{\{.*?\}\}|\{%.*?%\})""",
                 fstr,
             )
-            for i in range(0, len(parts), 2):
-                parts[i] = ref_re.sub(_one, parts[i])
+            offset = 0
+            for i, part in enumerate(parts):
+                if i % 2 == 0:
+                    parts[i] = ref_re.sub(_make_one(offset), part)
+                offset += len(part)
             return "".join(parts)
 
         return " AND ".join("(" + _resolve(f).replace("{model}", "${TABLE}") + ")" for f in filters)
@@ -3362,12 +3387,17 @@ class LookMLAdapter(BaseAdapter):
                         # folded into the aggregate; if the expression isn't a single
                         # foldable FUNC(arg), skip rather than emit a silently-unfiltered
                         # measure.
-                        if not metric.filters and re.fullmatch(r"(?i)count\s*\(\s*(?:\*|\d+)\s*\)", col_sql.strip()):
-                            # A bare row count -- COUNT(*), COUNT(1), COUNT(0), incl. spaced
-                            # COUNT (*) -- references
-                            # no column; a type: number would re-import as a derived metric
-                            # over an empty CTE (SELECT FROM ...), which the compiler rejects.
-                            # LookML's native type: count counts rows and round-trips cleanly.
+                        # A COUNT over any NON-NULL constant counts every row -- it is a native
+                        # row count, identical to type: count: `*`, an int/decimal (1, 0, 1.0,
+                        # .5), a boolean (TRUE/FALSE), or a string literal ('x'). COUNT(NULL) is
+                        # deliberately excluded -- it is always 0, not a row count.
+                        _count_const = r"\*|[+-]?(?:\d+\.?\d*|\.\d+)|true|false|'(?:[^']|'')*'"
+                        if not metric.filters and re.fullmatch(
+                            rf"(?i)count\s*\(\s*(?:{_count_const})\s*\)", col_sql.strip()
+                        ):
+                            # These reference no column; a type: number would re-import as a
+                            # derived metric over an empty CTE (SELECT FROM ...), which the
+                            # compiler rejects. Native type: count round-trips cleanly.
                             measure_def["type"] = "count"
                         else:
                             measure_def["type"] = "number"

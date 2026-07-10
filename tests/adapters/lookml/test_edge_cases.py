@@ -4650,6 +4650,41 @@ def test_lookml_export_folded_filter_does_not_rewrite_cast_type():
     assert "AS (${TABLE}" not in text  # the cast type is NOT rewritten to a column
 
 
+def test_lookml_export_folded_filter_does_not_rewrite_date_part_keyword():
+    """A folded filter's date-part / interval-unit keyword equal to a dimension must not be rewritten.
+
+    With a `day` dimension, EXTRACT(day FROM ...) and INTERVAL 7 day contain the SQL keyword `day`
+    in a non-column position. Rewriting it to the dimension SQL emits invalid LookML such as
+    EXTRACT((${TABLE}.order_day) FROM ...); the keyword must be protected while genuine column uses
+    (and the extract SOURCE column) are still rewritten.
+    """
+    from sidemantic import Dimension, Model
+
+    model = Model(
+        name="orders",
+        table="raw_orders",
+        primary_key="id",
+        dimensions=[
+            Dimension(name="id", type="numeric", sql="id"),
+            Dimension(name="day", type="time", granularity="day", sql="order_day"),  # dim named 'day'
+            Dimension(name="created_at", type="time", granularity="day", sql="created_at"),
+        ],
+    )
+    conds = LookMLAdapter._fold_filter_conds
+    # EXTRACT part keyword protected; the FROM source column IS rewritten.
+    assert conds(["EXTRACT(day FROM created_at) = 1"], model) == "(EXTRACT(day FROM (${TABLE}.created_at)) = 1)"
+    # INTERVAL unit keyword protected -- both bare and quoted-number spellings.
+    assert conds(["created_at >= CURRENT_DATE - INTERVAL 7 day"], model) == (
+        "((${TABLE}.created_at) >= CURRENT_DATE - INTERVAL 7 day)"
+    )
+    assert conds(["created_at >= CURRENT_DATE - INTERVAL '7' day"], model) == (
+        "((${TABLE}.created_at) >= CURRENT_DATE - INTERVAL '7' day)"
+    )
+    # A genuine column use of the same name IS still rewritten (not over-protected).
+    assert conds(["day = '2024-01-01'"], model) == "((${TABLE}.order_day) = '2024-01-01')"
+    assert conds(["LOWER(day) = 'x'"], model) == "(LOWER((${TABLE}.order_day)) = 'x')"
+
+
 def test_lookml_export_scalar_wrapped_aggregate_filter_skipped():
     """A scalar-wrapped aggregate with filters (ABS(SUM(x))) can't fold -> skipped, not mangled."""
     import tempfile
@@ -4891,13 +4926,20 @@ def test_lookml_export_multi_arg_aggregate_filter_skipped():
 
 
 def test_lookml_export_count_constant_uses_native_count_type():
-    """COUNT(1) / COUNT(0) row-count aggregates export as native type: count, like COUNT(*)."""
+    """COUNT over any NON-NULL constant is a native row count and exports as type: count.
+
+    COUNT(1)/COUNT(0), plus COUNT(TRUE), COUNT('x'), COUNT(1.0), COUNT(.5) all count every row.
+    Exporting them as type: number would re-import as a zero-column complete-SQL metric whose
+    query hits an empty model CTE (SELECT FROM ...). COUNT(NULL) is NOT a row count (always 0), so
+    it must stay a type: number.
+    """
+    import re
     import tempfile
 
     from sidemantic import Dimension, Metric, Model
     from sidemantic.core.semantic_graph import SemanticGraph
 
-    for expr in ("COUNT(1)", "COUNT(0)"):
+    def export_measure(expr):
         graph = SemanticGraph()
         graph.add_model(
             Model(
@@ -4910,8 +4952,15 @@ def test_lookml_export_count_constant_uses_native_count_type():
         )
         out = tempfile.mktemp(suffix=".lkml")
         LookMLAdapter().export(graph, out)
-        text = open(out).read()
-        assert "type: count" in text and expr not in text
+        return re.search(r"measure: c \{.*?\n  \}", open(out).read(), re.S).group(0)
+
+    for expr in ("COUNT(1)", "COUNT(0)", "COUNT(TRUE)", "COUNT('x')", "COUNT(1.0)", "COUNT(.5)"):
+        block = export_measure(expr)
+        assert "type: count" in block and expr not in block, f"{expr} -> {block}"
+
+    # COUNT(NULL) is always 0, not a row count: it must NOT be flattened to type: count.
+    null_block = export_measure("COUNT(NULL)")
+    assert "type: number" in null_block and "COUNT(NULL)" in null_block
 
 
 def test_lookml_export_spaced_count_star_maps_to_native_count():

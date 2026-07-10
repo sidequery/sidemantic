@@ -224,7 +224,7 @@ Supported. The `views:` top-level section in Cube YAML is parsed after all cubes
 | `folders` (incl. nested folders and `join_path` includes) | Supported (the raw folder definitions are preserved in `Model.meta["folders"]` for UI grouping) |
 | `default_filters` | Supported (raw filter definitions preserved in `Model.meta["default_filters"]`) |
 | `meta.default_ui_filters` | Supported (preserved in `Model.meta["default_ui_filters"]`) |
-| View-level `access_policy` | Unsupported |
+| View-level `access_policy` | Row-level filters imported and enforced as `Model.security`; see [Access Control](#access-control-access_policy--accesspolicy) |
 
 View models are marked with `meta={"cube_type": "view"}` and are excluded from Cube export. View-level metadata (folders, default filters) is stored alongside `cube_type` in `Model.meta`.
 
@@ -249,13 +249,18 @@ Supported. `hierarchies:` blocks on cubes are parsed and used to set `Dimension.
 
 ## Access Control (`access_policy` / `accessPolicy`)
 
-Unsupported. Access policy blocks on cubes and views are parsed by YAML without error but not stored. This includes:
+Partially supported and **enforced**. Cube `access_policy` `row_level.filters` are imported into an enforced `Model.security` (`SecurityPolicy`) that Sidemantic applies per query when `user_attributes` are supplied; the raw `access_policy` is also preserved in `Model.meta`. Constructs with no mechanical equivalent are dropped with a warning. See [Security](../security.md).
 
-- `role` / `group` definitions
-- `row_level` filters with `member`, `operator`, `values`
-- `row_level: { allow_all: true }`
-- `member_level: { includes, excludes }`
-- `conditions` with security context expressions (`{ security_context.* }`)
+| Construct | Status |
+|-----------|--------|
+| `row_level.filters` (`member`, `operator`, `values`) | **Imported and enforced** as `SecurityPolicy.row_filters`. Operators mapped: `equals`, `notEquals`, `in`, `notIn`, `contains`, `notContains`, `startsWith`, `endsWith`, `gt`/`gte`/`lt`/`lte`, `set`, `notSet`. |
+| `row_level.filters_type` (`and` / `or`) | Supported (combines a policy's filters). |
+| `role` / `group` | Not translated — preserved in `meta`, warned. |
+| `conditions` (`{ security_context.* }`) | Not translated — preserved in `meta`, warned. |
+| `member_level: { includes, excludes }` | Not translated — preserved in `meta`, warned. |
+| Nested `and` / `or` filter groups | Not translated — reported as unmapped. |
+
+Imported filters use `member` values statically; Cube's `security_context`-driven conditions are not evaluated at import. To scope by the requesting user, add `{{ user.* }}` templates to the resulting `SecurityPolicy.row_filters`.
 
 ---
 

@@ -911,7 +911,7 @@ class SemanticLayer:
         # Visibility: when enforce_visibility is set, requesting a non-public field is rejected
         # before any SQL is generated.
         if self.enforce_visibility:
-            self._enforce_visibility_for_query(metrics, dimensions)
+            self._enforce_visibility_for_query(metrics, dimensions, filters, order_by, segments)
 
         # Determine if pre-aggregations should be used
         use_preaggs = use_preaggregations if use_preaggregations is not None else self.use_preaggregations
@@ -1106,26 +1106,44 @@ class SemanticLayer:
                 return True
         return False
 
+    def _field_is_public(self, model_name: str, field_name: str) -> bool:
+        """Return whether ``model.field`` is public. Unknown fields are treated as public
+        (they are not a hidden definition being leaked)."""
+        model = self.graph.models.get(model_name)
+        if model is None:
+            return True
+        dimension = model.get_dimension(field_name)
+        if dimension is not None:
+            return dimension.public
+        metric_obj = model.get_metric(field_name)
+        if metric_obj is not None:
+            return metric_obj.public
+        return True
+
     def _enforce_visibility_for_query(
         self,
         metrics: list[str] | None,
         dimensions: list[str] | None,
+        filters: list[str] | None = None,
+        order_by: list[str] | None = None,
+        segments: list[str] | None = None,
     ) -> None:
-        """Reject requests for non-public dimensions/metrics when enforce_visibility is set.
+        """Reject requests that reference non-public fields when enforce_visibility is set.
+
+        Covers projected metrics/dimensions AND fields referenced only in ``filters`` or
+        ``order_by`` -- otherwise a hidden field could be used as an information-disclosure
+        oracle (e.g. ``filters=["orders.margin > 100"]`` or ``order_by=["orders.margin"]``
+        against a ``public=False`` column).
 
         Raises:
-            SecurityError: If a requested field's owning definition has ``public=False``.
+            SecurityError: If a referenced field's owning definition has ``public=False``.
         """
         for dim in dimensions or []:
             ref = dim.rsplit("__", 1)[0] if "__" in dim else dim
             if "." not in ref:
                 continue
             model_name, field_name = ref.split(".", 1)
-            model = self.graph.models.get(model_name)
-            if model is None:
-                continue
-            dimension = model.get_dimension(field_name)
-            if dimension is not None and not dimension.public:
+            if not self._field_is_public(model_name, field_name):
                 raise SecurityError(f"Field '{model_name}.{field_name}' is not public")
 
         for metric in metrics or []:
@@ -1136,12 +1154,19 @@ class SemanticLayer:
                     raise SecurityError(f"Field '{metric}' is not public")
                 continue
             model_name, field_name = metric.split(".", 1)
-            model = self.graph.models.get(model_name)
-            if model is None:
-                continue
-            metric_obj = model.get_metric(field_name)
-            if metric_obj is not None and not metric_obj.public:
+            if not self._field_is_public(model_name, field_name):
                 raise SecurityError(f"Field '{model_name}.{field_name}' is not public")
+
+        # filters/order_by can smuggle a hidden field. Scan them for `model.field` tokens
+        # (stripping any granularity suffix / sort direction) and reject non-public ones.
+        import re as _re
+
+        ref_pattern = _re.compile(r"\b([A-Za-z_]\w*)\.([A-Za-z_]\w*)\b")
+        for raw in [*(filters or []), *(order_by or []), *(segments or [])]:
+            for model_name, field_name in ref_pattern.findall(raw):
+                field_name = field_name.rsplit("__", 1)[0] if "__" in field_name else field_name
+                if not self._field_is_public(model_name, field_name):
+                    raise SecurityError(f"Field '{model_name}.{field_name}' is not public")
 
     def _compile_with_rust(
         self,

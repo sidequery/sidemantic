@@ -124,6 +124,7 @@ At least one of `table`, `sql`, or `source_uri` should be present unless the mod
 | `default_time_dimension` | No | Time dimension to add by default when the query needs time grouping. |
 | `default_grain` | No | Default time grain for the default time dimension. |
 | `freshness` | No | Source freshness policy for live chart/dashboard runtimes. |
+| `security` | No | Row/access `SecurityPolicy` (`access` gate + `row_filters`) enforced per query when `user_attributes` are supplied. See [Security](security.md). |
 | `auto_dimensions` | No | Python auto-discovery flag. Rust accepts `false` for compatibility and rejects `true` because it does not perform schema discovery. |
 
 Canonical CLI-authored files should use `metrics` and `sql`. The native loaders
@@ -200,6 +201,8 @@ dimensions:
 | `value_format_name` | No | Named display format. |
 | `parent` | No | Parent dimension for hierarchy navigation. |
 | `window` | No | Window expression. |
+| `public` | No | Visibility flag (default true). When a layer is built with `enforce_visibility=True`, a `public: false` dimension cannot be projected, filtered, or ordered on. |
+| `uri` | No | Rendering hint (default false): UIs may render this dimension's values as links. Metadata only — no effect on generated SQL. |
 
 The `{model}` placeholder can be used in SQL expressions that need the generated table alias:
 
@@ -367,7 +370,8 @@ Initial native-runtime rule:
 | `format` | Display format string. |
 | `value_format_name` | Named display format. |
 | `drill_fields` | Suggested drill fields. |
-| `non_additive_dimension` | Non-additive dimension marker. |
+| `non_additive_dimension` | Semi-additive time dimension. The measure is aggregated over only the last (or first) snapshot per group — implemented with a `QUALIFY` on QUALIFY-capable engines (DuckDB, Snowflake, BigQuery, Databricks, Spark, ClickHouse). Raises `UnsupportedMetricError` on other dialects or when combined with a fan-out (symmetric-aggregate) join, unless `SemanticLayer(allow_non_additive_unsafe=True)`. |
+| `non_additive_window` | `"max"` (default, last value) or `"min"` (first value) for `non_additive_dimension`. |
 
 ## Relationships
 

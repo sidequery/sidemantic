@@ -268,6 +268,24 @@ def create_app(
             )
         return parsed
 
+    def deny_free_sql_if_secured() -> None:
+        """Deny the free-form SQL endpoints when any model declares a security policy.
+
+        ``/sql`` (semantic rewrite) and ``/raw`` (direct passthrough) cannot apply
+        per-user row filters -- the rewriter/raw paths do not thread user attributes,
+        and ``/raw`` reads the underlying table directly, bypassing the model entirely.
+        Rather than silently return unscoped rows for a secured model, refuse these
+        endpoints outright when security is in play and point callers at ``/query``,
+        which enforces access gates and row filters.
+        """
+        layer = app.state.layer
+        if any(getattr(model, "security", None) is not None for model in layer.graph.models.values()):
+            raise SecurityError(
+                "The /sql and /raw endpoints cannot enforce row-level security and are "
+                "disabled because a model declares a security policy. Use the structured "
+                "/query endpoint, which applies access gates and row filters per user."
+            )
+
     @app.get("/readyz")
     def readyz() -> dict[str, str]:
         return {"status": "ok"}
@@ -431,6 +449,7 @@ def create_app(
         # cursor, routed through _query_table for opt-in result caching.
         current_layer = app.state.layer
         user_attributes = resolve_user_attributes(request)
+        deny_free_sql_if_secured()
         query = _normalize_sql_query(payload.query)
         rewritten_sql = QueryRewriter(current_layer.graph, dialect=current_layer.dialect).rewrite(query)
         table = _query_table(app, current_layer, rewritten_sql, user_attributes=user_attributes)
@@ -454,6 +473,7 @@ def create_app(
         # routed through _query_table for opt-in result caching.
         current_layer = app.state.layer
         user_attributes = resolve_user_attributes(request)
+        deny_free_sql_if_secured()
         query = _normalize_sql_query(payload.query)
         _require_select_statement(query)
         table = _query_table(app, current_layer, query, user_attributes=user_attributes)

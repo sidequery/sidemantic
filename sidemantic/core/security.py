@@ -16,6 +16,8 @@ silently rendering an empty (and therefore unscoped) predicate.
 
 from __future__ import annotations
 
+import re
+
 from jinja2 import Environment, StrictUndefined, TemplateError, UndefinedError
 from pydantic import BaseModel, Field
 
@@ -56,28 +58,76 @@ class SecurityPolicy(BaseModel):
         return hash((self.access, tuple(self.row_filters)))
 
 
-def _sql_escape_attributes(value):
-    """Recursively SQL-escape string values so they cannot break out of a quoted literal.
+class _SqlLiteral:
+    """A pre-rendered SQL literal. Its ``str()`` is a complete, safe SQL token.
 
-    Doubles single quotes in strings (the standard SQL escape). Dicts and lists are walked
-    so nested ``user`` attribute access stays escaped. Non-string scalars pass through
-    unchanged so numeric/boolean predicates render as-is.
+    Row-filter attribute values are wrapped in this so that Jinja interpolation of
+    ``{{ user.x }}`` emits a fully-formed literal (a quoted+escaped string, a bare
+    number/bool, or NULL) rather than raw text. This makes injection impossible
+    regardless of whether the template author wrapped the placeholder in quotes:
+    a string value is ALWAYS single-quoted, so it can never break out into SQL.
     """
+
+    __slots__ = ("sql",)
+
+    def __init__(self, sql: str) -> None:
+        self.sql = sql
+
+    def __str__(self) -> str:
+        return self.sql
+
+    # Jinja may call __html__ on output values; keep it identical (autoescape is off).
+    def __html__(self) -> str:
+        return self.sql
+
+
+def _to_sql_literal(value):
+    """Convert a Python attribute value to a safe SQL literal token.
+
+    Strings are single-quoted with embedded quotes doubled; bools become TRUE/FALSE;
+    ints/floats render bare; None becomes NULL. Unsupported types raise so a caller
+    cannot smuggle an object whose ``repr``/``str`` is attacker-controlled SQL.
+    """
+    if isinstance(value, bool):
+        return _SqlLiteral("TRUE" if value else "FALSE")
+    if isinstance(value, (int, float)):
+        return _SqlLiteral(str(value))
+    if value is None:
+        return _SqlLiteral("NULL")
     if isinstance(value, str):
-        return value.replace("'", "''")
+        return _SqlLiteral("'" + value.replace("'", "''") + "'")
+    raise TypeError(f"unsupported user-attribute type for a row filter: {type(value).__name__}")
+
+
+def _wrap_attributes(value):
+    """Recursively wrap attribute scalars as _SqlLiteral so any ``{{ user.x }}`` is a literal.
+
+    Dicts/lists are walked so nested access (``user.org.id``) and list membership stay safe.
+    """
     if isinstance(value, dict):
-        return {key: _sql_escape_attributes(item) for key, item in value.items()}
+        return {key: _wrap_attributes(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
-        return type(value)(_sql_escape_attributes(item) for item in value)
-    return value
+        return type(value)(_wrap_attributes(item) for item in value)
+    return _to_sql_literal(value)
+
+
+# Matches a single- or double-quote pair immediately hugging a ``{{ ... }}`` placeholder,
+# e.g. ``'{{ user.region }}'``. Such author quotes are stripped before rendering because the
+# value already renders as a complete, correctly-quoted SQL literal; leaving the author quotes
+# would double-quote strings (``''US''``) and, for the unquoted form, is what allowed injection.
+_HUGGING_QUOTES = re.compile(r"(['\"])\s*(\{\{.*?\}\})\s*\1")
 
 
 def render_row_filter(filter_template: str, user_attributes: dict) -> str:
-    """Render a row-filter template against user attributes.
+    """Render a row-filter template against user attributes as a safe SQL fragment.
 
-    The only namespace exposed is ``user``. Rendering uses ``StrictUndefined`` so
-    that a filter referencing an attribute the caller did not supply raises a
-    ``SecurityError`` rather than rendering an empty (unscoped) predicate.
+    The only namespace exposed is ``user``. Every ``{{ user.x }}`` renders as a
+    complete, type-correct SQL literal (strings always single-quoted and escaped),
+    so an attribute value can never break out of its predicate -- this holds for
+    BOTH the quoted (``col = '{{ user.x }}'``) and unquoted (``col = {{ user.x }}``)
+    template forms; author quotes hugging a placeholder are stripped first.
+    Rendering uses ``StrictUndefined`` so a filter referencing an attribute the
+    caller did not supply raises rather than silently rendering an unscoped predicate.
 
     Args:
         filter_template: SQL filter template, e.g. ``"tenant_id = {{ user.tenant_id }}"``.
@@ -87,27 +137,24 @@ def render_row_filter(filter_template: str, user_attributes: dict) -> str:
         The rendered SQL fragment.
 
     Raises:
-        SecurityError: If the template references an undefined ``user`` attribute
-            or is otherwise malformed.
+        SecurityError: If the template references an undefined ``user`` attribute,
+            is otherwise malformed, or an attribute has an unsupported type.
     """
     # Imported lazily to avoid a circular import (semantic_layer imports this module).
     from sidemantic.core.semantic_layer import SecurityError
 
     try:
-        template = _security_env.from_string(filter_template)
-        # SQL-escape string attribute values before interpolation. Row filter templates
-        # commonly wrap the value in single quotes (e.g. "email = '{{ user.email }}'"); a raw
-        # value like "x' OR '1'='1" would otherwise break out of the literal and inject a
-        # boolean condition. Doubling embedded single quotes keeps the value a single quoted
-        # literal after sqlglot re-parses/re-serializes the fragment. Non-string values
-        # (ints, bools) are left untouched so numeric predicates render correctly.
-        safe_user = _sql_escape_attributes(user_attributes if user_attributes is not None else {})
+        normalized = _HUGGING_QUOTES.sub(r"\2", filter_template)
+        template = _security_env.from_string(normalized)
+        safe_user = _wrap_attributes(user_attributes if user_attributes is not None else {})
         return template.render(user=safe_user)
     except UndefinedError as exc:
         raise SecurityError(
             f"Row filter {filter_template!r} references an undefined user attribute: {exc}. "
             "Provide the attribute in user_attributes or remove it from the filter."
         ) from exc
+    except TypeError as exc:
+        raise SecurityError(f"Row filter {filter_template!r} has an unsupported attribute value: {exc}") from exc
     except TemplateError as exc:
         raise SecurityError(f"Row filter {filter_template!r} failed to render: {exc}") from exc
 

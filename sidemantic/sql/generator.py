@@ -261,18 +261,21 @@ class SQLGenerator:
                     "or pass allow_non_additive_unsafe=True (naive, incorrect)."
                 )
 
-            # If the query already groups by the non-additive dimension itself, the
-            # measure is additive within each requested time bucket, so no QUALIFY is
-            # needed (and applying one would wrongly collapse to a single bucket). Skip.
-            grouped_by_non_additive = False
-            for dim_ref, _gran in parsed_dims or []:
+            # If the query groups by the non-additive dimension at its RAW grain, each
+            # group is already a single snapshot value, so the measure is additive within
+            # the group and no QUALIFY is needed. But a COARSER grain (e.g. day__month)
+            # still spans many snapshots per bucket, so it must keep the QUALIFY (partitioned
+            # by the truncated bucket) -- otherwise a month-end-balance-style query silently
+            # sums every daily snapshot in the month. Only the raw-grain case is additive.
+            grouped_by_non_additive_raw = False
+            for dim_ref, gran in parsed_dims or []:
                 if "." not in dim_ref:
                     continue
                 dim_model, dim_name = dim_ref.split(".", 1)
-                if dim_model == owning_model and dim_name == metric.non_additive_dimension:
-                    grouped_by_non_additive = True
+                if dim_model == owning_model and dim_name == metric.non_additive_dimension and gran is None:
+                    grouped_by_non_additive_raw = True
                     break
-            if grouped_by_non_additive:
+            if grouped_by_non_additive_raw:
                 continue
 
             window = getattr(metric, "non_additive_window", "max") or "max"
@@ -2293,8 +2296,10 @@ class SQLGenerator:
                 if not dim_ref.startswith(model_name + "."):
                     continue
                 dim_name = dim_ref.split(".", 1)[1]
-                if dim_name == non_additive_dim:
-                    # The non-additive time dim is the window axis, never a partition key.
+                if dim_name == non_additive_dim and gran is None:
+                    # The non-additive time dim at its RAW grain is the window axis, never a
+                    # partition key. A coarser grain of it (e.g. day__month) IS a partition key:
+                    # the QUALIFY then keeps the last raw snapshot within each (other dims, bucket).
                     continue
                 cte_alias = f"{dim_name}__{gran}" if gran else dim_name
                 if cte_alias in seen_partition:

@@ -224,3 +224,39 @@ def test_result_cache_no_cross_user_leak_end_to_end():
     tenants_b = {row["tenant_id"] for row in resp_b.json()["rows"]}
     assert tenants_a == {1}
     assert tenants_b == {2}
+
+
+def test_sql_endpoint_denied_when_model_secured():
+    """P0-3: /sql cannot enforce row filters, so it must refuse when security is declared."""
+    layer = _make_layer()
+    client = TestClient(create_app(layer, auth_token="secret"))
+    resp = client.post(
+        "/sql",
+        json={"query": "SELECT order_count FROM orders"},
+        headers=_headers(user_attrs={"tenant_id": 1}),
+    )
+    assert resp.status_code == 403, resp.text
+
+
+def test_raw_endpoint_denied_when_model_secured():
+    """P0-3: /raw reads the underlying table directly, so it must refuse under security."""
+    layer = _make_layer()
+    client = TestClient(create_app(layer, auth_token="secret"))
+    resp = client.post(
+        "/raw",
+        json={"query": "SELECT * FROM orders"},
+        headers=_headers(user_attrs={"tenant_id": 1}),
+    )
+    assert resp.status_code == 403, resp.text
+
+
+def test_sql_endpoint_allowed_without_security():
+    """The free-form SQL endpoints stay available when no model declares a policy."""
+    layer = SemanticLayer()
+    layer.adapter.execute("create table t (id integer)")
+    layer.adapter.execute("insert into t values (1), (2)")
+    layer.add_model(Model(name="t", table="t", primary_key="id", metrics=[Metric(name="cnt", agg="count")]))
+    client = TestClient(create_app(layer, auth_token="secret"))
+    resp = client.post("/raw", json={"query": "SELECT count(*) AS n FROM t"}, headers=_headers())
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["rows"] == [{"n": 2}]

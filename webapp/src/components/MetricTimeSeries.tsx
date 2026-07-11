@@ -14,6 +14,10 @@ type MetricTimeSeriesProps = {
   prevTotal?: number;
   hasTime: boolean;
   loading?: boolean;
+  /** Short label for the comparison window ("Prev period" / "Prev year" / a custom range). */
+  comparisonLabel?: string;
+  /** Render a raw UTC bucket label into the selected timezone (axis ticks + tooltip). */
+  formatLabel?: (label: string) => string;
   onBrush: (range: BrushRange | null) => void;
 };
 
@@ -28,12 +32,14 @@ export function MetricTimeSeries({
   prevTotal,
   hasTime,
   loading,
+  comparisonLabel = "Prev period",
+  formatLabel,
   onBrush,
 }: MetricTimeSeriesProps) {
   const hint = { format: metric.format, type: metric.type };
   const delta = prevTotal !== undefined ? formatDelta(total, prevTotal) : null;
   const ariaSummary = `${metric.label} over time. Total ${formatValue(total, hint)}${
-    delta ? `, ${delta.label} versus the previous period` : ""
+    delta ? `, ${delta.label} versus the ${comparisonLabel.toLowerCase()}` : ""
 }.`;
 
   return (
@@ -41,7 +47,7 @@ export function MetricTimeSeries({
       <header className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 px-0.5">
         <h2 className="text-2xs font-semibold uppercase tracking-wide text-faint">{metric.label}</h2>
         <span className="font-mono tnum text-xl font-semibold text-ink">{formatValue(total, hint)}</span>
-        {delta ? <span className={`text-xs ${TONE[delta.tone]}`}>{delta.label} vs prev</span> : null}
+        {delta ? <span className={`text-xs ${TONE[delta.tone]}`}>{delta.label} vs {comparisonLabel.toLowerCase()}</span> : null}
         {!hasTime ? <span className="text-2xs text-faint">No time dimension</span> : null}
       </header>
       {!hasTime ? null : loading && points.length < 2 ? (
@@ -52,7 +58,8 @@ export function MetricTimeSeries({
           comparison={comparisonPoints}
           formatValue={(value) => formatValue(value, hint)}
           formatAxis={(value) => formatCompact(value, hint)}
-          comparisonLabel="Prev period"
+          formatLabel={formatLabel}
+          comparisonLabel={comparisonLabel}
           ariaLabel={ariaSummary}
           onBrush={onBrush}
         />

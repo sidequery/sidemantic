@@ -9,7 +9,16 @@ import type { BrushRange } from "../components/TimeSeriesChart";
 import { formatDelta, formatValue } from "../lib/format";
 import { graphMetricsForModel } from "../lib/catalog";
 import { composeFilters, dimTypes, metricSeries, metricTotals } from "../lib/queries";
-import { bucketOffset, dateOnly, endOfBucket, previousRange } from "../lib/time";
+import type { StructuredQuery } from "../data/types";
+import {
+  bucketOffset,
+  dateOnly,
+  endOfBucket,
+  formatBucketLabel,
+  previousRange,
+  previousYearRange,
+  type DateRange,
+} from "../lib/time";
 import { useExplorer } from "../state/ExplorerContext";
 import { useQueryResult } from "../state/useQueryResult";
 
@@ -44,24 +53,41 @@ export function ExplorerView() {
     () => composeFilters(state.filters, { timeRef, range: state.dateRange, types }),
     [state.filters, timeRef, state.dateRange, types],
   );
-  const prevRange = state.dateRange ? previousRange(state.dateRange) : null;
+  // Resolve the chosen comparison mode into a concrete window. `off` (or no active date range, since
+  // every comparison here is relative to one) means no comparison at all — the strip cards, chart
+  // overlay, and leaderboard deltas all go dark together.
+  const prevRange = useMemo<DateRange | null>(() => {
+    if (state.comparison === "off" || !state.dateRange) return null;
+    if (state.comparison === "year") return previousYearRange(state.dateRange);
+    if (state.comparison === "custom") return state.comparisonRange ?? null;
+    return previousRange(state.dateRange);
+  }, [state.comparison, state.dateRange, state.comparisonRange]);
   const prevFilters = useMemo(
     () => (prevRange && timeRef ? composeFilters(state.filters, { timeRef, range: prevRange, types }) : null),
     [state.filters, timeRef, prevRange, types],
   );
 
+  // Stamp the selected timezone onto every query so the backend truncates time buckets in-zone
+  // (UTC is elided at the wire boundary, matching the pre-E4 request shape).
+  const tz = state.timezone;
+  const withTz = (query: StructuredQuery | null): StructuredQuery | null =>
+    query ? { ...query, timezone: tz } : null;
+
   // Strip queries — one aggregate per shape, covering every metric at once.
-  const totals = useQueryResult(backend, stripMetricRefs.length ? metricTotals(stripMetricRefs, baseFilters) : null);
+  const totals = useQueryResult(backend, stripMetricRefs.length ? withTz(metricTotals(stripMetricRefs, baseFilters)) : null);
   const series = useQueryResult(
     backend,
-    stripMetricRefs.length && timeRef ? metricSeries(stripMetricRefs, timeRef, state.grain, baseFilters) : null,
+    stripMetricRefs.length && timeRef ? withTz(metricSeries(stripMetricRefs, timeRef, state.grain, baseFilters)) : null,
   );
-  const comparison = useQueryResult(backend, stripMetricRefs.length && prevFilters ? metricTotals(stripMetricRefs, prevFilters) : null);
+  const comparison = useQueryResult(
+    backend,
+    stripMetricRefs.length && prevFilters ? withTz(metricTotals(stripMetricRefs, prevFilters)) : null,
+  );
   // The single extra query the chart needs: the focused metric over the *previous* period (the
   // dashed overlay). Everything else is reused from the strip results above.
   const prevSeries = useQueryResult(
     backend,
-    rankMetric && timeRef && prevFilters ? metricSeries([rankMetric.ref], timeRef, state.grain, prevFilters) : null,
+    rankMetric && timeRef && prevFilters ? withTz(metricSeries([rankMetric.ref], timeRef, state.grain, prevFilters)) : null,
   );
 
   // Surface a failure from any strip query (totals/series/comparison/prev), not just totals, so a
@@ -71,6 +97,7 @@ export function ExplorerView() {
   if (!model) return <div className="p-4"><EmptyState message="No model available in this semantic layer." /></div>;
 
   const leaderboardDims = model.dimensions.filter((dim) => dim.type !== "time");
+  const comparisonLabel = state.comparison === "year" ? "Prev year" : state.comparison === "custom" ? "Comparison" : "Prev period";
 
   // A kept result from a previous model has different metric columns. Ignore it until the fresh one
   // lands (cards/chart keep showing their skeleton) rather than reading missing columns as zeros.
@@ -149,9 +176,11 @@ export function ExplorerView() {
           points={chartPoints}
           comparisonPoints={prevRange ? chartComparison : undefined}
           total={chartTotal}
-          prevTotal={chartPrevTotal}
+          prevTotal={prevRange ? chartPrevTotal : undefined}
           hasTime={!!timeRef}
           loading={series.loading}
+          comparisonLabel={comparisonLabel}
+          formatLabel={(label) => formatBucketLabel(label, state.grain)}
           onBrush={onBrush}
         />
       ) : null}
@@ -159,7 +188,19 @@ export function ExplorerView() {
       {/* Dimension leaderboards */}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
         {rankMetric && leaderboardDims.length ? (
-          leaderboardDims.map((dim) => <LeaderboardPanel key={dim.ref} dim={dim} model={model} rankMetric={rankMetric} />)
+          leaderboardDims.map((dim) => (
+            <LeaderboardPanel
+              key={dim.ref}
+              dim={dim}
+              model={model}
+              rankMetric={rankMetric}
+              contextColumn={state.contextColumn}
+              // The focused metric's ungrouped total under the current filters — computed once for the
+              // scorecard strip and reused here rather than re-queried, so "% of total" adds no round trip.
+              metricTotal={Number.isFinite(chartTotal) ? chartTotal : undefined}
+              comparisonRange={prevRange ?? undefined}
+            />
+          ))
         ) : (
           <EmptyState message="No categorical dimensions to break down." />
         )}

@@ -1,13 +1,29 @@
 """CLI for sidemantic semantic layer operations."""
 
+from __future__ import annotations
+
 import os
 import tempfile
 from pathlib import Path
 
 import typer
 
-from sidemantic import SemanticLayer, __version__, load_from_directory
+from sidemantic import __version__
 from sidemantic.config import SidemanticConfig, build_connection_string, find_config, get_init_sql, load_config
+
+
+def SemanticLayer(*args, **kwargs):  # noqa: N802 - deliberately shadows the class so call sites stay unchanged while deferring the import
+    """Lazy SemanticLayer constructor for fast help/version paths."""
+    from sidemantic import SemanticLayer as _SemanticLayer
+
+    return _SemanticLayer(*args, **kwargs)
+
+
+def load_from_directory(*args, **kwargs):
+    """Lazy loader import for fast help/version paths."""
+    from sidemantic import load_from_directory as _load_from_directory
+
+    return _load_from_directory(*args, **kwargs)
 
 
 def version_callback(value: bool):
@@ -1015,6 +1031,11 @@ def serve(
     port: int = typer.Option(None, "--port", "-p", help="Port to listen on (overrides config)"),
     username: str = typer.Option(None, "--username", "-u", help="Username for authentication (overrides config)"),
     password: str = typer.Option(None, "--password", help="Password for authentication (overrides config)"),
+    user_attrs_file: Path = typer.Option(
+        None,
+        "--user-attrs-file",
+        help="Path to a JSON file mapping usernames -> user-attribute dicts for row/access security",
+    ),
 ):
     """
     Start a PostgreSQL-compatible server for the semantic layer.
@@ -1138,8 +1159,33 @@ def serve(
                 placeholders = ", ".join(["?" for _ in columns])
                 layer.conn.executemany(f"INSERT INTO {table} VALUES ({placeholders})", rows)
 
+    # Load the optional username -> user-attributes map for security enforcement.
+    user_attrs_map = None
+    if user_attrs_file is not None:
+        import json
+
+        if not user_attrs_file.exists():
+            typer.echo(f"Error: user-attrs file {user_attrs_file} does not exist", err=True)
+            raise typer.Exit(1)
+        try:
+            loaded = json.loads(user_attrs_file.read_text())
+        except json.JSONDecodeError as exc:
+            typer.echo(f"Error: failed to parse user-attrs file {user_attrs_file}: {exc}", err=True)
+            raise typer.Exit(1)
+        if not isinstance(loaded, dict) or not all(isinstance(v, dict) for v in loaded.values()):
+            typer.echo(f"Error: user-attrs file {user_attrs_file} must map usernames to attribute objects", err=True)
+            raise typer.Exit(1)
+        user_attrs_map = loaded
+
     # Start the server
-    start_server(layer, host=host_resolved, port=port_resolved, username=username_resolved, password=password_resolved)
+    start_server(
+        layer,
+        host=host_resolved,
+        port=port_resolved,
+        username=username_resolved,
+        password=password_resolved,
+        user_attrs_map=user_attrs_map,
+    )
 
 
 @app.command()
@@ -1156,6 +1202,27 @@ def api_serve(
     cors_origin: list[str] | None = typer.Option(None, "--cors-origin", help="Allowed CORS origin (repeatable)"),
     max_request_body_bytes: int = typer.Option(
         None, "--max-request-body-bytes", help="Maximum request body size in bytes"
+    ),
+    result_cache_mb: int = typer.Option(
+        None, "--result-cache-mb", help="Result cache size in MB (0 disables; default 0)"
+    ),
+    result_cache_ttl: float = typer.Option(
+        None, "--result-cache-ttl", help="Result cache entry TTL in seconds (default 60)"
+    ),
+    require_user_attrs: bool = typer.Option(
+        False,
+        "--require-user-attrs",
+        help="Require the user-attributes header on data endpoints (reject with 400 if missing)",
+    ),
+    enforce_visibility: bool = typer.Option(
+        False,
+        "--enforce-visibility",
+        help="Reject requests for non-public dimensions/metrics",
+    ),
+    user_header: str = typer.Option(
+        "X-Sidemantic-User",
+        "--user-header",
+        help="Trusted request header carrying JSON user attributes",
     ),
     ui: bool = typer.Option(True, "--ui/--no-ui", help="Serve the embedded web UI at the root path"),
 ):
@@ -1221,6 +1288,16 @@ def api_serve(
         max_request_body_bytes
         if max_request_body_bytes is not None
         else (_loaded_config.api_server.max_request_body_bytes if _loaded_config else 1024 * 1024)
+    )
+    result_cache_mb_resolved = (
+        result_cache_mb
+        if result_cache_mb is not None
+        else (_loaded_config.api_server.result_cache_mb if _loaded_config else 0)
+    )
+    result_cache_ttl_resolved = (
+        result_cache_ttl
+        if result_cache_ttl is not None
+        else (_loaded_config.api_server.result_cache_ttl if _loaded_config else 60.0)
     )
 
     preagg_db = _loaded_config.preagg_database if _loaded_config else None
@@ -1290,6 +1367,11 @@ def api_serve(
         cors_origins=cors_origins_resolved,
         max_request_body_bytes=max_body_bytes_resolved,
         serve_ui=serve_ui,
+        result_cache_mb=result_cache_mb_resolved,
+        result_cache_ttl=result_cache_ttl_resolved,
+        require_user_attrs=require_user_attrs,
+        enforce_visibility=enforce_visibility,
+        user_header=user_header,
     )
 
 

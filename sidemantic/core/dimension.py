@@ -52,6 +52,9 @@ class Dimension(BaseModel):
     # Visibility
     public: bool = Field(True, description="Whether dimension is visible in API/UI")
 
+    # Rendering hint (metadata only; no SQL generation impact)
+    uri: bool = Field(False, description="Whether this dimension's values should be rendered as links in UIs")
+
     @model_validator(mode="before")
     @classmethod
     def handle_expr_alias(cls, data):

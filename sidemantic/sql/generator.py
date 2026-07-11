@@ -14,6 +14,13 @@ from sidemantic.core.symmetric_aggregate import build_symmetric_aggregate_sql
 from sidemantic.sql.aggregation_detection import sql_has_aggregate
 from sidemantic.validation import QueryValidationError
 
+# Dialects whose SQL supports the QUALIFY clause natively. Semi-additive
+# (non_additive_dimension) handling emits a QUALIFY into each affected model's CTE
+# to keep only the last (or first) snapshot per group; dialects without QUALIFY
+# (e.g. postgres, mysql) are rejected rather than served an equivalent subquery in
+# this first cut. See SQLGenerator._plan_semi_additive.
+_QUALIFY_DIALECTS = frozenset({"duckdb", "snowflake", "bigquery", "databricks", "spark", "clickhouse"})
+
 
 @lru_cache(maxsize=4096)
 def _quote_identifier_cached(name: str, dialect: str, is_simple: bool) -> str:
@@ -21,6 +28,44 @@ def _quote_identifier_cached(name: str, dialect: str, is_simple: bool) -> str:
     if is_simple:
         return sqlglot.to_identifier(name).sql(dialect=dialect)
     return sqlglot.to_identifier(name, quoted=True).sql(dialect=dialect)
+
+
+@lru_cache(maxsize=4096)
+def _parse_fragment_cached(sql: str, dialect: str) -> exp.Expression:
+    """Parse a SQL fragment once, cached across all SQLGenerator instances.
+
+    sqlglot parsing dominates compile latency because the generator re-parses the
+    same small fragments (filters, metric SQL, column refs) many times per compile.
+    A single parse_one is ~100x the cost of an AST copy, so callers that mutate the
+    tree should go through _parse_fragment() (which copies) rather than parsing anew.
+
+    The cached tree is shared; NEVER mutate the value returned here directly.
+    """
+    return sqlglot.parse_one(sql, dialect=dialect)
+
+
+def _parse_fragment(sql: str, dialect: str) -> exp.Expression:
+    """Return a fresh, mutable copy of a cached parsed fragment.
+
+    Use this at any call site that embeds the result into a larger tree or mutates
+    it in place (find_all + set/replace, transform, etc.), since sqlglot maintains
+    parent pointers on nodes.
+    """
+    return _parse_fragment_cached(sql, dialect).copy()
+
+
+@lru_cache(maxsize=4096)
+def _date_trunc_simple_cached(granularity: str, column_expr: str, dialect: str) -> str:
+    """Cached DATE_TRUNC serialization for a bare column expression.
+
+    Serializing an exp.DateTrunc triggers an internal sqlglot parse in several
+    dialects, and _date_trunc is called many times per compile with the same few
+    (granularity, column, dialect) tuples. This returns the fully rendered string;
+    the result is a plain str, so no defensive copy is needed.
+    """
+    col = sqlglot.parse_one(column_expr, into=exp.Column, dialect=dialect)
+    date_trunc = exp.DateTrunc(this=col, unit=exp.Literal.string(granularity))
+    return date_trunc.sql(dialect=dialect)
 
 
 _dialect_cache: dict[str, Dialect] = {}
@@ -62,6 +107,7 @@ class SQLGenerator:
         preagg_database: str | None = None,
         preagg_schema: str | None = None,
         timezone: str | None = None,
+        allow_non_additive_unsafe: bool = False,
     ):
         """Initialize SQL generator.
 
@@ -72,11 +118,17 @@ class SQLGenerator:
             preagg_schema: Optional schema name for pre-aggregation tables
             timezone: Optional IANA timezone; when set, time dimensions are bucketed
                 in this timezone (UTC-stored timestamps converted before truncation)
+            allow_non_additive_unsafe: When True, skip the semi-additive rewrite for
+                metrics that declare a non_additive_dimension and aggregate them naively
+                over ALL snapshots (over-aggregated, wrong results). By default the generator
+                implements semi-additive handling (QUALIFY last/first snapshot per group);
+                this flag opts back into the old, naive behavior explicitly (default: False)
         """
         self.graph = graph
         self.dialect = dialect
         self.preagg_database = preagg_database
         self.preagg_schema = preagg_schema
+        self.allow_non_additive_unsafe = allow_non_additive_unsafe
         # The timezone is interpolated into SQL string literals (AT TIME ZONE '...', etc.),
         # so it must not contain quote/escape characters. Restrict to IANA-name characters
         # to prevent SQL injection from a request- or preference-supplied value; the database
@@ -91,6 +143,176 @@ class SQLGenerator:
         self._dialect_instance = _cached_dialect(dialect)
         self._generate_cache: dict[tuple[object, ...], str] = {}
         self._generate_cache_limit = 256
+
+    def _resolve_metric_obj(self, reference: str):
+        """Resolve a metric reference to its Metric object, or None if not found."""
+        metric = None
+        try:
+            _, metric = self.graph.resolve_metric_reference(reference)
+        except KeyError:
+            pass
+        if not metric and "." not in reference:
+            try:
+                metric = self.graph.get_metric(reference)
+            except KeyError:
+                pass
+            if not metric:
+                for model in self.graph.models.values():
+                    found = model.get_metric(reference)
+                    if found:
+                        metric = found
+                        break
+        return metric
+
+    def _plan_semi_additive(
+        self,
+        metrics: list[str],
+        base_model_name: str,
+        model_names: list[str],
+        parsed_dims: list[tuple[str, str | None]] | None = None,
+    ) -> dict[str, tuple[str, str]]:
+        """Plan semi-additive (non_additive_dimension) handling for a grouped query.
+
+        A measure with ``non_additive_dimension`` must be aggregated over only the
+        rows at the last (max) — or first (min) — value of that time dimension per
+        group, so an account-balance snapshot is summed across accounts but NOT
+        double-counted across days. We implement this by emitting a QUALIFY into the
+        owning model's CTE (see ``_build_model_cte``) that keeps only those rows.
+
+        Returns a mapping ``model_name -> (non_additive_dimension_name, window)`` for
+        the models that need a semi-additive QUALIFY. ``window`` is "min" or "max".
+
+        Raises ``UnsupportedMetricError`` only for cases we do NOT implement:
+
+        - a dialect without QUALIFY (postgres, mysql, ...), since we don't emit the
+          equivalent subquery/self-join in this first cut; and
+        - the combination of semi-additive handling with fan-out symmetric aggregation
+          for the SAME model. These two rewrites don't compose safely: symmetric
+          aggregation deduplicates fan-out rows via SUM(DISTINCT hash+value) at the
+          OUTER aggregation, while semi-additive filtering must happen at the INNER
+          (pre-join) grain. Applying the QUALIFY to the fanned-out CTE would filter on
+          a post-fan-out max and the two corrections would silently interfere, so we
+          refuse rather than emit wrong SQL.
+
+        When ``allow_non_additive_unsafe`` is set we skip the rewrite entirely and
+        return an empty plan — the measure is then aggregated naively (over ALL
+        snapshots, i.e. the old, incorrect behavior). This is the documented escape
+        hatch: it now means "skip correct handling, aggregate naively", not "opt out
+        of a guard".
+        """
+        plan: dict[str, tuple[str, str]] = {}
+
+        # Collect requested semi-additive measures and their owning models. Traverse metric
+        # dependencies so a graph-level/derived metric that WRAPS a model measure declaring
+        # non_additive_dimension (the common MetricFlow-import shape) is still planned -- the
+        # outer metric object has no non_additive_dimension itself.
+        from sidemantic.core.dependency_analyzer import extract_metric_dependencies
+
+        semi_additive: list[tuple[str, object]] = []  # (reference, metric_obj)
+        seen_refs: set[str] = set()
+
+        def _collect_semi_additive(reference: str) -> None:
+            if reference in seen_refs:
+                return
+            seen_refs.add(reference)
+            metric = self._resolve_metric_obj(reference)
+            if metric is None:
+                return
+            if getattr(metric, "non_additive_dimension", None):
+                semi_additive.append((reference, metric))
+            for dep in extract_metric_dependencies(metric, self.graph):
+                _collect_semi_additive(dep)
+
+        for reference in metrics:
+            _collect_semi_additive(reference)
+
+        if not semi_additive:
+            return plan
+
+        # Escape hatch: skip the rewrite entirely (naive, incorrect aggregation).
+        if self.allow_non_additive_unsafe:
+            return plan
+
+        # Lazy import to avoid a circular import (semantic_layer imports this module).
+        from sidemantic.core.semantic_layer import UnsupportedMetricError
+
+        if self.dialect not in _QUALIFY_DIALECTS:
+            reference = semi_additive[0][0]
+            raise UnsupportedMetricError(
+                f"Metric '{reference}' declares non_additive_dimension, which is handled "
+                f"with a QUALIFY clause, but dialect '{self.dialect}' has no QUALIFY support. "
+                "Semi-additive handling is currently implemented only for "
+                f"{sorted(_QUALIFY_DIALECTS)}. Pre-aggregate this metric upstream, or pass "
+                "allow_non_additive_unsafe=True to query it anyway (naive, over-aggregated)."
+            )
+
+        # Fan-out detection: a model whose measures are computed with symmetric
+        # aggregation cannot also carry a semi-additive QUALIFY (see docstring).
+        fanout = self._has_fanout_joins(base_model_name, [m for m in model_names if m != base_model_name])
+
+        for reference, metric in semi_additive:
+            # Resolve the owning model of this measure.
+            try:
+                owning_model, _ = self.graph.resolve_metric_reference(reference)
+            except KeyError:
+                owning_model = None
+            if owning_model is None:
+                # Fall back to the model that actually defines this measure.
+                for model_name in model_names:
+                    model = self.graph.get_model(model_name)
+                    if model.get_metric(reference) or ("." in reference and reference.split(".", 1)[0] == model_name):
+                        owning_model = model_name
+                        break
+            if owning_model is None:
+                owning_model = base_model_name
+
+            if fanout.get(owning_model, False):
+                raise UnsupportedMetricError(
+                    f"Metric '{reference}' declares non_additive_dimension "
+                    f"'{metric.non_additive_dimension}' and is also computed under a fan-out "
+                    "(one-to-many) join that requires symmetric aggregation. These two "
+                    "corrections operate at different grains (semi-additive filters rows "
+                    "before the join; symmetric aggregation deduplicates after it) and do not "
+                    "compose safely, so this combination is unsupported. Query the "
+                    "semi-additive metric without the fan-out join, pre-aggregate it upstream, "
+                    "or pass allow_non_additive_unsafe=True (naive, incorrect)."
+                )
+
+            # If the query groups by the non-additive dimension at its RAW grain, each
+            # group is already a single snapshot value, so the measure is additive within
+            # the group and no QUALIFY is needed. But a COARSER grain (e.g. day__month)
+            # still spans many snapshots per bucket, so it must keep the QUALIFY (partitioned
+            # by the truncated bucket) -- otherwise a month-end-balance-style query silently
+            # sums every daily snapshot in the month. Only the raw-grain case is additive.
+            grouped_by_non_additive_raw = False
+            for dim_ref, gran in parsed_dims or []:
+                if "." not in dim_ref:
+                    continue
+                dim_model, dim_name = dim_ref.split(".", 1)
+                if dim_model == owning_model and dim_name == metric.non_additive_dimension and gran is None:
+                    grouped_by_non_additive_raw = True
+                    break
+            if grouped_by_non_additive_raw:
+                continue
+
+            window = getattr(metric, "non_additive_window", "max") or "max"
+            groupings = getattr(metric, "non_additive_window_groupings", None)
+            proposed = (metric.non_additive_dimension, window, tuple(groupings) if groupings else None)
+            existing = plan.get(owning_model)
+            if existing is not None and existing != proposed:
+                # A single model CTE carries one QUALIFY, so two semi-additive metrics on the
+                # same model that need different (dimension, window) snapshots cannot both be
+                # served correctly here (e.g. opening balance with min and closing with max).
+                # Refuse rather than silently applying only the last plan.
+                raise UnsupportedMetricError(
+                    f"Model '{owning_model}' is queried with conflicting semi-additive metrics: "
+                    f"one needs non_additive ({existing[0]!r}, window={existing[1]!r}) and another "
+                    f"needs ({proposed[0]!r}, window={proposed[1]!r}). A single model CTE can carry "
+                    "only one snapshot rule. Query them in separate requests, or pre-aggregate upstream."
+                )
+            plan[owning_model] = proposed
+
+        return plan
 
     @staticmethod
     def _agg_sql_name(agg: str) -> str:
@@ -159,6 +381,7 @@ class SQLGenerator:
         aliases,
         skip_default_time_dimensions,
         with_totals,
+        user_attributes=None,
     ) -> tuple[object, ...]:
         return (
             getattr(self.graph, "_version", 0),
@@ -178,6 +401,9 @@ class SQLGenerator:
             self._freeze_cache_value(aliases),
             skip_default_time_dimensions,
             with_totals,
+            # user_attributes affects rendered row filters and access outcome, so it MUST be
+            # part of the cache key; otherwise one user's scoped SQL could be served to another.
+            self._freeze_cache_value(user_attributes),
         )
 
     def _cache_generate_result(self, cache_key: tuple[object, ...], sql: str) -> str:
@@ -218,6 +444,13 @@ class SQLGenerator:
         Returns:
             Time truncation SQL expression appropriate for the dialect
         """
+        # LIMITATION: query-timezone localization assumes a TIMESTAMP-backed time dimension.
+        # It correctly shifts timestamps into the requested zone (an event at 02:00 UTC falls on
+        # the previous local day), which is a required, tested behavior. It cannot, however,
+        # detect a DATE-backed column at compile time (the semantic model does not track column
+        # storage types), and localizing a bare DATE shifts it to the previous day/month in a
+        # negative-offset zone. Do NOT set a query timezone for DATE-backed time dimensions;
+        # cast them to TIMESTAMP in the dimension SQL if zone-aware bucketing is needed.
         if self.timezone:
             column_expr = self._localize_to_timezone(column_expr)
 
@@ -236,10 +469,10 @@ class SQLGenerator:
         if "{" in column_expr or "(" in column_expr:
             return f"DATE_TRUNC('{granularity}', {column_expr})"
 
-        # Parse the column expression to handle table.column references
-        col = sqlglot.parse_one(column_expr, into=exp.Column, dialect=self.dialect)
-        date_trunc = exp.DateTrunc(this=col, unit=exp.Literal.string(granularity))
-        return date_trunc.sql(dialect=self.dialect)
+        # Parse the column expression to handle table.column references. The
+        # serialization (and the parse below) are memoized module-side because
+        # exp.DateTrunc.sql() re-parses internally in several dialects.
+        return _date_trunc_simple_cached(granularity, column_expr, self.dialect)
 
     def _build_interval(self, num: str, unit: str) -> str:
         """Build dialect-specific INTERVAL expression.
@@ -297,7 +530,7 @@ class SQLGenerator:
             # parsing, so sqlglot can handle the expression as valid SQL.
             f_resolved = f.replace("{model}.", f"{model_name}.")
             try:
-                parsed = sqlglot.parse_one(f_resolved, dialect=self.dialect)
+                parsed = _parse_fragment(f_resolved, self.dialect)
                 for column in parsed.find_all(exp.Column):
                     tbl = column.table
                     if tbl and tbl.replace("_cte", "") == model_name:
@@ -336,10 +569,10 @@ class SQLGenerator:
         result = []
         for f in filters:
             try:
-                parsed = sqlglot.parse_one(f, dialect=self.dialect)
+                parsed = _parse_fragment(f, self.dialect)
                 for column in parsed.find_all(exp.Column):
                     if not column.table and column.name in dim_map:
-                        replacement = sqlglot.parse_one(dim_map[column.name], dialect=self.dialect)
+                        replacement = _parse_fragment(dim_map[column.name], self.dialect)
                         # Strip model-qualified refs from the replacement so
                         # expressions like events.region don't leak into
                         # subquery contexts where the alias is t/s.
@@ -431,7 +664,7 @@ class SQLGenerator:
         to_marker = "__to__"
         condition = join_path.custom_condition.replace("{from}", from_marker).replace("{to}", to_marker)
         try:
-            parsed = sqlglot.parse_one(condition, dialect=self.dialect)
+            parsed = _parse_fragment(condition, self.dialect)
         except Exception as exc:
             raise ValueError(
                 "Could not parse custom relationship SQL for "
@@ -563,6 +796,7 @@ class SQLGenerator:
         filters: list[str] | None = None,
         order_by: list[str] | None = None,
         limit: int | None = None,
+        user_attributes: dict | None = None,
     ) -> str:
         """Generate CREATE VIEW statement for a semantic query.
 
@@ -575,6 +809,9 @@ class SQLGenerator:
             filters: List of filter expressions
             order_by: List of fields to order by
             limit: Maximum number of rows
+            user_attributes: Per-request attributes bound to the ``user`` namespace when
+                enforcing model security policies (access gates and row filters). A model
+                with a declared security policy but no ``user_attributes`` is denied.
 
         Returns:
             CREATE VIEW SQL statement
@@ -583,8 +820,117 @@ class SQLGenerator:
 
         if not re.match(r"^[a-zA-Z_][a-zA-Z0-9_.]*$", view_name):
             raise ValueError(f"Invalid view name: {view_name}")
-        query_sql = self.generate(metrics, dimensions, filters, order_by, limit)
+        query_sql = self.generate(
+            metrics,
+            dimensions,
+            filters,
+            order_by=order_by,
+            limit=limit,
+            user_attributes=user_attributes,
+        )
         return f"CREATE VIEW {view_name} AS\n{query_sql}"
+
+    def _participating_models(self, model_names: list[str]) -> set[str]:
+        """Compute the full set of models a query touches, including intermediate join models.
+
+        This mirrors the ``all_models`` derivation used by the main grouped-query path so the
+        security enforcement, filter classification, and CTE build all see the identical set.
+        """
+        all_models = set(model_names)
+        names = list(model_names)
+        for i, model_a in enumerate(names):
+            for model_b in names[i + 1 :]:
+                try:
+                    join_path = self.graph.find_relationship_path(model_a, model_b)
+                    for jp in join_path:
+                        all_models.add(jp.from_model)
+                        all_models.add(jp.to_model)
+                except ValueError:
+                    # No join path found between these two models.
+                    pass
+        return all_models
+
+    def _enforce_security(self, models_in_query: set[str], user_attributes: dict | None) -> dict[str, list[str]]:
+        """Enforce model security policies for a compile, once per query.
+
+        For every participating model with a ``security`` policy:
+          - Access check: evaluate ``access`` (bool or Jinja boolean expression over ``user``);
+            a falsy result raises ``SecurityError`` naming the model.
+          - Deny-by-default: if the model declares a security policy and ``user_attributes is
+            None`` the query is denied (it cannot bypass a declared policy). ``{}`` counts as
+            "attributes provided but empty".
+          - Row filters: each ``row_filters`` entry is rendered against ``user_attributes`` and
+            returned, keyed by model, so the caller can AND it into that model's own CTE.
+
+        Args:
+            models_in_query: Full set of participating model names (base + joined + intermediate).
+            user_attributes: Per-request ``user`` attributes, or ``None``.
+
+        Returns:
+            Dict mapping model name to the list of rendered row-filter SQL fragments (columns
+            qualified with the model name so classification pushes them into that model's CTE).
+
+        Raises:
+            SecurityError: On access denial, deny-by-default, undefined attributes, or a row
+                filter that fails to parse.
+        """
+        from sidemantic.core.security import evaluate_access, render_row_filter
+        from sidemantic.core.semantic_layer import SecurityError
+
+        row_filters_by_model: dict[str, list[str]] = {}
+
+        for model_name in sorted(models_in_query):
+            model = self.graph.get_model(model_name)
+            if model is None or model.security is None:
+                continue
+
+            policy = model.security
+
+            # Deny-by-default: a declared policy cannot be bypassed by omitting attributes.
+            if user_attributes is None:
+                raise SecurityError(
+                    f"Model '{model_name}' declares a security policy but the query supplied no "
+                    "user_attributes; pass user_attributes to query()/compile() (use {} for an "
+                    "empty attribute set)."
+                )
+
+            # Access gate.
+            if not evaluate_access(policy.access, user_attributes):
+                raise SecurityError(f"Access denied to model '{model_name}' by its security policy.")
+
+            # Row-level filters: render, parse (via the memoized fragment parser to validate),
+            # then qualify bare columns with the model name so _classify_filters_for_pushdown
+            # routes them into this model's CTE (scoping rows before joins/aggregation).
+            rendered_filters: list[str] = []
+            for filter_template in policy.row_filters:
+                rendered = render_row_filter(filter_template, user_attributes)
+                try:
+                    parsed = _parse_fragment(rendered, self.dialect)
+                except Exception as exc:
+                    raise SecurityError(
+                        f"Row filter for model '{model_name}' failed to parse as SQL: {rendered!r}"
+                    ) from exc
+
+                # Qualify unqualified OUTER columns with the model name so the filter is pushed
+                # into this model's CTE rather than the outer (post-join) WHERE. Do NOT descend
+                # into subqueries: a filter like `id IN (SELECT id FROM allowed)` must leave the
+                # inner `id` bound to the subquery, not rewritten to `model.id`.
+                def _qualify_outer(node: exp.Expression) -> None:
+                    if isinstance(node, exp.Subquery):
+                        return
+                    if isinstance(node, exp.Column) and not node.table:
+                        node.set("table", model_name)
+                    for arg in node.args.values():
+                        if isinstance(arg, exp.Expression):
+                            _qualify_outer(arg)
+
+                _qualify_outer(parsed)
+                rendered_filters.append(parsed.sql(dialect=self.dialect))
+
+            if rendered_filters:
+                row_filters_by_model[model_name] = rendered_filters
+
+        return row_filters_by_model
 
     def generate(
         self,
@@ -601,6 +947,7 @@ class SQLGenerator:
         aliases: dict[str, str] | None = None,
         skip_default_time_dimensions: bool = False,
         with_totals: bool = False,
+        user_attributes: dict | None = None,
     ) -> str:
         """Generate SQL query from semantic layer query.
 
@@ -621,6 +968,10 @@ class SQLGenerator:
                 trailing _is_total column (1 for the grand total, 0 for detail rows) so it
                 is distinguishable from a real all-NULL dimension group. Cannot be combined
                 with ungrouped, limit, or offset
+            user_attributes: Per-request attributes bound to the ``user`` namespace when
+                enforcing model security policies (access gates and row-level filters). A
+                model with a declared security policy but ``user_attributes is None`` is
+                denied (deny-by-default); ``{}`` is treated as "provided but empty".
 
         Returns:
             SQL query string
@@ -631,6 +982,13 @@ class SQLGenerator:
         segments = segments or []
         parameters = parameters or {}
         aliases = aliases or {}
+
+        # Semi-additive (non_additive_dimension) metrics are handled below by injecting
+        # a QUALIFY into the owning model's CTE (see _plan_semi_additive / _build_model_cte).
+        # The plan (and any UnsupportedMetricError for unimplemented dialects or the
+        # semi-additive + symmetric-aggregate combination) is computed once model_names
+        # is known; a non-empty plan also forces the live CTE path (pre-aggregations do
+        # not model per-group last-snapshot filtering).
 
         # Pre-aggregations are materialized with UTC time buckets, so a timezone-bucketed
         # query cannot be served from a rollup without returning wrong (UTC) buckets. Force a
@@ -653,6 +1011,7 @@ class SQLGenerator:
             aliases,
             skip_default_time_dimensions,
             with_totals,
+            user_attributes,
         )
         cached = self._generate_cache.get(cache_key)
         if cached is not None:
@@ -716,6 +1075,21 @@ class SQLGenerator:
                 processed_filters.append(f)
 
         filters = processed_filters
+
+        # Enforce model security policies once per compile, BEFORE any SQL is assembled or any
+        # query-shape early-return path (window functions, symmetric-aggregate fanout, pre-agg
+        # routing) fires. The participating model set is derived the same way as the main
+        # grouped-query path (base + joined + intermediate join models) so access checks and
+        # row filters cover every model the query actually touches. Rendered row filters are
+        # qualified with their model name and appended to `filters`, so downstream filter
+        # classification/pushdown injects them into each model's own CTE (scoping rows before
+        # joins and aggregation, which is what makes them fan-out-safe).
+        security_model_names = self._find_required_models(metrics, dimensions, filters)
+        if security_model_names:
+            participating_models = self._participating_models(security_model_names)
+            security_row_filters = self._enforce_security(participating_models, user_attributes)
+            for model_name in sorted(security_row_filters):
+                filters = filters + security_row_filters[model_name]
 
         # Check if any metrics need window functions (cumulative or time_comparison)
         def metric_needs_window(m):
@@ -789,6 +1163,16 @@ class SQLGenerator:
         # Find all models needed for the query
         model_names = self._find_required_models(metrics, dimensions, filters)
 
+        # Plan semi-additive handling. Raises for unimplemented cases (non-QUALIFY
+        # dialect, or semi-additive combined with fan-out symmetric aggregation on the
+        # same model). A non-empty plan forces the live CTE path (below) so the QUALIFY
+        # can be injected; pre-aggregation routing is skipped for these queries.
+        semi_additive_plan = (
+            self._plan_semi_additive(metrics, model_names[0], model_names, parsed_dims) if model_names else {}
+        )
+        if semi_additive_plan:
+            use_preaggregations = False
+
         if with_totals and (use_preaggregations or self._needs_preaggregation_for_fanout(metrics, dimensions)):
             raise NotImplementedError(
                 "with_totals is not yet supported for pre-aggregated or fanout (symmetric-aggregate) queries"
@@ -811,8 +1195,11 @@ class SQLGenerator:
                 return self._cache_generate_result(cache_key, join_key_preagg_sql + "\n" + instrumentation)
 
         # Check if we need symmetric aggregation (pre-aggregation approach)
-        # This is needed when metrics come from different models at different join levels
-        if self._needs_preaggregation_for_fanout(metrics, dimensions):
+        # This is needed when metrics come from different models at different join levels.
+        # Skip this fan-out path for semi-additive queries: _plan_semi_additive already
+        # rejected any semi-additive measure whose owning model is fanned out, so a
+        # surviving plan must be served by the standard CTE path (which injects QUALIFY).
+        if not semi_additive_plan and self._needs_preaggregation_for_fanout(metrics, dimensions):
             return self._cache_generate_result(
                 cache_key,
                 self._generate_with_preaggregation(
@@ -888,7 +1275,7 @@ class SQLGenerator:
         # Also check main query filters
         for filter_expr in main_query_filters:
             try:
-                parsed = sqlglot.parse_one(filter_expr, dialect=self.dialect)
+                parsed = _parse_fragment(filter_expr, self.dialect)
                 for column in parsed.find_all(exp.Column):
                     if column.table:
                         # Remove _cte suffix if present
@@ -907,7 +1294,7 @@ class SQLGenerator:
         # are included in the relevant CTE SELECT lists.
         for filter_expr in main_query_filters:
             try:
-                parsed = sqlglot.parse_one(filter_expr, dialect=self.dialect)
+                parsed = _parse_fragment(filter_expr, self.dialect)
                 for column in parsed.find_all(exp.Column):
                     if column.table:
                         model_name = column.table.replace("_cte", "")
@@ -936,6 +1323,7 @@ class SQLGenerator:
                 all_models=all_models,
                 metric_filter_columns=metric_filter_cols,
                 ungrouped=ungrouped,
+                semi_additive=semi_additive_plan.get(model_name),
             )
             cte_sqls.append(cte_sql)
 
@@ -1005,7 +1393,7 @@ class SQLGenerator:
         def qualify_unaliased_columns(filter_sql: str, model_alias: str) -> str:
             """Qualify unaliased columns in segment filters with model alias."""
             try:
-                parsed = sqlglot.parse_one(filter_sql, dialect=self.dialect)
+                parsed = _parse_fragment(filter_sql, self.dialect)
             except Exception:
                 return filter_sql
 
@@ -1055,7 +1443,7 @@ class SQLGenerator:
         """Extract referenced model names from qualified column references."""
         models: set[str] = set()
         try:
-            parsed = sqlglot.parse_one(sql_expr, dialect=self.dialect)
+            parsed = _parse_fragment(sql_expr, self.dialect)
             for column in parsed.find_all(exp.Column):
                 if not column.table:
                     continue
@@ -1151,7 +1539,7 @@ class SQLGenerator:
             for filter_expr in filters:
                 # Parse filter to find model references
                 try:
-                    parsed = sqlglot.parse_one(filter_expr, dialect=self.dialect)
+                    parsed = _parse_fragment(filter_expr, self.dialect)
                     # Find all column references in the filter
                     for column in parsed.find_all(exp.Column):
                         if column.table:
@@ -1196,7 +1584,7 @@ class SQLGenerator:
         flat_parts: list[str] = []
         for filter_expr in filters:
             try:
-                parsed = sqlglot.parse_one(filter_expr, dialect=self.dialect)
+                parsed = _parse_fragment(filter_expr, self.dialect)
                 conjuncts = list(parsed.flatten() if isinstance(parsed, exp.And) else [parsed])
                 for c in conjuncts:
                     # A flattened conjunct that is itself an OR (lower precedence than the
@@ -1213,7 +1601,7 @@ class SQLGenerator:
         for filter_expr in flat_parts:
             # Parse filter expression with SQLGlot
             try:
-                parsed = sqlglot.parse_one(filter_expr, dialect=self.dialect)
+                parsed = _parse_fragment(filter_expr, self.dialect)
             except Exception:
                 # If parsing fails, keep in main query to be safe
                 main_query_filters.append(filter_expr)
@@ -1297,7 +1685,7 @@ class SQLGenerator:
             for f in filters:
                 aliased_filter = f.replace("{model}", f"{model_name}_cte")
                 try:
-                    parsed = sqlglot.parse_one(aliased_filter, dialect=self.dialect)
+                    parsed = _parse_fragment(aliased_filter, self.dialect)
                     for col in parsed.find_all(exp.Column):
                         if col.table and col.table.replace("_cte", "") == model_name:
                             columns_by_model[model_name].add(col.name)
@@ -1309,7 +1697,7 @@ class SQLGenerator:
         def add_sql_columns(sql_expr: str, default_model_name: str | None = None):
             """Extract column refs from SQL and track them per model."""
             try:
-                parsed = sqlglot.parse_one(sql_expr, dialect=self.dialect)
+                parsed = _parse_fragment(sql_expr, self.dialect)
                 for col in parsed.find_all(exp.Column):
                     if col.table:
                         model_name = col.table.replace("_cte", "")
@@ -1387,7 +1775,7 @@ class SQLGenerator:
                 # the CTE and the CASE WHEN filter references a missing column.
                 if filter_model_name is None and metric.agg and metric.sql:
                     try:
-                        parsed = sqlglot.parse_one(metric.sql, dialect=self.dialect)
+                        parsed = _parse_fragment(metric.sql, self.dialect)
                         for col in parsed.find_all(exp.Column):
                             candidate = col.table.replace("_cte", "") if col.table else None
                             if candidate and candidate in self.graph.models:
@@ -1470,7 +1858,7 @@ class SQLGenerator:
         if filters:
             for filter_expr in filters:
                 try:
-                    parsed = sqlglot.parse_one(filter_expr, dialect=self.dialect)
+                    parsed = _parse_fragment(filter_expr, self.dialect)
                     for col in parsed.find_all(exp.Column):
                         if col.table and col.table.replace("_cte", "") == model_name:
                             needed.add(col.name)
@@ -1503,6 +1891,7 @@ class SQLGenerator:
         all_models: set[str] | None = None,
         metric_filter_columns: set[str] | None = None,
         ungrouped: bool = False,
+        semi_additive: tuple[str, str] | None = None,
     ) -> str:
         """Build CTE SQL for a model with optional filter pushdown.
 
@@ -1515,6 +1904,10 @@ class SQLGenerator:
             all_models: All models in query (for determining if joins needed)
             metric_filter_columns: Columns needed for metric-level filters
             ungrouped: Whether the query is returning raw ungrouped rows
+            semi_additive: Optional ``(non_additive_dimension_name, window)`` for a
+                semi-additive measure owned by this model. When set, a QUALIFY is added
+                so only rows at the last (window="max") or first ("min") value of that
+                time dimension per group survive. See ``_plan_semi_additive``.
 
         Returns:
             CTE SQL string
@@ -1528,6 +1921,15 @@ class SQLGenerator:
         needed_dimensions = self._find_needed_dimensions(
             model_name, dimensions, filters, order_by, metric_filter_columns
         )
+
+        # Semi-additive handling needs the non_additive_dimension column projected into
+        # this CTE (aliased to its dimension name) so the QUALIFY below can reference it,
+        # even when the query does not group by it. Declared window_groupings must also be
+        # projected so the QUALIFY can partition per those dimensions.
+        if semi_additive is not None:
+            needed_dimensions.add(semi_additive[0])
+            for grouping_col in semi_additive[2] or ():
+                needed_dimensions.add(grouping_col)
 
         # Build SELECT columns
         select_cols = []
@@ -1700,7 +2102,7 @@ class SQLGenerator:
             # a real column named "model" (e.g. PERCENTILE_CONT(... {model}.amount)).
             sql_expr = sql_expr.replace("{model}.", "").replace("{model}", "")
             try:
-                parsed = sqlglot.parse_one(sql_expr, dialect=self.dialect)
+                parsed = _parse_fragment(sql_expr, self.dialect)
                 for col in parsed.find_all(exp.Column):
                     if col.table and col.table.replace("_cte", "") != model_name:
                         continue
@@ -1912,7 +2314,7 @@ class SQLGenerator:
             processed_filters = []
             for f in filters:
                 try:
-                    parsed = sqlglot.parse_one(f, dialect=self.dialect)
+                    parsed = _parse_fragment(f, self.dialect)
                     # Remove table qualifiers (model_name_cte. or model_name.)
                     for col in parsed.find_all(exp.Column):
                         if col.table:
@@ -1927,11 +2329,60 @@ class SQLGenerator:
 
             where_clause = f"\n  WHERE {' AND '.join(processed_filters)}"
 
+        # Build QUALIFY clause for semi-additive (non_additive_dimension) measures.
+        # Keep only the rows at the last (window="max") or first ("min") value of the
+        # non-additive time dimension per group. Referencing the CTE's own SELECT aliases
+        # here is valid under QUALIFY in DuckDB and the other _QUALIFY_DIALECTS.
+        qualify_clause = ""
+        if semi_additive is not None:
+            non_additive_dim, window, groupings = semi_additive
+            time_col = self._quote_identifier(non_additive_dim)
+
+            partition_aliases: list[str] = []
+            seen_partition: set[str] = set()
+
+            def _add_partition(alias: str) -> None:
+                if alias not in seen_partition:
+                    seen_partition.add(alias)
+                    partition_aliases.append(self._quote_identifier(alias))
+
+            if groupings:
+                # Declared window_groupings (MetricFlow): the snapshot is taken per these
+                # dimensions regardless of the query's grouping (e.g. balance-per-user).
+                for grouping_col in groupings:
+                    _add_partition(grouping_col)
+                # A coarser grain of the non-additive dim requested by the query still scopes
+                # the snapshot to that bucket (month-end balance per user).
+                for dim_ref, gran in dimensions:
+                    if dim_ref == f"{model_name}.{non_additive_dim}" and gran is not None:
+                        _add_partition(f"{non_additive_dim}__{gran}")
+            else:
+                # No declared groupings: partition by the query's other grouping dimensions
+                # for THIS model (e.g. account/region), excluding the raw non-additive axis.
+                for dim_ref, gran in dimensions:
+                    if not dim_ref.startswith(model_name + "."):
+                        continue
+                    dim_name = dim_ref.split(".", 1)[1]
+                    if dim_name == non_additive_dim and gran is None:
+                        # The non-additive time dim at its RAW grain is the window axis, never a
+                        # partition key. A coarser grain of it (day__month) IS a partition key.
+                        continue
+                    _add_partition(f"{dim_name}__{gran}" if gran else dim_name)
+
+            agg = "MAX" if window == "max" else "MIN"
+            if partition_aliases:
+                partition_sql = ", ".join(partition_aliases)
+                window_expr = f"{agg}({time_col}) OVER (PARTITION BY {partition_sql})"
+            else:
+                # No other grouping dimensions: one global last/first snapshot.
+                window_expr = f"{agg}({time_col}) OVER ()"
+            qualify_clause = f"\n  QUALIFY {time_col} = {window_expr}"
+
         # Build CTE
         select_str = ",\n    ".join(select_cols)
         cte_sql = (
             f"{self._quote_identifier(self._cte_name(model_name))} AS "
-            f"(\n  SELECT\n    {select_str}\n  FROM {from_clause}{where_clause}\n)"
+            f"(\n  SELECT\n    {select_str}\n  FROM {from_clause}{where_clause}{qualify_clause}\n)"
         )
 
         return cte_sql
@@ -2327,7 +2778,7 @@ class SQLGenerator:
             rewritten = []
             for f in shared_filters:
                 try:
-                    parsed = sqlglot.parse_one(f, dialect=self.dialect)
+                    parsed = _parse_fragment(f, self.dialect)
                     for col in parsed.find_all(exp.Column):
                         if col.table and col.table in preagg_table_map:
                             col.set("table", exp.to_identifier(preagg_table_map[col.table]))
@@ -2969,7 +3420,7 @@ class SQLGenerator:
         columns: list[str] = []
         seen: set[str] = set()
         try:
-            parsed = sqlglot.parse_one(sql_expr, dialect=self.dialect)
+            parsed = _parse_fragment(sql_expr, self.dialect)
             for col in parsed.find_all(exp.Column):
                 if col.name in seen:
                     continue
@@ -2991,7 +3442,7 @@ class SQLGenerator:
         expr = (measure.sql or "").replace("{model}", cte_alias)
 
         try:
-            parsed = sqlglot.parse_one(expr, dialect=self.dialect)
+            parsed = _parse_fragment(expr, self.dialect)
             for col in parsed.find_all(exp.Column):
                 raw_alias = self._complete_sql_raw_alias(measure.name, col.name)
                 col.set("this", exp.to_identifier(raw_alias, quoted=not self._is_simple_identifier(raw_alias)))
@@ -3013,7 +3464,7 @@ class SQLGenerator:
     def _rewrite_model_refs_to_ctes(self, sql_expr: str) -> str:
         """Rewrite qualified model refs (model.col) to CTE refs (model_cte.col)."""
         try:
-            parsed = sqlglot.parse_one(sql_expr, dialect=self.dialect)
+            parsed = _parse_fragment(sql_expr, self.dialect)
             for col in parsed.find_all(exp.Column):
                 if not col.table:
                     continue
@@ -3042,7 +3493,7 @@ class SQLGenerator:
             return model_context
         if metric.sql:
             try:
-                parsed = sqlglot.parse_one(metric.sql, dialect=self.dialect)
+                parsed = _parse_fragment(metric.sql, self.dialect)
                 for col in parsed.find_all(exp.Column):
                     candidate = col.table.replace("_cte", "") if col.table else None
                     if candidate and candidate in self.graph.models:
@@ -3064,7 +3515,7 @@ class SQLGenerator:
         cte_name = self._cte_name(model_name)
         cte_identifier = exp.to_identifier(cte_name, quoted=not self._is_simple_identifier(cte_name))
         try:
-            parsed = sqlglot.parse_one(filter_expr, dialect=self.dialect)
+            parsed = _parse_fragment(filter_expr, self.dialect)
         except Exception:
             return self._rewrite_model_refs_to_ctes(filter_expr)
         for col in parsed.find_all(exp.Column):
@@ -4288,7 +4739,7 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
             # Rewrite column references via sqlglot to avoid corrupting string
             # literals (e.g. "events.signup" inside a quoted value).
             try:
-                parsed = sqlglot.parse_one(result, dialect=self.dialect)
+                parsed = _parse_fragment(result, self.dialect)
                 for col in parsed.find_all(exp.Column):
                     if col.table == model.name:
                         # Strip model-name qualifier (e.g. events.col -> col)
@@ -5243,7 +5694,7 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
 
     def _filter_references_model_metric(self, model, filter_expr: str) -> bool:
         try:
-            parsed = sqlglot.parse_one(filter_expr, dialect=self.dialect)
+            parsed = _parse_fragment(filter_expr, self.dialect)
         except Exception:
             return False
 
@@ -5285,7 +5736,7 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
         if not metric.sql:
             return f"SUM({metric.name}_raw)"
         try:
-            expression = sqlglot.parse_one(metric.sql, dialect=self.dialect)
+            expression = _parse_fragment(metric.sql, self.dialect)
         except Exception:
             return metric.sql
 
@@ -5294,9 +5745,9 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
                 return node
             field_name = node.name
             if model.get_metric(field_name):
-                return sqlglot.parse_one(
+                return _parse_fragment(
                     self._preaggregation_metric_expression(model, preagg, field_name),
-                    dialect=self.dialect,
+                    self.dialect,
                 )
             return node
 
@@ -5304,7 +5755,7 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
 
     def _rewrite_preaggregation_aggregate_filter(self, model, preagg, filter_expr: str) -> str:
         try:
-            parsed = sqlglot.parse_one(filter_expr, dialect=self.dialect)
+            parsed = _parse_fragment(filter_expr, self.dialect)
         except Exception:
             return filter_expr.replace(f"{model.name}_cte.", "").replace(f"{model.name}.", "")
 
@@ -5318,9 +5769,9 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
 
             field_name = node.name.rsplit("__", 1)[0] if "__" in node.name else node.name
             if model.get_metric(field_name):
-                return sqlglot.parse_one(
+                return _parse_fragment(
                     self._preaggregation_metric_expression(model, preagg, field_name),
-                    dialect=self.dialect,
+                    self.dialect,
                 )
 
             if preagg.time_dimension and preagg.granularity and field_name == preagg.time_dimension:
@@ -5596,7 +6047,7 @@ LEFT JOIN {preagg_table} AS {rollup_alias}
     def _qualify_model_expression(self, expression_sql: str, model_name: str, alias: str) -> str:
         expression_sql = expression_sql.replace("{model}", alias)
         try:
-            expression = sqlglot.parse_one(expression_sql, dialect=self.dialect)
+            expression = _parse_fragment(expression_sql, self.dialect)
         except Exception:
             if self._is_simple_identifier(expression_sql):
                 return f"{alias}.{self._quote_identifier(expression_sql)}"

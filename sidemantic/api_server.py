@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import threading
 from pathlib import Path
 from typing import Any, Literal
@@ -20,9 +21,9 @@ from sidemantic import SemanticLayer, __version__
 from sidemantic.loaders import load_from_directory
 from sidemantic.server.common import (
     ARROW_STREAM_MEDIA_TYPE,
-    reader_to_arrow_bytes,
     record_batch_reader_to_table,
     result_to_record_batch_reader,
+    table_to_arrow_bytes,
     table_to_json_rows,
     validate_filter_expression,
 )
@@ -48,6 +49,7 @@ class StructuredQueryRequest(BaseModel):
     ungrouped: bool = False
     parameters: dict[str, Any] | None = None
     use_preaggregations: bool | None = None
+    timezone: str | None = None
 
     def resolved_filters(self) -> list[str]:
         filters = list(self.filters)
@@ -112,6 +114,11 @@ def start_api_server(
     cors_origins: list[str] | None = None,
     max_request_body_bytes: int = 1024 * 1024,
     serve_ui: bool = True,
+    result_cache_mb: int = 0,
+    result_cache_ttl: float = 60.0,
+    require_user_attrs: bool = False,
+    enforce_visibility: bool = False,
+    user_header: str = "X-Sidemantic-User",
 ) -> None:
     """Start the HTTP API server."""
     try:
@@ -125,6 +132,11 @@ def start_api_server(
         cors_origins=cors_origins,
         max_request_body_bytes=max_request_body_bytes,
         serve_ui=serve_ui,
+        result_cache_mb=result_cache_mb,
+        result_cache_ttl=result_cache_ttl,
+        require_user_attrs=require_user_attrs,
+        enforce_visibility=enforce_visibility,
+        user_header=user_header,
     )
     uvicorn.run(app, host=host, port=port, log_level="info")
 
@@ -140,12 +152,54 @@ def create_app(
     cors_origins: list[str] | None = None,
     max_request_body_bytes: int = 1024 * 1024,
     serve_ui: bool = False,
+    result_cache_mb: int = 0,
+    result_cache_ttl: float = 60.0,
+    require_user_attrs: bool = False,
+    enforce_visibility: bool = False,
+    user_header: str = "X-Sidemantic-User",
 ) -> FastAPI:
-    """Create a FastAPI app for a loaded semantic layer."""
+    """Create a FastAPI app for a loaded semantic layer.
+
+    When ``result_cache_mb`` > 0, read-only query handlers serve identical
+    repeated queries from a content-keyed Arrow result cache (opt-in; the
+    library ``SemanticLayer.query()`` is never cached by default).
+
+    Security integration:
+    - Per-request user attributes are read from the trusted ``user_header``
+      (default ``X-Sidemantic-User``) whose value is a JSON object. They are
+      threaded into the layer's compile/query path so access gates and row
+      filters are enforced, and into the result-cache key so cached results
+      never leak across users.
+    - ``require_user_attrs`` rejects data-endpoint requests lacking a valid
+      header with HTTP 400 before executing.
+    - ``enforce_visibility`` is applied to the layer so requesting a non-public
+      field is rejected.
+    """
     app = FastAPI(title="Sidemantic API", version=__version__)
+    # enforce_visibility is a SemanticLayer.__init__ arg; the layer is passed in
+    # pre-built here, so set it on the instance (least invasive) rather than
+    # reconstructing the layer and re-loading its models.
+    if enforce_visibility:
+        layer.enforce_visibility = True
     app.state.layer = layer
+    app.state.require_user_attrs = require_user_attrs
+    app.state.user_header = user_header
+    # Reentrant lock reserved for layer-MUTATION endpoints (model registration,
+    # config reload). Read-only query/compile/metadata handlers do NOT take it:
+    # they read the immutable in-memory graph and execute queries on a fresh
+    # per-request adapter.cursor(), so HTTP reads run concurrently.
     app.state.lock = threading.RLock()
     app.state.auth_token = auth_token
+
+    if result_cache_mb and result_cache_mb > 0:
+        from sidemantic.core.result_cache import ResultCache
+
+        app.state.result_cache = ResultCache(
+            max_bytes=result_cache_mb * 1024 * 1024,
+            ttl_seconds=result_cache_ttl,
+        )
+    else:
+        app.state.result_cache = None
 
     if cors_origins:
         app.add_middleware(
@@ -175,112 +229,189 @@ def create_app(
     async def handle_value_error(_request: Request, exc: ValueError):
         return JSONResponse({"error": str(exc)}, status_code=400)
 
+    from sidemantic.core.semantic_layer import SecurityError
+
+    @app.exception_handler(SecurityError)
+    async def handle_security_error(_request: Request, exc: SecurityError):
+        # A secured model was queried without sufficient user attributes (or an
+        # access gate denied the request). Map to 403 Forbidden.
+        return JSONResponse({"error": str(exc)}, status_code=403)
+
+    def resolve_user_attributes(request: Request) -> dict | None:
+        """Parse per-request user attributes from the trusted user header.
+
+        The header value is a JSON object bound to the ``user`` namespace when
+        enforcing security policies. Returns ``None`` when the header is absent.
+        Raises HTTP 400 when ``require_user_attrs`` is set and the header is
+        missing, or whenever the header is present but not a JSON object.
+        """
+        header_name = app.state.user_header
+        raw = request.headers.get(header_name)
+        if raw is None or raw.strip() == "":
+            if app.state.require_user_attrs:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Missing required user-attributes header {header_name!r}",
+                )
+            return None
+        try:
+            parsed = json.loads(raw)
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Malformed JSON in {header_name!r} header: {exc}",
+            ) from exc
+        if not isinstance(parsed, dict):
+            raise HTTPException(
+                status_code=400,
+                detail=f"{header_name!r} header must be a JSON object",
+            )
+        return parsed
+
+    def deny_free_sql_if_secured() -> None:
+        """Deny the free-form SQL endpoints when any model declares a security policy.
+
+        ``/sql`` (semantic rewrite) and ``/raw`` (direct passthrough) cannot apply
+        per-user row filters -- the rewriter/raw paths do not thread user attributes,
+        and ``/raw`` reads the underlying table directly, bypassing the model entirely.
+        Rather than silently return unscoped rows for a secured model, refuse these
+        endpoints outright when security is in play and point callers at ``/query``,
+        which enforces access gates and row filters.
+        """
+        layer = app.state.layer
+        if any(getattr(model, "security", None) is not None for model in layer.graph.models.values()):
+            raise SecurityError(
+                "The /sql and /raw endpoints cannot enforce row-level security and are "
+                "disabled because a model declares a security policy. Use the structured "
+                "/query endpoint, which applies access gates and row filters per user."
+            )
+
     @app.get("/readyz")
     def readyz() -> dict[str, str]:
         return {"status": "ok"}
 
     @app.get("/health", dependencies=[Depends(require_auth)])
     def health() -> dict[str, Any]:
-        with app.state.lock:
-            current_layer = app.state.layer
-            return {
-                "status": "ok",
-                "version": __version__,
-                "dialect": current_layer.dialect,
-                "model_count": len(current_layer.graph.models),
-            }
+        # Read-only metadata: reads the in-memory graph, never mutates layer
+        # state and never touches the database, so it needs no lock.
+        current_layer = app.state.layer
+        return {
+            "status": "ok",
+            "version": __version__,
+            "dialect": current_layer.dialect,
+            "model_count": len(current_layer.graph.models),
+        }
+
+    def _visible_dimensions(layer, model) -> list:
+        if getattr(layer, "enforce_visibility", False):
+            return [d for d in model.dimensions if getattr(d, "public", True)]
+        return list(model.dimensions)
+
+    def _visible_metrics(layer, model) -> list:
+        if getattr(layer, "enforce_visibility", False):
+            return [m for m in model.metrics if getattr(m, "public", True)]
+        return list(model.metrics)
 
     @app.get("/models", dependencies=[Depends(require_auth)])
     def list_models() -> list[dict[str, Any]]:
-        with app.state.lock:
-            current_layer = app.state.layer
-            models = []
-            for model_name, model in current_layer.graph.models.items():
-                models.append(
-                    {
-                        "name": model_name,
-                        "table": model.table,
-                        "dimensions": [d.name for d in model.dimensions],
-                        "metrics": [m.name for m in model.metrics],
-                        "relationships": len(model.relationships),
-                    }
-                )
-            return models
+        # Read-only metadata over the in-memory graph. Non-public fields are omitted
+        # when the layer enforces visibility, so this catalog cannot enumerate them.
+        current_layer = app.state.layer
+        models = []
+        for model_name, model in current_layer.graph.models.items():
+            models.append(
+                {
+                    "name": model_name,
+                    "table": model.table,
+                    "dimensions": [d.name for d in _visible_dimensions(current_layer, model)],
+                    "metrics": [m.name for m in _visible_metrics(current_layer, model)],
+                    "relationships": len(model.relationships),
+                }
+            )
+        return models
 
     @app.get("/graph", dependencies=[Depends(require_auth)])
     def graph() -> dict[str, Any]:
-        with app.state.lock:
-            current_layer = app.state.layer
-            graph_obj = current_layer.graph
+        # Read-only metadata over the in-memory graph.
+        current_layer = app.state.layer
+        graph_obj = current_layer.graph
 
-            models = []
-            for model_name, model in graph_obj.models.items():
-                model_info = {
-                    "name": model_name,
-                    "table": model.table,
-                    "dimensions": [d.name for d in model.dimensions],
-                    "metrics": [m.name for m in model.metrics],
-                    "relationships": [{"name": rel.name, "type": rel.type} for rel in model.relationships],
-                }
-                if model.segments:
-                    model_info["segments"] = [segment.name for segment in model.segments]
-                models.append(model_info)
+        models = []
+        for model_name, model in graph_obj.models.items():
+            model_info = {
+                "name": model_name,
+                "table": model.table,
+                "dimensions": [d.name for d in _visible_dimensions(current_layer, model)],
+                "metrics": [m.name for m in _visible_metrics(current_layer, model)],
+                "relationships": [{"name": rel.name, "type": rel.type} for rel in model.relationships],
+            }
+            if model.segments:
+                model_info["segments"] = [segment.name for segment in model.segments]
+            models.append(model_info)
 
-            graph_metrics = []
-            for metric_name, metric in graph_obj.metrics.items():
-                metric_info = {"name": metric_name}
-                if metric.type:
-                    metric_info["type"] = metric.type
-                if metric.description:
-                    metric_info["description"] = metric.description
-                if metric.base_metric:
-                    metric_info["base_metric"] = metric.base_metric
-                graph_metrics.append(metric_info)
+        graph_metrics = []
+        for metric_name, metric in graph_obj.metrics.items():
+            if getattr(current_layer, "enforce_visibility", False) and not getattr(metric, "public", True):
+                continue
+            metric_info = {"name": metric_name}
+            if metric.type:
+                metric_info["type"] = metric.type
+            if metric.description:
+                metric_info["description"] = metric.description
+            if metric.base_metric:
+                metric_info["base_metric"] = metric.base_metric
+            graph_metrics.append(metric_info)
 
-            joinable_pairs = []
-            model_names = list(graph_obj.models.keys())
-            for index, left_name in enumerate(model_names):
-                for right_name in model_names[index + 1 :]:
-                    try:
-                        path = graph_obj.find_relationship_path(left_name, right_name)
-                    except (KeyError, ValueError):
-                        continue
-                    joinable_pairs.append({"from": left_name, "to": right_name, "hops": len(path)})
+        joinable_pairs = []
+        model_names = list(graph_obj.models.keys())
+        for index, left_name in enumerate(model_names):
+            for right_name in model_names[index + 1 :]:
+                try:
+                    path = graph_obj.find_relationship_path(left_name, right_name)
+                except (KeyError, ValueError):
+                    continue
+                joinable_pairs.append({"from": left_name, "to": right_name, "hops": len(path)})
 
-            payload: dict[str, Any] = {"models": models, "joinable_pairs": joinable_pairs}
-            if graph_metrics:
-                payload["graph_metrics"] = graph_metrics
-            return payload
+        payload: dict[str, Any] = {"models": models, "joinable_pairs": joinable_pairs}
+        if graph_metrics:
+            payload["graph_metrics"] = graph_metrics
+        return payload
 
     @app.get("/describe", dependencies=[Depends(require_auth)])
     def describe() -> dict[str, Any]:
         """Rich UI/FFI model metadata (dimension types, granularities, labels, formats)."""
-        with app.state.lock:
-            current_layer = app.state.layer
-            payload = current_layer.describe_models()
-            payload["dialect"] = current_layer.dialect
-            return payload
+        # Read-only metadata over the in-memory graph.
+        current_layer = app.state.layer
+        payload = current_layer.describe_models()
+        payload["dialect"] = current_layer.dialect
+        return payload
 
     @app.post("/compile", dependencies=[Depends(require_auth)])
-    def compile_query(payload: StructuredQueryRequest) -> dict[str, str]:
-        with app.state.lock:
-            current_layer = app.state.layer
-            filters = payload.resolved_filters()
-            for filter_str in filters:
-                validate_filter_expression(filter_str, dialect=current_layer.dialect)
-            sql = current_layer.compile(
-                dimensions=payload.dimensions,
-                metrics=payload.metrics,
-                filters=filters,
-                segments=payload.segments or None,
-                order_by=payload.order_by or None,
-                limit=payload.limit,
-                offset=payload.offset,
-                ungrouped=payload.ungrouped,
-                parameters=payload.parameters,
-                use_preaggregations=payload.use_preaggregations,
-            )
-            return {"sql": sql}
+    def compile_query(payload: StructuredQueryRequest, request: Request) -> dict[str, str]:
+        # Pure CPU: compiles SQL from the in-memory graph, no DB access, no lock.
+        # User attributes are threaded in so access gates and row filters are
+        # baked into the compiled SQL (a secured model with no attrs raises
+        # SecurityError -> 403).
+        current_layer = app.state.layer
+        user_attributes = resolve_user_attributes(request)
+        filters = payload.resolved_filters()
+        for filter_str in filters:
+            validate_filter_expression(filter_str, dialect=current_layer.dialect)
+        sql = current_layer.compile(
+            dimensions=payload.dimensions,
+            metrics=payload.metrics,
+            filters=filters,
+            segments=payload.segments or None,
+            order_by=payload.order_by or None,
+            limit=payload.limit,
+            offset=payload.offset,
+            ungrouped=payload.ungrouped,
+            parameters=payload.parameters,
+            use_preaggregations=payload.use_preaggregations,
+            user_attributes=user_attributes,
+            timezone=payload.timezone,
+        )
+        return {"sql": sql}
 
     @app.post("/query", dependencies=[Depends(require_auth)])
     def run_query(
@@ -288,33 +419,38 @@ def create_app(
         request: Request,
         format: Literal["json", "arrow"] | None = Query(default=None),
     ):
-        with app.state.lock:
-            current_layer = app.state.layer
-            filters = payload.resolved_filters()
-            for filter_str in filters:
-                validate_filter_expression(filter_str, dialect=current_layer.dialect)
-            sql = current_layer.compile(
-                dimensions=payload.dimensions,
-                metrics=payload.metrics,
-                filters=filters,
-                segments=payload.segments or None,
-                order_by=payload.order_by or None,
-                limit=payload.limit,
-                offset=payload.offset,
-                ungrouped=payload.ungrouped,
-                parameters=payload.parameters,
-                use_preaggregations=payload.use_preaggregations,
-            )
-            result = current_layer.adapter.execute(sql)
-            return _build_query_response(request, current_layer, result, sql=sql, format_override=format)
+        # Read-only query: compile (pure CPU) then execute on a fresh per-request
+        # cursor so concurrent reads do not serialize on one connection. Execution
+        # flows through _query_table so the opt-in result cache can serve repeats.
+        current_layer = app.state.layer
+        user_attributes = resolve_user_attributes(request)
+        filters = payload.resolved_filters()
+        for filter_str in filters:
+            validate_filter_expression(filter_str, dialect=current_layer.dialect)
+        sql = current_layer.compile(
+            dimensions=payload.dimensions,
+            metrics=payload.metrics,
+            filters=filters,
+            segments=payload.segments or None,
+            order_by=payload.order_by or None,
+            limit=payload.limit,
+            offset=payload.offset,
+            ungrouped=payload.ungrouped,
+            parameters=payload.parameters,
+            use_preaggregations=payload.use_preaggregations,
+            user_attributes=user_attributes,
+            timezone=payload.timezone,
+        )
+        table = _query_table(app, current_layer, sql, user_attributes=user_attributes)
+        return _build_query_response(request, current_layer, table, sql=sql, format_override=format)
 
     @app.post("/sql/compile", dependencies=[Depends(require_auth)])
     def compile_sql(payload: SQLRequest) -> dict[str, str]:
-        with app.state.lock:
-            current_layer = app.state.layer
-            query = _normalize_sql_query(payload.query)
-            rewritten_sql = QueryRewriter(current_layer.graph, dialect=current_layer.dialect).rewrite(query)
-            return {"sql": rewritten_sql}
+        # Pure CPU: rewrites SQL from the in-memory graph, no DB access, no lock.
+        current_layer = app.state.layer
+        query = _normalize_sql_query(payload.query)
+        rewritten_sql = QueryRewriter(current_layer.graph, dialect=current_layer.dialect).rewrite(query)
+        return {"sql": rewritten_sql}
 
     @app.post("/sql", dependencies=[Depends(require_auth)])
     def run_sql(
@@ -322,19 +458,22 @@ def create_app(
         request: Request,
         format: Literal["json", "arrow"] | None = Query(default=None),
     ):
-        with app.state.lock:
-            current_layer = app.state.layer
-            query = _normalize_sql_query(payload.query)
-            rewritten_sql = QueryRewriter(current_layer.graph, dialect=current_layer.dialect).rewrite(query)
-            result = current_layer.adapter.execute(rewritten_sql)
-            return _build_query_response(
-                request,
-                current_layer,
-                result,
-                sql=rewritten_sql,
-                original_sql=query,
-                format_override=format,
-            )
+        # Read-only query: rewrite (pure CPU) then execute on a fresh per-request
+        # cursor, routed through _query_table for opt-in result caching.
+        current_layer = app.state.layer
+        user_attributes = resolve_user_attributes(request)
+        deny_free_sql_if_secured()
+        query = _normalize_sql_query(payload.query)
+        rewritten_sql = QueryRewriter(current_layer.graph, dialect=current_layer.dialect).rewrite(query)
+        table = _query_table(app, current_layer, rewritten_sql, user_attributes=user_attributes)
+        return _build_query_response(
+            request,
+            current_layer,
+            table,
+            sql=rewritten_sql,
+            original_sql=query,
+            format_override=format,
+        )
 
     @app.post("/raw", dependencies=[Depends(require_auth)])
     def run_raw_sql(
@@ -343,18 +482,21 @@ def create_app(
         format: Literal["json", "arrow"] | None = Query(default=None),
     ):
         """Execute raw SQL directly on the underlying database, bypassing the semantic rewriter."""
-        with app.state.lock:
-            current_layer = app.state.layer
-            query = _normalize_sql_query(payload.query)
-            _require_select_statement(query)
-            result = current_layer.adapter.execute(query)
-            return _build_query_response(
-                request,
-                current_layer,
-                result,
-                sql=query,
-                format_override=format,
-            )
+        # Read-only query (SELECT enforced) on a fresh per-request cursor,
+        # routed through _query_table for opt-in result caching.
+        current_layer = app.state.layer
+        user_attributes = resolve_user_attributes(request)
+        deny_free_sql_if_secured()
+        query = _normalize_sql_query(payload.query)
+        _require_select_statement(query)
+        table = _query_table(app, current_layer, query, user_attributes=user_attributes)
+        return _build_query_response(
+            request,
+            current_layer,
+            table,
+            sql=query,
+            format_override=format,
+        )
 
     if serve_ui:
         ui_dir = ui_static_dir()
@@ -384,29 +526,59 @@ def create_app(
     return app
 
 
+def _execute_to_table(layer: SemanticLayer, sql: str) -> Any:
+    """Execute SQL on the layer's adapter and materialize a PyArrow table.
+
+    Caching operates on fully-materialized tables (rather than single-use
+    RecordBatchReaders) so a cached result can be served to many requests.
+
+    Executes on a fresh per-request cursor rather than the shared connection so
+    concurrent reads run in parallel; the result cache's singleflight then dedups
+    identical concurrent queries into a single underlying execute.
+    """
+    result = layer.adapter.cursor().execute(sql)
+    reader = result_to_record_batch_reader(result, layer.adapter)
+    return record_batch_reader_to_table(reader)
+
+
+def _query_table(app: FastAPI, layer: SemanticLayer, sql: str, user_attributes: dict | None = None) -> Any:
+    """Return the Arrow table for ``sql``, served from the result cache if enabled.
+
+    The cache is opt-in (``result_cache_mb`` > 0). The key covers the compiled
+    SQL, dialect + connection fingerprint, layer generation, and the caller's
+    security-scoped ``user_attributes`` so cached results never leak across
+    users. Singleflight in ResultCache ensures a duplicate in-flight query runs
+    the underlying execute exactly once.
+    """
+    cache = getattr(app.state, "result_cache", None)
+    if cache is None:
+        return _execute_to_table(layer, sql)
+
+    key = layer.build_result_key(sql, user_attributes=user_attributes)
+    return cache.get_or_compute(key, lambda: _execute_to_table(layer, sql))
+
+
 def _build_query_response(
     request: Request,
     layer: SemanticLayer,
-    result: Any,
+    table: Any,
     sql: str,
     format_override: Literal["json", "arrow"] | None,
     original_sql: str | None = None,
 ):
-    reader = result_to_record_batch_reader(result, layer.adapter)
     response_format = _resolve_response_format(request, format_override)
 
     if response_format == ARROW_FORMAT:
-        body, row_count = reader_to_arrow_bytes(reader)
+        body = table_to_arrow_bytes(table)
         return Response(
             content=body,
             media_type=ARROW_STREAM_MEDIA_TYPE,
             headers={
-                "X-Sidemantic-Row-Count": str(row_count),
+                "X-Sidemantic-Row-Count": str(table.num_rows),
                 "X-Sidemantic-Dialect": layer.dialect,
             },
         )
 
-    table = record_batch_reader_to_table(reader)
     payload: dict[str, Any] = {
         "sql": sql,
         "rows": table_to_json_rows(table),

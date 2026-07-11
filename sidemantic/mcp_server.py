@@ -14,6 +14,11 @@ from sidemantic.loaders import load_from_directory
 # Global semantic layer instance
 _layer: SemanticLayer | None = None
 _apps_enabled: bool = False
+# Optional static security user attributes applied to every query. The MCP
+# server has no per-session auth/identity concept here, so attributes are a
+# server-level, process-wide value provided at init (defaults to None, meaning
+# no attributes -> the layer denies any query touching a secured model).
+_user_attributes: dict | None = None
 
 
 def initialize_layer(
@@ -21,9 +26,10 @@ def initialize_layer(
     db_path: str | None = None,
     connection: str | None = None,
     init_sql: list[str] | None = None,
+    user_attributes: dict | None = None,
 ) -> SemanticLayer:
     """Initialize the semantic layer with models from directory."""
-    global _layer
+    global _layer, _user_attributes
 
     # Use explicit connection string, or build one from db_path
     if connection is None and db_path:
@@ -34,6 +40,7 @@ def initialize_layer(
 
     _layer = SemanticLayer(connection=connection, init_sql=init_sql)
     load_from_directory(_layer, directory)
+    _user_attributes = user_attributes
     return _layer
 
 
@@ -45,6 +52,11 @@ def get_layer() -> SemanticLayer:
             "'sidemantic mcp-serve <directory>' which loads models before serving."
         )
     return _layer
+
+
+def get_user_attributes() -> dict | None:
+    """Return the server-level static security user attributes (None if unset)."""
+    return _user_attributes
 
 
 def _convert_to_json_compatible(value: Any) -> Any:
@@ -394,7 +406,8 @@ def run_query(
     if where:
         _validate_filter(where, dialect=layer.dialect)
 
-    # Compile SQL
+    # Compile SQL. Pass the server-level static user attributes so model access
+    # gates and row filters are enforced (None -> secured models are denied).
     sql = layer.compile(
         dimensions=dimensions or [],
         metrics=metrics or [],
@@ -404,6 +417,7 @@ def run_query(
         limit=limit or None,
         offset=offset or None,
         ungrouped=ungrouped,
+        user_attributes=get_user_attributes(),
     )
 
     if dry_run:
@@ -484,6 +498,7 @@ def create_chart(
         order_by=order_by,
         limit=limit or None,
         offset=offset or None,
+        user_attributes=get_user_attributes(),
     )
 
     result = layer.adapter.execute(sql)
@@ -595,6 +610,15 @@ def run_sql(query: str) -> dict[str, Any]:
     from sidemantic.sql.query_rewriter import QueryRewriter
 
     layer = get_layer()
+    # This SQL-first path cannot apply per-user row filters (QueryRewriter does not
+    # accept user_attributes). Rather than return unscoped rows for a secured model,
+    # refuse this tool when any model declares a security policy -- mirroring the HTTP
+    # /sql endpoint. Use the structured run_query tool, which enforces access + filters.
+    if any(getattr(model, "security", None) is not None for model in layer.graph.models.values()):
+        raise ValueError(
+            "run_sql is disabled because a model declares a security policy; it cannot apply "
+            "row-level security. Use run_query (structured), which enforces access gates and row filters."
+        )
     rewriter = QueryRewriter(layer.graph, dialect=layer.dialect)
     rewritten_sql = rewriter.rewrite(query)
 

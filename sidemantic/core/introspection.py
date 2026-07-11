@@ -11,16 +11,20 @@ from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
 
 
-def describe_graph(graph: SemanticGraph, model_names: list[str] | None = None) -> dict[str, Any]:
+def describe_graph(
+    graph: SemanticGraph, model_names: list[str] | None = None, enforce_visibility: bool = False
+) -> dict[str, Any]:
     warnings = _warnings(graph)
     requested = set(model_names or [])
     models = [
-        _describe_model(model, warnings) for model in graph.models.values() if not requested or model.name in requested
+        _describe_model(model, warnings, enforce_visibility)
+        for model in graph.models.values()
+        if not requested or model.name in requested
     ]
     metrics = [
         _describe_metric(metric, warnings, model_name=None)
         for metric in graph.metrics.values()
-        if _include_graph_metric(metric, requested)
+        if _include_graph_metric(metric, requested) and not (enforce_visibility and not getattr(metric, "public", True))
     ]
 
     return {
@@ -47,16 +51,18 @@ def _metric_owner_model(metric: Metric) -> str | None:
     return None
 
 
-def _describe_model(model: Model, warnings: list[dict[str, Any]]) -> dict[str, Any]:
+def _describe_model(model: Model, warnings: list[dict[str, Any]], enforce_visibility: bool = False) -> dict[str, Any]:
     model_kind = _model_kind(model)
+    dimensions = model.dimensions if not enforce_visibility else [d for d in model.dimensions if d.public]
+    metrics = model.metrics if not enforce_visibility else [m for m in model.metrics if m.public]
     info: dict[str, Any] = {
         "name": model.name,
         "kind": model_kind,
         "table": model.table,
         "sql": model.sql,
         "primary_key": model.primary_key,
-        "dimensions": [_describe_dimension(dimension, warnings, model) for dimension in model.dimensions],
-        "metrics": [_describe_metric(metric, warnings, model.name, model=model) for metric in model.metrics],
+        "dimensions": [_describe_dimension(dimension, warnings, model) for dimension in dimensions],
+        "metrics": [_describe_metric(metric, warnings, model.name, model=model) for metric in metrics],
         "relationships": [
             _describe_relationship(relationship, warnings, model=model) for relationship in model.relationships
         ],

@@ -270,7 +270,15 @@ PARSEABLE_FIXTURE_CASES = [
 
 @cache
 def _parse_graph(adapter_cls: type, fixture_path: str):
-    return adapter_cls().parse(fixture_path)
+    graph = adapter_cls().parse(fixture_path)
+    # These contract tests validate parse/graph/execution structure, not access control.
+    # Some fixtures now import an enforced SecurityPolicy (Cube access_policy, Rill security:),
+    # which would otherwise trip deny-by-default when queries run without user attributes.
+    # Security import itself is covered by tests/adapters/test_security_import.py.
+    for model in graph.models.values():
+        if getattr(model, "security", None) is not None:
+            model.security = None
+    return graph
 
 
 def _pick_compile_query(graph):

@@ -4,8 +4,6 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
-from .dependency_analyzer import extract_metric_dependencies
-
 
 class Metric(BaseModel):
     """Measure definition - supports simple aggregations and complex metric types.
@@ -365,6 +363,23 @@ class Metric(BaseModel):
         None,
         description="Dimension across which this metric cannot be summed (e.g., time for averages)",
     )
+    non_additive_window: Literal["min", "max"] = Field(
+        "max",
+        description=(
+            "Which value of non_additive_dimension to keep per group when computing a "
+            "semi-additive metric. 'max' (default) keeps the last snapshot (MetricFlow "
+            "default); 'min' keeps the first."
+        ),
+    )
+    non_additive_window_groupings: list[str] | None = Field(
+        None,
+        description=(
+            "Dimensions the semi-additive snapshot is taken per (MetricFlow window_groupings). "
+            "When set, the last/first snapshot is computed per these groupings regardless of the "
+            "query's grouping (e.g. balance-per-user). When unset, the snapshot partitions by the "
+            "query's own non-time grouping dimensions."
+        ),
+    )
 
     # Arbitrary metadata (ai_context, custom_extensions, etc.)
     meta: dict[str, Any] | None = Field(None, description="Arbitrary metadata for extensions")
@@ -419,4 +434,6 @@ class Metric(BaseModel):
         Returns:
             Set of measure/metric names this depends on.
         """
+        from .dependency_analyzer import extract_metric_dependencies
+
         return extract_metric_dependencies(self, graph, model_context)

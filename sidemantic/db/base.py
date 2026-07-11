@@ -1,6 +1,7 @@
 """Base database adapter interface."""
 
 import re
+import threading
 from abc import ABC, abstractmethod
 from typing import Any
 
@@ -8,6 +9,10 @@ from typing import Any
 # followed by letters, digits, or underscores. Also allows dots for
 # qualified names (schema.table).
 _IDENTIFIER_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)*$")
+
+# Guards lazy creation of each adapter's shared-connection lock so two threads
+# calling cursor() concurrently cannot end up with two different locks.
+_SHARED_LOCK_INIT_GUARD = threading.Lock()
 
 
 def validate_identifier(value: str, name: str = "identifier") -> str:
@@ -81,12 +86,111 @@ def validate_query_history_params(
     return days_back_int, limit_int
 
 
+class _MaterializedResult:
+    """A fully-materialized query result served entirely from memory.
+
+    Produced by :class:`_SerializedCursor` so that ALL shared-connection access (execute
+    plus the fetch/drain) happens while the lock is held; downstream consumers then read
+    from the in-memory Arrow table and never touch the shared connection concurrently.
+    """
+
+    __slots__ = ("_table", "_rows", "_pos")
+
+    def __init__(self, table: Any):
+        self._table = table
+        self._rows: list | None = None
+        self._pos = 0
+
+    def fetch_record_batch(self) -> Any:
+        """Return a RecordBatchReader over the materialized table (no connection access).
+
+        ``result_to_record_batch_reader`` prefers this no-arg method over the adapter path.
+        """
+        return self._table.to_reader()
+
+    def fetchone(self) -> tuple | None:
+        if self._rows is None:
+            self._rows = self._table.to_pylist()
+        if self._pos >= len(self._rows):
+            return None
+        row = self._rows[self._pos]
+        self._pos += 1
+        return tuple(row.values())
+
+
+class _SerializedCursor:
+    """Fallback cursor that guards the shared adapter connection with a lock.
+
+    Adapters that do not expose an independent concurrent handle fall back to this
+    wrapper. It preserves the pre-existing serialized single-connection behavior: the
+    query AND its full result materialization run under a per-adapter lock, so callers
+    that switch to ``adapter.cursor()`` for concurrency cannot interleave fetches on a
+    driver that does not support concurrent handles. The result is returned already
+    materialized so no connection access happens after the lock is released.
+    """
+
+    def __init__(self, adapter: "BaseDatabaseAdapter", lock: threading.Lock):
+        self._adapter = adapter
+        self._lock = lock
+
+    def execute(self, sql: str) -> Any:
+        """Execute SQL and fully materialize the result under the shared-connection lock."""
+        with self._lock:
+            result = self._adapter.execute(sql)
+            # Drain to an in-memory Arrow table WHILE the lock is held so a concurrent
+            # request's execute cannot interleave with this result's fetch on the shared
+            # connection (which would corrupt driver state / stale the cursor).
+            reader = self._adapter.fetch_record_batch(result)
+            table = reader.read_all()
+        return _MaterializedResult(table)
+
+    def fetch_record_batch(self, result: Any) -> Any:
+        """Return a RecordBatchReader; results from ``execute`` are already materialized."""
+        if isinstance(result, _MaterializedResult):
+            return result.fetch_record_batch()
+        return self._adapter.fetch_record_batch(result)
+
+    def fetchone(self, result: Any) -> tuple | None:
+        if isinstance(result, _MaterializedResult):
+            return result.fetchone()
+        return self._adapter.fetchone(result)
+
+    def close(self) -> None:
+        """No-op: the shared connection is owned by the adapter, not the cursor."""
+        return None
+
+
 class BaseDatabaseAdapter(ABC):
     """Abstract base class for database adapters.
 
     Adapters provide a unified interface for different database backends,
     allowing Sidemantic to work with DuckDB, PostgreSQL, and other databases.
     """
+
+    def cursor(self) -> Any:
+        """Return a per-call handle for executing a query.
+
+        The returned object exposes ``execute(sql)`` returning a result object
+        compatible with :meth:`fetch_record_batch` / :meth:`fetchone`.
+
+        The default implementation returns a wrapper that serializes execution
+        on the shared connection behind a per-adapter lock, matching the
+        historical single-connection behavior. Adapters whose driver supports
+        independent concurrent handles (e.g. DuckDB via ``conn.cursor()``)
+        override this to return a truly independent cursor so concurrent reads
+        do not serialize.
+        """
+        lock = getattr(self, "_shared_connection_lock", None)
+        if lock is None:
+            # Double-checked under a global init guard so concurrent first calls
+            # settle on a single lock instance for this adapter.
+            with _SHARED_LOCK_INIT_GUARD:
+                lock = getattr(self, "_shared_connection_lock", None)
+                if lock is None:
+                    lock = threading.Lock()
+                    # Store so all fallback cursors for this adapter share one lock.
+                    self._shared_connection_lock = lock
+        return _SerializedCursor(self, lock)
 
     @abstractmethod
     def execute(self, sql: str) -> Any:

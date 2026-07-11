@@ -22,6 +22,24 @@ class PreaggregationStrictError(RuntimeError):
     """Raised in strict (rollup-only) mode when a query cannot be served from a pre-aggregation."""
 
 
+class SecurityError(Exception):
+    """Raised by the security enforcement layer when a query violates a model's SecurityPolicy.
+
+    Covers denied model access (falsy ``access`` expression), missing user attributes under
+    deny-by-default, and failures rendering a row-filter template (e.g. an undefined ``user``
+    attribute reference).
+    """
+
+
+class UnsupportedMetricError(RuntimeError):
+    """Raised when a queried metric uses a feature the generator cannot serve correctly.
+
+    Currently raised for metrics with ``non_additive_dimension`` set, which would
+    otherwise be silently over-aggregated (wrong results). Suppress with
+    ``SemanticLayer(allow_non_additive_unsafe=True)``.
+    """
+
+
 # Substrings that identify a "missing relation/table" execution error across
 # database adapters (DuckDB, Postgres, BigQuery, Snowflake, ClickHouse, ...).
 # Used to decide whether a routed-but-unbuilt pre-aggregation table should fall
@@ -56,6 +74,8 @@ class SemanticLayer:
         fallback: bool | None = None,
         default_limit: int | None = None,
         max_limit: int | None = None,
+        allow_non_additive_unsafe: bool = False,
+        enforce_visibility: bool = False,
     ):
         """Initialize semantic layer.
 
@@ -92,6 +112,16 @@ class SemanticLayer:
                 full-table scans.
             max_limit: Opt-in maximum row limit; an explicit (or defaulted) limit larger
                 than this is capped to it (default: None, i.e. uncapped).
+            allow_non_additive_unsafe: When True, skip the generator's semi-additive
+                (non_additive_dimension) rewrite entirely and aggregate such metrics naively
+                over ALL snapshots -- i.e. over-aggregated (wrong) results. By default the
+                generator implements semi-additive handling correctly (QUALIFY last/first
+                snapshot per group) for QUALIFY dialects and raises UnsupportedMetricError
+                only for cases it does not implement; this flag opts back into the old,
+                naive behavior explicitly (default: False).
+            enforce_visibility: When True, requesting a dimension/metric whose ``public=False``
+                raises during compile, and catalog/introspection listings omit non-public
+                fields. Defaults to False so library users are unaffected.
         """
         from sidemantic.db.base import BaseDatabaseAdapter
 
@@ -103,6 +133,10 @@ class SemanticLayer:
         self.graph = SemanticGraph()
         self._sql_rewrite_cache: dict[tuple[object, ...], str] = {}
         self._sql_rewrite_cache_limit = 256
+        # Monotonic counter bumped whenever the model/metric graph or query-affecting
+        # config mutates. Included in result-cache keys so cached Arrow results are
+        # invalidated the moment the layer definition changes.
+        self._generation = 0
         self.use_preaggregations = use_preaggregations
         self.preagg_strict = preagg_strict
         self.preagg_database = preagg_database
@@ -110,6 +144,8 @@ class SemanticLayer:
         self.engine = engine or "python"
         self.default_limit = default_limit
         self.max_limit = max_limit
+        self.allow_non_additive_unsafe = allow_non_additive_unsafe
+        self.enforce_visibility = enforce_visibility
         self._strict_rust_sql_generator_entrypoint = is_strict_for("sql_generator_entrypoint")
         self._strict_rust_query_validation = is_strict_for("semantic_core_query_validation")
         if engine == "python":
@@ -271,6 +307,44 @@ class SemanticLayer:
         # Update the adapter's connection
         self.adapter.conn = value
 
+    @property
+    def connection_fingerprint(self) -> str:
+        """Stable string identifying which database this layer talks to.
+
+        Included in result-cache keys so identical SQL against different
+        databases (or different connection strings) never shares a cached
+        Arrow result. Uses the adapter dialect plus the connection string when
+        available; falls back to the adapter's identity for custom adapters.
+        """
+        connection_string = getattr(self, "connection_string", None) or f"custom:{id(self.adapter)}"
+        return f"{self.dialect}|{connection_string}"
+
+    def build_result_key(
+        self,
+        compiled_sql: str,
+        user_attributes: dict | None = None,
+    ) -> str:
+        """Build a content-addressed result-cache key for a compiled query.
+
+        Servers call this to key cached Arrow results. The key covers the
+        compiled (post pre-agg-routing) SQL, the dialect + connection
+        fingerprint, the layer generation counter (bumped on model/metric/config
+        mutations), and the caller's security-scoped ``user_attributes`` (may be
+        None today; A2 will populate it) so results never collide across users.
+        """
+        from sidemantic.core.result_cache import build_result_key
+
+        # Combine the layer-level generation with the graph's own mutation
+        # counter so any direct graph mutation also invalidates cached results.
+        generation = self._generation + getattr(self.graph, "_version", 0)
+        return build_result_key(
+            compiled_sql=compiled_sql,
+            dialect=self.dialect,
+            connection_fingerprint=self.connection_fingerprint,
+            generation=generation,
+            user_attributes=user_attributes,
+        )
+
     def add_model(self, model: Model) -> None:
         """Add a model to the semantic layer.
 
@@ -322,6 +396,7 @@ class SemanticLayer:
 
         self.graph.add_model(model)
         self._sql_rewrite_cache.clear()
+        self._generation += 1
 
     def _normalize_model_table(self, model: Model) -> None:
         """Normalize model.table for the active dialect when needed."""
@@ -539,6 +614,7 @@ class SemanticLayer:
 
         self.graph.add_metric(measure)
         self._sql_rewrite_cache.clear()
+        self._generation += 1
 
     def query(
         self,
@@ -556,6 +632,7 @@ class SemanticLayer:
         post_process: str | None = None,
         timezone: str | None = None,
         with_totals: bool = False,
+        user_attributes: dict | None = None,
     ):
         """Execute a query against the semantic layer.
 
@@ -569,6 +646,10 @@ class SemanticLayer:
             offset: Number of rows to skip
             ungrouped: If True, return raw rows without aggregation (no GROUP BY)
             parameters: Template parameters for Jinja2 rendering
+            user_attributes: Per-request attributes bound to the ``user`` namespace when
+                enforcing model security policies (access gates and row-level filters). A
+                model with a declared security policy but ``user_attributes is None`` is
+                denied (deny-by-default); pass ``{}`` for an empty attribute set.
             use_preaggregations: Override pre-aggregation routing setting for this query
             preagg_strict: Override rollup-only mode for this query. When True, raise
                 PreaggregationStrictError if no rollup matches or its table is missing,
@@ -603,6 +684,7 @@ class SemanticLayer:
             use_preaggregations=use_preaggregations,
             timezone=timezone,
             with_totals=with_totals,
+            user_attributes=user_attributes,
         )
         used_preagg = "used_preagg=true" in routing_sql
 
@@ -619,6 +701,7 @@ class SemanticLayer:
                 use_preaggregations=use_preaggregations,
                 post_process=post_process,
                 timezone=timezone,
+                user_attributes=user_attributes,
             )
         else:
             sql = routing_sql
@@ -636,6 +719,7 @@ class SemanticLayer:
                 use_preaggregations=False,
                 post_process=post_process,
                 timezone=timezone,
+                user_attributes=user_attributes,
             )
 
         return self._execute_with_preagg_fallback(
@@ -694,7 +778,7 @@ class SemanticLayer:
         """Return UI/FFI-friendly model metadata, including source and DAX/TMDL state."""
         from sidemantic.core.introspection import describe_graph
 
-        return describe_graph(self.graph, model_names=model_names)
+        return describe_graph(self.graph, model_names=model_names, enforce_visibility=self.enforce_visibility)
 
     def chart(
         self,
@@ -763,6 +847,7 @@ class SemanticLayer:
         post_process: str | None = None,
         timezone: str | None = None,
         with_totals: bool = False,
+        user_attributes: dict | None = None,
     ) -> str:
         """Compile a query to SQL without executing.
 
@@ -776,6 +861,10 @@ class SemanticLayer:
             offset: Number of rows to skip
             dialect: SQL dialect override (defaults to layer's dialect)
             ungrouped: If True, return raw rows without aggregation (no GROUP BY)
+            user_attributes: Per-request attributes bound to the ``user`` namespace when
+                enforcing model security policies (access gates and row-level filters). A
+                model with a declared security policy but ``user_attributes is None`` is
+                denied (deny-by-default); pass ``{}`` for an empty attribute set.
             use_preaggregations: Override pre-aggregation routing setting for this query
             aliases: Custom output aliases keyed by semantic field reference
             post_process: Optional SQL to wrap around the semantic query result.
@@ -819,14 +908,33 @@ class SemanticLayer:
         if errors:
             raise QueryValidationError("Query validation failed:\n" + "\n".join(f"  - {e}" for e in errors))
 
+        # Visibility: when enforce_visibility is set, requesting a non-public field is rejected
+        # before any SQL is generated.
+        if self.enforce_visibility:
+            self._enforce_visibility_for_query(metrics, dimensions, filters, order_by, segments)
+
         # Determine if pre-aggregations should be used
         use_preaggs = use_preaggregations if use_preaggregations is not None else self.use_preaggregations
+
+        # Pre-agg interaction: if any participating model has active row filters for this query,
+        # disable pre-aggregation routing. A rollup is pre-materialized without per-user row
+        # filtering, so serving a security-filtered query from it would leak unfiltered rows.
+        # This is the simplest correct v1; filtered rollups would need identical filtering.
+        security_active = self._query_has_active_row_filters(metrics, dimensions, filters, user_attributes)
+        if security_active:
+            use_preaggs = False
+
+        # The Rust SQL generator does not enforce security policies, so any query touching a
+        # model with a security policy (row filters or an access gate) must use the Python path.
+        security_forces_python = user_attributes is not None or self._query_touches_secured_model(
+            metrics, dimensions, filters, segments
+        )
 
         inner_sql = None
         # The Rust generator implements neither query-timezone bucketing nor with_totals
         # GROUPING SETS, so use the Python path when either is requested.
         # (Pre-agg bypass for timezone queries is enforced inside SQLGenerator.generate.)
-        if self._use_rust_sql_generator and not timezone and not with_totals:
+        if self._use_rust_sql_generator and not timezone and not with_totals and not security_forces_python:
             inner_sql = self._compile_with_rust(
                 metrics=metrics,
                 dimensions=dimensions,
@@ -879,6 +987,7 @@ class SemanticLayer:
                 aliases=aliases,
                 timezone=timezone,
                 with_totals=with_totals,
+                user_attributes=user_attributes,
             )
 
         return self._apply_post_process(inner_sql, post_process)
@@ -918,6 +1027,7 @@ class SemanticLayer:
         aliases: dict[str, str] | None,
         timezone: str | None = None,
         with_totals: bool = False,
+        user_attributes: dict | None = None,
     ) -> str:
         generator = SQLGenerator(
             self.graph,
@@ -925,6 +1035,7 @@ class SemanticLayer:
             preagg_database=self.preagg_database,
             preagg_schema=self.preagg_schema,
             timezone=timezone,
+            allow_non_additive_unsafe=self.allow_non_additive_unsafe,
         )
 
         return generator.generate(
@@ -940,7 +1051,141 @@ class SemanticLayer:
             use_preaggregations=use_preaggregations,
             aliases=aliases,
             with_totals=with_totals,
+            user_attributes=user_attributes,
         )
+
+    def _security_participating_models(
+        self,
+        metrics: list[str] | None,
+        dimensions: list[str] | None,
+        filters: list[str] | None,
+        segments: list[str] | None = None,
+    ) -> set[str]:
+        """Resolve the full participating-model set (base + joined + intermediate) for a query.
+
+        Delegates to the SQLGenerator so this set matches exactly what the generator's
+        ``_enforce_security`` iterates over. Segments are named filters on a model, so a
+        ``model.segment`` reference also makes that model participate.
+        """
+        generator = SQLGenerator(self.graph, dialect=self.dialect)
+        model_names = list(generator._find_required_models(metrics or [], dimensions or [], filters or []))
+        for segment_ref in segments or []:
+            if "." in segment_ref:
+                model_names.append(segment_ref.split(".", 1)[0])
+        if not model_names:
+            return set()
+        return generator._participating_models(model_names)
+
+    def _query_touches_secured_model(
+        self,
+        metrics: list[str] | None,
+        dimensions: list[str] | None,
+        filters: list[str] | None,
+        segments: list[str] | None = None,
+    ) -> bool:
+        """Whether any participating model declares a security policy."""
+        for model_name in self._security_participating_models(metrics, dimensions, filters, segments):
+            model = self.graph.models.get(model_name)
+            if model is not None and model.security is not None:
+                return True
+        return False
+
+    def _query_has_active_row_filters(
+        self,
+        metrics: list[str] | None,
+        dimensions: list[str] | None,
+        filters: list[str] | None,
+        user_attributes: dict | None,
+    ) -> bool:
+        """Whether any participating model contributes at least one row filter for this query.
+
+        Used to disable pre-aggregation routing: a rollup is materialized without the per-user
+        row filter, so serving a filtered query from it would leak unfiltered rows.
+        """
+        if user_attributes is None:
+            # Deny-by-default handles the secured-model case; without attributes there is no
+            # rendered row filter to worry about here.
+            return False
+        for model_name in self._security_participating_models(metrics, dimensions, filters):
+            model = self.graph.models.get(model_name)
+            if model is not None and model.security is not None and model.security.row_filters:
+                return True
+        return False
+
+    def _field_is_public(self, model_name: str, field_name: str) -> bool:
+        """Return whether ``model.field`` is public. Unknown fields are treated as public
+        (they are not a hidden definition being leaked)."""
+        model = self.graph.models.get(model_name)
+        if model is None:
+            return True
+        dimension = model.get_dimension(field_name)
+        if dimension is not None:
+            return dimension.public
+        metric_obj = model.get_metric(field_name)
+        if metric_obj is not None:
+            return metric_obj.public
+        return True
+
+    def _enforce_visibility_for_query(
+        self,
+        metrics: list[str] | None,
+        dimensions: list[str] | None,
+        filters: list[str] | None = None,
+        order_by: list[str] | None = None,
+        segments: list[str] | None = None,
+    ) -> None:
+        """Reject requests that reference non-public fields when enforce_visibility is set.
+
+        Covers projected metrics/dimensions AND fields referenced only in ``filters`` or
+        ``order_by`` -- otherwise a hidden field could be used as an information-disclosure
+        oracle (e.g. ``filters=["orders.margin > 100"]`` or ``order_by=["orders.margin"]``
+        against a ``public=False`` column).
+
+        Raises:
+            SecurityError: If a referenced field's owning definition has ``public=False``.
+        """
+        for dim in dimensions or []:
+            ref = dim.rsplit("__", 1)[0] if "__" in dim else dim
+            if "." not in ref:
+                continue
+            model_name, field_name = ref.split(".", 1)
+            if not self._field_is_public(model_name, field_name):
+                raise SecurityError(f"Field '{model_name}.{field_name}' is not public")
+
+        for metric in metrics or []:
+            if "." not in metric:
+                # Graph-level metric reference.
+                graph_metric = self.graph.metrics.get(metric)
+                if graph_metric is not None and not getattr(graph_metric, "public", True):
+                    raise SecurityError(f"Field '{metric}' is not public")
+                continue
+            model_name, field_name = metric.split(".", 1)
+            if not self._field_is_public(model_name, field_name):
+                raise SecurityError(f"Field '{model_name}.{field_name}' is not public")
+
+        # Segments are named filters that may themselves be non-public; a segment reference is
+        # `model.segment`, not a dimension/metric, so check them explicitly.
+        for segment_ref in segments or []:
+            if "." not in segment_ref:
+                continue
+            model_name, segment_name = segment_ref.split(".", 1)
+            model = self.graph.models.get(model_name)
+            if model is None:
+                continue
+            segment = model.get_segment(segment_name) if hasattr(model, "get_segment") else None
+            if segment is not None and not getattr(segment, "public", True):
+                raise SecurityError(f"Segment '{model_name}.{segment_name}' is not public")
+
+        # filters/order_by can smuggle a hidden field. Scan them for `model.field` tokens
+        # (stripping any granularity suffix / sort direction) and reject non-public ones.
+        import re as _re
+
+        ref_pattern = _re.compile(r"\b([A-Za-z_]\w*)\.([A-Za-z_]\w*)\b")
+        for raw in [*(filters or []), *(order_by or [])]:
+            for model_name, field_name in ref_pattern.findall(raw):
+                field_name = field_name.rsplit("__", 1)[0] if "__" in field_name else field_name
+                if not self._field_is_public(model_name, field_name):
+                    raise SecurityError(f"Field '{model_name}.{field_name}' is not public")
 
     def _compile_with_rust(
         self,
@@ -1309,7 +1554,7 @@ class SemanticLayer:
         """
         from sidemantic.core.catalog import get_catalog_metadata
 
-        return get_catalog_metadata(self.graph, schema=schema)
+        return get_catalog_metadata(self.graph, schema=schema, enforce_visibility=self.enforce_visibility)
 
     @classmethod
     def from_yaml(
@@ -1543,6 +1788,17 @@ class SemanticLayer:
             >>> layer.sql("SELECT orders.revenue, orders.status FROM orders WHERE orders.status = 'completed'")
         """
         from sidemantic.sql.query_rewriter import QueryRewriter
+
+        # The SQL-first path rewrites and executes without user attributes, so it cannot
+        # apply per-user row filters or access gates. Rather than return unscoped rows for a
+        # secured model, refuse when any model declares a security policy (mirrors the HTTP
+        # /sql endpoint and MCP run_sql). The structured query()/compile() path enforces.
+        if any(getattr(model, "security", None) is not None for model in self.graph.models.values()):
+            raise SecurityError(
+                "SemanticLayer.sql() cannot enforce row-level security and is disabled because a "
+                "model declares a security policy. Use query()/compile() (structured), which "
+                "applies access gates and row filters per user."
+            )
 
         cache_key = (
             getattr(self.graph, "_version", 0),

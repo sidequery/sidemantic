@@ -232,6 +232,12 @@
           "title": "Type",
           "type": "string"
         },
+        "uri": {
+          "default": false,
+          "description": "Whether this dimension's values should be rendered as links in UIs",
+          "title": "Uri",
+          "type": "boolean"
+        },
         "value_format_name": {
           "anyOf": [
             {
@@ -765,6 +771,32 @@
           "default": null,
           "description": "Dimension across which this metric cannot be summed (e.g., time for averages)",
           "title": "Non Additive Dimension"
+        },
+        "non_additive_window": {
+          "default": "max",
+          "description": "Which value of non_additive_dimension to keep per group when computing a semi-additive metric. 'max' (default) keeps the last snapshot (MetricFlow default); 'min' keeps the first.",
+          "enum": [
+            "min",
+            "max"
+          ],
+          "title": "Non Additive Window",
+          "type": "string"
+        },
+        "non_additive_window_groupings": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Dimensions the semi-additive snapshot is taken per (MetricFlow window_groupings). When set, the last/first snapshot is computed per these groupings regardless of the query's grouping (e.g. balance-per-user). When unset, the snapshot partitions by the query's own non-time grouping dimensions.",
+          "title": "Non Additive Window Groupings"
         },
         "numerator": {
           "anyOf": [
@@ -1550,6 +1582,34 @@
       "title": "Relationship",
       "type": "object"
     },
+    "SecurityPolicy": {
+      "description": "Model-level security policy: access gate plus row-level filters.\n\nAttributes:\n    access: Whether the model may be queried. A literal ``bool`` or a Jinja\n        boolean expression over ``user`` (rendered as ``{{ (EXPR) }}`` and\n        interpreted truthy/falsy). Defaults to ``True`` (no access restriction).\n    row_filters: SQL filter templates rendered per-request over ``user`` and\n        AND-ed into the model's CTE (row-level security). Defaults to empty.",
+      "properties": {
+        "access": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "boolean"
+            }
+          ],
+          "default": true,
+          "description": "Access gate: bool or Jinja boolean expression over `user`",
+          "title": "Access"
+        },
+        "row_filters": {
+          "description": "Row-level filter templates rendered over `user` and AND-ed into the model CTE",
+          "items": {
+            "type": "string"
+          },
+          "title": "Row Filters",
+          "type": "array"
+        }
+      },
+      "title": "SecurityPolicy",
+      "type": "object"
+    },
     "Segment": {
       "description": "Segment definition - predefined reusable filter.\n\nSegments are named filters that can be applied to queries to consistently\nfilter data according to business definitions.\n\nExample:\n    active_users = Segment(\n        name=\"active_users\",\n        sql=\"{model}.status = 'active' AND {model}.last_login > CURRENT_DATE - 30\"\n    )",
       "properties": {
@@ -2014,6 +2074,32 @@
             "description": "Dimension across which this metric cannot be summed (e.g., time for averages)",
             "title": "Non Additive Dimension"
           },
+          "non_additive_window": {
+            "default": "max",
+            "description": "Which value of non_additive_dimension to keep per group when computing a semi-additive metric. 'max' (default) keeps the last snapshot (MetricFlow default); 'min' keeps the first.",
+            "enum": [
+              "min",
+              "max"
+            ],
+            "title": "Non Additive Window",
+            "type": "string"
+          },
+          "non_additive_window_groupings": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Dimensions the semi-additive snapshot is taken per (MetricFlow window_groupings). When set, the last/first snapshot is computed per these groupings regardless of the query's grouping (e.g. balance-per-user). When unset, the snapshot partitions by the query's own non-time grouping dimensions.",
+            "title": "Non Additive Window Groupings"
+          },
           "numerator": {
             "anyOf": [
               {
@@ -2472,6 +2558,12 @@
                 ],
                 "title": "Type",
                 "type": "string"
+              },
+              "uri": {
+                "default": false,
+                "description": "Whether this dimension's values should be rendered as links in UIs",
+                "title": "Uri",
+                "type": "boolean"
               },
               "value_format_name": {
                 "anyOf": [
@@ -3006,6 +3098,32 @@
                 "default": null,
                 "description": "Dimension across which this metric cannot be summed (e.g., time for averages)",
                 "title": "Non Additive Dimension"
+              },
+              "non_additive_window": {
+                "default": "max",
+                "description": "Which value of non_additive_dimension to keep per group when computing a semi-additive metric. 'max' (default) keeps the last snapshot (MetricFlow default); 'min' keeps the first.",
+                "enum": [
+                  "min",
+                  "max"
+                ],
+                "title": "Non Additive Window",
+                "type": "string"
+              },
+              "non_additive_window_groupings": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Dimensions the semi-additive snapshot is taken per (MetricFlow window_groupings). When set, the last/first snapshot is computed per these groupings regardless of the query's grouping (e.g. balance-per-user). When unset, the snapshot partitions by the query's own non-time grouping dimensions.",
+                "title": "Non Additive Window Groupings"
               },
               "numerator": {
                 "anyOf": [
@@ -3712,6 +3830,34 @@
             "title": "Relationship",
             "type": "object"
           },
+          "SecurityPolicy": {
+            "description": "Model-level security policy: access gate plus row-level filters.\n\nAttributes:\n    access: Whether the model may be queried. A literal ``bool`` or a Jinja\n        boolean expression over ``user`` (rendered as ``{{ (EXPR) }}`` and\n        interpreted truthy/falsy). Defaults to ``True`` (no access restriction).\n    row_filters: SQL filter templates rendered per-request over ``user`` and\n        AND-ed into the model's CTE (row-level security). Defaults to empty.",
+            "properties": {
+              "access": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "boolean"
+                  }
+                ],
+                "default": true,
+                "description": "Access gate: bool or Jinja boolean expression over `user`",
+                "title": "Access"
+              },
+              "row_filters": {
+                "description": "Row-level filter templates rendered over `user` and AND-ed into the model CTE",
+                "items": {
+                  "type": "string"
+                },
+                "title": "Row Filters",
+                "type": "array"
+              }
+            },
+            "title": "SecurityPolicy",
+            "type": "object"
+          },
           "Segment": {
             "description": "Segment definition - predefined reusable filter.\n\nSegments are named filters that can be applied to queries to consistently\nfilter data according to business definitions.\n\nExample:\n    active_users = Segment(\n        name=\"active_users\",\n        sql=\"{model}.status = 'active' AND {model}.last_login > CURRENT_DATE - 30\"\n    )",
             "properties": {
@@ -3948,6 +4094,18 @@
             },
             "title": "Relationships",
             "type": "array"
+          },
+          "security": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/SecurityPolicy"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Model-level access control and row-level security policy"
           },
           "segments": {
             "description": "Segment (named filter) definitions",

@@ -13,6 +13,7 @@ from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.pre_aggregation import Index, PreAggregation, RefreshKey
 from sidemantic.core.relationship import Relationship
+from sidemantic.core.security import SecurityPolicy
 from sidemantic.core.semantic_graph import SemanticGraph
 
 
@@ -165,6 +166,114 @@ _CUBE_RELATIONSHIP_MAP = {
 # Directories pruned when scanning a Cube project root for .js files: a YAML-only adapter
 # only needs to warn that JS cubes exist, so it should not descend into dependency/build trees.
 _JS_SCAN_SKIP_DIRS = {"node_modules", "dist", "build", ".git", ".venv", "__pycache__"}
+
+
+def _sql_literal(value: object) -> str:
+    """Render a Cube filter value as a SQL literal, escaping single quotes in strings."""
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
+    if isinstance(value, (int, float)):
+        return str(value)
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def _cube_filter_to_sql(member: str, operator: str, values: list) -> str | None:
+    """Translate one Cube row_level filter (member/operator/values) to a SQL fragment.
+
+    Returns None for operators that have no mechanical SQL equivalent here (the caller
+    records them as unmapped). Member references like ``{CUBE}.status`` are reduced to the
+    bare column name; the enforcement layer scopes the fragment to the owning model's CTE.
+    """
+    # Strip a leading Cube self-reference (``{CUBE}.col`` / ``{cube_name}.col``) and any prefix.
+    col = re.sub(r"^\{[^}]*\}\.", "", member or "")
+    col = col.split(".")[-1] if "." in col else col
+    op = (operator or "").strip()
+    # Operators without operands still map (set/notSet); everything else needs LITERAL values.
+    # Cube also allows dynamic values (e.g. ``values: security_context.auth.userAttributes.x``),
+    # which arrive as a string, not a list. Those cannot be translated to static SQL -- treat the
+    # filter as unmapped rather than iterating the string character by character.
+    if op in ("set", "notSet"):
+        vals: list = []
+    elif isinstance(values, (list, tuple)):
+        vals = list(values)
+    else:
+        return None
+    if op in ("equals", "in"):
+        if len(vals) == 1:
+            return f"{col} = {_sql_literal(vals[0])}"
+        return f"{col} IN ({', '.join(_sql_literal(v) for v in vals)})" if vals else None
+    if op in ("notEquals", "notIn"):
+        if len(vals) == 1:
+            return f"{col} != {_sql_literal(vals[0])}"
+        return f"{col} NOT IN ({', '.join(_sql_literal(v) for v in vals)})" if vals else None
+    if op == "contains":
+        return " OR ".join(f"{col} LIKE {_sql_literal('%' + str(v) + '%')}" for v in vals) if vals else None
+    if op == "notContains":
+        return " AND ".join(f"{col} NOT LIKE {_sql_literal('%' + str(v) + '%')}" for v in vals) if vals else None
+    if op == "startsWith":
+        return " OR ".join(f"{col} LIKE {_sql_literal(str(v) + '%')}" for v in vals) if vals else None
+    if op == "endsWith":
+        return " OR ".join(f"{col} LIKE {_sql_literal('%' + str(v))}" for v in vals) if vals else None
+    if op in ("gt", "gte", "lt", "lte") and vals:
+        sql_op = {"gt": ">", "gte": ">=", "lt": "<", "lte": "<="}[op]
+        return f"{col} {sql_op} {_sql_literal(vals[0])}"
+    if op == "set":
+        return f"{col} IS NOT NULL"
+    if op == "notSet":
+        return f"{col} IS NULL"
+    return None
+
+
+def _access_policy_to_security(access_policy: object) -> tuple[SecurityPolicy | None, set[str]]:
+    """Map a Cube ``access_policy`` to a SecurityPolicy, returning (policy, unmapped_constructs).
+
+    Translates the mechanical subset -- ``row_level.filters`` with member/operator/values --
+    into ANDed SQL row filters. Role/condition gating and member-level rules have no direct
+    equivalent and are reported as unmapped so the caller can warn and preserve them in meta.
+    """
+    if not isinstance(access_policy, list):
+        return None, set()
+    row_filters: list[str] = []
+    unmapped: set[str] = set()
+    for policy in access_policy:
+        if not isinstance(policy, dict):
+            continue
+        if policy.get("conditions"):
+            unmapped.add("conditions")
+        if policy.get("role") not in (None, "*"):
+            unmapped.add("role")
+        if policy.get("member_level"):
+            unmapped.add("member_level")
+        row_level = policy.get("row_level") or {}
+        combine = str(row_level.get("filters_type") or "and").lower()
+        filters = row_level.get("filters") or []
+        fragments: list[str] = []
+        for filt in filters:
+            if not isinstance(filt, dict):
+                continue
+            if "and" in filt or "or" in filt:
+                unmapped.add("nested_filters")
+                continue
+            sql = _cube_filter_to_sql(filt.get("member", ""), filt.get("operator", ""), filt.get("values", []))
+            if sql is None:
+                unmapped.add(f"operator:{filt.get('operator')}")
+            else:
+                fragments.append(f"({sql})" if " OR " in sql or " AND " in sql else sql)
+        if not fragments:
+            continue
+        # Multiple filters within one policy combine per filters_type (default AND). An OR
+        # group MUST be parenthesized: each policy becomes a separate row filter that the
+        # generator later ANDs together, and `A OR B AND C` binds as `A OR (B AND C)`, letting
+        # rows matching A bypass the other predicates. AND groups need no extra wrapping.
+        if len(fragments) == 1:
+            row_filters.append(fragments[0])
+        elif combine == "or":
+            row_filters.append("(" + " OR ".join(fragments) + ")")
+        else:
+            row_filters.append(" AND ".join(fragments))
+    if not row_filters:
+        return None, unmapped
+    return SecurityPolicy(row_filters=row_filters), unmapped
 
 
 class CubeAdapter(BaseAdapter):
@@ -463,10 +572,11 @@ class CubeAdapter(BaseAdapter):
         extends = cube_def.get("extends")
         cube_meta = cube_def.get("meta")
 
-        # Cube-level governance/visibility fields have no first-class Sidemantic equivalent.
-        # Preserve them in meta; warn for the security-relevant ones (access_policy, public).
+        # Cube-level governance/visibility fields. Row-level access_policy filters map to an
+        # enforced SecurityPolicy; anything we cannot translate is preserved in meta and warned.
         extra_meta = {}
         access_policy = cube_def.get("access_policy")
+        security_policy, unmapped_policy = _access_policy_to_security(access_policy)
         if access_policy is not None:
             extra_meta["access_policy"] = access_policy
         if cube_def.get("public") is False or cube_def.get("shown") is False:
@@ -475,10 +585,19 @@ class CubeAdapter(BaseAdapter):
             cosmetic_val = cube_def.get(cosmetic_key)
             if cosmetic_val is not None:
                 extra_meta[cosmetic_key] = cosmetic_val
-        if access_policy is not None or extra_meta.get("public") is False:
+        if security_policy is not None and security_policy.row_filters:
+            imported = f"{len(security_policy.row_filters)} row-level filter(s) imported as an enforced SecurityPolicy"
+            if unmapped_policy:
+                warnings.warn(
+                    f"Cube '{name}': {imported}; some access_policy constructs "
+                    f"({', '.join(sorted(unmapped_policy))}) could not be translated and are preserved in meta only.",
+                    CubeImportWarning,
+                    stacklevel=2,
+                )
+        elif access_policy is not None or extra_meta.get("public") is False:
             warnings.warn(
-                f"Cube '{name}' uses access_policy/public visibility controls, which Sidemantic "
-                f"does not enforce; preserved in meta only.",
+                f"Cube '{name}' uses access_policy/public visibility controls that Sidemantic "
+                f"could not translate; preserved in meta only.",
                 CubeImportWarning,
                 stacklevel=2,
             )
@@ -567,6 +686,8 @@ class CubeAdapter(BaseAdapter):
         desc = cube_def.get("description")
         if desc is not None:
             model_kwargs["description"] = desc
+        if security_policy is not None and (security_policy.row_filters or security_policy.access is not True):
+            model_kwargs["security"] = security_policy
 
         return Model(**model_kwargs)
 

@@ -83,6 +83,44 @@ def _build_test_client(
     return TestClient(app)
 
 
+def _build_test_client_with_cache(tmp_path: Path, result_cache_mb: int = 16, result_cache_ttl: float = 60.0):
+    """Build a client with the result cache enabled, returning (client, app)."""
+    models_dir = tmp_path / "models"
+    _write_models(models_dir)
+
+    db_path = tmp_path / "warehouse.duckdb"
+    conn = duckdb.connect(str(db_path))
+    conn.execute(
+        """
+        create table orders (
+            id integer,
+            status varchar,
+            amount double,
+            created_at timestamp
+        )
+        """
+    )
+    conn.executemany(
+        "insert into orders values (?, ?, ?, ?)",
+        [
+            (1, "completed", 10.0, "2024-01-01 10:00:00"),
+            (2, "completed", 20.0, "2024-01-02 11:00:00"),
+            (3, "pending", 5.0, "2024-01-03 12:00:00"),
+        ],
+    )
+    conn.close()
+
+    layer = SemanticLayer(connection=f"duckdb:///{db_path}", auto_register=False)
+    load_from_directory(layer, str(models_dir))
+    app = create_app(
+        layer,
+        auth_token="secret",
+        result_cache_mb=result_cache_mb,
+        result_cache_ttl=result_cache_ttl,
+    )
+    return TestClient(app), app
+
+
 def _auth_headers(token: str = "secret") -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
@@ -140,6 +178,45 @@ def test_describe_endpoint(tmp_path):
     assert {"order_count", "total_amount"} <= metric_names
 
 
+def test_result_cache_serves_repeated_query(tmp_path):
+    client, app = _build_test_client_with_cache(tmp_path)
+
+    body = {
+        "dimensions": ["orders.status"],
+        "metrics": ["orders.total_amount", "orders.order_count"],
+        "order_by": ["orders.status"],
+    }
+
+    first = client.post("/query", headers=_auth_headers(), json=body)
+    second = client.post("/query", headers=_auth_headers(), json=body)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    # Identical results served both times.
+    assert first.json()["rows"] == second.json()["rows"]
+
+    stats = app.state.result_cache.stats()
+    assert stats["hits"] == 1
+    assert stats["misses"] == 1
+    assert stats["entries"] == 1
+
+    # A different query is a distinct cache entry (another miss).
+    other = client.post(
+        "/query",
+        headers=_auth_headers(),
+        json={"dimensions": ["orders.status"], "metrics": ["orders.order_count"]},
+    )
+    assert other.status_code == 200
+    stats2 = app.state.result_cache.stats()
+    assert stats2["misses"] == 2
+    assert stats2["entries"] == 2
+
+
+def test_result_cache_disabled_by_default(tmp_path):
+    client = _build_test_client(tmp_path)
+    assert client.app.state.result_cache is None
+
+
 def test_serve_ui_serves_spa_and_keeps_api_gated(tmp_path):
     from sidemantic.api_server import ui_static_dir
 
@@ -194,6 +271,34 @@ def test_compile_and_query_json_endpoints(tmp_path):
         {"status": "completed", "total_amount": 30.0, "order_count": 2},
         {"status": "pending", "total_amount": 5.0, "order_count": 1},
     ]
+
+
+def test_compile_accepts_timezone(tmp_path):
+    # The optional timezone field on the structured-query request threads into
+    # layer.compile so time-dimension truncation happens in the requested zone.
+    client = _build_test_client(tmp_path)
+
+    without_tz = client.post(
+        "/compile",
+        headers=_auth_headers(),
+        json={"dimensions": ["orders.created_at__day"], "metrics": ["orders.order_count"]},
+    )
+    with_tz = client.post(
+        "/compile",
+        headers=_auth_headers(),
+        json={
+            "dimensions": ["orders.created_at__day"],
+            "metrics": ["orders.order_count"],
+            "timezone": "America/New_York",
+        },
+    )
+
+    assert without_tz.status_code == 200
+    assert with_tz.status_code == 200
+    tz_sql = with_tz.json()["sql"]
+    # The zone shows up in the compiled SQL and the timezone-aware SQL differs from the UTC default.
+    assert "America/New_York" in tz_sql
+    assert tz_sql != without_tz.json()["sql"]
 
 
 def test_query_arrow_endpoint(tmp_path):

@@ -305,11 +305,17 @@ class MetricFlowAdapter(BaseAdapter):
         # Parse entities to extract primary key and relationships
         primary_key = "id"  # default
         relationships = []
+        # Map entity name -> backing SQL column, so semi-additive window_groupings that name an
+        # entity (e.g. `user`, backed by `user_id`) resolve to the real column the generator can
+        # partition by, rather than a non-existent `user` column.
+        entity_column_by_name: dict[str, str] = {}
 
         for entity_def in model_def.get("entities") or []:
             entity_type = entity_def.get("type", "primary")
             entity_name = entity_def.get("name")
             entity_expr = entity_def.get("expr", entity_name)
+            if entity_name:
+                entity_column_by_name[entity_name] = entity_expr
 
             if entity_type == "primary":
                 # Use this as the primary key
@@ -327,9 +333,18 @@ class MetricFlowAdapter(BaseAdapter):
 
         # Parse measures
         measures = []
+        dimension_names = {dim.name for dim in dimensions}
         for measure_def in model_def.get("measures") or []:
             measure = self._parse_measure(measure_def)
             if measure:
+                # Resolve semi-additive window_groupings: an entity name maps to its backing
+                # column; a dimension name is kept as-is. This avoids partitioning by a name
+                # that has no projectable column on the model.
+                if measure.non_additive_window_groupings:
+                    measure.non_additive_window_groupings = [
+                        grouping if grouping in dimension_names else entity_column_by_name.get(grouping, grouping)
+                        for grouping in measure.non_additive_window_groupings
+                    ]
                 measures.append(measure)
 
         # Parse segments from meta
@@ -570,11 +585,21 @@ class MetricFlowAdapter(BaseAdapter):
         value_format_name = meta.get("value_format_name")
         drill_fields = meta.get("drill_fields")
 
-        # Parse non_additive_dimension
+        # Parse non_additive_dimension. MetricFlow allows a window_choice of "min"/"max"
+        # (default "max" = keep the last snapshot) and window_groupings (the dimensions the
+        # snapshot is taken per, e.g. balance-per-user).
         non_additive = measure_def.get("non_additive_dimension")
         non_additive_dimension = None
+        non_additive_window = "max"
+        non_additive_window_groupings = None
         if non_additive and isinstance(non_additive, dict):
             non_additive_dimension = non_additive.get("name")
+            window_choice = non_additive.get("window_choice")
+            if window_choice in ("min", "max"):
+                non_additive_window = window_choice
+            groupings = non_additive.get("window_groupings")
+            if groupings:
+                non_additive_window_groupings = list(groupings)
 
         # Convert expr to string if it's not None (can be int, like 1 for count)
         expr = measure_def.get("expr")
@@ -591,6 +616,8 @@ class MetricFlowAdapter(BaseAdapter):
             value_format_name=value_format_name,
             drill_fields=drill_fields,
             non_additive_dimension=non_additive_dimension,
+            non_additive_window=non_additive_window,
+            non_additive_window_groupings=non_additive_window_groupings,
         )
 
     @staticmethod
@@ -1031,7 +1058,14 @@ class MetricFlowAdapter(BaseAdapter):
                     measure_def["meta"] = measure_def.get("meta", {})
                     measure_def["meta"]["drill_fields"] = measure.drill_fields
                 if measure.non_additive_dimension:
-                    measure_def["non_additive_dimension"] = {"name": measure.non_additive_dimension}
+                    non_additive_def = {"name": measure.non_additive_dimension}
+                    # Only emit window_choice when it differs from the MetricFlow default
+                    # ("max" = keep the last snapshot), to keep exports minimal.
+                    if getattr(measure, "non_additive_window", "max") == "min":
+                        non_additive_def["window_choice"] = "min"
+                    if getattr(measure, "non_additive_window_groupings", None):
+                        non_additive_def["window_groupings"] = list(measure.non_additive_window_groupings)
+                    measure_def["non_additive_dimension"] = non_additive_def
 
                 result["measures"].append(measure_def)
 

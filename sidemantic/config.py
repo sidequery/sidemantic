@@ -122,6 +122,8 @@ class APIServerConfig(BaseModel):
     auth_token: str | None = Field(default=None, description="Bearer token for API authentication (optional)")
     cors_origins: list[str] = Field(default_factory=list, description="Allowed CORS origins")
     max_request_body_bytes: int = Field(default=1024 * 1024, description="Maximum request body size in bytes")
+    result_cache_mb: int = Field(default=0, description="Result cache size in megabytes (0 disables the result cache)")
+    result_cache_ttl: float = Field(default=60.0, description="Result cache entry TTL in seconds")
 
 
 class RuntimeConfig(BaseModel):

@@ -1,9 +1,11 @@
 # Sidemantic
 
-The universal metrics layer for consistent metrics across your data stack. Compatible with 15+ semantic model formats.
+Sidemantic is an open-source semantic runtime. Define governed metrics once—or import the semantic models you already have—and query them consistently from SQL, the CLI, Python, HTTP, PostgreSQL clients, notebooks, BI tools, and AI agents.
 
-- **Supported Formats:** Sidemantic (YAML, Python or SQL), Power BI TMDL, Cube, dbt MetricFlow, LookML, Hex, Rill, Superset, Omni, BSL, GoodData LDM, Snowflake Cortex, Malloy, OSI, AtScale SML, ThoughtSpot TML
-- **Databases:** DuckDB, MotherDuck, PostgreSQL, BigQuery, Snowflake, ClickHouse, Databricks, Spark SQL (also via ADBC)
+- **Bring existing models:** Power BI TMDL/DAX, Cube, dbt MetricFlow, LookML, Hex, Rill, Superset, Omni, BSL, GoodData LDM, Snowflake Cortex, Malloy, OSI, AtScale SML, and ThoughtSpot TML
+- **Or author natively:** concise YAML, semantic SQL DDL, or Python
+- **Run on your warehouse:** DuckDB, MotherDuck, PostgreSQL, BigQuery, Snowflake, ClickHouse, Databricks, Spark SQL, and ADBC sources
+- **Consume metrics anywhere:** semantic SQL, CLI, Python, HTTP/Arrow, PostgreSQL wire protocol, MCP, notebooks, TypeScript/WASM, and embedded analytics
 
 [Documentation](https://sidemantic.com) | [GitHub](https://github.com/sidequery/sidemantic) | [Docker Hub](https://hub.docker.com/repository/docker/sidequery/sidemantic) | [Discord](https://discord.com/invite/7MZ4UgSVvF) | [Demo](https://sidemantic.com/demo) (50+ MB data download, runs in your browser with Pyodide + DuckDB)
 
@@ -11,77 +13,24 @@ The universal metrics layer for consistent metrics across your data stack. Compa
 
 Sidemantic ships Claude Code and Codex plugin metadata for two skills (`modeler` and `webapp-builder`). See [Agent Plugin](#agent-plugin) below to install.
 
-## Quickstart
+## 60-second quickstart
 
-Install:
-```bash
-uv add sidemantic
-```
-
-Malloy support (uv):
-```bash
-uv add "sidemantic[malloy]"
-```
-
-DAX and Power BI TMDL support (uv):
-```bash
-uv add "sidemantic[dax]"
-```
-
-HTTP API server (uv):
-```bash
-uv add "sidemantic[api]"
-```
-
-Notebook widget (uv):
-```bash
-uv add "sidemantic[widget]" jupyterlab
-uv run jupyter lab
-```
-
-Marimo (uv):
-```bash
-uv add "sidemantic[widget]" marimo
-uv run marimo edit
-```
-
-```python
-import duckdb
-from sidemantic.widget import MetricsExplorer
-
-conn = duckdb.connect(":memory:")
-conn.execute("create table t as select 1 as value, 'a' as category, date '2024-01-01' as d")
-MetricsExplorer(conn.table("t"), time_dimension="d")
-```
-
-Define models in SQL, YAML, or Python:
-
-<details>
-<summary><b>SQL</b> (orders.sql)</summary>
-
-```sql
-MODEL (name orders, table orders, primary_key order_id);
-DIMENSION (name status, type categorical);
-DIMENSION (name order_date, type time, granularity day);
-METRIC (name revenue, agg sum, sql amount);
-METRIC (name order_count, agg count);
-```
-</details>
-
-<details>
-<summary><b>YAML</b> (orders.yml)</summary>
+Create `models/orders.yml`:
 
 ```yaml
 models:
   - name: orders
-    table: orders
-    primary_key: order_id
+    sql: |
+      select * from (values
+        (1, 'paid',    120.00),
+        (2, 'paid',     80.00),
+        (3, 'pending',  50.00)
+      ) as t(id, status, amount)
+    primary_key: id
     dimensions:
       - name: status
         type: categorical
-      - name: order_date
-        type: time
-        granularity: day
+        sql: status
     metrics:
       - name: revenue
         agg: sum
@@ -89,43 +38,44 @@ models:
       - name: order_count
         agg: count
 ```
-</details>
 
-<details>
-<summary><b>Python</b> (programmatic)</summary>
+Query it directly—no database setup or package installation required:
 
-```python
-from sidemantic import Model, Dimension, Metric
-
-orders = Model(
-    name="orders",
-    table="orders",
-    primary_key="order_id",
-    dimensions=[
-        Dimension(name="status", type="categorical"),
-        Dimension(name="order_date", type="time", granularity="day"),
-    ],
-    metrics=[
-        Metric(name="revenue", agg="sum", sql="amount"),
-        Metric(name="order_count", agg="count"),
-    ]
-)
-```
-</details>
-
-Query via CLI:
 ```bash
-sidemantic query "SELECT revenue, status FROM orders" --db data.duckdb
+uvx sidemantic query \
+  "SELECT orders.status, orders.revenue, orders.order_count
+   FROM orders
+   ORDER BY orders.status" \
+  --models ./models
 ```
 
-Or Python API:
-```python
-from sidemantic import SemanticLayer, load_from_directory
-
-layer = SemanticLayer(connection="duckdb:///data.duckdb")
-load_from_directory(layer, "models/")
-result = layer.sql("SELECT revenue, status FROM orders")
+```csv
+status,revenue,order_count
+paid,200.00,2
+pending,50.00,1
 ```
+
+From here, inspect generated warehouse SQL or open an interactive explorer:
+
+```bash
+# Compile without executing
+uvx sidemantic query \
+  "SELECT orders.status, orders.revenue FROM orders" \
+  --models ./models --dry-run
+
+# Explore in the terminal
+uvx --from "sidemantic[workbench]" sidemantic workbench ./models
+```
+
+## Choose your path
+
+- **Import existing semantic models:** point Sidemantic at a Cube, MetricFlow, LookML, Power BI, Malloy, Rill, or other supported project. Start with the [adapter guide](https://sidemantic.com/sidemantic/adapters).
+- **Model tables or SQL:** continue with [models](https://sidemantic.com/sidemantic/models), [dimensions](https://sidemantic.com/sidemantic/dimensions), [metrics](https://sidemantic.com/sidemantic/metrics), and [relationships](https://sidemantic.com/sidemantic/relationships).
+- **Query governed metrics:** use the [CLI](https://sidemantic.com/sidemantic/cli), [semantic SQL](https://sidemantic.com/sidemantic/query), or [Python API](https://sidemantic.com/sidemantic/python-api).
+- **Explore data:** launch the terminal workbench, notebook widget, or browser UI.
+- **Serve other tools:** expose models over the HTTP API, PostgreSQL wire protocol, or MCP server.
+
+Install Sidemantic in a project with `uv add sidemantic`. Optional features are packaged as extras: `malloy`, `dax`, `workbench`, `widget`, `api`, and `serve`.
 
 ## DAX And TMDL
 

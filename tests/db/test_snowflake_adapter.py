@@ -163,6 +163,7 @@ def test_snowflake_query_history_sql():
     assert "INFORMATION_SCHEMA.QUERY_HISTORY" in captured["sql"]
     assert "-5" in captured["sql"]
     assert "LIMIT 10" in captured["sql"]
+    assert "query_text NOT ILIKE '%INFORMATION_SCHEMA.QUERY_HISTORY%'" in captured["sql"]
     assert results == ["select 1 -- sidemantic: y"]
 
     adapter.get_query_history(days_back=5, limit=10, instrumented_only=False)

@@ -236,6 +236,7 @@ def test_bigquery_query_history_sql():
     assert "INFORMATION_SCHEMA.JOBS_BY_PROJECT" in captured["sql"]
     assert "INTERVAL 4 DAY" in captured["sql"]
     assert "LIMIT 9" in captured["sql"]
+    assert "error_result IS NULL" in captured["sql"]
     assert results == ["select 1 -- sidemantic: ok"]
 
     adapter.get_query_history(days_back=4, limit=9, instrumented_only=False)

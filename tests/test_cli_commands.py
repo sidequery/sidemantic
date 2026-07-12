@@ -110,8 +110,8 @@ def test_migrator_generates_models_from_warehouse_query_history(monkeypatch, tmp
             self.adapter = FakeAdapter() if connection else None
 
     class FakeMigrator:
-        def __init__(self, _layer):
-            pass
+        def __init__(self, _layer, dialect="duckdb"):
+            captured["dialect"] = dialect
 
         def analyze_queries(self, queries):
             captured["queries"] = queries
@@ -156,6 +156,7 @@ def test_migrator_generates_models_from_warehouse_query_history(monkeypatch, tmp
 
     assert result.exit_code == 0, result.output
     assert captured["history_args"] == (30, 2500, False)
+    assert captured["dialect"] == "snowflake"
     assert captured["queries"] == ["SELECT status, SUM(amount) AS revenue FROM orders GROUP BY status"]
     assert captured["models_dir"] == str(output / "models")
     assert captured["rewritten_dir"] == str(output / "rewritten_queries")

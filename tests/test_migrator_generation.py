@@ -4,6 +4,27 @@ from sidemantic import SemanticLayer
 from sidemantic.core.migrator import Migrator
 
 
+def test_generate_models_parses_bigquery_history_with_source_dialect():
+    layer = SemanticLayer(auto_register=False)
+    analyzer = Migrator(layer, dialect="bigquery")
+
+    report = analyzer.analyze_queries(
+        [
+            """
+            SELECT status, SUM(amount) AS revenue
+            FROM `project.dataset.orders`
+            GROUP BY status
+            """
+        ]
+    )
+    models = analyzer.generate_models(report)
+
+    assert report.parseable_queries == 1
+    assert "orders" in models
+    assert models["orders"]["table"] == "orders"
+    assert {metric["name"] for metric in models["orders"]["metrics"]} == {"revenue"}
+
+
 def test_generate_models_from_queries():
     """Test generating model definitions from queries."""
     layer = SemanticLayer(auto_register=False)

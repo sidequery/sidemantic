@@ -230,6 +230,8 @@ def migrator(
     """
     from sidemantic.core.migrator import Migrator
 
+    source_dialect = "duckdb"
+
     if not queries and not connection:
         typer.echo("Error: Must specify --queries or --connection", err=True)
         typer.echo("Usage: sidemantic migrator [models_dir] (--queries <path> | --connection <url>)", err=True)
@@ -244,9 +246,11 @@ def migrator(
         raise typer.Exit(1)
 
     def load_queries_from_source() -> list[str] | None:
+        nonlocal source_dialect
         if connection:
             history_layer = SemanticLayer(connection=connection, auto_register=False)
             adapter = history_layer.adapter
+            source_dialect = adapter.dialect
             get_query_history = getattr(adapter, "get_query_history", None)
             if get_query_history is None:
                 raise ValueError(f"{adapter.dialect} does not support query-history import")
@@ -282,10 +286,9 @@ def migrator(
         try:
             # Create empty semantic layer for analysis
             layer = SemanticLayer(auto_register=False)
-            analyzer = Migrator(layer)
-
             # Analyze queries
             query_list = load_queries_from_source()
+            analyzer = Migrator(layer, dialect=source_dialect)
             if query_list is not None:
                 report = analyzer.analyze_queries(query_list)
             else:
@@ -336,11 +339,9 @@ def migrator(
                 typer.echo("Error: No models found in semantic layer", err=True)
                 raise typer.Exit(1)
 
-            # Create analyzer
-            analyzer = Migrator(layer)
-
             # Analyze queries
             query_list = load_queries_from_source()
+            analyzer = Migrator(layer, dialect=source_dialect)
             if query_list is not None:
                 report = analyzer.analyze_queries(query_list)
             else:

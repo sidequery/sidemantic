@@ -185,6 +185,7 @@ class BigQueryAdapter(BaseDatabaseAdapter):
         WHERE creation_time >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {days_back} DAY)
           AND job_type = 'QUERY'
           AND state = 'DONE'
+          AND error_result IS NULL
           {instrumentation_filter}
         ORDER BY creation_time DESC
         LIMIT {limit}

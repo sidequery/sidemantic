@@ -238,6 +238,9 @@ def test_bigquery_query_history_sql():
     assert "LIMIT 9" in captured["sql"]
     assert results == ["select 1 -- sidemantic: ok"]
 
+    adapter.get_query_history(days_back=4, limit=9, instrumented_only=False)
+    assert "query LIKE '%-- sidemantic:%'" not in captured["sql"]
+
 
 def test_bigquery_result_fetchone_fetchall():
     class FakeRow:

@@ -165,6 +165,9 @@ def test_snowflake_query_history_sql():
     assert "LIMIT 10" in captured["sql"]
     assert results == ["select 1 -- sidemantic: y"]
 
+    adapter.get_query_history(days_back=5, limit=10, instrumented_only=False)
+    assert "query_text LIKE '%-- sidemantic:%'" not in captured["sql"]
+
 
 def test_snowflake_result_ordering_and_exhaustion():
     cursor = _FakeCursor(rows=[(1,), (2,)], description=[("a", None)])

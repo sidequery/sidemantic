@@ -202,6 +202,13 @@ def migrator(
     queries: Path = typer.Option(
         None, "--queries", "-q", help="Path to file or folder containing SQL queries to analyze"
     ),
+    connection: str = typer.Option(
+        None,
+        "--connection",
+        help="Database connection string used to import warehouse query history",
+    ),
+    days_back: int = typer.Option(7, "--days", "-d", help="Days of query history to import (default: 7)"),
+    limit: int = typer.Option(1000, "--limit", "-l", help="Maximum history queries to import (default: 1000)"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Show detailed analysis for each query"),
     generate_models: Path = typer.Option(
         None,
@@ -218,32 +225,74 @@ def migrator(
 
     Examples:
       sidemantic migrator --queries queries/ --generate-models output/
+      sidemantic migrator --connection "snowflake://..." --days 7 --generate-models output/
       sidemantic migrator models/ --queries queries/ --verbose
     """
     from sidemantic.core.migrator import Migrator
 
-    if not queries:
-        typer.echo("Error: --queries is required", err=True)
-        typer.echo("Usage: sidemantic migrator [models_dir] --queries <path>", err=True)
+    source_dialect = "duckdb"
+
+    if not queries and not connection:
+        typer.echo("Error: Must specify --queries or --connection", err=True)
+        typer.echo("Usage: sidemantic migrator [models_dir] (--queries <path> | --connection <url>)", err=True)
         raise typer.Exit(1)
 
-    if not queries.exists():
+    if queries and connection:
+        typer.echo("Error: --queries and --connection are mutually exclusive", err=True)
+        raise typer.Exit(1)
+
+    if queries and not queries.exists():
         typer.echo(f"Error: {queries} does not exist", err=True)
         raise typer.Exit(1)
+
+    def load_queries_from_source() -> list[str] | None:
+        nonlocal source_dialect
+        if connection:
+            history_layer = SemanticLayer(connection=connection, auto_register=False)
+            adapter = history_layer.adapter
+            source_dialect = adapter.dialect
+            get_query_history = getattr(adapter, "get_query_history", None)
+            if get_query_history is None:
+                raise ValueError(f"{adapter.dialect} does not support query-history import")
+            typer.echo(
+                f"Importing up to {limit} queries from the last {days_back} day(s) of {adapter.dialect} history...",
+                err=True,
+            )
+            try:
+                try:
+                    imported = get_query_history(days_back=days_back, limit=limit, instrumented_only=False)
+                except TypeError as exc:
+                    if "instrumented_only" not in str(exc):
+                        raise
+                    raise ValueError(
+                        f"{adapter.dialect} adapter does not support unfiltered query-history import"
+                    ) from exc
+            finally:
+                close_adapter = getattr(adapter, "close", None)
+                if close_adapter:
+                    close_adapter()
+            queries_from_history = [query.strip() for query in imported if query and query.strip()]
+            typer.echo(f"Imported {len(queries_from_history)} queries from warehouse history", err=True)
+            if not queries_from_history:
+                raise ValueError("No queries found in warehouse history for the requested time range")
+            return queries_from_history
+
+        if queries and queries.is_file():
+            return [query.strip() for query in queries.read_text().split(";") if query.strip()]
+        return None
 
     # Bootstrap mode - generate models from queries
     if generate_models:
         try:
             # Create empty semantic layer for analysis
             layer = SemanticLayer(auto_register=False)
-            analyzer = Migrator(layer)
-
             # Analyze queries
-            if queries.is_file():
-                query_list = queries.read_text().split(";")
-                query_list = [q.strip() for q in query_list if q.strip()]
+            query_list = load_queries_from_source()
+            analyzer = Migrator(layer, dialect=source_dialect)
+            if query_list is not None:
                 report = analyzer.analyze_queries(query_list)
             else:
+                assert queries is not None
                 report = analyzer.analyze_folder(str(queries))
 
             # Generate model definitions
@@ -290,17 +339,14 @@ def migrator(
                 typer.echo("Error: No models found in semantic layer", err=True)
                 raise typer.Exit(1)
 
-            # Create analyzer
-            analyzer = Migrator(layer)
-
             # Analyze queries
-            if queries.is_file():
-                # Single file - load queries from it
-                query_list = queries.read_text().split(";")
-                query_list = [q.strip() for q in query_list if q.strip()]
+            query_list = load_queries_from_source()
+            analyzer = Migrator(layer, dialect=source_dialect)
+            if query_list is not None:
                 report = analyzer.analyze_queries(query_list)
             else:
                 # Directory - load all .sql files
+                assert queries is not None
                 report = analyzer.analyze_folder(str(queries))
 
             # Print report

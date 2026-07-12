@@ -95,6 +95,95 @@ models:
     assert "bad.yml" in result.output
 
 
+def test_migrator_generates_models_from_warehouse_query_history(monkeypatch, tmp_path):
+    captured = {}
+
+    class FakeAdapter:
+        dialect = "snowflake"
+
+        def get_query_history(self, days_back=7, limit=1000, *, instrumented_only=True):
+            captured["history_args"] = (days_back, limit, instrumented_only)
+            return ["SELECT status, SUM(amount) AS revenue FROM orders GROUP BY status", "  ", None]
+
+    class FakeLayer:
+        def __init__(self, connection=None, **_kwargs):
+            self.adapter = FakeAdapter() if connection else None
+
+    class FakeMigrator:
+        def __init__(self, _layer, dialect="duckdb"):
+            captured["dialect"] = dialect
+
+        def analyze_queries(self, queries):
+            captured["queries"] = queries
+            return object()
+
+        def generate_models(self, _report):
+            return {"orders": object()}
+
+        def write_model_files(self, _models, output_dir):
+            captured["models_dir"] = output_dir
+
+        def generate_graph_metrics(self, _report, _models):
+            return {}
+
+        def write_graph_metrics_file(self, _metrics, _output_dir):
+            pass
+
+        def generate_rewritten_queries(self, _report):
+            return {"query_1": "SELECT orders.status, orders.revenue FROM orders"}
+
+        def write_rewritten_queries(self, _queries, output_dir):
+            captured["rewritten_dir"] = output_dir
+
+    monkeypatch.setattr(cli_module, "SemanticLayer", FakeLayer)
+    monkeypatch.setattr("sidemantic.core.migrator.Migrator", FakeMigrator)
+
+    output = tmp_path / "generated"
+    result = runner.invoke(
+        app,
+        [
+            "migrator",
+            "--connection",
+            "snowflake://example",
+            "--days",
+            "30",
+            "--limit",
+            "2500",
+            "--generate-models",
+            str(output),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["history_args"] == (30, 2500, False)
+    assert captured["dialect"] == "snowflake"
+    assert captured["queries"] == ["SELECT status, SUM(amount) AS revenue FROM orders GROUP BY status"]
+    assert captured["models_dir"] == str(output / "models")
+    assert captured["rewritten_dir"] == str(output / "rewritten_queries")
+    assert "Imported 1 queries from warehouse history" in result.output
+
+
+def test_migrator_rejects_queries_and_connection_together(tmp_path):
+    query_file = tmp_path / "queries.sql"
+    query_file.write_text("SELECT 1")
+
+    result = runner.invoke(
+        app,
+        [
+            "migrator",
+            "--queries",
+            str(query_file),
+            "--connection",
+            "snowflake://example",
+            "--generate-models",
+            str(tmp_path / "output"),
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "mutually exclusive" in result.output
+
+
 def test_query_dry_run_emits_sql(tmp_path):
     _write_min_model(tmp_path)
 

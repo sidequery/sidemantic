@@ -174,6 +174,9 @@ def test_databricks_query_history_sql():
     assert "LIMIT 25" in captured["sql"]
     assert results == ["select 1 -- sidemantic: z"]
 
+    adapter.get_query_history(days_back=2, limit=25, instrumented_only=False)
+    assert "statement_text LIKE '%-- sidemantic:%'" not in captured["sql"]
+
 
 def test_databricks_result_ordering_and_exhaustion():
     cursor = _FakeCursor(rows=[(1,), (2,)], description=[("a", None)])

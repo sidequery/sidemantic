@@ -193,6 +193,9 @@ def test_clickhouse_query_history_sql():
     assert "LIMIT 50" in captured["sql"]
     assert results == ["select 1 -- sidemantic: x"]
 
+    adapter.get_query_history(days_back=3, limit=50, instrumented_only=False)
+    assert "query LIKE '%-- sidemantic:%'" not in captured["sql"]
+
 
 def test_clickhouse_result_ordering_and_exhaustion():
     result = ClickHouseResult(

@@ -164,7 +164,7 @@ class BigQueryAdapter(BaseDatabaseAdapter):
             )
         return columns
 
-    def get_query_history(self, days_back: int = 7, limit: int = 1000) -> list[str]:
+    def get_query_history(self, days_back: int = 7, limit: int = 1000, *, instrumented_only: bool = True) -> list[str]:
         """Fetch query history from BigQuery.
 
         Queries INFORMATION_SCHEMA.JOBS_BY_PROJECT to find queries with sidemantic instrumentation.
@@ -172,18 +172,21 @@ class BigQueryAdapter(BaseDatabaseAdapter):
         Args:
             days_back: Number of days of history to fetch (default: 7)
             limit: Maximum number of queries to return (default: 1000)
+            instrumented_only: Only return queries containing Sidemantic instrumentation comments
 
         Returns:
-            List of SQL query strings containing '-- sidemantic:' comments
+            List of SQL query strings. By default only Sidemantic-instrumented queries are returned.
         """
         days_back, limit = validate_query_history_params(days_back, limit)
+        instrumentation_filter = "AND query LIKE '%-- sidemantic:%'" if instrumented_only else ""
         sql = f"""
         SELECT query
         FROM `{self.project_id}.region-{self.client.location}.INFORMATION_SCHEMA.JOBS_BY_PROJECT`
         WHERE creation_time >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {days_back} DAY)
           AND job_type = 'QUERY'
           AND state = 'DONE'
-          AND query LIKE '%-- sidemantic:%'
+          AND error_result IS NULL
+          {instrumentation_filter}
         ORDER BY creation_time DESC
         LIMIT {limit}
         """

@@ -118,16 +118,18 @@ class Migrator:
     - How to rewrite queries using the semantic layer
     """
 
-    def __init__(self, layer: SemanticLayer, connection=None):
+    def __init__(self, layer: SemanticLayer, connection=None, dialect: str = "duckdb"):
         """Initialize analyzer.
 
         Args:
             layer: Semantic layer to analyze coverage for
             connection: Optional database connection for querying information_schema.
                        Should have an execute() method that returns results.
+            dialect: SQLGlot source dialect used to parse input queries.
         """
         self.layer = layer
         self.connection = connection
+        self.dialect = dialect
         self.analyses: list[QueryAnalysis] = []
 
         # Build mapping from table names to model names
@@ -244,7 +246,7 @@ class Migrator:
 
         try:
             # Parse SQL
-            parsed = sqlglot.parse_one(query, read="duckdb")
+            parsed = sqlglot.parse_one(query, read=self.dialect)
 
             # Extract components
             self._extract_tables(parsed, analysis)

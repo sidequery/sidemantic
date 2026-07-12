@@ -220,7 +220,7 @@ class SnowflakeAdapter(BaseDatabaseAdapter):
         rows = result.fetchall()
         return [{"column_name": row[0], "data_type": row[1]} for row in rows]
 
-    def get_query_history(self, days_back: int = 7, limit: int = 1000) -> list[str]:
+    def get_query_history(self, days_back: int = 7, limit: int = 1000, *, instrumented_only: bool = True) -> list[str]:
         """Fetch query history from Snowflake.
 
         Queries INFORMATION_SCHEMA.QUERY_HISTORY to find queries with sidemantic instrumentation.
@@ -228,18 +228,20 @@ class SnowflakeAdapter(BaseDatabaseAdapter):
         Args:
             days_back: Number of days of history to fetch (default: 7, max: 7 for INFORMATION_SCHEMA)
             limit: Maximum number of queries to return (default: 1000)
+            instrumented_only: Only return queries containing Sidemantic instrumentation comments
 
         Returns:
-            List of SQL query strings containing '-- sidemantic:' comments
+            List of SQL query strings. By default only Sidemantic-instrumented queries are returned.
         """
         days_back, limit = validate_query_history_params(days_back, limit, max_days_back=7)
+        instrumentation_filter = "AND query_text LIKE '%-- sidemantic:%'" if instrumented_only else ""
         sql = f"""
         SELECT query_text
         FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY(
             END_TIME_RANGE_START => DATEADD('day', -{days_back}, CURRENT_TIMESTAMP())
         ))
-        WHERE query_text LIKE '%-- sidemantic:%'
-          AND execution_status = 'SUCCESS'
+        WHERE execution_status = 'SUCCESS'
+          {instrumentation_filter}
         ORDER BY start_time DESC
         LIMIT {limit}
         """

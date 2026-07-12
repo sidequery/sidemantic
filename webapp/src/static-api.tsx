@@ -190,10 +190,19 @@ export function renderDimensionLeaderboardCards(container: Element, dimensions: 
 }
 
 export function renderFilterPills(container: Element, filters: Record<string, unknown[]>, onRemove?: (filter: {dimension: string; value: string}) => void, options: Record<string, any> = {}) {
-  const pills = Object.entries(filters ?? {}).flatMap(([dimension, values]) => (values ?? []).map((value) => {
+  const pills: ReactNode[] = Object.entries(filters ?? {}).flatMap(([dimension, values]) => (values ?? []).map((value) => {
     const normalized = normalizeFilterValue(value);
     return createElement(FilterPill, { key: `${dimension}:${normalized}`, dimension, value: normalized, onRemove: onRemove ? () => onRemove({ dimension, value: normalized }) : undefined });
   }));
+  for (const extra of options.extraPills ?? []) {
+    pills.push(createElement(FilterPill, {
+      key: extra.key ?? `${extra.dimension}:${extra.value}`,
+      dimension: extra.dimension,
+      dimensionLabel: extra.dimensionLabel,
+      value: extra.value,
+      onRemove: extra.onRemove,
+    }));
+  }
   mount(container, pills.length ? createElement(Fragment, null, ...pills) : options.emptyLabel ? createElement("span", { className: "text-faint" }, options.emptyLabel) : null);
 }
 

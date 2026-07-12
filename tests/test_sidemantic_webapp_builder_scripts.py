@@ -193,6 +193,7 @@ def test_static_scaffold_preserves_requested_model_candidate(tmp_path: Path) -> 
     assert 'data-testid="filter-pills"' in index_html
     assert 'data-action="reset"' in index_html
     assert 'data-testid="data-preview"' in index_html
+    assert '<div data-testid="data-preview"></div>' in index_html
     assert "interactive: true" in app_js
     assert "onSelect: setFilter" in app_js
     assert "metricTotalsForFilters" in app_js

@@ -46,7 +46,7 @@ def _list_components() -> None:
         kind: {
             "components": sorted(manifest),
             "default": "all",
-            "files": sorted(path.name for path in (COMPONENT_ROOT / kind).iterdir() if path.is_file()),
+            "files": sorted({filename for filenames in manifest.values() for filename in filenames}),
         }
         for kind, manifest in KINDS.items()
     }

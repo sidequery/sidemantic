@@ -12,6 +12,7 @@ import {
   renderDimensionLeaderboardCards as mountDimensionLeaderboards,
   renderFilterPills as mountFilterPills,
   renderMetricSummaryCards as mountMetricCards,
+  renderState as mountState,
   toggleFilterValue,
 } from "../plugins/sidemantic/skills/webapp-builder/assets/ui-dist/sidemantic-ui-static.js";
 
@@ -306,10 +307,7 @@ function render({ model, el }) {
       (metricSeriesDataRaw.byteLength !== undefined &&
         metricSeriesDataRaw.byteLength === 0)
     ) {
-      metricsColEl.innerHTML = "";
-      metricsConfig.forEach(() => {
-        metricsColEl.appendChild(renderMetricSkeleton());
-      });
+      mountState(metricsColEl, { kind: "loading", message: "Loading metrics…" });
       return;
     }
 
@@ -397,10 +395,20 @@ function render({ model, el }) {
 
   function renderFilters() {
     const filters = getFilters();
-    const dateRange = model.get("date_range") || [];
     const brushSelection = model.get("brush_selection") || [];
 
-    mountFilterPills(filterPillsEl, filters, ({ dimension, value }) => removeFilter(dimension, value), { emptyLabel: "No filters" });
+    mountFilterPills(filterPillsEl, filters, ({ dimension, value }) => removeFilter(dimension, value), {
+      emptyLabel: "No filters",
+      extraPills: brushSelection.length === 2
+        ? [{
+            key: "active-date-range",
+            dimension: "__date_range",
+            dimensionLabel: "Date",
+            value: formatRangeShort(brushSelection[0], brushSelection[1]),
+            onRemove: clearBrush,
+          }]
+        : [],
+    });
   }
 
   function renderMetricSelect() {

@@ -101,7 +101,7 @@ test("brush-to-zoom on the chart sets a date range and shows the comparison over
 });
 
 test("filter editor: open, search, exclude a value, persist to URL, and restore on reload", async ({ page }) => {
-  await page.goto("/?model=customers&metric=customers.customer_count");
+  await page.goto("/?view=explore&model=customers&metric=customers.customer_count");
 
   const kpi = page.locator('button[data-metric="customers.customer_count"]');
   await expect.poll(async () => number(await kpi.textContent())).toBeGreaterThan(0);

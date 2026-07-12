@@ -30,6 +30,10 @@ function ChartTooltip({
 import { useEffect, useRef, useState as useState2 } from "react";
 
 // webapp/src/data/types.ts
+function aliasOf(ref) {
+  const last = ref.split(".").at(-1);
+  return last || ref;
+}
 var NULL_TOKEN = "\x00__null__";
 
 // webapp/src/lib/uiCore.js
@@ -123,6 +127,22 @@ function formatValue(value, hint = {}) {
 }
 function formatCompact(value, hint = {}) {
   return formatUiCompact(value, hint);
+}
+function sqlLiteral(value) {
+  return `'${value.replaceAll("'", "''")}'`;
+}
+function filterSummary(filter) {
+  if (filter.mode === "contains")
+    return `contains ${sqlLiteral(filter.pattern ?? "")}`;
+  const { values } = filter;
+  const verb = filter.mode === "exclude" ? "is not" : "is";
+  if (values.length === 0)
+    return verb;
+  if (values.length === 1)
+    return `${verb} ${displayDimValue(values[0])}`;
+  if (values.length <= 2)
+    return `${verb} ${values.map(displayDimValue).join(", ")}`;
+  return `${verb} ${values.length} values`;
 }
 
 // webapp/src/components/ColumnChart.tsx
@@ -396,7 +416,7 @@ function DashboardShell({ title, eyebrow = "Sidemantic", status, toolbar, childr
 }
 // webapp/src/components/TimeSeriesChart.tsx
 import { useEffect as useEffect3, useRef as useRef2, useState as useState4 } from "react";
-import { jsx as jsx5, jsxs as jsxs4, Fragment as Fragment2 } from "react/jsx-runtime";
+import { jsx as jsx5, jsxs as jsxs4 } from "react/jsx-runtime";
 var HEIGHT = 280;
 var PAD = { top: 14, right: 18, bottom: 26, left: 60 };
 function clamp(value, min, max) {
@@ -407,6 +427,7 @@ function TimeSeriesChart({
   comparison,
   formatValue: formatValue2,
   formatAxis = formatValue2,
+  formatLabel = (label) => label,
   comparisonLabel = "Previous",
   ariaLabel,
   onBrush
@@ -510,9 +531,9 @@ function TimeSeriesChart({
   const hoverPrev = hoverPrevRaw && Number.isFinite(hoverPrevRaw.y) ? hoverPrevRaw : null;
   const tooltipLeft = safeHover != null ? clamp(xAt(safeHover), 80, width - 80) : 0;
   const delta = hoverCur && hoverPrev && hoverPrev.y !== 0 ? (hoverCur.y - hoverPrev.y) / Math.abs(hoverPrev.y) * 100 : null;
-  const summary = ariaLabel ?? (empty ? "Time series chart: not enough data to plot." : `Time series chart, ${count} points from ${points[0].x} to ${points[count - 1].x}.`);
+  const summary = ariaLabel ?? (empty ? "Time series chart: not enough data to plot." : `Time series chart, ${count} points from ${formatLabel(points[0].x)} to ${formatLabel(points[count - 1].x)}.`);
   return /* @__PURE__ */ jsxs4("div", {
-    className: "relative border border-line bg-surface text-chart-primary",
+    className: "relative border border-line bg-surface text-accent",
     children: [
       /* @__PURE__ */ jsxs4("div", {
         className: "absolute right-3 top-2 z-10 flex items-center gap-3 text-2xs text-faint",
@@ -521,7 +542,7 @@ function TimeSeriesChart({
             className: "flex items-center gap-1",
             children: [
               /* @__PURE__ */ jsx5("span", {
-                className: "inline-block h-0.5 w-3 bg-chart-primary"
+                className: "inline-block h-0.5 w-3 bg-accent"
               }),
               " Current"
             ]
@@ -619,7 +640,7 @@ function TimeSeriesChart({
               y: PAD.top,
               width: Math.abs(brush.b - brush.a),
               height: plotH,
-              className: "fill-chart-primary",
+              className: "fill-accent",
               opacity: 0.12
             }) : null,
             safeHover != null && hoverCur ? /* @__PURE__ */ jsxs4("g", {
@@ -651,62 +672,54 @@ function TimeSeriesChart({
               y: HEIGHT - 8,
               textAnchor: "middle",
               className: "fill-faint font-mono text-[10px]",
-              children: point.x
+              children: formatLabel(point.x)
             }, point.x) : null)
           ]
         })
       }),
-      /* @__PURE__ */ jsx5(ChartTooltip, {
-        tip: hoverCur ? {
-          x: tooltipLeft,
-          y: 32,
-          content: /* @__PURE__ */ jsxs4(Fragment2, {
+      hoverCur ? /* @__PURE__ */ jsxs4("div", {
+        className: "pointer-events-none absolute top-8 z-20 -translate-x-1/2 whitespace-nowrap border border-line bg-surface px-2 py-1.5 text-2xs shadow-[var(--shadow)]",
+        style: { left: tooltipLeft },
+        children: [
+          /* @__PURE__ */ jsx5("div", {
+            className: "mb-0.5 font-mono text-faint",
+            children: formatLabel(hoverCur.x)
+          }),
+          /* @__PURE__ */ jsxs4("div", {
+            className: "flex items-center justify-between gap-3",
             children: [
-              /* @__PURE__ */ jsx5("div", {
-                className: "mb-0.5 font-mono text-faint",
-                children: hoverCur.x
+              /* @__PURE__ */ jsx5("span", {
+                className: "text-muted",
+                children: "Current"
               }),
-              /* @__PURE__ */ jsxs4("div", {
-                className: "flex items-center justify-between gap-3",
-                children: [
-                  /* @__PURE__ */ jsx5("span", {
-                    className: "text-muted",
-                    children: "Current"
-                  }),
-                  /* @__PURE__ */ jsx5("span", {
-                    className: "font-mono tnum font-medium text-ink",
-                    children: formatValue2(hoverCur.y)
-                  })
-                ]
-              }),
-              hoverPrev ? /* @__PURE__ */ jsxs4("div", {
-                className: "flex items-center justify-between gap-3",
-                children: [
-                  /* @__PURE__ */ jsx5("span", {
-                    className: "text-muted",
-                    children: comparisonLabel
-                  }),
-                  /* @__PURE__ */ jsx5("span", {
-                    className: "font-mono tnum text-muted",
-                    children: formatValue2(hoverPrev.y)
-                  })
-                ]
-              }) : null,
-              delta != null ? /* @__PURE__ */ jsxs4("div", {
-                className: `mt-0.5 text-right font-mono ${delta > 0 ? "text-accent" : delta < 0 ? "text-danger" : "text-faint"}`,
-                children: [
-                  delta.toLocaleString(undefined, { maximumFractionDigits: 1, signDisplay: "exceptZero" }),
-                  "%"
-                ]
-              }) : null
+              /* @__PURE__ */ jsx5("span", {
+                className: "font-mono tnum font-medium text-ink",
+                children: formatValue2(hoverCur.y)
+              })
             ]
-          })
-        } : null,
-        position: "absolute",
-        offset: 0,
-        style: { transform: "translateX(-50%)" },
-        className: "whitespace-nowrap border border-line bg-surface px-2 py-1.5 text-2xs shadow-[var(--shadow)]"
-      })
+          }),
+          hoverPrev ? /* @__PURE__ */ jsxs4("div", {
+            className: "flex items-center justify-between gap-3",
+            children: [
+              /* @__PURE__ */ jsx5("span", {
+                className: "text-muted",
+                children: comparisonLabel
+              }),
+              /* @__PURE__ */ jsx5("span", {
+                className: "font-mono tnum text-muted",
+                children: formatValue2(hoverPrev.y)
+              })
+            ]
+          }) : null,
+          delta != null ? /* @__PURE__ */ jsxs4("div", {
+            className: `mt-0.5 text-right font-mono ${delta > 0 ? "text-accent" : delta < 0 ? "text-danger" : "text-faint"}`,
+            children: [
+              delta.toLocaleString(undefined, { maximumFractionDigits: 1, signDisplay: "exceptZero" }),
+              "%"
+            ]
+          }) : null
+        ]
+      }) : null
     ]
   });
 }
@@ -781,39 +794,480 @@ class ErrorBoundary extends Component {
   }
 }
 // webapp/src/components/FilterPill.tsx
-import { jsx as jsx8, jsxs as jsxs6 } from "react/jsx-runtime";
-function FilterPill({ dimension, dimensionLabel, value, onRemove }) {
-  return /* @__PURE__ */ jsxs6("span", {
-    "data-dimension": dimension,
-    "data-value": value,
-    className: "inline-flex max-w-full items-center gap-1.5 border border-line bg-surface px-2 py-0.5 text-2xs text-muted",
+import { useState as useState7 } from "react";
+
+// webapp/src/components/FilterEditor.tsx
+import { useEffect as useEffect6, useId, useMemo as useMemo2, useRef as useRef4, useState as useState6 } from "react";
+
+// webapp/src/lib/time.ts
+var ALL_GRAINS = ["hour", "day", "week", "month", "quarter", "year"];
+function isoDate(date) {
+  return date.toISOString().slice(0, 10);
+}
+function dateOnly(value) {
+  return value.slice(0, 10);
+}
+function parseISO(value) {
+  return new Date(`${dateOnly(value)}T00:00:00Z`);
+}
+function addDays(value, days) {
+  const date = parseISO(value);
+  date.setUTCDate(date.getUTCDate() + days);
+  return isoDate(date);
+}
+function timeFilters(ref, range) {
+  return [`${ref} >= cast('${range.from}' as date)`, `${ref} < cast('${addDays(range.to, 1)}' as date)`];
+}
+
+// webapp/src/lib/queries.ts
+function isEmptyFilter(filter) {
+  return filter.mode === "contains" ? !filter.pattern : filter.values.length === 0;
+}
+function filterLiteral(value, type) {
+  if ((type === "numeric" || type === "number") && value.trim() !== "" && Number.isFinite(Number(value))) {
+    return value;
+  }
+  if (type === "boolean") {
+    const lower = value.toLowerCase();
+    if (lower === "true" || lower === "false")
+      return lower;
+  }
+  return sqlLiteral(value);
+}
+function likeEscape(pattern) {
+  return pattern.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_");
+}
+function membershipExpr(dimRef, filter, type) {
+  const negate = filter.mode === "exclude";
+  const hasNull = filter.values.includes(NULL_TOKEN);
+  const present = filter.values.filter((value) => value !== NULL_TOKEN);
+  let presentExpr = null;
+  if (present.length === 1) {
+    presentExpr = `${dimRef} ${negate ? "!=" : "="} ${filterLiteral(present[0], type)}`;
+  } else if (present.length > 1) {
+    const list = present.map((v) => filterLiteral(v, type)).join(", ");
+    presentExpr = `${dimRef} ${negate ? "NOT IN" : "IN"} (${list})`;
+  }
+  if (!negate) {
+    const parts = [];
+    if (presentExpr)
+      parts.push(presentExpr);
+    if (hasNull)
+      parts.push(`${dimRef} IS NULL`);
+    if (parts.length === 0)
+      return null;
+    return parts.length === 1 ? parts[0] : `(${parts.join(" OR ")})`;
+  }
+  if (hasNull) {
+    const parts = [];
+    if (presentExpr)
+      parts.push(presentExpr);
+    parts.push(`${dimRef} IS NOT NULL`);
+    return parts.length === 1 ? parts[0] : `(${parts.join(" AND ")})`;
+  }
+  if (!presentExpr)
+    return null;
+  return `(${presentExpr} OR ${dimRef} IS NULL)`;
+}
+function filterExprs(filters, opts = {}) {
+  const out = [];
+  for (const [dimRef, filter] of Object.entries(filters)) {
+    if (dimRef === opts.excludeDim || isEmptyFilter(filter))
+      continue;
+    const type = opts.types?.[dimRef];
+    if (filter.mode === "contains") {
+      const pat = sqlLiteral(`%${likeEscape(filter.pattern ?? "")}%`);
+      out.push(`CAST(${dimRef} AS VARCHAR) ILIKE ${pat} ESCAPE '\\'`);
+      continue;
+    }
+    const expr = membershipExpr(dimRef, filter, type);
+    if (expr)
+      out.push(expr);
+  }
+  return out;
+}
+function composeFilters(filters, opts = {}) {
+  const base = filterExprs(filters, { types: opts.types, excludeDim: opts.excludeDim });
+  if (opts.timeRef && opts.range)
+    base.push(...timeFilters(opts.timeRef, opts.range));
+  return base;
+}
+function distinctValues(dimRef, filters, limit = 50) {
+  return { dimensions: [dimRef], filters, orderBy: [`${dimRef} ASC`], limit };
+}
+
+// webapp/src/state/ExplorerContext.tsx
+import { createContext, useContext, useEffect as useEffect4, useMemo, useReducer } from "react";
+
+// webapp/src/state/url.ts
+var GRAINS = new Set(ALL_GRAINS);
+var CONTEXT_COLUMNS = new Set(["none", "pctTotal", "delta", "deltaPct"]);
+var COMPARISONS = new Set(["off", "previous", "year", "custom"]);
+var FILTER_MODES = new Set(["include", "exclude", "contains"]);
+
+// webapp/src/state/ExplorerContext.tsx
+import { jsx as jsx8 } from "react/jsx-runtime";
+var ExplorerContext = createContext(null);
+function useExplorer() {
+  const value = useContext(ExplorerContext);
+  if (!value)
+    throw new Error("useExplorer must be used within ExplorerProvider");
+  return value;
+}
+
+// webapp/src/state/useQueryResult.ts
+import { useEffect as useEffect5, useRef as useRef3, useState as useState5 } from "react";
+
+// webapp/src/state/queryActivity.ts
+import { useSyncExternalStore } from "react";
+var store = { active: 0, listeners: new Set };
+function emit() {
+  for (const listener of store.listeners)
+    listener();
+}
+function beginQuery() {
+  store.active += 1;
+  emit();
+}
+function endQuery() {
+  store.active = Math.max(0, store.active - 1);
+  emit();
+}
+
+// webapp/src/state/useQueryResult.ts
+var DEBOUNCE_MS = 80;
+function useQueryResult(backend, query) {
+  const [state, setState] = useState5({ loading: false });
+  const token = useRef3(0);
+  const key = query ? JSON.stringify(query) : null;
+  useEffect5(() => {
+    if (!query) {
+      setState({ loading: false });
+      return;
+    }
+    const current = ++token.current;
+    setState((prev) => ({ result: prev.result, loading: true }));
+    const timer = setTimeout(() => {
+      beginQuery();
+      backend.runQuery(query).then((result) => {
+        if (current === token.current)
+          setState({ result, loading: false });
+      }).catch((err) => {
+        if (current === token.current) {
+          setState({ loading: false, error: err instanceof Error ? err.message : String(err) });
+        }
+      }).finally(() => endQuery());
+    }, DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [key, backend]);
+  return state;
+}
+
+// webapp/src/components/FilterEditor.tsx
+import { jsx as jsx9, jsxs as jsxs6, Fragment as Fragment2 } from "react/jsx-runtime";
+var MODES = [
+  { mode: "include", label: "Include" },
+  { mode: "exclude", label: "Exclude" },
+  { mode: "contains", label: "Contains" }
+];
+var VALUE_LIMIT = 50;
+var SEARCH_DEBOUNCE_MS = 200;
+function useDebounced(value, delayMs) {
+  const [debounced, setDebounced] = useState6(value);
+  useEffect6(() => {
+    const timer = setTimeout(() => setDebounced(value), delayMs);
+    return () => clearTimeout(timer);
+  }, [value, delayMs]);
+  return debounced;
+}
+function FilterEditor({
+  dim,
+  model,
+  onClose
+}) {
+  const { state, dispatch, backend } = useExplorer();
+  const filter = state.filters[dim.ref];
+  const [mode, setModeState] = useState6(filter?.mode ?? "include");
+  const selected = useMemo2(() => new Set(filter?.mode !== "contains" ? filter?.values ?? [] : []), [filter]);
+  const panelRef = useRef4(null);
+  const searchRef = useRef4(null);
+  const labelId = useId();
+  const [search, setSearch] = useState6("");
+  const debouncedSearch = useDebounced(search, SEARCH_DEBOUNCE_MS);
+  const pattern = filter?.mode === "contains" ? filter.pattern ?? "" : "";
+  const [patternDraft, setPatternDraft] = useState6(pattern);
+  const debouncedPattern = useDebounced(patternDraft, SEARCH_DEBOUNCE_MS);
+  useEffect6(() => {
+    const opener = document.activeElement;
+    searchRef.current?.focus();
+    return () => opener?.focus?.();
+  }, []);
+  useEffect6(() => {
+    function onKey(event) {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        onClose();
+      }
+    }
+    function onPointer(event) {
+      if (panelRef.current && !panelRef.current.contains(event.target))
+        onClose();
+    }
+    document.addEventListener("keydown", onKey, true);
+    document.addEventListener("mousedown", onPointer, true);
+    return () => {
+      document.removeEventListener("keydown", onKey, true);
+      document.removeEventListener("mousedown", onPointer, true);
+    };
+  }, [onClose]);
+  useEffect6(() => {
+    if (mode !== "contains")
+      return;
+    if (debouncedPattern === pattern)
+      return;
+    dispatch({ type: "setFilterPattern", dim: dim.ref, pattern: debouncedPattern });
+  }, [debouncedPattern, mode, dim.ref, dispatch]);
+  const timeRef = model.timeDimension?.ref;
+  const valueFilters = useMemo2(() => {
+    const base = composeFilters(state.filters, { timeRef, range: state.dateRange, excludeDim: dim.ref });
+    if (debouncedSearch.trim()) {
+      const pat = sqlLiteral(`%${likeEscape(debouncedSearch.trim())}%`);
+      base.push(`CAST(${dim.ref} AS VARCHAR) ILIKE ${pat} ESCAPE '\\'`);
+    }
+    return base;
+  }, [state.filters, timeRef, state.dateRange, dim.ref, debouncedSearch]);
+  const listMode = mode !== "contains";
+  const { result, loading, error } = useQueryResult(backend, listMode ? distinctValues(dim.ref, valueFilters, VALUE_LIMIT) : null);
+  const dimAlias = aliasOf(dim.ref);
+  const values = useMemo2(() => {
+    if (!result)
+      return [];
+    return result.rows.map((row) => {
+      const raw = row[dimAlias];
+      return raw === null || raw === undefined ? NULL_TOKEN : String(raw);
+    });
+  }, [result, dimAlias]);
+  const stale = !!result && result.rows.length > 0 && !result.columns.includes(dimAlias);
+  const showSkeleton = listMode && (loading || stale);
+  function setMode(next) {
+    setModeState(next);
+    if (filter)
+      dispatch({ type: "setFilterMode", dim: dim.ref, mode: next });
+    if (next === "contains")
+      setPatternDraft(pattern);
+  }
+  function onKeyDown(event) {
+    if (event.key !== "Tab")
+      return;
+    const focusable = panelRef.current?.querySelectorAll('button, input, [href], select, textarea, [tabindex]:not([tabindex="-1"])');
+    if (!focusable || focusable.length === 0)
+      return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
+  return /* @__PURE__ */ jsxs6("div", {
+    ref: panelRef,
+    role: "dialog",
+    "aria-modal": "true",
+    "aria-labelledby": labelId,
+    onKeyDown,
+    className: "absolute left-0 z-50 mt-1 w-64 border border-line bg-surface p-2 text-2xs shadow-lg",
     children: [
-      /* @__PURE__ */ jsxs6("span", {
-        className: "truncate",
+      /* @__PURE__ */ jsxs6("div", {
+        id: labelId,
+        className: "mb-2 flex items-baseline justify-between gap-2",
         children: [
-          /* @__PURE__ */ jsxs6("span", {
-            className: "text-faint",
-            children: [
-              dimensionLabel ?? labelize2(dimension),
-              ":"
-            ]
+          /* @__PURE__ */ jsx9("span", {
+            className: "truncate font-semibold text-ink",
+            children: dim.label
           }),
-          " ",
-          displayDimValue(value)
+          /* @__PURE__ */ jsx9("button", {
+            type: "button",
+            "aria-label": "Close filter editor",
+            onClick: onClose,
+            className: "grid size-4 place-items-center rounded-full bg-surface-soft text-faint hover:bg-line hover:text-ink",
+            children: "×"
+          })
         ]
       }),
-      onRemove ? /* @__PURE__ */ jsx8("button", {
-        type: "button",
-        "aria-label": `Remove filter ${value}`,
-        onClick: onRemove,
-        className: "grid size-3.5 place-items-center rounded-full bg-surface-soft text-faint hover:bg-line hover:text-ink",
-        children: "×"
+      /* @__PURE__ */ jsx9("div", {
+        role: "group",
+        "aria-label": "Filter mode",
+        className: "mb-2 grid grid-cols-3 gap-px border border-line bg-line",
+        children: MODES.map(({ mode: m, label }) => /* @__PURE__ */ jsx9("button", {
+          type: "button",
+          "aria-pressed": mode === m,
+          onClick: () => setMode(m),
+          className: `px-1.5 py-1 text-center ${mode === m ? "bg-accent-soft font-medium text-accent" : "bg-surface text-muted hover:bg-surface-soft"}`,
+          children: label
+        }, m))
+      }),
+      mode === "contains" ? /* @__PURE__ */ jsx9("input", {
+        ref: searchRef,
+        type: "text",
+        "aria-label": `${dim.label} contains`,
+        placeholder: "Substring…",
+        value: patternDraft,
+        onChange: (event) => setPatternDraft(event.target.value),
+        className: "w-full border border-line bg-surface px-1.5 py-1 text-2xs text-ink placeholder:text-faint"
+      }) : /* @__PURE__ */ jsxs6(Fragment2, {
+        children: [
+          /* @__PURE__ */ jsx9("input", {
+            ref: searchRef,
+            type: "text",
+            "aria-label": `Search ${dim.label} values`,
+            placeholder: "Search values…",
+            value: search,
+            onChange: (event) => setSearch(event.target.value),
+            className: "w-full border border-line bg-surface px-1.5 py-1 text-2xs text-ink placeholder:text-faint"
+          }),
+          /* @__PURE__ */ jsx9("div", {
+            className: "mt-2 max-h-56 overflow-y-auto",
+            role: "group",
+            "aria-label": `${dim.label} values`,
+            children: error ? /* @__PURE__ */ jsx9("p", {
+              className: "px-1 py-2 text-danger",
+              children: error
+            }) : showSkeleton ? /* @__PURE__ */ jsx9("div", {
+              className: "space-y-1.5 p-1",
+              children: [0, 1, 2, 3, 4].map((i) => /* @__PURE__ */ jsx9("div", {
+                className: "skeleton h-4 w-full"
+              }, i))
+            }) : values.length === 0 ? /* @__PURE__ */ jsx9("p", {
+              className: "px-1 py-2 text-faint",
+              children: "No values"
+            }) : values.map((value) => {
+              const checked = selected.has(value);
+              return /* @__PURE__ */ jsxs6("label", {
+                className: "flex cursor-pointer items-center gap-2 px-1 py-1 hover:bg-surface-soft",
+                children: [
+                  /* @__PURE__ */ jsx9("input", {
+                    type: "checkbox",
+                    checked,
+                    onChange: () => dispatch({ type: "toggleFilter", dim: dim.ref, value, mode }),
+                    className: "size-3 accent-[var(--accent)]"
+                  }),
+                  /* @__PURE__ */ jsx9("span", {
+                    className: "min-w-0 truncate text-ink",
+                    children: displayDimValue(value)
+                  })
+                ]
+              }, value);
+            })
+          })
+        ]
+      }),
+      /* @__PURE__ */ jsxs6("div", {
+        className: "mt-2 flex items-center justify-between border-t border-line pt-2",
+        children: [
+          /* @__PURE__ */ jsx9("button", {
+            type: "button",
+            onClick: () => dispatch({ type: "removeFilterDim", dim: dim.ref }),
+            className: "text-muted underline-offset-2 hover:text-ink hover:underline",
+            children: "Clear"
+          }),
+          /* @__PURE__ */ jsx9("button", {
+            type: "button",
+            onClick: onClose,
+            className: "border border-line px-2 py-1 text-muted hover:bg-surface-soft",
+            children: "Done"
+          })
+        ]
+      })
+    ]
+  });
+}
+
+// webapp/src/components/FilterPill.tsx
+import { jsx as jsx10, jsxs as jsxs7 } from "react/jsx-runtime";
+function FilterPill(props) {
+  const [open, setOpen] = useState7(false);
+  if (!("dim" in props)) {
+    return /* @__PURE__ */ jsxs7("span", {
+      "data-dimension": props.dimension,
+      "data-value": props.value,
+      className: "inline-flex max-w-full items-center gap-1.5 border border-line bg-surface px-2 py-0.5 text-2xs text-muted",
+      children: [
+        /* @__PURE__ */ jsxs7("span", {
+          className: "truncate",
+          children: [
+            /* @__PURE__ */ jsxs7("span", {
+              className: "text-faint",
+              children: [
+                props.dimensionLabel ?? props.dimension,
+                ":"
+              ]
+            }),
+            " ",
+            props.value
+          ]
+        }),
+        props.onRemove ? /* @__PURE__ */ jsx10("button", {
+          type: "button",
+          "aria-label": `Remove filter ${props.value}`,
+          onClick: props.onRemove,
+          className: "grid size-3.5 place-items-center rounded-full bg-surface-soft text-faint hover:bg-line hover:text-ink",
+          children: "×"
+        }) : null
+      ]
+    });
+  }
+  const { dim, model, filter, onRemove } = props;
+  return /* @__PURE__ */ jsxs7("span", {
+    className: "relative inline-flex max-w-full items-center",
+    "data-dimension": dim.ref,
+    "data-mode": filter.mode,
+    children: [
+      /* @__PURE__ */ jsxs7("span", {
+        className: "inline-flex max-w-full items-center gap-1.5 border border-line bg-surface px-2 py-0.5 text-2xs text-muted",
+        children: [
+          /* @__PURE__ */ jsxs7("button", {
+            type: "button",
+            "aria-label": `Edit filter ${dim.label}`,
+            "aria-haspopup": "dialog",
+            "aria-expanded": open,
+            onClick: () => setOpen((v) => !v),
+            className: "min-w-0 truncate text-left hover:text-ink",
+            children: [
+              /* @__PURE__ */ jsx10("span", {
+                className: "text-faint",
+                children: dim.label
+              }),
+              " ",
+              filterSummary(filter)
+            ]
+          }),
+          /* @__PURE__ */ jsx10("button", {
+            type: "button",
+            "aria-label": `Remove filter ${dim.label}`,
+            onClick: onRemove,
+            className: "grid size-3.5 shrink-0 place-items-center rounded-full bg-surface-soft text-faint hover:bg-line hover:text-ink",
+            children: "×"
+          })
+        ]
+      }),
+      open ? /* @__PURE__ */ jsx10(FilterEditor, {
+        dim,
+        model,
+        onClose: () => setOpen(false)
       }) : null
     ]
   });
 }
 // webapp/src/components/Leaderboard.tsx
-import { jsx as jsx9, jsxs as jsxs7 } from "react/jsx-runtime";
+import { jsx as jsx11, jsxs as jsxs8 } from "react/jsx-runtime";
+var CONTEXT_TONE = {
+  positive: "text-accent",
+  negative: "text-danger",
+  neutral: "text-faint"
+};
 function Leaderboard({
   dimension,
   title,
@@ -823,6 +1277,9 @@ function Leaderboard({
   loading,
   formatMetric,
   onToggle,
+  contextColumn = "none",
+  contextOptions,
+  onContextColumn,
   collapsedLimit = 6,
   expanded = false,
   onExpandedChange
@@ -831,44 +1288,67 @@ function Leaderboard({
   const visibleRows = expanded ? rows : rows.slice(0, collapsedLimit);
   const maxMagnitude = Math.max(1, ...visibleRows.map((row) => Math.abs(row.metric)));
   const expandable = expanded || rows.length > collapsedLimit;
-  return /* @__PURE__ */ jsxs7("section", {
+  const showContext = contextColumn !== "none";
+  const rowGrid = showContext ? "grid-cols-[minmax(0,1fr)_auto_auto]" : "grid-cols-[minmax(0,1fr)_auto]";
+  return /* @__PURE__ */ jsxs8("section", {
     "data-testid": "dimension-leaderboard",
     "data-dimension": dimension,
     "data-expanded": expanded || undefined,
     "aria-label": `${title}, ranked by ${metricLabel}`,
     className: "flex min-h-60 flex-col border-b border-r border-line bg-surface data-[expanded=true]:col-span-full",
     children: [
-      /* @__PURE__ */ jsxs7("header", {
-        className: "px-3 pb-2 pt-2.5",
+      /* @__PURE__ */ jsxs8("header", {
+        className: "flex items-center justify-between gap-3 px-3 pb-2 pt-2.5",
         children: [
-          /* @__PURE__ */ jsx9("h3", {
-            className: "truncate text-sm font-semibold text-ink",
-            children: title
-          }),
-          /* @__PURE__ */ jsxs7("p", {
-            className: "sr-only",
+          /* @__PURE__ */ jsxs8("div", {
+            className: "flex min-w-0 items-baseline gap-2",
             children: [
-              "Ranked by ",
-              metricLabel
+              /* @__PURE__ */ jsx11("h3", {
+                className: "truncate text-sm font-semibold text-ink",
+                children: title
+              }),
+              /* @__PURE__ */ jsxs8("p", {
+                className: "sr-only",
+                children: [
+                  "Ranked by ",
+                  metricLabel
+                ]
+              })
             ]
-          })
+          }),
+          contextOptions && onContextColumn ? /* @__PURE__ */ jsx11("div", {
+            role: "group",
+            "aria-label": "Context column",
+            "data-testid": "leaderboard-context-toggle",
+            className: "flex shrink-0 overflow-hidden border border-line text-2xs",
+            children: contextOptions.map((option) => /* @__PURE__ */ jsx11("button", {
+              type: "button",
+              title: option.title,
+              "aria-pressed": contextColumn === option.key,
+              "data-context": option.key,
+              "data-active": contextColumn === option.key || undefined,
+              onClick: () => onContextColumn(option.key),
+              className: "border-l border-line px-1.5 py-0.5 font-mono text-faint first:border-l-0 hover:bg-surface-soft data-[active=true]:bg-accent-soft data-[active=true]:text-accent",
+              children: option.label
+            }, option.key))
+          }) : null
         ]
       }),
-      /* @__PURE__ */ jsx9("div", {
+      /* @__PURE__ */ jsx11("div", {
         "data-testid": "leaderboard-rows",
-        children: loading && rows.length === 0 ? /* @__PURE__ */ jsx9("div", {
+        children: loading && rows.length === 0 ? /* @__PURE__ */ jsx11("div", {
           className: "space-y-2 p-3",
-          children: [0, 1, 2, 3].map((i) => /* @__PURE__ */ jsx9("div", {
+          children: [0, 1, 2, 3].map((i) => /* @__PURE__ */ jsx11("div", {
             className: "skeleton h-5 w-full"
           }, i))
-        }) : rows.length === 0 ? /* @__PURE__ */ jsx9("p", {
+        }) : rows.length === 0 ? /* @__PURE__ */ jsx11("p", {
           className: "px-3 py-4 text-xs text-faint",
           children: "No values"
         }) : visibleRows.map((row) => {
           const tone = row.metric < 0 ? "negative" : "positive";
           const isSelected = selected.has(row.value);
           const width = `${Math.round(Math.abs(row.metric) / maxMagnitude * 100)}%`;
-          return /* @__PURE__ */ jsxs7("button", {
+          return /* @__PURE__ */ jsxs8("button", {
             type: "button",
             "data-dimension": dimension,
             "data-value": row.value,
@@ -876,26 +1356,32 @@ function Leaderboard({
             "data-tone": tone,
             onClick: () => onToggle?.(row.value),
             "aria-pressed": isSelected,
-            className: "leaderboard-row relative grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-2 overflow-hidden border-0 bg-transparent px-3 py-1 text-left text-xs text-ink data-[selected=true]:bg-chart-primary-selected",
+            className: `leaderboard-row relative grid w-full ${rowGrid} items-center gap-3 overflow-hidden border-0 bg-transparent px-3 py-1 text-left text-xs text-ink data-[selected=true]:bg-chart-primary-selected`,
             children: [
-              /* @__PURE__ */ jsx9("span", {
+              /* @__PURE__ */ jsx11("span", {
                 "aria-hidden": "true",
                 className: `absolute inset-y-0 left-0 ${tone === "negative" ? "bg-danger-soft" : "bg-chart-primary-soft"}`,
                 style: { width }
               }),
-              /* @__PURE__ */ jsx9("span", {
+              /* @__PURE__ */ jsx11("span", {
                 className: "relative min-w-0 truncate text-muted",
                 children: displayDimValue(row.value)
               }),
-              /* @__PURE__ */ jsx9("strong", {
+              /* @__PURE__ */ jsx11("strong", {
                 className: "relative tnum font-semibold text-ink",
                 children: formatMetric(row.metric)
-              })
+              }),
+              showContext ? /* @__PURE__ */ jsx11("span", {
+                "data-testid": "leaderboard-context",
+                "data-tone": row.context?.tone ?? "neutral",
+                className: `relative w-14 text-right font-mono tnum text-2xs ${CONTEXT_TONE[row.context?.tone ?? "neutral"]}`,
+                children: row.context?.label ?? "—"
+              }) : null
             ]
           }, `${dimension}:${row.value}`);
         })
       }),
-      expandable && !loading ? /* @__PURE__ */ jsx9("button", {
+      expandable && !loading ? /* @__PURE__ */ jsx11("button", {
         type: "button",
         "data-action": expanded ? "leaderboard-back" : "leaderboard-expand",
         "aria-expanded": expanded,
@@ -907,11 +1393,11 @@ function Leaderboard({
   });
 }
 // webapp/src/components/MetricCard.tsx
-import { useState as useState6 } from "react";
+import { useState as useState9 } from "react";
 
 // webapp/src/components/Sparkline.tsx
-import { useEffect as useEffect4, useRef as useRef3, useState as useState5 } from "react";
-import { jsx as jsx10, jsxs as jsxs8, Fragment as Fragment3 } from "react/jsx-runtime";
+import { useEffect as useEffect7, useRef as useRef5, useState as useState8 } from "react";
+import { jsx as jsx12, jsxs as jsxs9, Fragment as Fragment3 } from "react/jsx-runtime";
 function Sparkline({
   values,
   labels,
@@ -921,14 +1407,14 @@ function Sparkline({
   onHover,
   onBrush
 }) {
-  const containerRef = useRef3(null);
-  const svgRef = useRef3(null);
-  const dragStart = useRef3(null);
-  const [width, setWidth] = useState5(200);
-  const [hover, setHover] = useState5(null);
-  const [brush, setBrush] = useState5(null);
-  const [tip, setTip] = useState5(null);
-  useEffect4(() => {
+  const containerRef = useRef5(null);
+  const svgRef = useRef5(null);
+  const dragStart = useRef5(null);
+  const [width, setWidth] = useState8(200);
+  const [hover, setHover] = useState8(null);
+  const [brush, setBrush] = useState8(null);
+  const [tip, setTip] = useState8(null);
+  useEffect7(() => {
     const node = containerRef.current;
     if (!node || typeof ResizeObserver === "undefined")
       return;
@@ -941,7 +1427,7 @@ function Sparkline({
   }, []);
   const points = values.map((value, index) => ({ index, value })).filter((point) => Number.isFinite(point.value));
   if (points.length < 2) {
-    return /* @__PURE__ */ jsx10("svg", {
+    return /* @__PURE__ */ jsx12("svg", {
       ref: svgRef,
       role: "img",
       "aria-label": ariaLabel || "No trend data",
@@ -1013,11 +1499,11 @@ function Sparkline({
       setBrush(null);
   }
   const hovered = hover === null ? null : coordinates[hover];
-  return /* @__PURE__ */ jsxs8("span", {
+  return /* @__PURE__ */ jsxs9("span", {
     ref: containerRef,
     className: "relative block w-full",
     children: [
-      /* @__PURE__ */ jsxs8("svg", {
+      /* @__PURE__ */ jsxs9("svg", {
         ref: svgRef,
         role: "img",
         "aria-label": summary,
@@ -1031,19 +1517,19 @@ function Sparkline({
         onPointerLeave: leave,
         onDoubleClick: () => onBrush?.(null),
         children: [
-          /* @__PURE__ */ jsx10("path", {
+          /* @__PURE__ */ jsx12("path", {
             d: area,
             fill: "currentColor",
             opacity: 0.1
           }),
-          /* @__PURE__ */ jsx10("path", {
+          /* @__PURE__ */ jsx12("path", {
             d: `M ${line}`,
             fill: "none",
             stroke: "currentColor",
             strokeWidth: 1.5,
             vectorEffect: "non-scaling-stroke"
           }),
-          brush ? /* @__PURE__ */ jsx10("rect", {
+          brush ? /* @__PURE__ */ jsx12("rect", {
             x: Math.min(brush.a, brush.b),
             y: 0,
             width: Math.abs(brush.b - brush.a),
@@ -1051,9 +1537,9 @@ function Sparkline({
             fill: "currentColor",
             opacity: 0.12
           }) : null,
-          hovered ? /* @__PURE__ */ jsxs8(Fragment3, {
+          hovered ? /* @__PURE__ */ jsxs9(Fragment3, {
             children: [
-              /* @__PURE__ */ jsx10("line", {
+              /* @__PURE__ */ jsx12("line", {
                 x1: hovered.x,
                 x2: hovered.x,
                 y1: 0,
@@ -1062,14 +1548,14 @@ function Sparkline({
                 strokeWidth: 1,
                 opacity: 0.45
               }),
-              /* @__PURE__ */ jsx10("circle", {
+              /* @__PURE__ */ jsx12("circle", {
                 cx: hovered.x,
                 cy: hovered.y,
                 r: 2.5,
                 fill: "currentColor"
               })
             ]
-          }) : /* @__PURE__ */ jsx10("circle", {
+          }) : /* @__PURE__ */ jsx12("circle", {
             cx: latest.x,
             cy: latest.y,
             r: 2.25,
@@ -1077,7 +1563,7 @@ function Sparkline({
           })
         ]
       }),
-      /* @__PURE__ */ jsx10(ChartTooltip, {
+      /* @__PURE__ */ jsx12(ChartTooltip, {
         tip
       })
     ]
@@ -1085,7 +1571,7 @@ function Sparkline({
 }
 
 // webapp/src/components/MetricCard.tsx
-import { jsx as jsx11, jsxs as jsxs9, Fragment as Fragment4 } from "react/jsx-runtime";
+import { jsx as jsx13, jsxs as jsxs10, Fragment as Fragment4 } from "react/jsx-runtime";
 var TONE_CLASS = {
   positive: "text-accent",
   negative: "text-danger",
@@ -1107,24 +1593,24 @@ function MetricCard({
   onSparkHover,
   onSparkBrush
 }) {
-  const [sparkHover, setSparkHover] = useState6(null);
-  const summary = /* @__PURE__ */ jsxs9(Fragment4, {
+  const [sparkHover, setSparkHover] = useState9(null);
+  const summary = /* @__PURE__ */ jsxs10(Fragment4, {
     children: [
-      /* @__PURE__ */ jsxs9("div", {
+      /* @__PURE__ */ jsxs10("div", {
         className: "flex items-baseline justify-between gap-2",
         children: [
-          /* @__PURE__ */ jsx11("span", {
+          /* @__PURE__ */ jsx13("span", {
             className: "truncate text-2xs font-semibold uppercase tracking-wide text-faint",
             children: label
           }),
-          sparkHover?.label ? /* @__PURE__ */ jsx11("span", {
+          sparkHover?.label ? /* @__PURE__ */ jsx13("span", {
             className: "shrink-0 font-mono text-2xs text-faint",
             children: sparkHover.label
-          }) : delta ? /* @__PURE__ */ jsxs9("span", {
+          }) : delta ? /* @__PURE__ */ jsxs10("span", {
             "data-tone": delta.tone,
             className: `shrink-0 text-2xs font-medium ${TONE_CLASS[delta.tone]}`,
             children: [
-              /* @__PURE__ */ jsx11("span", {
+              /* @__PURE__ */ jsx13("span", {
                 "aria-hidden": "true",
                 className: "mr-0.5 text-[8px]",
                 children: TONE_ARROW[delta.tone]
@@ -1134,16 +1620,16 @@ function MetricCard({
           }) : null
         ]
       }),
-      /* @__PURE__ */ jsx11("div", {
+      /* @__PURE__ */ jsx13("div", {
         className: "font-mono tnum text-base font-semibold text-ink",
-        children: loading ? /* @__PURE__ */ jsx11("span", {
+        children: loading ? /* @__PURE__ */ jsx13("span", {
           className: "skeleton inline-block h-5 w-24 align-middle"
         }) : sparkHover ? formatValue(sparkHover.value, format) : valueText ?? formatValue(value, format)
       })
     ]
   });
   const className = "group flex w-full flex-col gap-1.5 border border-line bg-surface px-3 py-2.5 text-left data-[selected=true]:border-accent data-[selected=true]:ring-1 data-[selected=true]:ring-accent";
-  const sparkline = /* @__PURE__ */ jsx11(Sparkline, {
+  const sparkline = /* @__PURE__ */ jsx13(Sparkline, {
     values: sparkValues,
     labels: sparkLabels,
     onHover: (point) => {
@@ -1154,7 +1640,7 @@ function MetricCard({
     formatValue: (sparkValue) => formatValue(sparkValue, format)
   });
   if (!onSelect) {
-    return /* @__PURE__ */ jsxs9("article", {
+    return /* @__PURE__ */ jsxs10("article", {
       "data-metric": metric,
       "data-selected": selected || undefined,
       className,
@@ -1164,12 +1650,12 @@ function MetricCard({
       ]
     });
   }
-  return /* @__PURE__ */ jsxs9("article", {
+  return /* @__PURE__ */ jsxs10("article", {
     "data-metric": metric,
     "data-selected": selected || undefined,
     className,
     children: [
-      /* @__PURE__ */ jsx11("button", {
+      /* @__PURE__ */ jsx13("button", {
         type: "button",
         "data-metric": metric,
         "aria-pressed": !!selected,
@@ -1182,7 +1668,7 @@ function MetricCard({
   });
 }
 // webapp/src/components/QueryDebugPanel.tsx
-import { jsx as jsx12, jsxs as jsxs10 } from "react/jsx-runtime";
+import { jsx as jsx14, jsxs as jsxs11 } from "react/jsx-runtime";
 var SQL_KEYWORDS = new Set([
   "and",
   "as",
@@ -1251,20 +1737,20 @@ ${sql}`).join(`
 
 `);
   const tokens = tokenizeSql(text || "No queries yet.");
-  return /* @__PURE__ */ jsxs10("details", {
+  return /* @__PURE__ */ jsxs11("details", {
     className: "border border-line bg-surface",
     children: [
-      /* @__PURE__ */ jsx12("summary", {
+      /* @__PURE__ */ jsx14("summary", {
         className: "cursor-pointer px-3 py-2 text-2xs font-semibold uppercase tracking-wide text-faint",
         children: "Generated SQL"
       }),
-      Object.keys(inputs).length > 0 ? /* @__PURE__ */ jsx12("div", {
+      Object.keys(inputs).length > 0 ? /* @__PURE__ */ jsx14("div", {
         "data-testid": "query-inputs",
         className: "grid gap-px border-t border-line bg-line sm:grid-cols-2",
-        children: Object.entries(inputs).map(([name, input]) => input ? /* @__PURE__ */ jsxs10("section", {
+        children: Object.entries(inputs).map(([name, input]) => input ? /* @__PURE__ */ jsxs11("section", {
           className: "min-w-0 bg-surface px-3 py-2 text-2xs",
           children: [
-            /* @__PURE__ */ jsx12("h3", {
+            /* @__PURE__ */ jsx14("h3", {
               className: "mb-1 font-semibold text-ink",
               children: name
             }),
@@ -1272,11 +1758,11 @@ ${sql}`).join(`
               ["Metrics", input.metrics],
               ["Dimensions", input.dimensions],
               ["Filters", input.filters]
-            ].map(([label, values]) => values?.length ? /* @__PURE__ */ jsxs10("p", {
+            ].map(([label, values]) => values?.length ? /* @__PURE__ */ jsxs11("p", {
               className: "truncate text-muted",
               title: values.join(", "),
               children: [
-                /* @__PURE__ */ jsxs10("strong", {
+                /* @__PURE__ */ jsxs11("strong", {
                   className: "font-medium text-faint",
                   children: [
                     label,
@@ -1290,10 +1776,10 @@ ${sql}`).join(`
           ]
         }, name) : null)
       }) : null,
-      /* @__PURE__ */ jsx12("pre", {
+      /* @__PURE__ */ jsx14("pre", {
         "data-testid": "query-debug",
         className: "max-h-72 overflow-auto whitespace-pre-wrap border-t border-line px-3 py-2 font-mono text-2xs text-muted",
-        children: tokens.map((token, index) => TOKEN_CLASS[token.kind] ? /* @__PURE__ */ jsx12("span", {
+        children: tokens.map((token, index) => TOKEN_CLASS[token.kind] ? /* @__PURE__ */ jsx14("span", {
           className: TOKEN_CLASS[token.kind],
           "data-token": token.kind,
           children: token.value
@@ -1303,26 +1789,26 @@ ${sql}`).join(`
   });
 }
 // webapp/src/components/States.tsx
-import { jsx as jsx13, jsxs as jsxs11 } from "react/jsx-runtime";
+import { jsx as jsx15, jsxs as jsxs12 } from "react/jsx-runtime";
 function StateBox({ tone, title, message }) {
   const danger = tone === "danger";
-  return /* @__PURE__ */ jsx13("div", {
+  return /* @__PURE__ */ jsx15("div", {
     className: `grid min-h-[200px] place-items-center border bg-surface p-6 text-center ${danger ? "border-danger/40" : "border-line"}`,
     "data-state": tone,
     role: danger ? "alert" : "status",
     "aria-live": danger ? "assertive" : "polite",
-    children: /* @__PURE__ */ jsxs11("div", {
+    children: /* @__PURE__ */ jsxs12("div", {
       className: "max-w-md",
       children: [
-        tone === "loading" ? /* @__PURE__ */ jsx13("span", {
+        tone === "loading" ? /* @__PURE__ */ jsx15("span", {
           "aria-hidden": "true",
           className: "motion-safe:animate-pulse inline-block size-2 rounded-full bg-accent"
         }) : null,
-        title ? /* @__PURE__ */ jsx13("h3", {
+        title ? /* @__PURE__ */ jsx15("h3", {
           className: `text-sm font-semibold ${danger ? "text-danger" : "text-ink"}`,
           children: title
         }) : null,
-        /* @__PURE__ */ jsx13("p", {
+        /* @__PURE__ */ jsx15("p", {
           className: `mt-1 text-xs ${danger ? "text-danger" : "text-muted"}`,
           children: message
         })
@@ -1331,21 +1817,21 @@ function StateBox({ tone, title, message }) {
   });
 }
 function LoadingState({ title = "Loading", message = "Loading metrics…" }) {
-  return /* @__PURE__ */ jsx13(StateBox, {
+  return /* @__PURE__ */ jsx15(StateBox, {
     tone: "loading",
     title,
     message
   });
 }
 function EmptyState({ title = "No results", message }) {
-  return /* @__PURE__ */ jsx13(StateBox, {
+  return /* @__PURE__ */ jsx15(StateBox, {
     tone: "muted",
     title,
     message
   });
 }
 function ErrorState({ title = "Query failed", message }) {
-  return /* @__PURE__ */ jsx13(StateBox, {
+  return /* @__PURE__ */ jsx15(StateBox, {
     tone: "danger",
     title,
     message
@@ -1353,7 +1839,7 @@ function ErrorState({ title = "Query failed", message }) {
 }
 function StatusDot({ status }) {
   const color = status === "ok" ? "bg-accent" : status === "loading" ? "bg-faint animate-pulse" : "bg-line";
-  return /* @__PURE__ */ jsx13("span", {
+  return /* @__PURE__ */ jsx15("span", {
     "aria-hidden": "true",
     className: `inline-block size-2 rounded-full ${color}`
   });

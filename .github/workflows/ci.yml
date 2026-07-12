@@ -237,12 +237,16 @@ jobs:
             webapp:
               - 'webapp/**'
               - 'scripts/build_webapp.py'
+              - 'scripts/build_ui_distribution.py'
               - 'sidemantic/ui/static/**'
               - 'sidemantic-rs/ui/**'
+              - 'plugins/sidemantic/skills/webapp-builder/assets/ui-dist/**'
+              - 'examples/sidemantic_wasm_demo/src/components/sidemantic/**'
             widget:
               - 'js/**'
               - 'scripts/build_widget.py'
               - 'sidemantic/widget/static/**'
+              - 'plugins/sidemantic/skills/webapp-builder/assets/ui-dist/**'
 
   dax-rust:
     name: Rust (DAX crates)
@@ -450,7 +454,9 @@ jobs:
         run: bun test src
 
       - name: Check committed bundles
-        run: python ../scripts/build_webapp.py --check
+        run: |
+          python ../scripts/build_webapp.py --check
+          python ../scripts/build_ui_distribution.py --check
 
   widget:
     name: AnyWidget bundle

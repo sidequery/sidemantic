@@ -7657,7 +7657,7 @@ var require_jsx_runtime = __commonJS((exports, module) => {
 });
 
 // webapp/src/static-api.tsx
-var import_react5 = __toESM(require_react(), 1);
+var import_react10 = __toESM(require_react(), 1);
 var import_client = __toESM(require_client(), 1);
 var import_react_dom = __toESM(require_react_dom(), 1);
 
@@ -7863,55 +7863,513 @@ function DataTable({ columns, rows, loading, sortKey, sortDir, onSort, renderCel
   });
 }
 
+// webapp/src/components/FilterPill.tsx
+var import_react6 = __toESM(require_react(), 1);
+
 // webapp/src/data/types.ts
+function aliasOf(ref) {
+  const last = ref.split(".").at(-1);
+  return last || ref;
+}
 var NULL_TOKEN = "\x00__null__";
 
 // webapp/src/lib/format.ts
 function displayDimValue(value) {
   return value === NULL_TOKEN || value === "" ? "—" : value;
 }
-function labelize2(value) {
-  return labelize(value);
-}
 function formatValue(value, hint = {}) {
   return formatUiValue(value, hint);
 }
+function sqlLiteral(value) {
+  return `'${value.replaceAll("'", "''")}'`;
+}
+function filterSummary(filter) {
+  if (filter.mode === "contains")
+    return `contains ${sqlLiteral(filter.pattern ?? "")}`;
+  const { values } = filter;
+  const verb = filter.mode === "exclude" ? "is not" : "is";
+  if (values.length === 0)
+    return verb;
+  if (values.length === 1)
+    return `${verb} ${displayDimValue(values[0])}`;
+  if (values.length <= 2)
+    return `${verb} ${values.map(displayDimValue).join(", ")}`;
+  return `${verb} ${values.length} values`;
+}
 
-// webapp/src/components/FilterPill.tsx
+// webapp/src/components/FilterEditor.tsx
+var import_react5 = __toESM(require_react(), 1);
+
+// webapp/src/lib/time.ts
+var ALL_GRAINS = ["hour", "day", "week", "month", "quarter", "year"];
+function isoDate(date) {
+  return date.toISOString().slice(0, 10);
+}
+function dateOnly(value) {
+  return value.slice(0, 10);
+}
+function parseISO(value) {
+  return new Date(`${dateOnly(value)}T00:00:00Z`);
+}
+function addDays(value, days) {
+  const date = parseISO(value);
+  date.setUTCDate(date.getUTCDate() + days);
+  return isoDate(date);
+}
+function timeFilters(ref, range) {
+  return [`${ref} >= cast('${range.from}' as date)`, `${ref} < cast('${addDays(range.to, 1)}' as date)`];
+}
+
+// webapp/src/lib/queries.ts
+function isEmptyFilter(filter) {
+  return filter.mode === "contains" ? !filter.pattern : filter.values.length === 0;
+}
+function filterLiteral(value, type) {
+  if ((type === "numeric" || type === "number") && value.trim() !== "" && Number.isFinite(Number(value))) {
+    return value;
+  }
+  if (type === "boolean") {
+    const lower = value.toLowerCase();
+    if (lower === "true" || lower === "false")
+      return lower;
+  }
+  return sqlLiteral(value);
+}
+function likeEscape(pattern) {
+  return pattern.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_");
+}
+function membershipExpr(dimRef, filter, type) {
+  const negate = filter.mode === "exclude";
+  const hasNull = filter.values.includes(NULL_TOKEN);
+  const present = filter.values.filter((value) => value !== NULL_TOKEN);
+  let presentExpr = null;
+  if (present.length === 1) {
+    presentExpr = `${dimRef} ${negate ? "!=" : "="} ${filterLiteral(present[0], type)}`;
+  } else if (present.length > 1) {
+    const list = present.map((v3) => filterLiteral(v3, type)).join(", ");
+    presentExpr = `${dimRef} ${negate ? "NOT IN" : "IN"} (${list})`;
+  }
+  if (!negate) {
+    const parts = [];
+    if (presentExpr)
+      parts.push(presentExpr);
+    if (hasNull)
+      parts.push(`${dimRef} IS NULL`);
+    if (parts.length === 0)
+      return null;
+    return parts.length === 1 ? parts[0] : `(${parts.join(" OR ")})`;
+  }
+  if (hasNull) {
+    const parts = [];
+    if (presentExpr)
+      parts.push(presentExpr);
+    parts.push(`${dimRef} IS NOT NULL`);
+    return parts.length === 1 ? parts[0] : `(${parts.join(" AND ")})`;
+  }
+  if (!presentExpr)
+    return null;
+  return `(${presentExpr} OR ${dimRef} IS NULL)`;
+}
+function filterExprs(filters, opts = {}) {
+  const out = [];
+  for (const [dimRef, filter] of Object.entries(filters)) {
+    if (dimRef === opts.excludeDim || isEmptyFilter(filter))
+      continue;
+    const type = opts.types?.[dimRef];
+    if (filter.mode === "contains") {
+      const pat = sqlLiteral(`%${likeEscape(filter.pattern ?? "")}%`);
+      out.push(`CAST(${dimRef} AS VARCHAR) ILIKE ${pat} ESCAPE '\\'`);
+      continue;
+    }
+    const expr = membershipExpr(dimRef, filter, type);
+    if (expr)
+      out.push(expr);
+  }
+  return out;
+}
+function composeFilters(filters, opts = {}) {
+  const base = filterExprs(filters, { types: opts.types, excludeDim: opts.excludeDim });
+  if (opts.timeRef && opts.range)
+    base.push(...timeFilters(opts.timeRef, opts.range));
+  return base;
+}
+function distinctValues(dimRef, filters, limit = 50) {
+  return { dimensions: [dimRef], filters, orderBy: [`${dimRef} ASC`], limit };
+}
+
+// webapp/src/state/ExplorerContext.tsx
+var import_react2 = __toESM(require_react(), 1);
+
+// webapp/src/state/url.ts
+var GRAINS = new Set(ALL_GRAINS);
+var CONTEXT_COLUMNS = new Set(["none", "pctTotal", "delta", "deltaPct"]);
+var COMPARISONS = new Set(["off", "previous", "year", "custom"]);
+var FILTER_MODES = new Set(["include", "exclude", "contains"]);
+
+// webapp/src/state/ExplorerContext.tsx
 var jsx_runtime2 = __toESM(require_jsx_runtime(), 1);
-function FilterPill({ dimension, dimensionLabel, value, onRemove }) {
-  return /* @__PURE__ */ jsx_runtime2.jsxs("span", {
-    "data-dimension": dimension,
-    "data-value": value,
-    className: "inline-flex max-w-full items-center gap-1.5 border border-line bg-surface px-2 py-0.5 text-2xs text-muted",
+var ExplorerContext = import_react2.createContext(null);
+function useExplorer() {
+  const value = import_react2.useContext(ExplorerContext);
+  if (!value)
+    throw new Error("useExplorer must be used within ExplorerProvider");
+  return value;
+}
+
+// webapp/src/state/useQueryResult.ts
+var import_react4 = __toESM(require_react(), 1);
+
+// webapp/src/state/queryActivity.ts
+var import_react3 = __toESM(require_react(), 1);
+var store = { active: 0, listeners: new Set };
+function emit() {
+  for (const listener of store.listeners)
+    listener();
+}
+function beginQuery() {
+  store.active += 1;
+  emit();
+}
+function endQuery() {
+  store.active = Math.max(0, store.active - 1);
+  emit();
+}
+
+// webapp/src/state/useQueryResult.ts
+var DEBOUNCE_MS = 80;
+function useQueryResult(backend, query) {
+  const [state, setState] = import_react4.useState({ loading: false });
+  const token = import_react4.useRef(0);
+  const key = query ? JSON.stringify(query) : null;
+  import_react4.useEffect(() => {
+    if (!query) {
+      setState({ loading: false });
+      return;
+    }
+    const current = ++token.current;
+    setState((prev) => ({ result: prev.result, loading: true }));
+    const timer = setTimeout(() => {
+      beginQuery();
+      backend.runQuery(query).then((result) => {
+        if (current === token.current)
+          setState({ result, loading: false });
+      }).catch((err) => {
+        if (current === token.current) {
+          setState({ loading: false, error: err instanceof Error ? err.message : String(err) });
+        }
+      }).finally(() => endQuery());
+    }, DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [key, backend]);
+  return state;
+}
+
+// webapp/src/components/FilterEditor.tsx
+var jsx_runtime3 = __toESM(require_jsx_runtime(), 1);
+var MODES = [
+  { mode: "include", label: "Include" },
+  { mode: "exclude", label: "Exclude" },
+  { mode: "contains", label: "Contains" }
+];
+var VALUE_LIMIT = 50;
+var SEARCH_DEBOUNCE_MS = 200;
+function useDebounced(value, delayMs) {
+  const [debounced, setDebounced] = import_react5.useState(value);
+  import_react5.useEffect(() => {
+    const timer = setTimeout(() => setDebounced(value), delayMs);
+    return () => clearTimeout(timer);
+  }, [value, delayMs]);
+  return debounced;
+}
+function FilterEditor({
+  dim,
+  model,
+  onClose
+}) {
+  const { state, dispatch, backend } = useExplorer();
+  const filter = state.filters[dim.ref];
+  const [mode, setModeState] = import_react5.useState(filter?.mode ?? "include");
+  const selected = import_react5.useMemo(() => new Set(filter?.mode !== "contains" ? filter?.values ?? [] : []), [filter]);
+  const panelRef = import_react5.useRef(null);
+  const searchRef = import_react5.useRef(null);
+  const labelId = import_react5.useId();
+  const [search, setSearch] = import_react5.useState("");
+  const debouncedSearch = useDebounced(search, SEARCH_DEBOUNCE_MS);
+  const pattern = filter?.mode === "contains" ? filter.pattern ?? "" : "";
+  const [patternDraft, setPatternDraft] = import_react5.useState(pattern);
+  const debouncedPattern = useDebounced(patternDraft, SEARCH_DEBOUNCE_MS);
+  import_react5.useEffect(() => {
+    const opener = document.activeElement;
+    searchRef.current?.focus();
+    return () => opener?.focus?.();
+  }, []);
+  import_react5.useEffect(() => {
+    function onKey(event) {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        onClose();
+      }
+    }
+    function onPointer(event) {
+      if (panelRef.current && !panelRef.current.contains(event.target))
+        onClose();
+    }
+    document.addEventListener("keydown", onKey, true);
+    document.addEventListener("mousedown", onPointer, true);
+    return () => {
+      document.removeEventListener("keydown", onKey, true);
+      document.removeEventListener("mousedown", onPointer, true);
+    };
+  }, [onClose]);
+  import_react5.useEffect(() => {
+    if (mode !== "contains")
+      return;
+    if (debouncedPattern === pattern)
+      return;
+    dispatch({ type: "setFilterPattern", dim: dim.ref, pattern: debouncedPattern });
+  }, [debouncedPattern, mode, dim.ref, dispatch]);
+  const timeRef = model.timeDimension?.ref;
+  const valueFilters = import_react5.useMemo(() => {
+    const base = composeFilters(state.filters, { timeRef, range: state.dateRange, excludeDim: dim.ref });
+    if (debouncedSearch.trim()) {
+      const pat = sqlLiteral(`%${likeEscape(debouncedSearch.trim())}%`);
+      base.push(`CAST(${dim.ref} AS VARCHAR) ILIKE ${pat} ESCAPE '\\'`);
+    }
+    return base;
+  }, [state.filters, timeRef, state.dateRange, dim.ref, debouncedSearch]);
+  const listMode = mode !== "contains";
+  const { result, loading, error } = useQueryResult(backend, listMode ? distinctValues(dim.ref, valueFilters, VALUE_LIMIT) : null);
+  const dimAlias = aliasOf(dim.ref);
+  const values = import_react5.useMemo(() => {
+    if (!result)
+      return [];
+    return result.rows.map((row) => {
+      const raw = row[dimAlias];
+      return raw === null || raw === undefined ? NULL_TOKEN : String(raw);
+    });
+  }, [result, dimAlias]);
+  const stale = !!result && result.rows.length > 0 && !result.columns.includes(dimAlias);
+  const showSkeleton = listMode && (loading || stale);
+  function setMode(next) {
+    setModeState(next);
+    if (filter)
+      dispatch({ type: "setFilterMode", dim: dim.ref, mode: next });
+    if (next === "contains")
+      setPatternDraft(pattern);
+  }
+  function onKeyDown(event) {
+    if (event.key !== "Tab")
+      return;
+    const focusable = panelRef.current?.querySelectorAll('button, input, [href], select, textarea, [tabindex]:not([tabindex="-1"])');
+    if (!focusable || focusable.length === 0)
+      return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
+  return /* @__PURE__ */ jsx_runtime3.jsxs("div", {
+    ref: panelRef,
+    role: "dialog",
+    "aria-modal": "true",
+    "aria-labelledby": labelId,
+    onKeyDown,
+    className: "absolute left-0 z-50 mt-1 w-64 border border-line bg-surface p-2 text-2xs shadow-lg",
     children: [
-      /* @__PURE__ */ jsx_runtime2.jsxs("span", {
-        className: "truncate",
+      /* @__PURE__ */ jsx_runtime3.jsxs("div", {
+        id: labelId,
+        className: "mb-2 flex items-baseline justify-between gap-2",
         children: [
-          /* @__PURE__ */ jsx_runtime2.jsxs("span", {
-            className: "text-faint",
-            children: [
-              dimensionLabel ?? labelize2(dimension),
-              ":"
-            ]
+          /* @__PURE__ */ jsx_runtime3.jsx("span", {
+            className: "truncate font-semibold text-ink",
+            children: dim.label
           }),
-          " ",
-          displayDimValue(value)
+          /* @__PURE__ */ jsx_runtime3.jsx("button", {
+            type: "button",
+            "aria-label": "Close filter editor",
+            onClick: onClose,
+            className: "grid size-4 place-items-center rounded-full bg-surface-soft text-faint hover:bg-line hover:text-ink",
+            children: "×"
+          })
         ]
       }),
-      onRemove ? /* @__PURE__ */ jsx_runtime2.jsx("button", {
-        type: "button",
-        "aria-label": `Remove filter ${value}`,
-        onClick: onRemove,
-        className: "grid size-3.5 place-items-center rounded-full bg-surface-soft text-faint hover:bg-line hover:text-ink",
-        children: "×"
+      /* @__PURE__ */ jsx_runtime3.jsx("div", {
+        role: "group",
+        "aria-label": "Filter mode",
+        className: "mb-2 grid grid-cols-3 gap-px border border-line bg-line",
+        children: MODES.map(({ mode: m2, label }) => /* @__PURE__ */ jsx_runtime3.jsx("button", {
+          type: "button",
+          "aria-pressed": mode === m2,
+          onClick: () => setMode(m2),
+          className: `px-1.5 py-1 text-center ${mode === m2 ? "bg-accent-soft font-medium text-accent" : "bg-surface text-muted hover:bg-surface-soft"}`,
+          children: label
+        }, m2))
+      }),
+      mode === "contains" ? /* @__PURE__ */ jsx_runtime3.jsx("input", {
+        ref: searchRef,
+        type: "text",
+        "aria-label": `${dim.label} contains`,
+        placeholder: "Substring…",
+        value: patternDraft,
+        onChange: (event) => setPatternDraft(event.target.value),
+        className: "w-full border border-line bg-surface px-1.5 py-1 text-2xs text-ink placeholder:text-faint"
+      }) : /* @__PURE__ */ jsx_runtime3.jsxs(jsx_runtime3.Fragment, {
+        children: [
+          /* @__PURE__ */ jsx_runtime3.jsx("input", {
+            ref: searchRef,
+            type: "text",
+            "aria-label": `Search ${dim.label} values`,
+            placeholder: "Search values…",
+            value: search,
+            onChange: (event) => setSearch(event.target.value),
+            className: "w-full border border-line bg-surface px-1.5 py-1 text-2xs text-ink placeholder:text-faint"
+          }),
+          /* @__PURE__ */ jsx_runtime3.jsx("div", {
+            className: "mt-2 max-h-56 overflow-y-auto",
+            role: "group",
+            "aria-label": `${dim.label} values`,
+            children: error ? /* @__PURE__ */ jsx_runtime3.jsx("p", {
+              className: "px-1 py-2 text-danger",
+              children: error
+            }) : showSkeleton ? /* @__PURE__ */ jsx_runtime3.jsx("div", {
+              className: "space-y-1.5 p-1",
+              children: [0, 1, 2, 3, 4].map((i) => /* @__PURE__ */ jsx_runtime3.jsx("div", {
+                className: "skeleton h-4 w-full"
+              }, i))
+            }) : values.length === 0 ? /* @__PURE__ */ jsx_runtime3.jsx("p", {
+              className: "px-1 py-2 text-faint",
+              children: "No values"
+            }) : values.map((value) => {
+              const checked = selected.has(value);
+              return /* @__PURE__ */ jsx_runtime3.jsxs("label", {
+                className: "flex cursor-pointer items-center gap-2 px-1 py-1 hover:bg-surface-soft",
+                children: [
+                  /* @__PURE__ */ jsx_runtime3.jsx("input", {
+                    type: "checkbox",
+                    checked,
+                    onChange: () => dispatch({ type: "toggleFilter", dim: dim.ref, value, mode }),
+                    className: "size-3 accent-[var(--accent)]"
+                  }),
+                  /* @__PURE__ */ jsx_runtime3.jsx("span", {
+                    className: "min-w-0 truncate text-ink",
+                    children: displayDimValue(value)
+                  })
+                ]
+              }, value);
+            })
+          })
+        ]
+      }),
+      /* @__PURE__ */ jsx_runtime3.jsxs("div", {
+        className: "mt-2 flex items-center justify-between border-t border-line pt-2",
+        children: [
+          /* @__PURE__ */ jsx_runtime3.jsx("button", {
+            type: "button",
+            onClick: () => dispatch({ type: "removeFilterDim", dim: dim.ref }),
+            className: "text-muted underline-offset-2 hover:text-ink hover:underline",
+            children: "Clear"
+          }),
+          /* @__PURE__ */ jsx_runtime3.jsx("button", {
+            type: "button",
+            onClick: onClose,
+            className: "border border-line px-2 py-1 text-muted hover:bg-surface-soft",
+            children: "Done"
+          })
+        ]
+      })
+    ]
+  });
+}
+
+// webapp/src/components/FilterPill.tsx
+var jsx_runtime4 = __toESM(require_jsx_runtime(), 1);
+function FilterPill(props) {
+  const [open, setOpen] = import_react6.useState(false);
+  if (!("dim" in props)) {
+    return /* @__PURE__ */ jsx_runtime4.jsxs("span", {
+      "data-dimension": props.dimension,
+      "data-value": props.value,
+      className: "inline-flex max-w-full items-center gap-1.5 border border-line bg-surface px-2 py-0.5 text-2xs text-muted",
+      children: [
+        /* @__PURE__ */ jsx_runtime4.jsxs("span", {
+          className: "truncate",
+          children: [
+            /* @__PURE__ */ jsx_runtime4.jsxs("span", {
+              className: "text-faint",
+              children: [
+                props.dimensionLabel ?? props.dimension,
+                ":"
+              ]
+            }),
+            " ",
+            props.value
+          ]
+        }),
+        props.onRemove ? /* @__PURE__ */ jsx_runtime4.jsx("button", {
+          type: "button",
+          "aria-label": `Remove filter ${props.value}`,
+          onClick: props.onRemove,
+          className: "grid size-3.5 place-items-center rounded-full bg-surface-soft text-faint hover:bg-line hover:text-ink",
+          children: "×"
+        }) : null
+      ]
+    });
+  }
+  const { dim, model, filter, onRemove } = props;
+  return /* @__PURE__ */ jsx_runtime4.jsxs("span", {
+    className: "relative inline-flex max-w-full items-center",
+    "data-dimension": dim.ref,
+    "data-mode": filter.mode,
+    children: [
+      /* @__PURE__ */ jsx_runtime4.jsxs("span", {
+        className: "inline-flex max-w-full items-center gap-1.5 border border-line bg-surface px-2 py-0.5 text-2xs text-muted",
+        children: [
+          /* @__PURE__ */ jsx_runtime4.jsxs("button", {
+            type: "button",
+            "aria-label": `Edit filter ${dim.label}`,
+            "aria-haspopup": "dialog",
+            "aria-expanded": open,
+            onClick: () => setOpen((v3) => !v3),
+            className: "min-w-0 truncate text-left hover:text-ink",
+            children: [
+              /* @__PURE__ */ jsx_runtime4.jsx("span", {
+                className: "text-faint",
+                children: dim.label
+              }),
+              " ",
+              filterSummary(filter)
+            ]
+          }),
+          /* @__PURE__ */ jsx_runtime4.jsx("button", {
+            type: "button",
+            "aria-label": `Remove filter ${dim.label}`,
+            onClick: onRemove,
+            className: "grid size-3.5 shrink-0 place-items-center rounded-full bg-surface-soft text-faint hover:bg-line hover:text-ink",
+            children: "×"
+          })
+        ]
+      }),
+      open ? /* @__PURE__ */ jsx_runtime4.jsx(FilterEditor, {
+        dim,
+        model,
+        onClose: () => setOpen(false)
       }) : null
     ]
   });
 }
 
 // webapp/src/components/Leaderboard.tsx
-var jsx_runtime3 = __toESM(require_jsx_runtime(), 1);
+var jsx_runtime5 = __toESM(require_jsx_runtime(), 1);
+var CONTEXT_TONE = {
+  positive: "text-accent",
+  negative: "text-danger",
+  neutral: "text-faint"
+};
 function Leaderboard({
   dimension,
   title,
@@ -7921,6 +8379,9 @@ function Leaderboard({
   loading,
   formatMetric,
   onToggle,
+  contextColumn = "none",
+  contextOptions,
+  onContextColumn,
   collapsedLimit = 6,
   expanded = false,
   onExpandedChange
@@ -7929,44 +8390,67 @@ function Leaderboard({
   const visibleRows = expanded ? rows : rows.slice(0, collapsedLimit);
   const maxMagnitude = Math.max(1, ...visibleRows.map((row) => Math.abs(row.metric)));
   const expandable = expanded || rows.length > collapsedLimit;
-  return /* @__PURE__ */ jsx_runtime3.jsxs("section", {
+  const showContext = contextColumn !== "none";
+  const rowGrid = showContext ? "grid-cols-[minmax(0,1fr)_auto_auto]" : "grid-cols-[minmax(0,1fr)_auto]";
+  return /* @__PURE__ */ jsx_runtime5.jsxs("section", {
     "data-testid": "dimension-leaderboard",
     "data-dimension": dimension,
     "data-expanded": expanded || undefined,
     "aria-label": `${title}, ranked by ${metricLabel}`,
     className: "flex min-h-60 flex-col border-b border-r border-line bg-surface data-[expanded=true]:col-span-full",
     children: [
-      /* @__PURE__ */ jsx_runtime3.jsxs("header", {
-        className: "px-3 pb-2 pt-2.5",
+      /* @__PURE__ */ jsx_runtime5.jsxs("header", {
+        className: "flex items-center justify-between gap-3 px-3 pb-2 pt-2.5",
         children: [
-          /* @__PURE__ */ jsx_runtime3.jsx("h3", {
-            className: "truncate text-sm font-semibold text-ink",
-            children: title
-          }),
-          /* @__PURE__ */ jsx_runtime3.jsxs("p", {
-            className: "sr-only",
+          /* @__PURE__ */ jsx_runtime5.jsxs("div", {
+            className: "flex min-w-0 items-baseline gap-2",
             children: [
-              "Ranked by ",
-              metricLabel
+              /* @__PURE__ */ jsx_runtime5.jsx("h3", {
+                className: "truncate text-sm font-semibold text-ink",
+                children: title
+              }),
+              /* @__PURE__ */ jsx_runtime5.jsxs("p", {
+                className: "sr-only",
+                children: [
+                  "Ranked by ",
+                  metricLabel
+                ]
+              })
             ]
-          })
+          }),
+          contextOptions && onContextColumn ? /* @__PURE__ */ jsx_runtime5.jsx("div", {
+            role: "group",
+            "aria-label": "Context column",
+            "data-testid": "leaderboard-context-toggle",
+            className: "flex shrink-0 overflow-hidden border border-line text-2xs",
+            children: contextOptions.map((option) => /* @__PURE__ */ jsx_runtime5.jsx("button", {
+              type: "button",
+              title: option.title,
+              "aria-pressed": contextColumn === option.key,
+              "data-context": option.key,
+              "data-active": contextColumn === option.key || undefined,
+              onClick: () => onContextColumn(option.key),
+              className: "border-l border-line px-1.5 py-0.5 font-mono text-faint first:border-l-0 hover:bg-surface-soft data-[active=true]:bg-accent-soft data-[active=true]:text-accent",
+              children: option.label
+            }, option.key))
+          }) : null
         ]
       }),
-      /* @__PURE__ */ jsx_runtime3.jsx("div", {
+      /* @__PURE__ */ jsx_runtime5.jsx("div", {
         "data-testid": "leaderboard-rows",
-        children: loading && rows.length === 0 ? /* @__PURE__ */ jsx_runtime3.jsx("div", {
+        children: loading && rows.length === 0 ? /* @__PURE__ */ jsx_runtime5.jsx("div", {
           className: "space-y-2 p-3",
-          children: [0, 1, 2, 3].map((i) => /* @__PURE__ */ jsx_runtime3.jsx("div", {
+          children: [0, 1, 2, 3].map((i) => /* @__PURE__ */ jsx_runtime5.jsx("div", {
             className: "skeleton h-5 w-full"
           }, i))
-        }) : rows.length === 0 ? /* @__PURE__ */ jsx_runtime3.jsx("p", {
+        }) : rows.length === 0 ? /* @__PURE__ */ jsx_runtime5.jsx("p", {
           className: "px-3 py-4 text-xs text-faint",
           children: "No values"
         }) : visibleRows.map((row) => {
           const tone = row.metric < 0 ? "negative" : "positive";
           const isSelected = selected.has(row.value);
           const width = `${Math.round(Math.abs(row.metric) / maxMagnitude * 100)}%`;
-          return /* @__PURE__ */ jsx_runtime3.jsxs("button", {
+          return /* @__PURE__ */ jsx_runtime5.jsxs("button", {
             type: "button",
             "data-dimension": dimension,
             "data-value": row.value,
@@ -7974,26 +8458,32 @@ function Leaderboard({
             "data-tone": tone,
             onClick: () => onToggle?.(row.value),
             "aria-pressed": isSelected,
-            className: "leaderboard-row relative grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-2 overflow-hidden border-0 bg-transparent px-3 py-1 text-left text-xs text-ink data-[selected=true]:bg-chart-primary-selected",
+            className: `leaderboard-row relative grid w-full ${rowGrid} items-center gap-3 overflow-hidden border-0 bg-transparent px-3 py-1 text-left text-xs text-ink data-[selected=true]:bg-chart-primary-selected`,
             children: [
-              /* @__PURE__ */ jsx_runtime3.jsx("span", {
+              /* @__PURE__ */ jsx_runtime5.jsx("span", {
                 "aria-hidden": "true",
                 className: `absolute inset-y-0 left-0 ${tone === "negative" ? "bg-danger-soft" : "bg-chart-primary-soft"}`,
                 style: { width }
               }),
-              /* @__PURE__ */ jsx_runtime3.jsx("span", {
+              /* @__PURE__ */ jsx_runtime5.jsx("span", {
                 className: "relative min-w-0 truncate text-muted",
                 children: displayDimValue(row.value)
               }),
-              /* @__PURE__ */ jsx_runtime3.jsx("strong", {
+              /* @__PURE__ */ jsx_runtime5.jsx("strong", {
                 className: "relative tnum font-semibold text-ink",
                 children: formatMetric(row.metric)
-              })
+              }),
+              showContext ? /* @__PURE__ */ jsx_runtime5.jsx("span", {
+                "data-testid": "leaderboard-context",
+                "data-tone": row.context?.tone ?? "neutral",
+                className: `relative w-14 text-right font-mono tnum text-2xs ${CONTEXT_TONE[row.context?.tone ?? "neutral"]}`,
+                children: row.context?.label ?? "—"
+              }) : null
             ]
           }, `${dimension}:${row.value}`);
         })
       }),
-      expandable && !loading ? /* @__PURE__ */ jsx_runtime3.jsx("button", {
+      expandable && !loading ? /* @__PURE__ */ jsx_runtime5.jsx("button", {
         type: "button",
         "data-action": expanded ? "leaderboard-back" : "leaderboard-expand",
         "aria-expanded": expanded,
@@ -8006,14 +8496,14 @@ function Leaderboard({
 }
 
 // webapp/src/components/MetricCard.tsx
-var import_react4 = __toESM(require_react(), 1);
+var import_react9 = __toESM(require_react(), 1);
 
 // webapp/src/components/Sparkline.tsx
-var import_react3 = __toESM(require_react(), 1);
+var import_react8 = __toESM(require_react(), 1);
 
 // webapp/src/components/ChartTooltip.tsx
-var import_react2 = __toESM(require_react(), 1);
-var jsx_runtime4 = __toESM(require_jsx_runtime(), 1);
+var import_react7 = __toESM(require_react(), 1);
+var jsx_runtime6 = __toESM(require_jsx_runtime(), 1);
 function ChartTooltip({
   tip,
   position = "fixed",
@@ -8023,7 +8513,7 @@ function ChartTooltip({
 }) {
   if (!tip)
     return null;
-  return /* @__PURE__ */ jsx_runtime4.jsx("div", {
+  return /* @__PURE__ */ jsx_runtime6.jsx("div", {
     role: "tooltip",
     style: { position, left: tip.x + offset, top: tip.y + offset, pointerEvents: "none", zIndex: 50, ...style },
     className: className || "rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-white shadow",
@@ -8032,7 +8522,7 @@ function ChartTooltip({
 }
 
 // webapp/src/components/Sparkline.tsx
-var jsx_runtime5 = __toESM(require_jsx_runtime(), 1);
+var jsx_runtime7 = __toESM(require_jsx_runtime(), 1);
 function Sparkline({
   values,
   labels,
@@ -8042,14 +8532,14 @@ function Sparkline({
   onHover,
   onBrush
 }) {
-  const containerRef = import_react3.useRef(null);
-  const svgRef = import_react3.useRef(null);
-  const dragStart = import_react3.useRef(null);
-  const [width, setWidth] = import_react3.useState(200);
-  const [hover, setHover] = import_react3.useState(null);
-  const [brush, setBrush] = import_react3.useState(null);
-  const [tip, setTip] = import_react3.useState(null);
-  import_react3.useEffect(() => {
+  const containerRef = import_react8.useRef(null);
+  const svgRef = import_react8.useRef(null);
+  const dragStart = import_react8.useRef(null);
+  const [width, setWidth] = import_react8.useState(200);
+  const [hover, setHover] = import_react8.useState(null);
+  const [brush, setBrush] = import_react8.useState(null);
+  const [tip, setTip] = import_react8.useState(null);
+  import_react8.useEffect(() => {
     const node = containerRef.current;
     if (!node || typeof ResizeObserver === "undefined")
       return;
@@ -8062,7 +8552,7 @@ function Sparkline({
   }, []);
   const points = values.map((value, index) => ({ index, value })).filter((point) => Number.isFinite(point.value));
   if (points.length < 2) {
-    return /* @__PURE__ */ jsx_runtime5.jsx("svg", {
+    return /* @__PURE__ */ jsx_runtime7.jsx("svg", {
       ref: svgRef,
       role: "img",
       "aria-label": ariaLabel || "No trend data",
@@ -8134,11 +8624,11 @@ function Sparkline({
       setBrush(null);
   }
   const hovered = hover === null ? null : coordinates[hover];
-  return /* @__PURE__ */ jsx_runtime5.jsxs("span", {
+  return /* @__PURE__ */ jsx_runtime7.jsxs("span", {
     ref: containerRef,
     className: "relative block w-full",
     children: [
-      /* @__PURE__ */ jsx_runtime5.jsxs("svg", {
+      /* @__PURE__ */ jsx_runtime7.jsxs("svg", {
         ref: svgRef,
         role: "img",
         "aria-label": summary,
@@ -8152,19 +8642,19 @@ function Sparkline({
         onPointerLeave: leave,
         onDoubleClick: () => onBrush?.(null),
         children: [
-          /* @__PURE__ */ jsx_runtime5.jsx("path", {
+          /* @__PURE__ */ jsx_runtime7.jsx("path", {
             d: area,
             fill: "currentColor",
             opacity: 0.1
           }),
-          /* @__PURE__ */ jsx_runtime5.jsx("path", {
+          /* @__PURE__ */ jsx_runtime7.jsx("path", {
             d: `M ${line}`,
             fill: "none",
             stroke: "currentColor",
             strokeWidth: 1.5,
             vectorEffect: "non-scaling-stroke"
           }),
-          brush ? /* @__PURE__ */ jsx_runtime5.jsx("rect", {
+          brush ? /* @__PURE__ */ jsx_runtime7.jsx("rect", {
             x: Math.min(brush.a, brush.b),
             y: 0,
             width: Math.abs(brush.b - brush.a),
@@ -8172,9 +8662,9 @@ function Sparkline({
             fill: "currentColor",
             opacity: 0.12
           }) : null,
-          hovered ? /* @__PURE__ */ jsx_runtime5.jsxs(jsx_runtime5.Fragment, {
+          hovered ? /* @__PURE__ */ jsx_runtime7.jsxs(jsx_runtime7.Fragment, {
             children: [
-              /* @__PURE__ */ jsx_runtime5.jsx("line", {
+              /* @__PURE__ */ jsx_runtime7.jsx("line", {
                 x1: hovered.x,
                 x2: hovered.x,
                 y1: 0,
@@ -8183,14 +8673,14 @@ function Sparkline({
                 strokeWidth: 1,
                 opacity: 0.45
               }),
-              /* @__PURE__ */ jsx_runtime5.jsx("circle", {
+              /* @__PURE__ */ jsx_runtime7.jsx("circle", {
                 cx: hovered.x,
                 cy: hovered.y,
                 r: 2.5,
                 fill: "currentColor"
               })
             ]
-          }) : /* @__PURE__ */ jsx_runtime5.jsx("circle", {
+          }) : /* @__PURE__ */ jsx_runtime7.jsx("circle", {
             cx: latest.x,
             cy: latest.y,
             r: 2.25,
@@ -8198,7 +8688,7 @@ function Sparkline({
           })
         ]
       }),
-      /* @__PURE__ */ jsx_runtime5.jsx(ChartTooltip, {
+      /* @__PURE__ */ jsx_runtime7.jsx(ChartTooltip, {
         tip
       })
     ]
@@ -8206,7 +8696,7 @@ function Sparkline({
 }
 
 // webapp/src/components/MetricCard.tsx
-var jsx_runtime6 = __toESM(require_jsx_runtime(), 1);
+var jsx_runtime8 = __toESM(require_jsx_runtime(), 1);
 var TONE_CLASS = {
   positive: "text-accent",
   negative: "text-danger",
@@ -8228,24 +8718,24 @@ function MetricCard({
   onSparkHover,
   onSparkBrush
 }) {
-  const [sparkHover, setSparkHover] = import_react4.useState(null);
-  const summary = /* @__PURE__ */ jsx_runtime6.jsxs(jsx_runtime6.Fragment, {
+  const [sparkHover, setSparkHover] = import_react9.useState(null);
+  const summary = /* @__PURE__ */ jsx_runtime8.jsxs(jsx_runtime8.Fragment, {
     children: [
-      /* @__PURE__ */ jsx_runtime6.jsxs("div", {
+      /* @__PURE__ */ jsx_runtime8.jsxs("div", {
         className: "flex items-baseline justify-between gap-2",
         children: [
-          /* @__PURE__ */ jsx_runtime6.jsx("span", {
+          /* @__PURE__ */ jsx_runtime8.jsx("span", {
             className: "truncate text-2xs font-semibold uppercase tracking-wide text-faint",
             children: label
           }),
-          sparkHover?.label ? /* @__PURE__ */ jsx_runtime6.jsx("span", {
+          sparkHover?.label ? /* @__PURE__ */ jsx_runtime8.jsx("span", {
             className: "shrink-0 font-mono text-2xs text-faint",
             children: sparkHover.label
-          }) : delta ? /* @__PURE__ */ jsx_runtime6.jsxs("span", {
+          }) : delta ? /* @__PURE__ */ jsx_runtime8.jsxs("span", {
             "data-tone": delta.tone,
             className: `shrink-0 text-2xs font-medium ${TONE_CLASS[delta.tone]}`,
             children: [
-              /* @__PURE__ */ jsx_runtime6.jsx("span", {
+              /* @__PURE__ */ jsx_runtime8.jsx("span", {
                 "aria-hidden": "true",
                 className: "mr-0.5 text-[8px]",
                 children: TONE_ARROW[delta.tone]
@@ -8255,16 +8745,16 @@ function MetricCard({
           }) : null
         ]
       }),
-      /* @__PURE__ */ jsx_runtime6.jsx("div", {
+      /* @__PURE__ */ jsx_runtime8.jsx("div", {
         className: "font-mono tnum text-base font-semibold text-ink",
-        children: loading ? /* @__PURE__ */ jsx_runtime6.jsx("span", {
+        children: loading ? /* @__PURE__ */ jsx_runtime8.jsx("span", {
           className: "skeleton inline-block h-5 w-24 align-middle"
         }) : sparkHover ? formatValue(sparkHover.value, format) : valueText ?? formatValue(value, format)
       })
     ]
   });
   const className = "group flex w-full flex-col gap-1.5 border border-line bg-surface px-3 py-2.5 text-left data-[selected=true]:border-accent data-[selected=true]:ring-1 data-[selected=true]:ring-accent";
-  const sparkline = /* @__PURE__ */ jsx_runtime6.jsx(Sparkline, {
+  const sparkline = /* @__PURE__ */ jsx_runtime8.jsx(Sparkline, {
     values: sparkValues,
     labels: sparkLabels,
     onHover: (point) => {
@@ -8275,7 +8765,7 @@ function MetricCard({
     formatValue: (sparkValue) => formatValue(sparkValue, format)
   });
   if (!onSelect) {
-    return /* @__PURE__ */ jsx_runtime6.jsxs("article", {
+    return /* @__PURE__ */ jsx_runtime8.jsxs("article", {
       "data-metric": metric,
       "data-selected": selected || undefined,
       className,
@@ -8285,12 +8775,12 @@ function MetricCard({
       ]
     });
   }
-  return /* @__PURE__ */ jsx_runtime6.jsxs("article", {
+  return /* @__PURE__ */ jsx_runtime8.jsxs("article", {
     "data-metric": metric,
     "data-selected": selected || undefined,
     className,
     children: [
-      /* @__PURE__ */ jsx_runtime6.jsx("button", {
+      /* @__PURE__ */ jsx_runtime8.jsx("button", {
         type: "button",
         "data-metric": metric,
         "aria-pressed": !!selected,
@@ -8304,7 +8794,7 @@ function MetricCard({
 }
 
 // webapp/src/components/QueryDebugPanel.tsx
-var jsx_runtime7 = __toESM(require_jsx_runtime(), 1);
+var jsx_runtime9 = __toESM(require_jsx_runtime(), 1);
 var SQL_KEYWORDS = new Set([
   "and",
   "as",
@@ -8373,20 +8863,20 @@ ${sql}`).join(`
 
 `);
   const tokens = tokenizeSql(text || "No queries yet.");
-  return /* @__PURE__ */ jsx_runtime7.jsxs("details", {
+  return /* @__PURE__ */ jsx_runtime9.jsxs("details", {
     className: "border border-line bg-surface",
     children: [
-      /* @__PURE__ */ jsx_runtime7.jsx("summary", {
+      /* @__PURE__ */ jsx_runtime9.jsx("summary", {
         className: "cursor-pointer px-3 py-2 text-2xs font-semibold uppercase tracking-wide text-faint",
         children: "Generated SQL"
       }),
-      Object.keys(inputs).length > 0 ? /* @__PURE__ */ jsx_runtime7.jsx("div", {
+      Object.keys(inputs).length > 0 ? /* @__PURE__ */ jsx_runtime9.jsx("div", {
         "data-testid": "query-inputs",
         className: "grid gap-px border-t border-line bg-line sm:grid-cols-2",
-        children: Object.entries(inputs).map(([name, input]) => input ? /* @__PURE__ */ jsx_runtime7.jsxs("section", {
+        children: Object.entries(inputs).map(([name, input]) => input ? /* @__PURE__ */ jsx_runtime9.jsxs("section", {
           className: "min-w-0 bg-surface px-3 py-2 text-2xs",
           children: [
-            /* @__PURE__ */ jsx_runtime7.jsx("h3", {
+            /* @__PURE__ */ jsx_runtime9.jsx("h3", {
               className: "mb-1 font-semibold text-ink",
               children: name
             }),
@@ -8394,11 +8884,11 @@ ${sql}`).join(`
               ["Metrics", input.metrics],
               ["Dimensions", input.dimensions],
               ["Filters", input.filters]
-            ].map(([label, values]) => values?.length ? /* @__PURE__ */ jsx_runtime7.jsxs("p", {
+            ].map(([label, values]) => values?.length ? /* @__PURE__ */ jsx_runtime9.jsxs("p", {
               className: "truncate text-muted",
               title: values.join(", "),
               children: [
-                /* @__PURE__ */ jsx_runtime7.jsxs("strong", {
+                /* @__PURE__ */ jsx_runtime9.jsxs("strong", {
                   className: "font-medium text-faint",
                   children: [
                     label,
@@ -8412,10 +8902,10 @@ ${sql}`).join(`
           ]
         }, name) : null)
       }) : null,
-      /* @__PURE__ */ jsx_runtime7.jsx("pre", {
+      /* @__PURE__ */ jsx_runtime9.jsx("pre", {
         "data-testid": "query-debug",
         className: "max-h-72 overflow-auto whitespace-pre-wrap border-t border-line px-3 py-2 font-mono text-2xs text-muted",
-        children: tokens.map((token, index) => TOKEN_CLASS[token.kind] ? /* @__PURE__ */ jsx_runtime7.jsx("span", {
+        children: tokens.map((token, index) => TOKEN_CLASS[token.kind] ? /* @__PURE__ */ jsx_runtime9.jsx("span", {
           className: TOKEN_CLASS[token.kind],
           "data-token": token.kind,
           children: token.value
@@ -8426,26 +8916,26 @@ ${sql}`).join(`
 }
 
 // webapp/src/components/States.tsx
-var jsx_runtime8 = __toESM(require_jsx_runtime(), 1);
+var jsx_runtime10 = __toESM(require_jsx_runtime(), 1);
 function StateBox({ tone, title, message }) {
   const danger = tone === "danger";
-  return /* @__PURE__ */ jsx_runtime8.jsx("div", {
+  return /* @__PURE__ */ jsx_runtime10.jsx("div", {
     className: `grid min-h-[200px] place-items-center border bg-surface p-6 text-center ${danger ? "border-danger/40" : "border-line"}`,
     "data-state": tone,
     role: danger ? "alert" : "status",
     "aria-live": danger ? "assertive" : "polite",
-    children: /* @__PURE__ */ jsx_runtime8.jsxs("div", {
+    children: /* @__PURE__ */ jsx_runtime10.jsxs("div", {
       className: "max-w-md",
       children: [
-        tone === "loading" ? /* @__PURE__ */ jsx_runtime8.jsx("span", {
+        tone === "loading" ? /* @__PURE__ */ jsx_runtime10.jsx("span", {
           "aria-hidden": "true",
           className: "motion-safe:animate-pulse inline-block size-2 rounded-full bg-accent"
         }) : null,
-        title ? /* @__PURE__ */ jsx_runtime8.jsx("h3", {
+        title ? /* @__PURE__ */ jsx_runtime10.jsx("h3", {
           className: `text-sm font-semibold ${danger ? "text-danger" : "text-ink"}`,
           children: title
         }) : null,
-        /* @__PURE__ */ jsx_runtime8.jsx("p", {
+        /* @__PURE__ */ jsx_runtime10.jsx("p", {
           className: `mt-1 text-xs ${danger ? "text-danger" : "text-muted"}`,
           children: message
         })
@@ -8454,21 +8944,21 @@ function StateBox({ tone, title, message }) {
   });
 }
 function LoadingState({ title = "Loading", message = "Loading metrics…" }) {
-  return /* @__PURE__ */ jsx_runtime8.jsx(StateBox, {
+  return /* @__PURE__ */ jsx_runtime10.jsx(StateBox, {
     tone: "loading",
     title,
     message
   });
 }
 function EmptyState({ title = "No results", message }) {
-  return /* @__PURE__ */ jsx_runtime8.jsx(StateBox, {
+  return /* @__PURE__ */ jsx_runtime10.jsx(StateBox, {
     tone: "muted",
     title,
     message
   });
 }
 function ErrorState({ title = "Query failed", message }) {
-  return /* @__PURE__ */ jsx_runtime8.jsx(StateBox, {
+  return /* @__PURE__ */ jsx_runtime10.jsx(StateBox, {
     tone: "danger",
     title,
     message
@@ -8570,10 +9060,10 @@ function toComponentQuery({ dimensions = [], metrics = [], result, outputAliases
 }
 function renderMetricCards(container, query, options = {}) {
   const row = rowsOf(query)[0] ?? {};
-  mount(container, import_react5.createElement(import_react5.Fragment, null, ...(query.metrics ?? []).map((metric) => {
+  mount(container, import_react10.createElement(import_react10.Fragment, null, ...(query.metrics ?? []).map((metric) => {
     const key = aliasFor(query, metric);
     const format = typeof options.valueFormat === "function" ? options.valueFormat({ metric, key, value: row[key] }) : options.valueFormat;
-    return import_react5.createElement(MetricCard, {
+    return import_react10.createElement(MetricCard, {
       key: metric,
       metric,
       label: options.labels?.[metric] ?? aliasForSemanticRef(metric).replaceAll("_", " "),
@@ -8588,10 +9078,10 @@ function renderMetricCards(container, query, options = {}) {
 function renderMetricSummaryCards(container, config = {}) {
   const totals = config.totals?.rows?.[0] ?? {};
   const series = config.seriesRows ?? [];
-  mount(container, import_react5.createElement(import_react5.Fragment, null, ...(config.metrics ?? []).map((metric) => {
+  mount(container, import_react10.createElement(import_react10.Fragment, null, ...(config.metrics ?? []).map((metric) => {
     const key = metric.key;
     const alias = aliasForSemanticRef(key);
-    return import_react5.createElement(MetricCard, {
+    return import_react10.createElement(MetricCard, {
       key,
       metric: key,
       label: metric.label ?? alias.replaceAll("_", " "),
@@ -8612,7 +9102,7 @@ function renderLeaderboard(container, query, options = {}) {
   const metricKey = aliasFor(query, metric);
   const allRows = rowsOf(query);
   const expanded = options.expanded ?? container.__sdmExpanded ?? false;
-  mount(container, import_react5.createElement(Leaderboard, {
+  mount(container, import_react10.createElement(Leaderboard, {
     dimension,
     title: options.dimensionLabel ?? dimensionKey.replaceAll("_", " "),
     metricLabel: options.metricLabel ?? metricKey.replaceAll("_", " "),
@@ -8632,13 +9122,13 @@ function renderLeaderboard(container, query, options = {}) {
 function renderDimensionLeaderboardCards(container, dimensions, config = {}) {
   const expandedDimension = container.__sdmExpandedDim;
   const visible = expandedDimension ? dimensions.filter((item) => (item.key ?? item) === expandedDimension) : dimensions;
-  mount(container, import_react5.createElement(import_react5.Fragment, null, ...visible.map((item) => {
+  mount(container, import_react10.createElement(import_react10.Fragment, null, ...visible.map((item) => {
     const dimension = item.key ?? item;
     const result = config.resultForDimension?.(item) ?? { rows: [] };
     const query = toComponentQuery({ dimensions: [dimension], metrics: [config.metricRef], result });
     const rows = rowsOf(query);
     const expanded = expandedDimension === dimension;
-    return import_react5.createElement(Leaderboard, {
+    return import_react10.createElement(Leaderboard, {
       key: dimension,
       dimension,
       title: item.label ?? aliasForSemanticRef(dimension).replaceAll("_", " "),
@@ -8659,17 +9149,26 @@ function renderDimensionLeaderboardCards(container, dimensions, config = {}) {
 function renderFilterPills(container, filters, onRemove, options = {}) {
   const pills = Object.entries(filters ?? {}).flatMap(([dimension, values]) => (values ?? []).map((value) => {
     const normalized = normalizeFilterValue(value);
-    return import_react5.createElement(FilterPill, { key: `${dimension}:${normalized}`, dimension, value: normalized, onRemove: onRemove ? () => onRemove({ dimension, value: normalized }) : undefined });
+    return import_react10.createElement(FilterPill, { key: `${dimension}:${normalized}`, dimension, value: normalized, onRemove: onRemove ? () => onRemove({ dimension, value: normalized }) : undefined });
   }));
-  mount(container, pills.length ? import_react5.createElement(import_react5.Fragment, null, ...pills) : options.emptyLabel ? import_react5.createElement("span", { className: "text-faint" }, options.emptyLabel) : null);
+  for (const extra of options.extraPills ?? []) {
+    pills.push(import_react10.createElement(FilterPill, {
+      key: extra.key ?? `${extra.dimension}:${extra.value}`,
+      dimension: extra.dimension,
+      dimensionLabel: extra.dimensionLabel,
+      value: extra.value,
+      onRemove: extra.onRemove
+    }));
+  }
+  mount(container, pills.length ? import_react10.createElement(import_react10.Fragment, null, ...pills) : options.emptyLabel ? import_react10.createElement("span", { className: "text-faint" }, options.emptyLabel) : null);
 }
 function renderHighlightedQueryDebug(container, queries) {
-  mount(container, import_react5.createElement(QueryDebugPanel, { queries: Object.fromEntries(Object.entries(queries ?? {}).map(([name, query]) => [name, typeof query === "string" ? query : query?.sql])) }));
+  mount(container, import_react10.createElement(QueryDebugPanel, { queries: Object.fromEntries(Object.entries(queries ?? {}).map(([name, query]) => [name, typeof query === "string" ? query : query?.sql])) }));
 }
 var renderQueryDebug = renderHighlightedQueryDebug;
 function renderDataPreview(container, result, options = {}) {
   const columns = result?.columns ?? [];
-  mount(container, import_react5.createElement(DataTable, {
+  mount(container, import_react10.createElement(DataTable, {
     columns: columns.map((key) => ({ key, label: key.replaceAll("_", " "), numeric: (result.sample_rows ?? result.rows ?? []).some((row) => typeof row[key] === "number") })),
     rows: result.sample_rows ?? result.rows ?? [],
     pageSize: options.pageSize || 50,
@@ -8678,7 +9177,7 @@ function renderDataPreview(container, result, options = {}) {
 }
 function renderState(container, state) {
   const Component = state.kind === "error" ? ErrorState : state.kind === "loading" ? LoadingState : EmptyState;
-  mount(container, import_react5.createElement(Component, { message: state.message }));
+  mount(container, import_react10.createElement(Component, { message: state.message }));
 }
 function renderValidationState(stateElement, listElement, errors = []) {
   stateElement.textContent = errors.length ? "Invalid" : "Valid";

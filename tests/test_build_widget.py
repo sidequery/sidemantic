@@ -26,3 +26,23 @@ def test_files_match_compares_presence_and_bytes(tmp_path: Path) -> None:
     assert module.files_match(left, right) is True
     right.write_text("different", encoding="utf-8")
     assert module.files_match(left, right) is False
+
+
+def test_widget_loading_and_brush_paths_use_canonical_mounts() -> None:
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "js/widget.js").read_text()
+
+    assert "renderMetricSkeleton" not in source
+    assert 'mountState(metricsColEl, { kind: "loading"' in source
+    assert 'key: "active-date-range"' in source
+    assert "onRemove: clearBrush" in source
+
+
+def test_widget_css_contains_canonical_utilities_and_host_layout() -> None:
+    root = Path(__file__).resolve().parents[1]
+    css = (root / "sidemantic/widget/static/widget.css").read_text()
+
+    assert ".flex{display:flex}" in css
+    assert ".bg-surface{background-color:var(--surface)}" in css
+    assert ".sidemantic-widget" in css
+    assert ".widget-layout" in css

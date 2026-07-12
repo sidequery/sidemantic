@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -38,3 +39,16 @@ def test_copy_script_distributes_built_artifacts(tmp_path: Path) -> None:
     assert len(module.check_components(args)) == 2
     module.copy_components(args)
     assert module.check_components(args) == []
+
+
+def test_copy_script_lists_generated_distribution(capsys) -> None:
+    script = ROOT / "plugins/sidemantic/skills/webapp-builder/scripts/copy_components.py"
+    spec = importlib.util.spec_from_file_location("copy_components_list", script)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    module._list_components()
+    listing = json.loads(capsys.readouterr().out)
+    assert listing["react-tailwind"]["files"] == ["sidemantic-ui.css", "sidemantic-ui.js"]
+    assert listing["static"]["files"] == ["sidemantic-ui-static.js", "sidemantic-ui.css"]

@@ -12,6 +12,18 @@ ROOT = Path(__file__).resolve().parent.parent
 JS_ROOT = ROOT / "js"
 SOURCE = JS_ROOT / "widget.js"
 TARGET = ROOT / "sidemantic" / "widget" / "static" / "widget.js"
+HOST_CSS = JS_ROOT / "widget.css"
+UI_CSS = ROOT / "plugins" / "sidemantic" / "skills" / "webapp-builder" / "assets" / "ui-dist" / "sidemantic-ui.css"
+CSS_TARGET = ROOT / "sidemantic" / "widget" / "static" / "widget.css"
+
+
+def build_css(target: Path) -> None:
+    target.write_text(
+        "/* Generated from the canonical UI distribution and js/widget.css. */\n"
+        + UI_CSS.read_text()
+        + "\n"
+        + HOST_CSS.read_text()
+    )
 
 
 def files_match(left: Path, right: Path) -> bool:
@@ -28,10 +40,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if not args.check:
         subprocess.run(["bun", "run", "build"], cwd=JS_ROOT, check=True)
+        build_css(CSS_TARGET)
         return 0
 
     with tempfile.TemporaryDirectory(prefix="sidemantic-widget-") as temp_dir:
         candidate = Path(temp_dir) / "widget.js"
+        css_candidate = Path(temp_dir) / "widget.css"
         subprocess.run(
             [
                 "bun",
@@ -47,11 +61,12 @@ def main(argv: list[str] | None = None) -> int:
             cwd=JS_ROOT,
             check=True,
         )
-        if not files_match(candidate, TARGET):
+        build_css(css_candidate)
+        if not files_match(candidate, TARGET) or not files_match(css_candidate, CSS_TARGET):
             print(f"out of sync: {TARGET.relative_to(ROOT)}")
             return 1
 
-    print("widget JavaScript bundle is in sync")
+    print("widget JavaScript and CSS bundles are in sync")
     return 0
 
 

@@ -88,8 +88,9 @@ def scaffold(args: argparse.Namespace) -> None:
 
     _write_app_spec(data_dir / "app-spec.json", spec)
     _write_index(output_dir / "index.html", args.title or f"{candidate['model']} Dashboard", candidate["model"])
-    shutil.copyfile(STATIC_COMPONENT_ROOT / "sidemantic-components.css", output_dir / "styles.css")
-    shutil.copyfile(STATIC_COMPONENT_ROOT / "sidemantic-components.js", output_dir / "sidemantic-components.js")
+    distribution_root = STATIC_COMPONENT_ROOT.parent.parent / "ui-dist"
+    shutil.copyfile(distribution_root / "sidemantic-ui.css", output_dir / "styles.css")
+    shutil.copyfile(distribution_root / "sidemantic-ui-static.js", output_dir / "sidemantic-ui-static.js")
     _write_app(output_dir / "app.js")
 
 

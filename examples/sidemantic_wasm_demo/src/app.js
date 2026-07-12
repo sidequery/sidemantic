@@ -14,7 +14,7 @@ import {
   syncScrollPosition,
   toComponentResult,
   toggleFilterValue,
-} from "./components/sidemantic/sidemantic-components.js";
+} from "./components/sidemantic/sidemantic-ui-static.js";
 import { createDemoData, DIMENSIONS, METRICS, MODEL_YAML, TIME_GRAINS } from "./demo/ecommerce.js";
 import { buildQueries, dimensionQueryKey, queryYaml, timeDimensionAlias } from "./queries.js";
 import { createDuckDBRuntime } from "./runtime/duckdb-runtime.js";

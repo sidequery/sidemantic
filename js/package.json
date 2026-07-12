@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "esbuild widget.js --bundle --format=esm --outfile=../sidemantic/widget/static/widget.js --minify",
+    "build": "esbuild widget.js --bundle --format=esm --outfile=../sidemantic/widget/static/widget.js --minify --define:process.env.NODE_ENV='\"production\"'",
     "watch": "esbuild widget.js --bundle --format=esm --outfile=../sidemantic/widget/static/widget.js --watch"
   },
   "devDependencies": {

@@ -1,6 +1,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
+import { ComponentGallery } from "./views/ComponentGallery";
 import { initTheme } from "./lib/theme";
 import "./index.css";
 
@@ -11,6 +12,6 @@ if (!root) throw new Error("Missing #root element");
 
 createRoot(root).render(
   <StrictMode>
-    <App />
+    {window.location.pathname === "/components" ? <ComponentGallery /> : <App />}
   </StrictMode>,
 );

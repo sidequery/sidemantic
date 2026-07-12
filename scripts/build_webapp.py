@@ -13,6 +13,7 @@ Run: uv run scripts/build_webapp.py
 
 from __future__ import annotations
 
+import argparse
 import shutil
 import subprocess
 import sys
@@ -24,13 +25,40 @@ DIST = WEBAPP / "dist"
 TARGETS = [ROOT / "sidemantic" / "ui" / "static", ROOT / "sidemantic-rs" / "ui"]
 
 
-def main() -> int:
+def directories_match(source: Path, target: Path) -> bool:
+    """Return whether two directory trees contain the same relative files and bytes."""
+    if not source.is_dir() or not target.is_dir():
+        return False
+    source_files = {path.relative_to(source): path for path in source.rglob("*") if path.is_file()}
+    target_files = {path.relative_to(target): path for path in target.rglob("*") if path.is_file()}
+    if source_files.keys() != target_files.keys():
+        return False
+    return all(
+        source_path.read_bytes() == target_files[relative].read_bytes()
+        for relative, source_path in source_files.items()
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--check", action="store_true", help="Build and exit nonzero if committed copies differ")
+    args = parser.parse_args(argv)
+
     if not (WEBAPP / "node_modules").exists():
         subprocess.run(["bun", "install"], cwd=WEBAPP, check=True)
     subprocess.run(["bun", "run", "build"], cwd=WEBAPP, check=True)
     if not DIST.exists():
         print("build produced no dist/", file=sys.stderr)
         return 1
+    if args.check:
+        mismatched = [target for target in TARGETS if not directories_match(DIST, target)]
+        if mismatched:
+            for target in mismatched:
+                print(f"out of sync: {target.relative_to(ROOT)}", file=sys.stderr)
+            return 1
+        print("web UI copies are in sync")
+        return 0
+
     for target in TARGETS:
         if target.exists():
             shutil.rmtree(target)

@@ -22,6 +22,9 @@ type LeaderboardProps = {
   contextColumn?: ContextColumn;
   contextOptions?: ContextOption[];
   onContextColumn?: (column: ContextColumn) => void;
+  collapsedLimit?: number;
+  expanded?: boolean;
+  onExpandedChange?: (expanded: boolean) => void;
 };
 
 const CONTEXT_TONE: Record<Tone, string> = {
@@ -42,9 +45,14 @@ export function Leaderboard({
   contextColumn = "none",
   contextOptions,
   onContextColumn,
+  collapsedLimit = 6,
+  expanded = false,
+  onExpandedChange,
 }: LeaderboardProps) {
   const selected = new Set(selectedValues);
-  const maxMagnitude = Math.max(1, ...rows.map((row) => Math.abs(row.metric)));
+  const visibleRows = expanded ? rows : rows.slice(0, collapsedLimit);
+  const maxMagnitude = Math.max(1, ...visibleRows.map((row) => Math.abs(row.metric)));
+  const expandable = expanded || rows.length > collapsedLimit;
   const showContext = contextColumn !== "none";
   // Grid gains a third, right-aligned column only when a context column is active, so the plain
   // leaderboard keeps its exact two-column layout.
@@ -53,11 +61,17 @@ export function Leaderboard({
     : "grid-cols-[minmax(0,1fr)_auto]";
 
   return (
-    <section data-testid="dimension-leaderboard" data-dimension={dimension} className="flex flex-col border border-line bg-surface">
-      <header className="flex items-center justify-between gap-3 border-b border-line px-3 py-2">
+    <section
+      data-testid="dimension-leaderboard"
+      data-dimension={dimension}
+      data-expanded={expanded || undefined}
+      aria-label={`${title}, ranked by ${metricLabel}`}
+      className="flex min-h-60 flex-col border-b border-r border-line bg-surface data-[expanded=true]:col-span-full"
+    >
+      <header className="flex items-center justify-between gap-3 px-3 pb-2 pt-2.5">
         <div className="flex min-w-0 items-baseline gap-2">
-          <h3 className="truncate text-xs font-semibold text-ink">{title}</h3>
-          <p className="hidden shrink-0 text-2xs text-faint sm:block">Ranked by {metricLabel}</p>
+          <h3 className="truncate text-sm font-semibold text-ink">{title}</h3>
+          <p className="sr-only">Ranked by {metricLabel}</p>
         </div>
         {contextOptions && onContextColumn ? (
           <div
@@ -93,7 +107,7 @@ export function Leaderboard({
         ) : rows.length === 0 ? (
           <p className="px-3 py-4 text-xs text-faint">No values</p>
         ) : (
-          rows.map((row) => {
+          visibleRows.map((row) => {
             const tone = row.metric < 0 ? "negative" : "positive";
             const isSelected = selected.has(row.value);
             const width = `${Math.round((Math.abs(row.metric) / maxMagnitude) * 100)}%`;
@@ -106,15 +120,16 @@ export function Leaderboard({
                 data-selected={isSelected || undefined}
                 data-tone={tone}
                 onClick={() => onToggle?.(row.value)}
-                className={`relative grid w-full ${rowGrid} items-center gap-3 overflow-hidden border-b border-line px-3 py-1.5 text-left text-xs last:border-b-0 hover:bg-surface-soft data-[selected=true]:bg-accent-soft`}
+                aria-pressed={isSelected}
+                className={`leaderboard-row relative grid w-full ${rowGrid} items-center gap-3 overflow-hidden border-0 bg-transparent px-3 py-1 text-left text-xs text-ink data-[selected=true]:bg-chart-primary-selected`}
               >
                 <span
                   aria-hidden="true"
-                  className={`absolute inset-y-0 left-0 ${tone === "negative" ? "bg-danger-soft" : "bg-accent-soft"}`}
+                  className={`absolute inset-y-0 left-0 ${tone === "negative" ? "bg-danger-soft" : "bg-chart-primary-soft"}`}
                   style={{ width }}
                 />
                 <span className="relative min-w-0 truncate text-muted">{displayDimValue(row.value)}</span>
-                <strong className="relative font-mono tnum font-medium text-ink">{formatMetric(row.metric)}</strong>
+                <strong className="relative tnum font-semibold text-ink">{formatMetric(row.metric)}</strong>
                 {showContext ? (
                   <span
                     data-testid="leaderboard-context"
@@ -129,6 +144,17 @@ export function Leaderboard({
           })
         )}
       </div>
+      {expandable && !loading ? (
+        <button
+          type="button"
+          data-action={expanded ? "leaderboard-back" : "leaderboard-expand"}
+          aria-expanded={expanded}
+          onClick={() => onExpandedChange?.(!expanded)}
+          className="leaderboard-expand mt-1 min-h-9 border-0 border-t border-line bg-transparent px-3 text-left text-xs font-normal text-faint hover:text-accent"
+        >
+          {expanded ? "← All dimensions" : `Expand table (${rows.length})`}
+        </button>
+      ) : null}
     </section>
   );
 }

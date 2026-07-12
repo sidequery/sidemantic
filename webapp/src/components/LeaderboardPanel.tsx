@@ -29,6 +29,8 @@ export function LeaderboardPanel({
   metricTotal,
   comparisonRange,
   limit = 6,
+  expanded = false,
+  onExpandedChange,
 }: {
   dim: CatalogDimension;
   model: CatalogModel;
@@ -39,6 +41,8 @@ export function LeaderboardPanel({
   /** Resolved comparison window for the delta columns; undefined when comparison is off. */
   comparisonRange?: DateRange;
   limit?: number;
+  expanded?: boolean;
+  onExpandedChange?: (expanded: boolean) => void;
 }) {
   const { state, dispatch, backend } = useExplorer();
   const timeRef = model.timeDimension?.ref;
@@ -153,6 +157,9 @@ export function LeaderboardPanel({
       contextColumn={contextColumn}
       contextOptions={CONTEXT_OPTIONS}
       onContextColumn={(column) => dispatch({ type: "setContextColumn", column })}
+      collapsedLimit={limit}
+      expanded={expanded}
+      onExpandedChange={onExpandedChange}
     />
   );
 }

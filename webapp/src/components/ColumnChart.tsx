@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { ChartTooltip, useChartTooltip } from "./chart-tooltip";
-import { axisTicks, formatCompact, formatValue } from "./types";
+import { ChartTooltip, useChartTooltip } from "./ChartTooltip";
+import { formatCompact, formatValue } from "../lib/format";
 
 type ColumnChartDatum = {
   label: string;
@@ -14,6 +14,12 @@ type ColumnChartProps = {
 };
 
 const MARGIN = { top: 12, right: 14, bottom: 26, left: 44 };
+
+function axisTicks(min: number, max: number, count = 4) {
+  if (!(max > min)) return [min];
+  const step = (max - min) / (count - 1);
+  return Array.from({ length: count }, (_, index) => min + step * index);
+}
 
 // Categorical bars with a zero baseline, responsive width (no aspect distortion), y-axis gridlines +
 // compact labels, per-bar x labels and hover tooltips, and an a11y summary. Negatives draw below the
@@ -53,14 +59,14 @@ export function ColumnChart({ data, height = 200, ariaLabel }: ColumnChartProps)
           const y = yForValue(tick);
           return (
             <g key={index}>
-              <line x1={MARGIN.left} x2={width - MARGIN.right} y1={y} y2={y} className="stroke-slate-100" />
-              <text x={MARGIN.left - 6} y={y + 3} textAnchor="end" className="fill-slate-400 text-[10px]">
+              <line x1={MARGIN.left} x2={width - MARGIN.right} y1={y} y2={y} className="stroke-line" />
+              <text x={MARGIN.left - 6} y={y + 3} textAnchor="end" className="fill-faint text-[10px]">
                 {formatCompact(tick)}
               </text>
             </g>
           );
         })}
-        <line x1={MARGIN.left} x2={width - MARGIN.right} y1={baselineY} y2={baselineY} className="stroke-slate-300" />
+        <line x1={MARGIN.left} x2={width - MARGIN.right} y1={baselineY} y2={baselineY} className="stroke-line" />
         {data.map((item, index) => {
           const value = values[index] ?? 0;
           const valueY = yForValue(value);
@@ -78,10 +84,10 @@ export function ColumnChart({ data, height = 200, ariaLabel }: ColumnChartProps)
                 data-label={item.label}
                 data-value={value}
                 data-tone={value < 0 ? "negative" : "positive"}
-                className={value < 0 ? "fill-[#b91c1c]" : "fill-[#6b7cff]"}
+                className={value < 0 ? "fill-danger" : "fill-chart-primary"}
                 {...handlers(`${item.label}: ${formatValue(value)}`)}
               />
-              <text x={x + barWidth / 2} y={height - 8} textAnchor="middle" className="fill-slate-500 text-[10px]">
+              <text x={x + barWidth / 2} y={height - 8} textAnchor="middle" className="fill-muted text-[10px]">
                 {item.label.slice(0, 8)}
               </text>
             </g>

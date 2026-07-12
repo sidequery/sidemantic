@@ -20,7 +20,12 @@ test("the home index lists models and opens one into Explore", async ({ page }) 
 });
 
 test("crossfilter, reset, and metric re-rank change rendered data", async ({ page }) => {
-  await page.goto("/?view=explore");
+  const params = new URLSearchParams({
+    view: "explore",
+    model: "customers",
+    pmetrics: JSON.stringify(["customers.customer_count", "repeat_customer_rate", "cancellation_rate"]),
+  });
+  await page.goto(`/?${params}`);
 
   const kpi = page.locator('button[data-metric="customers.customer_count"]');
   await expect(kpi).toBeVisible();
@@ -36,6 +41,17 @@ test("crossfilter, reset, and metric re-rank change rendered data", async ({ pag
   await expect(countryPill).toContainText("CA");
   await expect.poll(async () => number(await kpi.textContent())).toBeLessThan(baseline);
 
+  // The shared bottom preview uses the same active filters as Explore/Pivot.
+  await page.getByRole("button", { name: "Rows preview" }).click();
+  const preview = page.locator('[data-testid="row-preview-drawer"]');
+  await expect(preview.getByRole("alert")).toHaveCount(0);
+  const previewTable = preview.locator('[data-testid="pivot-table"]');
+  await expect(previewTable.locator("tbody tr").first()).toBeVisible();
+  const headers = await previewTable.locator("thead th").allTextContents();
+  const countryColumn = headers.findIndex((header) => header.includes("Country"));
+  expect(countryColumn).toBeGreaterThanOrEqual(0);
+  await expect(previewTable.locator(`tbody td:nth-child(${countryColumn + 1})`).first()).toHaveText("CA");
+
   // The country leaderboard still lists every country (its own filter is excluded).
   await expect(page.locator('button[data-dimension="customers.country"][data-value="JP"]')).toBeVisible();
 
@@ -43,10 +59,12 @@ test("crossfilter, reset, and metric re-rank change rendered data", async ({ pag
   await page.getByRole("button", { name: "Clear" }).click();
   await expect(countryPill).toHaveCount(0);
   await expect.poll(async () => number(await kpi.textContent())).toBe(baseline);
+  await expect.poll(async () => new Set(await previewTable.locator(`tbody td:nth-child(${countryColumn + 1})`).allTextContents()).size).toBeGreaterThan(1);
 
   // Re-rank leaderboards by a different metric.
   await page.locator('button[data-metric="customers.active_customer_count"]').click();
   await expect(page.locator('[data-testid="dimension-leaderboard"]').first()).toContainText("Active Customer Count");
+
 });
 
 test("brush-to-zoom on the chart sets a date range and shows the comparison overlay", async ({ page }) => {
@@ -65,6 +83,21 @@ test("brush-to-zoom on the chart sets a date range and shows the comparison over
 
   await expect.poll(() => new URL(page.url()).searchParams.get("from")).not.toBeNull();
   await expect(page.getByText("Prev period")).toBeVisible();
+  const resetZoom = page.getByRole("button", { name: "Reset zoom" });
+  await expect(resetZoom).toBeVisible();
+  expect((await resetZoom.boundingBox())?.height).toBeLessThanOrEqual(26);
+  await resetZoom.click();
+  await expect.poll(() => new URL(page.url()).searchParams.get("from")).toBeNull();
+  await expect(resetZoom).toHaveCount(0);
+
+  const rangeControl = page.locator("details").filter({ hasText: "Range" });
+  await rangeControl.locator("summary").click();
+  await expect(rangeControl.getByRole("button", { name: "Last 28 days" })).toBeVisible();
+  await rangeControl.getByRole("button", { name: "Last 28 days" }).click();
+  await expect.poll(() => new URL(page.url()).searchParams.get("from")).not.toBeNull();
+  await rangeControl.locator("summary").click();
+  await rangeControl.getByRole("button", { name: "All time" }).click();
+  await expect.poll(() => new URL(page.url()).searchParams.get("from")).toBeNull();
 });
 
 test("filter editor: open, search, exclude a value, persist to URL, and restore on reload", async ({ page }) => {
@@ -110,9 +143,68 @@ test("filter editor: open, search, exclude a value, persist to URL, and restore 
 });
 
 test("pivot view renders a grouped table", async ({ page }) => {
+  await page.goto("/?view=explore&model=orders&metric=orders.revenue");
+  await page.getByRole("button", { name: "Collapse sidebar" }).click();
+  await expect(page.locator("aside")).toBeHidden();
+  await page.getByRole("tab", { name: "Pivot" }).click();
+  await expect(page.locator("aside")).toBeVisible();
+
   await page.goto("/?view=pivot&model=orders&pdims=%5B%22orders.status%22%5D&pmetrics=%5B%22orders.revenue%22%5D");
+  await expect(page.locator('[data-catalog-dimension="orders.status"]')).toHaveAttribute("data-selected", "true");
+  await expect(page.locator('[data-catalog-metric="orders.revenue"]')).toHaveAttribute("data-selected", "true");
+  await expect(page.getByText("Raw rows (ungrouped, first 50)")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Rows preview" })).toBeVisible();
+  await page.locator('[data-catalog-dimension="orders.payment_method"]').click();
+  await page.locator('[data-catalog-metric="orders.order_count"]').click();
   const table = page.locator('[data-testid="pivot-table"]');
   await expect(table).toBeVisible();
   await expect(table.locator("tbody tr")).not.toHaveCount(0);
   await expect(table).toContainText("Revenue");
+  await expect(table).toContainText("Order Count");
+  await expect(table).toContainText("Payment Method");
+});
+
+test("pivot table paginates large grouped results and SQL is highlighted", async ({ page }) => {
+  const params = new URLSearchParams({
+    view: "pivot",
+    model: "orders",
+    pdims: JSON.stringify(["orders.created_at"]),
+    pmetrics: JSON.stringify(["orders.revenue"]),
+  });
+  await page.goto(`/?${params}`);
+
+  const pager = page.locator('[data-testid="pivot-table-pager"]');
+  await expect(pager).toBeVisible();
+  await expect(pager).toContainText("of");
+  const firstCell = page.locator('[data-testid="pivot-table"] tbody tr').first().locator("td").first();
+  const firstPageValue = await firstCell.textContent();
+  await pager.getByRole("button", { name: "Next" }).click();
+  await expect(firstCell).not.toHaveText(firstPageValue ?? "");
+
+  await page.getByText("Generated SQL", { exact: true }).click();
+  await expect(page.locator('[data-testid="query-debug"] [data-token="keyword"]').first()).toBeVisible();
+});
+
+test("component gallery exposes the WASM-style leaderboard and full-width expanded table", async ({ page }) => {
+  await page.goto("/components");
+  const analyticalCells = page.locator('[data-testid="pivot-table"] tbody tr').first().locator("td");
+  await expect(analyticalCells).toHaveCount(3);
+  await expect(analyticalCells.last()).toHaveCSS("border-bottom-style", "solid");
+  const leaderboards = page.locator('[data-testid="dimension-leaderboard"]');
+  await expect(leaderboards).toHaveCount(4);
+  await expect(leaderboards.first()).toHaveCSS("border-radius", "0px");
+  await expect(page.locator('[data-testid="gallery-filter-pills"] [data-dimension]')).toHaveCount(3);
+  await expect(page.getByRole("button", { name: "Remove filter East" })).toBeVisible();
+  await expect(page.getByRole("img", { name: "Eight month revenue trend" })).toBeVisible();
+  await expect(page.getByRole("img", { name: "Eight month revenue trend" })).toHaveAttribute("preserveAspectRatio", "none");
+  await expect(page.getByText("Column chart", { exact: true })).toBeVisible();
+  await expect(page.getByText("Dashboard shell", { exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "Expand table (8)" }).click();
+  await expect(leaderboards).toHaveCount(1);
+  const expandedRows = page.locator('[data-testid="dimension-leaderboard"][data-expanded="true"] .leaderboard-row');
+  await expect(expandedRows).toHaveCount(8);
+  await expect(expandedRows.first()).toHaveCSS("display", "grid");
+  await page.getByRole("button", { name: "← All dimensions" }).click();
+  await expect(leaderboards).toHaveCount(4);
 });

@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
+    "build:ui": "uv run ../scripts/build_ui_distribution.py",
     "preview": "vite preview --port 4322",
     "typecheck": "tsc --noEmit",
     "test": "playwright test",

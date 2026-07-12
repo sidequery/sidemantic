@@ -6,6 +6,14 @@
  */
 
 import { tableFromIPC } from "apache-arrow";
+import {
+  formatValue as formatUiValue,
+  removeFilterValue,
+  renderDimensionLeaderboardCards as mountDimensionLeaderboards,
+  renderFilterPills as mountFilterPills,
+  renderMetricSummaryCards as mountMetricCards,
+  toggleFilterValue,
+} from "../plugins/sidemantic/skills/webapp-builder/assets/ui-dist/sidemantic-ui-static.js";
 
 // ============================================================================
 // Utility Functions
@@ -25,17 +33,11 @@ function formatNumber(value, format = "number") {
     }
     const parsed = Number(trimmed);
     if (!Number.isFinite(parsed)) return "—";
-    if (format === "currency") {
-      return `$${parsed.toFixed(2)}`;
-    }
-    return parsed.toLocaleString();
+    return formatUiValue(parsed, { format });
   }
   const numericValue = Number(value);
   if (!Number.isFinite(numericValue)) return "—";
-  if (format === "currency") {
-    return `$${numericValue.toFixed(2)}`;
-  }
-  return numericValue.toLocaleString();
+  return formatUiValue(numericValue, { format });
 }
 
 function formatDate(date) {
@@ -187,330 +189,6 @@ function parseArrowIPC(dataRaw) {
 // SVG Sparkline
 // ============================================================================
 
-function sparklineSvg(values) {
-  if (!values || !values.length) return "";
-
-  // Use higher resolution viewBox for smoother rendering
-  const height = 60;
-  const width = values.length > 1 ? values.length - 1 : 1;
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const range = max - min || 1;
-
-  // One point per data value for pixel-perfect alignment
-  const points = values.map((value, idx) => {
-    const x = idx;
-    const y = height - ((value - min) / range) * height;
-    return [x.toFixed(2), y.toFixed(2)];
-  });
-
-  const line = points.map(([x, y]) => `${x},${y}`).join(" ");
-  const area = `0,${height} ${line} ${width},${height}`;
-
-  return `
-    <svg class="sparkline" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">
-      <polygon points="${area}" fill="var(--chart-fill)"></polygon>
-      <polyline
-        points="${line}"
-        fill="none"
-        stroke="var(--chart)"
-        stroke-width="1.5"
-        stroke-linecap="round"
-        stroke-linejoin="round"
-        vector-effect="non-scaling-stroke"
-      ></polyline>
-    </svg>
-  `;
-}
-
-// ============================================================================
-// Skeleton Components
-// ============================================================================
-
-function renderMetricSkeleton() {
-  const skeleton = document.createElement("div");
-  skeleton.className = "metric-skeleton";
-  skeleton.innerHTML = `
-    <div class="skeleton-header">
-      <div class="skeleton-title-group">
-        <div class="skeleton-line skeleton-title"></div>
-        <div class="skeleton-line skeleton-subtitle"></div>
-      </div>
-      <div class="skeleton-value-group">
-        <div class="skeleton-line skeleton-value"></div>
-        <div class="skeleton-line skeleton-delta"></div>
-      </div>
-    </div>
-    <div class="skeleton-line skeleton-chart"></div>
-  `;
-  return skeleton;
-}
-
-function renderDimensionSkeleton(label) {
-  const skeleton = document.createElement("div");
-  skeleton.className = "skeleton-card";
-  skeleton.innerHTML = `
-    <div class="skeleton-line skeleton-title"></div>
-    ${Array(6)
-      .fill(0)
-      .map(
-        () => `
-      <div class="skeleton-row-wrap">
-        <div class="skeleton-line skeleton-row"></div>
-      </div>
-    `
-      )
-      .join("")}
-  `;
-  return skeleton;
-}
-
-// ============================================================================
-// Metric Card Component
-// ============================================================================
-
-function renderMetricCard(
-  metricConfig,
-  series,
-  total,
-  dateRange,
-  selectedMetric,
-  dates,
-  onHover,
-  onBrush
-) {
-  const rangeLabel =
-    dateRange && dateRange.length === 2
-      ? formatRangeShort(dateRange[0], dateRange[1])
-      : "";
-
-  const isActive = metricConfig.key === selectedMetric;
-  const formattedValue = formatNumber(total, metricConfig.format);
-
-  const card = document.createElement("div");
-  card.className = `metric-card${isActive ? " active" : ""}`;
-  card.dataset.metric = metricConfig.key;
-
-  card.innerHTML = `
-    <div class="metric-header">
-      <div class="metric-title">
-        <h3>${metricConfig.label}</h3>
-        <span class="metric-range">${rangeLabel}</span>
-      </div>
-      <div class="metric-value-group">
-        <div class="metric-value">${formattedValue}</div>
-      </div>
-    </div>
-    <div class="sparkline-wrap" data-metric="${metricConfig.key}">
-      ${sparklineSvg(series)}
-      <div class="hover-line"></div>
-      <div class="brush-selection"></div>
-    </div>
-  `;
-
-  // Sparkline hover and brush interactions
-  const sparklineWrap = card.querySelector(".sparkline-wrap");
-  const hoverLine = card.querySelector(".hover-line");
-  const brushSelection = card.querySelector(".brush-selection");
-  const metricRangeEl = card.querySelector(".metric-range");
-  const metricValueEl = card.querySelector(".metric-value");
-
-  let brushState = null;
-  let originalRange = rangeLabel;
-  let originalValue = formattedValue;
-
-  // Hover: show vertical line and update value
-  sparklineWrap.addEventListener("pointermove", (e) => {
-    if (brushState) return; // Don't show hover during brush
-
-    const rect = sparklineWrap.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const pct = x / rect.width;
-    const idx = Math.max(0, Math.min(series.length - 1, Math.round(pct * (series.length - 1))));
-
-    hoverLine.style.left = `${pct * 100}%`;
-    hoverLine.style.opacity = "1";
-
-    // Update displayed value and date
-    if (dates && dates[idx]) {
-      metricRangeEl.textContent = formatShortDate(dates[idx]);
-    }
-    metricValueEl.textContent = formatNumber(series[idx], metricConfig.format);
-  });
-
-  sparklineWrap.addEventListener("pointerleave", () => {
-    if (brushState) return;
-    hoverLine.style.opacity = "0";
-    metricRangeEl.textContent = originalRange;
-    metricValueEl.textContent = originalValue;
-  });
-
-  // Brush: click-drag to select date range
-  sparklineWrap.addEventListener("pointerdown", (e) => {
-    sparklineWrap.setPointerCapture(e.pointerId);
-    const rect = sparklineWrap.getBoundingClientRect();
-    const startX = e.clientX - rect.left;
-    brushState = { startX, rect };
-
-    brushSelection.style.left = `${(startX / rect.width) * 100}%`;
-    brushSelection.style.width = "0";
-    brushSelection.style.display = "block";
-    hoverLine.style.opacity = "0";
-  });
-
-  sparklineWrap.addEventListener("pointermove", (e) => {
-    if (!brushState) return;
-
-    const { startX, rect } = brushState;
-    const currentX = e.clientX - rect.left;
-    const left = Math.min(startX, currentX);
-    const width = Math.abs(currentX - startX);
-
-    brushSelection.style.left = `${(left / rect.width) * 100}%`;
-    brushSelection.style.width = `${(width / rect.width) * 100}%`;
-  });
-
-  sparklineWrap.addEventListener("pointerup", (e) => {
-    if (!brushState) return;
-
-    const { startX, rect } = brushState;
-    const endX = e.clientX - rect.left;
-    const width = rect.width;
-
-    sparklineWrap.releasePointerCapture(e.pointerId);
-
-    // Only trigger brush if dragged more than 6px
-    if (Math.abs(endX - startX) > 6 && dates && dates.length > 0) {
-      const startPct = Math.max(0, Math.min(1, startX / width));
-      const endPct = Math.max(0, Math.min(1, endX / width));
-
-      const startIdx = Math.round(startPct * (dates.length - 1));
-      const endIdx = Math.round(endPct * (dates.length - 1));
-
-      const minIdx = Math.min(startIdx, endIdx);
-      const maxIdx = Math.max(startIdx, endIdx);
-
-      if (onBrush) {
-        onBrush(dates[minIdx], dates[maxIdx]);
-      }
-    }
-
-    brushState = null;
-    brushSelection.style.display = "none";
-  });
-
-  // Double-click to clear brush
-  sparklineWrap.addEventListener("dblclick", () => {
-    if (onBrush) {
-      onBrush(null, null);
-    }
-  });
-
-  return card;
-}
-
-// ============================================================================
-// Dimension Leaderboard Component
-// ============================================================================
-
-function renderDimensionCard(
-  dimConfig,
-  rows,
-  selectedMetric,
-  activeFilters,
-  onFilterClick
-) {
-  const maxValue = Math.max(
-    ...rows.map((row) => Number(row[selectedMetric]) || 0),
-    1
-  );
-
-  const card = document.createElement("div");
-  card.className = "dim-card";
-  card.dataset.dim = dimConfig.key;
-
-  card.innerHTML = `<h4>${dimConfig.label}</h4>`;
-
-  rows.forEach((row) => {
-    const value = row[dimConfig.key];
-    const metricValue = Number(row[selectedMetric]) || 0;
-    const width = Math.round((metricValue / maxValue) * 100);
-
-    const rowEl = document.createElement("div");
-    const isSelected =
-      activeFilters[dimConfig.key] &&
-      activeFilters[dimConfig.key].includes(String(value));
-    rowEl.className = `dim-row${isSelected ? " active" : ""}`;
-    rowEl.dataset.value = String(value);
-
-    rowEl.innerHTML = `
-      <div class="bar" style="transform: scaleX(${width / 100});"></div>
-      <span>${value}</span>
-      <span class="dim-value">${formatNumber(metricValue)}</span>
-    `;
-
-    rowEl.addEventListener("click", () => {
-      onFilterClick(dimConfig.key, String(value));
-    });
-
-    card.appendChild(rowEl);
-  });
-
-  return card;
-}
-
-// ============================================================================
-// Filter Pills Component
-// ============================================================================
-
-function renderFilterPills(
-  container,
-  filters,
-  dateRange,
-  brushSelection,
-  onRemoveFilter,
-  onClearBrush
-) {
-  container.innerHTML = "";
-
-  let hasFilter = false;
-
-  // Brush selection pill
-  if (brushSelection && brushSelection.length === 2 && brushSelection[0] && brushSelection[1]) {
-    hasFilter = true;
-    const pill = document.createElement("span");
-    pill.className = "pill";
-    pill.textContent = `Date: ${formatDate(brushSelection[0])} → ${formatDate(brushSelection[1])} ×`;
-    pill.addEventListener("click", onClearBrush);
-    container.appendChild(pill);
-  }
-
-  // Dimension filter pills
-  Object.entries(filters).forEach(([dimKey, values]) => {
-    if (values && values.length > 0) {
-      values.forEach((value) => {
-        hasFilter = true;
-        const pill = document.createElement("span");
-        pill.className = "pill";
-        pill.textContent = `${dimKey}: ${value} ×`;
-        pill.addEventListener("click", () => onRemoveFilter(dimKey, value));
-        container.appendChild(pill);
-      });
-    }
-  });
-
-  if (!hasFilter) {
-    const pill = document.createElement("span");
-    pill.className = "pill muted";
-    pill.textContent = "No filters";
-    container.appendChild(pill);
-  }
-}
-
-// ============================================================================
-// Main Widget Render
-// ============================================================================
-
 function render({ model, el }) {
   // Create widget structure
   el.innerHTML = `
@@ -578,32 +256,14 @@ function render({ model, el }) {
   }
 
   function toggleFilter(dimKey, value) {
-    const filters = { ...getFilters() };
-    const current = filters[dimKey] || [];
     model.set("active_dimension", dimKey);
-
-    if (current.includes(value)) {
-      filters[dimKey] = current.filter((v) => v !== value);
-      if (filters[dimKey].length === 0) {
-        delete filters[dimKey];
-      }
-    } else {
-      filters[dimKey] = [...current, value];
-    }
-
-    setFilters(filters);
+    setFilters(toggleFilterValue(getFilters(), dimKey, value));
     scheduleActiveDimensionClear();
   }
 
   function removeFilter(dimKey, value) {
-    const filters = { ...getFilters() };
-    const current = filters[dimKey] || [];
     clearActiveDimension();
-    filters[dimKey] = current.filter((v) => v !== value);
-    if (filters[dimKey].length === 0) {
-      delete filters[dimKey];
-    }
-    setFilters(filters);
+    setFilters(removeFilterValue(getFilters(), dimKey, value));
   }
 
   function setBrush(start, end) {
@@ -670,34 +330,19 @@ function render({ model, el }) {
         );
       const dates = timeCol ? rows.map((r) => formatDate(r[timeCol])) : [];
 
-      metricsColEl.innerHTML = "";
-
-      metricsConfig.forEach((metricConfig) => {
-        const series = rows.map((row) => Number(row[metricConfig.key]) || 0);
-        const total =
-          metricTotals[metricConfig.key] ??
-          series.reduce((sum, v) => sum + v, 0);
-
-        const card = renderMetricCard(
-          metricConfig,
-          series,
-          total,
-          activeRange,
-          selectedMetric,
-          dates,
-          null, // onHover
-          setBrush // onBrush
-        );
-
-        // Click to select metric
-        card.addEventListener("click", (e) => {
-          // Don't select on sparkline interactions
-          if (e.target.closest(".sparkline-wrap")) return;
-          model.set("selected_metric", metricConfig.key);
+      mountMetricCards(metricsColEl, {
+        metrics: metricsConfig,
+        totals: { rows: [metricTotals] },
+        seriesRows: rows,
+        timeKey: timeCol,
+        selectedMetric,
+        rangeLabel: activeRange?.length === 2 ? formatRangeShort(activeRange[0], activeRange[1]) : "",
+        valueFormat: (key) => ({ format: metricsConfig.find((metric) => metric.key === key)?.format }),
+        onSelect: ({ metric }) => {
+          model.set("selected_metric", metric);
           model.save_changes();
-        });
-
-        metricsColEl.appendChild(card);
+        },
+        onBrush: setBrush,
       });
     } catch (e) {
       metricsColEl.innerHTML = `<div class="error">Error: ${e.message}</div>`;
@@ -714,8 +359,7 @@ function render({ model, el }) {
     const selectedMetric = model.get("selected_metric") || "";
     const filters = getFilters();
 
-    dimensionsGridEl.innerHTML = "";
-
+    const results = new Map();
     dimensionsConfig.forEach((dimConfig) => {
       const ipcDataView = dimensionData[dimConfig.key];
 
@@ -726,35 +370,28 @@ function render({ model, el }) {
           ? ipcDataView.length === 0
           : ipcDataView.byteLength === 0)
       ) {
-        dimensionsGridEl.appendChild(renderDimensionSkeleton(dimConfig.label));
+        results.set(dimConfig.key, []);
         return;
       }
 
       try {
         const rows = parseArrowIPC(ipcDataView);
         if (!rows) {
-          const errorCard = document.createElement("div");
-          errorCard.className = "dim-card error";
-          errorCard.innerHTML = `<h4>${dimConfig.label}</h4><div>Failed to parse data</div>`;
-          dimensionsGridEl.appendChild(errorCard);
+          results.set(dimConfig.key, []);
           return;
         }
-
-        const card = renderDimensionCard(
-          dimConfig,
-          rows,
-          selectedMetric,
-          filters,
-          toggleFilter
-        );
-
-        dimensionsGridEl.appendChild(card);
+        results.set(dimConfig.key, rows);
       } catch (e) {
-        const errorCard = document.createElement("div");
-        errorCard.className = "dim-card error";
-        errorCard.innerHTML = `<h4>${dimConfig.label}</h4><div>Error: ${e.message}</div>`;
-        dimensionsGridEl.appendChild(errorCard);
+        results.set(dimConfig.key, []);
       }
+    });
+    mountDimensionLeaderboards(dimensionsGridEl, dimensionsConfig, {
+      metricRef: selectedMetric,
+      resultForDimension: (dimension) => ({ rows: results.get(dimension.key) || [] }),
+      selectedValuesForDimension: (dimension) => filters[dimension.key] || [],
+      interactive: true,
+      expandable: true,
+      onSelect: ({ dimension, value }) => toggleFilter(dimension, value),
     });
   }
 
@@ -763,14 +400,7 @@ function render({ model, el }) {
     const dateRange = model.get("date_range") || [];
     const brushSelection = model.get("brush_selection") || [];
 
-    renderFilterPills(
-      filterPillsEl,
-      filters,
-      dateRange,
-      brushSelection,
-      removeFilter,
-      clearBrush
-    );
+    mountFilterPills(filterPillsEl, filters, ({ dimension, value }) => removeFilter(dimension, value), { emptyLabel: "No filters" });
   }
 
   function renderMetricSelect() {

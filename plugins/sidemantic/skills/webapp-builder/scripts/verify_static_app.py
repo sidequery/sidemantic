@@ -88,7 +88,7 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
     spec_path = args.app_spec.resolve() if args.app_spec else app_dir / "data" / "app-spec.json"
     index_path = app_dir / "index.html"
     app_js_path = app_dir / "app.js"
-    component_js_path = app_dir / "sidemantic-components.js"
+    component_js_path = app_dir / "sidemantic-ui-static.js"
     styles_path = app_dir / "styles.css"
 
     report: dict[str, Any] = {"checks": {}, "app_dir": str(app_dir), "app_spec": str(spec_path)}
@@ -136,7 +136,7 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
         path.read_text(encoding="utf-8") for path in (index_path, app_js_path, component_js_path, styles_path)
     )
     checks["references_app_spec"] = "data/app-spec.json" in source
-    checks["uses_copyable_components"] = "sidemantic-components.js" in source and ".sdm-metric-card" in source
+    checks["uses_copyable_components"] = "sidemantic-ui-static.js" in source and "renderMetricCards" in source
     checks["has_metric_totals_selector"] = 'data-testid="metric-totals"' in source
     checks["has_leaderboard_selector"] = 'data-testid="dimension-leaderboard"' in source
     checks["has_leaderboard_rows_selector"] = 'data-testid="leaderboard-rows"' in source
@@ -147,7 +147,8 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
     checks["wires_interactive_metric_cards"] = "onSelect: ({ metric })" in source
     checks["has_metric_data_binding"] = "dataset.metric" in source or "data-metric" in source
     checks["has_dimension_data_binding"] = "dataset.dimension" in source or "data-dimension" in source
-    checks["avoids_inner_html"] = "innerHTML" not in source
+    authored_source = "\n".join(path.read_text(encoding="utf-8") for path in (index_path, app_js_path, styles_path))
+    checks["avoids_inner_html"] = "innerHTML" not in authored_source
     checks["sparkline_bounded_if_present"] = ".sdm-sparkline" not in source or (
         "overflow: hidden" in source and 'setAttribute("viewBox"' in source
     )

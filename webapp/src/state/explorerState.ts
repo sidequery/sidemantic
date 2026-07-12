@@ -80,7 +80,7 @@ export function explorerReducer(state: ExplorerState, action: ExplorerAction): E
         grain: action.grain,
         filters: {},
         pivotDims: [],
-        pivotMetrics: [action.metric],
+        pivotMetrics: [],
       };
     case "setMetric":
       return { ...state, selectedMetric: action.metric };

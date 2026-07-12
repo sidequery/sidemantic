@@ -5,29 +5,12 @@ import { QueryDebugPanel } from "../components/QueryDebugPanel";
 import { EmptyState, ErrorState } from "../components/States";
 import { formatValue, labelize } from "../lib/format";
 import { graphMetricsForModel } from "../lib/catalog";
-import { composeFilters, dimTypes, pivotGroup, previewRows } from "../lib/queries";
+import { composeFilters, dimTypes, pivotGroup } from "../lib/queries";
 import { useExplorer } from "../state/ExplorerContext";
 import { useQueryResult } from "../state/useQueryResult";
 
-function toggleInArray(list: string[], item: string): string[] {
-  return list.includes(item) ? list.filter((x) => x !== item) : [...list, item];
-}
-
-function Chip({ active, label, onClick }: { active: boolean; label: string; onClick: () => void }) {
-  return (
-    <button
-      type="button"
-      data-selected={active || undefined}
-      onClick={onClick}
-      className="border border-line bg-surface px-2 py-0.5 text-2xs text-muted hover:border-faint data-[selected=true]:border-accent data-[selected=true]:bg-accent-soft data-[selected=true]:text-accent"
-    >
-      {label}
-    </button>
-  );
-}
-
 export function PivotView() {
-  const { state, dispatch, catalog, backend } = useExplorer();
+  const { state, catalog, backend } = useExplorer();
   const model = catalog.models.find((m) => m.name === state.model);
   const dims = model?.dimensions ?? [];
   const graphMetrics = graphMetricsForModel(catalog, state.model);
@@ -46,7 +29,6 @@ export function PivotView() {
   const fallbackMetric = validMetric(state.selectedMetric) ? state.selectedMetric : model?.metrics[0]?.ref;
   const pivotMetrics = sanitizedMetrics.length ? sanitizedMetrics : fallbackMetric ? [fallbackMetric] : [];
 
-  const [ungrouped, setUngrouped] = useState(false);
   const [sort, setSort] = useState<{ ref: string; dir: "asc" | "desc" } | null>(null);
 
   const types = useMemo(() => dimTypes(dims), [dims]);
@@ -56,14 +38,8 @@ export function PivotView() {
   );
 
   const effectiveSort = sort ?? (pivotMetrics[0] ? { ref: pivotMetrics[0], dir: "desc" as const } : null);
-  const orderBy = !ungrouped && effectiveSort ? [`${effectiveSort.ref} ${effectiveSort.dir.toUpperCase()}`] : undefined;
-
-  const query =
-    pivotMetrics.length || pivotDims.length
-      ? ungrouped
-        ? previewRows({ dimensions: pivotDims, metrics: pivotMetrics }, baseFilters, 50)
-        : pivotGroup(pivotMetrics, pivotDims, baseFilters, orderBy, 500)
-      : null;
+  const orderBy = effectiveSort ? [`${effectiveSort.ref} ${effectiveSort.dir.toUpperCase()}`] : undefined;
+  const query = pivotMetrics.length || pivotDims.length ? pivotGroup(pivotMetrics, pivotDims, baseFilters, orderBy, 500) : null;
   // Stamp the selected timezone so any time-bucketed pivot dimension truncates in-zone server-side
   // (elided when UTC, matching the pre-E4 request shape).
   const tzQuery = query ? { ...query, timezone: state.timezone } : null;
@@ -82,7 +58,7 @@ export function PivotView() {
       key: aliasOf(ref),
       label: metricByRef.get(ref)?.label ?? labelize(ref),
       numeric: true,
-      sortable: !ungrouped,
+      sortable: true,
     })),
   ];
 
@@ -104,35 +80,6 @@ export function PivotView() {
 
   return (
     <div className="flex flex-col gap-4 p-4">
-      <section className="flex flex-col gap-2 border border-line bg-surface p-3">
-        <div className="flex flex-wrap items-center gap-1.5">
-          <span className="mr-1 text-2xs font-semibold uppercase tracking-wide text-faint">Group by</span>
-          {dims.map((dim) => (
-            <Chip
-              key={dim.ref}
-              active={pivotDims.includes(dim.ref)}
-              label={dim.label}
-              onClick={() => dispatch({ type: "setPivotDims", dims: toggleInArray(pivotDims, dim.ref) })}
-            />
-          ))}
-        </div>
-        <div className="flex flex-wrap items-center gap-1.5">
-          <span className="mr-1 text-2xs font-semibold uppercase tracking-wide text-faint">Metrics</span>
-          {allMetrics.map((metric) => (
-            <Chip
-              key={metric.ref}
-              active={pivotMetrics.includes(metric.ref)}
-              label={metric.label}
-              onClick={() => dispatch({ type: "setPivotMetrics", metrics: toggleInArray(pivotMetrics, metric.ref) })}
-            />
-          ))}
-        </div>
-        <label className="flex items-center gap-1.5 text-2xs text-muted">
-          <input type="checkbox" checked={ungrouped} onChange={(event) => setUngrouped(event.target.checked)} />
-          Raw rows (ungrouped, first 50)
-        </label>
-      </section>
-
       {error ? (
         <ErrorState message={error} />
       ) : columns.length === 0 ? (

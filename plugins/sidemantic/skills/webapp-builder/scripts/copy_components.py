@@ -13,19 +13,11 @@ SKILL_ROOT = Path(__file__).resolve().parents[1]
 COMPONENT_ROOT = SKILL_ROOT / "assets" / "components"
 
 REACT_COMPONENTS: dict[str, list[str]] = {
-    "column-chart": ["column-chart.tsx"],
-    "dashboard-shell": ["dashboard-shell.tsx", "types.ts"],
-    "data-preview-table": ["data-preview-table.tsx", "types.ts"],
-    "filter-pill": ["filter-pill.tsx", "types.ts"],
-    "leaderboard": ["leaderboard.tsx", "types.ts"],
-    "metric-card": ["metric-card.tsx", "types.ts"],
-    "query-debug-panel": ["query-debug-panel.tsx", "types.ts"],
-    "sparkline": ["sparkline.tsx"],
-    "states": ["states.tsx"],
+    "ui": ["sidemantic-ui.js", "sidemantic-ui.css"],
 }
 
 STATIC_COMPONENTS: dict[str, list[str]] = {
-    "static-components": ["sidemantic-components.js", "sidemantic-components.css"],
+    "static-components": ["sidemantic-ui-static.js", "sidemantic-ui.css"],
 }
 
 KINDS = {
@@ -36,7 +28,7 @@ KINDS = {
 
 def _files_for(kind: str, components: list[str]) -> list[Path]:
     manifest = KINDS[kind]
-    source_dir = COMPONENT_ROOT / kind
+    source_dir = COMPONENT_ROOT.parent / "ui-dist"
     copy_all = "all" in components
     requested = list(manifest) if copy_all else components
     unknown = sorted(set(requested) - set(manifest))
@@ -46,9 +38,6 @@ def _files_for(kind: str, components: list[str]) -> list[Path]:
     filenames: list[str] = []
     for component in requested:
         filenames.extend(manifest[component])
-    if kind == "react-tailwind" and copy_all:
-        filenames.append("index.ts")
-
     return [source_dir / filename for filename in sorted(set(filenames))]
 
 
@@ -57,7 +46,7 @@ def _list_components() -> None:
         kind: {
             "components": sorted(manifest),
             "default": "all",
-            "files": sorted(path.name for path in (COMPONENT_ROOT / kind).iterdir() if path.is_file()),
+            "files": sorted({filename for filenames in manifest.values() for filename in filenames}),
         }
         for kind, manifest in KINDS.items()
     }
@@ -81,6 +70,19 @@ def copy_components(args: argparse.Namespace) -> list[Path]:
     return copied
 
 
+def check_components(args: argparse.Namespace) -> list[Path]:
+    """Return target files that are missing or differ from the canonical assets."""
+    target = args.target.resolve()
+    mismatched: list[Path] = []
+
+    for source in _files_for(args.kind, args.components):
+        destination = target / source.name
+        if not destination.exists() or destination.read_bytes() != source.read_bytes():
+            mismatched.append(destination)
+
+    return mismatched
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--kind", choices=sorted(KINDS), default="react-tailwind")
@@ -91,8 +93,10 @@ def main() -> int:
         dest="components",
         help="Component to copy. Repeat for several. Defaults to all.",
     )
-    parser.add_argument("--force", action="store_true", help="Overwrite existing target files")
-    parser.add_argument("--dry-run", action="store_true", help="Print target paths without writing files")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--force", action="store_true", help="Overwrite existing target files")
+    mode.add_argument("--dry-run", action="store_true", help="Print target paths without writing files")
+    mode.add_argument("--check", action="store_true", help="Exit nonzero when target files differ from the source")
     parser.add_argument("--list", action="store_true", help="List available component groups and exit")
     args = parser.parse_args()
 
@@ -103,6 +107,15 @@ def main() -> int:
         parser.error("--target is required unless --list is used")
 
     args.components = args.components or ["all"]
+    if args.check:
+        mismatched = check_components(args)
+        if mismatched:
+            for path in mismatched:
+                print(f"Out of sync {path}", file=sys.stderr)
+            return 1
+        print(f"Components are in sync: {args.target.resolve()}")
+        return 0
+
     try:
         copied = copy_components(args)
     except (FileExistsError, ValueError) as error:

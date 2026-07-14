@@ -9,7 +9,8 @@ import { DateRangeControl } from "./components/DateRangeControl";
 import { FilterPill } from "./components/FilterPill";
 import { GrainSelect } from "./components/GrainSelect";
 import { TimezoneSelect } from "./components/TimezoneSelect";
-import { EmptyState, ErrorState } from "./components/States";
+import { RowPreviewDrawer } from "./components/RowPreviewDrawer";
+import { EmptyState, ErrorState, LoadingState } from "./components/States";
 import { ThemeToggle } from "./components/ThemeToggle";
 import { ViewSwitcher } from "./components/ViewSwitcher";
 import { grainOptions } from "./lib/time";
@@ -176,6 +177,8 @@ function Shell() {
       filters={isHome ? undefined : filters}
       rail={<CatalogRail />}
       showRail={!isHome}
+      openRailRequest={state.view === "pivot"}
+      drawer={isHome ? undefined : <RowPreviewDrawer />}
     >
       <ErrorBoundary key={state.view}>
         {state.view === "home" ? <ExploreIndexView /> : null}
@@ -203,7 +206,7 @@ export function App() {
   }, [backend]);
 
   if (error) return <FullScreen><ErrorState title="Could not load semantic layer" message={error} /></FullScreen>;
-  if (!catalog) return <FullScreen><div className="text-sm text-muted">Loading semantic layer…</div></FullScreen>;
+  if (!catalog) return <FullScreen><LoadingState title="Loading semantic layer" message="Reading models and metrics…" /></FullScreen>;
   if (!catalog.models.length)
     return <FullScreen><EmptyState title="Empty semantic layer" message="No models were found." /></FullScreen>;
 

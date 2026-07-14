@@ -8,7 +8,7 @@ import {
   renderMetricCards,
   removeFilterValue,
   toggleFilterValue,
-} from "./sidemantic-components.js";
+} from "./sidemantic-ui-static.js";
 
 const statusEl = document.querySelector('[data-testid="app-status"]');
 const totalsEl = document.querySelector('[data-testid="metric-totals"]');

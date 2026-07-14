@@ -1,5 +1,39 @@
 export type Theme = "light" | "dark";
 
+export type ThemeTokens = Partial<{
+  background: string;
+  surface: string;
+  surfaceSoft: string;
+  ink: string;
+  muted: string;
+  faint: string;
+  line: string;
+  action: string;
+  actionSoft: string;
+  chartPrimary: string;
+  chartPrimarySoft: string;
+  chartPrimarySelected: string;
+  danger: string;
+  dangerSoft: string;
+}>;
+
+const TOKEN_PROPERTIES: Record<keyof ThemeTokens, `--${string}`> = {
+  background: "--bg",
+  surface: "--surface",
+  surfaceSoft: "--surface-soft",
+  ink: "--ink",
+  muted: "--muted",
+  faint: "--faint",
+  line: "--line",
+  action: "--accent",
+  actionSoft: "--accent-soft",
+  chartPrimary: "--chart-primary",
+  chartPrimarySoft: "--chart-primary-soft",
+  chartPrimarySelected: "--chart-primary-selected",
+  danger: "--danger",
+  dangerSoft: "--danger-soft",
+};
+
 const KEY = "sidemantic-theme";
 
 export function getTheme(): Theme {
@@ -22,4 +56,12 @@ export function toggleTheme(): Theme {
   localStorage.setItem(KEY, next);
   applyTheme(next);
   return next;
+}
+
+/** Override semantic UI tokens on the document or on a scoped component container. */
+export function applyThemeTokens(tokens: ThemeTokens, target: HTMLElement = document.documentElement): void {
+  for (const [name, value] of Object.entries(tokens) as [keyof ThemeTokens, string | undefined][]) {
+    if (value) target.style.setProperty(TOKEN_PROPERTIES[name], value);
+    else target.style.removeProperty(TOKEN_PROPERTIES[name]);
+  }
 }

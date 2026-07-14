@@ -217,6 +217,7 @@ jobs:
       duckdb_changed: ${{ steps.changes.outputs.duckdb }}
       dax_changed: ${{ steps.changes.outputs.dax }}
       webapp_changed: ${{ steps.changes.outputs.webapp }}
+      widget_changed: ${{ steps.changes.outputs.widget }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -235,6 +236,17 @@ jobs:
               - 'tests/dax/fixtures/**'
             webapp:
               - 'webapp/**'
+              - 'scripts/build_webapp.py'
+              - 'scripts/build_ui_distribution.py'
+              - 'sidemantic/ui/static/**'
+              - 'sidemantic-rs/ui/**'
+              - 'plugins/sidemantic/skills/webapp-builder/assets/ui-dist/**'
+              - 'examples/sidemantic_wasm_demo/src/components/sidemantic/**'
+            widget:
+              - 'js/**'
+              - 'scripts/build_widget.py'
+              - 'sidemantic/widget/static/**'
+              - 'plugins/sidemantic/skills/webapp-builder/assets/ui-dist/**'
 
   dax-rust:
     name: Rust (DAX crates)
@@ -440,3 +452,26 @@ jobs:
 
       - name: Unit tests
         run: bun test src
+
+      - name: Check committed bundles
+        run: |
+          python ../scripts/build_webapp.py --check
+          python ../scripts/build_ui_distribution.py --check
+
+  widget:
+    name: AnyWidget bundle
+    needs: check-rust-changes
+    if: needs.check-rust-changes.outputs.widget_changed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        working-directory: js
+        run: bun install --frozen-lockfile
+
+      - name: Check committed bundle
+        run: python scripts/build_widget.py --check

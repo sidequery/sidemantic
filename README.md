@@ -13,6 +13,8 @@ Sidemantic is an open-source semantic runtime. Define governed metrics once—or
 
 Sidemantic ships Claude Code and Codex plugin metadata for two skills (`modeler` and `webapp-builder`). See [Agent Plugin](#agent-plugin) below to install.
 
+Contributors working on browser surfaces should read the [UI architecture and canonical ownership map](docs/ui-architecture.md).
+
 ## 60-second quickstart
 
 Create `models/orders.yml`:

@@ -5,13 +5,13 @@ description: Build interactive analytics webapps, demos, dashboards, or embedded
 
 # Sidemantic Webapp Builder
 
-Build webapps around a validated Sidemantic semantic layer. Default to project-owned source components copied from this skill, then adapt them to the target app and wire them to inspected Sidemantic query contracts.
+Build webapps around a validated Sidemantic semantic layer. Use the canonical built UI distribution, then wire runtime-specific data adapters to its documented props or mount functions.
 
 In command examples, set `SIDEMANTIC_PLUGIN_ROOT` to the installed `sidemantic` plugin directory.
 
 ## Component-First Pattern
 
-Treat `assets/components/` like a small shadcn-style source library for analytics primitives. Copy components into the target project, then edit those copied files as normal app code. Do not retype component source into the answer or keep it as a hidden runtime dependency.
+Treat `assets/ui-dist/` as the generated distribution of the sole component source in `webapp/src`. Never regenerate or fork component markup in a target project.
 
 Copy React + Tailwind components for product apps:
 
@@ -29,7 +29,7 @@ uv run ${SIDEMANTIC_PLUGIN_ROOT}/skills/webapp-builder/scripts/copy_components.p
   --target public/sidemantic-components
 ```
 
-Use `--component metric-card --component leaderboard` to copy a narrower React subset. Use `--list` before copying when you need the available names. Existing target files are never overwritten unless `--force` is passed.
+Use `--list` to inspect the distribution. Existing target files are never overwritten unless `--force` is passed.
 
 Available React primitives:
 
@@ -45,7 +45,7 @@ Available React primitives:
 
 State primitives are conditional UI branches. Do not render loading, empty, and error examples as permanent app content unless the user explicitly asks for a component gallery.
 
-Available static JS helpers in `sidemantic-components.js`:
+Available static mount helpers in `sidemantic-ui-static.js`:
 
 - Data adapters: `aliasForSemanticRef`, `toComponentResult`, `toComponentQuery`, `filterZeroMetricRows`.
 - Formatting: `labelize`, `formatValue`, `metricConfigFor`, `metricValueFormat`, `formatDateLike`, `seriesRangeLabel`.

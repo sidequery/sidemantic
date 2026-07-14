@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { aliasOf, type CatalogMetric } from "../data/types";
 import { LeaderboardPanel } from "../components/LeaderboardPanel";
 import { MetricCard } from "../components/MetricCard";
@@ -28,6 +28,7 @@ function metricHint(metric?: CatalogMetric) {
 
 export function ExplorerView() {
   const { state, dispatch, catalog, backend } = useExplorer();
+  const [expandedLeaderboard, setExpandedLeaderboard] = useState<string | null>(null);
   const model = catalog.models.find((m) => m.name === state.model);
 
   const metrics = model?.metrics ?? [];
@@ -179,6 +180,7 @@ export function ExplorerView() {
           prevTotal={prevRange ? chartPrevTotal : undefined}
           hasTime={!!timeRef}
           loading={series.loading}
+          activeRange={state.dateRange}
           comparisonLabel={comparisonLabel}
           formatLabel={(label) => formatBucketLabel(label, state.grain)}
           onBrush={onBrush}
@@ -186,21 +188,23 @@ export function ExplorerView() {
       ) : null}
 
       {/* Dimension leaderboards */}
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
+      <div className="grid grid-cols-[repeat(auto-fit,minmax(220px,1fr))] gap-0 border-l border-t border-line">
         {rankMetric && leaderboardDims.length ? (
-          leaderboardDims.map((dim) => (
-            <LeaderboardPanel
-              key={dim.ref}
-              dim={dim}
-              model={model}
-              rankMetric={rankMetric}
-              contextColumn={state.contextColumn}
-              // The focused metric's ungrouped total under the current filters — computed once for the
-              // scorecard strip and reused here rather than re-queried, so "% of total" adds no round trip.
-              metricTotal={Number.isFinite(chartTotal) ? chartTotal : undefined}
-              comparisonRange={prevRange ?? undefined}
-            />
-          ))
+          leaderboardDims
+            .filter((dim) => expandedLeaderboard === null || expandedLeaderboard === dim.ref)
+            .map((dim) => (
+              <LeaderboardPanel
+                key={dim.ref}
+                dim={dim}
+                model={model}
+                rankMetric={rankMetric}
+                contextColumn={state.contextColumn}
+                metricTotal={Number.isFinite(chartTotal) ? chartTotal : undefined}
+                comparisonRange={prevRange ?? undefined}
+                expanded={expandedLeaderboard === dim.ref}
+                onExpandedChange={(expanded) => setExpandedLeaderboard(expanded ? dim.ref : null)}
+              />
+            ))
         ) : (
           <EmptyState message="No categorical dimensions to break down." />
         )}

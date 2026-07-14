@@ -2,18 +2,13 @@
 
 Use this reference when implementing the concrete UI/data layer after the skill workflow has selected an app shape.
 
-## Why two component implementations
+## One component implementation
 
-There are two parallel component sets and they cannot share code:
-
-- `assets/components/react-tailwind/` (`.tsx`) targets app shape 1 — a real product webapp with a build step (React/Vite/Next). It is declarative components.
-- `assets/components/static/` (`.js` + `.css`) targets app shape 2 — a backendless browser demo (Pyodide / DuckDB-WASM) with no build step. It is plain ESM `render*` functions that mutate the DOM directly, runnable from a `<script type="module">`.
-
-Pick the set that matches the chosen app shape; do not import one from the other. They are kept at feature + data-contract parity (same `data-*` / `data-testid` hooks, same formatting, highlighting, charts, pagination, and leaderboard expand), but their APIs differ by necessity: React uses props + parent-owned state, static uses imperative renderers with container-held state. When you add or change a primitive in one set, mirror it in the other. `tests/test_sidemantic_webapp_builder_scripts.py` enforces parity for the high-value contracts. `docs/component-gallery.html` renders every component and its variations on one page.
+All app shapes consume builds of `webapp/src/ui.ts`. React projects use `sidemantic-ui.js`; backendless and WASM projects use the self-contained `sidemantic-ui-static.js` mount API. Do not create local component lookalikes.
 
 ## Copyable Components
 
-Default to copied component source instead of regenerating dashboard primitives. Copy from the skill, then edit the copied files inside the target project:
+Copy the built distribution instead of component source:
 
 ```bash
 uv run ${SIDEMANTIC_PLUGIN_ROOT}/skills/webapp-builder/scripts/copy_components.py \
@@ -29,7 +24,7 @@ uv run ${SIDEMANTIC_PLUGIN_ROOT}/skills/webapp-builder/scripts/copy_components.p
   --target dist/sidemantic-dashboard
 ```
 
-The React components are intentionally style-light and contract-heavy. Keep these contracts unless the target project already has stronger equivalents:
+The distributed components preserve these contracts:
 
 - `data-metric` on metric cards.
 - `data-dimension` and `data-value` on leaderboard rows and filter pills.
@@ -43,7 +38,7 @@ The React components are intentionally style-light and contract-heavy. Keep thes
 - Leaderboards are dense by default: top-`limit` rows collapsed, all rows + per-column bars when expanded. The parent owns `expanded`, so pass a compact `extraColumns` set (e.g. delta, delta%) when collapsed and a richer one (every metric, bar-backed) when expanded.
 - Charts (`LineChart`, `ColumnChart`) carry y-axis gridlines + compact labels, per-point/bar hover tooltips, `role="img"` summaries, and responsive width (ResizeObserver, no aspect distortion). `Sparkline` stays compact (no axes) but has an endpoint marker, tooltip, and a11y label.
 
-Prefer copying all primitives first for a new dashboard, then deleting unused files after the app shape is clear. Copy a subset only when fitting into an established component system.
+The distribution is one generated module; tree-shaking removes unused React exports in product builds.
 
 The static component file exports both low-level renderers and generic app helpers. Use them before creating local DOM utilities:
 

@@ -14,6 +14,7 @@ type MetricTimeSeriesProps = {
   prevTotal?: number;
   hasTime: boolean;
   loading?: boolean;
+  activeRange?: BrushRange;
   /** Short label for the comparison window ("Prev period" / "Prev year" / a custom range). */
   comparisonLabel?: string;
   /** Render a raw UTC bucket label into the selected timezone (axis ticks + tooltip). */
@@ -32,6 +33,7 @@ export function MetricTimeSeries({
   prevTotal,
   hasTime,
   loading,
+  activeRange,
   comparisonLabel = "Prev period",
   formatLabel,
   onBrush,
@@ -49,6 +51,15 @@ export function MetricTimeSeries({
         <span className="font-mono tnum text-xl font-semibold text-ink">{formatValue(total, hint)}</span>
         {delta ? <span className={`text-xs ${TONE[delta.tone]}`}>{delta.label} vs {comparisonLabel.toLowerCase()}</span> : null}
         {!hasTime ? <span className="text-2xs text-faint">No time dimension</span> : null}
+        {activeRange ? (
+          <button
+            type="button"
+            onClick={() => onBrush(null)}
+            className="ml-auto h-6 border border-line bg-surface px-2 text-2xs text-muted hover:border-faint hover:text-ink"
+          >
+            Reset zoom
+          </button>
+        ) : null}
       </header>
       {!hasTime ? null : loading && points.length < 2 ? (
         <div className="skeleton h-[280px] w-full" />

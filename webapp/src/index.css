@@ -12,11 +12,14 @@
   --muted: #586170;
   --faint: #858f9c;
   --line: #dde2e8;
-  --accent: #0c8a5f;
-  --accent-hover: #0a7350;
-  --accent-soft: #e2f3ea;
+  --accent: #6875e8;
+  --accent-hover: #5663d6;
+  --accent-soft: rgba(104, 117, 232, 0.14);
   --danger: #b3392f;
   --danger-soft: #fbeae8;
+  --chart-primary: #6875e8;
+  --chart-primary-soft: rgba(104, 117, 232, 0.14);
+  --chart-primary-selected: rgba(104, 117, 232, 0.22);
   --shadow: 0 8px 24px rgba(16, 24, 40, 0.1);
   color-scheme: light;
 }
@@ -29,11 +32,14 @@
   --muted: #98a2b1;
   --faint: #69727e;
   --line: #262d38;
-  --accent: #2dd4a7;
-  --accent-hover: #4fe0bb;
-  --accent-soft: rgba(45, 212, 167, 0.14);
+  --accent: #8b96ff;
+  --accent-hover: #a2aaff;
+  --accent-soft: rgba(139, 150, 255, 0.18);
   --danger: #f1796b;
   --danger-soft: rgba(241, 121, 107, 0.14);
+  --chart-primary: #8b96ff;
+  --chart-primary-soft: rgba(139, 150, 255, 0.18);
+  --chart-primary-selected: rgba(139, 150, 255, 0.28);
   --shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
   color-scheme: dark;
 }
@@ -113,6 +119,21 @@ body {
 }
 .spinner {
   animation: spin 0.7s linear infinite;
+}
+
+/* The static/WASM leaderboard is the visual champion. Keep compact desktop rows while preserving
+   touch-sized targets on coarse pointers. */
+@media (hover: hover) and (pointer: fine) {
+  .leaderboard-row:hover {
+    background-color: var(--surface-soft);
+  }
+}
+
+@media (pointer: coarse) {
+  .leaderboard-row,
+  .leaderboard-expand {
+    min-height: 44px;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

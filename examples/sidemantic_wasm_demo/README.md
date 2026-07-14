@@ -8,6 +8,20 @@ This demo runs fully in the browser:
 - The UI uses the copied static component kit from `plugins/sidemantic/skills/webapp-builder`: metric cards, sparklines, filter pills, query debug, data preview, and dimension leaderboards.
 - The data/model vocabulary matches the repo's e-commerce demo: `orders`, `customers`, and `products`.
 
+## Component source
+
+`src/components/sidemantic/` is synchronized from the canonical framework-free component kit in
+`plugins/sidemantic/skills/webapp-builder/assets/components/static/`. Do not edit the demo copy directly.
+
+```bash
+uv run plugins/sidemantic/skills/webapp-builder/scripts/copy_components.py \
+  --kind static \
+  --target examples/sidemantic_wasm_demo/src/components/sidemantic \
+  --force
+```
+
+Use `--check` instead of `--force` to verify that the copy has not drifted.
+
 ## Run
 
 Build the Sidemantic Rust WASM bundle:

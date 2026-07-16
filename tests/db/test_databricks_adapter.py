@@ -172,6 +172,7 @@ def test_databricks_query_history_sql():
     assert "system.query.history" in captured["sql"]
     assert "INTERVAL 2 DAYS" in captured["sql"]
     assert "LIMIT 25" in captured["sql"]
+    assert "LOWER(statement_text) NOT LIKE '%system.query.history%'" in captured["sql"]
     assert results == ["select 1 -- sidemantic: z"]
 
     adapter.get_query_history(days_back=2, limit=25, instrumented_only=False)

@@ -191,6 +191,7 @@ def test_clickhouse_query_history_sql():
     assert "system.query_log" in captured["sql"]
     assert "INTERVAL 3 DAY" in captured["sql"]
     assert "LIMIT 50" in captured["sql"]
+    assert "lower(query) NOT LIKE '%system.query_log%'" in captured["sql"]
     assert results == ["select 1 -- sidemantic: x"]
 
     adapter.get_query_history(days_back=3, limit=50, instrumented_only=False)

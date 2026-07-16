@@ -241,6 +241,7 @@ class SnowflakeAdapter(BaseDatabaseAdapter):
             END_TIME_RANGE_START => DATEADD('day', -{days_back}, CURRENT_TIMESTAMP())
         ))
         WHERE execution_status = 'SUCCESS'
+          AND query_text NOT ILIKE '%INFORMATION_SCHEMA.QUERY_HISTORY%'
           {instrumentation_filter}
         ORDER BY start_time DESC
         LIMIT {limit}

@@ -186,6 +186,7 @@ class BigQueryAdapter(BaseDatabaseAdapter):
           AND job_type = 'QUERY'
           AND state = 'DONE'
           AND error_result IS NULL
+          AND NOT REGEXP_CONTAINS(UPPER(query), r'INFORMATION_SCHEMA\\.JOBS_BY_PROJECT')
           {instrumentation_filter}
         ORDER BY creation_time DESC
         LIMIT {limit}

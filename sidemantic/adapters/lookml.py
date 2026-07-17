@@ -407,14 +407,18 @@ class LookMLAdapter(BaseAdapter):
         # anonymous/engine-specific aggregate), inside an aggregate FILTER (WHERE ...)
         # predicate (sqlglot nests that under exp.Filter, not exp.AggFunc), or inside an
         # ordered-set aggregate's WITHIN GROUP (ORDER BY ...) (nested under exp.WithinGroup,
-        # e.g. PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY x)). But a column inside a WINDOW
-        # function (SUM(x) OVER ()) is NOT safe: the window runs after grouping, so a raw
-        # column there is still ungrouped and would be rejected in a grouped SELECT.
+        # e.g. PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY x)), or inside a LIST(...) collector
+        # (sqlglot parses DuckDB's LIST as exp.List, and aggregation_detection counts it as an
+        # aggregate -- so this check must agree, else ARRAY_LENGTH(LIST(x)) reads as raw and a
+        # valid measure is dropped). But a column inside a WINDOW function (SUM(x) OVER ()) is
+        # NOT safe: the window runs after grouping, so a raw column there is still ungrouped
+        # and would be rejected in a grouped SELECT.
         return all(
             (
                 c.find_ancestor(exp.AggFunc) is not None
                 or c.find_ancestor(exp.Filter) is not None
                 or c.find_ancestor(exp.WithinGroup) is not None
+                or c.find_ancestor(exp.List) is not None
                 or _in_anon_agg(c)
             )
             and c.find_ancestor(exp.Window) is None

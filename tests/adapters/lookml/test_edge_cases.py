@@ -2508,6 +2508,39 @@ view: orders {
     assert con.execute(layer.compile(metrics=["orders.triple_sum"])).fetchall() == [(390,)]  # 260 + 130
 
 
+def test_lookml_number_measure_list_aggregate_is_scope_safe():
+    """A column inside DuckDB's LIST(...) collector is aggregate-scoped, not raw.
+
+    aggregation_detection counts exp.List as an aggregate, so ARRAY_LENGTH(LIST(${amount}))
+    takes the complete-SQL path; the safety check must agree or the column reads as raw and the
+    valid measure is dropped. A raw column OUTSIDE the LIST must still be rejected.
+    """
+    import duckdb
+
+    from sidemantic import SemanticLayer
+
+    graph = _parse_lkml(
+        """
+view: orders {
+  sql_table_name: orders ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: amount { type: number  sql: ${TABLE}.amount ;; }
+  measure: n_amounts { type: number  sql: ARRAY_LENGTH(LIST(${amount})) ;; }
+  measure: raw_bad { type: number  sql: ARRAY_LENGTH(LIST(${amount})) + ${amount} ;; }
+}
+"""
+    )
+    model = graph.get_model("orders")
+    assert model.get_metric("n_amounts") is not None  # was dropped as a raw ungrouped column
+    assert model.get_metric("raw_bad") is None  # raw column outside the LIST is still unsafe
+    layer = SemanticLayer(auto_register=False)
+    layer.add_model(model)
+    con = duckdb.connect()
+    con.execute("create table orders(id int, amount int)")
+    con.execute("insert into orders values (1,100),(2,50),(3,30)")
+    assert con.execute(layer.compile(metrics=["orders.n_amounts"])).fetchall() == [(3,)]
+
+
 def test_lookml_number_measure_constant_dimension_is_aggregate_safe():
     """A CONSTANT-valued dimension in a mixed number measure must not read as a raw column.
 

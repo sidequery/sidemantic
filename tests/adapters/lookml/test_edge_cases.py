@@ -4772,6 +4772,15 @@ def test_lookml_export_folded_filter_date_part_guard_is_position_aware():
     assert conds(["DATE_TRUNC(month, date) = DATE '2024-01-01'"], model) == (
         "(DATE_TRUNC(month, (${TABLE}.order_date)) = DATE '2024-01-01')"
     )
+    # Postgres/DuckDB quote the part. The quoted token is already protected from rewriting, but it
+    # must still be RECOGNISED as the part -- otherwise the `date` COLUMN looks like the only
+    # keyword and is left unresolved.
+    assert conds(["DATE_TRUNC('month', date) = DATE '2024-01-01'"], model) == (
+        "(DATE_TRUNC('month', (${TABLE}.order_date)) = DATE '2024-01-01')"
+    )
+    assert conds(["DATE_TRUNC(\"month\", date) = DATE '2024-01-01'"], model) == (
+        "(DATE_TRUNC(\"month\", (${TABLE}.order_date)) = DATE '2024-01-01')"
+    )
 
 
 def test_lookml_export_template_only_folded_filter_skipped():

@@ -580,7 +580,12 @@ class LookMLAdapter(BaseAdapter):
             args = cls._enclosing_call_arg_texts(pre, suf, token)
             if len(args) != 2:
                 return False
-            first, second = args[0].strip().lower(), args[1].strip().lower()
+            # Strip quotes before matching: Postgres/DuckDB write the part QUOTED
+            # (DATE_TRUNC('month', date)). The quoted token is already protected from rewriting by
+            # the literal splitter, but it must still be RECOGNISED as the part here -- otherwise
+            # the other argument looks like the only keyword and a real column named `date` is
+            # left unresolved.
+            first, second = (a.strip().strip("'\"").lower() for a in (args[0], args[1]))
             first_kw = first in cls._DATE_PART_KEYWORDS
             second_kw = second in cls._DATE_PART_KEYWORDS
             if first_kw and not second_kw:

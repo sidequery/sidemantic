@@ -1,5 +1,6 @@
 """LookML adapter for importing Looker semantic models."""
 
+import copy
 import logging
 import re
 from pathlib import Path
@@ -102,10 +103,12 @@ class LookMLAdapter(BaseAdapter):
         # defined each view so a whole-project (directory) load still reports per-file
         # provenance instead of just the project root.
         refinements: list[Model] = []
+        refinement_raw_defs: list[dict] = []
+        raw_view_defs: dict[str, dict] = {}
         view_source_files: dict[str, str] = {}
         for lkml_file in lkml_files:
             _before = set(graph.models)
-            self._parse_views_from_file(lkml_file, graph, refinements)
+            self._parse_views_from_file(lkml_file, graph, refinements, raw_view_defs, refinement_raw_defs)
             for _new in set(graph.models) - _before:
                 view_source_files[_new] = str(lkml_file)
 
@@ -120,7 +123,7 @@ class LookMLAdapter(BaseAdapter):
 
         refinement_abstract: set[str] = set()
         refinement_unsupported_dt: set[str] = set()
-        for refinement in refinements:
+        for _ridx, refinement in enumerate(refinements):
             base_name = refinement.name.lstrip("+")
             # Record flags from EACH refinement's own meta: a later refinement's merge
             # can replace the base meta and drop a flag an earlier refinement added.
@@ -130,10 +133,28 @@ class LookMLAdapter(BaseAdapter):
             if rmeta.get("unsupported_derived_table"):
                 refinement_unsupported_dt.add(base_name)
             if base_name in graph.models:
-                # Create a copy with the base name for merging
-                refinement_for_merge = refinement.model_copy(update={"name": base_name})
-                merged = merge_model(refinement_for_merge, graph.models[base_name])
-                graph.models[base_name] = merged
+                # Prefer merging the RAW LookML dicts and re-parsing: that is the only way a
+                # PARTIAL field refinement (`dimension: id { label: "ID" }`) keeps the base
+                # field's sql/type/primary_key -- merging parsed models would clobber them with
+                # the parser's defaults. Fall back to the model-level merge when the base's raw
+                # dict is unavailable (e.g. a base built by some other path).
+                base_raw = raw_view_defs.get(base_name)
+                ref_raw = refinement_raw_defs[_ridx] if _ridx < len(refinement_raw_defs) else None
+                remerged = None
+                if base_raw is not None and ref_raw is not None:
+                    merged_raw = self._merge_view_defs(base_raw, ref_raw)
+                    remerged = self._parse_view(merged_raw)
+                    if remerged is not None:
+                        # Keep the merged raw so a SECOND refinement of the same view stacks
+                        # onto this result rather than the original base.
+                        raw_view_defs[base_name] = merged_raw
+                if remerged is not None:
+                    graph.models[base_name] = remerged
+                else:
+                    # Create a copy with the base name for merging
+                    refinement_for_merge = refinement.model_copy(update={"name": base_name})
+                    merged = merge_model(refinement_for_merge, graph.models[base_name])
+                    graph.models[base_name] = merged
 
         # Union the pre-merge snapshot, every refinement's own flags, and the post-merge
         # state (so a flag added by ANY refinement is caught even if a later refinement
@@ -269,7 +290,12 @@ class LookMLAdapter(BaseAdapter):
         return graph
 
     def _parse_views_from_file(
-        self, file_path: Path, graph: SemanticGraph, refinements: list[Model] | None = None
+        self,
+        file_path: Path,
+        graph: SemanticGraph,
+        refinements: list[Model] | None = None,
+        raw_view_defs: dict[str, dict] | None = None,
+        refinement_raw_defs: list[dict] | None = None,
     ) -> None:
         """Parse views from a single LookML file.
 
@@ -277,6 +303,10 @@ class LookMLAdapter(BaseAdapter):
             file_path: Path to .lkml file
             graph: Semantic graph to add models to
             refinements: Optional list to collect refinement models into
+            raw_view_defs: Optional map to collect each base view's RAW LookML dict, keyed by
+                view name -- refinements are merged at the raw level (see _merge_view_defs).
+            refinement_raw_defs: Optional list collecting each refinement's RAW dict, appended in
+                lockstep with ``refinements``.
         """
         lkml = _import_lkml()
 
@@ -296,7 +326,11 @@ class LookMLAdapter(BaseAdapter):
                     # Refinement: collect separately for merging after all views parsed
                     if refinements is not None:
                         refinements.append(model)
+                        if refinement_raw_defs is not None:
+                            refinement_raw_defs.append(view_def)
                 else:
+                    if raw_view_defs is not None:
+                        raw_view_defs[model.name] = view_def
                     graph.add_model(model)
 
     def _parse_explores_from_file(self, file_path: Path, graph: SemanticGraph) -> None:
@@ -635,6 +669,51 @@ class LookMLAdapter(BaseAdapter):
             return wg if wg is not None else a
 
         return all(any(True for _ in _scope(a).find_all(exp.Column)) for a in aggs)
+
+    # LookML view keys holding a named-field LIST. A refinement's entry for an EXISTING field
+    # updates that field's properties; it does not replace the field.
+    _VIEW_FIELD_LIST_KEYS = ("dimensions", "dimension_groups", "measures", "filters", "parameters", "sets")
+
+    @classmethod
+    def _merge_view_defs(cls, base: dict, refinement: dict) -> dict:
+        """Merge a `view: +name` refinement's RAW LookML dict onto the base view's RAW dict.
+
+        Merging at the RAW level (then re-parsing) is what makes a PARTIAL field refinement work:
+        ``view: +base { dimension: id { label: "ID" } }`` must only set ``label`` and leave the
+        base field's ``sql``/``type``/``primary_key`` intact. Merging the PARSED models cannot do
+        this -- the parser fills defaults (a bare ``dimension:`` becomes type ``categorical`` with
+        no sql), so the refinement's field looks fully specified and clobbers the base's.
+
+        Named-field lists are merged per field by name; every other key is overridden wholesale
+        (Looker refinement semantics), and the base's name is kept.
+        """
+        merged = copy.deepcopy(base)
+        for key, value in refinement.items():
+            if key == "name":
+                continue
+            if key in cls._VIEW_FIELD_LIST_KEYS and isinstance(value, list):
+                by_name: dict[str, dict] = {}
+                extras: list = []
+                for item in merged.get(key) or []:
+                    if isinstance(item, dict) and item.get("name"):
+                        by_name[item["name"]] = copy.deepcopy(item)
+                    else:
+                        extras.append(copy.deepcopy(item))
+                for item in value:
+                    if not isinstance(item, dict) or not item.get("name"):
+                        extras.append(copy.deepcopy(item))
+                        continue
+                    fname = item["name"]
+                    if fname in by_name:
+                        # Field-level refinement: override ONLY the properties it specifies.
+                        by_name[fname].update({k: copy.deepcopy(v) for k, v in item.items() if k != "name"})
+                    else:
+                        by_name[fname] = copy.deepcopy(item)
+                merged[key] = list(by_name.values()) + extras
+            else:
+                merged[key] = copy.deepcopy(value)
+        merged["name"] = base.get("name")
+        return merged
 
     @staticmethod
     def _sql_has_list_aggregate(sql: str) -> bool:

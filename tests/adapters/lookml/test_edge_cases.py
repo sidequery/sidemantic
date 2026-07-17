@@ -5359,6 +5359,44 @@ def test_lookml_parse_raises_on_duplicate_model_in_active_layer():
             LookMLAdapter().parse(path)
 
 
+def test_lookml_refinement_deep_merges_partial_field_properties():
+    """A refinement that sets ONE property of a field must not clobber the field's other props.
+
+    `view: +base { dimension: id { label: "ID" } }` only sets a label, so the base field's sql /
+    type / primary_key must survive. Merging the PARSED models replaced the field wholesale (the
+    parser defaults a bare `dimension:` to a categorical with no sql), so the model silently fell
+    back to a default column. Applies to a refinement in the SAME file or another one.
+    """
+    import tempfile
+
+    base_view = (
+        "view: base {\n  sql_table_name: t ;;\n"
+        "  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }\n"
+        "  dimension: amount { type: number  sql: ${TABLE}.amount ;; }\n}\n"
+    )
+    refinement = 'view: +base {\n  dimension: id { label: "The ID" }\n}\n'
+
+    def check(model):
+        by_name = {d.name: d for d in model.dimensions}
+        assert by_name["id"].sql == "{model}.id"  # base sql survived
+        assert by_name["id"].type == "numeric"  # base type survived
+        assert by_name["id"].label == "The ID"  # refinement applied
+        assert model.primary_key == "id"  # base primary_key survived
+        assert by_name["amount"].sql == "{model}.amount"  # untouched field intact
+
+    # Same file.
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".lkml", delete=False) as f:
+        f.write(base_view + refinement)
+        f.flush()
+        check(LookMLAdapter().parse(Path(f.name)).get_model("base"))
+
+    # Across files (the CLI project-load path).
+    directory = Path(tempfile.mkdtemp())
+    (directory / "a.lkml").write_text(base_view)
+    (directory / "b.lkml").write_text(refinement)
+    check(LookMLAdapter().parse(str(directory)).get_model("base"))
+
+
 def test_lookml_project_parse_merges_refinements_deterministically():
     """Refinements merge in sorted file order, not filesystem traversal order.
 

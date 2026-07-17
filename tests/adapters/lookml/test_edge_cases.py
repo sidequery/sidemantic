@@ -5023,6 +5023,52 @@ def test_lookml_export_string_literal_paren_in_aggregate_arg_folds():
     assert "DISTINCT CASE WHEN" in text
 
 
+def test_lookml_export_normalizes_all_modifier_for_roundtrip():
+    """An explicit ALL modifier must be normalized away so the exported measure round-trips.
+
+    ALL is the DEFAULT aggregate modifier and changes nothing, but sqlglot cannot parse
+    COUNT(ALL x), so a type: number measure exported with it is DROPPED on re-import. Strip it on
+    export; DISTINCT (which is NOT a no-op) and a column named `all` must survive untouched.
+    """
+    import re
+    import tempfile
+
+    from sidemantic import Dimension, Metric, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    def roundtrip(expr):
+        graph = SemanticGraph()
+        graph.add_model(
+            Model(
+                name="o",
+                table="t",
+                primary_key="id",
+                dimensions=[
+                    Dimension(name="id", type="numeric", sql="id"),
+                    Dimension(name="amount", type="numeric", sql="amount"),
+                ],
+                metrics=[Metric(name="c", agg=None, sql=expr, sql_is_complete=True)],
+            )
+        )
+        out = tempfile.mktemp(suffix=".lkml")
+        LookMLAdapter().export(graph, out)
+        text = open(out).read()
+        block = re.search(r"measure: c \{.*?\n  \}", text, re.S)
+        reimported = "c" in {m.name for m in LookMLAdapter().parse(Path(out)).get_model("o").metrics}
+        return (block.group(0) if block else None), reimported
+
+    for expr in ("COUNT(ALL {model}.id)", "SUM(ALL {model}.amount)"):
+        block, kept = roundtrip(expr)
+        assert block and "ALL" not in block, block  # normalized away
+        assert kept, f"{expr} must survive the round-trip"
+
+    # DISTINCT is not a no-op and must be preserved; a plain aggregate is unchanged.
+    block, kept = roundtrip("COUNT(DISTINCT {model}.id)")
+    assert block and "DISTINCT" in block and kept
+    block, kept = roundtrip("SUM({model}.amount)")
+    assert block and kept
+
+
 def test_lookml_export_zero_column_stddev_skipped():
     """A stddev/variance over a CONSTANT also emits type: number -> needs the zero-column guard.
 

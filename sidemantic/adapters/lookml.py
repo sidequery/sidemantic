@@ -3610,6 +3610,14 @@ class LookMLAdapter(BaseAdapter):
                         "variance_pop": "VAR_POP",
                     }
                     col_sql = metric.sql.replace("{model}", "${TABLE}") if metric.sql else None
+                    # Drop an explicit ALL aggregate modifier: it is the DEFAULT and changes
+                    # nothing, but emitting it produces LookML that will not round-trip -- sqlglot
+                    # cannot parse `COUNT(ALL x)`, so the type: number import safety check drops
+                    # the measure. Normalizing here keeps the exported SQL equivalent AND readable
+                    # back. (`(` must precede it, so `= ALL (SELECT ...)` and a column named `all`
+                    # are untouched.)
+                    if col_sql:
+                        col_sql = re.sub(r"(?i)\(\s*ALL\s+", "(", col_sql)
 
                     if metric.agg == "approx_count_distinct":
                         # Looker represents this as count_distinct with approximate: yes.

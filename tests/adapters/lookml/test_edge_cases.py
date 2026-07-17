@@ -5504,6 +5504,55 @@ def test_lookml_included_view_does_not_extend_unincluded_parent():
     assert {"secret", "leaked"} <= ({d.name for d in model.dimensions} | {m.name for m in model.metrics})
 
 
+def test_lookml_implicit_dimension_group_resolves_in_field_references():
+    """A ${created_date} reference to a no-sql dimension_group reads the implicit `<group>` column.
+
+    Resolving the group's implicit column on the generated Dimension objects alone was too late:
+    the lookup that expands ${ref}s in other fields is built first, so a measure or dimension over
+    the timeframe still queried the generated field name -- a column that does not exist -- even
+    though a direct query of the timeframe was correct.
+    """
+    import tempfile
+
+    directory = Path(tempfile.mkdtemp())
+    (directory / "orders.view.lkml").write_text(
+        """view: orders {
+  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }
+  dimension_group: created {
+    type: time
+    timeframes: [date, week]
+  }
+  measure: cd { type: count_distinct  sql: ${created_date} ;; }
+  dimension: is_new { type: yesno  sql: ${created_date} > '2020-01-01' ;; }
+}
+"""
+    )
+    model = LookMLAdapter().parse(str(directory / "orders.view.lkml")).get_model("orders")
+    fields = {f.name: f.sql for f in [*model.dimensions, *model.metrics]}
+
+    assert fields["cd"] == "({model}.created)"
+    assert fields["is_new"] == "({model}.created) > '2020-01-01'"
+    # Nothing references the generated field name, which is not a real column.
+    assert not [name for name, sql in fields.items() if sql and "created_date" in sql], fields
+
+    # An explicit sql: on the group still wins for references.
+    explicit = Path(tempfile.mkdtemp())
+    (explicit / "orders.view.lkml").write_text(
+        """view: orders {
+  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }
+  dimension_group: created {
+    type: time
+    timeframes: [date]
+    sql: ${TABLE}.ts ;;
+  }
+  measure: cd { type: count_distinct  sql: ${created_date} ;; }
+}
+"""
+    )
+    referring = LookMLAdapter().parse(str(explicit / "orders.view.lkml")).get_model("orders")
+    assert [m.sql for m in referring.metrics if m.name == "cd"] == ["({model}.ts)"]
+
+
 def test_lookml_implicit_dimension_group_compiles_against_group_column():
     """A dimension_group without `sql` reads Looker's implicit `<group>` column.
 

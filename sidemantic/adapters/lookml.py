@@ -2199,12 +2199,20 @@ class LookMLAdapter(BaseAdapter):
         for dim_group_def in view_def.get("dimension_groups") or []:
             group_name = dim_group_def.get("name")
             group_sql = dim_group_def.get("sql")
-            if group_name and group_sql:
+            if not group_name:
+                continue
+            if group_sql:
                 group_sql = group_sql.replace("${TABLE}", "{model}")
-                timeframes = dim_group_def.get("timeframes", ["date"])
-                for timeframe in timeframes:
-                    if timeframe != "raw":
-                        dimension_sql_lookup[f"{group_name}_{timeframe}"] = group_sql
+            else:
+                # A group that omits `sql` reads Looker's implicit `<group>` column. Seed it HERE,
+                # not just on the generated dimensions: this lookup is what expands a ${created_date}
+                # reference in another field, and an unseeded timeframe falls back to the generated
+                # field name -- so a measure over it queried a column that does not exist.
+                group_sql = "{model}." + group_name
+            timeframes = dim_group_def.get("timeframes", ["date"])
+            for timeframe in timeframes:
+                if timeframe != "raw":
+                    dimension_sql_lookup[f"{group_name}_{timeframe}"] = group_sql
 
         # All declared dimension names (including compact dimensions with no explicit
         # sql), so ${ref}s to a compact dimension resolve to its default column rather
@@ -2783,9 +2791,17 @@ class LookMLAdapter(BaseAdapter):
 
         timeframes = dim_group_def.get("timeframes", ["date"])
 
+        # A group that omits `sql` reads Looker's implicit `<group>` column -- ONE column shared by
+        # every timeframe. Leaving sql unset made each generated field fall back to its OWN name,
+        # compiling DATE_TRUNC('day', created_date) against a column that does not exist. Marked
+        # from the DEFINITION, not from whichever branch below supplies the SQL: the resolved
+        # lookup seeds implicit groups too, so inferring the mark from an unset sql would silently
+        # stop marking them. Export needs the mark to tell this from an explicit
+        # `sql: ${TABLE}.created ;;` and re-emit the group without inventing a sql.
+        implicit_sql = not dim_group_def.get("sql")
+
         # Get SQL from the resolved lookup if available
         first_timeframe_name = f"{group_name}_{timeframes[0]}" if timeframes else None
-        implicit_sql = False
         if dimension_sql_lookup and first_timeframe_name and first_timeframe_name in dimension_sql_lookup:
             base_sql = dimension_sql_lookup[first_timeframe_name]
         else:
@@ -2793,13 +2809,7 @@ class LookMLAdapter(BaseAdapter):
             if base_sql:
                 base_sql = base_sql.replace("${TABLE}", "{model}")
             else:
-                # A group that omits `sql` reads Looker's implicit `<group>` column -- ONE column
-                # shared by every timeframe. Leaving sql unset made each generated field fall back
-                # to its OWN name, compiling DATE_TRUNC('day', created_date) against a column that
-                # does not exist. Mark them so export can tell this from an explicit
-                # `sql: ${TABLE}.created ;;` and re-emit the group without inventing a sql.
                 base_sql = "{model}." + group_name
-                implicit_sql = True
 
         # A dimension_group whose base SQL references another view inline (${other.ts})
         # would leak that literal into every generated timeframe field, so drop the whole

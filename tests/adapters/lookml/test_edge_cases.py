@@ -2508,6 +2508,33 @@ view: orders {
     assert con.execute(layer.compile(metrics=["orders.triple_sum"])).fetchall() == [(390,)]  # 260 + 130
 
 
+def test_lookml_number_measure_unsafe_intermediate_not_expandable():
+    """A number measure _parse_measure skips as unsafe must not be inlined into a later measure.
+
+    `bad = ${total} + ${amount}` mixes an aggregate measure with a RAW dimension, so it is dropped
+    on import. The expansion prepass must apply the same aggregate-safety check, otherwise it
+    caches `SUM(amount) + amount` and a later `outer = ${bad} / NULLIF(COUNT(*), 0)` inlines that
+    raw ungrouped column and fails on grouped queries -- instead of `outer` being unavailable too.
+    """
+    graph = _parse_lkml(
+        """
+view: orders {
+  sql_table_name: orders ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: amount { type: number  sql: ${TABLE}.amount ;; }
+  measure: total { type: sum  sql: ${amount} ;; }
+  measure: bad { type: number  sql: ${total} + ${amount} ;; }
+  measure: outer_m { type: number  sql: ${bad} / NULLIF(COUNT(*), 0) ;; }
+}
+"""
+    )
+    model = graph.get_model("orders")
+    names = {m.name for m in model.metrics}
+    assert "bad" not in names  # mixed aggregate + raw ungrouped column -> unsupported
+    assert "outer_m" not in names  # must NOT inline the unsafe intermediate
+    assert "total" in names  # the valid base measure is unaffected
+
+
 def test_lookml_number_measure_expands_chained_derived_ref():
     """A number measure referencing another DERIVED number measure must be kept, not dropped.
 

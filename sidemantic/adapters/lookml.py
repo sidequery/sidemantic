@@ -1151,6 +1151,16 @@ class LookMLAdapter(BaseAdapter):
             # dimension expression, handled/skipped by _parse_measure itself).
             if not sql_has_aggregate(expanded.replace("{model}", "x")):
                 return None
+            # Apply the SAME aggregate-safety check _parse_measure uses, so a measure IT would
+            # skip as invalid never lands in the lookup. `bad: ${total} + ${amount}` mixes an
+            # aggregate measure with a RAW dimension: _parse_measure drops it, but without this
+            # check the prepass would still cache `SUM(amount) + amount`, and a later
+            # `outer: ${bad} / NULLIF(COUNT(*), 0)` would inline that raw ungrouped column and
+            # fail on grouped queries instead of the unsupported measure being unavailable.
+            if not self._mixed_is_aggregate_safe(
+                raw, lambda rn: rn in resolved_dimension_sql or rn in declared_dim_names
+            ):
+                return None
             joined = _folded_measure_filter(m_def)
             if joined:
                 # force=True: this SQL will be INLINED into a referencing measure with no

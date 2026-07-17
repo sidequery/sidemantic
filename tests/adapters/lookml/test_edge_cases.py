@@ -5515,6 +5515,35 @@ def test_lookml_project_parse_resolves_view_with_several_archived_copies():
     assert LookMLAdapter().parse(str(directory)).get_model("orders").table == "real_orders"
 
 
+def test_lookml_include_scoping_follows_closure_from_model_files():
+    """Includes are a closure SEEDED from model files, not a flat set of every declaration.
+
+    Reachability from a model file is the rule. A refinement reached THROUGH a model-selected view
+    (model -> orders.view -> refine.view) is part of the project and must apply; a stray view
+    file's helper include in a directory no model selects must not switch scoping on at all.
+    """
+    import tempfile
+
+    view = "view: %s {\n  sql_table_name: %s ;;\n  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }\n}\n"
+
+    # Reachable through the selected view: the nested refinement applies.
+    nested = Path(tempfile.mkdtemp())
+    (nested / "views").mkdir()
+    (nested / "m.model.lkml").write_text('include: "/views/orders.view.lkml"\n')
+    (nested / "views" / "orders.view.lkml").write_text(
+        'include: "refine.view.lkml"\n' + (view % ("orders", "real_orders"))
+    )
+    (nested / "views" / "refine.view.lkml").write_text("view: +orders {\n  sql_table_name: REFINED ;;\n}\n")
+    assert LookMLAdapter().parse(str(nested)).get_model("orders").table == "REFINED"
+
+    # NOT reachable from any model (there is none): scoping stays off entirely.
+    stray = Path(tempfile.mkdtemp())
+    (stray / "helper.view.lkml").write_text(view % ("helper", "h"))
+    (stray / "orders.view.lkml").write_text('include: "helper.view.lkml"\n' + (view % ("orders", "real_orders")))
+    (stray / "ref.view.lkml").write_text("view: +orders {\n  sql_table_name: REFINED ;;\n}\n")
+    assert LookMLAdapter().parse(str(stray)).get_model("orders").table == "REFINED"
+
+
 def test_lookml_only_model_file_includes_activate_scoping():
     """A VIEW file's helper include must not activate project-wide include scoping.
 

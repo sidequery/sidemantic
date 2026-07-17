@@ -131,14 +131,26 @@ class LookMLAdapter(BaseAdapter):
         # REFINEMENT merge is scoped: views themselves still all parse, so a project whose
         # includes do not enumerate every view keeps loading them. With no includes declared
         # (the common single-directory case) nothing is filtered.
-        included_paths: set[Path] = set()
+        # Resolve the project's include graph as a TRANSITIVE CLOSURE seeded from MODEL files.
+        # Seeding only from models means a stray view file's helper include cannot switch scoping
+        # on for a directory no model selects; following the closure means a refinement reachable
+        # THROUGH a selected view (model -> orders.view -> refine.view) is still included.
+        _include_root = source_path if source_path.is_dir() else source_path.parent
+        includes_by_file: dict[Path, list[str]] = {}
         for _including_file, _pattern in include_specs:
-            included_paths |= self._resolve_include(
-                source_path if source_path.is_dir() else source_path.parent, _including_file, _pattern
-            )
-        if included_paths:
-            # A file declaring includes is part of the project itself.
-            included_paths |= {f.resolve() for f, _ in include_specs}
+            includes_by_file.setdefault(_including_file.resolve(), []).append(_pattern)
+        _model_files = [f for f in includes_by_file if f.name.endswith(".model.lkml")]
+        included_paths: set[Path] = set()
+        if _model_files:
+            included_paths |= set(_model_files)  # a model file is part of its own project
+            _queue = list(_model_files)
+            while _queue:
+                _current = _queue.pop()
+                for _pattern in includes_by_file.get(_current, []):
+                    for _hit in self._resolve_include(_include_root, _current, _pattern):
+                        if _hit not in included_paths:
+                            included_paths.add(_hit)
+                            _queue.append(_hit)
 
         # Install base views, resolving a SAME-NAME collision between files by include: an
         # archived copy of a view alongside the live one would otherwise make add_model raise
@@ -407,10 +419,10 @@ class LookMLAdapter(BaseAdapter):
 
         # Record this file's `include:` declarations (LookML model files list the view files the
         # model actually uses) so refinements from un-included files can be ignored.
-        # ONLY a model file's includes activate scoping. A view file may include a helper, which
-        # says nothing about which files the project selects -- letting it populate the included
-        # set would make unrelated sibling refinements/explores look un-included and drop them.
-        if include_specs is not None and file_path.name.endswith(".model.lkml"):
+        # Record every file's includes. Only a MODEL file's includes SEED the scoping (see the
+        # closure in _build_graph) -- but a selected view file's own includes must be followed
+        # from there, so they have to be recorded here too.
+        if include_specs is not None:
             for pattern in parsed.get("includes") or []:
                 if isinstance(pattern, str):
                     include_specs.append((file_path, pattern))

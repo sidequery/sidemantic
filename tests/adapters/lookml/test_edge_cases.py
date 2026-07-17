@@ -5327,6 +5327,58 @@ def test_lookml_drop_metrics_uses_provenance_marker_not_base_ref():
     assert "pop" not in metrics2
 
 
+def test_lookml_parse_raises_on_duplicate_model_in_active_layer():
+    """A model the active layer already defines is a conflict -- deferral must not hide it.
+
+    Deferring registration must not silently skip a name that already exists: parsing a view
+    `orders` into a layer that already has a different `orders` model previously raised via
+    auto-registration, and must still raise rather than leave the old definition in place.
+    """
+    import tempfile
+
+    from sidemantic import Dimension, Model, SemanticLayer
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".lkml", delete=False) as f:
+        f.write(
+            "view: orders {\n  sql_table_name: lookml_orders ;;\n  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }\n}\n"
+        )
+        f.flush()
+        path = Path(f.name)
+
+    layer = SemanticLayer()
+    layer.add_model(
+        Model(
+            name="orders",
+            table="manual_orders",
+            primary_key="id",
+            dimensions=[Dimension(name="id", type="numeric", sql="id")],
+        )
+    )
+    with pytest.raises(ValueError, match="already exists"):
+        with layer:
+            LookMLAdapter().parse(path)
+
+
+def test_lookml_project_parse_merges_refinements_deterministically():
+    """Refinements merge in sorted file order, not filesystem traversal order.
+
+    Two refinement files setting the same property must resolve the same way on every load;
+    an unsorted rglob would make the winner depend on directory traversal.
+    """
+    import tempfile
+
+    directory = Path(tempfile.mkdtemp())
+    (directory / "a.lkml").write_text(
+        "view: base {\n  sql_table_name: t ;;\n  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }\n}\n"
+    )
+    (directory / "m_second.lkml").write_text("view: +base {\n  label: SECOND\n}\n")
+    (directory / "b_first.lkml").write_text("view: +base {\n  label: FIRST\n}\n")
+
+    labels = {LookMLAdapter().parse(str(directory)).get_model("base").meta.get("label") for _ in range(5)}
+    assert len(labels) == 1, f"nondeterministic refinement merge: {labels}"
+    assert labels == {"SECOND"}  # last file in SORTED order wins
+
+
 def test_lookml_directory_load_non_strict_falls_back_after_project_parse_error():
     """A single malformed .lkml must not drop every valid sibling in a non-strict load.
 

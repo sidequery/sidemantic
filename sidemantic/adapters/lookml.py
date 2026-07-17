@@ -64,6 +64,9 @@ class LookMLAdapter(BaseAdapter):
         # surfaces the real "no table/sql" error instead of silently dropping it. Strip
         # survivors' relationships pointing at a skipped template (e.g. an explore join to
         # it) so the active layer is not left with a dangling relationship validation flags.
+        # A name the layer ALREADY defines is NOT skipped: that is a genuine duplicate-model
+        # conflict, and add_model must surface it (as auto-registration did before this
+        # deferral) rather than silently leaving the pre-existing definition in place.
         if prev_layer is not None:
             skipped = {
                 name
@@ -72,7 +75,7 @@ class LookMLAdapter(BaseAdapter):
                 and (m.meta or {}).get("lookml_template")
             }
             for model in graph.models.values():
-                if model.name in skipped or model.name in prev_layer.graph.models:
+                if model.name in skipped:
                     continue
                 rels = getattr(model, "relationships", None)
                 if rels:
@@ -85,10 +88,13 @@ class LookMLAdapter(BaseAdapter):
         graph = SemanticGraph()
         source_path = Path(source)
 
-        # Collect all .lkml files
+        # Collect all .lkml files. SORT them: rglob order is filesystem-dependent, and refinements
+        # (`view: +name`) are merged in file order -- so with two refinements setting the same
+        # property (label, sql_table_name, ...) an unsorted walk would make the resulting model
+        # depend on directory traversal. Sorting makes a project load deterministic.
         lkml_files = []
         if source_path.is_dir():
-            lkml_files = list(source_path.rglob("*.lkml"))
+            lkml_files = sorted(source_path.rglob("*.lkml"))
         else:
             lkml_files = [source_path]
 

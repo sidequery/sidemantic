@@ -4817,6 +4817,78 @@ def test_lookml_export_string_literal_paren_in_aggregate_arg_folds():
     assert "DISTINCT CASE WHEN" in text
 
 
+def test_lookml_export_folded_zero_column_aggregate_skipped():
+    """A filter that adds NO column must not sneak a zero-column aggregate past the guard.
+
+    The zero-column check runs before folding, but a filter needn't reference a column: COUNT(*)
+    with `1 = 1` folds to COUNT(CASE WHEN (1 = 1) THEN 1 END), which STILL references none and
+    re-imports as a metric over an empty model CTE. Re-check the folded SQL. A filter that does
+    reference a column must still export.
+    """
+    import re
+    import tempfile
+
+    from sidemantic import Dimension, Metric, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    def export_measure(expr, filters):
+        graph = SemanticGraph()
+        graph.add_model(
+            Model(
+                name="o",
+                table="t",
+                primary_key="id",
+                dimensions=[
+                    Dimension(name="id", type="numeric", sql="id"),
+                    Dimension(name="status", type="categorical", sql="status"),
+                ],
+                metrics=[Metric(name="c", agg=None, sql=expr, sql_is_complete=True, filters=filters)],
+            )
+        )
+        out = tempfile.mktemp(suffix=".lkml")
+        LookMLAdapter().export(graph, out)
+        m = re.search(r"measure: c \{.*?\n  \}", open(out).read(), re.S)
+        return m.group(0) if m else None
+
+    # Folds to COUNT(CASE WHEN (1 = 1) THEN 1 END) -> still zero-column -> skipped.
+    assert export_measure("COUNT(*)", ["1 = 1"]) is None
+    # A filter that DOES reference a column still exports (the folded CASE reads it).
+    block = export_measure("COUNT(*)", ["{model}.status = 'x'"])
+    assert block and "COUNT(CASE WHEN" in block and "THEN 1 END" in block
+
+
+def test_lookml_export_aggregate_order_by_not_folded_into_case():
+    """An aggregate-local ORDER BY belongs to the aggregate call, not the CASE result.
+
+    SUM(amount ORDER BY created_at) must NOT fold to
+    SUM(CASE WHEN ... THEN amount ORDER BY created_at END) (malformed); bail so the caller skips.
+    An ORDER BY inside a string literal or nested parens is not a top-level one.
+    """
+    from sidemantic import Dimension, Model
+
+    model = Model(
+        name="o",
+        table="t",
+        primary_key="id",
+        dimensions=[Dimension(name="status", type="categorical", sql="status")],
+    )
+    filters = ["{model}.status = 'x'"]
+    assert (
+        LookMLAdapter._fold_filters_into_aggregate("SUM({model}.amount ORDER BY {model}.created_at)", filters, model)
+        is None
+    )
+    # A plain aggregate still folds normally.
+    folded = LookMLAdapter._fold_filters_into_aggregate("SUM({model}.amount)", filters, model)
+    assert folded and folded.startswith("SUM(CASE WHEN")
+
+    # The detector itself: only a TOP-LEVEL, unquoted ORDER BY counts.
+    assert LookMLAdapter._has_top_level_order_by("{model}.a ORDER BY {model}.b")
+    assert LookMLAdapter._has_top_level_order_by("{model}.a order by {model}.b")  # case-insensitive
+    assert not LookMLAdapter._has_top_level_order_by("'a order by b'")  # string literal
+    assert not LookMLAdapter._has_top_level_order_by("F({model}.a, ' order by ')")  # literal in a call
+    assert not LookMLAdapter._has_top_level_order_by("{model}.reorder_by_date")  # word boundary
+
+
 def test_lookml_export_all_modifier_stays_outside_folded_case():
     """COUNT(ALL x) must fold as COUNT(ALL CASE ... END), not COUNT(CASE ... THEN ALL x END).
 

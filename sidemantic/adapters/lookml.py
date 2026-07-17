@@ -470,6 +470,37 @@ class LookMLAdapter(BaseAdapter):
         return any(True for _ in tree.find_all(exp.List)) or any(True for _ in tree.find_all(exp.ArrayAgg))
 
     @staticmethod
+    def _has_top_level_order_by(s: str) -> bool:
+        """True if ``s`` has an ``ORDER BY`` at paren depth 0, outside string literals.
+
+        Used to detect an aggregate-local ORDER BY (``SUM(amount ORDER BY created_at)``), which
+        belongs to the aggregate CALL rather than the argument expression -- so a filter must not
+        be folded into a CASE around it.
+        """
+        depth, quote, i = 0, None, 0
+        while i < len(s):
+            ch = s[i]
+            if quote is not None:
+                if ch == quote:
+                    quote = None
+                i += 1
+                continue
+            if ch in "'\"":
+                quote = ch
+            elif ch in "[(":
+                depth += 1
+            elif ch in ")]":
+                depth = max(0, depth - 1)
+            elif (
+                depth == 0
+                and (i == 0 or not (s[i - 1].isalnum() or s[i - 1] == "_"))
+                and re.match(r"(?i)order\s+by\b", s[i:])
+            ):
+                return True
+            i += 1
+        return False
+
+    @staticmethod
     def _has_subquery(sql: str) -> bool:
         """True if ``sql`` contains a SELECT outside any quoted token.
 
@@ -3106,6 +3137,12 @@ class LookMLAdapter(BaseAdapter):
 
         if _has_agg(arg):
             return None
+        # An aggregate-local ORDER BY (SUM(amount ORDER BY created_at), ARRAY_AGG(x ORDER BY y))
+        # belongs to the aggregate CALL, not to the argument expression. Wrapping the whole arg
+        # in a CASE would emit `SUM(CASE WHEN ... THEN amount ORDER BY created_at END)`, which is
+        # malformed. Bail so the caller skips rather than export invalid SQL.
+        if cls._has_top_level_order_by(arg):
+            return None
         conds = cls._fold_filter_conds(filters, model)
         # COUNT(*) -> COUNT(CASE WHEN ... THEN 1 END): "* " can't live inside CASE.
         if arg == "*":
@@ -3446,6 +3483,18 @@ class LookMLAdapter(BaseAdapter):
                                         "Metric %r has filters over a complex aggregate SQL expression that "
                                         "cannot be folded for LookML export; skipping to avoid an unfiltered measure.",
                                         metric.name,
+                                    )
+                                    continue
+                                # Re-run the zero-column check on the FOLDED SQL: a filter does
+                                # not necessarily add a column (COUNT(*) with `1 = 1`, or a pure
+                                # template predicate), so the result can still reference none and
+                                # would re-import as a metric over an empty model CTE.
+                                if not self._aggregate_references_column(folded):
+                                    logger.warning(
+                                        "Metric %r folds to a zero-column aggregate SQL (%r) with no LookML "
+                                        "equivalent that round-trips; skipping on export.",
+                                        metric.name,
+                                        folded,
                                     )
                                     continue
                                 measure_def["sql"] = folded

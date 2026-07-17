@@ -3259,6 +3259,11 @@ class LookMLAdapter(BaseAdapter):
         from sqlglot import expressions as exp
 
         neutralised = re.sub(r"\{\{.*?\}\}|\{%.*?%\}", "NULL", sql or "")
+        # sqlglot cannot parse an aggregate's ALL modifier (COUNT(ALL x)), which would send every
+        # such expression to the has-columns fallback below instead of a real check. ALL is the
+        # default modifier and irrelevant to which columns are referenced, so drop it first.
+        # `(` must precede it, so `= ALL (SELECT ...)` is untouched.
+        neutralised = re.sub(r"(?i)\(\s*ALL\s+", "(", neutralised)
         try:
             tree = sqlglot.parse_one(neutralised.replace("{model}", "__m__").replace("${TABLE}", "__m__"))
         except Exception:
@@ -3619,10 +3624,14 @@ class LookMLAdapter(BaseAdapter):
                         # A COUNT over any NON-NULL constant counts every row -- it is a native
                         # row count, identical to type: count: `*`, an int/decimal (1, 0, 1.0,
                         # .5), a boolean (TRUE/FALSE), or a string literal ('x'). COUNT(NULL) is
-                        # deliberately excluded -- it is always 0, not a row count.
+                        # deliberately excluded -- it is always 0, not a row count. An explicit
+                        # ALL modifier (COUNT(ALL 1)) is the default and does not change the count,
+                        # so accept it too rather than dropping the metric at the zero-column check
+                        # below. The trailing \s+ keeps a column literally named `all` (COUNT(all))
+                        # a plain argument.
                         _count_const = r"\*|[+-]?(?:\d+\.?\d*|\.\d+)|true|false|'(?:[^']|'')*'"
                         if not metric.filters and re.fullmatch(
-                            rf"(?i)count\s*\(\s*(?:{_count_const})\s*\)", col_sql.strip()
+                            rf"(?i)count\s*\(\s*(?:all\s+)?(?:{_count_const})\s*\)", col_sql.strip()
                         ):
                             # These reference no column; a type: number would re-import as a
                             # derived metric over an empty CTE (SELECT FROM ...), which the

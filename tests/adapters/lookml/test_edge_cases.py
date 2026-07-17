@@ -5268,6 +5268,15 @@ def test_lookml_export_count_constant_uses_native_count_type():
     for expr in ("COUNT(NULL)", "COUNT(DISTINCT 1)", "SUM(1)", "MAX('x')"):
         assert export_measure(expr) is None, f"{expr} should be skipped, not exported"
 
+    # An explicit ALL modifier is the default and does not change the count, so COUNT(ALL <const>)
+    # is the same native row count. (sqlglot cannot parse ALL, so the column check strips it --
+    # otherwise every ALL form fell back to "has columns" and COUNT(ALL NULL) exported broken.)
+    for expr in ("COUNT(ALL 1)", "COUNT(ALL TRUE)", "COUNT(ALL 'x')"):
+        block = export_measure(expr)
+        assert block and "type: count" in block, f"{expr} -> {block}"
+    assert export_measure("COUNT(ALL NULL)") is None  # still not a row count
+    assert "type: number" in (export_measure("COUNT(ALL {model}.id)") or "")  # a real column stays
+
 
 def test_lookml_export_spaced_count_star_maps_to_native_count():
     """A spaced `COUNT (*)` complete aggregate must still export as native type: count."""

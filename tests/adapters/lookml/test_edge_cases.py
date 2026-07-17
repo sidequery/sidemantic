@@ -4748,6 +4748,13 @@ def test_lookml_export_folded_filter_date_part_guard_is_position_aware():
     assert conds(["DATEDIFF(day, created_at, date) > 1"], model) == (
         "(DATEDIFF(day, (${TABLE}.created_at), (${TABLE}.order_date)) > 1)"
     )
+    # The unspaced TIMESTAMPADD/TIMESTAMPDIFF aliases also take the part first.
+    assert conds(["TIMESTAMPADD(day, 1, created_at) > 1"], model) == (
+        "(TIMESTAMPADD(day, 1, (${TABLE}.created_at)) > 1)"
+    )
+    assert conds(["TIMESTAMPDIFF(day, created_at, date) > 1"], model) == (
+        "(TIMESTAMPDIFF(day, (${TABLE}.created_at), (${TABLE}.order_date)) > 1)"
+    )
     # The two TRUNC spellings differ: underscored DATE_TRUNC is BigQuery's (value, part), while
     # the unspaced DATETRUNC is SQL Server's (part, value).
     assert conds(["DATETRUNC(month, created_at) = DATE '2024-01-01'"], model) == (

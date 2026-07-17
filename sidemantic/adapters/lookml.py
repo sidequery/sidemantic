@@ -495,6 +495,7 @@ class LookMLAdapter(BaseAdapter):
         "timestamp_trunc": -1, "datetime_trunc": -1, "time_trunc": -1,
         "date_diff": -1, "timestamp_diff": -1, "datetime_diff": -1, "time_diff": -1,
         "datetrunc": 0, "datediff": 0, "dateadd": 0, "datepart": 0, "date_part": 0,
+        "timestampadd": 0, "timestampdiff": 0, "timestampdiff_big": 0, "datetimediff": 0,
     }  # fmt: skip
     # DATE_TRUNC has NO fixed part position: BigQuery is DATE_TRUNC(value, part) while Snowflake is
     # DATE_TRUNC(part, expr), and the adapter has no dialect context. Disambiguate by CONTENT --

@@ -212,12 +212,16 @@ class LookMLAdapter(BaseAdapter):
         # closest single-graph answer to Looker resolving each model separately.
         _view_files = {name: Path(src).resolve() for name, src in view_source_files.items()}
         _scope_by_file: dict[Path, set[str]] = {}
+        # Which model files reach each file. Used to tell a refinement that every model sharing a
+        # view agrees on from one only SOME of them select.
+        _models_by_file: dict[Path, set[Path]] = {}
         if _scoping_active:
             for _model_file in _model_files:
                 _closure = _include_closure(_model_file)
                 _allowed = {v for v, src in _view_files.items() if src in _closure}
                 for _reached in _closure:
                     _scope_by_file.setdefault(_reached, set()).update(_allowed)
+                    _models_by_file.setdefault(_reached, set()).add(_model_file)
 
         # Snapshot abstract / unsupported-derived_table flags BEFORE refinement merge:
         # merge_model REPLACES a base view's meta when the refinement carries metadata,
@@ -241,6 +245,30 @@ class LookMLAdapter(BaseAdapter):
                         _src,
                     )
                     continue
+                # A refinement only SOME of the base view's models select is genuinely ambiguous:
+                # Looker resolves each model separately (prod sees the plain view, staging sees the
+                # refined one), while a graph holds ONE model per view name and cannot hold both.
+                # The refinement is still applied -- refusing to load a valid project, or dropping
+                # the refinement and silently mis-serving the model that DID select it, are both
+                # worse -- but the ambiguity is surfaced rather than resolved by a coin flip.
+                _base_source = view_source_files.get(base_name)
+                if _base_source is not None:
+                    _unselecting = _models_by_file.get(Path(_base_source).resolve(), set()) - _models_by_file.get(
+                        _src, set()
+                    )
+                    if _unselecting:
+                        logger.warning(
+                            "LookML refinement of view %r from %s is not included by these models, which use "
+                            "%r without it: %s. It is applied anyway, because one model per view name cannot "
+                            "hold both the refined and unrefined view -- so those models see the refined view, "
+                            "which Looker would not do. Include the refinement from every model that uses %r, "
+                            "or give the models separate views.",
+                            base_name,
+                            _src,
+                            base_name,
+                            ", ".join(sorted(f.name for f in _unselecting)),
+                            base_name,
+                        )
             # Record flags from EACH refinement's own meta: a later refinement's merge
             # can replace the base meta and drop a flag an earlier refinement added.
             rmeta = refinement.meta or {}

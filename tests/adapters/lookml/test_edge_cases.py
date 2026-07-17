@@ -5504,6 +5504,58 @@ def test_lookml_included_view_does_not_extend_unincluded_parent():
     assert {"secret", "leaked"} <= ({d.name for d in model.dimensions} | {m.name for m in model.metrics})
 
 
+def test_lookml_refinement_selected_by_only_some_models_warns(caplog):
+    """A refinement only SOME models include is ambiguous and must be surfaced, not silent.
+
+    Looker resolves each model separately: prod sees the plain view, staging the refined one. A
+    graph holds ONE model per view name and cannot hold both, so a staging-only
+    `+orders { sql_table_name: staging_orders }` silently repoints the view prod also uses. The
+    refinement is still applied -- refusing a valid project, or dropping it and mis-serving the
+    model that DID select it, are both worse -- but the load no longer resolves it silently.
+    """
+    import logging
+    import tempfile
+
+    base = "view: orders {\n  sql_table_name: real_orders ;;\n  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }\n}\n"
+    refinement = "view: +orders {\n  sql_table_name: staging_orders ;;\n}\n"
+
+    def parse(models, refinement_dir="views"):
+        directory = Path(tempfile.mkdtemp())
+        (directory / "views").mkdir()
+        (directory / refinement_dir).mkdir(exist_ok=True)
+        for name, include in models:
+            (directory / f"{name}.model.lkml").write_text(include)
+        (directory / "views" / "orders.view.lkml").write_text(base)
+        (directory / refinement_dir / "staging_refine.view.lkml").write_text(refinement)
+        return LookMLAdapter().parse(str(directory))
+
+    # Only staging includes the refinement, but prod uses the same view -> warn, still apply.
+    with caplog.at_level(logging.WARNING, logger="sidemantic.adapters.lookml"):
+        graph = parse(
+            [
+                ("prod", 'include: "/views/orders.view.lkml"\n'),
+                ("staging", 'include: "/views/orders.view.lkml"\ninclude: "/views/staging_refine.view.lkml"\n'),
+            ]
+        )
+    assert graph.get_model("orders").table == "staging_orders"  # applied: the project still loads
+    assert "prod.model.lkml" in caplog.text
+    assert "not included by these models" in caplog.text
+
+    # Every model that uses the view includes the refinement: unambiguous, no warning.
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="sidemantic.adapters.lookml"):
+        graph = parse([("prod", 'include: "/views/*.view.lkml"\n'), ("staging", 'include: "/views/*.view.lkml"\n')])
+    assert graph.get_model("orders").table == "staging_orders"
+    assert caplog.text == ""
+
+    # An un-included refinement is skipped as before -- not applied, and not an ambiguity.
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="sidemantic.adapters.lookml"):
+        graph = parse([("prod", 'include: "/views/*.view.lkml"\n')], refinement_dir="archive")
+    assert graph.get_model("orders").table == "real_orders"
+    assert caplog.text == ""
+
+
 def test_lookml_extends_parent_scoped_per_model_not_project_wide():
     """A parent selected by ANOTHER model is not in scope for this model's child.
 

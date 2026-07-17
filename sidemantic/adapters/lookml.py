@@ -74,6 +74,10 @@ class LookMLAdapter(BaseAdapter):
                 for name, m in graph.models.items()
                 if not (m.table or m.sql or getattr(m, "dax", None) or getattr(m, "source_uri", None))
                 and (m.meta or {}).get("lookml_template")
+                # ...but a name the layer ALREADY defines is a duplicate-model conflict, not a
+                # skippable template: let add_model raise it rather than silently keeping the
+                # pre-existing model. (Mirrors the non-template case below.)
+                and name not in prev_layer.graph.models
             }
             for model in graph.models.values():
                 if model.name in skipped:

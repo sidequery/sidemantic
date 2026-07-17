@@ -5327,6 +5327,52 @@ def test_lookml_drop_metrics_uses_provenance_marker_not_base_ref():
     assert "pop" not in metrics2
 
 
+def test_lookml_abstract_template_conflicting_with_active_model_is_not_skipped():
+    """A template whose name collides with an existing model must not silently take the skip path.
+
+    Skipping tableless templates is right in general, but when the active layer ALREADY defines
+    that name the parsed definition was dropped and the pre-existing model silently left in place.
+    Such a name must reach add_model so the conflict surfaces. With no collision the template is
+    still skipped and the concrete child registers.
+    """
+    import tempfile
+
+    from sidemantic import Dimension, Model, SemanticLayer
+
+    template = "view: base {\n  extension: required\n  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }\n}\n"
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".lkml", delete=False) as f:
+        f.write(template)
+        f.flush()
+        collide_path = Path(f.name)
+
+    layer = SemanticLayer()
+    layer.add_model(
+        Model(
+            name="base",
+            table="manual_base",
+            primary_key="id",
+            dimensions=[Dimension(name="id", type="numeric", sql="id")],
+        )
+    )
+    # Raises rather than silently keeping manual_base (the exact error depends on which
+    # validation fires first; the point is it is surfaced, not swallowed).
+    with pytest.raises(Exception):
+        with layer:
+            LookMLAdapter().parse(collide_path)
+
+    # No collision: the template is still skipped and the concrete child registers.
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".lkml", delete=False) as f:
+        f.write(template + "view: orders {\n  extends: [base]\n  sql_table_name: raw_orders ;;\n}\n")
+        f.flush()
+        ok_path = Path(f.name)
+    clean = SemanticLayer()
+    with clean:
+        LookMLAdapter().parse(ok_path)
+    assert "base" not in clean.graph.models
+    assert clean.graph.get_model("orders").table == "raw_orders"
+
+
 def test_lookml_parse_raises_on_duplicate_model_in_active_layer():
     """A model the active layer already defines is a conflict -- deferral must not hide it.
 

@@ -5405,6 +5405,43 @@ def test_lookml_parse_raises_on_duplicate_model_in_active_layer():
             LookMLAdapter().parse(path)
 
 
+def test_lookml_project_parse_handles_duplicate_views_and_extensionless_includes():
+    """Two files defining the SAME view must not fail the load, and includes may omit .lkml.
+
+    Parsing the tree as one project means an archived copy of a view alongside the live one hits
+    add_model's "Model X already exists" and fails everything. Includes decide the winner; with no
+    includes it is a deterministic first-wins rather than a crash. LookML also allows the .lkml
+    suffix to be omitted (`include: "/views/*.view"`), which must still resolve on disk -- else the
+    included set is skewed and stale refinements leak back in.
+    """
+    import tempfile
+
+    view = "view: orders {\n  sql_table_name: %s ;;\n  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }\n}\n"
+
+    def build(include_pattern, *, duplicate=False, stale_refinement=False):
+        directory = Path(tempfile.mkdtemp())
+        (directory / "views").mkdir()
+        (directory / "archive").mkdir()
+        if include_pattern:
+            (directory / "m.model.lkml").write_text(f'include: "{include_pattern}"\nexplore: orders {{}}\n')
+        (directory / "views" / "orders.view.lkml").write_text(view % "real_orders")
+        if duplicate:
+            (directory / "archive" / "orders.view.lkml").write_text(view % "archived_orders")
+        if stale_refinement:
+            (directory / "archive" / "stale.view.lkml").write_text("view: +orders {\n  sql_table_name: STALE ;;\n}\n")
+        return LookMLAdapter().parse(str(directory)).get_model("orders")
+
+    # A duplicate view no longer fails the load; the INCLUDED copy wins.
+    assert build("/views/*.view.lkml", duplicate=True).table == "real_orders"
+    # Extensionless include patterns still resolve, so the stale refinement stays out.
+    assert build("/views/*.view", stale_refinement=True).table == "real_orders"
+    assert build("/views/orders.view", stale_refinement=True).table == "real_orders"
+    # With NO includes a duplicate is deterministic rather than a crash (no ValueError).
+    assert build(None, duplicate=True).table in {"real_orders", "archived_orders"}
+    # A view no include matches is NEVER dropped -- include scoping only breaks ties.
+    assert build("/nonexistent/*.view.lkml").table == "real_orders"
+
+
 def test_lookml_project_parse_ignores_refinements_from_unincluded_files():
     """A refinement in a file no `include:` reaches must not override a loaded view.
 

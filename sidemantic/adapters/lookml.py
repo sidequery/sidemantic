@@ -112,8 +112,8 @@ class LookMLAdapter(BaseAdapter):
         include_specs: list[tuple[Path, str]] = []
         raw_view_defs: dict[str, dict] = {}
         view_source_files: dict[str, str] = {}
+        view_candidates: list[tuple[Path, dict, Model]] = []
         for lkml_file in lkml_files:
-            _before = set(graph.models)
             self._parse_views_from_file(
                 lkml_file,
                 graph,
@@ -122,9 +122,8 @@ class LookMLAdapter(BaseAdapter):
                 refinement_raw_defs,
                 refinement_source_files,
                 include_specs,
+                view_candidates,
             )
-            for _new in set(graph.models) - _before:
-                view_source_files[_new] = str(lkml_file)
 
         # When the project DECLARES includes (a model file listing the view files it uses), a
         # refinement in an un-included file must not silently override a loaded view -- e.g. a
@@ -140,6 +139,31 @@ class LookMLAdapter(BaseAdapter):
         if included_paths:
             # A file declaring includes is part of the project itself.
             included_paths |= {f.resolve() for f, _ in include_specs}
+
+        # Install base views, resolving a SAME-NAME collision between files by include: an
+        # archived copy of a view alongside the live one would otherwise make add_model raise
+        # "Model X already exists" and fail the whole project load. Only a collision consults the
+        # includes -- a view with no rival is kept regardless, so an imperfectly-resolved include
+        # can never silently drop a view.
+        chosen: dict[str, tuple[Path, dict, Model]] = {}
+        for _file, _view_def, _model in view_candidates:
+            previous = chosen.get(_model.name)
+            if previous is None:
+                chosen[_model.name] = (_file, _view_def, _model)
+                continue
+            if included_paths and _file.resolve() in included_paths and previous[0].resolve() not in included_paths:
+                chosen[_model.name] = (_file, _view_def, _model)  # the included copy wins
+            else:
+                logger.debug(
+                    "Ignoring duplicate LookML view %r from %s (already defined by %s).",
+                    _model.name,
+                    _file,
+                    previous[0],
+                )
+        for _name, (_file, _view_def, _model) in chosen.items():
+            raw_view_defs[_name] = _view_def
+            view_source_files[_name] = str(_file)
+            graph.add_model(_model)
 
         # Snapshot abstract / unsupported-derived_table flags BEFORE refinement merge:
         # merge_model REPLACES a base view's meta when the refinement carries metadata,
@@ -336,6 +360,7 @@ class LookMLAdapter(BaseAdapter):
         refinement_raw_defs: list[dict] | None = None,
         refinement_source_files: list[Path] | None = None,
         include_specs: list[tuple[Path, str]] | None = None,
+        view_candidates: list[tuple[Path, dict, Model]] | None = None,
     ) -> None:
         """Parse views from a single LookML file.
 
@@ -377,6 +402,11 @@ class LookMLAdapter(BaseAdapter):
                             refinement_raw_defs.append(view_def)
                         if refinement_source_files is not None:
                             refinement_source_files.append(file_path)
+                elif view_candidates is not None:
+                    # Defer installation: two files under the tree can define the SAME view (an
+                    # archived copy alongside the live one), and which wins depends on the
+                    # `include:` declarations, which are only known once every file is parsed.
+                    view_candidates.append((file_path, view_def, model))
                 else:
                     if raw_view_defs is not None:
                         raw_view_defs[model.name] = view_def
@@ -736,10 +766,18 @@ class LookMLAdapter(BaseAdapter):
         if pattern.startswith("//"):
             return set()
         base, pat = (root, pattern[1:]) if pattern.startswith("/") else (including_file.parent, pattern)
-        try:
-            return {p.resolve() for p in base.glob(pat) if p.is_file()}
-        except (OSError, ValueError):
-            return set()
+        # LookML allows the .lkml suffix to be omitted -- `include: "/views/*.view"` and
+        # `include: "/views/orders.view"` match the on-disk *.view.lkml files -- so try the
+        # suffixed form too. Without it such an include resolves to nothing, which silently
+        # skews the included set (an included refinement looks un-included, or nothing is scoped).
+        patterns = [pat] if pat.endswith(".lkml") else [pat, pat + ".lkml"]
+        out: set[Path] = set()
+        for candidate in patterns:
+            try:
+                out |= {p.resolve() for p in base.glob(candidate) if p.is_file()}
+            except (OSError, ValueError):
+                continue
+        return out
 
     @classmethod
     def _replace_model_refreshing_graph_metrics(cls, graph: SemanticGraph, name: str, model: Model) -> None:

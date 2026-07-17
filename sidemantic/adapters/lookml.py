@@ -153,6 +153,35 @@ class LookMLAdapter(BaseAdapter):
                             queue.append(hit)
             return reached
 
+        def _ordered_include_closure(start: Path) -> list[Path]:
+            """Files reachable from `start`, in Looker's include order.
+
+            Refinements are order-sensitive -- the LAST include of a `view: +name` wins -- so a
+            model listing `z_ref` then `a_ref` must let `a_ref` win, whatever the filenames sort
+            like. Walks includes depth-first in declaration order, sorting only WITHIN a glob
+            pattern (whose on-disk match order is otherwise arbitrary) so loads stay deterministic.
+
+            A file is ordered AFTER the files it includes: `include:` brings that content in where
+            it is written, and includes sit at the top of a file, so an included refinement lands
+            before the includer's own. Looker documents that refinements follow include order but
+            not how a nested include orders against its includer, so this mirrors the plain
+            file-inclusion reading.
+            """
+            order: list[Path] = []
+            seen: set[Path] = set()
+
+            def visit(current: Path) -> None:
+                if current in seen:
+                    return
+                seen.add(current)  # before recursing: a circular include must not loop
+                for pattern in includes_by_file.get(current, []):
+                    for hit in sorted(self._resolve_include(_include_root, current, pattern)):
+                        visit(hit)
+                order.append(current)
+
+            visit(start)
+            return order
+
         # EVERY model file seeds the closure, not just the ones that declare includes: a
         # self-contained model (its own views and explores, no include:) belongs to the project
         # just as much as an include-based sibling and must not be scoped out by one.
@@ -228,6 +257,27 @@ class LookMLAdapter(BaseAdapter):
         # which would otherwise drop these markers.
         abstract_pre = {n for n, m in graph.models.items() if (m.meta or {}).get("extension_required")}
         unsupported_pre = {n for n, m in graph.models.items() if (m.meta or {}).get("unsupported_derived_table")}
+
+        # Merge refinements in the models' INCLUDE order, not the sorted tree-walk order. Looker
+        # gives the last-included `view: +orders` precedence, so a model including z_ref then a_ref
+        # must let a_ref win even though the walk parsed a_ref first. Files no model reaches keep
+        # their sorted-walk position (last); with no include scope at all the sorted order stands,
+        # which is what keeps a plain directory load deterministic.
+        _include_order: dict[Path, int] = {}
+        if _scoping_active:
+            for _model_file in _model_files:
+                for _reached in _ordered_include_closure(_model_file):
+                    _include_order.setdefault(_reached, len(_include_order))
+        if _include_order and refinement_source_files:
+            _unordered = len(_include_order)
+            # Stable: refinements from the SAME file keep their in-file order.
+            _positions = sorted(
+                range(len(refinements)),
+                key=lambda i: _include_order.get(refinement_source_files[i].resolve(), _unordered),
+            )
+            refinements = [refinements[i] for i in _positions]
+            refinement_raw_defs = [refinement_raw_defs[i] for i in _positions]
+            refinement_source_files = [refinement_source_files[i] for i in _positions]
 
         # Apply refinements: merge each refinement into its base view
         from sidemantic.core.inheritance import merge_model, resolve_model_inheritance

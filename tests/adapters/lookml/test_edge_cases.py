@@ -5504,6 +5504,86 @@ def test_lookml_included_view_does_not_extend_unincluded_parent():
     assert {"secret", "leaked"} <= ({d.name for d in model.dimensions} | {m.name for m in model.metrics})
 
 
+def test_lookml_refinements_merge_in_include_order_not_pathname_order():
+    """Refinements follow the model's include order; the last-included one wins.
+
+    Looker documents that refinements leverage include order, but the tree walk is sorted by
+    pathname (for determinism), so a model including z_ref then a_ref applied a_ref FIRST and let
+    z_ref win -- leaving the view pointed at the wrong table. Include order now drives the merge,
+    and the sorted walk still decides anything the includes do not order.
+    """
+    import tempfile
+
+    base = "view: orders {\n  sql_table_name: real_orders ;;\n  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }\n}\n"
+
+    def refinement(table):
+        return f"view: +orders {{\n  sql_table_name: {table} ;;\n}}\n"
+
+    def table(model_text, files):
+        directory = Path(tempfile.mkdtemp())
+        (directory / "views").mkdir()
+        (directory / "m.model.lkml").write_text(model_text)
+        (directory / "views" / "orders.view.lkml").write_text(base)
+        for name, content in files.items():
+            (directory / "views" / f"{name}.view.lkml").write_text(content)
+        return LookMLAdapter().parse(str(directory)).get_model("orders").table
+
+    refs = {"z_ref": refinement("from_z"), "a_ref": refinement("from_a")}
+
+    # Include order wins over pathname order, in both directions.
+    assert (
+        table(
+            'include: "/views/orders.view.lkml"\ninclude: "/views/z_ref.view.lkml"\ninclude: "/views/a_ref.view.lkml"\n',
+            refs,
+        )
+        == "from_a"
+    )
+    assert (
+        table(
+            'include: "/views/orders.view.lkml"\ninclude: "/views/a_ref.view.lkml"\ninclude: "/views/z_ref.view.lkml"\n',
+            refs,
+        )
+        == "from_z"
+    )
+
+    # A glob cannot express an order, so its matches stay sorted -- the load is deterministic.
+    assert table('include: "/views/*.view.lkml"\n', refs) == "from_z"
+
+    # Two refinements in ONE file keep their in-file order.
+    assert (
+        table(
+            'include: "/views/orders.view.lkml"\ninclude: "/views/multi.view.lkml"\n',
+            {"multi": refinement("from_first") + refinement("from_second")},
+        )
+        == "from_second"
+    )
+
+    # An included file's refinement lands BEFORE the includer's own: include: brings that content
+    # in where it is written, above the includer's definitions.
+    nested = Path(tempfile.mkdtemp())
+    (nested / "views").mkdir()
+    (nested / "m.model.lkml").write_text('include: "/views/orders.view.lkml"\ninclude: "/views/z_ref.view.lkml"\n')
+    (nested / "views" / "orders.view.lkml").write_text(base)
+    (nested / "views" / "z_ref.view.lkml").write_text('include: "/views/a_ref.view.lkml"\n' + refinement("from_z"))
+    (nested / "views" / "a_ref.view.lkml").write_text(refinement("from_a"))
+    assert LookMLAdapter().parse(str(nested)).get_model("orders").table == "from_z"
+
+    # A circular include must not hang the ordered walk.
+    circular = Path(tempfile.mkdtemp())
+    (circular / "views").mkdir()
+    (circular / "m.model.lkml").write_text('include: "/views/x.view.lkml"\n')
+    (circular / "views" / "x.view.lkml").write_text('include: "/views/y.view.lkml"\n' + base)
+    (circular / "views" / "y.view.lkml").write_text('include: "/views/x.view.lkml"\n' + refinement("from_y"))
+    assert LookMLAdapter().parse(str(circular)).get_model("orders").table == "from_y"
+
+    # With no include scope at all, the deterministic sorted order still applies.
+    plain = Path(tempfile.mkdtemp())
+    (plain / "orders.view.lkml").write_text(base)
+    (plain / "a_ref.view.lkml").write_text(refinement("from_a"))
+    (plain / "z_ref.view.lkml").write_text(refinement("from_z"))
+    assert LookMLAdapter().parse(str(plain)).get_model("orders").table == "from_z"
+
+
 def test_lookml_refinement_selected_by_only_some_models_warns(caplog):
     """A refinement only SOME models include is ambiguous and must be surfaced, not silent.
 

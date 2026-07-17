@@ -469,11 +469,7 @@ class LookMLAdapter(BaseAdapter):
             return False
         return any(True for _ in tree.find_all(exp.List)) or any(True for _ in tree.find_all(exp.ArrayAgg))
 
-    # SQL date-part keywords, and the date/time functions that take one as an UNQUOTED argument.
-    # A bare token matching BOTH (a keyword inside such a call) is a date part, not a column, so
-    # folded filters must not rewrite it to a dimension's SQL -- e.g. BigQuery's
-    # DATE_TRUNC(created_at, month) on a model that also has a `month` dimension. Gating on the
-    # keyword set keeps a real column argument of the same call (created_at) resolvable.
+    # SQL date-part keywords that a date/time function can take UNQUOTED.
     _DATE_PART_KEYWORDS = frozenset(
         {
             "year", "quarter", "month", "week", "day", "hour", "minute", "second",
@@ -482,25 +478,30 @@ class LookMLAdapter(BaseAdapter):
             "weekday", "yearofweek", "century", "decade", "millennium",
         }
     )  # fmt: skip
-    _DATE_PART_FUNCS = frozenset(
-        {
-            "extract", "date_part", "datepart", "date_trunc", "datetrunc", "timestamp_trunc",
-            "datetime_trunc", "time_trunc", "date_diff", "datediff", "timestamp_diff",
-            "datetime_diff", "time_diff", "date_add", "dateadd", "date_sub", "datesub",
-            "timestamp_add", "timestamp_sub", "datetime_add", "datetime_sub", "last_day",
-            "timestamp_bucket", "time_bucket",
-        }
-    )  # fmt: skip
+    # Which ARGUMENT of a date/time call is the date part. Position matters: the same keyword can
+    # be a real column in another slot -- DATE_TRUNC(date, month) on a model with BOTH a `date`
+    # and a `month` dimension means column `date` truncated to part `month`. Keying only on "is a
+    # keyword inside a date function" would wrongly protect the `date` COLUMN too.
+    #   -1 => the LAST argument (BigQuery DATE_TRUNC(value, part), DATE_DIFF(a, b, part))
+    #    0 => the FIRST argument (SQL Server DATEADD(part, n, x) / DATEDIFF(part, a, b))
+    # EXTRACT(part FROM x) and INTERVAL n part are handled by their own position checks; quoted
+    # forms (DATE_TRUNC('day', x)) are already protected as string literals.
+    _DATE_PART_ARG_POS = {
+        "date_trunc": -1, "datetrunc": -1, "timestamp_trunc": -1, "datetime_trunc": -1,
+        "time_trunc": -1, "timestamp_bucket": -1, "time_bucket": -1,
+        "date_diff": -1, "timestamp_diff": -1, "datetime_diff": -1, "time_diff": -1,
+        "datediff": 0, "dateadd": 0, "datepart": 0, "date_part": 0,
+    }  # fmt: skip
 
     @staticmethod
-    def _enclosing_function(pre: str) -> str | None:
-        """Name of the function whose open paren directly encloses the end of ``pre``.
+    def _enclosing_call(pre: str) -> tuple[str | None, int, int]:
+        """Describe the call a token sits in, given the text ``pre`` before it.
 
-        ``pre`` is the text BEFORE a token; scanning backwards for the first unclosed ``(`` and
-        reading the identifier in front of it identifies the call the token sits in (used to tell
-        a date-part argument from a column). Returns None when the token is not inside a call.
+        Returns ``(function_name, arg_index, open_paren_pos)`` by scanning backwards for the first
+        unclosed ``(`` and counting the top-level commas after it. ``(None, 0, -1)`` when the token
+        is not inside a call.
         """
-        depth, i = 0, len(pre) - 1
+        depth, commas, i = 0, 0, len(pre) - 1
         while i >= 0:
             ch = pre[i]
             if ch == ")":
@@ -508,10 +509,44 @@ class LookMLAdapter(BaseAdapter):
             elif ch == "(":
                 if depth == 0:
                     m = re.search(r"(\w+)\s*$", pre[:i])
-                    return m.group(1) if m else None
+                    return (m.group(1) if m else None), commas, i
                 depth -= 1
+            elif ch == "," and depth == 0:
+                commas += 1
             i -= 1
-        return None
+        return None, 0, -1
+
+    @classmethod
+    def _is_date_part_argument(cls, pre: str, suf: str, token: str) -> bool:
+        """True if ``token`` occupies the date-PART argument slot of a date/time call.
+
+        Position-aware on purpose: DATE_TRUNC(date, month) on a model with both a `date` and a
+        `month` dimension means column `date` truncated to part `month` -- only the LAST argument
+        is the part, so the `date` column must still resolve.
+        """
+        if token.lower() not in cls._DATE_PART_KEYWORDS:
+            return False
+        func, arg_index, open_pos = cls._enclosing_call(pre)
+        if not func:
+            return False
+        want = cls._DATE_PART_ARG_POS.get(func.lower())
+        if want is None:
+            return False
+        if want >= 0:
+            return arg_index == want
+        # want == -1: the part is the LAST argument -- true when no top-level comma follows the
+        # token before the call's closing paren.
+        depth = 0
+        for ch in suf:
+            if ch in "([":
+                depth += 1
+            elif ch in ")]":
+                if depth == 0:
+                    return True  # reached this call's close with no further top-level comma
+                depth -= 1
+            elif ch == "," and depth == 0:
+                return False
+        return False
 
     @staticmethod
     def _has_top_level_order_by(s: str) -> bool:
@@ -3128,14 +3163,12 @@ class LookMLAdapter(BaseAdapter):
                             re.search(r"(?i)\bextract\s*\(\s*$", pre)
                             or re.match(r"(?is)\s+from\b", suf)
                             or re.search(r"(?i)\binterval\s+(?:[+-]?\d+(?:\.\d+)?|'(?:[^']|'')*')\s*$", pre)
-                            # A date-part KEYWORD passed unquoted to a date/time function, e.g.
-                            # BigQuery's DATE_TRUNC(created_at, month) or DATE_DIFF(a, b, day).
-                            # Gate on the keyword set so a real column argument of the SAME call
-                            # (created_at above) is still resolved.
-                            or (
-                                bare.lower() in cls._DATE_PART_KEYWORDS
-                                and (cls._enclosing_function(pre) or "").lower() in cls._DATE_PART_FUNCS
-                            )
+                            # A date-part KEYWORD in the date-part ARGUMENT SLOT of a date/time
+                            # call, e.g. BigQuery's DATE_TRUNC(created_at, month) or
+                            # DATE_DIFF(a, b, day). Position-aware so a real column in another
+                            # slot of the SAME call still resolves -- DATE_TRUNC(date, month) is
+                            # column `date` truncated to part `month`.
+                            or cls._is_date_part_argument(pre, suf, bare)
                         ):
                             return m.group(0)
                     name = m.group(1) or bare

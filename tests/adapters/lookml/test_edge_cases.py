@@ -4715,6 +4715,41 @@ def test_lookml_export_folded_filter_does_not_rewrite_unquoted_date_part_argumen
     assert conds(["UPPER(day) = 'X'"], model) == "(UPPER((${TABLE}.order_day)) = 'X')"
 
 
+def test_lookml_export_folded_filter_date_part_guard_is_position_aware():
+    """Only the date-part ARGUMENT SLOT is protected -- a keyword-named column elsewhere resolves.
+
+    `DATE_TRUNC(date, month)` on a model with BOTH a `date` and a `month` dimension means column
+    `date` truncated to part `month`: protecting every keyword inside a date function would leave
+    the `date` COLUMN unresolved. Covers both argument conventions -- BigQuery puts the part LAST
+    (DATE_TRUNC(value, part), DATE_DIFF(a, b, part)), SQL Server FIRST (DATEDIFF(part, a, b)).
+    """
+    from sidemantic import Dimension, Model
+
+    model = Model(
+        name="orders",
+        table="raw_orders",
+        primary_key="id",
+        dimensions=[
+            Dimension(name="date", type="time", granularity="day", sql="order_date"),
+            Dimension(name="month", type="time", granularity="month", sql="order_month"),
+            Dimension(name="day", type="time", granularity="day", sql="order_day"),
+            Dimension(name="created_at", type="time", granularity="day", sql="created_at"),
+        ],
+    )
+    conds = LookMLAdapter._fold_filter_conds
+    # BigQuery: part is the LAST arg -- the `date` COLUMN in slot 0 must still resolve.
+    assert conds(["DATE_TRUNC(date, month) = DATE '2024-01-01'"], model) == (
+        "(DATE_TRUNC((${TABLE}.order_date), month) = DATE '2024-01-01')"
+    )
+    assert conds(["DATE_DIFF(created_at, date, day) > 1"], model) == (
+        "(DATE_DIFF((${TABLE}.created_at), (${TABLE}.order_date), day) > 1)"
+    )
+    # SQL Server: part is the FIRST arg; the trailing columns still resolve.
+    assert conds(["DATEDIFF(day, created_at, date) > 1"], model) == (
+        "(DATEDIFF(day, (${TABLE}.created_at), (${TABLE}.order_date)) > 1)"
+    )
+
+
 def test_lookml_export_folded_filter_does_not_rewrite_table_qualifier():
     """A foreign table QUALIFIER that matches a dimension name must not be rewritten.
 

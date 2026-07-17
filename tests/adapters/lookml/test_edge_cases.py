@@ -4154,6 +4154,38 @@ view: v {
     assert "COUNT(DISTINCT" not in pct.sql
 
 
+def test_lookml_post_sql_measure_preserves_filtered_base_measure_filter():
+    """A post-SQL measure over a FILTERED base must keep the base's filter.
+
+    A percent_of_total over `uu` (count_distinct, approximate, filtered to completed) expanded via
+    the bare `<AGG>({model}.uu)` template, which carries no filter -- so the percent was computed
+    over every row instead of the filtered population. A filtered base must expand through the
+    FILTERED aggregate built in the first pass. An UNFILTERED base keeps the template form.
+    """
+    graph = _parse_lkml(
+        """
+view: orders {
+  sql_table_name: orders ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: user_id { type: number  sql: ${TABLE}.user_id ;; }
+  dimension: status { type: string  sql: ${TABLE}.status ;; }
+  measure: uu { type: count_distinct  approximate: yes  sql: ${user_id} ;; filters: [status: "completed"] }
+  measure: pct { type: percent_of_total  sql: ${uu} ;; }
+  measure: total { type: sum  sql: ${TABLE}.amount ;; }
+  measure: pct_unfiltered { type: percent_of_total  sql: ${total} ;; }
+}
+"""
+    )
+    model = graph.get_model("orders")
+    pct = model.get_metric("pct")
+    # The base's filter is carried into the expansion, over the REAL column, still approximate.
+    assert "completed" in pct.sql, pct.sql
+    assert "APPROX_COUNT_DISTINCT" in pct.sql and "COUNT(DISTINCT" not in pct.sql, pct.sql
+    assert "user_id" in pct.sql, pct.sql
+    # An UNFILTERED base is unchanged (still the aggregate template over the measure ref).
+    assert "{model}.total" in model.get_metric("pct_unfiltered").sql
+
+
 def test_lookml_export_running_total_roundtrips():
     """An imported running_total (cumulative + table_calculation meta) round-trips, not dropped."""
     import tempfile

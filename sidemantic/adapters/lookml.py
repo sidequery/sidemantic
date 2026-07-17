@@ -1297,6 +1297,11 @@ class LookMLAdapter(BaseAdapter):
         # used to expand a measure ref inside an aggregate-safe mixed number measure into
         # its base aggregate over the REAL column (not a phantom {model}.<measure>).
         measure_full_sql_lookup: dict[str, str] = {}
+        # Base measures carrying their OWN LookML `filters`. A post-SQL measure (percent_of_total
+        # / percent_of_previous) that references one must expand it through the FILTERED aggregate
+        # in measure_full_sql_lookup, not the bare `<AGG>({model}.<measure>)` template -- which
+        # would drop the filter and compute over every row.
+        filtered_base_measures: set[str] = set()
 
         def _folded_measure_filter(m_def):
             # AND-joined predicate for a base measure's OWN filters, with each filter field
@@ -1341,6 +1346,8 @@ class LookMLAdapter(BaseAdapter):
                     # mixed-expr expansion of a filtered measure (e.g. completed_total with
                     # filters: [status: "completed"]) keeps the filter, not SUM(amount).
                     joined = _folded_measure_filter(m)
+                    if joined:
+                        filtered_base_measures.add(m_name)
                     if m_type == "count" and col.strip() == "*":
                         # `type: count sql: * ;;` is the row-count form; `*` can't live inside
                         # a CASE, so route it through the no-sql count path instead of emitting
@@ -1358,6 +1365,7 @@ class LookMLAdapter(BaseAdapter):
                     # expansion instead of counting all rows.
                     joined = _folded_measure_filter(m)
                     if joined:
+                        filtered_base_measures.add(m_name)
                         measure_full_sql_lookup[m_name] = f"COUNT(CASE WHEN {joined} THEN 1 END)"
                     else:
                         measure_full_sql_lookup[m_name] = "COUNT(*)"
@@ -1477,6 +1485,7 @@ class LookMLAdapter(BaseAdapter):
                 measure_full_sql_lookup,
                 view_name=name.lstrip("+"),
                 filter_sensitive_measures=filter_sensitive_measures,
+                filtered_base_measures=filtered_base_measures,
             )
             if measure and self._leaks_cross_view_ref(measure.sql):
                 # Like a cross-view dimension, a measure whose SQL references another view
@@ -2086,6 +2095,7 @@ class LookMLAdapter(BaseAdapter):
         measure_full_sql_lookup: dict[str, str] | None = None,
         view_name: str | None = None,
         filter_sensitive_measures: set[str] | None = None,
+        filtered_base_measures: set[str] | None = None,
     ) -> Metric | None:
         """Parse LookML measure.
 
@@ -2110,6 +2120,7 @@ class LookMLAdapter(BaseAdapter):
         measure_agg_lookup = measure_agg_lookup or {}
         measure_full_sql_lookup = measure_full_sql_lookup or {}
         filter_sensitive_measures = filter_sensitive_measures or set()
+        filtered_base_measures = filtered_base_measures or set()
 
         # Check if type is explicitly set
         has_explicit_type = "type" in measure_def
@@ -2214,6 +2225,8 @@ class LookMLAdapter(BaseAdapter):
                 dimension_sql_lookup,
                 measure_names or set(),
                 measure_agg_lookup or {},
+                measure_full_sql_lookup,
+                filtered_base_measures,
             )
 
         # Map LookML measure types to sidemantic aggregation types
@@ -2679,6 +2692,8 @@ class LookMLAdapter(BaseAdapter):
         dimension_sql_lookup: dict[str, str],
         measure_names: set[str] | None = None,
         measure_agg_lookup: dict[str, str] | None = None,
+        measure_full_sql_lookup: dict[str, str] | None = None,
+        filtered_base_measures: set[str] | None = None,
     ) -> str:
         """Resolve ${ref} in a measure-referencing SQL (e.g. running_total sql).
 
@@ -2694,6 +2709,8 @@ class LookMLAdapter(BaseAdapter):
         """
         measure_names = measure_names or set()
         measure_agg_lookup = measure_agg_lookup or {}
+        measure_full_sql_lookup = measure_full_sql_lookup or {}
+        filtered_base_measures = filtered_base_measures or set()
         sql = sql.replace("${TABLE}", "{model}")
 
         def _resolve(match: re.Match) -> str:
@@ -2713,6 +2730,13 @@ class LookMLAdapter(BaseAdapter):
             if ref_name in dimension_sql_lookup:
                 return f"({dimension_sql_lookup[ref_name]})"
             if ref_name in measure_names:
+                # A base measure with its OWN LookML `filters` must expand to the FILTERED
+                # aggregate built in the first pass (e.g. APPROX_COUNT_DISTINCT(CASE WHEN
+                # status='completed' THEN user_id END)). The `<AGG>({model}.<measure>)` template
+                # below carries no filter, so a percent_of_total over a filtered base would be
+                # computed across every row instead of the filtered population.
+                if ref_name in filtered_base_measures and ref_name in measure_full_sql_lookup:
+                    return f"({measure_full_sql_lookup[ref_name]})"
                 agg_template = measure_agg_lookup.get(ref_name)
                 if agg_template:
                     return agg_template.format(f"{{model}}.{ref_name}")
@@ -2729,6 +2753,8 @@ class LookMLAdapter(BaseAdapter):
         dimension_sql_lookup: dict[str, str],
         measure_names: set[str] | None = None,
         measure_agg_lookup: dict[str, str] | None = None,
+        measure_full_sql_lookup: dict[str, str] | None = None,
+        filtered_base_measures: set[str] | None = None,
     ) -> Metric | None:
         """Parse a post-SQL / table-calculation measure.
 
@@ -2760,6 +2786,8 @@ class LookMLAdapter(BaseAdapter):
             return None
         measure_names = measure_names or set()
         measure_agg_lookup = measure_agg_lookup or {}
+        measure_full_sql_lookup = measure_full_sql_lookup or {}
+        filtered_base_measures = filtered_base_measures or set()
 
         if measure_type == "running_total":
             # A running_total maps to a cumulative metric whose `sql` is the base
@@ -2780,7 +2808,14 @@ class LookMLAdapter(BaseAdapter):
         # percent_of_total / percent_of_previous build window aggregates inline,
         # so qualify base measure refs with {model} (for the generator's _raw
         # column rewrite) and wrap them in the base measure's aggregate function.
-        base = self._resolve_measure_reference_sql(sql, dimension_sql_lookup, measure_names, measure_agg_lookup).strip()
+        base = self._resolve_measure_reference_sql(
+            sql,
+            dimension_sql_lookup,
+            measure_names,
+            measure_agg_lookup,
+            measure_full_sql_lookup,
+            filtered_base_measures,
+        ).strip()
 
         common = {
             "description": measure_def.get("description"),

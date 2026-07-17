@@ -4875,6 +4875,49 @@ def test_lookml_time_dims_grouped_by_effective_sql_not_explicit_sql():
     assert same_source == {"started_hour": "a"}, same_source
 
 
+def test_lookml_imported_dimension_group_without_sql_stays_one_group():
+    """An imported `dimension_group` that omits `sql` must round-trip as ONE group.
+
+    Its timeframes all read the same implicit `<base>` column, but each generated Dimension has
+    sql=None, so keying them on the effective expression (which falls back to the generated field
+    name) read every timeframe as its own source. The group was split into standalone dims backed
+    by columns that never existed -- `sql: DATE_TRUNC('week', created_week)`.
+    """
+    import tempfile
+
+    source = """view: orders {
+  sql_table_name: orders ;;
+  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }
+  dimension_group: created {
+    type: time
+    timeframes: [date, week, month]
+  }
+}
+"""
+    directory = Path(tempfile.mkdtemp())
+    (directory / "orders.view.lkml").write_text(source)
+    graph = LookMLAdapter().parse(str(directory / "orders.view.lkml"))
+
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    exported = Path(out).read_text()
+
+    # One dimension_group carrying every timeframe, and no phantom-column standalones.
+    assert exported.count("dimension_group:") == 1, exported
+    assert "timeframes: [date, week, month]" in exported, exported
+    assert "created_week" not in exported, exported
+    assert "created_month" not in exported, exported
+    # The implicit column stays implicit: no invented `sql:` on the group.
+    assert "sql: created" not in exported, exported
+
+    reimported = LookMLAdapter().parse(Path(out)).get_model("orders")
+    assert sorted((d.name, d.granularity) for d in reimported.dimensions if d.type == "time") == [
+        ("created_date", "day"),
+        ("created_month", "month"),
+        ("created_week", "week"),
+    ]
+
+
 def test_lookml_collision_time_of_day_recovers_timeframe_meta_and_survives_sibling_drop():
     """A collision-exported `time_of_day` standalone must recover its timeframe into meta.
 

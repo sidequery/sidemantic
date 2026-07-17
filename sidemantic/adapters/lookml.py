@@ -4522,8 +4522,12 @@ class LookMLAdapter(BaseAdapter):
                 # for native dims fall back to the common suffix list.
                 base_name = dim.name
                 stored_tf = (dim.meta or {}).get("lookml_timeframe")
+                implicit_group = False
                 if stored_tf and dim.name.endswith("_" + stored_tf):
                     base_name = dim.name[: -(len(stored_tf) + 1)]
+                    # An imported `dimension_group` that omits `sql` reads ONE implicit column
+                    # named after the GROUP (`created`), shared by every timeframe it generates.
+                    implicit_group = dim.sql is None
                 else:
                     # Native dims (no stored timeframe): strip any known LookML truncation
                     # timeframe suffix, LONGEST first so e.g. `_minute15`/`_time_of_day`/
@@ -4537,8 +4541,12 @@ class LookMLAdapter(BaseAdapter):
                 # both rely on their default column (sql is None for both) still read DIFFERENT
                 # columns -- `started` and `started_hour` -- and keying on None would collapse
                 # them into one dimension_group, emitting a single field backed by the wrong
-                # column and losing the other dim entirely.
-                base_name_groups.setdefault((base_name, dim.sql_expr), []).append(dim)
+                # column and losing the other dim entirely. An imported no-sql group is the
+                # opposite case: its timeframes SHARE the implicit `<base>` column, so key them
+                # on the group (None) -- keying on the generated field name would read each
+                # timeframe as its own source and split the group into standalone dims backed by
+                # columns that do not exist (`DATE_TRUNC('week', created_week)`).
+                base_name_groups.setdefault((base_name, None if implicit_group else dim.sql_expr), []).append(dim)
 
             # When one base name spans multiple source SQLs, only ONE can be the
             # dimension_group (a second `dimension_group: <base>` is illegal LookML);
@@ -4646,7 +4654,12 @@ class LookMLAdapter(BaseAdapter):
             for (base_name, group_sql), dims in ordered_groups:
                 if base_name_counts[base_name] > 1 and base_name in assigned_names:
                     for dim in dims:
-                        cdim = self._export_collision_time_dim(dim, group_sql, used_names)
+                        # An implicit group (group_sql None) is backed by the `<base>` column;
+                        # without it the standalone would fall back to its own generated field
+                        # name and reference a column that does not exist.
+                        cdim = self._export_collision_time_dim(
+                            dim, base_name if group_sql is None else group_sql, used_names
+                        )
                         used_names.add(cdim["name"])
                         collision_dims.append(cdim)
                     continue

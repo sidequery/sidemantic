@@ -5737,6 +5737,62 @@ def test_lookml_every_model_file_seeds_include_scoping():
     assert LookMLAdapter().parse(str(unscoped)).get_model("orders").table == "REFINED"
 
 
+def test_lookml_explore_joins_scoped_to_included_views():
+    """A join must not wire to a view the explore's own model file cannot see.
+
+    Scoping only the explore's BASE view left its joins unrestricted: unique un-included views
+    are still installed, so a model including just orders.view.lkml could silently wire
+    `join: customers` to an archived customers.view.lkml and query the wrong table. A join to a
+    NEVER-DEFINED view is still kept -- that dangling relationship is a real error `validate`
+    must surface, and dropping it would hide the typo.
+    """
+    import tempfile
+
+    view = "view: %s {\n  sql_table_name: %s ;;\n  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }\n}\n"
+
+    def relationships(explore, include, *, archived=(), views=("orders",)):
+        directory = Path(tempfile.mkdtemp())
+        (directory / "views").mkdir()
+        (directory / "archive").mkdir()
+        (directory / "orders.model.lkml").write_text(f'include: "{include}"\n' + explore)
+        for name in views:
+            (directory / "views" / f"{name}.view.lkml").write_text(view % (name, f"real_{name}"))
+        for name in archived:
+            (directory / "archive" / f"{name}.view.lkml").write_text(view % (name, f"archived_{name}"))
+        graph = LookMLAdapter().parse(str(directory))
+        return graph, [r.name for r in (graph.get_model("orders").relationships or [])]
+
+    join = (
+        "explore: orders {\n  join: customers { sql_on: ${orders.id} = ${customers.id} ;; "
+        "relationship: many_to_one }\n}\n"
+    )
+
+    # Archived join target: not reached by the model's include -> not wired.
+    graph, archived_join = relationships(join, "/views/orders.view.lkml", archived=("customers",))
+    assert archived_join == [], archived_join
+    assert "customers" in graph.models  # still loaded; just not joinable from this model
+
+    # Included join target still wires.
+    _, included_join = relationships(join, "/views/*.view.lkml", views=("orders", "customers"))
+    assert included_join == ["customers"]
+
+    # A join's from: target is the view it actually reads, so it is scoped too.
+    aliased = (
+        "explore: orders {\n  join: c_alias { from: customers  sql_on: ${orders.id} = ${c_alias.id} ;; "
+        "relationship: many_to_one }\n}\n"
+    )
+    _, aliased_join = relationships(aliased, "/views/orders.view.lkml", archived=("customers",))
+    assert aliased_join == [], aliased_join
+
+    # A never-defined target is NOT scoped away: validate must still surface it.
+    typo = (
+        "explore: orders {\n  join: typo_view { sql_on: ${orders.id} = ${typo_view.id} ;; "
+        "relationship: many_to_one }\n}\n"
+    )
+    _, dangling = relationships(typo, "/views/orders.view.lkml")
+    assert dangling == ["typo_view"], dangling
+
+
 def test_lookml_project_parse_ignores_explores_from_unincluded_files():
     """An explore in a model file no include reaches must not mutate the live model.
 

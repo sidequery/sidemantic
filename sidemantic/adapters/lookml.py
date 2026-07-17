@@ -509,19 +509,10 @@ class LookMLAdapter(BaseAdapter):
         if not parsed:
             return
 
-        # Parse explores
+        # Parse explores. The scope check lives in _parse_explore, which owns the from:/fallback
+        # resolution of the base view -- duplicating that resolution here would drift from it.
         for explore_def in parsed.get("explores") or []:
-            if allowed_views is not None:
-                base_view = explore_def.get("from", explore_def.get("name"))
-                if base_view not in allowed_views:
-                    logger.debug(
-                        "Ignoring LookML explore %s in %s: view %s is not in the model's scope.",
-                        explore_def.get("name"),
-                        file_path,
-                        base_view,
-                    )
-                    continue
-            self._parse_explore(explore_def, graph)
+            self._parse_explore(explore_def, graph, allowed_views=allowed_views)
 
     # Matches ${field} and ${view.field}. ${TABLE} is handled specially.
     _REF_RE = re.compile(r"\$\{(?:([a-zA-Z_]\w*)\.)?([a-zA-Z_]\w*)\}")
@@ -3782,12 +3773,13 @@ class LookMLAdapter(BaseAdapter):
             **common,
         )
 
-    def _parse_explore(self, explore_def: dict, graph: SemanticGraph) -> None:
+    def _parse_explore(self, explore_def: dict, graph: SemanticGraph, allowed_views: set[str] | None = None) -> None:
         """Parse LookML explore and add relationships to models.
 
         Args:
             explore_def: Explore definition from parsed LookML
             graph: Semantic graph to add relationships to
+            allowed_views: Views this explore's model file may reference, or None to allow any.
         """
         explore_name = explore_def.get("name")
         if not explore_name:
@@ -3800,6 +3792,16 @@ class LookMLAdapter(BaseAdapter):
             if explore_name not in graph.models:
                 return
             base_model_name = explore_name
+
+        # Scope-check the RESOLVED base: an explore on a view this model file neither defines nor
+        # includes is not part of this model, and applying it would mutate the live view.
+        if allowed_views is not None and base_model_name not in allowed_views:
+            logger.debug(
+                "Ignoring LookML explore %s: view %s is not in the model's scope.",
+                explore_name,
+                base_model_name,
+            )
+            return
 
         base_model = graph.models[base_model_name]
 
@@ -3875,6 +3877,23 @@ class LookMLAdapter(BaseAdapter):
 
         # Parse joins
         for join_def in explore_def.get("joins") or []:
+            # Scope join targets like the base view: unique un-included views are still installed,
+            # so without this a model that includes only orders.view.lkml could wire `join:
+            # customers` to an archived customers.view.lkml Looker would not have in scope. Check
+            # the `from:` target, which is the view a join alias actually reads.
+            #
+            # Only skip a target that EXISTS but is out of scope. A join to a never-defined view
+            # is left intact: that dangling relationship is a real error `validate` must surface
+            # (see _drop_non_registerable_models), and silently dropping it would hide the typo.
+            join_target = join_def.get("from", join_def.get("name"))
+            if allowed_views is not None and join_target in graph.models and join_target not in allowed_views:
+                logger.debug(
+                    "Ignoring LookML join %s in explore %s: view %s is not in the model's scope.",
+                    join_def.get("name"),
+                    explore_name,
+                    join_target,
+                )
+                continue
             relationship = self._parse_join(join_def, base_model_name, explore_name)
             if relationship:
                 # Add relationship to the base model

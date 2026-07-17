@@ -2574,6 +2574,8 @@ view: orders {
   dimension: amount { type: number  sql: ${TABLE}.amount ;; }
   measure: n_else { type: number  sql: COUNT(CASE WHEN ${status} = 'completed' THEN 1 ELSE 0 END) ;; filters: [country: "US"] }
   measure: n_no_else { type: number  sql: COUNT(CASE WHEN ${status} = 'completed' THEN 1 END) ;; filters: [country: "US"] }
+  measure: n_if { type: number  sql: COUNT(IF(${status} = 'completed', 1, 0)) ;; filters: [country: "US"] }
+  measure: n_if_no_default { type: number  sql: COUNT(IF(${status} = 'completed', 1)) ;; filters: [country: "US"] }
   measure: total { type: number  sql: SUM(${amount}) ;; filters: [country: "US"] }
 }
 """
@@ -2588,6 +2590,10 @@ view: orders {
     assert con.execute(layer.compile(metrics=["orders.n_else"])).fetchall() == [(2,)]
     # A CASE with no ELSE nulls out naturally: only the US+completed row.
     assert con.execute(layer.compile(metrics=["orders.n_no_else"])).fetchall() == [(1,)]
+    # IF(cond, 1, 0) is the same trap: IF(NULL, 1, 0) is 0, so it must fold too.
+    assert con.execute(layer.compile(metrics=["orders.n_if"])).fetchall() == [(2,)]
+    # IF with no false branch has no default -> nulls out naturally, must NOT over-fold.
+    assert con.execute(layer.compile(metrics=["orders.n_if_no_default"])).fetchall() == [(1,)]
     # A plain aggregate still filters correctly via the generator's column-nulling.
     assert con.execute(layer.compile(metrics=["orders.total"])).fetchall() == [(30,)]
 

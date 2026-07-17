@@ -305,16 +305,29 @@ class LookMLAdapter(BaseAdapter):
         # to true and counts the row; (2) a keyed symmetric-distinct aggregate hashes the key
         # (`HASH(col)`), and HASH(NULL) is a non-NULL constant, so the row still contributes
         # (garbage). In those cases fold the filter into the aggregate predicate instead.
-        # (3) a CASE with an ELSE default also survives nulling: nulling the predicate's column
-        # only makes the WHEN false, and ELSE still yields a non-NULL value, so the aggregate
-        # keeps counting the excluded row -- e.g. COUNT(CASE WHEN status='completed' THEN 1
-        # ELSE 0 END) returns EVERY row rather than the filtered ones.
+        # (3) a conditional with a non-NULL DEFAULT branch also survives nulling: nulling the
+        # predicate's column only makes the condition false, and the default still yields a
+        # non-NULL value, so the aggregate keeps counting the excluded row -- e.g.
+        # COUNT(CASE WHEN status='completed' THEN 1 ELSE 0 END) or its IF/IFF spellings return
+        # EVERY row rather than the filtered ones. Covers:
+        #   - CASE ... ELSE <x>            -> exp.Case with a `default`
+        #   - IF(cond, a, b)               -> exp.If with a non-None `false` branch. A CASE's own
+        #                                     WHEN clauses are exp.If with false=None, so a plain
+        #                                     CASE (no ELSE) is NOT matched here.
+        #   - IFF(cond, a, b) (Snowflake)  -> parsed as exp.Anonymous with 3 args
+        # (NVL / IFNULL already parse as exp.Coalesce, covered above.)
         case_with_default = any(c.args.get("default") is not None for c in tree.find_all(exp.Case))
+        if_with_default = any(n.args.get("false") is not None for n in tree.find_all(exp.If))
+        iff_with_default = any(
+            (n.name or "").lower() in ("iff", "if") and len(n.expressions) >= 3 for n in tree.find_all(exp.Anonymous)
+        )
         unsafe_nulling = (
             tree.find(exp.Is) is not None
             or tree.find(exp.Coalesce) is not None
             or "hash(" in sql.lower()
             or case_with_default
+            or if_with_default
+            or iff_with_default
         )
         # Otherwise, if every aggregate already references a column the generator can null
         # (nulling the value/ORDER-BY column filters it; aggregates ignore NULLs), the

@@ -5414,6 +5414,95 @@ def test_lookml_drop_metrics_uses_provenance_marker_not_base_ref():
     _drop_non_registerable_models({"base": template, "orders": orders}, metrics2)
     assert "pop" not in metrics2
 
+    # A LATER file can OVERWRITE the template's name with a real model, so NOTHING is dropped
+    # this pass -- the marked metric is still orphaned and must go. Keying the cleanup off
+    # "something was dropped" left it registered and broke compile with "No models found".
+    real_base = Model(name="base", table="real_base", metrics=[Metric(name="cnt", agg="count", sql="id")])
+    metrics3 = {"pop": pop("revenue", template_metric=True)}
+    kept = _drop_non_registerable_models({"base": real_base, "orders": orders}, metrics3)
+    assert "pop" not in metrics3
+    assert set(kept) == {"base", "orders"}  # nothing dropped: only the orphaned metric goes
+
+
+def test_lookml_template_metric_dropped_when_later_file_overwrites_template():
+    """A template's orphaned metric must go even when a later file reuses the template's name.
+
+    The template is skipped, but a native file defining a real `base` overwrites it in the model
+    dict, so the load drops NOTHING -- and the cleanup, gated on a drop having happened, left the
+    template's auto-registered `pop` behind. `compile(metrics=["pop"])` then failed with
+    "No models found for query".
+    """
+    import tempfile
+
+    from sidemantic import SemanticLayer
+    from sidemantic.loaders import load_from_directory
+
+    directory = Path(tempfile.mkdtemp())
+    (directory / "base.view.lkml").write_text(
+        """view: base {
+  extension: required
+  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }
+  dimension_group: created { type: time  timeframes: [date]  sql: ${TABLE}.created ;; }
+  measure: revenue { type: sum  sql: ${TABLE}.amount ;; }
+  measure: pop { type: period_over_period  based_on: revenue  based_on_time: created_date  period: year }
+}
+"""
+    )
+    # Sorts after the .lkml file, so it overwrites `base` with a real model.
+    (directory / "zz_native.py").write_text(
+        "from sidemantic import Dimension, Metric, Model\n"
+        'model = Model(name="base", table="real_base", primary_key="id",\n'
+        '              dimensions=[Dimension(name="id", type="numeric", sql="id")],\n'
+        '              metrics=[Metric(name="cnt", agg="count", sql="id")])\n'
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, directory, strict=False)
+
+    assert layer.graph.models["base"].table == "real_base"  # the real model won
+    assert "pop" not in layer.graph.metrics  # the template's orphan did not survive it
+
+
+def test_lookml_included_view_does_not_extend_unincluded_parent():
+    """An included view must not inherit fields from a parent no model include reaches.
+
+    A unique view is installed even when un-included (an imperfectly-resolved include must never
+    silently drop a view), but loaded is not in-scope: `extends: [base]` resolving against an
+    archived `base` merged fields Looker would never expose in that model. The parent is treated
+    as absent instead, leaving the child's extends unresolved -- the child still loads.
+    """
+    import tempfile
+
+    child = "view: orders {\n  extends: [base]\n  sql_table_name: orders ;;\n  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }\n}\n"
+    parent = "view: base {\n  sql_table_name: base_t ;;\n  dimension: secret { sql: ${TABLE}.secret ;; }\n  measure: leaked { type: sum  sql: ${TABLE}.amount ;; }\n}\n"
+
+    def fields(parent_dir, include):
+        directory = Path(tempfile.mkdtemp())
+        (directory / "views").mkdir()
+        (directory / parent_dir).mkdir(exist_ok=True)
+        (directory / "orders.model.lkml").write_text(f'include: "{include}"\n')
+        (directory / "views" / "orders.view.lkml").write_text(child)
+        (directory / parent_dir / "base.view.lkml").write_text(parent)
+        graph = LookMLAdapter().parse(str(directory))
+        model = graph.get_model("orders")
+        return graph, {d.name for d in model.dimensions} | {m.name for m in model.metrics}
+
+    # Parent in archive/: NOT reached by the model's include -> not inherited.
+    graph, archived = fields("archive", "/views/orders.view.lkml")
+    assert archived == {"id"}, archived
+    assert "base" in graph.models  # the un-included view still LOADS; it is just not a parent
+
+    # Parent reached by the include -> inherited as before.
+    _, included = fields("views", "/views/*.view.lkml")
+    assert {"secret", "leaked"} <= included, included
+
+    # With no include declared anywhere, scoping is off and inheritance is unaffected.
+    plain = Path(tempfile.mkdtemp())
+    (plain / "orders.view.lkml").write_text(child)
+    (plain / "base.view.lkml").write_text(parent)
+    model = LookMLAdapter().parse(str(plain)).get_model("orders")
+    assert {"secret", "leaked"} <= ({d.name for d in model.dimensions} | {m.name for m in model.metrics})
+
 
 def test_lookml_abstract_template_conflicting_with_active_model_is_not_skipped():
     """A template whose name collides with an existing model must not silently take the skip path.

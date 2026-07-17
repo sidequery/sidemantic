@@ -276,6 +276,20 @@ class LookMLAdapter(BaseAdapter):
         )
         extends_parent = {n: m.extends for n, m in graph.models.items() if m.extends}
 
+        def _parent_in_scope(name: str) -> bool:
+            """Whether `name` may be INHERITED from under the project's include scoping.
+
+            A unique view is installed even when no include reaches it (an imperfectly-resolved
+            include must never silently drop a view), but being loaded is not being in a model's
+            scope: letting an included child extend an archived parent merges fields Looker would
+            not expose. Such a parent is treated as absent instead, which leaves the child's
+            extends unresolved -- the child still loads, just without the inherited fields.
+            """
+            if not _scoping_active:
+                return True
+            source = view_source_files.get(name)
+            return source is None or Path(source).resolve() in included_paths
+
         # Resolve extends chains. Pre-filter to models whose full chain
         # is present so one broken/missing parent doesn't block valid ones.
         def _chain_resolvable(name: str, visited: set[str] | None = None) -> bool:
@@ -288,6 +302,8 @@ class LookMLAdapter(BaseAdapter):
                 return False
             if not model.extends:
                 return True
+            if not _parent_in_scope(model.extends):
+                return False
             visited.add(name)
             return _chain_resolvable(model.extends, visited)
 

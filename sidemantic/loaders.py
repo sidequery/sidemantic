@@ -53,7 +53,7 @@ def _drop_non_registerable_models(all_models: dict, all_metrics: dict | None = N
         rels = getattr(model, "relationships", None)
         if rels:
             model.relationships = [r for r in rels if r.name not in dropped]
-    if all_metrics is not None and dropped:
+    if all_metrics is not None:
         # add_model auto-registers a model's GRAPH-LEVEL measures (time_comparison/conversion)
         # into the graph; a dropped template's such measure would linger in all_metrics with
         # its base model gone. Drop by PROVENANCE: the LookML parser stamps a template's graph
@@ -61,6 +61,13 @@ def _drop_non_registerable_models(all_models: dict, all_metrics: dict | None = N
         # the Metric object). That proves the metric came from a dropped template -- unlike a
         # base-ref heuristic, it never drops a same-named STANDALONE metric from another file
         # (no marker) nor mistakes an unqualified base that merely exists on a surviving model.
+        #
+        # The marker alone is the proof, so this does NOT key off `dropped`: the parser only
+        # stamps templates, which are never registerable. Requiring a drop this pass missed the
+        # case where a LATER file OVERWRITES the template name with a real model -- nothing is
+        # dropped, yet the template's orphaned graph metric survives and breaks compile/info.
+        # A same-named metric redefined by that later file overwrites this one and carries no
+        # marker, so it is kept.
         for mn in list(all_metrics):
             if (all_metrics[mn].meta or {}).get("_lookml_template_metric"):
                 all_metrics.pop(mn, None)

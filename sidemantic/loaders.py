@@ -201,7 +201,12 @@ def load_from_directory(
                 source_format="LookML",
                 source_file=str(lookml_root.relative_to(directory)),
             )
-            _handle_parse_error(lookml_root, e, strict=strict)
+            _handle_parse_error(lookml_root, e, strict=strict)  # raises when strict
+            # Non-strict: ONE malformed .lkml must not drop every valid sibling view. Fall back
+            # to the per-file scan below, which loads what it can and warns per bad file (the
+            # non-strict contract used throughout this loader). Cross-file refinements are lost
+            # in that degraded mode, but partial loading beats loading nothing.
+            lookml_root = None
 
     if only_file is None:
         _load_graphene_project(directory, all_models, all_metrics, all_parameters, strict=strict)

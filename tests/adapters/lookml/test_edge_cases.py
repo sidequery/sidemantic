@@ -5327,6 +5327,32 @@ def test_lookml_drop_metrics_uses_provenance_marker_not_base_ref():
     assert "pop" not in metrics2
 
 
+def test_lookml_directory_load_non_strict_falls_back_after_project_parse_error():
+    """A single malformed .lkml must not drop every valid sibling in a non-strict load.
+
+    LookML is parsed as one project, so a parse error there covers the whole tree. Non-strict
+    loading must fall back to the per-file scan (loading what it can, warning about the bad file)
+    rather than skipping every .lkml. Strict mode must still raise.
+    """
+    import tempfile
+
+    from sidemantic import SemanticLayer
+    from sidemantic.loaders import load_from_directory
+
+    directory = Path(tempfile.mkdtemp())
+    (directory / "good.lkml").write_text(
+        "view: good {\n  sql_table_name: raw_good ;;\n  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }\n}\n"
+    )
+    (directory / "bad.lkml").write_text("view: bad { dimension: x { sql: ${TABLE}.x ;; }\n")  # unclosed brace
+
+    layer = SemanticLayer()
+    load_from_directory(layer, directory, strict=False)
+    assert "good" in layer.graph.models  # valid sibling survives the bad file
+
+    with pytest.raises(ValueError):
+        load_from_directory(SemanticLayer(), directory, strict=True)
+
+
 def test_lookml_directory_load_keeps_standalone_metric_overwritten_by_template():
     """A directory load must not lose a standalone metric that shares a template metric's name.
 

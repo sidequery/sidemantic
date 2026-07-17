@@ -363,14 +363,17 @@ class LookMLAdapter(BaseAdapter):
 
     @staticmethod
     def _has_subquery(sql: str) -> bool:
-        """True if ``sql`` contains a SELECT outside any string literal.
+        """True if ``sql`` contains a SELECT outside any quoted token.
 
-        A raw ``\\bselect\\b`` scan also matches the word inside a VALUE, e.g.
-        ``SUM(CASE WHEN status = 'select' THEN amount END)``, which has no subquery and is a
-        perfectly valid inline aggregate. Blank out single-quoted literals first so only real
-        SQL keywords are seen.
+        A raw ``\\bselect\\b`` scan also matches the word inside a VALUE
+        (``SUM(CASE WHEN status = 'select' THEN amount END)``) or inside a quoted IDENTIFIER for a
+        column named after a reserved word (``SUM(${TABLE}."select")``, ``SUM(`select`)``) --
+        neither is a subquery, and both are valid inline aggregates. Blank out every quoted form
+        first -- single-quoted literals, and double-quote / backtick / bracket identifiers (the
+        same protected set the folded-filter splitter uses) -- so only real SQL keywords are seen.
         """
-        return bool(re.search(r"(?is)\bselect\b", re.sub(r"'(?:[^']|'')*'", "''", sql or "")))
+        stripped = re.sub(r"""'(?:[^']|'')*'|"(?:[^"]|"")*"|`[^`]*`|\[[^\]]*\]""", "''", sql or "")
+        return bool(re.search(r"(?is)\bselect\b", stripped))
 
     @classmethod
     def _mixed_is_aggregate_safe(cls, sql: str, is_dim_ref, dim_sql_lookup: dict[str, str] | None = None) -> bool:

@@ -2616,6 +2616,36 @@ view: orders {
     assert float(tax_value) == pytest.approx(180 * 0.07)  # SUM(amount) * 0.07
 
 
+def test_lookml_number_measure_quoted_select_identifier_is_not_a_subquery():
+    """A quoted IDENTIFIER named after a reserved word must not read as a subquery.
+
+    A column named `select` is written quoted -- ${TABLE}."select", `select`, [select] -- and has
+    no subquery, but a bare \\bselect\\b scan matched it and dropped the measure. Every quoted form
+    is blanked before scanning; a REAL subquery is still detected.
+    """
+    conv = LookMLAdapter._has_subquery
+    assert not conv('SUM({model}."select")')  # double-quoted (standard / Postgres / DuckDB)
+    assert not conv("SUM(`select`)")  # backtick (BigQuery / MySQL)
+    assert not conv("SUM([select])")  # bracket (SQL Server)
+    assert not conv("SUM(CASE WHEN {model}.s = 'select' THEN {model}.a END)")  # string VALUE
+    assert conv("SUM({model}.a) / (SELECT SUM(x) FROM t)")  # real subquery
+    assert conv('SUM({model}."col") / (SELECT 1)')  # quoted id AND a real subquery
+
+    graph = _parse_lkml(
+        """
+view: orders {
+  sql_table_name: orders ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  measure: s { type: number  sql: SUM(${TABLE}."select") ;; }
+  measure: subq { type: number  sql: SUM(${TABLE}.a) / NULLIF((SELECT SUM(x) FROM t), 0) ;; }
+}
+"""
+    )
+    model = graph.get_model("orders")
+    assert model.get_metric("s") is not None  # was dropped as a phantom subquery
+    assert model.get_metric("subq") is None  # a real subquery is still skipped
+
+
 def test_lookml_number_measure_select_in_string_literal_is_not_a_subquery():
     """The word `select` inside a string VALUE must not be mistaken for a subquery.
 

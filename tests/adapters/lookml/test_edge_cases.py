@@ -4748,6 +4748,16 @@ def test_lookml_export_folded_filter_date_part_guard_is_position_aware():
     assert conds(["DATEDIFF(day, created_at, date) > 1"], model) == (
         "(DATEDIFF(day, (${TABLE}.created_at), (${TABLE}.order_date)) > 1)"
     )
+    # The two TRUNC spellings differ: underscored DATE_TRUNC is BigQuery's (value, part), while
+    # the unspaced DATETRUNC is SQL Server's (part, value).
+    assert conds(["DATETRUNC(month, created_at) = DATE '2024-01-01'"], model) == (
+        "(DATETRUNC(month, (${TABLE}.created_at)) = DATE '2024-01-01')"
+    )
+    # A function with NO bare date-part argument must not protect its slots: time_bucket takes an
+    # INTERVAL, so a keyword-named COLUMN in its last slot is still resolved.
+    assert conds(["time_bucket(INTERVAL '5 minutes', date) = 1"], model) == (
+        "(time_bucket(INTERVAL '5 minutes', (${TABLE}.order_date)) = 1)"
+    )
 
 
 def test_lookml_export_folded_filter_does_not_rewrite_table_qualifier():

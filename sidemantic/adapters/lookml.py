@@ -483,14 +483,18 @@ class LookMLAdapter(BaseAdapter):
     # and a `month` dimension means column `date` truncated to part `month`. Keying only on "is a
     # keyword inside a date function" would wrongly protect the `date` COLUMN too.
     #   -1 => the LAST argument (BigQuery DATE_TRUNC(value, part), DATE_DIFF(a, b, part))
-    #    0 => the FIRST argument (SQL Server DATEADD(part, n, x) / DATEDIFF(part, a, b))
-    # EXTRACT(part FROM x) and INTERVAL n part are handled by their own position checks; quoted
-    # forms (DATE_TRUNC('day', x)) are already protected as string literals.
+    #    0 => the FIRST argument (SQL Server DATETRUNC(part, x) / DATEADD(part, n, x) /
+    #         DATEDIFF(part, a, b); also DuckDB's datetrunc(part, x) spelling)
+    # NOTE the two TRUNC spellings differ: underscored DATE_TRUNC is BigQuery's (value, part) --
+    # Postgres/DuckDB's date_trunc('part', value) quotes the part, so it is already protected as a
+    # string literal -- while the unspaced DATETRUNC is SQL Server's (part, value).
+    # Functions with NO bare date-part argument (time_bucket takes an INTERVAL, not a keyword) are
+    # deliberately absent: listing one would protect whatever sits in that slot, including a real
+    # keyword-named column. EXTRACT(part FROM x) and INTERVAL n part have their own position checks.
     _DATE_PART_ARG_POS = {
-        "date_trunc": -1, "datetrunc": -1, "timestamp_trunc": -1, "datetime_trunc": -1,
-        "time_trunc": -1, "timestamp_bucket": -1, "time_bucket": -1,
+        "date_trunc": -1, "timestamp_trunc": -1, "datetime_trunc": -1, "time_trunc": -1,
         "date_diff": -1, "timestamp_diff": -1, "datetime_diff": -1, "time_diff": -1,
-        "datediff": 0, "dateadd": 0, "datepart": 0, "date_part": 0,
+        "datetrunc": 0, "datediff": 0, "dateadd": 0, "datepart": 0, "date_part": 0,
     }  # fmt: skip
 
     @staticmethod

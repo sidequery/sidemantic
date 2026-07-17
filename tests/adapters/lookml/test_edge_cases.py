@@ -5153,6 +5153,37 @@ def test_lookml_abstract_base_not_registered_inside_layer_context():
     assert layer.graph.get_model("orders").table == "orders"  # concrete child registered
 
 
+def test_lookml_directory_load_merges_cross_file_refinement_before_defaulting_table():
+    """A CLI directory load must merge `+view` refinements from OTHER files before defaulting.
+
+    `view: base` in one file and `view: +base { extension: required }` in another is a normal
+    LookML layout. Parsing each .lkml independently never merged that refinement, so `base` missed
+    its abstract marker, got defaulted to a physical table named `base`, and was registered as
+    queryable -- validate/queries would silently target a fabricated table.
+    """
+    import tempfile
+
+    from sidemantic import SemanticLayer
+    from sidemantic.loaders import load_from_directory
+
+    directory = Path(tempfile.mkdtemp())
+    (directory / "a.lkml").write_text("view: base {\n  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }\n}\n")
+    (directory / "b.lkml").write_text("view: +base {\n  extension: required\n}\n")
+    (directory / "c.lkml").write_text(
+        "view: orders {\n  extends: [base]\n  sql_table_name: raw_orders ;;\n  measure: cnt { type: count }\n}\n"
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, directory)
+
+    # The refined abstract base stays non-queryable instead of getting a fabricated table.
+    assert "base" not in layer.graph.models
+    orders = layer.graph.get_model("orders")
+    assert orders.table == "raw_orders"
+    # Per-file provenance still points at the DEFINING file, not the project root.
+    assert getattr(orders, "_source_file", None) == "c.lkml"
+
+
 def test_lookml_broken_tableless_view_surfaces_error_inside_layer_context():
     """A genuinely-broken tableless view (unresolved extends) must NOT be silently skipped.
 

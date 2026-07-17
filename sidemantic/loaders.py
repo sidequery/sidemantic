@@ -164,6 +164,45 @@ def load_from_directory(
             _handle_parse_error(tmdl_root, e, strict=strict)
             logging.warning("Could not parse TMDL models in %s: %s", tmdl_root, e)
 
+    # LookML projects are folder-based: a view and its `+view` refinement (or an `extends` base)
+    # routinely live in DIFFERENT .lkml files. Parsing each file independently never merges those
+    # refinements, so an `extension: required` abstract base would miss its marker, get defaulted
+    # to a physical table, and be registered as queryable -- CLI validate/queries would silently
+    # target a fabricated table. Parse the whole tree once instead (mirrors the TMDL handling).
+    lookml_root = None
+    if only_file is None and any(directory.rglob("*.lkml")):
+        lookml_root = directory
+
+    if lookml_root:
+        try:
+            graph = _run_without_auto_registration(LookMLAdapter().parse, str(lookml_root))
+            _merge_graph_passthrough_metadata(layer.graph, graph)
+            _extend_import_warnings(import_warnings, graph)
+            for model in graph.models.values():
+                if not hasattr(model, "_source_format"):
+                    model._source_format = "LookML"
+                # The adapter stamps the defining .lkml file; make it relative to the load root.
+                src = getattr(model, "_source_file", None)
+                if src:
+                    try:
+                        model._source_file = str(Path(src).relative_to(directory))
+                    except ValueError:
+                        pass
+                else:
+                    model._source_file = str(lookml_root.relative_to(directory))
+            all_models.update(graph.models)
+            all_metrics.update(graph.metrics)
+            all_parameters.update(graph.parameters)
+        except Exception as e:
+            _append_import_warning(
+                import_warnings,
+                code="adapter_parse_error",
+                message=str(e),
+                source_format="LookML",
+                source_file=str(lookml_root.relative_to(directory)),
+            )
+            _handle_parse_error(lookml_root, e, strict=strict)
+
     if only_file is None:
         _load_graphene_project(directory, all_models, all_metrics, all_parameters, strict=strict)
 
@@ -185,6 +224,8 @@ def load_from_directory(
                 continue
             adapter = TMDLAdapter()
         elif suffix == ".lkml":
+            if lookml_root:
+                continue  # already parsed as one project above (cross-file refinements)
             adapter = LookMLAdapter()
         elif suffix == ".malloy":
             from sidemantic.adapters.malloy import MalloyAdapter

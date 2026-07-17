@@ -92,10 +92,16 @@ class LookMLAdapter(BaseAdapter):
         else:
             lkml_files = [source_path]
 
-        # First pass: parse all views, collecting refinements separately
+        # First pass: parse all views, collecting refinements separately. Remember which file
+        # defined each view so a whole-project (directory) load still reports per-file
+        # provenance instead of just the project root.
         refinements: list[Model] = []
+        view_source_files: dict[str, str] = {}
         for lkml_file in lkml_files:
+            _before = set(graph.models)
             self._parse_views_from_file(lkml_file, graph, refinements)
+            for _new in set(graph.models) - _before:
+                view_source_files[_new] = str(lkml_file)
 
         # Snapshot abstract / unsupported-derived_table flags BEFORE refinement merge:
         # merge_model REPLACES a base view's meta when the refinement carries metadata,
@@ -245,6 +251,14 @@ class LookMLAdapter(BaseAdapter):
 
         # Rebuild adjacency graph now that relationships have been added
         graph.build_adjacency()
+
+        # Stamp per-file provenance LAST: refinement/extends resolution can REPLACE a model
+        # object, which would drop an earlier stamp. Loaders only fills _source_file when it is
+        # unset, so this keeps per-file attribution for a whole-project load.
+        for _name, _model in graph.models.items():
+            _src = view_source_files.get(_name)
+            if _src and not hasattr(_model, "_source_file"):
+                _model._source_file = _src
 
         return graph
 
@@ -4058,7 +4072,9 @@ class LookMLAdapter(BaseAdapter):
         ``_parse_dimension``). If the source SQL is already a DATE_TRUNC at this grain it
         is reused verbatim, keeping repeated round-trips stable (no nested truncation).
         """
-        src = (group_sql if group_sql is not None else dim.sql) or ""
+        # Fall back to the dimension's DEFAULT column expression (sql_expr == sql or name) when it
+        # has no explicit sql -- an empty string would emit `sql: DATE_TRUNC('hour', ) ;;`.
+        src = (group_sql if group_sql is not None else dim.sql) or dim.sql_expr
         src = src.replace("{model}", "${TABLE}")
         grain = (dim.granularity or "").lower()
         tf = (dim.meta or {}).get("lookml_timeframe")

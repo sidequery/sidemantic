@@ -2508,6 +2508,75 @@ view: orders {
     assert con.execute(layer.compile(metrics=["orders.triple_sum"])).fetchall() == [(390,)]  # 260 + 130
 
 
+def test_lookml_number_measure_constant_dimension_is_aggregate_safe():
+    """A CONSTANT-valued dimension in a mixed number measure must not read as a raw column.
+
+    `dimension: tax_rate { sql: 0.07 ;; }` plus `tax = ${total} * ${tax_rate}` resolves to
+    `SUM(amount) * 0.07` -- valid aggregate SQL with no ungrouped column. Probing the ref as a
+    synthetic `t.tax_rate` column wrongly flagged it as raw and dropped the measure.
+    """
+    import duckdb
+
+    from sidemantic import SemanticLayer
+
+    graph = _parse_lkml(
+        """
+view: orders {
+  sql_table_name: orders ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: amount { type: number  sql: ${TABLE}.amount ;; }
+  dimension: tax_rate { type: number  sql: 0.07 ;; }
+  measure: total { type: sum  sql: ${amount} ;; }
+  measure: tax { type: number  sql: ${total} * ${tax_rate} ;; }
+}
+"""
+    )
+    model = graph.get_model("orders")
+    assert model.get_metric("tax") is not None  # was dropped as an ungrouped column
+    layer = SemanticLayer(auto_register=False)
+    layer.add_model(model)
+    con = duckdb.connect()
+    con.execute("create table orders(id int, amount int)")
+    con.execute("insert into orders values (1,100),(2,50),(3,30)")
+    # DuckDB returns a Decimal for the constant-scaled product; compare numerically.
+    (tax_value,) = con.execute(layer.compile(metrics=["orders.tax"])).fetchone()
+    assert float(tax_value) == pytest.approx(180 * 0.07)  # SUM(amount) * 0.07
+
+
+def test_lookml_number_measure_select_in_string_literal_is_not_a_subquery():
+    """The word `select` inside a string VALUE must not be mistaken for a subquery.
+
+    `SUM(CASE WHEN ${status} = 'select' THEN ${amount} END)` has no subquery and is a valid
+    inline aggregate; a raw \\bselect\\b scan matched the literal and dropped it. A REAL subquery
+    must still be skipped.
+    """
+    import duckdb
+
+    from sidemantic import SemanticLayer
+
+    graph = _parse_lkml(
+        """
+view: orders {
+  sql_table_name: orders ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: amount { type: number  sql: ${TABLE}.amount ;; }
+  dimension: status { type: string  sql: ${TABLE}.status ;; }
+  measure: sel { type: number  sql: SUM(CASE WHEN ${status} = 'select' THEN ${amount} END) ;; }
+  measure: subq { type: number  sql: SUM(${amount}) / NULLIF((SELECT SUM(amount) FROM orders), 0) ;; }
+}
+"""
+    )
+    model = graph.get_model("orders")
+    assert model.get_metric("sel") is not None  # literal 'select' is not a subquery
+    assert model.get_metric("subq") is None  # a real subquery is still skipped
+    layer = SemanticLayer(auto_register=False)
+    layer.add_model(model)
+    con = duckdb.connect()
+    con.execute("create table orders(id int, amount int, status text)")
+    con.execute("insert into orders values (1,100,'completed'),(2,50,'select'),(3,30,'completed')")
+    assert con.execute(layer.compile(metrics=["orders.sel"])).fetchall() == [(50,)]
+
+
 def test_lookml_number_measure_unsafe_intermediate_not_expandable():
     """A number measure _parse_measure skips as unsafe must not be inlined into a later measure.
 

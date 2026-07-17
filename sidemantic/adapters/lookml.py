@@ -345,21 +345,40 @@ class LookMLAdapter(BaseAdapter):
         except Exception:
             return None
 
+    @staticmethod
+    def _has_subquery(sql: str) -> bool:
+        """True if ``sql`` contains a SELECT outside any string literal.
+
+        A raw ``\\bselect\\b`` scan also matches the word inside a VALUE, e.g.
+        ``SUM(CASE WHEN status = 'select' THEN amount END)``, which has no subquery and is a
+        perfectly valid inline aggregate. Blank out single-quoted literals first so only real
+        SQL keywords are seen.
+        """
+        return bool(re.search(r"(?is)\bselect\b", re.sub(r"'(?:[^']|'')*'", "''", sql or "")))
+
     @classmethod
-    def _mixed_is_aggregate_safe(cls, sql: str, is_dim_ref) -> bool:
+    def _mixed_is_aggregate_safe(cls, sql: str, is_dim_ref, dim_sql_lookup: dict[str, str] | None = None) -> bool:
         """For a ``type: number`` measure that mixes measure refs with dimension refs,
         return True iff every dimension column ends up INSIDE an aggregate (no raw,
         ungrouped column -- which would be a GROUP BY error).
 
-        Probes with measure refs as aggregate-valued constants (``1``) and dimension
-        refs as raw columns (``t.<name>``), then checks via sqlglot that no column sits
-        outside an aggregate. Returns False on any parse failure (treat as unsafe).
+        Probes with measure refs as aggregate-valued constants (``1``) and dimension refs
+        as their RESOLVED SQL (falling back to a raw column ``t.<name>`` for a compact
+        dimension with no explicit sql), then checks via sqlglot that no column sits
+        outside an aggregate. Using the resolved SQL matters for a CONSTANT-valued
+        dimension (``sql: 0.07 ;;``): probing it as ``t.<name>`` would look like a raw
+        ungrouped column and wrongly drop a valid measure such as
+        ``${total} * ${tax_rate}`` (really ``SUM(amount) * 0.07``).
+        Returns False on any parse failure (treat as unsafe).
         """
 
         def _probe(m):
             v, rn = m.group(1), m.group(2)
             if v is None and rn != "TABLE" and is_dim_ref(rn):
-                return f"t.{rn}"
+                # Parenthesized so the substituted expression keeps its precedence; the
+                # caller's {model} -> t replacement below rewrites any table qualifier.
+                dim_sql = (dim_sql_lookup or {}).get(rn)
+                return f"({dim_sql})" if dim_sql else f"t.{rn}"
             return "1"
 
         probe = cls._REF_RE.sub(_probe, sql).replace("{model}", "t")
@@ -1126,7 +1145,7 @@ class LookMLAdapter(BaseAdapter):
             raw = m_def["sql"].replace("${TABLE}", "{model}")
             refs = [(mm.group(1), mm.group(2)) for mm in self._REF_RE.finditer(raw)]
             # Cross-view refs and subqueries have no inline complete-SQL form.
-            if any(v is not None and rn != "TABLE" for v, rn in refs) or re.search(r"(?is)\bselect\b", raw):
+            if any(v is not None and rn != "TABLE" for v, rn in refs) or self._has_subquery(raw):
                 return None
             # Every measure ref must already be resolvable (a dim, a compact dim, or already in
             # the lookup); otherwise retry next round (it may be a later-added number measure).
@@ -1158,7 +1177,9 @@ class LookMLAdapter(BaseAdapter):
             # `outer: ${bad} / NULLIF(COUNT(*), 0)` would inline that raw ungrouped column and
             # fail on grouped queries instead of the unsupported measure being unavailable.
             if not self._mixed_is_aggregate_safe(
-                raw, lambda rn: rn in resolved_dimension_sql or rn in declared_dim_names
+                raw,
+                lambda rn: rn in resolved_dimension_sql or rn in declared_dim_names,
+                resolved_dimension_sql,
             ):
                 return None
             joined = _folded_measure_filter(m_def)
@@ -1889,7 +1910,7 @@ class LookMLAdapter(BaseAdapter):
                 )
                 expand_measures = needs_complete and referenced_measure
                 if needs_complete:
-                    if re.search(r"(?is)\bselect\b", sql):
+                    if self._has_subquery(sql):
                         # A scalar subquery in the expr can't go through the complete-SQL
                         # path: its builder rewrites EVERY parsed column -- including columns
                         # INSIDE the subquery -- to this measure's CTE raw alias, producing a
@@ -1911,7 +1932,11 @@ class LookMLAdapter(BaseAdapter):
                         and m.group(2) not in measure_full_sql_lookup
                         for m in self._REF_RE.finditer(sql)
                     )
-                    if cross_view or unexpandable or not self._mixed_is_aggregate_safe(sql, _is_dim_ref):
+                    if (
+                        cross_view
+                        or unexpandable
+                        or not self._mixed_is_aggregate_safe(sql, _is_dim_ref, dimension_sql_lookup)
+                    ):
                         logger.warning(
                             "LookML number measure %r combines a measure/dimension reference with "
                             "a raw ungrouped column or an unsupported reference, which has no valid "

@@ -139,18 +139,31 @@ class LookMLAdapter(BaseAdapter):
         includes_by_file: dict[Path, list[str]] = {}
         for _including_file, _pattern in include_specs:
             includes_by_file.setdefault(_including_file.resolve(), []).append(_pattern)
-        _model_files = [f for f in includes_by_file if f.name.endswith(".model.lkml")]
+
+        def _include_closure(start: Path) -> set[Path]:
+            """Files reachable from `start` through include:, including `start` itself."""
+            reached = {start}
+            queue = [start]
+            while queue:
+                current = queue.pop()
+                for pattern in includes_by_file.get(current, []):
+                    for hit in self._resolve_include(_include_root, current, pattern):
+                        if hit not in reached:
+                            reached.add(hit)
+                            queue.append(hit)
+            return reached
+
+        # EVERY model file seeds the closure, not just the ones that declare includes: a
+        # self-contained model (its own views and explores, no include:) belongs to the project
+        # just as much as an include-based sibling and must not be scoped out by one.
+        _model_files = [f.resolve() for f in lkml_files if f.name.endswith(".model.lkml")]
+        # Scoping only ACTIVATES once some model declares an include. Seeding unconditionally
+        # would scope an include-free project down to its model files alone.
+        _scoping_active = any(f in includes_by_file for f in _model_files)
         included_paths: set[Path] = set()
-        if _model_files:
-            included_paths |= set(_model_files)  # a model file is part of its own project
-            _queue = list(_model_files)
-            while _queue:
-                _current = _queue.pop()
-                for _pattern in includes_by_file.get(_current, []):
-                    for _hit in self._resolve_include(_include_root, _current, _pattern):
-                        if _hit not in included_paths:
-                            included_paths.add(_hit)
-                            _queue.append(_hit)
+        if _scoping_active:
+            for _model_file in _model_files:
+                included_paths |= _include_closure(_model_file)
 
         # Install base views, resolving a SAME-NAME collision between files by include: an
         # archived copy of a view alongside the live one would otherwise make add_model raise
@@ -320,13 +333,23 @@ class LookMLAdapter(BaseAdapter):
 
         _apply_default_tables()
 
-        # Second pass: parse explores and add relationships. Scope them the same way refinements
-        # are: an explore in a model file no include reaches -- an archived or alternate model --
-        # would otherwise mutate the LIVE model by adding its joins/segments. A file DECLARING
-        # includes is part of the project (that is where explores normally live), so the active
-        # model file is unaffected; with no includes declared nothing is filtered.
+        # Second pass: parse explores and add relationships. Once the project declares includes,
+        # an explore is scoped to the views ITS OWN model file can see -- the views that file
+        # defines inline plus the views its include closure reaches. Looker resolves a model's
+        # fields that way, and loading the tree as one project otherwise lets an archived or
+        # alternate model's joins/segments silently mutate the LIVE model. A self-contained model
+        # (inline views, no include:) still sees its own views; an archived model that includes
+        # nothing and defines nothing sees none, so its explores cannot attach anywhere.
+        _view_files = {name: Path(src).resolve() for name, src in view_source_files.items()}
         for lkml_file in lkml_files:
-            if included_paths and lkml_file.resolve() not in included_paths:
+            _resolved = lkml_file.resolve()
+            if _scoping_active and _resolved in _model_files:
+                _scope = _include_closure(_resolved)
+                self._parse_explores_from_file(
+                    lkml_file, graph, allowed_views={v for v, src in _view_files.items() if src in _scope}
+                )
+                continue
+            if included_paths and _resolved not in included_paths:
                 logger.debug("Ignoring LookML explores in %s: not reached by any include.", lkml_file)
                 continue
             self._parse_explores_from_file(lkml_file, graph)
@@ -449,12 +472,16 @@ class LookMLAdapter(BaseAdapter):
                         raw_view_defs[model.name] = view_def
                     graph.add_model(model)
 
-    def _parse_explores_from_file(self, file_path: Path, graph: SemanticGraph) -> None:
+    def _parse_explores_from_file(
+        self, file_path: Path, graph: SemanticGraph, allowed_views: set[str] | None = None
+    ) -> None:
         """Parse explores from a single LookML file and add relationships.
 
         Args:
             file_path: Path to .lkml file
             graph: Semantic graph to add relationships to
+            allowed_views: Base views this file may explore, or None to allow any. Scopes a model
+                file's explores to the views it defines or includes, as Looker resolves them.
         """
         lkml = _import_lkml()
 
@@ -468,6 +495,16 @@ class LookMLAdapter(BaseAdapter):
 
         # Parse explores
         for explore_def in parsed.get("explores") or []:
+            if allowed_views is not None:
+                base_view = explore_def.get("from", explore_def.get("name"))
+                if base_view not in allowed_views:
+                    logger.debug(
+                        "Ignoring LookML explore %s in %s: view %s is not in the model's scope.",
+                        explore_def.get("name"),
+                        file_path,
+                        base_view,
+                    )
+                    continue
             self._parse_explore(explore_def, graph)
 
     # Matches ${field} and ${view.field}. ${TABLE} is handled specially.

@@ -5572,6 +5572,39 @@ def test_lookml_only_model_file_includes_activate_scoping():
     assert LookMLAdapter().parse(str(scoped)).get_model("orders").table == "real_orders"
 
 
+def test_lookml_every_model_file_seeds_include_scoping():
+    """A self-contained model file must not be scoped out by an include-based sibling.
+
+    Seeding the include closure only from models that DECLARE `include:` left a model carrying
+    its own views and explores unseeded, so once a sibling model switched scoping on, the
+    self-contained file looked un-included and its explore segment was silently dropped.
+    """
+    import tempfile
+
+    view = "view: %s {\n  sql_table_name: %s ;;\n  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }\n}\n"
+
+    directory = Path(tempfile.mkdtemp())
+    (directory / "views").mkdir()
+    (directory / "one.model.lkml").write_text('include: "/views/*.view.lkml"\n')
+    (directory / "views" / "orders.view.lkml").write_text(view % ("orders", "real_orders"))
+    # Declares no includes: its view and explore live in the file itself.
+    (directory / "two.model.lkml").write_text(
+        (view % ("local", "local_tbl")) + "explore: local {\n  sql_always_where: ${local.id} > 0 ;;\n}\n"
+    )
+
+    graph = LookMLAdapter().parse(str(directory))
+    assert [s.name for s in graph.get_model("local").segments] == ["_sql_always_where_local"]
+    # The include-based sibling still loads normally.
+    assert graph.get_model("orders").table == "real_orders"
+
+    # Model files present but NONE declaring an include leaves scoping off entirely.
+    unscoped = Path(tempfile.mkdtemp())
+    (unscoped / "m.model.lkml").write_text("explore: orders {}\n")
+    (unscoped / "orders.view.lkml").write_text(view % ("orders", "real_orders"))
+    (unscoped / "ref.view.lkml").write_text("view: +orders {\n  sql_table_name: REFINED ;;\n}\n")
+    assert LookMLAdapter().parse(str(unscoped)).get_model("orders").table == "REFINED"
+
+
 def test_lookml_project_parse_ignores_explores_from_unincluded_files():
     """An explore in a model file no include reaches must not mutate the live model.
 

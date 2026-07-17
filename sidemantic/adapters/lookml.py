@@ -237,9 +237,18 @@ class LookMLAdapter(BaseAdapter):
         # The view scope of every file a model reaches: the views that model defines inline plus
         # the views its include closure reaches. Keyed on REACHABILITY, not file name -- a model's
         # explores routinely live in an included sidecar (orders.explore.lkml), which inherits the
-        # includer's scope. A file reached by several models sees the UNION of their scopes, the
-        # closest single-graph answer to Looker resolving each model separately.
+        # includer's scope.
+        #
+        # Kept BOTH per model (_scopes_by_file) and unioned (_scope_by_file), because the two
+        # consumers need different things from a file several models reach:
+        #  - An explore must be checked against ONE model's scope: the union would let it join a
+        #    base view from model A to a target only model B includes, a pair no single LookML
+        #    model can see.
+        #  - An extends is checked from the CHILD's file, and the child is in the scope of every
+        #    model reaching that file, so "parent in the union" already means "some one model sees
+        #    child and parent both" -- exactly the per-model rule.
         _view_files = {name: Path(src).resolve() for name, src in view_source_files.items()}
+        _scopes_by_file: dict[Path, list[set[str]]] = {}
         _scope_by_file: dict[Path, set[str]] = {}
         # Which model files reach each file. Used to tell a refinement that every model sharing a
         # view agrees on from one only SOME of them select.
@@ -249,6 +258,7 @@ class LookMLAdapter(BaseAdapter):
                 _closure = _include_closure(_model_file)
                 _allowed = {v for v, src in _view_files.items() if src in _closure}
                 for _reached in _closure:
+                    _scopes_by_file.setdefault(_reached, []).append(_allowed)
                     _scope_by_file.setdefault(_reached, set()).update(_allowed)
                     _models_by_file.setdefault(_reached, set()).add(_model_file)
 
@@ -501,10 +511,10 @@ class LookMLAdapter(BaseAdapter):
             if not _scoping_active:
                 self._parse_explores_from_file(lkml_file, graph)
                 continue
-            if _resolved not in _scope_by_file:
+            if _resolved not in _scopes_by_file:
                 logger.debug("Ignoring LookML explores in %s: not reached by any include.", lkml_file)
                 continue
-            self._parse_explores_from_file(lkml_file, graph, allowed_views=_scope_by_file[_resolved])
+            self._parse_explores_from_file(lkml_file, graph, model_scopes=_scopes_by_file[_resolved])
 
         # Re-apply the default: explores can add segments (sql_always_where /
         # always_filter) to an otherwise-fieldless view, which only now makes it
@@ -625,15 +635,15 @@ class LookMLAdapter(BaseAdapter):
                     graph.add_model(model)
 
     def _parse_explores_from_file(
-        self, file_path: Path, graph: SemanticGraph, allowed_views: set[str] | None = None
+        self, file_path: Path, graph: SemanticGraph, model_scopes: list[set[str]] | None = None
     ) -> None:
         """Parse explores from a single LookML file and add relationships.
 
         Args:
             file_path: Path to .lkml file
             graph: Semantic graph to add relationships to
-            allowed_views: Base views this file may explore, or None to allow any. Scopes a model
-                file's explores to the views it defines or includes, as Looker resolves them.
+            model_scopes: One view set per model that includes this file, or None to allow any.
+                Scopes each explore to the views a SINGLE model can see, as Looker resolves them.
         """
         lkml = _import_lkml()
 
@@ -648,7 +658,7 @@ class LookMLAdapter(BaseAdapter):
         # Parse explores. The scope check lives in _parse_explore, which owns the from:/fallback
         # resolution of the base view -- duplicating that resolution here would drift from it.
         for explore_def in parsed.get("explores") or []:
-            self._parse_explore(explore_def, graph, allowed_views=allowed_views)
+            self._parse_explore(explore_def, graph, model_scopes=model_scopes)
 
     # Matches ${field} and ${view.field}. ${TABLE} is handled specially.
     _REF_RE = re.compile(r"\$\{(?:([a-zA-Z_]\w*)\.)?([a-zA-Z_]\w*)\}")
@@ -3920,13 +3930,17 @@ class LookMLAdapter(BaseAdapter):
             **common,
         )
 
-    def _parse_explore(self, explore_def: dict, graph: SemanticGraph, allowed_views: set[str] | None = None) -> None:
+    def _parse_explore(
+        self, explore_def: dict, graph: SemanticGraph, model_scopes: list[set[str]] | None = None
+    ) -> None:
         """Parse LookML explore and add relationships to models.
 
         Args:
             explore_def: Explore definition from parsed LookML
             graph: Semantic graph to add relationships to
-            allowed_views: Views this explore's model file may reference, or None to allow any.
+            model_scopes: One view set per model including this explore's file, or None to allow
+                any. An explore resolves within a SINGLE model, so its base view and joins are
+                checked against the same model's scope rather than the models' combined views.
         """
         explore_name = explore_def.get("name")
         if not explore_name:
@@ -3940,15 +3954,20 @@ class LookMLAdapter(BaseAdapter):
                 return
             base_model_name = explore_name
 
-        # Scope-check the RESOLVED base: an explore on a view this model file neither defines nor
-        # includes is not part of this model, and applying it would mutate the live view.
-        if allowed_views is not None and base_model_name not in allowed_views:
-            logger.debug(
-                "Ignoring LookML explore %s: view %s is not in the model's scope.",
-                explore_name,
-                base_model_name,
-            )
-            return
+        # Scope-check the RESOLVED base: an explore on a view no model including this file defines
+        # or includes is not part of any model, and applying it would mutate the live view. The
+        # models that CAN see the base are the ones this explore could belong to, so its joins are
+        # checked against those and not against every model sharing the file.
+        base_scopes = model_scopes
+        if model_scopes is not None:
+            base_scopes = [scope for scope in model_scopes if base_model_name in scope]
+            if not base_scopes:
+                logger.debug(
+                    "Ignoring LookML explore %s: view %s is not in the scope of any model including this file.",
+                    explore_name,
+                    base_model_name,
+                )
+                return
 
         base_model = graph.models[base_model_name]
 
@@ -4033,14 +4052,33 @@ class LookMLAdapter(BaseAdapter):
             # is left intact: that dangling relationship is a real error `validate` must surface
             # (see _drop_non_registerable_models), and silently dropping it would hide the typo.
             join_target = join_def.get("from", join_def.get("name"))
-            if allowed_views is not None and join_target in graph.models and join_target not in allowed_views:
-                logger.debug(
-                    "Ignoring LookML join %s in explore %s: view %s is not in the model's scope.",
-                    join_def.get("name"),
-                    explore_name,
-                    join_target,
-                )
-                continue
+            if base_scopes is not None and join_target in graph.models:
+                joinable = [scope for scope in base_scopes if join_target in scope]
+                if not joinable:
+                    logger.debug(
+                        "Ignoring LookML join %s in explore %s: no model including this file sees both %s and %s.",
+                        join_def.get("name"),
+                        explore_name,
+                        base_model_name,
+                        join_target,
+                    )
+                    continue
+                if len(joinable) != len(base_scopes):
+                    # Some models that explore this base view do not include the join target, so
+                    # Looker would give them an explore without this join (and reject the file for
+                    # them). One model per view name cannot hold both shapes, so the join is kept
+                    # for the models that do include it and the divergence is reported.
+                    logger.warning(
+                        "LookML explore %r joins %r, which only some of the models including this explore "
+                        "have in scope. The join is applied to the single %r model, so the models missing "
+                        "%r see a join Looker would not give them. Include %r from every model with this "
+                        "explore, or give the models separate explores.",
+                        explore_name,
+                        join_target,
+                        base_model_name,
+                        join_target,
+                        join_target,
+                    )
             relationship = self._parse_join(join_def, base_model_name, explore_name)
             if relationship:
                 # Add relationship to the base model

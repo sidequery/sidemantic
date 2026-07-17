@@ -5991,6 +5991,67 @@ def test_lookml_every_model_file_seeds_include_scoping():
     assert LookMLAdapter().parse(str(unscoped)).get_model("orders").table == "REFINED"
 
 
+def test_lookml_shared_explore_sidecar_checked_against_one_model_scope(caplog):
+    """An explore in a sidecar two models share resolves within ONE model, not their union.
+
+    Giving a shared sidecar the combined view set let `explore: orders { join: customers }` attach
+    when an orders model included only `orders` and a customers model only `customers` -- a pair no
+    single LookML model can see -- wiring queries to an out-of-scope table. Base view and joins are
+    now checked against the same model's scope.
+    """
+    import logging
+    import tempfile
+
+    view = "view: %s {\n  sql_table_name: %s ;;\n  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }\n}\n"
+    sidecar = 'include: "/views/shared.explore.lkml"\n'
+    join = (
+        "explore: orders {\n  join: customers { sql_on: ${orders.id} = ${customers.id} ;; "
+        "relationship: many_to_one }\n}\n"
+    )
+
+    def relationships(*models):
+        directory = Path(tempfile.mkdtemp())
+        (directory / "views").mkdir()
+        for name, include in models:
+            (directory / f"{name}.model.lkml").write_text(include)
+        for name in ("orders", "customers"):
+            (directory / "views" / f"{name}.view.lkml").write_text(view % (name, f"real_{name}"))
+        (directory / "views" / "shared.explore.lkml").write_text(join)
+        graph = LookMLAdapter().parse(str(directory))
+        return [r.name for r in (graph.get_model("orders").relationships or [])]
+
+    # Neither model sees both views: the join belongs to no model.
+    assert (
+        relationships(
+            ("orders", 'include: "/views/orders.view.lkml"\n' + sidecar),
+            ("customers", 'include: "/views/customers.view.lkml"\n' + sidecar),
+        )
+        == []
+    )
+
+    # One model seeing both still wires it.
+    assert relationships(("both", 'include: "/views/*.view.lkml"\n' + sidecar)) == ["customers"]
+
+    # Two models that both see everything agree: no divergence to report.
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="sidemantic.adapters.lookml"):
+        wired = relationships(
+            ("a", 'include: "/views/*.view.lkml"\n' + sidecar), ("b", 'include: "/views/*.view.lkml"\n' + sidecar)
+        )
+    assert wired == ["customers"]
+    assert "only some of the models" not in caplog.text
+
+    # One model has the target and another does not: kept for the model that does, and reported.
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="sidemantic.adapters.lookml"):
+        wired = relationships(
+            ("a", 'include: "/views/*.view.lkml"\n' + sidecar),
+            ("b", 'include: "/views/orders.view.lkml"\n' + sidecar),
+        )
+    assert wired == ["customers"]
+    assert "only some of the models" in caplog.text
+
+
 def test_lookml_included_explore_sidecar_inherits_model_scope():
     """An explore sidecar included by a model must be scoped like the model file itself.
 
@@ -6031,16 +6092,16 @@ def test_lookml_included_explore_sidecar_inherits_model_scope():
         "customers"
     ]
 
-    # A sidecar reached by two models sees the union of their scopes.
+    # A sidecar two models share is checked against ONE model's scope, never their combined views:
+    # neither model below sees both `orders` and `customers`, so the join belongs to no model. See
+    # test_lookml_shared_explore_sidecar_checked_against_one_model_scope for the full contract.
     shared = Path(tempfile.mkdtemp())
     (shared / "a.model.lkml").write_text('include: "orders.view.lkml"\ninclude: "shared.explore.lkml"\n')
     (shared / "b.model.lkml").write_text('include: "customers.view.lkml"\ninclude: "shared.explore.lkml"\n')
     (shared / "orders.view.lkml").write_text(view % ("orders", "real_orders"))
     (shared / "customers.view.lkml").write_text(view % ("customers", "real_customers"))
     (shared / "shared.explore.lkml").write_text(join)
-    assert [r.name for r in (LookMLAdapter().parse(str(shared)).get_model("orders").relationships or [])] == [
-        "customers"
-    ]
+    assert [r.name for r in (LookMLAdapter().parse(str(shared)).get_model("orders").relationships or [])] == []
 
 
 def test_lookml_explore_joins_scoped_to_included_views():

@@ -263,11 +263,49 @@ class LookMLAdapter(BaseAdapter):
         # must let a_ref win even though the walk parsed a_ref first. Files no model reaches keep
         # their sorted-walk position (last); with no include scope at all the sorted order stands,
         # which is what keeps a plain directory load deterministic.
+        _ordered_closures: dict[Path, list[Path]] = {}
         _include_order: dict[Path, int] = {}
         if _scoping_active:
             for _model_file in _model_files:
-                for _reached in _ordered_include_closure(_model_file):
+                _ordered_closures[_model_file] = _ordered_include_closure(_model_file)
+                for _reached in _ordered_closures[_model_file]:
                     _include_order.setdefault(_reached, len(_include_order))
+
+        # Models can disagree: one includes z_ref then a_ref, another the reverse. Looker resolves
+        # each model separately; one model per view name can only be merged in ONE order, and the
+        # first model file's order wins. Report the disagreement rather than silently serving the
+        # other model the wrong overrides. Compares each PAIR of a view's refinement files, so a
+        # model that merely includes MORE of them is not mistaken for a conflict.
+        if _ordered_closures:
+            _ref_files_by_base: dict[str, set[Path]] = {}
+            for _i, _refinement in enumerate(refinements):
+                if _i < len(refinement_source_files):
+                    _ref_files_by_base.setdefault(_refinement.name.lstrip("+"), set()).add(
+                        refinement_source_files[_i].resolve()
+                    )
+            for _base, _ref_files in _ref_files_by_base.items():
+                if len(_ref_files) < 2:
+                    continue
+                _pair_orders: dict[tuple[Path, Path], set[bool]] = {}
+                for _closure in _ordered_closures.values():
+                    _seq = [f for f in _closure if f in _ref_files]
+                    for _first in range(len(_seq)):
+                        for _second in range(_first + 1, len(_seq)):
+                            _a, _b = _seq[_first], _seq[_second]
+                            _key = (_a, _b) if _a < _b else (_b, _a)
+                            _pair_orders.setdefault(_key, set()).add(_a == _key[0])
+                _conflicts = [pair for pair, seen in _pair_orders.items() if len(seen) > 1]
+                if _conflicts:
+                    logger.warning(
+                        "LookML models disagree on the include order of refinements for view %r: %s. Looker "
+                        "applies refinements in each model's own include order, but one model per view name "
+                        "can hold only one result, so the first model file's order is used and the others see "
+                        "overrides Looker would not give them. Align the include order across models, or give "
+                        "the models separate views.",
+                        _base,
+                        "; ".join(sorted(f"{a.name} vs {b.name}" for a, b in _conflicts)),
+                    )
+
         if _include_order and refinement_source_files:
             _unordered = len(_include_order)
             # Stable: refinements from the SAME file keep their in-file order.
@@ -2737,12 +2775,21 @@ class LookMLAdapter(BaseAdapter):
 
         # Get SQL from the resolved lookup if available
         first_timeframe_name = f"{group_name}_{timeframes[0]}" if timeframes else None
+        implicit_sql = False
         if dimension_sql_lookup and first_timeframe_name and first_timeframe_name in dimension_sql_lookup:
             base_sql = dimension_sql_lookup[first_timeframe_name]
         else:
             base_sql = dim_group_def.get("sql")
             if base_sql:
                 base_sql = base_sql.replace("${TABLE}", "{model}")
+            else:
+                # A group that omits `sql` reads Looker's implicit `<group>` column -- ONE column
+                # shared by every timeframe. Leaving sql unset made each generated field fall back
+                # to its OWN name, compiling DATE_TRUNC('day', created_date) against a column that
+                # does not exist. Mark them so export can tell this from an explicit
+                # `sql: ${TABLE}.created ;;` and re-emit the group without inventing a sql.
+                base_sql = "{model}." + group_name
+                implicit_sql = True
 
         # A dimension_group whose base SQL references another view inline (${other.ts})
         # would leak that literal into every generated timeframe field, so drop the whole
@@ -2764,6 +2811,8 @@ class LookMLAdapter(BaseAdapter):
 
             dim = self._build_timeframe_dimension(group_name, timeframe, base_sql, dim_group_def)
             if dim is not None:
+                if implicit_sql:
+                    dim.meta = {**(dim.meta or {}), "_lookml_implicit_group": True}
                 dimensions.append(dim)
 
         return dimensions
@@ -4660,7 +4709,9 @@ class LookMLAdapter(BaseAdapter):
                     base_name = dim.name[: -(len(stored_tf) + 1)]
                     # An imported `dimension_group` that omits `sql` reads ONE implicit column
                     # named after the GROUP (`created`), shared by every timeframe it generates.
-                    implicit_group = dim.sql is None
+                    # The parser resolves those dims to that column and marks them, so this is the
+                    # marker rather than `sql is None`.
+                    implicit_group = bool((dim.meta or {}).get("_lookml_implicit_group"))
                 else:
                     # Native dims (no stored timeframe): strip any known LookML truncation
                     # timeframe suffix, LONGEST first so e.g. `_minute15`/`_time_of_day`/

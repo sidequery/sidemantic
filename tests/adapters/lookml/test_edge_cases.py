@@ -5504,6 +5504,95 @@ def test_lookml_included_view_does_not_extend_unincluded_parent():
     assert {"secret", "leaked"} <= ({d.name for d in model.dimensions} | {m.name for m in model.metrics})
 
 
+def test_lookml_implicit_dimension_group_compiles_against_group_column():
+    """A dimension_group without `sql` reads Looker's implicit `<group>` column.
+
+    Its generated dimensions carried sql=None, so each fell back to its OWN field name and
+    compiled DATE_TRUNC('day', created_date) -- a column that does not exist -- against an
+    otherwise valid view. The dims resolve to `created`, and export still re-emits the group
+    without inventing a `sql`, since an implicit group is marked rather than inferred from sql.
+    """
+    import tempfile
+
+    from sidemantic import SemanticLayer
+
+    directory = Path(tempfile.mkdtemp())
+    (directory / "orders.view.lkml").write_text(
+        """view: orders {
+  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }
+  dimension_group: created {
+    type: time
+    timeframes: [date, week]
+  }
+  measure: cnt { type: count }
+}
+"""
+    )
+    graph = LookMLAdapter().parse(str(directory / "orders.view.lkml"))
+    assert [d.sql for d in graph.get_model("orders").dimensions if d.name == "created_date"] == ["{model}.created"]
+
+    layer = SemanticLayer()
+    layer.graph = graph
+    sql = layer.compile(dimensions=["orders.created_date"], metrics=["orders.cnt"])
+    assert "DATE_TRUNC('day', created)" in sql, sql
+    assert "'day', created_date)" not in sql, sql  # never the generated field name
+
+    # Export still round-trips the group with no invented sql.
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    exported = Path(out).read_text()
+    assert exported.count("dimension_group:") == 1, exported
+    assert "sql:" not in exported[exported.index("dimension_group:") :], exported
+
+
+def test_lookml_conflicting_per_model_refinement_order_warns(caplog):
+    """Models disagreeing on refinement include order must be surfaced, not silently resolved.
+
+    Looker applies refinements in each model's own include order. One model per view name can
+    hold only one result, so a model including z_ref then a_ref and another doing the reverse
+    cannot both be served -- the first model file's order silently won.
+    """
+    import logging
+    import tempfile
+
+    base = "view: orders {\n  sql_table_name: real_orders ;;\n  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }\n}\n"
+    orders_include = 'include: "/views/orders.view.lkml"\n'
+    z_then_a = orders_include + 'include: "/views/z_ref.view.lkml"\ninclude: "/views/a_ref.view.lkml"\n'
+    a_then_z = orders_include + 'include: "/views/a_ref.view.lkml"\ninclude: "/views/z_ref.view.lkml"\n'
+
+    def parse(*models):
+        directory = Path(tempfile.mkdtemp())
+        (directory / "views").mkdir()
+        for name, include in models:
+            (directory / f"{name}.model.lkml").write_text(include)
+        (directory / "views" / "orders.view.lkml").write_text(base)
+        (directory / "views" / "z_ref.view.lkml").write_text("view: +orders {\n  sql_table_name: from_z ;;\n}\n")
+        (directory / "views" / "a_ref.view.lkml").write_text("view: +orders {\n  sql_table_name: from_a ;;\n}\n")
+        return LookMLAdapter().parse(str(directory))
+
+    def order_conflict(*models):
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="sidemantic.adapters.lookml"):
+            graph = parse(*models)
+        return graph, any("disagree on the include order" in r.getMessage() for r in caplog.records)
+
+    graph, conflicted = order_conflict(("a_first", z_then_a), ("b_second", a_then_z))
+    assert conflicted
+    assert graph.get_model("orders").table == "from_a"  # first model file's order; still loads
+
+    # Agreeing models are not a conflict.
+    _, conflicted = order_conflict(("a", z_then_a), ("b", z_then_a))
+    assert not conflicted
+
+    # A model including only SOME of the refinements orders nothing differently.
+    _, conflicted = order_conflict(("a", z_then_a), ("b", orders_include + 'include: "/views/a_ref.view.lkml"\n'))
+    assert not conflicted
+
+    # A single model has nothing to disagree with.
+    _, conflicted = order_conflict(("a", z_then_a))
+    assert not conflicted
+
+
 def test_lookml_refinements_merge_in_include_order_not_pathname_order():
     """Refinements follow the model's include order; the last-included one wins.
 

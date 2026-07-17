@@ -469,6 +469,50 @@ class LookMLAdapter(BaseAdapter):
             return False
         return any(True for _ in tree.find_all(exp.List)) or any(True for _ in tree.find_all(exp.ArrayAgg))
 
+    # SQL date-part keywords, and the date/time functions that take one as an UNQUOTED argument.
+    # A bare token matching BOTH (a keyword inside such a call) is a date part, not a column, so
+    # folded filters must not rewrite it to a dimension's SQL -- e.g. BigQuery's
+    # DATE_TRUNC(created_at, month) on a model that also has a `month` dimension. Gating on the
+    # keyword set keeps a real column argument of the same call (created_at) resolvable.
+    _DATE_PART_KEYWORDS = frozenset(
+        {
+            "year", "quarter", "month", "week", "day", "hour", "minute", "second",
+            "millisecond", "microsecond", "nanosecond", "epoch", "date", "time",
+            "dayofweek", "dayofyear", "dow", "doy", "isoweek", "isoyear", "isodow",
+            "weekday", "yearofweek", "century", "decade", "millennium",
+        }
+    )  # fmt: skip
+    _DATE_PART_FUNCS = frozenset(
+        {
+            "extract", "date_part", "datepart", "date_trunc", "datetrunc", "timestamp_trunc",
+            "datetime_trunc", "time_trunc", "date_diff", "datediff", "timestamp_diff",
+            "datetime_diff", "time_diff", "date_add", "dateadd", "date_sub", "datesub",
+            "timestamp_add", "timestamp_sub", "datetime_add", "datetime_sub", "last_day",
+            "timestamp_bucket", "time_bucket",
+        }
+    )  # fmt: skip
+
+    @staticmethod
+    def _enclosing_function(pre: str) -> str | None:
+        """Name of the function whose open paren directly encloses the end of ``pre``.
+
+        ``pre`` is the text BEFORE a token; scanning backwards for the first unclosed ``(`` and
+        reading the identifier in front of it identifies the call the token sits in (used to tell
+        a date-part argument from a column). Returns None when the token is not inside a call.
+        """
+        depth, i = 0, len(pre) - 1
+        while i >= 0:
+            ch = pre[i]
+            if ch == ")":
+                depth += 1
+            elif ch == "(":
+                if depth == 0:
+                    m = re.search(r"(\w+)\s*$", pre[:i])
+                    return m.group(1) if m else None
+                depth -= 1
+            i -= 1
+        return None
+
     @staticmethod
     def _has_top_level_order_by(s: str) -> bool:
         """True if ``s`` has an ``ORDER BY`` at paren depth 0, outside string literals.
@@ -2976,8 +3020,8 @@ class LookMLAdapter(BaseAdapter):
             lookml_str = lkml.dump(data)
             f.write(lookml_str)
 
-    @staticmethod
-    def _fold_filter_conds(filters: list[str], model: Model) -> str:
+    @classmethod
+    def _fold_filter_conds(cls, filters: list[str], model: Model) -> str:
         """Resolve ``metric.filters`` into an AND-joined, ``${TABLE}``-qualified SQL
         predicate for folding into an exported aggregate measure.
 
@@ -3049,6 +3093,14 @@ class LookMLAdapter(BaseAdapter):
                             re.search(r"(?i)\bextract\s*\(\s*$", pre)
                             or re.match(r"(?is)\s+from\b", suf)
                             or re.search(r"(?i)\binterval\s+(?:[+-]?\d+(?:\.\d+)?|'(?:[^']|'')*')\s*$", pre)
+                            # A date-part KEYWORD passed unquoted to a date/time function, e.g.
+                            # BigQuery's DATE_TRUNC(created_at, month) or DATE_DIFF(a, b, day).
+                            # Gate on the keyword set so a real column argument of the SAME call
+                            # (created_at above) is still resolved.
+                            or (
+                                bare.lower() in cls._DATE_PART_KEYWORDS
+                                and (cls._enclosing_function(pre) or "").lower() in cls._DATE_PART_FUNCS
+                            )
                         ):
                             return m.group(0)
                     name = m.group(1) or bare

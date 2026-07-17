@@ -4650,6 +4650,39 @@ def test_lookml_export_folded_filter_does_not_rewrite_cast_type():
     assert "AS (${TABLE}" not in text  # the cast type is NOT rewritten to a column
 
 
+def test_lookml_export_folded_filter_does_not_rewrite_unquoted_date_part_argument():
+    """An UNQUOTED date part passed to a date/time function must not be rewritten as a column.
+
+    BigQuery-style DATE_TRUNC(created_at, month) / DATE_DIFF(a, b, day) pass the part unquoted, so
+    on a model with `month`/`day` dimensions it became DATE_TRUNC(..., (${TABLE}.order_month)).
+    Protection is gated on the date-part KEYWORD set, so a real column argument of the SAME call
+    (created_at) still resolves, and a keyword-named column outside a date function still resolves.
+    """
+    from sidemantic import Dimension, Model
+
+    model = Model(
+        name="orders",
+        table="raw_orders",
+        primary_key="id",
+        dimensions=[
+            Dimension(name="month", type="time", granularity="month", sql="order_month"),
+            Dimension(name="day", type="time", granularity="day", sql="order_day"),
+            Dimension(name="created_at", type="time", granularity="day", sql="created_at"),
+        ],
+    )
+    conds = LookMLAdapter._fold_filter_conds
+    # The part is protected; the column argument of the same call IS resolved.
+    assert conds(["DATE_TRUNC(created_at, month) = DATE '2024-01-01'"], model) == (
+        "(DATE_TRUNC((${TABLE}.created_at), month) = DATE '2024-01-01')"
+    )
+    assert conds(["DATE_DIFF(created_at, created_at, day) > 1"], model) == (
+        "(DATE_DIFF((${TABLE}.created_at), (${TABLE}.created_at), day) > 1)"
+    )
+    # A keyword-named column used for real is still rewritten (not over-protected).
+    assert conds(["month = '2024-01'"], model) == "((${TABLE}.order_month) = '2024-01')"
+    assert conds(["UPPER(day) = 'X'"], model) == "(UPPER((${TABLE}.order_day)) = 'X')"
+
+
 def test_lookml_export_folded_filter_does_not_rewrite_table_qualifier():
     """A foreign table QUALIFIER that matches a dimension name must not be rewritten.
 

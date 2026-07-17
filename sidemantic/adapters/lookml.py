@@ -4484,7 +4484,12 @@ class LookMLAdapter(BaseAdapter):
                         if dim.name.endswith("_" + tf):
                             base_name = dim.name[: -(len(tf) + 1)]
                             break
-                base_name_groups.setdefault((base_name, dim.sql), []).append(dim)
+                # Key on the EFFECTIVE expression, not the explicit `sql`: two native dims that
+                # both rely on their default column (sql is None for both) still read DIFFERENT
+                # columns -- `started` and `started_hour` -- and keying on None would collapse
+                # them into one dimension_group, emitting a single field backed by the wrong
+                # column and losing the other dim entirely.
+                base_name_groups.setdefault((base_name, dim.sql_expr), []).append(dim)
 
             # When one base name spans multiple source SQLs, only ONE can be the
             # dimension_group (a second `dimension_group: <base>` is illegal LookML);

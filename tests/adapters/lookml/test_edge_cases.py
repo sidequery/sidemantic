@@ -4830,6 +4830,51 @@ def test_lookml_collision_time_dim_multiword_timeframe_suffix_recovered():
         assert grains == {"started_date": "day", "started_time_of_day": "hour"}
 
 
+def test_lookml_time_dims_grouped_by_effective_sql_not_explicit_sql():
+    """Two default-column time dims must not collapse just because both have sql=None.
+
+    `started` and `started_hour` at hour grain with no explicit sql read DIFFERENT columns, but
+    grouping on the raw `sql` field saw None for both and merged them into one dimension_group --
+    emitting a single field bound to the WRONG column and losing the other dim entirely. Group on
+    the EFFECTIVE expression (sql or name). Dims that genuinely share a source still group.
+    """
+    import tempfile
+
+    from sidemantic import Dimension, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    def roundtrip(*dims):
+        graph = SemanticGraph()
+        graph.add_model(
+            Model(
+                name="ev",
+                table="t",
+                primary_key="id",
+                dimensions=[Dimension(name="id", type="numeric", sql="id"), *dims],
+            )
+        )
+        out = tempfile.mktemp(suffix=".lkml")
+        LookMLAdapter().export(graph, out)
+        reimported = LookMLAdapter().parse(Path(out)).get_model("ev")
+        return {d.name: d.sql for d in reimported.dimensions if d.name != "id"}
+
+    # Both default-column: BOTH must survive, and started_hour must read started_hour.
+    both_default = roundtrip(
+        Dimension(name="started", type="time", granularity="hour"),
+        Dimension(name="started_hour", type="time", granularity="hour"),
+    )
+    assert len(both_default) == 2, both_default
+    assert both_default["started_hour"] == "started_hour", both_default  # not the `started` column
+    assert any("started" in (sql or "") for name, sql in both_default.items() if name != "started_hour")
+
+    # A genuinely shared source still collapses into one dimension_group (unchanged).
+    same_source = roundtrip(
+        Dimension(name="started", type="time", granularity="hour", sql="a"),
+        Dimension(name="started_hour", type="time", granularity="hour", sql="a"),
+    )
+    assert same_source == {"started_hour": "a"}, same_source
+
+
 def test_lookml_collision_time_of_day_recovers_timeframe_meta_and_survives_sibling_drop():
     """A collision-exported `time_of_day` standalone must recover its timeframe into meta.
 

@@ -5737,6 +5737,58 @@ def test_lookml_every_model_file_seeds_include_scoping():
     assert LookMLAdapter().parse(str(unscoped)).get_model("orders").table == "REFINED"
 
 
+def test_lookml_included_explore_sidecar_inherits_model_scope():
+    """An explore sidecar included by a model must be scoped like the model file itself.
+
+    Scope was keyed on the file NAME (`.model.lkml`), but explores routinely live in an included
+    `orders.explore.lkml` sidecar. That file fell through to the unscoped branch, so its joins
+    could wire to any loaded unique view -- including an archived one -- and send queries to a
+    stale table. Scope is keyed on reachability instead: a sidecar inherits its includer's scope.
+    """
+    import tempfile
+
+    view = "view: %s {\n  sql_table_name: %s ;;\n  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }\n}\n"
+    join = (
+        "explore: orders {\n  join: customers { sql_on: ${orders.id} = ${customers.id} ;; "
+        "relationship: many_to_one }\n}\n"
+    )
+
+    # Sidecar included by the model; customers.view.lkml is NOT included.
+    archived = Path(tempfile.mkdtemp())
+    (archived / "archive").mkdir()
+    (archived / "orders.model.lkml").write_text('include: "orders.view.lkml"\ninclude: "orders.explore.lkml"\n')
+    (archived / "orders.view.lkml").write_text(view % ("orders", "real_orders"))
+    (archived / "orders.explore.lkml").write_text(join)
+    (archived / "archive" / "customers.view.lkml").write_text(view % ("customers", "archived_cust"))
+
+    graph = LookMLAdapter().parse(str(archived))
+    assert [r.name for r in (graph.get_model("orders").relationships or [])] == []
+    assert graph.models["customers"].table == "archived_cust"  # loaded, but never joined
+
+    # The same sidecar wires normally when the model includes the join target.
+    included = Path(tempfile.mkdtemp())
+    (included / "orders.model.lkml").write_text(
+        'include: "orders.view.lkml"\ninclude: "customers.view.lkml"\ninclude: "orders.explore.lkml"\n'
+    )
+    (included / "orders.view.lkml").write_text(view % ("orders", "real_orders"))
+    (included / "customers.view.lkml").write_text(view % ("customers", "real_customers"))
+    (included / "orders.explore.lkml").write_text(join)
+    assert [r.name for r in (LookMLAdapter().parse(str(included)).get_model("orders").relationships or [])] == [
+        "customers"
+    ]
+
+    # A sidecar reached by two models sees the union of their scopes.
+    shared = Path(tempfile.mkdtemp())
+    (shared / "a.model.lkml").write_text('include: "orders.view.lkml"\ninclude: "shared.explore.lkml"\n')
+    (shared / "b.model.lkml").write_text('include: "customers.view.lkml"\ninclude: "shared.explore.lkml"\n')
+    (shared / "orders.view.lkml").write_text(view % ("orders", "real_orders"))
+    (shared / "customers.view.lkml").write_text(view % ("customers", "real_customers"))
+    (shared / "shared.explore.lkml").write_text(join)
+    assert [r.name for r in (LookMLAdapter().parse(str(shared)).get_model("orders").relationships or [])] == [
+        "customers"
+    ]
+
+
 def test_lookml_explore_joins_scoped_to_included_views():
     """A join must not wire to a view the explore's own model file cannot see.
 

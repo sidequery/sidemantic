@@ -350,25 +350,35 @@ class LookMLAdapter(BaseAdapter):
         _apply_default_tables()
 
         # Second pass: parse explores and add relationships. Once the project declares includes,
-        # an explore is scoped to the views ITS OWN model file can see -- the views that file
-        # defines inline plus the views its include closure reaches. Looker resolves a model's
-        # fields that way, and loading the tree as one project otherwise lets an archived or
-        # alternate model's joins/segments silently mutate the LIVE model. A self-contained model
-        # (inline views, no include:) still sees its own views; an archived model that includes
-        # nothing and defines nothing sees none, so its explores cannot attach anywhere.
+        # an explore is scoped to the views its MODEL can see -- the views that model file defines
+        # inline plus the views its include closure reaches. Looker resolves a model's fields that
+        # way, and loading the tree as one project otherwise lets an archived or alternate model's
+        # joins/segments silently mutate the LIVE model. A self-contained model (inline views, no
+        # include:) still sees its own views; an archived model that includes nothing and defines
+        # nothing sees none, so its explores cannot attach anywhere.
+        #
+        # Scope is keyed on REACHABILITY, not file name: explores routinely live in an included
+        # sidecar (orders.explore.lkml) rather than the model file, and such a file inherits the
+        # scope of the model that includes it. A file reached by several models sees the union,
+        # which is the closest single-graph answer to Looker's per-model resolution.
         _view_files = {name: Path(src).resolve() for name, src in view_source_files.items()}
+        _scope_by_file: dict[Path, set[str]] = {}
+        if _scoping_active:
+            for _model_file in _model_files:
+                _closure = _include_closure(_model_file)
+                _allowed = {v for v, src in _view_files.items() if src in _closure}
+                for _reached in _closure:
+                    _scope_by_file.setdefault(_reached, set()).update(_allowed)
+
         for lkml_file in lkml_files:
             _resolved = lkml_file.resolve()
-            if _scoping_active and _resolved in _model_files:
-                _scope = _include_closure(_resolved)
-                self._parse_explores_from_file(
-                    lkml_file, graph, allowed_views={v for v, src in _view_files.items() if src in _scope}
-                )
+            if not _scoping_active:
+                self._parse_explores_from_file(lkml_file, graph)
                 continue
-            if included_paths and _resolved not in included_paths:
+            if _resolved not in _scope_by_file:
                 logger.debug("Ignoring LookML explores in %s: not reached by any include.", lkml_file)
                 continue
-            self._parse_explores_from_file(lkml_file, graph)
+            self._parse_explores_from_file(lkml_file, graph, allowed_views=_scope_by_file[_resolved])
 
         # Re-apply the default: explores can add segments (sql_always_where /
         # always_filter) to an otherwise-fieldless view, which only now makes it

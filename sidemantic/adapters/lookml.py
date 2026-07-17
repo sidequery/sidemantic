@@ -3622,8 +3622,22 @@ class LookMLAdapter(BaseAdapter):
                         if col_sql:
                             measure_def["sql"] = col_sql
                     elif metric.agg in sql_agg_funcs and col_sql:
-                        measure_def["type"] = "number"
                         agg_sql = f"{sql_agg_funcs[metric.agg]}({col_sql})"
+                        # This path also emits a type: number, so it needs the same zero-column
+                        # guard as the agg-less branch above: STDDEV(1) over a constant references
+                        # no column, and re-importing builds a metric over an empty model CTE
+                        # (SELECT ... FROM with no select list). Checked BEFORE folding; a filter
+                        # that adds a column is re-checked after it (below).
+                        if not self._aggregate_references_column(agg_sql) and not metric.filters:
+                            logger.warning(
+                                "Metric %r (agg=%r) has a zero-column aggregate SQL (%r) with no "
+                                "LookML equivalent that round-trips; skipping on export.",
+                                metric.name,
+                                metric.agg,
+                                agg_sql,
+                            )
+                            continue
+                        measure_def["type"] = "number"
                         if metric.filters:
                             # type: number re-imports as a derived metric whose generator
                             # does not apply LookML `filters`, so fold them into the aggregate
@@ -3638,6 +3652,17 @@ class LookMLAdapter(BaseAdapter):
                                     "cannot be folded for LookML export; skipping to avoid invalid SQL.",
                                     metric.name,
                                     metric.agg,
+                                )
+                                continue
+                            # A filter does not necessarily add a column (a constant predicate or a
+                            # pure template), so the folded SQL can still reference none.
+                            if not self._aggregate_references_column(folded):
+                                logger.warning(
+                                    "Metric %r (agg=%r) folds to a zero-column aggregate SQL (%r) "
+                                    "with no LookML equivalent that round-trips; skipping on export.",
+                                    metric.name,
+                                    metric.agg,
+                                    folded,
                                 )
                                 continue
                             measure_def["sql"] = folded

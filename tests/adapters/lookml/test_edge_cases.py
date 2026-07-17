@@ -5023,6 +5023,51 @@ def test_lookml_export_string_literal_paren_in_aggregate_arg_folds():
     assert "DISTINCT CASE WHEN" in text
 
 
+def test_lookml_export_zero_column_stddev_skipped():
+    """A stddev/variance over a CONSTANT also emits type: number -> needs the zero-column guard.
+
+    STDDEV(1) references no column, so re-importing builds a metric over an empty model CTE --
+    the same failure the agg-less path already guards. A filter needn't add a column either, so
+    the folded SQL is re-checked. Column-based and native aggregates are unaffected.
+    """
+    import re
+    import tempfile
+
+    from sidemantic import Dimension, Metric, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    def export_measure(**metric_kwargs):
+        graph = SemanticGraph()
+        graph.add_model(
+            Model(
+                name="o",
+                table="t",
+                primary_key="id",
+                dimensions=[
+                    Dimension(name="id", type="numeric", sql="id"),
+                    Dimension(name="status", type="categorical", sql="status"),
+                    Dimension(name="amount", type="numeric", sql="amount"),
+                ],
+                metrics=[Metric(name="c", **metric_kwargs)],
+            )
+        )
+        out = tempfile.mktemp(suffix=".lkml")
+        LookMLAdapter().export(graph, out)
+        m = re.search(r"measure: c \{.*?\n  \}", open(out).read(), re.S)
+        return m.group(0) if m else None
+
+    assert export_measure(agg="stddev", sql="1") is None  # STDDEV(1) -> no column
+    assert export_measure(agg="variance", sql="1") is None
+    assert export_measure(agg="stddev", sql="1", filters=["1 = 1"]) is None  # filter adds no column
+    # A real column still exports, filtered or not.
+    assert "type: number" in (export_measure(agg="stddev", sql="{model}.amount") or "")
+    assert "type: number" in (
+        export_measure(agg="stddev", sql="{model}.amount", filters=["{model}.status = 'x'"]) or ""
+    )
+    # A natively-mapped aggregate is untouched.
+    assert "type: sum" in (export_measure(agg="sum", sql="{model}.amount") or "")
+
+
 def test_lookml_export_folded_zero_column_aggregate_skipped():
     """A filter that adds NO column must not sneak a zero-column aggregate past the guard.
 

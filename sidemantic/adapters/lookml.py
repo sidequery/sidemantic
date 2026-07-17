@@ -500,6 +500,20 @@ class LookMLAdapter(BaseAdapter):
     # DATE_TRUNC(part, expr), and the adapter has no dialect context. Disambiguate by CONTENT --
     # whichever argument is a date-part keyword is the part (see _is_date_part_argument).
     _DATE_PART_AMBIGUOUS_TRUNC = frozenset({"date_trunc"})
+    # Coarseness rank of each date-part keyword (LOWER = coarser). Used only to break the tie when
+    # BOTH arguments of an ambiguous DATE_TRUNC are keywords (a model with `date` AND `month`
+    # dimensions): truncation always goes finer -> coarser, so the COARSER keyword is the part and
+    # the other is the value column. That reads DATE_TRUNC(date, month) and DATE_TRUNC(month, date)
+    # the same way -- month truncates date -- which is right under either dialect's order.
+    _DATE_PART_RANK = {
+        "millennium": 0, "century": 1, "decade": 2,
+        "year": 3, "isoyear": 3, "yearofweek": 3,
+        "quarter": 4, "month": 5, "week": 6, "isoweek": 6,
+        "day": 7, "date": 7, "dayofweek": 7, "dayofyear": 7,
+        "dow": 7, "doy": 7, "weekday": 7, "isodow": 7,
+        "hour": 8, "time": 8, "minute": 9, "second": 10,
+        "millisecond": 11, "microsecond": 12, "nanosecond": 13, "epoch": 14,
+    }  # fmt: skip
 
     @staticmethod
     def _enclosing_call(pre: str) -> tuple[str | None, int, int]:
@@ -561,15 +575,28 @@ class LookMLAdapter(BaseAdapter):
             return False
         if func.lower() in cls._DATE_PART_AMBIGUOUS_TRUNC:
             # DATE_TRUNC(a, b) is BigQuery (value, part) OR Snowflake (part, expr) -- same name,
-            # opposite orders. Decide by CONTENT: the argument that IS a date-part keyword is the
-            # part. When BOTH are keywords (DATE_TRUNC(date, month)) it is genuinely ambiguous, so
-            # take the LAST as the part (BigQuery's order) and let the other resolve as a column.
+            # opposite orders. Decide by CONTENT, not position: the argument that IS a date-part
+            # keyword is the part, and the other is the value column.
             args = cls._enclosing_call_arg_texts(pre, suf, token)
             if len(args) != 2:
                 return False
-            if arg_index == 1:
-                return True
-            return args[1].strip().lower() not in cls._DATE_PART_KEYWORDS
+            first, second = args[0].strip().lower(), args[1].strip().lower()
+            first_kw = first in cls._DATE_PART_KEYWORDS
+            second_kw = second in cls._DATE_PART_KEYWORDS
+            if first_kw and not second_kw:
+                part_index = 0  # Snowflake order
+            elif second_kw and not first_kw:
+                part_index = 1  # BigQuery order
+            elif first_kw and second_kw:
+                # A model with e.g. BOTH `date` and `month` dimensions makes both arguments look
+                # like parts. Truncation goes finer -> coarser, so the COARSER one is the part --
+                # month truncates date under either order. Ties fall back to BigQuery's order.
+                first_rank = cls._DATE_PART_RANK.get(first, 99)
+                second_rank = cls._DATE_PART_RANK.get(second, 99)
+                part_index = 0 if first_rank < second_rank else 1
+            else:
+                return False
+            return arg_index == part_index
         want = cls._DATE_PART_ARG_POS.get(func.lower())
         if want is None:
             return False

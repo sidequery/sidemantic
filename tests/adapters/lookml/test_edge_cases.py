@@ -4763,10 +4763,14 @@ def test_lookml_export_folded_filter_date_part_guard_is_position_aware():
     assert conds(["DATE_TRUNC(month, created_at) = DATE '2024-01-01'"], model) == (
         "(DATE_TRUNC(month, (${TABLE}.created_at)) = DATE '2024-01-01')"
     )  # Snowflake order
-    # ...and when BOTH arguments are keywords it is genuinely ambiguous, so the LAST is the part
-    # (BigQuery's order) and the other still resolves as a column.
+    # When BOTH arguments are keywords (a model with `date` AND `month` dimensions) neither order
+    # is decisive, so coarseness decides: truncation goes finer -> coarser, so `month` is the part
+    # and `date` the column -- the SAME reading under either dialect's argument order.
     assert conds(["DATE_TRUNC(date, month) = DATE '2024-01-01'"], model) == (
         "(DATE_TRUNC((${TABLE}.order_date), month) = DATE '2024-01-01')"
+    )
+    assert conds(["DATE_TRUNC(month, date) = DATE '2024-01-01'"], model) == (
+        "(DATE_TRUNC(month, (${TABLE}.order_date)) = DATE '2024-01-01')"
     )
 
 

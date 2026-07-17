@@ -4817,6 +4817,45 @@ def test_lookml_export_string_literal_paren_in_aggregate_arg_folds():
     assert "DISTINCT CASE WHEN" in text
 
 
+def test_lookml_export_all_modifier_stays_outside_folded_case():
+    """COUNT(ALL x) must fold as COUNT(ALL CASE ... END), not COUNT(CASE ... THEN ALL x END).
+
+    ALL is an aggregate MODIFIER like DISTINCT, not a row expression, so wrapping it inside the
+    CASE emits malformed SQL while the separate filters block is suppressed. A column actually
+    NAMED `all` must still be treated as a plain argument.
+    """
+    import duckdb
+
+    from sidemantic import Dimension, Model
+
+    model = Model(
+        name="o",
+        table="t",
+        primary_key="id",
+        dimensions=[Dimension(name="status", type="categorical", sql="status")],
+    )
+    folded = LookMLAdapter._fold_filters_into_aggregate("COUNT(ALL {model}.user_id)", ["{model}.status = 'x'"], model)
+    assert folded is not None
+    assert folded.startswith("COUNT(ALL CASE WHEN"), folded  # modifier outside the CASE
+    assert "THEN ALL " not in folded, folded  # NOT the malformed generic wrapper
+
+    # The folded SQL must actually execute.
+    con = duckdb.connect()
+    con.execute("create table t as select * from (values (1,'x'),(2,'y'),(3,'x')) v(user_id,status)")
+    runnable = folded.replace("${TABLE}.", "").replace("{model}.", "")
+    assert con.execute(f"select {runnable} from t").fetchone() == (2,)
+
+    # A column literally named `all` is a plain argument, not a modifier.
+    plain = LookMLAdapter._fold_filters_into_aggregate("COUNT({model}.all)", ["{model}.status = 'x'"], model)
+    assert plain is not None and "COUNT(ALL CASE" not in plain, plain
+
+    # Multi-column ALL has no single CASE result -> bail so the caller skips it.
+    assert (
+        LookMLAdapter._fold_filters_into_aggregate("COUNT(ALL {model}.a, {model}.b)", ["{model}.status = 'x'"], model)
+        is None
+    )
+
+
 def test_lookml_export_parenthesized_distinct_filter_folds():
     """COUNT(DISTINCT(x)) (parenthesized, no space) must fold its filter, not emit malformed SQL."""
     import tempfile

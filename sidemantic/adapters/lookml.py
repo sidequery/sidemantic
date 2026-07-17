@@ -3114,16 +3114,19 @@ class LookMLAdapter(BaseAdapter):
         # outside the CASE (it's part of the aggregate, not the value being filtered). Accept
         # the parenthesized spelling COUNT(DISTINCT(x)) too; the lookahead requires a space or
         # `(` after DISTINCT so an identifier like `DISTINCTION` is not mistaken for it.
-        dm = re.match(r"(?is)^DISTINCT(?=[\s(])\s*(.+)$", arg)
+        # DISTINCT / ALL are aggregate MODIFIERS, not row expressions: they must stay OUTSIDE
+        # the CASE (COUNT(DISTINCT CASE ... END), not COUNT(CASE ... THEN DISTINCT x END)).
+        # The lookahead keeps a column actually named `all`/`distinct` (COUNT(all)) a plain arg.
+        dm = re.match(r"(?is)^(DISTINCT|ALL)(?=[\s(])\s*(.+)$", arg)
         if dm:
-            distinct_arg = dm.group(1).strip()
+            modifier, mod_arg = dm.group(1).upper(), dm.group(2).strip()
             # A multi-column DISTINCT (COUNT(DISTINCT a, b)) has no single CASE result, so
             # bail and let the caller skip rather than emit malformed `THEN a, b END`.
             # quote_aware: a delimited composite key COUNT(DISTINCT a || ',' || b) is ONE
             # column -- the comma in the string literal must not count as a separator.
-            if len(cls._split_top_level_commas(distinct_arg, quote_aware=True)) > 1:
+            if len(cls._split_top_level_commas(mod_arg, quote_aware=True)) > 1:
                 return None
-            return f"{func}(DISTINCT CASE WHEN {conds} THEN {distinct_arg} END)"
+            return f"{func}({modifier} CASE WHEN {conds} THEN {mod_arg} END)"
         # A multi-argument aggregate (WEIGHTED_AVG(price, qty)) has no single CASE result,
         # so bail rather than emit malformed `THEN price, qty END`.
         if len(cls._split_top_level_commas(arg, quote_aware=True)) > 1:

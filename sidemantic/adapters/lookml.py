@@ -205,6 +205,20 @@ class LookMLAdapter(BaseAdapter):
             view_source_files[_name] = str(_file)
             graph.add_model(_model)
 
+        # The view scope of every file a model reaches: the views that model defines inline plus
+        # the views its include closure reaches. Keyed on REACHABILITY, not file name -- a model's
+        # explores routinely live in an included sidecar (orders.explore.lkml), which inherits the
+        # includer's scope. A file reached by several models sees the UNION of their scopes, the
+        # closest single-graph answer to Looker resolving each model separately.
+        _view_files = {name: Path(src).resolve() for name, src in view_source_files.items()}
+        _scope_by_file: dict[Path, set[str]] = {}
+        if _scoping_active:
+            for _model_file in _model_files:
+                _closure = _include_closure(_model_file)
+                _allowed = {v for v, src in _view_files.items() if src in _closure}
+                for _reached in _closure:
+                    _scope_by_file.setdefault(_reached, set()).update(_allowed)
+
         # Snapshot abstract / unsupported-derived_table flags BEFORE refinement merge:
         # merge_model REPLACES a base view's meta when the refinement carries metadata,
         # which would otherwise drop these markers.
@@ -276,19 +290,26 @@ class LookMLAdapter(BaseAdapter):
         )
         extends_parent = {n: m.extends for n, m in graph.models.items() if m.extends}
 
-        def _parent_in_scope(name: str) -> bool:
-            """Whether `name` may be INHERITED from under the project's include scoping.
+        def _parent_in_scope(child: str, parent: str) -> bool:
+            """Whether `child` may INHERIT from `parent` under the project's include scoping.
 
             A unique view is installed even when no include reaches it (an imperfectly-resolved
             include must never silently drop a view), but being loaded is not being in a model's
             scope: letting an included child extend an archived parent merges fields Looker would
             not expose. Such a parent is treated as absent instead, which leaves the child's
             extends unresolved -- the child still loads, just without the inherited fields.
+
+            The parent must be visible from the CHILD's own file, not merely included somewhere in
+            the project: with several models, a parent selected only by model B is not in scope for
+            a child selected only by model A, and inheriting it would expose another model's
+            fields. A view whose source file is unknown is left alone.
             """
             if not _scoping_active:
                 return True
-            source = view_source_files.get(name)
-            return source is None or Path(source).resolve() in included_paths
+            child_source = view_source_files.get(child)
+            if child_source is None or parent not in view_source_files:
+                return True
+            return parent in _scope_by_file.get(Path(child_source).resolve(), set())
 
         # Resolve extends chains. Pre-filter to models whose full chain
         # is present so one broken/missing parent doesn't block valid ones.
@@ -302,7 +323,7 @@ class LookMLAdapter(BaseAdapter):
                 return False
             if not model.extends:
                 return True
-            if not _parent_in_scope(model.extends):
+            if not _parent_in_scope(name, model.extends):
                 return False
             visited.add(name)
             return _chain_resolvable(model.extends, visited)
@@ -357,19 +378,8 @@ class LookMLAdapter(BaseAdapter):
         # include:) still sees its own views; an archived model that includes nothing and defines
         # nothing sees none, so its explores cannot attach anywhere.
         #
-        # Scope is keyed on REACHABILITY, not file name: explores routinely live in an included
-        # sidecar (orders.explore.lkml) rather than the model file, and such a file inherits the
-        # scope of the model that includes it. A file reached by several models sees the union,
-        # which is the closest single-graph answer to Looker's per-model resolution.
-        _view_files = {name: Path(src).resolve() for name, src in view_source_files.items()}
-        _scope_by_file: dict[Path, set[str]] = {}
-        if _scoping_active:
-            for _model_file in _model_files:
-                _closure = _include_closure(_model_file)
-                _allowed = {v for v, src in _view_files.items() if src in _closure}
-                for _reached in _closure:
-                    _scope_by_file.setdefault(_reached, set()).update(_allowed)
-
+        # Reuses the per-file scope built with the views above (see _scope_by_file), so an explore
+        # and an extends in the same file resolve against exactly the same set of views.
         for lkml_file in lkml_files:
             _resolved = lkml_file.resolve()
             if not _scoping_active:

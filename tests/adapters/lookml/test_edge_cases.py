@@ -5504,6 +5504,39 @@ def test_lookml_included_view_does_not_extend_unincluded_parent():
     assert {"secret", "leaked"} <= ({d.name for d in model.dimensions} | {m.name for m in model.metrics})
 
 
+def test_lookml_extends_parent_scoped_per_model_not_project_wide():
+    """A parent selected by ANOTHER model is not in scope for this model's child.
+
+    Checking the parent against the project-wide union of included paths meant that with two
+    models -- A including only orders.view.lkml, B including only base.view.lkml -- `orders`
+    inherited from `base` anyway, exposing fields from another model's include scope. The parent
+    must be visible from the CHILD's own file.
+    """
+    import tempfile
+
+    child = "view: orders {\n  extends: [base]\n  sql_table_name: orders ;;\n  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }\n}\n"
+    parent = "view: base {\n  sql_table_name: base_t ;;\n  dimension: secret { sql: ${TABLE}.secret ;; }\n  measure: leaked { type: sum  sql: ${TABLE}.amount ;; }\n}\n"
+
+    def fields(*models):
+        directory = Path(tempfile.mkdtemp())
+        (directory / "views").mkdir()
+        for name, include in models:
+            (directory / f"{name}.model.lkml").write_text(f'include: "{include}"\n')
+        (directory / "views" / "orders.view.lkml").write_text(child)
+        (directory / "views" / "base.view.lkml").write_text(parent)
+        model = LookMLAdapter().parse(str(directory)).get_model("orders")
+        return {d.name for d in model.dimensions} | {m.name for m in model.metrics}
+
+    # Separate scopes: the child's model cannot see the parent -> not inherited.
+    assert fields(("a", "/views/orders.view.lkml"), ("b", "/views/base.view.lkml")) == {"id"}
+
+    # One model selecting both still inherits.
+    assert {"secret", "leaked"} <= fields(("a", "/views/*.view.lkml"))
+
+    # The child's file reached by a model that also selects the parent: union -> inherited.
+    assert {"secret", "leaked"} <= fields(("a", "/views/orders.view.lkml"), ("b", "/views/*.view.lkml"))
+
+
 def test_lookml_abstract_template_conflicting_with_active_model_is_not_skipped():
     """A template whose name collides with an existing model must not silently take the skip path.
 

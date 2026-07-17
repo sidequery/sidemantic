@@ -146,24 +146,34 @@ class LookMLAdapter(BaseAdapter):
         # includes -- a view with no rival is kept regardless, so an imperfectly-resolved include
         # can never silently drop a view.
         chosen: dict[str, tuple[Path, dict, Model]] = {}
+        duplicates: list[tuple[Path, dict, Model]] = []
         for _file, _view_def, _model in view_candidates:
             previous = chosen.get(_model.name)
             if previous is None:
                 chosen[_model.name] = (_file, _view_def, _model)
                 continue
-            if included_paths and _file.resolve() in included_paths and previous[0].resolve() not in included_paths:
+            current_included = bool(included_paths) and _file.resolve() in included_paths
+            previous_included = bool(included_paths) and previous[0].resolve() in included_paths
+            if current_included and not previous_included:
                 chosen[_model.name] = (_file, _view_def, _model)  # the included copy wins
-            else:
+            elif previous_included and not current_included:
                 logger.debug(
-                    "Ignoring duplicate LookML view %r from %s (already defined by %s).",
+                    "Ignoring duplicate LookML view %r from %s: %s is the included copy.",
                     _model.name,
                     _file,
                     previous[0],
                 )
+            else:
+                # Neither or BOTH are included, so nothing distinguishes them -- this is a real
+                # duplicate in the active project, not an archived copy. Install both and let
+                # add_model surface the conflict rather than silently loading one at random.
+                duplicates.append((_file, _view_def, _model))
         for _name, (_file, _view_def, _model) in chosen.items():
             raw_view_defs[_name] = _view_def
             view_source_files[_name] = str(_file)
             graph.add_model(_model)
+        for _file, _view_def, _model in duplicates:
+            graph.add_model(_model)  # raises: an unresolvable duplicate must not pass silently
 
         # Snapshot abstract / unsupported-derived_table flags BEFORE refinement merge:
         # merge_model REPLACES a base view's meta when the refinement carries metadata,
@@ -293,8 +303,15 @@ class LookMLAdapter(BaseAdapter):
 
         _apply_default_tables()
 
-        # Second pass: parse explores and add relationships
+        # Second pass: parse explores and add relationships. Scope them the same way refinements
+        # are: an explore in a model file no include reaches -- an archived or alternate model --
+        # would otherwise mutate the LIVE model by adding its joins/segments. A file DECLARING
+        # includes is part of the project (that is where explores normally live), so the active
+        # model file is unaffected; with no includes declared nothing is filtered.
         for lkml_file in lkml_files:
+            if included_paths and lkml_file.resolve() not in included_paths:
+                logger.debug("Ignoring LookML explores in %s: not reached by any include.", lkml_file)
+                continue
             self._parse_explores_from_file(lkml_file, graph)
 
         # Re-apply the default: explores can add segments (sql_always_where /

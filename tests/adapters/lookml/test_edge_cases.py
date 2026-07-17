@@ -5406,40 +5406,79 @@ def test_lookml_parse_raises_on_duplicate_model_in_active_layer():
 
 
 def test_lookml_project_parse_handles_duplicate_views_and_extensionless_includes():
-    """Two files defining the SAME view must not fail the load, and includes may omit .lkml.
+    """An ARCHIVED copy of a view must not fail the load; a real duplicate must still surface.
 
     Parsing the tree as one project means an archived copy of a view alongside the live one hits
-    add_model's "Model X already exists" and fails everything. Includes decide the winner; with no
-    includes it is a deterministic first-wins rather than a crash. LookML also allows the .lkml
-    suffix to be omitted (`include: "/views/*.view"`), which must still resolve on disk -- else the
-    included set is skewed and stale refinements leak back in.
+    add_model's duplicate error and fails everything. Includes decide the winner -- but ONLY when
+    exactly one copy is included: if both are included (or there are no includes), nothing
+    distinguishes them, so the conflict is a real project error and must be raised rather than
+    silently loading one at random. LookML also allows the .lkml suffix to be omitted
+    (`include: "/views/*.view"`), which must still resolve on disk -- else the included set is
+    skewed and stale refinements leak back in.
     """
     import tempfile
 
     view = "view: orders {\n  sql_table_name: %s ;;\n  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }\n}\n"
 
-    def build(include_pattern, *, duplicate=False, stale_refinement=False):
+    def build(include_pattern, *, duplicate_dir=None, stale_refinement=False):
         directory = Path(tempfile.mkdtemp())
         (directory / "views").mkdir()
         (directory / "archive").mkdir()
         if include_pattern:
             (directory / "m.model.lkml").write_text(f'include: "{include_pattern}"\nexplore: orders {{}}\n')
         (directory / "views" / "orders.view.lkml").write_text(view % "real_orders")
-        if duplicate:
-            (directory / "archive" / "orders.view.lkml").write_text(view % "archived_orders")
+        if duplicate_dir:
+            (directory / duplicate_dir / "dup.view.lkml").write_text(view % "other_orders")
         if stale_refinement:
             (directory / "archive" / "stale.view.lkml").write_text("view: +orders {\n  sql_table_name: STALE ;;\n}\n")
         return LookMLAdapter().parse(str(directory)).get_model("orders")
 
-    # A duplicate view no longer fails the load; the INCLUDED copy wins.
-    assert build("/views/*.view.lkml", duplicate=True).table == "real_orders"
+    # Exactly one copy included: the archived one is ignored instead of failing the load.
+    assert build("/views/*.view.lkml", duplicate_dir="archive").table == "real_orders"
     # Extensionless include patterns still resolve, so the stale refinement stays out.
     assert build("/views/*.view", stale_refinement=True).table == "real_orders"
     assert build("/views/orders.view", stale_refinement=True).table == "real_orders"
-    # With NO includes a duplicate is deterministic rather than a crash (no ValueError).
-    assert build(None, duplicate=True).table in {"real_orders", "archived_orders"}
     # A view no include matches is NEVER dropped -- include scoping only breaks ties.
     assert build("/nonexistent/*.view.lkml").table == "real_orders"
+
+    # BOTH copies included, or no includes at all: nothing distinguishes them, so the duplicate is
+    # a real conflict and must surface rather than silently loading one.
+    with pytest.raises(ValueError, match="already exists"):
+        build("/views/*.view.lkml", duplicate_dir="views")
+    with pytest.raises(ValueError, match="already exists"):
+        build(None, duplicate_dir="archive")
+
+
+def test_lookml_project_parse_ignores_explores_from_unincluded_files():
+    """An explore in a model file no include reaches must not mutate the live model.
+
+    Loading the tree as one project runs every file's explores against the loaded views, so an
+    archived or alternate model file's joins would silently attach to the live model. A file
+    DECLARING includes is part of the project, so the active model file's explores still apply.
+    """
+    import tempfile
+
+    view = "view: %s {\n  sql_table_name: %s ;;\n  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }\n}\n"
+    join = (
+        "explore: orders {\n  join: customers { sql_on: ${orders.id} = ${customers.id} ;; "
+        "relationship: many_to_one }\n}\n"
+    )
+
+    def relationships(*, live_explore, archived_explore):
+        directory = Path(tempfile.mkdtemp())
+        (directory / "views").mkdir()
+        (directory / "archive").mkdir()
+        (directory / "orders.model.lkml").write_text('include: "/views/*.view.lkml"\n' + (join if live_explore else ""))
+        (directory / "views" / "orders.view.lkml").write_text(view % ("orders", "real_orders"))
+        (directory / "views" / "customers.view.lkml").write_text(view % ("customers", "cust"))
+        if archived_explore:
+            (directory / "archive" / "old.model.lkml").write_text(join)
+        model = LookMLAdapter().parse(str(directory)).get_model("orders")
+        return [r.name for r in (model.relationships or [])]
+
+    assert relationships(live_explore=False, archived_explore=True) == []  # archived join must not leak
+    assert relationships(live_explore=True, archived_explore=False) == ["customers"]  # live one applies
+    assert relationships(live_explore=True, archived_explore=True) == ["customers"]  # and only once
 
 
 def test_lookml_project_parse_ignores_refinements_from_unincluded_files():

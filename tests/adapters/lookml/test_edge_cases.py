@@ -4650,6 +4650,36 @@ def test_lookml_export_folded_filter_does_not_rewrite_cast_type():
     assert "AS (${TABLE}" not in text  # the cast type is NOT rewritten to a column
 
 
+def test_lookml_export_folded_filter_does_not_rewrite_table_qualifier():
+    """A foreign table QUALIFIER that matches a dimension name must not be rewritten.
+
+    On an `orders` model that also has a `customers` dimension, the filter
+    `customers.status = 'vip'` qualifies another table. The lookbehind only guards the field
+    AFTER a dot, so `customers` (before the dot) still matched and produced
+    `(${TABLE}.customer_id).status = 'vip'`. A bare name followed by a dot is a qualifier, not a
+    column; a same-named dimension WITHOUT a dot is still a column.
+    """
+    from sidemantic import Dimension, Model
+
+    model = Model(
+        name="orders",
+        table="raw_orders",
+        primary_key="id",
+        dimensions=[
+            Dimension(name="customers", type="numeric", sql="customer_id"),
+            Dimension(name="status", type="categorical", sql="order_status"),
+        ],
+    )
+    conds = LookMLAdapter._fold_filter_conds
+    # Foreign qualifier left intact (neither the qualifier nor its field rewritten).
+    assert conds(["customers.status = 'vip'"], model) == "(customers.status = 'vip')"
+    # The same name used as a real column (no dot) IS still rewritten.
+    assert conds(["customers = 5"], model) == "((${TABLE}.customer_id) = 5)"
+    # Own-model and {model} qualifiers still resolve.
+    assert conds(["orders.status = 'done'"], model) == "((${TABLE}.order_status) = 'done')"
+    assert conds(["{model}.status = 'done'"], model) == "((${TABLE}.order_status) = 'done')"
+
+
 def test_lookml_export_folded_filter_does_not_rewrite_date_part_keyword():
     """A folded filter's date-part / interval-unit keyword equal to a dimension must not be rewritten.
 

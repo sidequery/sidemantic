@@ -3005,12 +3005,15 @@ class LookMLAdapter(BaseAdapter):
         # negative lookbehind for `.`/word-char: the bare one so it does NOT match the field
         # of a foreign qualifier (`status` inside `customers.status`), and the model-name one
         # so it does NOT match a schema-qualified ref (`orders.status` inside
-        # `schema.orders.status`). The bare alt also has a negative lookahead for `(` so it
-        # does NOT match a function name (e.g. `date(...)`).
+        # `schema.orders.status`). The bare alt also has negative lookaheads: for `(` so it does
+        # NOT match a function name (e.g. `date(...)`), and for `.` so it does NOT match a table
+        # QUALIFIER (`customers` inside `customers.status` on a model that also has a `customers`
+        # dimension) -- the lookbehind only guards the field AFTER a dot, not the name before it,
+        # which would otherwise emit `(${TABLE}.customer_id).status`.
         names_alt = "|".join(re.escape(n) for n in sorted(dim_names, key=len, reverse=True))
         pattern = rf"(?:\{{model\}}|(?<![\w.]){re.escape(model.name)})\.(\w+)"
         if names_alt:
-            pattern += rf"|(?<![\w.])({names_alt})\b(?!\s*\()"
+            pattern += rf"|(?<![\w.])({names_alt})\b(?!\s*\()(?!\s*\.)"
         ref_re = re.compile(pattern)
 
         def _resolve(fstr: str) -> str:

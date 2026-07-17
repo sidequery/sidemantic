@@ -492,10 +492,14 @@ class LookMLAdapter(BaseAdapter):
     # deliberately absent: listing one would protect whatever sits in that slot, including a real
     # keyword-named column. EXTRACT(part FROM x) and INTERVAL n part have their own position checks.
     _DATE_PART_ARG_POS = {
-        "date_trunc": -1, "timestamp_trunc": -1, "datetime_trunc": -1, "time_trunc": -1,
+        "timestamp_trunc": -1, "datetime_trunc": -1, "time_trunc": -1,
         "date_diff": -1, "timestamp_diff": -1, "datetime_diff": -1, "time_diff": -1,
         "datetrunc": 0, "datediff": 0, "dateadd": 0, "datepart": 0, "date_part": 0,
     }  # fmt: skip
+    # DATE_TRUNC has NO fixed part position: BigQuery is DATE_TRUNC(value, part) while Snowflake is
+    # DATE_TRUNC(part, expr), and the adapter has no dialect context. Disambiguate by CONTENT --
+    # whichever argument is a date-part keyword is the part (see _is_date_part_argument).
+    _DATE_PART_AMBIGUOUS_TRUNC = frozenset({"date_trunc"})
 
     @staticmethod
     def _enclosing_call(pre: str) -> tuple[str | None, int, int]:
@@ -521,6 +525,28 @@ class LookMLAdapter(BaseAdapter):
         return None, 0, -1
 
     @classmethod
+    def _enclosing_call_arg_texts(cls, pre: str, suf: str, token: str) -> list[str]:
+        """Argument texts of the call a token sits in, reconstructed from ``pre``/``token``/``suf``.
+
+        Used to disambiguate a call whose date-part slot is not fixed (see
+        ``_DATE_PART_AMBIGUOUS_TRUNC``). Returns [] when the token is not inside a call.
+        """
+        _, _, open_pos = cls._enclosing_call(pre)
+        if open_pos < 0:
+            return []
+        depth, end = 0, len(suf)
+        for i, ch in enumerate(suf):
+            if ch in "([":
+                depth += 1
+            elif ch in ")]":
+                if depth == 0:
+                    end = i
+                    break
+                depth -= 1
+        call_args = pre[open_pos + 1 :] + token + suf[:end]
+        return [a.strip() for a in cls._split_top_level_commas(call_args, quote_aware=True)]
+
+    @classmethod
     def _is_date_part_argument(cls, pre: str, suf: str, token: str) -> bool:
         """True if ``token`` occupies the date-PART argument slot of a date/time call.
 
@@ -533,6 +559,17 @@ class LookMLAdapter(BaseAdapter):
         func, arg_index, open_pos = cls._enclosing_call(pre)
         if not func:
             return False
+        if func.lower() in cls._DATE_PART_AMBIGUOUS_TRUNC:
+            # DATE_TRUNC(a, b) is BigQuery (value, part) OR Snowflake (part, expr) -- same name,
+            # opposite orders. Decide by CONTENT: the argument that IS a date-part keyword is the
+            # part. When BOTH are keywords (DATE_TRUNC(date, month)) it is genuinely ambiguous, so
+            # take the LAST as the part (BigQuery's order) and let the other resolve as a column.
+            args = cls._enclosing_call_arg_texts(pre, suf, token)
+            if len(args) != 2:
+                return False
+            if arg_index == 1:
+                return True
+            return args[1].strip().lower() not in cls._DATE_PART_KEYWORDS
         want = cls._DATE_PART_ARG_POS.get(func.lower())
         if want is None:
             return False
@@ -3212,12 +3249,18 @@ class LookMLAdapter(BaseAdapter):
         set is empty, so compiling it builds an empty model CTE (``SELECT ... FROM`` with no select
         list). Callers use this to skip such measures. On a parse failure assume it DOES reference a
         column, so a genuine (unparseable) column expression is not wrongly dropped.
+
+        Liquid/Jinja segments are neutralised to NULL first: a template is not a column, and left
+        in place it makes sqlglot fail, which the fallback above would read as "has columns" -- so
+        a folded filter that is ONLY a template (``COUNT(CASE WHEN ({{ user_filter }}) THEN 1 END)``)
+        would slip past the zero-column guard and export a measure with no real column.
         """
         import sqlglot
         from sqlglot import expressions as exp
 
+        neutralised = re.sub(r"\{\{.*?\}\}|\{%.*?%\}", "NULL", sql or "")
         try:
-            tree = sqlglot.parse_one(sql.replace("{model}", "__m__").replace("${TABLE}", "__m__"))
+            tree = sqlglot.parse_one(neutralised.replace("{model}", "__m__").replace("${TABLE}", "__m__"))
         except Exception:
             return True
         return any(True for _ in tree.find_all(exp.Column))

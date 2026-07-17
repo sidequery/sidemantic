@@ -4758,6 +4758,59 @@ def test_lookml_export_folded_filter_date_part_guard_is_position_aware():
     assert conds(["time_bucket(INTERVAL '5 minutes', date) = 1"], model) == (
         "(time_bucket(INTERVAL '5 minutes', (${TABLE}.order_date)) = 1)"
     )
+    # DATE_TRUNC has NO fixed part position -- BigQuery is (value, part), Snowflake is (part, expr)
+    # -- so it is disambiguated by CONTENT: whichever argument is a date-part keyword is the part.
+    assert conds(["DATE_TRUNC(month, created_at) = DATE '2024-01-01'"], model) == (
+        "(DATE_TRUNC(month, (${TABLE}.created_at)) = DATE '2024-01-01')"
+    )  # Snowflake order
+    # ...and when BOTH arguments are keywords it is genuinely ambiguous, so the LAST is the part
+    # (BigQuery's order) and the other still resolves as a column.
+    assert conds(["DATE_TRUNC(date, month) = DATE '2024-01-01'"], model) == (
+        "(DATE_TRUNC((${TABLE}.order_date), month) = DATE '2024-01-01')"
+    )
+
+
+def test_lookml_export_template_only_folded_filter_skipped():
+    """A folded filter that is ONLY a Liquid template leaves no real column -> skip the measure.
+
+    sqlglot cannot parse a Liquid segment, and the column check treats a parse failure as
+    "has columns", so COUNT(*) with filters: ["{{ user_filter }}"] folded to
+    COUNT(CASE WHEN ({{ user_filter }}) THEN 1 END) slipped past the zero-column guard and
+    exported a type: number with no real column. Templates are neutralised before parsing; a
+    template COMBINED with a real column still exports.
+    """
+    import re
+    import tempfile
+
+    from sidemantic import Dimension, Metric, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    def export_measure(filters):
+        graph = SemanticGraph()
+        graph.add_model(
+            Model(
+                name="o",
+                table="t",
+                primary_key="id",
+                dimensions=[
+                    Dimension(name="id", type="numeric", sql="id"),
+                    Dimension(name="status", type="categorical", sql="status"),
+                ],
+                metrics=[Metric(name="c", agg=None, sql="COUNT(*)", sql_is_complete=True, filters=filters)],
+            )
+        )
+        out = tempfile.mktemp(suffix=".lkml")
+        LookMLAdapter().export(graph, out)
+        m = re.search(r"measure: c \{.*?\n  \}", open(out).read(), re.S)
+        return m.group(0) if m else None
+
+    assert export_measure(["{{ user_filter }}"]) is None  # template-only -> no real column
+    assert export_measure(["{model}.status = 'x'"]) is not None  # real column filter still exports
+    assert export_measure(["{model}.status = 'x' AND {{ f }}"]) is not None  # template + column
+
+    # The helper itself: a template is not a column, but a genuine column alongside one is.
+    assert not LookMLAdapter._aggregate_references_column("COUNT(CASE WHEN ({{ user_filter }}) THEN 1 END)")
+    assert LookMLAdapter._aggregate_references_column("COUNT(CASE WHEN (status = 'x' AND {{ f }}) THEN 1 END)")
 
 
 def test_lookml_export_folded_filter_does_not_rewrite_table_qualifier():

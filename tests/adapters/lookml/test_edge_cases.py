@@ -2508,6 +2508,46 @@ view: orders {
     assert con.execute(layer.compile(metrics=["orders.triple_sum"])).fetchall() == [(390,)]  # 260 + 130
 
 
+def test_lookml_number_measure_case_with_else_folds_filter():
+    """A CASE with an ELSE default survives column-nulling, so its filter must be FOLDED.
+
+    The generator filters a complete measure by nulling the columns its SQL reads, relying on the
+    aggregate ignoring NULLs. That fails for COUNT(CASE WHEN status='completed' THEN 1 ELSE 0 END):
+    nulling `status` only makes the WHEN false, and ELSE 0 is still non-NULL, so COUNT returns
+    EVERY row. A CASE with an ELSE must be treated as unsafe-to-null and folded instead.
+    """
+    import duckdb
+
+    from sidemantic import SemanticLayer
+
+    graph = _parse_lkml(
+        """
+view: orders {
+  sql_table_name: orders ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: status { type: string  sql: ${TABLE}.status ;; }
+  dimension: country { type: string  sql: ${TABLE}.country ;; }
+  dimension: amount { type: number  sql: ${TABLE}.amount ;; }
+  measure: n_else { type: number  sql: COUNT(CASE WHEN ${status} = 'completed' THEN 1 ELSE 0 END) ;; filters: [country: "US"] }
+  measure: n_no_else { type: number  sql: COUNT(CASE WHEN ${status} = 'completed' THEN 1 END) ;; filters: [country: "US"] }
+  measure: total { type: number  sql: SUM(${amount}) ;; filters: [country: "US"] }
+}
+"""
+    )
+    model = graph.get_model("orders")
+    layer = SemanticLayer(auto_register=False)
+    layer.add_model(model)
+    con = duckdb.connect()
+    con.execute("create table orders(id int, status text, country text, amount int)")
+    con.execute("insert into orders values (1,'completed','US',10),(2,'pending','US',20),(3,'completed','CA',30)")
+    # ELSE 0 counts every row unless the filter is folded: 2 US rows, not 3.
+    assert con.execute(layer.compile(metrics=["orders.n_else"])).fetchall() == [(2,)]
+    # A CASE with no ELSE nulls out naturally: only the US+completed row.
+    assert con.execute(layer.compile(metrics=["orders.n_no_else"])).fetchall() == [(1,)]
+    # A plain aggregate still filters correctly via the generator's column-nulling.
+    assert con.execute(layer.compile(metrics=["orders.total"])).fetchall() == [(30,)]
+
+
 def test_lookml_number_measure_filtered_list_aggregate_skipped():
     """A FILTERED LIST(...) measure has no faithful form and must be skipped, not silently wrong.
 

@@ -305,7 +305,17 @@ class LookMLAdapter(BaseAdapter):
         # to true and counts the row; (2) a keyed symmetric-distinct aggregate hashes the key
         # (`HASH(col)`), and HASH(NULL) is a non-NULL constant, so the row still contributes
         # (garbage). In those cases fold the filter into the aggregate predicate instead.
-        unsafe_nulling = tree.find(exp.Is) is not None or tree.find(exp.Coalesce) is not None or "hash(" in sql.lower()
+        # (3) a CASE with an ELSE default also survives nulling: nulling the predicate's column
+        # only makes the WHEN false, and ELSE still yields a non-NULL value, so the aggregate
+        # keeps counting the excluded row -- e.g. COUNT(CASE WHEN status='completed' THEN 1
+        # ELSE 0 END) returns EVERY row rather than the filtered ones.
+        case_with_default = any(c.args.get("default") is not None for c in tree.find_all(exp.Case))
+        unsafe_nulling = (
+            tree.find(exp.Is) is not None
+            or tree.find(exp.Coalesce) is not None
+            or "hash(" in sql.lower()
+            or case_with_default
+        )
         # Otherwise, if every aggregate already references a column the generator can null
         # (nulling the value/ORDER-BY column filters it; aggregates ignore NULLs), the
         # existing path is correct AND consistent -> don't rewrite. `force` skips this: a caller

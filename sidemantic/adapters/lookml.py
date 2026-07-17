@@ -145,35 +145,40 @@ class LookMLAdapter(BaseAdapter):
         # "Model X already exists" and fail the whole project load. Only a collision consults the
         # includes -- a view with no rival is kept regardless, so an imperfectly-resolved include
         # can never silently drop a view.
-        chosen: dict[str, tuple[Path, dict, Model]] = {}
-        duplicates: list[tuple[Path, dict, Model]] = []
-        for _file, _view_def, _model in view_candidates:
-            previous = chosen.get(_model.name)
-            if previous is None:
-                chosen[_model.name] = (_file, _view_def, _model)
-                continue
-            current_included = bool(included_paths) and _file.resolve() in included_paths
-            previous_included = bool(included_paths) and previous[0].resolve() in included_paths
-            if current_included and not previous_included:
-                chosen[_model.name] = (_file, _view_def, _model)  # the included copy wins
-            elif previous_included and not current_included:
-                logger.debug(
-                    "Ignoring duplicate LookML view %r from %s: %s is the included copy.",
-                    _model.name,
-                    _file,
-                    previous[0],
-                )
-            else:
-                # Neither or BOTH are included, so nothing distinguishes them -- this is a real
-                # duplicate in the active project, not an archived copy. Install both and let
-                # add_model surface the conflict rather than silently loading one at random.
-                duplicates.append((_file, _view_def, _model))
-        for _name, (_file, _view_def, _model) in chosen.items():
+        by_name: dict[str, list[tuple[Path, dict, Model]]] = {}
+        for _candidate in view_candidates:
+            by_name.setdefault(_candidate[2].name, []).append(_candidate)
+
+        for _name, _candidates in by_name.items():
+            winner = _candidates[0]
+            if len(_candidates) > 1:
+                # Decide over ALL candidates for the name at once: deciding pairwise as files
+                # stream in mis-handles two archived copies followed by the included one (the
+                # first pair looks unresolvable before the winner is even seen).
+                _included = [c for c in _candidates if c[0].resolve() in included_paths] if included_paths else []
+                if len(_included) == 1:
+                    winner = _included[0]  # exactly one live copy: the rest are archived
+                    for _file, _, _ in _candidates:
+                        if _file is not winner[0]:
+                            logger.debug(
+                                "Ignoring duplicate LookML view %r from %s: %s is the included copy.",
+                                _name,
+                                _file,
+                                winner[0],
+                            )
+                else:
+                    # Zero or several included copies: nothing distinguishes them, so this is a
+                    # real duplicate in the active project. Install every copy and let add_model
+                    # surface the conflict rather than silently loading one at random.
+                    for _file, _view_def, _model in _candidates:
+                        raw_view_defs[_name] = _view_def
+                        view_source_files[_name] = str(_file)
+                        graph.add_model(_model)
+                    continue
+            _file, _view_def, _model = winner
             raw_view_defs[_name] = _view_def
             view_source_files[_name] = str(_file)
             graph.add_model(_model)
-        for _file, _view_def, _model in duplicates:
-            graph.add_model(_model)  # raises: an unresolvable duplicate must not pass silently
 
         # Snapshot abstract / unsupported-derived_table flags BEFORE refinement merge:
         # merge_model REPLACES a base view's meta when the refinement carries metadata,
@@ -402,7 +407,10 @@ class LookMLAdapter(BaseAdapter):
 
         # Record this file's `include:` declarations (LookML model files list the view files the
         # model actually uses) so refinements from un-included files can be ignored.
-        if include_specs is not None:
+        # ONLY a model file's includes activate scoping. A view file may include a helper, which
+        # says nothing about which files the project selects -- letting it populate the included
+        # set would make unrelated sibling refinements/explores look un-included and drop them.
+        if include_specs is not None and file_path.name.endswith(".model.lkml"):
             for pattern in parsed.get("includes") or []:
                 if isinstance(pattern, str):
                     include_specs.append((file_path, pattern))

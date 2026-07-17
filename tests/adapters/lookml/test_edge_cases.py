@@ -5449,6 +5449,55 @@ def test_lookml_project_parse_handles_duplicate_views_and_extensionless_includes
         build(None, duplicate_dir="archive")
 
 
+def test_lookml_project_parse_resolves_view_with_several_archived_copies():
+    """SEVERAL archived copies plus one included copy must still resolve to the included one.
+
+    The decision is made over ALL candidates for a name at once: judging them pairwise as files
+    stream in mis-handles two archived copies sorting before the live one, because the first pair
+    looks unresolvable before the winner has even been seen.
+    """
+    import tempfile
+
+    view = "view: orders {\n  sql_table_name: %s ;;\n  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }\n}\n"
+    directory = Path(tempfile.mkdtemp())
+    for name in ("aa_old", "ab_old", "views"):
+        (directory / name).mkdir()
+    (directory / "m.model.lkml").write_text('include: "/views/*.view.lkml"\n')
+    (directory / "aa_old" / "o.view.lkml").write_text(view % "arch1")  # both sort BEFORE views/
+    (directory / "ab_old" / "o.view.lkml").write_text(view % "arch2")
+    (directory / "views" / "o.view.lkml").write_text(view % "real_orders")
+
+    assert LookMLAdapter().parse(str(directory)).get_model("orders").table == "real_orders"
+
+
+def test_lookml_only_model_file_includes_activate_scoping():
+    """A VIEW file's helper include must not activate project-wide include scoping.
+
+    `include:` in a view file pulls in a helper; it says nothing about which files the project
+    selects. Letting it populate the included set made unrelated sibling refinements (and
+    explores) look un-included and silently dropped them from a plain single-directory load.
+    """
+    import tempfile
+
+    view = "view: %s {\n  sql_table_name: %s ;;\n  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }\n}\n"
+
+    directory = Path(tempfile.mkdtemp())
+    (directory / "helper.view.lkml").write_text(view % ("helper", "h"))
+    (directory / "orders.view.lkml").write_text('include: "helper.view.lkml"\n' + (view % ("orders", "real_orders")))
+    (directory / "ref.view.lkml").write_text("view: +orders {\n  sql_table_name: REFINED ;;\n}\n")
+    # The sibling refinement is valid and must still apply.
+    assert LookMLAdapter().parse(str(directory)).get_model("orders").table == "REFINED"
+
+    # A MODEL file's include still scopes: the stale refinement stays out.
+    scoped = Path(tempfile.mkdtemp())
+    (scoped / "views").mkdir()
+    (scoped / "archive").mkdir()
+    (scoped / "m.model.lkml").write_text('include: "/views/*.view.lkml"\n')
+    (scoped / "views" / "o.view.lkml").write_text(view % ("orders", "real_orders"))
+    (scoped / "archive" / "stale.view.lkml").write_text("view: +orders {\n  sql_table_name: STALE ;;\n}\n")
+    assert LookMLAdapter().parse(str(scoped)).get_model("orders").table == "real_orders"
+
+
 def test_lookml_project_parse_ignores_explores_from_unincluded_files():
     """An explore in a model file no include reaches must not mutate the live model.
 

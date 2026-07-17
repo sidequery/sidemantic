@@ -2508,6 +2508,50 @@ view: orders {
     assert con.execute(layer.compile(metrics=["orders.triple_sum"])).fetchall() == [(390,)]  # 260 + 130
 
 
+def test_lookml_filtered_list_measure_not_cached_for_expansion():
+    """A filtered LIST measure the parser skips must not be cached for later expansion.
+
+    ARRAY_LENGTH(LIST(${amount})) / NULLIF(COUNT(*), 0) with filters is unrepresentable (LIST
+    keeps NULLs), so _parse_measure skips it. The expansion prepass must apply the same guard: it
+    would otherwise fold only the COUNT(*), cache a PARTIALLY filtered SQL, and let a referencing
+    measure inline an UNFILTERED LIST numerator over a filtered denominator -- silently wrong.
+    An UNFILTERED LIST measure, and its referencer, must still work.
+    """
+    import duckdb
+
+    from sidemantic import SemanticLayer
+
+    graph = _parse_lkml(
+        """
+view: orders {
+  sql_table_name: orders ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: amount { type: number  sql: ${TABLE}.amount ;; }
+  dimension: status { type: string  sql: ${TABLE}.status ;; }
+  measure: ratio { type: number  sql: ARRAY_LENGTH(LIST(${amount})) / NULLIF(COUNT(*), 0) ;; filters: [status: "completed"] }
+  measure: outer_m { type: number  sql: ${ratio} * 2 ;; }
+  measure: unfiltered_ratio { type: number  sql: ARRAY_LENGTH(LIST(${amount})) / NULLIF(COUNT(*), 0) ;; }
+  measure: outer_ok { type: number  sql: ${unfiltered_ratio} * 2 ;; }
+}
+"""
+    )
+    model = graph.get_model("orders")
+    assert model.get_metric("ratio") is None  # filtered LIST is unrepresentable
+    # The referencer must NOT carry an inlined, partially-filtered copy. It stays a plain derived
+    # ref to the skipped measure, which fails LOUDLY rather than returning a wrong number.
+    outer = model.get_metric("outer_m")
+    assert outer is None or "LIST" not in (outer.sql or ""), outer.sql if outer else None
+
+    # The unfiltered LIST path is unaffected and still executes.
+    assert model.get_metric("unfiltered_ratio") is not None
+    layer = SemanticLayer(auto_register=False)
+    layer.add_model(model)
+    con = duckdb.connect()
+    con.execute("create table orders(id int, amount int, status text)")
+    con.execute("insert into orders values (1,100,'completed'),(2,50,'pending'),(3,30,'completed')")
+    assert con.execute(layer.compile(metrics=["orders.outer_ok"])).fetchall() == [(2.0,)]
+
+
 def test_lookml_number_measure_case_with_else_folds_filter():
     """A CASE with an ELSE default survives column-nulling, so its filter must be FOLDED.
 

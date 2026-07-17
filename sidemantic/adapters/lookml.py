@@ -1217,6 +1217,13 @@ class LookMLAdapter(BaseAdapter):
                 return None
             joined = _folded_measure_filter(m_def)
             if joined:
+                # A filtered LIST(...) has no faithful form -- LIST keeps NULL inputs, so no
+                # filtering strategy excludes a row (see _parse_measure, which skips these).
+                # Without this the prepass would fold only the OTHER aggregates and cache a
+                # PARTIALLY filtered SQL, so a later measure referencing it would inline an
+                # unfiltered LIST over a filtered denominator. Keep prepass and parser in step.
+                if self._sql_has_list_aggregate(expanded):
+                    return None
                 # force=True: this SQL will be INLINED into a referencing measure with no
                 # generator column-nulling, so the filter must be baked into a CASE unconditionally.
                 folded = self._fold_complete_sql_filters(expanded, [joined], force=True)

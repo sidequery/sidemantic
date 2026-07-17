@@ -108,13 +108,38 @@ class LookMLAdapter(BaseAdapter):
         # provenance instead of just the project root.
         refinements: list[Model] = []
         refinement_raw_defs: list[dict] = []
+        refinement_source_files: list[Path] = []
+        include_specs: list[tuple[Path, str]] = []
         raw_view_defs: dict[str, dict] = {}
         view_source_files: dict[str, str] = {}
         for lkml_file in lkml_files:
             _before = set(graph.models)
-            self._parse_views_from_file(lkml_file, graph, refinements, raw_view_defs, refinement_raw_defs)
+            self._parse_views_from_file(
+                lkml_file,
+                graph,
+                refinements,
+                raw_view_defs,
+                refinement_raw_defs,
+                refinement_source_files,
+                include_specs,
+            )
             for _new in set(graph.models) - _before:
                 view_source_files[_new] = str(lkml_file)
+
+        # When the project DECLARES includes (a model file listing the view files it uses), a
+        # refinement in an un-included file must not silently override a loaded view -- e.g. a
+        # stale `view: +orders { sql_table_name: ... }` left in an archive/ directory. Only the
+        # REFINEMENT merge is scoped: views themselves still all parse, so a project whose
+        # includes do not enumerate every view keeps loading them. With no includes declared
+        # (the common single-directory case) nothing is filtered.
+        included_paths: set[Path] = set()
+        for _including_file, _pattern in include_specs:
+            included_paths |= self._resolve_include(
+                source_path if source_path.is_dir() else source_path.parent, _including_file, _pattern
+            )
+        if included_paths:
+            # A file declaring includes is part of the project itself.
+            included_paths |= {f.resolve() for f, _ in include_specs}
 
         # Snapshot abstract / unsupported-derived_table flags BEFORE refinement merge:
         # merge_model REPLACES a base view's meta when the refinement carries metadata,
@@ -129,6 +154,15 @@ class LookMLAdapter(BaseAdapter):
         refinement_unsupported_dt: set[str] = set()
         for _ridx, refinement in enumerate(refinements):
             base_name = refinement.name.lstrip("+")
+            if included_paths and _ridx < len(refinement_source_files):
+                _src = refinement_source_files[_ridx].resolve()
+                if _src not in included_paths:
+                    logger.debug(
+                        "Ignoring LookML refinement of %r from %s: not reached by any include.",
+                        base_name,
+                        _src,
+                    )
+                    continue
             # Record flags from EACH refinement's own meta: a later refinement's merge
             # can replace the base meta and drop a flag an earlier refinement added.
             rmeta = refinement.meta or {}
@@ -300,6 +334,8 @@ class LookMLAdapter(BaseAdapter):
         refinements: list[Model] | None = None,
         raw_view_defs: dict[str, dict] | None = None,
         refinement_raw_defs: list[dict] | None = None,
+        refinement_source_files: list[Path] | None = None,
+        include_specs: list[tuple[Path, str]] | None = None,
     ) -> None:
         """Parse views from a single LookML file.
 
@@ -322,6 +358,13 @@ class LookMLAdapter(BaseAdapter):
         if not parsed:
             return
 
+        # Record this file's `include:` declarations (LookML model files list the view files the
+        # model actually uses) so refinements from un-included files can be ignored.
+        if include_specs is not None:
+            for pattern in parsed.get("includes") or []:
+                if isinstance(pattern, str):
+                    include_specs.append((file_path, pattern))
+
         # Parse views
         for view_def in parsed.get("views") or []:
             model = self._parse_view(view_def)
@@ -332,6 +375,8 @@ class LookMLAdapter(BaseAdapter):
                         refinements.append(model)
                         if refinement_raw_defs is not None:
                             refinement_raw_defs.append(view_def)
+                        if refinement_source_files is not None:
+                            refinement_source_files.append(file_path)
                 else:
                     if raw_view_defs is not None:
                         raw_view_defs[model.name] = view_def
@@ -680,6 +725,21 @@ class LookMLAdapter(BaseAdapter):
 
     # Metric types SemanticGraph.add_model auto-registers at graph level (accessible unprefixed).
     _GRAPH_LEVEL_METRIC_TYPES = ("time_comparison", "conversion")
+
+    @staticmethod
+    def _resolve_include(root: Path, including_file: Path, pattern: str) -> set[Path]:
+        """Files matched by one LookML ``include:`` pattern.
+
+        A leading ``/`` is project-root relative; anything else is relative to the file declaring
+        the include. ``//other_project/...`` is a cross-project include, which has no local files.
+        """
+        if pattern.startswith("//"):
+            return set()
+        base, pat = (root, pattern[1:]) if pattern.startswith("/") else (including_file.parent, pattern)
+        try:
+            return {p.resolve() for p in base.glob(pat) if p.is_file()}
+        except (OSError, ValueError):
+            return set()
 
     @classmethod
     def _replace_model_refreshing_graph_metrics(cls, graph: SemanticGraph, name: str, model: Model) -> None:

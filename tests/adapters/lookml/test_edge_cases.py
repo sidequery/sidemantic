@@ -5405,6 +5405,36 @@ def test_lookml_parse_raises_on_duplicate_model_in_active_layer():
             LookMLAdapter().parse(path)
 
 
+def test_lookml_project_parse_ignores_refinements_from_unincluded_files():
+    """A refinement in a file no `include:` reaches must not override a loaded view.
+
+    Parsing the whole tree merges every `view: +...` it finds, so a stale refinement left in e.g.
+    archive/ could silently change a model's sql_table_name even though the LookML model only
+    includes views/. Only the REFINEMENT merge is scoped -- views still all parse -- and a project
+    that declares no includes is unaffected.
+    """
+    import tempfile
+
+    def build(*, declares_includes, refinement_dir):
+        directory = Path(tempfile.mkdtemp())
+        (directory / "views").mkdir()
+        (directory / "archive").mkdir()
+        if declares_includes:
+            (directory / "orders.model.lkml").write_text('include: "/views/*.view.lkml"\nexplore: orders {}\n')
+        (directory / "views" / "orders.view.lkml").write_text(
+            "view: orders {\n  sql_table_name: real_orders ;;\n"
+            "  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }\n}\n"
+        )
+        (directory / refinement_dir / "ref.view.lkml").write_text("view: +orders {\n  sql_table_name: REFINED ;;\n}\n")
+        return LookMLAdapter().parse(str(directory)).get_model("orders").table
+
+    # Declared includes: an un-included refinement is ignored, an included one still applies.
+    assert build(declares_includes=True, refinement_dir="archive") == "real_orders"
+    assert build(declares_includes=True, refinement_dir="views") == "REFINED"
+    # No includes declared (the common single-directory project): nothing is filtered.
+    assert build(declares_includes=False, refinement_dir="archive") == "REFINED"
+
+
 def test_lookml_refinement_refreshes_graph_level_metrics():
     """Replacing a refined model must refresh its graph-level metrics, not leave a stale one.
 

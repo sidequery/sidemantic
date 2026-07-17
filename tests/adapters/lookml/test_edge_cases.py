@@ -5327,6 +5327,54 @@ def test_lookml_drop_metrics_uses_provenance_marker_not_base_ref():
     assert "pop" not in metrics2
 
 
+def test_lookml_directory_load_keeps_standalone_metric_overwritten_by_template():
+    """A directory load must not lose a standalone metric that shares a template metric's name.
+
+    `all_metrics.update(graph.metrics)` overwrites by name, so if a .lkml template's graph metric
+    landed AFTER a same-named standalone metric, the marked template metric won and the orphan
+    drop popped the name entirely -- silently losing the valid standalone. LookML is now parsed as
+    one project BEFORE the per-file scan, so a standalone always wins; an orphan template metric
+    with no standalone is still dropped.
+    """
+    import tempfile
+
+    from sidemantic import SemanticLayer
+    from sidemantic.loaders import load_from_directory
+
+    template = (
+        "view: tmpl {\n  extension: required\n  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }\n"
+        "  dimension: created { type: time  timeframes: [date]  sql: ${TABLE}.created ;; }\n"
+        "  measure: cnt { type: count }\n"
+        "  measure: pop { type: period_over_period  based_on: cnt  period: date  kind: relative_change }\n}\n"
+    )
+    base_model = (
+        "models:\n  - name: orders\n    table: raw_orders\n    primary_key: id\n"
+        "    dimensions:\n      - name: id\n        type: numeric\n        sql: id\n"
+        "    metrics:\n      - name: total\n        agg: sum\n        sql: amount\n"
+    )
+
+    # 'z.lkml' sorts AFTER the metric file -- the overwrite-then-drop ordering.
+    with_standalone = Path(tempfile.mkdtemp())
+    (with_standalone / "z.lkml").write_text(template)
+    (with_standalone / "metrics.yml").write_text(
+        base_model + "metrics:\n  - name: pop\n    type: ratio\n    numerator: orders.total\n"
+        "    denominator: orders.total\n"
+    )
+    layer = SemanticLayer()
+    load_from_directory(layer, with_standalone)
+    assert "tmpl" not in layer.graph.models  # abstract template still dropped
+    assert "pop" in layer.graph.metrics  # standalone survives the template's same-named metric
+    assert layer.graph.metrics["pop"].type == "ratio"  # ...and it IS the standalone
+
+    # With NO standalone, the orphan template metric is still dropped.
+    template_only = Path(tempfile.mkdtemp())
+    (template_only / "z.lkml").write_text(template)
+    (template_only / "m.yml").write_text(base_model)
+    layer2 = SemanticLayer()
+    load_from_directory(layer2, template_only)
+    assert "pop" not in layer2.graph.metrics
+
+
 def test_lookml_dropped_template_metric_dropped_despite_samename_local_measure():
     """A dropped template's graph metric is removed even if a surviving model has a same-named measure.
 

@@ -153,12 +153,12 @@ class LookMLAdapter(BaseAdapter):
                         # onto this result rather than the original base.
                         raw_view_defs[base_name] = merged_raw
                 if remerged is not None:
-                    graph.models[base_name] = remerged
+                    self._replace_model_refreshing_graph_metrics(graph, base_name, remerged)
                 else:
                     # Create a copy with the base name for merging
                     refinement_for_merge = refinement.model_copy(update={"name": base_name})
                     merged = merge_model(refinement_for_merge, graph.models[base_name])
-                    graph.models[base_name] = merged
+                    self._replace_model_refreshing_graph_metrics(graph, base_name, merged)
 
         # Union the pre-merge snapshot, every refinement's own flags, and the post-merge
         # state (so a flag added by ANY refinement is caught even if a later refinement
@@ -677,6 +677,31 @@ class LookMLAdapter(BaseAdapter):
     # LookML view keys holding a named-field LIST. A refinement's entry for an EXISTING field
     # updates that field's properties; it does not replace the field.
     _VIEW_FIELD_LIST_KEYS = ("dimensions", "dimension_groups", "measures", "filters", "parameters", "sets")
+
+    # Metric types SemanticGraph.add_model auto-registers at graph level (accessible unprefixed).
+    _GRAPH_LEVEL_METRIC_TYPES = ("time_comparison", "conversion")
+
+    @classmethod
+    def _replace_model_refreshing_graph_metrics(cls, graph: SemanticGraph, name: str, model: Model) -> None:
+        """Install ``model`` over ``graph.models[name]``, refreshing its graph-level metrics.
+
+        ``add_model`` auto-registered the ORIGINAL view's graph-level measures (time_comparison /
+        conversion) into ``graph.metrics``. A refinement can change one into a normal measure or
+        drop it, so replacing the model alone would leave a STALE graph metric that no loaded model
+        defines -- and the CLI registers graph metrics separately, exposing it. Drop the ones this
+        model registered (identity-checked, so a same-named STANDALONE metric is untouched), then
+        register the merged view's set.
+        """
+        old = graph.models.get(name)
+        if old is not None:
+            for metric in old.metrics or []:
+                if metric.type in cls._GRAPH_LEVEL_METRIC_TYPES and graph.metrics.get(metric.name) is metric:
+                    graph.metrics.pop(metric.name, None)
+        graph.models[name] = model
+        for metric in model.metrics or []:
+            if metric.type in cls._GRAPH_LEVEL_METRIC_TYPES and metric.name not in graph.metrics:
+                graph.metrics[metric.name] = metric
+        graph._mark_dirty()
 
     @classmethod
     def _merge_view_defs(cls, base: dict, refinement: dict) -> dict:

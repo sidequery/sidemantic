@@ -5405,6 +5405,37 @@ def test_lookml_parse_raises_on_duplicate_model_in_active_layer():
             LookMLAdapter().parse(path)
 
 
+def test_lookml_refinement_refreshes_graph_level_metrics():
+    """Replacing a refined model must refresh its graph-level metrics, not leave a stale one.
+
+    add_model auto-registers a view's graph-level measures (period_over_period ->
+    time_comparison) into graph.metrics. A refinement turning that measure into a normal one left
+    the ORIGINAL time_comparison registered, so a CLI load exposed a metric no model still defines.
+    A refinement that does NOT touch it must leave the graph metric registered.
+    """
+    import tempfile
+
+    base_view = (
+        "view: base {\n  sql_table_name: t ;;\n  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }\n"
+        "  dimension: created { type: time  timeframes: [date]  sql: ${TABLE}.created ;; }\n"
+        "  measure: cnt { type: count }\n"
+        "  measure: pop { type: period_over_period  based_on: cnt  period: date  kind: relative_change }\n}\n"
+    )
+
+    # Refined into a normal measure -> the stale graph-level metric must be gone.
+    refined = Path(tempfile.mkdtemp())
+    (refined / "a.lkml").write_text(base_view)
+    (refined / "b.lkml").write_text("view: +base {\n  measure: pop { type: count }\n}\n")
+    assert "pop" not in LookMLAdapter().parse(str(refined)).metrics
+
+    # An unrelated refinement leaves the graph-level metric registered.
+    untouched = Path(tempfile.mkdtemp())
+    (untouched / "a.lkml").write_text(base_view)
+    (untouched / "b.lkml").write_text("view: +base {\n  label: Refined\n}\n")
+    graph = LookMLAdapter().parse(str(untouched))
+    assert graph.metrics["pop"].type == "time_comparison"
+
+
 def test_lookml_refinement_deep_merges_partial_field_properties():
     """A refinement that sets ONE property of a field must not clobber the field's other props.
 

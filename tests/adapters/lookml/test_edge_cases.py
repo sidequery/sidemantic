@@ -2508,6 +2508,46 @@ view: orders {
     assert con.execute(layer.compile(metrics=["orders.triple_sum"])).fetchall() == [(390,)]  # 260 + 130
 
 
+def test_lookml_number_measure_filtered_list_aggregate_skipped():
+    """A FILTERED LIST(...) measure has no faithful form and must be skipped, not silently wrong.
+
+    LIST keeps NULL inputs, so neither the generator's column-nulling nor a folded CASE excludes
+    a row: LIST(CASE WHEN status='completed' THEN amount END) over 3 rows yields [100, NULL, 30],
+    so ARRAY_LENGTH still returns 3 and the filter is ignored. Only a dialect-specific
+    FILTER (WHERE ...) clause would work. An UNFILTERED LIST, and a filtered NON-list aggregate,
+    must both still import.
+    """
+    import duckdb
+
+    from sidemantic import SemanticLayer
+
+    graph = _parse_lkml(
+        """
+view: orders {
+  sql_table_name: orders ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: amount { type: number  sql: ${TABLE}.amount ;; }
+  dimension: status { type: string  sql: ${TABLE}.status ;; }
+  measure: n_completed { type: number  sql: ARRAY_LENGTH(LIST(${amount})) ;; filters: [status: "completed"] }
+  measure: n_all { type: number  sql: ARRAY_LENGTH(LIST(${amount})) ;; }
+  measure: sum_completed { type: number  sql: SUM(${amount}) ;; filters: [status: "completed"] }
+}
+"""
+    )
+    model = graph.get_model("orders")
+    assert model.get_metric("n_completed") is None  # would have silently ignored its filter
+    assert model.get_metric("n_all") is not None  # unfiltered LIST is fine
+    assert model.get_metric("sum_completed") is not None  # a foldable filtered aggregate is fine
+
+    layer = SemanticLayer(auto_register=False)
+    layer.add_model(model)
+    con = duckdb.connect()
+    con.execute("create table orders(id int, amount int, status text)")
+    con.execute("insert into orders values (1,100,'completed'),(2,50,'pending'),(3,30,'completed')")
+    assert con.execute(layer.compile(metrics=["orders.n_all"])).fetchall() == [(3,)]
+    assert con.execute(layer.compile(metrics=["orders.sum_completed"])).fetchall() == [(130,)]
+
+
 def test_lookml_number_measure_list_aggregate_is_scope_safe():
     """A column inside DuckDB's LIST(...) collector is aggregate-scoped, not raw.
 

@@ -346,6 +346,22 @@ class LookMLAdapter(BaseAdapter):
             return None
 
     @staticmethod
+    def _sql_has_list_aggregate(sql: str) -> bool:
+        """True if ``sql`` contains a ``LIST(...)`` collector (sqlglot's ``exp.List``).
+
+        Callers use this to refuse FILTERING such an expression: LIST keeps NULL inputs, so a
+        filter can be applied neither by column-nulling nor by a folded CASE.
+        """
+        import sqlglot
+        from sqlglot import expressions as exp
+
+        try:
+            tree = sqlglot.parse_one(sql.replace("{model}", "__m__").replace("${TABLE}", "__m__"))
+        except Exception:
+            return False
+        return any(True for _ in tree.find_all(exp.List))
+
+    @staticmethod
     def _has_subquery(sql: str) -> bool:
         """True if ``sql`` contains a SELECT outside any string literal.
 
@@ -2026,6 +2042,21 @@ class LookMLAdapter(BaseAdapter):
             meta["group_label"] = measure_def["group_label"]
         if measure_def.get("tags"):
             meta["tags"] = measure_def["tags"]
+
+        # A filtered LIST(...) aggregate has NO faithful portable form. Unlike every other
+        # aggregate, DuckDB's LIST KEEPS NULL inputs, so neither filtering strategy excludes a
+        # row: the generator's column-nulling and a folded CASE both leave one NULL element per
+        # non-matching row (LIST(CASE WHEN s='x' THEN amount END) over 3 rows -> [1, NULL, 3]),
+        # so ARRAY_LENGTH still counts them. Only a dialect-specific FILTER (WHERE ...) clause
+        # would work. Skip rather than silently import a measure that ignores its filter.
+        if number_refs_only_columns and filters and self._sql_has_list_aggregate(sql):
+            logger.warning(
+                "LookML number measure %r combines a LIST(...) aggregate with filters, which has "
+                "no faithful form (LIST keeps NULL inputs, so neither column-nulling nor a folded "
+                "CASE excludes a row); skipping on import.",
+                name,
+            )
+            return None
 
         # A COMPLETE (opaque) measure's filters are applied by the generator without
         # resolving dimension refs (it just strips {model}), so resolve {model}.<dim> to

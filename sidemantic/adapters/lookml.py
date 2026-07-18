@@ -2351,7 +2351,10 @@ class LookMLAdapter(BaseAdapter):
                 group_sql = "{model}." + group_name
             timeframes = dim_group_def.get("timeframes", ["date"])
             for timeframe in timeframes:
-                if timeframe != "raw":
+                # Skip UNSUPPORTED timeframes (minute buckets / sub-second): _build_timeframe_dimension
+                # drops their generated dimensions, so seeding the lookup would let a ${created_minute15}
+                # reference expand to the raw base column and run a measure on unbucketed timestamps.
+                if timeframe != "raw" and not self._is_unsupported_timeframe(timeframe):
                     dimension_sql_lookup[f"{group_name}_{timeframe}"] = group_sql
 
         # All declared dimension names (including compact dimensions with no explicit
@@ -2362,7 +2365,7 @@ class LookMLAdapter(BaseAdapter):
             group_name = dim_group_def.get("name")
             if group_name:
                 for timeframe in dim_group_def.get("timeframes", ["date"]):
-                    if timeframe != "raw":
+                    if timeframe != "raw" and not self._is_unsupported_timeframe(timeframe):
                         declared_dim_names.add(f"{group_name}_{timeframe}")
 
         # Resolve any dimension-to-dimension references in the lookup
@@ -3053,7 +3056,7 @@ class LookMLAdapter(BaseAdapter):
         #     adapter does not have.
         #   - millisecond / microsecond are FINER than the finest granularity the enum supports
         #     (`second`), so a time dimension truncates to the second and silently drops precision.
-        if timeframe in self._MINUTE_BUCKET_TF or timeframe in self._SUBSECOND_TF:
+        if self._is_unsupported_timeframe(timeframe):
             return None
 
         # Time-truncation timeframes -> time dimension with granularity. Remember the
@@ -4694,6 +4697,17 @@ class LookMLAdapter(BaseAdapter):
     # Sub-second LookML timeframes finer than sidemantic's `second` grain but valid as
     # DATE_TRUNC units; the collision export truncates at these and import recovers them.
     _SUBSECOND_TF = frozenset({"millisecond", "microsecond"})
+
+    @classmethod
+    def _is_unsupported_timeframe(cls, timeframe: str) -> bool:
+        """A timeframe sidemantic cannot represent as a portable time dimension on IMPORT.
+
+        Its generated dimension is dropped by ``_build_timeframe_dimension``, so the reference
+        lookup must skip it too -- otherwise ``${created_minute15}`` in another field would expand
+        to the raw base column and run on unbucketed timestamps.
+        """
+        return timeframe in cls._MINUTE_BUCKET_TF or timeframe in cls._SUBSECOND_TF
+
     # LookML timeframes that map MANY-to-one onto a coarser/finer sidemantic grain (15/30-min
     # buckets -> minute, sub-second -> second, time-of-day extraction -> hour). A native dim's
     # NAME suffix must NOT infer these on export: `created_minute15` at MINUTE grain is 1-minute

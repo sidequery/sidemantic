@@ -4139,6 +4139,36 @@ view: orders {
     assert {"created_minute", "created_hour"} <= names  # supported grains still import
 
 
+def test_lookml_reference_to_unsupported_timeframe_does_not_resolve_to_raw():
+    """A ${...} reference to a DROPPED timeframe must not expand to the raw base column.
+
+    _build_timeframe_dimension drops minute15/minute30/millisecond/microsecond, but the reference
+    lookup was seeded for every timeframe, so ${created_minute15} in a measure expanded to the raw
+    group column and the measure ran on UNBUCKETED timestamps. The unsupported timeframes are now
+    kept out of the lookup, so the reference is left unresolved (like any unknown ref) rather than
+    silently mis-resolved; a SUPPORTED timeframe still resolves.
+    """
+    model = _parse_lkml(
+        """
+view: orders {
+  sql_table_name: orders ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension_group: created { type: time  timeframes: [minute15, date]  sql: ${TABLE}.ts ;; }
+  measure: bad { type: count_distinct  sql: ${created_minute15} ;; }
+  dimension: is_new { type: yesno  sql: ${created_minute15} > '2020-01-01' ;; }
+  measure: good { type: count_distinct  sql: ${created_date} ;; }
+}
+"""
+    ).get_model("orders")
+
+    fields = {f.name: f.sql for f in [*model.dimensions, *model.metrics]}
+    # The unsupported-timeframe refs are NOT expanded to the raw base column.
+    assert "{model}.ts" not in (fields["bad"] or "")
+    assert "{model}.ts" not in (fields["is_new"] or "")
+    # The supported `created_date` reference still resolves to the group column.
+    assert fields["good"] == "({model}.ts)"
+
+
 def test_lookml_native_minute15_name_does_not_widen_grain():
     """A native created_minute15 at MINUTE grain must not export [minute15] (15-min buckets).
 

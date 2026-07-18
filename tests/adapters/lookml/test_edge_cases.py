@@ -5062,8 +5062,13 @@ def test_lookml_export_folded_filter_does_not_rewrite_date_part_keyword():
     assert conds(["LOWER(day) = 'x'"], model) == "(LOWER((${TABLE}.order_day)) = 'x')"
 
 
-def test_lookml_export_scalar_wrapped_aggregate_filter_skipped():
-    """A scalar-wrapped aggregate with filters (ABS(SUM(x))) can't fold -> skipped, not mangled."""
+def test_lookml_export_scalar_wrapped_aggregate_filter_folds_into_inner():
+    """A scalar-wrapped aggregate with filters (ABS(SUM(x))) folds into the INNER aggregate.
+
+    The complete-SQL folder wraps the filter around SUM's argument -- ABS(SUM(CASE WHEN ... THEN
+    amount END)) -- which is faithful, so the measure exports. It must NEVER push the CASE around
+    the nested aggregate itself (ABS(CASE WHEN ... THEN SUM(amount) END)), which would be wrong.
+    """
     import tempfile
 
     from sidemantic import Dimension, Metric, Model
@@ -5093,8 +5098,9 @@ def test_lookml_export_scalar_wrapped_aggregate_filter_skipped():
     out = tempfile.mktemp(suffix=".lkml")
     LookMLAdapter().export(graph, out)
     text = open(out).read()
-    assert "measure: aw" not in text  # can't fold CASE around the inner aggregate -> skipped
-    assert "ABS(CASE WHEN" not in text  # never push CASE around a nested aggregate
+    assert "measure: aw" in text  # exports: the filter folds into the inner SUM
+    assert "ABS(CASE WHEN" not in text  # never push CASE around the nested aggregate
+    assert "SUM(CASE WHEN" in text  # the CASE wraps SUM's argument, correctly
 
 
 def test_lookml_export_multi_column_distinct_filter_skipped():
@@ -5521,6 +5527,59 @@ def test_lookml_export_delimited_distinct_filter_folds_not_skipped():
     txt = open(out).read()
     assert "measure: composite_distinct" in txt  # folded, NOT skipped
     assert "DISTINCT CASE WHEN" in txt  # filter folded inside the single-column DISTINCT
+
+
+def test_lookml_export_filtered_multi_aggregate_measure_folds_and_roundtrips():
+    """A filtered complete measure with MULTIPLE aggregates must export, folding each aggregate.
+
+    SUM(a) / NULLIF(COUNT(*), 0) is not a single outer FUNC(arg), so _fold_filters_into_aggregate
+    bailed and the measure was skipped. The complete-SQL folder wraps EVERY aggregate's argument in
+    the filter, so it exports and round-trips to the correct filtered value; a renamed filter
+    dimension resolves to its column.
+    """
+    import tempfile
+
+    import duckdb
+
+    from sidemantic import Dimension, Metric, Model, SemanticLayer
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="orders",
+            table="orders",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(name="amount", type="numeric", sql="amount"),
+                Dimension(name="status", type="categorical", sql="order_status"),  # renamed column
+            ],
+            metrics=[
+                Metric(
+                    name="avg_completed",
+                    agg=None,
+                    sql="SUM({model}.amount) / NULLIF(COUNT(*), 0)",
+                    sql_is_complete=True,
+                    filters=["{model}.status = 'completed'"],
+                )
+            ],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    reimported = LookMLAdapter().parse(Path(out)).get_model("orders")
+    assert reimported.get_metric("avg_completed") is not None  # not skipped
+
+    layer = SemanticLayer(auto_register=False)
+    layer.add_model(reimported)
+    con = duckdb.connect()
+    con.execute(
+        "create table orders as select 1 id, 10 amount, 'completed' order_status "
+        "union all select 2, 30, 'pending' union all select 3, 20, 'completed'"
+    )
+    # completed rows: amount 10 + 20 = 30 over 2 rows -> 15.0.
+    assert con.execute(layer.compile(metrics=["orders.avg_completed"])).fetchall() == [(15.0,)]
 
 
 def test_lookml_export_multi_arg_aggregate_filter_skipped():

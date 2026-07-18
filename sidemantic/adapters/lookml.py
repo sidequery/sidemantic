@@ -3374,6 +3374,30 @@ class LookMLAdapter(BaseAdapter):
             return True
         return any(True for _ in tree.find_all(exp.Column))
 
+    @staticmethod
+    def _complete_sql_fold_is_safe(sql: str) -> bool:
+        """True if folding a filter into every aggregate of ``sql`` yields VALID SQL.
+
+        The complete-SQL folder wraps each aggregate argument in ``CASE WHEN <filter> THEN arg``.
+        That is safe for a single-argument aggregate (``SUM(x)``, ``COUNT(*)``, ``SUM(x)/COUNT(*)``,
+        ``ABS(SUM(x))``), but a MULTI-argument aggregate -- ``WEIGHTED_AVG(a, b)`` or a multi-column
+        ``COUNT(DISTINCT a, b)`` -- would fold to a malformed ``FUNC(CASE..., CASE...)`` the engine
+        rejects. A DISTINCT wrapping a single tuple ``(a, b)`` is one argument and stays safe.
+        """
+        import sqlglot
+        from sqlglot import expressions as exp
+
+        from sidemantic.sql.aggregation_detection import _ANONYMOUS_AGGREGATE_FUNCTIONS
+
+        try:
+            tree = sqlglot.parse_one(sql.replace("{model}", "__m__"))
+        except Exception:
+            return False
+        for n in tree.find_all(exp.Anonymous):
+            if (n.name or "").lower() in _ANONYMOUS_AGGREGATE_FUNCTIONS and len(n.expressions) > 1:
+                return False
+        return all(len(d.expressions) <= 1 for d in tree.find_all(exp.Distinct))
+
     @classmethod
     def _fold_filters_into_aggregate(cls, agg_sql: str, filters: list[str], model: Model) -> str | None:
         """Fold ``filters`` into a single-outer-aggregate SQL expression.
@@ -3802,6 +3826,23 @@ class LookMLAdapter(BaseAdapter):
                             measure_def["type"] = "number"
                             if metric.filters:
                                 folded = self._fold_filters_into_aggregate(col_sql, metric.filters, model)
+                                if folded is None and self._complete_sql_fold_is_safe(
+                                    col_sql.replace("${TABLE}", "{model}")
+                                ):
+                                    # A MULTI-aggregate complete expr (SUM(a) / COUNT(*)) or a scalar-
+                                    # wrapped one (ABS(SUM(x))) is not a single outer FUNC(arg), so
+                                    # _fold_filters_into_aggregate bails. Fall back to the complete-SQL
+                                    # folder, which wraps EVERY aggregate's argument in the filter (as
+                                    # the import path does) -- gated above to single-argument aggregates
+                                    # so a multi-arg one is not folded into malformed SQL. It works in
+                                    # {model} form, so resolve the filters and convert around the call.
+                                    resolved_pred = self._fold_filter_conds(metric.filters, model).replace(
+                                        "${TABLE}", "{model}"
+                                    )
+                                    folded_model = self._fold_complete_sql_filters(
+                                        col_sql.replace("${TABLE}", "{model}"), [resolved_pred], force=True
+                                    )
+                                    folded = folded_model.replace("{model}", "${TABLE}") if folded_model else None
                                 if folded is None:
                                     logger.warning(
                                         "Metric %r has filters over a complex aggregate SQL expression that "

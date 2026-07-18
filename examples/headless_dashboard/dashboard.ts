@@ -1,12 +1,9 @@
-import { defineDashboard, type DashboardRenderer } from "./sidemantic.generated";
-
-const renderer: DashboardRenderer = "vega-lite";
+import { defineDashboard } from "./sidemantic.generated";
 
 export default defineDashboard({
   schema: "sidemantic.dashboard.v1",
   title: "Revenue Performance Explorer",
   defaults: {
-    renderer,
     query: {
       interactionPreaggregations: true,
     },
@@ -55,4 +52,3 @@ export default defineDashboard({
     },
   ],
 });
-

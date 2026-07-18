@@ -6,9 +6,9 @@ Sidemantic supports several HTML hosts through one React component implementatio
 
 | Concern | Canonical source | Other surfaces |
 | --- | --- | --- |
-| Product application shell, catalog, query orchestration, date controls, and interactive time series | `webapp/src/` | Built into the Python and Rust servers |
+| Product application shell, declarative dashboards, catalog, query orchestration, date controls, and interactive time series | `webapp/src/` | Built into the Python and Rust servers |
 | Reusable charts, leaderboards, previews, query debugging, and state primitives | `webapp/src/components/` via `webapp/src/ui.ts` | Built as React ESM and self-contained browser distributions |
-| Portable standalone charts and live crossfilter dashboards | `sidemantic/viz.py` | Used by `sidemantic chart` and `sidemantic dashboard serve` |
+| Experimental cross-library chart and crossfilter renderers | `sidemantic/viz.py` | Library APIs and examples only; not a product UI or CLI surface |
 | Notebook trait synchronization and mounting | `js/widget.js` and `sidemantic/widget/` | Mounts the canonical React distribution |
 | MCP Apps chart embedding | `sidemantic/apps/chart_widget.html` | Returned by the MCP `create_chart` tool |
 
@@ -17,6 +17,11 @@ The React webapp, static/WASM apps, and AnyWidget have separate lifecycle adapte
 The framework-free/WASM leaderboard is the visual champion for ranked cards: contiguous hairline panels, compact rows, lavender magnitude fills, full formatted values, and an understated expand affordance. The React `LeaderboardPanel` keeps ownership of querying, null handling, stale-result protection, and crossfilter behavior while rendering that presentation.
 
 The consolidated component gallery is available at `/components`. `scripts/build_ui_distribution.py` produces `sidemantic-ui.js`, `sidemantic-ui-static.js`, and `sidemantic-ui.css` directly from `webapp/src`; there are no parallel JSX, DOM-renderer, or CSS component sources.
+
+Declarative dashboard specs are loaded with `sidemantic dashboard serve` and rendered by the same
+React Explore components. `sidemantic dashboard validate` and `sidemantic dashboard types` remain
+authoring tools. The command serves the official application; there is no separate dashboard
+frontend.
 
 ## Generated and synchronized copies
 

@@ -1,7 +1,6 @@
 schema: sidemantic.dashboard.v1
 title: Revenue Performance Explorer
 defaults:
-  renderer: vega-lite
   query:
     interaction_preaggregations: true
   interactions:
@@ -43,4 +42,3 @@ tabs:
               - orders.channel
               - orders.customer_tier
               - orders.product_line
-

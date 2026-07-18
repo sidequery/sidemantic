@@ -35,6 +35,10 @@ Rust does not parse these source formats directly:
 - Rill
 - Malloy
 - Omni
+
+`sidemantic convert` uses the shared format registry and accepts a project, directory, or exact
+file. Pass `--from` only to override auto-detection and `--force` only when intentionally replacing
+an existing destination.
 - Superset
 - GoodData
 - Snowflake Cortex

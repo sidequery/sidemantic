@@ -4954,6 +4954,102 @@ def test_lookml_export_folded_filter_protects_sql_server_datepart_abbreviations(
     assert conds(["mm = '2024-01'"], model) == "((${TABLE}.order_mm) = '2024-01')"
 
 
+def test_lookml_export_folded_filter_date_part_scan_is_quote_aware():
+    """A `)` inside a string literal must not break the date-part call scan.
+
+    The backward scan that finds the enclosing DATE_TRUNC counted the `)` inside `= ')'` as syntax
+    and lost the call, so the `month` date-part token was rewritten to the `month` dimension SQL.
+    The scan is now quote-aware, so the part token stays intact and the real column still resolves.
+    """
+    from sidemantic import Dimension, Model
+
+    model = Model(
+        name="orders",
+        table="raw_orders",
+        primary_key="id",
+        dimensions=[
+            Dimension(name="id", type="numeric", sql="id"),
+            Dimension(name="month", type="time", granularity="month", sql="order_month"),
+            Dimension(name="created_at", type="time", granularity="day", sql="created_at"),
+        ],
+    )
+    conds = LookMLAdapter._fold_filter_conds
+    out = conds(["DATE_TRUNC(CASE WHEN label = ')' THEN created_at END, month) = DATE '2024-01-01'"], model)
+    assert ", month)" in out  # date-part token untouched despite the ')' inside the string
+    assert "order_month" not in out  # not rewritten to the same-named dimension
+    assert "(${TABLE}.created_at)" in out  # the real column argument still resolves
+    # A same-named `month` column used as a real operand still resolves.
+    assert conds(["month = '2024-01'"], model) == "((${TABLE}.order_month) = '2024-01')"
+
+
+def test_lookml_export_folded_filter_protects_multi_word_cast_type():
+    """Every token of a multi-word cast type (double precision) is protected, not just the first."""
+    from sidemantic import Dimension, Model
+
+    model = Model(
+        name="orders",
+        table="t",
+        primary_key="id",
+        dimensions=[
+            Dimension(name="id", type="numeric", sql="id"),
+            Dimension(name="precision", type="numeric", sql="precision_col"),
+            Dimension(name="amount", type="numeric", sql="amt"),
+        ],
+    )
+    conds = LookMLAdapter._fold_filter_conds
+    assert conds(["cast(amount as double precision) > 0"], model) == "(cast((${TABLE}.amt) as double precision) > 0)"
+    # The `::` form is protected across the whole multi-word type too.
+    assert conds(["amount::double precision > 0"], model) == "((${TABLE}.amt)::double precision > 0)"
+    # A same-named `precision` column used as a real operand still resolves.
+    assert conds(["precision > 5"], model) == "((${TABLE}.precision_col) > 5)"
+
+
+def test_lookml_export_dialect_renamed_aggregate_skipped():
+    """A filtered complete metric whose aggregate sqlglot would RENAME on export is skipped, not mangled.
+
+    Serializing the fold rewrites APPROX_COUNT_DISTINCT to APPROX_DISTINCT, which DuckDB rejects, so
+    the fold bails and the measure is skipped rather than exported with an invalid function name. A
+    plain SUM/COUNT (no renamed aggregate) still folds and exports.
+    """
+    import tempfile
+
+    from sidemantic import Dimension, Metric, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    # The fold itself bails (returns None) on a renamed aggregate, but folds a stable one.
+    assert (
+        LookMLAdapter._fold_complete_sql_filters(
+            "APPROX_COUNT_DISTINCT({model}.user_id) / COUNT(*)", ["{model}.status = 'x'"], force=True
+        )
+        is None
+    )
+    assert (
+        LookMLAdapter._fold_complete_sql_filters("SUM({model}.amount) / COUNT(*)", ["{model}.status = 'x'"], force=True)
+        is not None
+    )
+
+    def _export(sql, name):
+        graph = SemanticGraph()
+        graph.add_model(
+            Model(
+                name="orders",
+                table="t",
+                primary_key="id",
+                dimensions=[
+                    Dimension(name="id", type="numeric", sql="id"),
+                    Dimension(name="status", type="categorical", sql="status"),
+                ],
+                metrics=[Metric(name=name, agg=None, sql=sql, sql_is_complete=True, filters=["{model}.status = 'x'"])],
+            )
+        )
+        out = tempfile.mktemp(suffix=".lkml")
+        LookMLAdapter().export(graph, out)
+        return open(out).read()
+
+    assert "measure: au" not in _export("APPROX_COUNT_DISTINCT({model}.user_id) / COUNT(*)", "au")  # skipped
+    assert "measure: ratio" in _export("SUM({model}.amount) / COUNT(*)", "ratio")  # ordinary fold exports
+
+
 def test_lookml_export_folded_filter_keeps_boolean_null_literals():
     """A bare true/false/null in a folded filter stays a literal even when a dimension shares the name.
 
@@ -5879,17 +5975,33 @@ def test_lookml_export_bare_count_star_uses_native_count_type():
 
 
 def test_lookml_export_running_total_cross_view_ref_not_double_wrapped():
-    """A running_total over an unsupported (already-braced) cross-view ref must not emit ${${...}}."""
+    """A cumulative metric whose sql is a single already-braced cross-view ref exports as-is (no ${${}}).
+
+    Such a metric is no longer importable from LookML (a cross-view ref is dropped at parse time,
+    see test_lookml_cross_view_reference), but it can still arrive via the Python API, so the export
+    path must pass the single ${...} ref straight through rather than re-wrap it into ${${...}}.
+    """
     import tempfile
 
-    graph = _parse_lkml(
-        """
-view: orders {
-  sql_table_name: t ;;
-  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
-  measure: rt { type: running_total  sql: ${other_view.total} ;; }
-}
-"""
+    from sidemantic import Dimension, Metric, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="orders",
+            table="t",
+            primary_key="id",
+            dimensions=[Dimension(name="id", type="numeric", sql="id")],
+            metrics=[
+                Metric(
+                    name="rt",
+                    type="cumulative",
+                    sql="${other_view.total}",
+                    meta={"table_calculation": "running_total"},
+                )
+            ],
+        )
     )
     out = tempfile.mktemp(suffix=".lkml")
     LookMLAdapter().export(graph, out)

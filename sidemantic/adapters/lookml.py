@@ -292,6 +292,22 @@ class LookMLAdapter(BaseAdapter):
         if not aggs or not parsed_conds:
             return None
 
+        # sqlglot canonicalizes some dialect-specific AGGREGATE spellings when it re-serializes the
+        # tree below (APPROX_COUNT_DISTINCT -> APPROX_DISTINCT, VAR_POP -> VARIANCE_POP, ...). The
+        # rewritten spelling can be INVALID on the warehouse the original targeted (DuckDB rejects
+        # APPROX_DISTINCT), and this fold is the only place the SQL is round-tripped through the
+        # serializer. If any aggregate would render under a name that does NOT appear as a call in
+        # the source, we cannot reproduce it faithfully -> bail so the caller skips the measure
+        # rather than emit a renamed aggregate. Only aggregate function names are checked, so a
+        # SAFE structural rewrite the target still accepts (IF -> CASE, `::t` -> CAST) is allowed.
+        for a in aggs:
+            try:
+                rendered_name = re.match(r"\s*(\w+)\s*\(", a.sql())
+            except Exception:
+                return None
+            if rendered_name and not re.search(rf"\b{re.escape(rendered_name.group(1))}\s*\(", sql, re.I):
+                return None
+
         # An ordered-set aggregate (PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY x)) keeps its
         # value column in the enclosing WithinGroup's ORDER BY, NOT inside the AggFunc (whose
         # only arg is the percentile constant). Its "aggregate scope" for the column check and
@@ -543,13 +559,36 @@ class LookMLAdapter(BaseAdapter):
     )  # fmt: skip
 
     @staticmethod
+    def _blank_string_literals(s: str) -> str:
+        """Replace the CONTENTS of single/double-quoted spans with spaces, preserving length.
+
+        A paren-depth scan can then treat a ``)`` inside a string literal (``label = ')'``) as
+        non-syntax without shifting any character position the caller relies on.
+        """
+        out = list(s)
+        quote = None
+        for i, ch in enumerate(s):
+            if quote is not None:
+                if ch == quote:
+                    quote = None
+                else:
+                    out[i] = " "
+            elif ch in "'\"":
+                quote = ch
+        return "".join(out)
+
+    @staticmethod
     def _enclosing_call(pre: str) -> tuple[str | None, int, int]:
         """Describe the call a token sits in, given the text ``pre`` before it.
 
         Returns ``(function_name, arg_index, open_paren_pos)`` by scanning backwards for the first
         unclosed ``(`` and counting the top-level commas after it. ``(None, 0, -1)`` when the token
-        is not inside a call.
+        is not inside a call. The scan is quote-aware: a paren or comma inside a string literal
+        (``DATE_TRUNC(CASE WHEN x = ')' THEN a END, month)``) is not counted as syntax.
         """
+        # Blank string-literal contents first (length-preserving) so a `)`/`,` inside a quoted
+        # value does not skew the paren depth or comma count; positions stay valid for the caller.
+        pre = LookMLAdapter._blank_string_literals(pre)
         depth, commas, i = 0, 0, len(pre) - 1
         while i >= 0:
             ch = pre[i]
@@ -3295,8 +3334,12 @@ class LookMLAdapter(BaseAdapter):
                         # with a `date` dimension. Rewriting the type token to a column would emit
                         # invalid SQL like CAST(x AS (${TABLE}.order_date)). (Typed literals like
                         # `date '2024-01-01'` are protected earlier, in the split below.)
+                        # The `(?:\w+\s+)*` tail also covers a MULTI-WORD type: in
+                        # `cast(x AS double precision)` the second type word `precision` is still in
+                        # the type slot (only words + spaces separate it from AS/::), so protect it
+                        # too rather than rewrite it to a same-named `precision` dimension.
                         pre = fstr[: base + m.start()]
-                        if re.search(r"(?is)\bAS\s+$", pre) or pre.rstrip().endswith("::"):
+                        if re.search(r"(?is)\bAS\s+(?:\w+\s+)*$", pre) or re.search(r"::\s*(?:\w+\s+)*$", pre):
                             return m.group(0)
                         # Skip a bare token in a DATE-PART / INTERVAL-UNIT keyword position, not a
                         # column operand -- e.g. EXTRACT(day FROM ...) or `INTERVAL 7 day` on a

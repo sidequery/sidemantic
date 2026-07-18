@@ -3395,6 +3395,53 @@ view: orders {
     assert con.execute(sql).fetchall() == [(1.0,)]
 
 
+def test_lookml_filtered_multi_column_distinct_folds_around_the_tuple():
+    """A filtered multi-column DISTINCT must fold the predicate, not rely on column-nulling.
+
+    Nulling the columns of an excluded row yields the tuple (NULL, NULL), which is NOT a NULL value,
+    so COUNT(DISTINCT (a, b)) counts that phantom tuple once and inflates the result by one. Fold
+    the predicate around the tuple instead; a single-column distinct stays on the safe nulling path.
+    """
+    import duckdb
+
+    from sidemantic import SemanticLayer
+
+    # Multi-column distinct (tuple and comma forms) folds; single-column stays on the nulling path.
+    assert (
+        LookMLAdapter._fold_complete_sql_filters("COUNT(DISTINCT ({model}.uid, {model}.oid))", ["{model}.s = 'x'"])
+        == "COUNT(DISTINCT CASE WHEN {model}.s = 'x' THEN ({model}.uid, {model}.oid) END)"
+    )
+    assert (
+        LookMLAdapter._fold_complete_sql_filters("COUNT(DISTINCT {model}.uid, {model}.oid)", ["{model}.s = 'x'"])
+        is not None
+    )
+    assert LookMLAdapter._fold_complete_sql_filters("COUNT(DISTINCT {model}.uid)", ["{model}.s = 'x'"]) is None
+
+    graph = _parse_lkml(
+        """
+view: orders {
+  sql_table_name: orders ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: uid { type: number  sql: ${TABLE}.uid ;; }
+  dimension: oid { type: number  sql: ${TABLE}.oid ;; }
+  dimension: status { type: string  sql: ${TABLE}.status ;; }
+  measure: pairs { type: number  sql: COUNT(DISTINCT (${uid}, ${oid})) ;; filters: [status: "completed"] }
+}
+"""
+    )
+    model = graph.get_model("orders")
+    layer = SemanticLayer(auto_register=False)
+    layer.add_model(model)
+    sql = layer.compile(metrics=["orders.pairs"])
+    con = duckdb.connect()
+    con.execute(
+        "create table orders as select 1 id, 1 uid, 10 oid, 'completed' status "
+        "union all select 2, 2, 20, 'pending' union all select 3, 1, 10, 'completed'"
+    )
+    # Only the two 'completed' rows, both (1, 10) -> one distinct pair. Nulling would give 2.
+    assert con.execute(sql).fetchall() == [(1,)]
+
+
 def test_lookml_complete_measure_own_filter_resolves_renamed_dimension():
     """A COMPLETE (mixed) measure's OWN filter on a renamed dimension resolves to the real column."""
     import duckdb

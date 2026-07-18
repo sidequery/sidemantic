@@ -321,6 +321,14 @@ class LookMLAdapter(BaseAdapter):
         iff_with_default = any(
             (n.name or "").lower() in ("iff", "if") and len(n.expressions) >= 3 for n in tree.find_all(exp.Anonymous)
         )
+        # (4) a MULTI-COLUMN DISTINCT -- COUNT(DISTINCT (a, b)) or COUNT(DISTINCT a, b) -- is unsafe
+        # to null: nulling the columns of an excluded row yields the tuple (NULL, NULL), which is
+        # NOT a NULL value (only its components are), so DISTINCT counts that phantom tuple ONCE and
+        # inflates the result by one. A single-column DISTINCT is safe (its NULL is ignored).
+        multi_col_distinct = any(
+            len(d.expressions) > 1 or any(isinstance(e, exp.Tuple) and len(e.expressions) > 1 for e in d.expressions)
+            for d in tree.find_all(exp.Distinct)
+        )
         unsafe_nulling = (
             tree.find(exp.Is) is not None
             or tree.find(exp.Coalesce) is not None
@@ -328,6 +336,7 @@ class LookMLAdapter(BaseAdapter):
             or case_with_default
             or if_with_default
             or iff_with_default
+            or multi_col_distinct
         )
         # Otherwise, if every aggregate already references a column the generator can null
         # (nulling the value/ORDER-BY column filters it; aggregates ignore NULLs), the

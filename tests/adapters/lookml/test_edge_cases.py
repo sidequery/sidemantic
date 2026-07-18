@@ -6040,6 +6040,83 @@ def test_lookml_every_model_file_seeds_include_scoping():
     assert LookMLAdapter().parse(str(unscoped)).get_model("orders").table == "REFINED"
 
 
+def test_lookml_partial_explore_filter_kept_and_reported(caplog):
+    """An explore's mandatory filter must not silently leak onto models without that explore.
+
+    sql_always_where / always_filter become segments on the single shared base model. When one
+    model includes the base view plus a filtered explore sidecar and another includes only the
+    base view, the filter attached to the shared model -- exposing a segment Looker would not give
+    the second model. One model per view name cannot hold both shapes, so the segment is kept (it
+    is opt-in, and dropping it would un-filter the model that wanted it) and the divergence warned.
+    """
+    import logging
+    import tempfile
+
+    view = "view: %s {\n  sql_table_name: %s ;;\n  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }\n}\n"
+    sidecar = 'include: "/views/filtered.explore.lkml"\n'
+
+    def parse(models, explore_body):
+        directory = Path(tempfile.mkdtemp())
+        (directory / "views").mkdir()
+        for name, include in models:
+            (directory / f"{name}.model.lkml").write_text(include)
+        (directory / "views" / "orders.view.lkml").write_text(view % ("orders", "real_orders"))
+        (directory / "views" / "filtered.explore.lkml").write_text(explore_body)
+        return LookMLAdapter().parse(str(directory)).get_model("orders")
+
+    where = "explore: orders {\n  sql_always_where: ${orders.id} > 100 ;;\n}\n"
+
+    # One model includes the filtered explore, another uses the base view without it -> warn, keep.
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="sidemantic.adapters.lookml"):
+        model = parse(
+            [
+                ("orders", 'include: "/views/orders.view.lkml"\n'),
+                ("filtered", 'include: "/views/orders.view.lkml"\n' + sidecar),
+            ],
+            where,
+        )
+    assert [s.name for s in model.segments] == ["_sql_always_where_orders"]  # kept
+    assert "mandatory filter" in caplog.text
+
+    # Every model using the base view includes the explore: no divergence.
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="sidemantic.adapters.lookml"):
+        model = parse(
+            [
+                ("a", 'include: "/views/orders.view.lkml"\n' + sidecar),
+                ("b", 'include: "/views/orders.view.lkml"\n' + sidecar),
+            ],
+            where,
+        )
+    assert [s.name for s in model.segments] == ["_sql_always_where_orders"]
+    assert "mandatory filter" not in caplog.text
+
+    # always_filter diverges the same way.
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="sidemantic.adapters.lookml"):
+        parse(
+            [
+                ("orders", 'include: "/views/orders.view.lkml"\n'),
+                ("filtered", 'include: "/views/orders.view.lkml"\n' + sidecar),
+            ],
+            'explore: orders {\n  always_filter: {\n    filters: [orders.id: "100"]\n  }\n}\n',
+        )
+    assert "mandatory filter" in caplog.text
+
+    # A partial explore with NO mandatory filter has nothing to leak -> no warning.
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="sidemantic.adapters.lookml"):
+        parse(
+            [
+                ("orders", 'include: "/views/orders.view.lkml"\n'),
+                ("filtered", 'include: "/views/orders.view.lkml"\n' + sidecar),
+            ],
+            'explore: orders {\n  label: "Orders"\n}\n',
+        )
+    assert "mandatory filter" not in caplog.text
+
+
 def test_lookml_shared_explore_sidecar_checked_against_one_model_scope(caplog):
     """An explore in a sidecar two models share resolves within ONE model, not their union.
 

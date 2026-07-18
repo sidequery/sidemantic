@@ -253,6 +253,10 @@ class LookMLAdapter(BaseAdapter):
         # Which model files reach each file. Used to tell a refinement that every model sharing a
         # view agrees on from one only SOME of them select.
         _models_by_file: dict[Path, set[Path]] = {}
+        # How many models have each view in scope. An explore's mandatory filters (sql_always_where
+        # / always_filter) attach to the single shared base model, so if fewer models reach the
+        # explore than use the base view, the rest get a filter Looker would not give them.
+        _view_model_count: dict[str, int] = {}
         if _scoping_active:
             for _model_file in _model_files:
                 _closure = _include_closure(_model_file)
@@ -261,6 +265,8 @@ class LookMLAdapter(BaseAdapter):
                     _scopes_by_file.setdefault(_reached, []).append(_allowed)
                     _scope_by_file.setdefault(_reached, set()).update(_allowed)
                     _models_by_file.setdefault(_reached, set()).add(_model_file)
+                for _v in _allowed:
+                    _view_model_count[_v] = _view_model_count.get(_v, 0) + 1
 
         # Snapshot abstract / unsupported-derived_table flags BEFORE refinement merge:
         # merge_model REPLACES a base view's meta when the refinement carries metadata,
@@ -514,7 +520,9 @@ class LookMLAdapter(BaseAdapter):
             if _resolved not in _scopes_by_file:
                 logger.debug("Ignoring LookML explores in %s: not reached by any include.", lkml_file)
                 continue
-            self._parse_explores_from_file(lkml_file, graph, model_scopes=_scopes_by_file[_resolved])
+            self._parse_explores_from_file(
+                lkml_file, graph, model_scopes=_scopes_by_file[_resolved], view_model_count=_view_model_count
+            )
 
         # Re-apply the default: explores can add segments (sql_always_where /
         # always_filter) to an otherwise-fieldless view, which only now makes it
@@ -635,7 +643,11 @@ class LookMLAdapter(BaseAdapter):
                     graph.add_model(model)
 
     def _parse_explores_from_file(
-        self, file_path: Path, graph: SemanticGraph, model_scopes: list[set[str]] | None = None
+        self,
+        file_path: Path,
+        graph: SemanticGraph,
+        model_scopes: list[set[str]] | None = None,
+        view_model_count: dict[str, int] | None = None,
     ) -> None:
         """Parse explores from a single LookML file and add relationships.
 
@@ -644,6 +656,9 @@ class LookMLAdapter(BaseAdapter):
             graph: Semantic graph to add relationships to
             model_scopes: One view set per model that includes this file, or None to allow any.
                 Scopes each explore to the views a SINGLE model can see, as Looker resolves them.
+            view_model_count: How many models have each view in scope project-wide. Lets an explore
+                tell that some models use its base view WITHOUT this explore, so its mandatory
+                filters would leak onto the shared base model.
         """
         lkml = _import_lkml()
 
@@ -658,7 +673,7 @@ class LookMLAdapter(BaseAdapter):
         # Parse explores. The scope check lives in _parse_explore, which owns the from:/fallback
         # resolution of the base view -- duplicating that resolution here would drift from it.
         for explore_def in parsed.get("explores") or []:
-            self._parse_explore(explore_def, graph, model_scopes=model_scopes)
+            self._parse_explore(explore_def, graph, model_scopes=model_scopes, view_model_count=view_model_count)
 
     # Matches ${field} and ${view.field}. ${TABLE} is handled specially.
     _REF_RE = re.compile(r"\$\{(?:([a-zA-Z_]\w*)\.)?([a-zA-Z_]\w*)\}")
@@ -3941,7 +3956,11 @@ class LookMLAdapter(BaseAdapter):
         )
 
     def _parse_explore(
-        self, explore_def: dict, graph: SemanticGraph, model_scopes: list[set[str]] | None = None
+        self,
+        explore_def: dict,
+        graph: SemanticGraph,
+        model_scopes: list[set[str]] | None = None,
+        view_model_count: dict[str, int] | None = None,
     ) -> None:
         """Parse LookML explore and add relationships to models.
 
@@ -3951,6 +3970,8 @@ class LookMLAdapter(BaseAdapter):
             model_scopes: One view set per model including this explore's file, or None to allow
                 any. An explore resolves within a SINGLE model, so its base view and joins are
                 checked against the same model's scope rather than the models' combined views.
+            view_model_count: How many models have each view in scope project-wide, used to detect
+                that some models use the base view without this explore's mandatory filters.
         """
         explore_name = explore_def.get("name")
         if not explore_name:
@@ -3997,6 +4018,26 @@ class LookMLAdapter(BaseAdapter):
                 base_model.meta.update(explore_meta)
             else:
                 base_model.meta = explore_meta
+
+        # An explore's mandatory filters (sql_always_where / always_filter) become segments on the
+        # single shared base model. If some models use that base view WITHOUT reaching this explore
+        # (base_scopes counts only the models that DO), those models expose a filter Looker would
+        # not give them. One model per view name cannot hold both the filtered and unfiltered
+        # explore, so the segment is kept -- dropping it would un-filter the model that wanted it,
+        # and the segment is opt-in, not auto-applied -- and the divergence is reported.
+        _has_explore_filters = bool(explore_def.get("sql_always_where") or explore_def.get("always_filter"))
+        if _has_explore_filters and view_model_count is not None and base_scopes is not None:
+            if view_model_count.get(base_model_name, len(base_scopes)) > len(base_scopes):
+                logger.warning(
+                    "LookML explore %r sets a mandatory filter (sql_always_where/always_filter), but only "
+                    "some of the models using view %r include this explore. The filter becomes a segment on "
+                    "the single %r model, so the models without this explore expose a filter Looker would not "
+                    "give them. Include this explore from every model that uses %r, or give them separate views.",
+                    explore_name,
+                    base_model_name,
+                    base_model_name,
+                    base_model_name,
+                )
 
         # Convert sql_always_where to a segment (use explore name for uniqueness)
         from sidemantic.core.segment import Segment

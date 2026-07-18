@@ -1,8 +1,10 @@
-"""Portable dashboard specs and TypeScript schema generation.
+"""Declarative dashboard specs and TypeScript schema generation.
 
 The dashboard spec is intentionally semantic: charts declare metrics,
 dimensions, encodings, and interactions. Rendering, SQL compilation, and
-interaction pre-aggregation stay inside Sidemantic.
+interaction pre-aggregation stay inside Sidemantic. Product rendering belongs to
+the canonical React application; the cross-library renderer adapters remain
+available for examples and library experimentation.
 """
 
 from __future__ import annotations
@@ -41,8 +43,9 @@ class DashboardDocument:
     """A versioned semantic dashboard definition.
 
     Use :meth:`from_file` for YAML/JSON specs, :meth:`from_dict` for Python
-    authoring, and :meth:`to_crossfilter_dashboard` to serve it with the
-    existing database-backed crossfilter runtime.
+    authoring. ``sidemantic dashboard serve`` passes the document to the official
+    React application; the
+    :meth:`to_crossfilter_dashboard` adapter is retained for renderer examples.
     """
 
     payload: dict[str, Any]
@@ -126,7 +129,7 @@ class DashboardDocument:
                 errors.append(f"{path}.charts must be a non-empty list")
                 continue
             if len(charts) != 1:
-                errors.append(f"{path}.charts currently supports exactly one chart for dashboard serve")
+                errors.append(f"{path}.charts currently supports exactly one chart in the canonical dashboard UI")
 
             chart_ids: set[str] = set()
             for chart_index, chart in enumerate(charts):
@@ -154,7 +157,7 @@ class DashboardDocument:
         return errors
 
     def to_crossfilter_dashboard(self, layer) -> CrossfilterDashboard:
-        """Build a live crossfilter dashboard from this semantic spec."""
+        """Build the experimental cross-library renderer for examples and library users."""
         errors = self.validate(layer)
         if errors:
             raise DashboardSpecError("; ".join(errors))

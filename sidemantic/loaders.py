@@ -852,7 +852,12 @@ def _handle_parse_error(file_path: Path, error: Exception, *, strict: bool) -> N
 
 
 def _parse_adapter_without_auto_registration(adapter, file_path: Path):
-    return _run_without_auto_registration(adapter.parse, str(file_path))
+    return parse_with_adapter(adapter, file_path)
+
+
+def parse_with_adapter(adapter, source: str | Path):
+    """Parse an exact source without leaking models into the active layer registry."""
+    return _run_without_auto_registration(adapter.parse, str(source))
 
 
 def _run_without_auto_registration(callback, *args):

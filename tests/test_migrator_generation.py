@@ -1,5 +1,7 @@
 """Tests for coverage analyzer model and query generation."""
 
+from pathlib import Path
+
 from sidemantic import SemanticLayer
 from sidemantic.core.migrator import Migrator
 
@@ -391,6 +393,51 @@ def test_generate_models_with_date_trunc():
     dims = {d["name"]: d for d in orders["dimensions"]}
     assert "order_date" in dims
     assert dims["order_date"]["type"] == "time"
+    assert dims["order_date"]["granularity"] == "month"
+
+
+def test_generate_models_uses_finest_observed_time_granularity():
+    """A time column is emitted once at the finest grain observed in queries."""
+    layer = SemanticLayer(auto_register=False)
+    analyzer = Migrator(layer)
+
+    report = analyzer.analyze_queries(
+        [
+            "SELECT DATE_TRUNC('month', order_date), COUNT(*) FROM orders GROUP BY 1",
+            "SELECT DATE_TRUNC('day', order_date), COUNT(*) FROM orders GROUP BY 1",
+        ]
+    )
+    models = analyzer.generate_models(report)
+
+    order_date_dimensions = [
+        dimension for dimension in models["orders"]["dimensions"] if dimension["name"] == "order_date"
+    ]
+    assert order_date_dimensions == [
+        {
+            "name": "order_date",
+            "sql": "order_date",
+            "type": "time",
+            "granularity": "day",
+        }
+    ]
+
+
+def test_migrator_example_generates_self_validating_models(tmp_path):
+    """The documented raw-query example produces models accepted by validation."""
+    from sidemantic.validation_runner import validate_directory
+
+    layer = SemanticLayer(auto_register=False)
+    analyzer = Migrator(layer)
+    queries_dir = Path(__file__).parents[1] / "examples" / "migrator" / "raw_queries"
+
+    report = analyzer.analyze_folder(str(queries_dir))
+    models = analyzer.generate_models(report)
+    output_dir = tmp_path / "models"
+    analyzer.write_model_files(models, str(output_dir))
+    analyzer.write_graph_metrics_file(analyzer.generate_graph_metrics(report, models), str(output_dir))
+
+    validation = validate_directory(output_dir)
+    assert validation.errors == []
 
 
 def test_generate_rewritten_query_with_date_trunc():

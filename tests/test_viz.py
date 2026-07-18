@@ -3,11 +3,9 @@ import json
 import re
 
 import pytest
-from typer.testing import CliRunner
 
 from examples.integrations.headless_charting import _build_chart, build_layer
 from sidemantic import Dimension, Freshness, Metric, Model, Relationship, SemanticLayer
-from sidemantic.cli import app
 from sidemantic.viz import (
     CrossfilterDashboard,
     CrossfilterTab,
@@ -16,8 +14,6 @@ from sidemantic.viz import (
     TimeRange,
     _freshness_datetime,
 )
-
-runner = CliRunner()
 
 
 def _strip_vendored_script_bodies(html: str) -> str:
@@ -1057,106 +1053,20 @@ def test_crossfilter_live_time_range_filters_supported_time_grains(grain, minimu
     assert response["row_count"] > 0
 
 
-def test_chart_cli_outputs_json(tmp_path):
-    models_dir = tmp_path / "models"
-    models_dir.mkdir()
-    (models_dir / "models.yml").write_text(
-        """
-models:
-  - name: orders
-    table: orders
-    primary_key: id
-    dimensions:
-      - name: created_at
-        type: time
-        granularity: day
-      - name: region
-        type: categorical
-    metrics:
-      - name: revenue
-        agg: sum
-        sql: amount
-"""
-    )
-    db_path = tmp_path / "orders.db"
-    layer = SemanticLayer(connection=f"duckdb:///{db_path}", auto_register=False)
-    layer.adapter.execute("CREATE TABLE orders (id INTEGER, created_at DATE, region VARCHAR, amount DOUBLE)")
-    layer.adapter.execute("""
-        INSERT INTO orders VALUES
-            (1, DATE '2024-01-03', 'North', 120.0),
-            (2, DATE '2024-02-03', 'South', 80.0)
-    """)
+def test_chart_library_outputs_json():
+    layer = _build_layer()
+    chart = layer.chart("orders.revenue", by="orders.created_at__month").line().interactive()
 
-    result = runner.invoke(
-        app,
-        [
-            "chart",
-            "orders.revenue",
-            "--by",
-            "orders.created_at__month",
-            "--mark",
-            "line",
-            "--interactive",
-            "--models",
-            str(models_dir),
-            "--db",
-            str(db_path),
-        ],
-    )
-
-    assert result.exit_code == 0
-    payload = json.loads(result.stdout)
+    payload = json.loads(json.dumps(chart.to_renderer("vega-lite")))
     assert payload["mark"]["type"] == "line"
     assert payload["params"][0]["name"] == "brush"
-    assert len(payload["data"]["values"]) == 2
+    assert len(payload["data"]["values"]) == 3
 
 
-def test_chart_cli_writes_html(tmp_path):
-    models_dir = tmp_path / "models"
-    models_dir.mkdir()
-    (models_dir / "models.yml").write_text(
-        """
-models:
-  - name: orders
-    table: orders
-    primary_key: id
-    dimensions:
-      - name: region
-        type: categorical
-    metrics:
-      - name: revenue
-        agg: sum
-        sql: amount
-"""
-    )
-    db_path = tmp_path / "orders.db"
-    layer = SemanticLayer(connection=f"duckdb:///{db_path}", auto_register=False)
-    layer.adapter.execute("CREATE TABLE orders (id INTEGER, region VARCHAR, amount DOUBLE)")
-    layer.adapter.execute("INSERT INTO orders VALUES (1, 'North', 120.0), (2, 'South', 80.0)")
-    output = tmp_path / "chart.html"
+def test_chart_library_renders_html():
+    layer = _build_layer()
+    html = layer.chart("orders.revenue", by="orders.region").bar().to_html("vega-lite")
 
-    result = runner.invoke(
-        app,
-        [
-            "chart",
-            "orders.revenue",
-            "--by",
-            "orders.region",
-            "--mark",
-            "bar",
-            "--format",
-            "html",
-            "--output",
-            str(output),
-            "--models",
-            str(models_dir),
-            "--db",
-            str(db_path),
-        ],
-    )
-
-    assert result.exit_code == 0
-    html = output.read_text()
     assert "vega-embed" in html
     assert "Revenue by Region" in html
 

@@ -6108,6 +6108,40 @@ view: child {
     assert "a_field" in dims  # the supported parent still contributes
 
 
+def test_lookml_refinement_of_unsupported_parent_field_is_dropped():
+    """Refining a field that exists only on an unsupported derived-table parent must not add it.
+
+    Seeding skips the unsupported parent, but the refinement's bare field would still be added as an
+    own field querying a table that never gets registered, so it is dropped entirely. A refinement
+    of a SUPPORTED-parent field, and a genuinely new field, are unaffected.
+    """
+    graph = _parse_lkml(
+        """
+view: base_a { sql_table_name: base_a ;; dimension: a_field { type: string  sql: ${TABLE}.a_field ;; } }
+view: pdt_base {
+  derived_table: { persist_for: "24 hours" }
+  dimension: pdt_only { type: string  sql: ${TABLE}.pdt_only ;; }
+}
+view: child {
+  sql_table_name: child ;;
+  extends: [base_a, pdt_base]
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+}
+view: +child {
+  dimension: pdt_only { label: "The PDT field" }
+  dimension: a_field { label: "Renamed A" }
+  dimension: brand_new { type: string  sql: ${TABLE}.brand_new ;; }
+}
+"""
+    )
+    model = graph.get_model("child")
+    dims = {d.name for d in model.dimensions}
+    assert "pdt_only" not in dims  # refinement of an unsupported-parent-only field is dropped
+    assert "brand_new" in dims  # a genuinely new refinement field is still added
+    a_field = model.get_dimension("a_field")
+    assert a_field is not None and a_field.label == "Renamed A"  # supported-parent refinement seeds
+
+
 def test_lookml_extends_parent_required_in_all_model_scopes(caplog):
     """A parent only SOME models reaching the child include must not be inherited, and it warns.
 

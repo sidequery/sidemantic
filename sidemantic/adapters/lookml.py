@@ -478,8 +478,25 @@ class LookMLAdapter(BaseAdapter):
                     # seed from parents IN the base's include scope, mirroring the extends resolution
                     # below -- otherwise a table-backed view would expose an archived parent's field
                     # Looker (and the resolved extends) would not include.
-                    inherited_fields = self._inherited_raw_fields(base_name, raw_view_defs, _parent_in_scope)
-                    merged_raw = self._merge_view_defs(base_raw, ref_raw, inherited_fields)
+                    inherited_fields = self._inherited_raw_fields(
+                        base_name, raw_view_defs, _parent_in_scope, unsupported_parents=unsupported_pre
+                    )
+                    # A refinement can touch a field that exists ONLY on an unsupported derived-table
+                    # parent (dropped by the loader). Seeding skips it above, but the refinement's
+                    # bare field would still be added as an own field querying a table that never
+                    # gets registered. Collect those keys (present via unsupported parents but not via
+                    # supported ones or the base) so the merge drops the refinement's copy entirely.
+                    all_inherited = self._inherited_raw_fields(base_name, raw_view_defs, _parent_in_scope)
+                    _base_keys = {
+                        (k, i["name"])
+                        for k in self._VIEW_FIELD_LIST_KEYS
+                        for i in (base_raw.get(k) or [])
+                        if isinstance(i, dict) and i.get("name")
+                    }
+                    unsupported_only_keys = set(all_inherited) - set(inherited_fields) - _base_keys
+                    merged_raw = self._merge_view_defs(
+                        base_raw, ref_raw, inherited_fields, drop_field_keys=unsupported_only_keys
+                    )
                     remerged = self._parse_view(merged_raw)
                     if remerged is not None:
                         # Keep the merged raw so a SECOND refinement of the same view stacks
@@ -1201,7 +1218,9 @@ class LookMLAdapter(BaseAdapter):
         return parents[0] if parents else None
 
     @classmethod
-    def _inherited_raw_fields(cls, base_name: str, raw_view_defs: dict, parent_in_scope=None) -> dict:
+    def _inherited_raw_fields(
+        cls, base_name: str, raw_view_defs: dict, parent_in_scope=None, unsupported_parents=None
+    ) -> dict:
         """Fields a view inherits via ``extends``, as ``{(list_key, field_name): field_def}``.
 
         Walks the extends chain through the raw view dicts (nearest parent wins). Lets a refinement
@@ -1213,10 +1232,15 @@ class LookMLAdapter(BaseAdapter):
         NOT be seeded either (else a table-backed view would expose an archived parent's field). An
         out-of-scope link is skipped (with its ancestors), but OTHER parents are still walked.
 
+        ``unsupported_parents`` names views backed by an unsupported derived table; they are dropped
+        by the loader, so seeding a refinement from their fields would resurrect a field querying a
+        table that never gets registered -- skip them, matching the extra-parent merge/copy guard.
+
         A view can extend SEVERAL parents (``extends: [a, b]``), so this walks EVERY parent, not
         just the first -- otherwise a refinement of a field inherited only from a non-first parent
         would not seed from its real definition and would re-parse to a bare categorical field.
         """
+        unsupported_parents = unsupported_parents or set()
         fields: dict[tuple[str, str], dict] = {}
         seen: set[str] = {base_name}
         # Breadth-first over all extends parents: nearer parents before their ancestors, and
@@ -1228,6 +1252,8 @@ class LookMLAdapter(BaseAdapter):
                 continue
             if parent_in_scope is not None and not parent_in_scope(child, parent):
                 continue  # skip this link (and its ancestors); other parents still apply
+            if parent in unsupported_parents:
+                continue  # unsupported derived-table parent: never registered, so do not seed it
             seen.add(parent)
             parent_raw = raw_view_defs.get(parent) or {}
             for key in cls._VIEW_FIELD_LIST_KEYS:
@@ -1238,7 +1264,9 @@ class LookMLAdapter(BaseAdapter):
         return fields
 
     @classmethod
-    def _merge_view_defs(cls, base: dict, refinement: dict, inherited_fields: dict | None = None) -> dict:
+    def _merge_view_defs(
+        cls, base: dict, refinement: dict, inherited_fields: dict | None = None, drop_field_keys=None
+    ) -> dict:
         """Merge a `view: +name` refinement's RAW LookML dict onto the base view's RAW dict.
 
         Merging at the RAW level (then re-parsing) is what makes a PARTIAL field refinement work:
@@ -1249,7 +1277,12 @@ class LookMLAdapter(BaseAdapter):
 
         Named-field lists are merged per field by name; every other key is overridden wholesale
         (Looker refinement semantics), and the base's name is kept.
+
+        ``drop_field_keys`` names ``(list_key, field_name)`` pairs the refinement must NOT introduce:
+        a field that exists only on an unsupported derived-table parent (never registered), so
+        refining it would resurrect a phantom own field querying a nonexistent column.
         """
+        drop_field_keys = drop_field_keys or set()
         merged = copy.deepcopy(base)
         for key, value in refinement.items():
             if key == "name":
@@ -1267,6 +1300,10 @@ class LookMLAdapter(BaseAdapter):
                         extras.append(copy.deepcopy(item))
                         continue
                     fname = item["name"]
+                    if (key, fname) in drop_field_keys and fname not in by_name:
+                        # Field exists only on an unsupported derived-table parent: refining it
+                        # would add a phantom own field querying an unregistered table, so drop it.
+                        continue
                     if fname in by_name:
                         # Field-level refinement: override ONLY the properties it specifies.
                         by_name[fname].update({k: copy.deepcopy(v) for k, v in item.items() if k != "name"})

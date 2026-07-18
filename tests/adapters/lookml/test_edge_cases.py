@@ -4286,6 +4286,41 @@ view: v {
     assert {"created_second", "created_date"} <= names  # supported grains still import
 
 
+def test_lookml_dimension_group_leading_unsupported_timeframe_resolves_ref_base_sql():
+    """A group whose FIRST timeframe is unsupported must still resolve a ${ref} in its base sql.
+
+    The base sql was keyed off timeframes[0]; when that leading timeframe is unsupported (minute15)
+    it is never seeded in the resolved lookup, so the lookup missed and fell back to the RAW group
+    sql -- leaving `sql: ${ts_src}` literally unresolved so the surviving `date` field compiled to
+    DATE_TRUNC('day', ${ts_src}). Key off the first SUPPORTED timeframe so the ref resolves.
+    """
+    from sidemantic.core.semantic_layer import SemanticLayer
+
+    graph = _parse_lkml(
+        """
+view: events {
+  sql_table_name: events ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: ts_src { type: time  sql: ${TABLE}.created_at ;; }
+  dimension_group: created {
+    type: time
+    timeframes: [minute15, date]
+    sql: ${ts_src} ;;
+  }
+}
+"""
+    )
+    created = next(d for d in graph.get_model("events").dimensions if d.name == "created_date")
+    assert "${ts_src}" not in created.sql  # ref resolved, not leaked literally
+    assert "created_at" in created.sql
+
+    layer = SemanticLayer()
+    layer.graph = graph
+    sql = layer.compile(dimensions=["events.created_date"])
+    assert "${ts_src}" not in sql  # compiles against the real column
+    assert "created_at" in sql
+
+
 def test_lookml_time_grain_roundtrip():
     """time/hour/minute/date grains round-trip through export without grain or suffix corruption."""
     import tempfile

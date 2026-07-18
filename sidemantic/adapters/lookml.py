@@ -2943,8 +2943,16 @@ class LookMLAdapter(BaseAdapter):
         # `sql: ${TABLE}.created ;;` and re-emit the group without inventing a sql.
         implicit_sql = not dim_group_def.get("sql")
 
-        # Get SQL from the resolved lookup if available
-        first_timeframe_name = f"{group_name}_{timeframes[0]}" if timeframes else None
+        # Get SQL from the resolved lookup if available. Key off the first SUPPORTED timeframe,
+        # not timeframes[0]: an unsupported leading timeframe (minute15, sub-second) is never
+        # seeded in the resolved lookup, so keying off it would miss and fall back to the RAW
+        # dim_group `sql` below -- leaving a ${ref} to another dimension (sql: ${ts_src}) literally
+        # unresolved, so a surviving timeframe compiled DATE_TRUNC('day', ${ts_src}).
+        lookup_timeframe = next(
+            (tf for tf in timeframes if tf != "raw" and not self._is_unsupported_timeframe(tf)),
+            timeframes[0] if timeframes else None,
+        )
+        first_timeframe_name = f"{group_name}_{lookup_timeframe}" if lookup_timeframe else None
         if dimension_sql_lookup and first_timeframe_name and first_timeframe_name in dimension_sql_lookup:
             base_sql = dimension_sql_lookup[first_timeframe_name]
         else:

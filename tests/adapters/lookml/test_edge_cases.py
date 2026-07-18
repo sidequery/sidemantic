@@ -4286,6 +4286,54 @@ view: v {
     assert {"created_second", "created_date"} <= names  # supported grains still import
 
 
+def test_lookml_preserved_unsupported_timeframe_round_trips_as_standalone():
+    """A dim preserving an unsupported timeframe exports as a standalone dim, not a lost group tf.
+
+    A dimension_group `timeframes: [minute15]` is dropped on re-import (unsupported), so a dimension
+    carrying meta['lookml_timeframe']='minute15' must export through the standalone collision form
+    (a plain N-minute bucket) so it survives the round-trip. Supported timeframes sharing the base
+    still form the group.
+    """
+    import tempfile
+
+    from sidemantic import Dimension, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="events",
+            table="events",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(
+                    name="created_date",
+                    type="time",
+                    granularity="day",
+                    sql="{model}.created_at",
+                    meta={"lookml_timeframe": "date"},
+                ),
+                Dimension(
+                    name="created_minute15",
+                    type="time",
+                    granularity="minute",
+                    sql="{model}.created_at",
+                    meta={"lookml_timeframe": "minute15"},
+                ),
+            ],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    text = open(out).read()
+    assert "[minute15]" not in text  # never emitted as an unimportable group timeframe list
+    assert "dimension: created_minute15" in text  # emitted as a standalone dimension instead
+    names = {d.name for d in LookMLAdapter().parse(Path(out)).get_model("events").dimensions}
+    # Both survive the round-trip: the supported grain via the group, the bucket via a standalone.
+    assert {"created_date", "created_minute15"} <= names
+
+
 def test_lookml_dimension_group_leading_unsupported_timeframe_resolves_ref_base_sql():
     """A group whose FIRST timeframe is unsupported must still resolve a ${ref} in its base sql.
 

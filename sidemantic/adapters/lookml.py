@@ -5089,6 +5089,12 @@ class LookMLAdapter(BaseAdapter):
                     # Prefer the original LookML timeframe captured at import (so
                     # "time"/"second"/etc. round-trip distinctly).
                     timeframe = (dim.meta or {}).get("lookml_timeframe")
+                    if timeframe is not None and self._is_unsupported_timeframe(timeframe):
+                        # An unsupported bucket/sub-second timeframe (minute15, millisecond) would be
+                        # emitted in `timeframes: [...]` but dropped on re-import, losing the field.
+                        # It is exported as a standalone collision dim instead, so keep it OUT of the
+                        # group's timeframe list here (and out of the pre-seed that mirrors it).
+                        continue
                     if timeframe is None:
                         # Native (non-import) dim: derive from the field-name suffix (longest
                         # known timeframe) so the EXACT name round-trips (created_hour -> [hour])
@@ -5137,13 +5143,31 @@ class LookMLAdapter(BaseAdapter):
                         used_names.add(cdim["name"])
                         collision_dims.append(cdim)
                     continue
+                # Route dims whose preserved timeframe is unsupported through the standalone
+                # collision form: a dimension_group `timeframes: [minute15]` re-imports to nothing
+                # (_is_unsupported_timeframe drops it), losing the field. The collision form emits a
+                # plain DATE_TRUNC/bucket dimension that round-trips. Keep the rest as the group.
+                group_dims = []
+                for dim in dims:
+                    tf = (dim.meta or {}).get("lookml_timeframe")
+                    if tf is not None and self._is_unsupported_timeframe(tf):
+                        cdim = self._export_collision_time_dim(
+                            dim, base_name if group_sql is None else group_sql, used_names
+                        )
+                        used_names.add(cdim["name"])
+                        collision_dims.append(cdim)
+                    else:
+                        group_dims.append(dim)
+                if not group_dims:
+                    continue
+
                 group_name = base_name
                 assigned_names.add(group_name)
 
                 dim_group_def = {
                     "name": group_name,
                     "type": "time",
-                    "timeframes": _group_timeframes(dims),
+                    "timeframes": _group_timeframes(group_dims),
                 }
 
                 if group_sql:

@@ -6072,6 +6072,37 @@ def test_lookml_project_parse_skips_duplicate_views_no_model_includes():
     assert LookMLAdapter().parse(str(scoped)).get_model("legacy").table == "live_legacy"
 
 
+def test_lookml_bracketed_include_activates_scoping():
+    """A bracketed `include: [...]` must scope like a scalar include, not be silently dropped.
+
+    lkml parses bracketed includes as a NESTED list, so the string-only guard dropped them --
+    scoping never activated and a stale un-included refinement leaked back in. Flattening the list
+    makes the bracketed form behave like the scalar one; both single and multi-element forms work.
+    """
+    import tempfile
+
+    view = "view: %s {\n  sql_table_name: %s ;;\n  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }\n}\n"
+
+    # Bracketed include selecting only the live view: an archived refinement stays excluded.
+    scoped = Path(tempfile.mkdtemp())
+    (scoped / "views").mkdir()
+    (scoped / "archive").mkdir()
+    (scoped / "orders.model.lkml").write_text('include: ["/views/orders.view.lkml"]\n')
+    (scoped / "views" / "orders.view.lkml").write_text(view % ("orders", "real_orders"))
+    (scoped / "archive" / "stale.view.lkml").write_text("view: +orders {\n  sql_table_name: STALE ;;\n}\n")
+    assert LookMLAdapter().parse(str(scoped)).get_model("orders").table == "real_orders"
+
+    # A multi-element bracketed include pulls in every listed view.
+    multi = Path(tempfile.mkdtemp())
+    (multi / "views").mkdir()
+    (multi / "orders.model.lkml").write_text('include: ["/views/orders.view.lkml", "/views/customers.view.lkml"]\n')
+    (multi / "views" / "orders.view.lkml").write_text(view % ("orders", "real_orders"))
+    (multi / "views" / "customers.view.lkml").write_text(view % ("customers", "real_customers"))
+    graph = LookMLAdapter().parse(str(multi))
+    assert graph.get_model("orders").table == "real_orders"
+    assert graph.get_model("customers").table == "real_customers"
+
+
 def test_lookml_include_scoping_follows_closure_from_model_files():
     """Includes are a closure SEEDED from model files, not a flat set of every declaration.
 

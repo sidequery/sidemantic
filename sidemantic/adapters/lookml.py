@@ -606,6 +606,19 @@ class LookMLAdapter(BaseAdapter):
 
         return graph
 
+    @classmethod
+    def _flatten_include_patterns(cls, entry) -> list[str]:
+        """String include patterns from one ``includes`` entry, flattening bracketed lists.
+
+        A scalar ``include: "a"`` parses to the string ``"a"``; a bracketed ``include: ["a", "b"]``
+        parses to the nested list ``["a", "b"]``. Recurse so any nesting yields plain strings.
+        """
+        if isinstance(entry, str):
+            return [entry]
+        if isinstance(entry, list):
+            return [p for item in entry for p in cls._flatten_include_patterns(item)]
+        return []
+
     def _parse_views_from_file(
         self,
         file_path: Path,
@@ -644,8 +657,12 @@ class LookMLAdapter(BaseAdapter):
         # closure in _build_graph) -- but a selected view file's own includes must be followed
         # from there, so they have to be recorded here too.
         if include_specs is not None:
-            for pattern in parsed.get("includes") or []:
-                if isinstance(pattern, str):
+            # LookML allows a bracketed `include: ["a", "b"]`, which lkml parses as a NESTED list
+            # (`[["a", "b"]]`), while a scalar `include: "a"` parses as a plain string. Flatten so
+            # both forms yield string patterns -- otherwise a bracketed include is dropped, scoping
+            # never activates, and stale un-included refinements/explores leak back in.
+            for entry in parsed.get("includes") or []:
+                for pattern in self._flatten_include_patterns(entry):
                     include_specs.append((file_path, pattern))
 
         # Parse views

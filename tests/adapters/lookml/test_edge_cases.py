@@ -5167,6 +5167,11 @@ def test_lookml_export_normalizes_all_modifier_for_roundtrip():
     block, kept = roundtrip("SUM({model}.amount)")
     assert block and kept
 
+    # `(ALL ` inside a STRING LITERAL is data, not a modifier -- it must be left intact so the
+    # metric still includes the same rows, while a real ALL modifier in the same SQL is stripped.
+    block, kept = roundtrip("SUM(ALL CASE WHEN {model}.amount > 0 THEN 1 ELSE 0 END) || '(ALL x)'")
+    assert block and "(ALL x)" in block and "SUM(ALL" not in block, block
+
 
 def test_lookml_export_zero_column_stddev_skipped():
     """A stddev/variance over a CONSTANT also emits type: number -> needs the zero-column guard.

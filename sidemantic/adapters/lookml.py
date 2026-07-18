@@ -701,6 +701,22 @@ class LookMLAdapter(BaseAdapter):
         )
         return bool(re.search(r"(?is)\bselect\b", stripped))
 
+    @staticmethod
+    def _strip_all_modifier(sql: str) -> str:
+        """Drop an explicit ``ALL`` aggregate modifier (``COUNT(ALL x)`` -> ``COUNT(x)``) OUTSIDE
+        string literals and quoted identifiers.
+
+        ``ALL`` is the default modifier and changes nothing, but sqlglot cannot parse it, so
+        normalizing it away keeps exported SQL round-trippable and the column check accurate. A
+        string literal like ``'(ALL users)'`` is DATA, not a modifier, so the substitution runs only
+        on the segments outside any quoted token (``(`` must precede ``ALL`` regardless, so
+        ``= ALL (SELECT ...)`` and a column named ``all`` are already untouched).
+        """
+        parts = re.split(r"""('(?:[^']|'')*'|"(?:[^"]|"")*"|`[^`]*`|\[[^\]]*\])""", sql or "")
+        for i in range(0, len(parts), 2):  # even indices are outside any quoted token
+            parts[i] = re.sub(r"(?i)\(\s*ALL\s+", "(", parts[i])
+        return "".join(parts)
+
     @classmethod
     def _mixed_is_aggregate_safe(cls, sql: str, is_dim_ref, dim_sql_lookup: dict[str, str] | None = None) -> bool:
         """For a ``type: number`` measure that mixes measure refs with dimension refs,
@@ -3325,9 +3341,9 @@ class LookMLAdapter(BaseAdapter):
         neutralised = re.sub(r"\{\{[\s\S]*?\}\}|\{%[\s\S]*?%\}", "NULL", sql or "")
         # sqlglot cannot parse an aggregate's ALL modifier (COUNT(ALL x)), which would send every
         # such expression to the has-columns fallback below instead of a real check. ALL is the
-        # default modifier and irrelevant to which columns are referenced, so drop it first.
-        # `(` must precede it, so `= ALL (SELECT ...)` is untouched.
-        neutralised = re.sub(r"(?i)\(\s*ALL\s+", "(", neutralised)
+        # default modifier and irrelevant to which columns are referenced, so drop it first --
+        # quote-aware, so a string literal containing "(ALL " is not mangled.
+        neutralised = LookMLAdapter._strip_all_modifier(neutralised)
         try:
             tree = sqlglot.parse_one(neutralised.replace("{model}", "__m__").replace("${TABLE}", "__m__"))
         except Exception:
@@ -3646,10 +3662,9 @@ class LookMLAdapter(BaseAdapter):
                     # nothing, but emitting it produces LookML that will not round-trip -- sqlglot
                     # cannot parse `COUNT(ALL x)`, so the type: number import safety check drops
                     # the measure. Normalizing here keeps the exported SQL equivalent AND readable
-                    # back. (`(` must precede it, so `= ALL (SELECT ...)` and a column named `all`
-                    # are untouched.)
+                    # back. Quote-aware, so a string literal like '(ALL users)' is left intact.
                     if col_sql:
-                        col_sql = re.sub(r"(?i)\(\s*ALL\s+", "(", col_sql)
+                        col_sql = self._strip_all_modifier(col_sql)
 
                     if metric.agg == "approx_count_distinct":
                         # Looker represents this as count_distinct with approximate: yes.

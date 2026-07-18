@@ -2795,6 +2795,33 @@ view: orders {
     assert graph.get_model("orders").get_metric("commented") is not None  # comment is not a subquery
 
 
+def test_lookml_number_measure_ref_named_select_is_not_a_subquery():
+    """A `${...}` reference to a field named `select` must not look like a subquery.
+
+    The subquery scan runs on the RAW SQL before refs are resolved, so `SUM(${select})` matched
+    `select` inside the placeholder and dropped a valid inline aggregate. Placeholders are blanked
+    with quotes/comments; a real subquery alongside a ref is still detected.
+    """
+    conv = LookMLAdapter._has_subquery
+    assert conv("SUM(${select})") is False
+    assert conv("SUM(${orders.select})") is False
+    assert conv("SUM(${select}) / (SELECT COUNT(*) FROM t)") is True  # real subquery still detected
+
+    graph = _parse_lkml(
+        """
+view: orders {
+  sql_table_name: orders ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: select { type: number  sql: ${TABLE}."select" ;; }
+  measure: m { type: number  sql: SUM(${select}) / NULLIF(COUNT(*), 0) ;; }
+}
+"""
+    )
+    metric = graph.get_model("orders").get_metric("m")
+    assert metric is not None  # ${select} ref is not a subquery
+    assert '"select"' in metric.sql  # resolved to the quoted column
+
+
 def test_lookml_number_measure_unsafe_intermediate_not_expandable():
     """A number measure _parse_measure skips as unsafe must not be inlined into a later measure.
 

@@ -407,15 +407,16 @@ class LookMLAdapter(BaseAdapter):
 
         A raw ``\\bselect\\b`` scan also matches the word inside a VALUE
         (``SUM(CASE WHEN status = 'select' THEN amount END)``) or inside a quoted IDENTIFIER for a
-        column named after a reserved word (``SUM(${TABLE}."select")``, ``SUM(`select`)``), or
-        inside a SQL COMMENT (``/* select paid rows */ SUM(amount)``) -- none is a subquery, and all
-        are valid inline aggregates. Blank out every quoted form AND every comment first -- single-
-        quoted literals, double-quote / backtick / bracket identifiers, and ``--``/``/* */``
-        comments -- in one left-to-right pass so a comment inside a string (or a quote inside a
-        comment) is consumed by whichever opens first, leaving only real SQL keywords.
+        column named after a reserved word (``SUM(${TABLE}."select")``, ``SUM(`select`)``), inside a
+        SQL COMMENT (``/* select paid rows */ SUM(amount)``), or inside a LookML ``${...}`` field
+        reference to a column named ``select`` (``SUM(${select})``) -- none is a subquery, and all
+        are valid inline aggregates. This runs on the RAW SQL before refs are resolved, so blank out
+        every quoted form, every comment, AND every ``${...}`` placeholder first -- in one left-to-
+        right pass so a comment inside a string (or a quote inside a comment) is consumed by
+        whichever opens first, leaving only real SQL keywords.
         """
         stripped = re.sub(
-            r"""'(?:[^']|'')*'|"(?:[^"]|"")*"|`[^`]*`|\[[^\]]*\]|--[^\n]*|/\*[\s\S]*?\*/""",
+            r"""'(?:[^']|'')*'|"(?:[^"]|"")*"|`[^`]*`|\[[^\]]*\]|--[^\n]*|/\*[\s\S]*?\*/|\$\{[^}]*\}""",
             " ",
             sql or "",
         )

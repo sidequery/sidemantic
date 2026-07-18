@@ -2487,6 +2487,32 @@ view: customers { sql_table_name: customers ;; dimension: active { type: yesno  
     assert "big" in names  # ordinary segment kept
 
 
+def test_lookml_measure_cross_view_filter_dropped():
+    """A measure whose `filters` reference another view inline is dropped, not imported broken.
+
+    filters: [customers.active: "yes"] would become {model}.customers.active in the single-table
+    model CTE (no `customers` alias) and fail to query. A self-view filter still imports.
+    """
+    graph = _parse_lkml(
+        """
+view: orders {
+  sql_table_name: orders ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: status { type: string  sql: ${TABLE}.status ;; }
+  measure: cross_filtered { type: sum  sql: ${TABLE}.amount ;; filters: [customers.active: "yes"] }
+  measure: self_filtered { type: sum  sql: ${TABLE}.amount ;; filters: [orders.status: "done"] }
+  measure: plain { type: sum  sql: ${TABLE}.amount ;; }
+}
+view: customers { sql_table_name: customers ;; dimension: active { type: yesno  sql: ${TABLE}.active ;; } }
+"""
+    )
+    model = graph.get_model("orders")
+    names = {m.name for m in model.metrics}
+    assert "cross_filtered" not in names  # cross-view filter -> measure dropped
+    assert {"self_filtered", "plain"} <= names  # self-view filter and unfiltered measure kept
+    assert model.get_metric("self_filtered").filters == ["{model}.status = 'done'"]
+
+
 def test_lookml_number_measure_row_level_dimension_expr_skipped():
     """A type: number measure that is a ROW-LEVEL dimension expression (no aggregate) is skipped.
 

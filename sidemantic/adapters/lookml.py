@@ -595,15 +595,17 @@ class LookMLAdapter(BaseAdapter):
         r"week|month|year)\b"
     )
 
-    def _measure_filter_conds(self, measure_def: dict, view_name: str | None = None) -> list[str]:
-        """Convert a measure's LookML ``filters`` to a list of SQL condition strings.
+    def _measure_filter_conds(self, measure_def: dict, view_name: str | None = None) -> tuple[list[str], bool]:
+        """Convert a measure's LookML ``filters`` to SQL condition strings.
 
         Handles both the shorthand list-of-dicts (``filters: [status: "x"]``) and the
         block (``filter: { field: ...  value: ... }``) syntaxes that ``lkml`` collapses
         into ``filters__all``. A SELF-view qualifier (``<this_view>.status``) is stripped
-        so the converter builds ``{model}.status``; a CROSS-view qualifier
-        (``other_view.field``) is left intact -- collapsing it to a same-named local field
-        would silently retarget the filter (e.g. GA360's ``hits.isInteraction``).
+        so the converter builds ``{model}.status``.
+
+        Returns ``(conds, has_cross_view)``: a CROSS-view qualifier (``other_view.field``) cannot be
+        represented in the single-table model CTE, so its condition is omitted and the flag is set
+        for the caller to drop the whole measure rather than import a broken filter.
         """
 
         def _bare(field: str) -> str:
@@ -613,23 +615,36 @@ class LookMLAdapter(BaseAdapter):
                     return rest
             return field
 
+        # A filter field that still carries a dot after stripping the self-view qualifier is a
+        # CROSS-view reference (customers.active): the converter would build {model}.customers.active,
+        # and the model CTE (single base table) has no `customers` alias, so the measure fails to
+        # query. Flag it so the caller drops the whole measure, matching how a cross-view inline sql
+        # ref is dropped -- rather than importing a measure with a broken filter.
+        has_cross_view = False
+
+        def _add(field, value):
+            nonlocal has_cross_view
+            bare = _bare(field)
+            if isinstance(bare, str) and re.search(r"[^\W]+\.[^\W]", bare) and "${" not in bare:
+                has_cross_view = True
+                return
+            fs = self._convert_lookml_filter_to_sql(bare, value)
+            if fs:
+                conds.append(fs)
+
         conds: list[str] = []
         for item in measure_def.get("filters__all") or []:
             if isinstance(item, list):
                 for filter_dict in item:
                     if isinstance(filter_dict, dict):
                         for field, value in filter_dict.items():
-                            fs = self._convert_lookml_filter_to_sql(_bare(field), value)
-                            if fs:
-                                conds.append(fs)
+                            _add(field, value)
             elif isinstance(item, dict):
                 field = item.get("field")
                 value = item.get("value")
                 if field and value:
-                    fs = self._convert_lookml_filter_to_sql(_bare(field), value)
-                    if fs:
-                        conds.append(fs)
-        return conds
+                    _add(field, value)
+        return conds, has_cross_view
 
     def _convert_lookml_filter_to_sql(self, field: str, value: str) -> str:
         """Convert a LookML filter value to a SQL condition.
@@ -1139,7 +1154,7 @@ class LookMLAdapter(BaseAdapter):
             # AND-joined predicate for a base measure's OWN filters, with each filter field
             # resolved through the dimension SQL ({model}.state -> ({model}.status) when the
             # dimension renames the column) so the folded aggregate hits the real column.
-            conds = self._measure_filter_conds(m_def, name.lstrip("+"))
+            conds, _ = self._measure_filter_conds(m_def, name.lstrip("+"))
             if not conds:
                 return None
             resolved = []
@@ -1203,7 +1218,7 @@ class LookMLAdapter(BaseAdapter):
                 # foldable predicate slot, so a filtered distinct can't be expanded faithfully
                 # -- leave it out so the referencing expr is skipped with a warning rather than
                 # silently producing an UNfiltered distinct.
-                if not self._measure_filter_conds(m, name.lstrip("+")):
+                if not self._measure_filter_conds(m, name.lstrip("+"))[0]:
                     dm = self._parse_distinct_measure(m_name, m_type, m, resolved_dimension_sql, declared_dim_names)
                     if dm and dm.sql:
                         measure_full_sql_lookup[m_name] = dm.sql
@@ -2075,7 +2090,17 @@ class LookMLAdapter(BaseAdapter):
         # 2. Block syntax: filters: { field: x value: y }
         #    -> lkml returns [{'field': 'flight_length', 'value': '>120'}]
         # We need to handle both formats.
-        filters = self._measure_filter_conds(measure_def, view_name)
+        filters, _filters_cross_view = self._measure_filter_conds(measure_def, view_name)
+        if _filters_cross_view:
+            # A filter references another view inline, which the model CTE cannot resolve; drop the
+            # measure rather than import one whose filter emits invalid SQL (mirrors the cross-view
+            # inline-sql drop).
+            logger.warning(
+                "LookML measure %r has a filter referencing another view inline, which sidemantic "
+                "cannot represent; dropping the measure instead of importing unqueryable SQL.",
+                measure_def.get("name"),
+            )
+            return None
 
         # Replace ${TABLE} and resolve ${dimension_ref} placeholders in SQL
         number_refs_only_columns = False

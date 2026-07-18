@@ -488,3 +488,31 @@ def test_load_from_directory_strips_template_join_after_native_overwrite(tmp_pat
     assert "base" not in {r.name for r in (orders.relationships or [])}
     # The real model still loads.
     assert layer.graph.models["base"].table == "real_base"
+
+
+def test_load_from_directory_preserves_native_join_to_overwritten_template_name(tmp_path):
+    """A NATIVE relationship authored for the replacement model must survive, only LookML template
+    joins to the overwritten name are stripped."""
+    (tmp_path / "a.model.lkml").write_text(
+        "view: customer {\n"
+        "  extension: required\n"
+        "  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }\n"
+        "}\n"
+    )
+    (tmp_path / "native.py").write_text(
+        "from sidemantic import Model, Dimension, Relationship\n"
+        "customer = Model(name='customer', table='real_customer', primary_key='id',\n"
+        "                 dimensions=[Dimension(name='id', type='numeric', sql='id')])\n"
+        "orders = Model(name='orders', table='orders', primary_key='id',\n"
+        "  dimensions=[Dimension(name='id', type='numeric', sql='id'), Dimension(name='cust_ref', type='numeric', sql='cust_ref')],\n"
+        "  relationships=[Relationship(name='customer', type='many_to_one', foreign_key='cust_ref')])\n"
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path, strict=False)
+
+    orders = layer.graph.models.get("orders")
+    assert orders is not None
+    # The native-authored relationship to the real customer is preserved, not stripped as a template join.
+    assert "customer" in {r.name for r in (orders.relationships or [])}
+    assert layer.graph.models["customer"].table == "real_customer"

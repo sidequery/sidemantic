@@ -56,13 +56,19 @@ def _drop_non_registerable_models(
     """
     kept = {name: model for name, model in all_models.items() if _is_registerable_model(model)}
     dropped = set(all_models) - set(kept)
-    # Also strip joins to a name that WAS a template but got overwritten by a real model (so it is
-    # in `kept`, not `dropped`): the join was defined against the template, not the replacement.
-    strip_targets = dropped | (set(template_target_names or set()) & set(kept))
+    # A join to a name that WAS a template but got overwritten by a real model (so it is in `kept`,
+    # not `dropped`) is stripped ONLY from LookML-sourced models: the explore join that created it
+    # targeted the template. A native/other-format model's relationship to the same name was
+    # authored for the REPLACEMENT model, so it must be preserved.
+    overwritten_templates = set(template_target_names or set()) & set(kept)
     for model in kept.values():
         rels = getattr(model, "relationships", None)
-        if rels:
-            model.relationships = [r for r in rels if r.name not in strip_targets]
+        if not rels:
+            continue
+        from_lookml = getattr(model, "_source_format", None) == "LookML"
+        model.relationships = [
+            r for r in rels if r.name not in dropped and not (from_lookml and r.name in overwritten_templates)
+        ]
     if all_metrics is not None:
         # add_model auto-registers a model's GRAPH-LEVEL measures (time_comparison/conversion)
         # into the graph; a dropped template's such measure would linger in all_metrics with

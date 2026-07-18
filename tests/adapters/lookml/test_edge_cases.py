@@ -1321,6 +1321,59 @@ view: duration_test {
         assert "SECOND" in seconds_dim.sql.upper()
 
 
+def test_lookml_duration_group_resolves_field_references():
+    """sql_start/sql_end ${field} references resolve to real columns, not leaked ${...} literals.
+
+    The duration path only replaced ${TABLE}, so a self-view ref (${started_at}) leaked into
+    DATE_DIFF and every query on the duration dimension emitted invalid SQL. Resolve them.
+    """
+    from sidemantic.core.semantic_layer import SemanticLayer
+
+    graph = _parse_lkml(
+        """
+view: orders {
+  sql_table_name: orders ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: started_at { type: time  sql: ${TABLE}.started_at ;; }
+  dimension: ended_at { type: time  sql: ${TABLE}.ended_at ;; }
+  dimension_group: elapsed {
+    type: duration
+    intervals: [day, hour]
+    sql_start: ${started_at} ;;
+    sql_end: ${ended_at} ;;
+  }
+}
+"""
+    )
+    elapsed = graph.get_model("orders").get_dimension("elapsed_days")
+    assert elapsed is not None
+    assert "${" not in elapsed.sql  # refs resolved, not leaked
+    assert "started_at" in elapsed.sql and "ended_at" in elapsed.sql
+    layer = SemanticLayer()
+    layer.graph = graph
+    assert "${" not in layer.compile(dimensions=["orders.elapsed_days"])
+
+
+def test_lookml_duration_group_cross_view_ref_dropped():
+    """A duration group whose sql_start/sql_end references another view inline is dropped."""
+    graph = _parse_lkml(
+        """
+view: orders {
+  sql_table_name: orders ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension_group: elapsed {
+    type: duration
+    intervals: [day]
+    sql_start: ${other.a} ;;
+    sql_end: ${TABLE}.ended_at ;;
+  }
+}
+view: other { sql_table_name: other ;; dimension: a { type: time  sql: ${TABLE}.a ;; } }
+"""
+    )
+    assert not any(d.name.startswith("elapsed") for d in graph.get_model("orders").dimensions)
+
+
 # =============================================================================
 # NATIVE DERIVED TABLE (EXPLORE_SOURCE) TESTS
 # =============================================================================

@@ -1534,7 +1534,7 @@ class LookMLAdapter(BaseAdapter):
 
         # Handle duration type separately
         if group_type == "duration":
-            return self._parse_duration_group(group_name, dim_group_def)
+            return self._parse_duration_group(group_name, dim_group_def, dimension_sql_lookup)
 
         if group_type != "time":
             return []
@@ -1804,7 +1804,9 @@ class LookMLAdapter(BaseAdapter):
 
         return "\n".join(sql_parts)
 
-    def _parse_duration_group(self, group_name: str, dim_group_def: dict) -> list[Dimension]:
+    def _parse_duration_group(
+        self, group_name: str, dim_group_def: dict, dimension_sql_lookup: dict[str, str] | None = None
+    ) -> list[Dimension]:
         """Parse LookML dimension_group with type: duration.
 
         Duration dimension groups calculate the difference between two timestamps
@@ -1813,6 +1815,7 @@ class LookMLAdapter(BaseAdapter):
         Args:
             group_name: Name of the dimension group
             dim_group_def: Dimension group definition
+            dimension_sql_lookup: Resolved dimension SQL for ${ref} resolution in sql_start/sql_end
 
         Returns:
             List of duration dimensions
@@ -1821,13 +1824,34 @@ class LookMLAdapter(BaseAdapter):
         sql_start = dim_group_def.get("sql_start", "")
         sql_end = dim_group_def.get("sql_end", "")
 
+        # Resolve ${dimension} references (self-view refs normalized to bare ${name}) so a
+        # sql_start/sql_end like ${started_at} becomes the real column instead of leaking the
+        # literal ${...} into DATE_DIFF; ${TABLE} is handled next. Without this the duration
+        # dimension carried an unresolved ${ref} and every query on it emitted invalid SQL.
         if sql_start:
-            sql_start = sql_start.replace("${TABLE}", "{model}")
+            sql_start = self._resolve_dimension_references(sql_start, dimension_sql_lookup or {}).replace(
+                "${TABLE}", "{model}"
+            )
         if sql_end:
-            sql_end = sql_end.replace("${TABLE}", "{model}")
+            sql_end = self._resolve_dimension_references(sql_end, dimension_sql_lookup or {}).replace(
+                "${TABLE}", "{model}"
+            )
 
         # If no sql_start/sql_end, we can't create duration dimensions
         if not sql_start or not sql_end:
+            return []
+
+        # A cross-view reference cannot be represented inline, so an unresolved ${other.field} would
+        # still leak. Drop the whole group rather than import unqueryable duration dimensions
+        # (mirrors _parse_dimension / _parse_dimension_group).
+        if self._leaks_cross_view_ref(sql_start) or self._leaks_cross_view_ref(sql_end):
+            logger.warning(
+                "LookML duration group %r references another view inline (sql_start=%r sql_end=%r), which "
+                "sidemantic cannot represent; dropping the group instead of importing unqueryable SQL.",
+                group_name,
+                sql_start,
+                sql_end,
+            )
             return []
 
         dimensions = []

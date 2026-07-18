@@ -4981,6 +4981,11 @@ def test_lookml_export_folded_filter_quoted_date_trunc_unit_resolves_value_colum
     assert conds(["DATE_TRUNC(date, month) = DATE '2024-01-01'"], model) == (
         "(DATE_TRUNC((${TABLE}.order_date), month) = DATE '2024-01-01')"
     )
+    # A DOUBLE-quoted second argument is a quoted IDENTIFIER, not a string-literal part, so it must
+    # NOT be treated as the part -- the real `month` part token stays protected (Snowflake style).
+    assert conds(["DATE_TRUNC(month, \"date\") = DATE '2024-01-01'"], model) == (
+        "(DATE_TRUNC(month, \"date\") = DATE '2024-01-01')"
+    )
 
 
 def test_lookml_export_folded_filter_protects_sql_server_datepart_abbreviations():

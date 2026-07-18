@@ -675,8 +675,11 @@ class LookMLAdapter(BaseAdapter):
             # the other argument looks like the only keyword and a real column named `date` is
             # left unresolved.
             first_raw, second_raw = (a.strip() for a in (args[0], args[1]))
-            first_quoted = first_raw[:1] in ("'", '"')
-            second_quoted = second_raw[:1] in ("'", '"')
+            # Only a SINGLE-quoted string literal is a date PART shortcut. A double-quoted token is
+            # a quoted IDENTIFIER (a column, e.g. Snowflake DATE_TRUNC(month, "date")), so it must
+            # NOT be treated as the part -- otherwise the real part token loses its protection.
+            first_quoted = first_raw[:1] == "'"
+            second_quoted = second_raw[:1] == "'"
             first, second = (a.strip("'\"").lower() for a in (first_raw, second_raw))
             first_kw = first in cls._DATE_PART_KEYWORDS
             second_kw = second in cls._DATE_PART_KEYWORDS

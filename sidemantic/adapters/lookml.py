@@ -434,38 +434,36 @@ class LookMLAdapter(BaseAdapter):
         except Exception:
             return False
 
-        def _in_anon_agg(c) -> bool:
-            # sqlglot parses some engine-specific aggregates (PRODUCT, ENTROPY, WEIGHTED_AVG,
-            # ...) as exp.Anonymous, not exp.AggFunc; a column inside one is still aggregate-
-            # scoped (sidemantic treats these as aggregates in aggregation_detection).
+        def _is_agg_scope(node) -> bool:
+            # A node that groups its argument columns: an aggregate function (incl. an
+            # anonymous/engine-specific aggregate), an aggregate FILTER (WHERE ...) predicate
+            # (sqlglot nests that under exp.Filter, not exp.AggFunc), an ordered-set aggregate's
+            # WITHIN GROUP (ORDER BY ...) (exp.WithinGroup, e.g. PERCENTILE_CONT(0.5) WITHIN
+            # GROUP (ORDER BY x)), or a LIST(...) collector (DuckDB's LIST -> exp.List, which
+            # aggregation_detection also counts as an aggregate, so this must agree).
+            return isinstance(node, (exp.AggFunc, exp.Filter, exp.WithinGroup, exp.List)) or (
+                isinstance(node, exp.Anonymous) and (node.name or "").lower() in _ANONYMOUS_AGGREGATE_FUNCTIONS
+            )
+
+        def _column_is_grouped(c) -> bool:
+            # Walk up from the column to the FIRST aggregate-or-window boundary.
             node = c.parent
             while node is not None:
-                if isinstance(node, exp.Anonymous) and (node.name or "").lower() in _ANONYMOUS_AGGREGATE_FUNCTIONS:
-                    return True
+                if isinstance(node, exp.Window):
+                    # Reached a window before any plain aggregate: the column is a raw per-row
+                    # argument of the window (SUM(x) OVER (), LAG(x) OVER ()) -- still ungrouped.
+                    return False
+                if _is_agg_scope(node):
+                    # A plain aggregate consumes the column and produces a grouped value. But if
+                    # that aggregate is ITSELF windowed (SUM(x) OVER ()), the column is a raw
+                    # per-row argument, so only a NON-windowed aggregate groups it. A nested
+                    # aggregate inside a window -- SUM(SUM(x)) OVER () -- is reached here at the
+                    # inner SUM, whose parent is the outer SUM (not the Window), so it is grouped.
+                    return not isinstance(node.parent, exp.Window)
                 node = node.parent
             return False
 
-        # A column is aggregate-scoped if it is inside an aggregate function (incl. an
-        # anonymous/engine-specific aggregate), inside an aggregate FILTER (WHERE ...)
-        # predicate (sqlglot nests that under exp.Filter, not exp.AggFunc), or inside an
-        # ordered-set aggregate's WITHIN GROUP (ORDER BY ...) (nested under exp.WithinGroup,
-        # e.g. PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY x)), or inside a LIST(...) collector
-        # (sqlglot parses DuckDB's LIST as exp.List, and aggregation_detection counts it as an
-        # aggregate -- so this check must agree, else ARRAY_LENGTH(LIST(x)) reads as raw and a
-        # valid measure is dropped). But a column inside a WINDOW function (SUM(x) OVER ()) is
-        # NOT safe: the window runs after grouping, so a raw column there is still ungrouped
-        # and would be rejected in a grouped SELECT.
-        return all(
-            (
-                c.find_ancestor(exp.AggFunc) is not None
-                or c.find_ancestor(exp.Filter) is not None
-                or c.find_ancestor(exp.WithinGroup) is not None
-                or c.find_ancestor(exp.List) is not None
-                or _in_anon_agg(c)
-            )
-            and c.find_ancestor(exp.Window) is None
-            for c in tree.find_all(exp.Column)
-        )
+        return all(_column_is_grouped(c) for c in tree.find_all(exp.Column))
 
     # Plain decimal numeric literal: optional sign, then digits with optional fraction,
     # or a bare fraction. Deliberately excludes Python-/float()-only spellings that this

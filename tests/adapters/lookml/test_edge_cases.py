@@ -3262,6 +3262,45 @@ view: o {
     assert graph.get_model("o").get_metric("m") is None  # windowed raw column -> skipped
 
 
+def test_lookml_number_measure_aggregate_nested_in_window_is_kept():
+    """A window OVER an already-aggregated column is safe and must be imported.
+
+    In SUM(SUM(x)) OVER () the inner SUM groups the raw column before the window runs, so the
+    outer window aggregates a grouped value -- valid in a grouped SELECT. The blanket "any column
+    under a window is unsafe" check wrongly dropped this percent-of-total-style measure; only a
+    RAW window argument (SUM(x) OVER ()) is unsafe.
+    """
+    import duckdb
+
+    from sidemantic import SemanticLayer
+
+    graph = _parse_lkml(
+        """
+view: orders {
+  sql_table_name: orders ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: amount { type: number  sql: ${TABLE}.amount ;; }
+  dimension: region { type: string  sql: ${TABLE}.region ;; }
+  measure: total { type: sum  sql: ${amount} ;; }
+  measure: pct_of_total { type: number  sql: ${total} / NULLIF(SUM(SUM(${amount})) OVER (), 0) ;; }
+}
+"""
+    )
+    model = graph.get_model("orders")
+    assert model.get_metric("pct_of_total") is not None  # nested-agg window kept, not dropped
+
+    layer = SemanticLayer(auto_register=False)
+    layer.add_model(model)
+    sql = layer.compile(metrics=["orders.pct_of_total"], dimensions=["orders.region"])
+    con = duckdb.connect()
+    con.execute(
+        "create table orders as select 1 id, 10.0 amount, 'e' region "
+        "union all select 2, 30, 'w' union all select 3, 60, 'w'"
+    )
+    # region totals 10 and 90 out of 100 overall.
+    assert dict(con.execute(sql).fetchall()) == {"e": 0.1, "w": 0.9}
+
+
 def test_lookml_complete_measure_own_filter_resolves_renamed_dimension():
     """A COMPLETE (mixed) measure's OWN filter on a renamed dimension resolves to the real column."""
     import duckdb

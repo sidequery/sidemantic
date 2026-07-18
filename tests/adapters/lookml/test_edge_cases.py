@@ -5371,6 +5371,60 @@ def test_lookml_export_aggregate_with_scalar_subquery_skipped():
     assert "measure: total" in text  # ordinary aggregates still export
 
 
+def test_lookml_export_complete_sql_with_raw_column_outside_aggregate_skipped():
+    """An aggregate expression with a raw column OUTSIDE any aggregate is skipped, not lost on re-import.
+
+    SUM({model}.amount) + {model}.tax_rate is not a valid grouped measure (tax_rate is ungrouped);
+    the import side's _mixed_is_aggregate_safe rejects it, so a type: number export would be dropped
+    on re-import. Skip on export to keep the round-trip consistent; a pure aggregate still exports.
+    """
+    import tempfile
+
+    from sidemantic import Dimension, Metric, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="orders",
+            table="t",
+            primary_key="id",
+            dimensions=[Dimension(name="id", type="numeric", sql="id")],
+            metrics=[
+                Metric(name="mixed", agg=None, sql="SUM({model}.amount) + {model}.tax_rate", sql_is_complete=True),
+                Metric(name="ratio", agg=None, sql="SUM({model}.amount) / COUNT(*)", sql_is_complete=True),
+            ],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    text = open(out).read()
+    assert "measure: mixed" not in text  # raw column outside aggregate -> skipped
+    assert "measure: ratio" in text  # fully-aggregated expression still exports
+
+
+def test_lookml_export_folded_filter_keeps_constant_dimension_sql_unqualified():
+    """A folded filter over a constant-SQL dimension keeps the literal unqualified, not ${TABLE}.1."""
+    from sidemantic import Dimension, Model
+
+    model = Model(
+        name="orders",
+        table="t",
+        primary_key="id",
+        dimensions=[
+            Dimension(name="status", type="categorical", sql="status_col"),
+            Dimension(name="flag", type="numeric", sql="1"),  # constant-valued dimension
+            Dimension(name="active", type="boolean", sql="TRUE"),
+        ],
+    )
+    conds = LookMLAdapter._fold_filter_conds
+    # A constant/literal resolved SQL is parenthesized WITHOUT a table qualifier.
+    assert conds(["{model}.flag = 1"], model) == "((1) = 1)"
+    assert conds(["{model}.active = true"], model) == "((TRUE) = true)"
+    # A genuine column still gets qualified.
+    assert conds(["{model}.status = 'x'"], model) == "((${TABLE}.status_col) = 'x')"
+
+
 def test_lookml_export_folded_filter_leaves_backtick_identifier_untouched():
     """A folded filter's backtick/bracket-quoted identifier must not be rewritten inside the quotes."""
     import tempfile

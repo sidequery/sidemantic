@@ -3299,9 +3299,12 @@ class LookMLAdapter(BaseAdapter):
         dim_names = {d.name for d in model.dimensions}
 
         def _qualify(val: str) -> str:
-            # Bare column -> qualify with {model}. so it stays unambiguous in joins;
-            # any resolved expression is parenthesized to preserve precedence.
-            if re.fullmatch(r"\w+", val):
+            # Bare column -> qualify with {model}. so it stays unambiguous in joins; any resolved
+            # expression is parenthesized to preserve precedence. But an identifier-shaped SQL
+            # LITERAL -- a numeric constant (`1`) or true/false/null -- is a VALUE, not a column, so
+            # parenthesize it WITHOUT a table qualifier (${TABLE}.1 is invalid SQL). A column name
+            # cannot start with a digit unquoted, so a leading digit marks a numeric literal.
+            if re.fullmatch(r"\w+", val) and not val[0].isdigit() and val.lower() not in ("true", "false", "null"):
                 return f"({{model}}.{val})"
             return f"({val})"
 
@@ -3883,6 +3886,20 @@ class LookMLAdapter(BaseAdapter):
                                 "Metric %r has a scalar subquery in its aggregate SQL (%r); the LookML "
                                 "adapter cannot re-import a type: number measure containing a subquery, "
                                 "so skipping it on export to keep round-trips consistent.",
+                                metric.name,
+                                col_sql,
+                            )
+                            continue
+                        # An aggregate expression that ALSO carries a raw column OUTSIDE any
+                        # aggregate (SUM({model}.amount) + {model}.tax_rate) is not a valid grouped
+                        # measure: the import side's _mixed_is_aggregate_safe rejects it, so a
+                        # type: number here would be dropped on re-import (and Looker would GROUP BY
+                        # error on the ungrouped column). Skip to keep the round-trip consistent.
+                        if not self._mixed_is_aggregate_safe(col_sql.replace("${TABLE}", "{model}"), lambda rn: False):
+                            logger.warning(
+                                "Metric %r has a raw column outside an aggregate in its complete SQL "
+                                "(%r); a type: number measure would be dropped on re-import, so "
+                                "skipping on export.",
                                 metric.name,
                                 col_sql,
                             )

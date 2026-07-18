@@ -470,6 +470,18 @@ class LookMLAdapter(BaseAdapter):
         return any(True for _ in tree.find_all(exp.List)) or any(True for _ in tree.find_all(exp.ArrayAgg))
 
     # SQL date-part keywords that a date/time function can take UNQUOTED.
+    # SQL Server DATEADD/DATEDIFF/DATENAME datepart ABBREVIATIONS -> canonical name (Microsoft's
+    # accepted forms). Folded filters see these in a date function's part slot, so they must be
+    # recognised as date-part keywords and resolved to the right coarseness. They are only ever
+    # protected in the part SLOT (position-guarded), so a single-letter column like `m`/`d` used
+    # anywhere else still resolves as a column.
+    _DATE_PART_ABBR = {
+        "yy": "year", "yyyy": "year", "qq": "quarter", "q": "quarter",
+        "mm": "month", "m": "month", "dy": "dayofyear", "y": "dayofyear",
+        "dd": "day", "d": "day", "wk": "week", "ww": "week",
+        "dw": "weekday", "w": "weekday", "hh": "hour", "mi": "minute", "n": "minute",
+        "ss": "second", "s": "second", "ms": "millisecond", "mcs": "microsecond", "ns": "nanosecond",
+    }  # fmt: skip
     _DATE_PART_KEYWORDS = frozenset(
         {
             "year", "quarter", "month", "week", "day", "hour", "minute", "second",
@@ -477,6 +489,7 @@ class LookMLAdapter(BaseAdapter):
             "dayofweek", "dayofyear", "dow", "doy", "isoweek", "isoyear", "isodow",
             "weekday", "yearofweek", "century", "decade", "millennium",
         }
+        | set(_DATE_PART_ABBR)
     )  # fmt: skip
     # Which ARGUMENT of a date/time call is the date part. Position matters: the same keyword can
     # be a real column in another slot -- DATE_TRUNC(date, month) on a model with BOTH a `date`
@@ -602,6 +615,10 @@ class LookMLAdapter(BaseAdapter):
             first, second = (a.strip().strip("'\"").lower() for a in (args[0], args[1]))
             first_kw = first in cls._DATE_PART_KEYWORDS
             second_kw = second in cls._DATE_PART_KEYWORDS
+            # Normalize an abbreviation (mm, dd, ...) to its canonical name so rank/unit lookups
+            # below see the real coarseness rather than defaulting to 99 / not-a-unit.
+            first_n = cls._DATE_PART_ABBR.get(first, first)
+            second_n = cls._DATE_PART_ABBR.get(second, second)
             if first_kw and not second_kw:
                 part_index = 0  # Snowflake order
             elif second_kw and not first_kw:
@@ -610,8 +627,8 @@ class LookMLAdapter(BaseAdapter):
                 # A model with e.g. BOTH `date` and `month` dimensions makes both arguments look
                 # like parts. Truncation goes finer -> coarser, so the COARSER one is the part --
                 # month truncates date under either order.
-                first_rank = cls._DATE_PART_RANK.get(first, 99)
-                second_rank = cls._DATE_PART_RANK.get(second, 99)
+                first_rank = cls._DATE_PART_RANK.get(first_n, 99)
+                second_rank = cls._DATE_PART_RANK.get(second_n, 99)
                 if first_rank != second_rank:
                     part_index = 0 if first_rank < second_rank else 1
                 else:
@@ -619,8 +636,8 @@ class LookMLAdapter(BaseAdapter):
                     # signal. A DATE_TRUNC part must be a truncation UNIT, so if exactly one
                     # argument is a real unit (day) and the other an extraction-only keyword that is
                     # also a column (date), the unit is the part and the other resolves as a column.
-                    first_unit = first in cls._DATE_TRUNC_UNITS
-                    second_unit = second in cls._DATE_TRUNC_UNITS
+                    first_unit = first_n in cls._DATE_TRUNC_UNITS
+                    second_unit = second_n in cls._DATE_TRUNC_UNITS
                     if first_unit and not second_unit:
                         part_index = 0
                     elif second_unit and not first_unit:

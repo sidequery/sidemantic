@@ -4882,6 +4882,40 @@ def test_lookml_export_folded_filter_protects_sql_server_datepart_first_function
     assert conds(["UPPER(day) = 'X'"], model) == "(UPPER((${TABLE}.order_day)) = 'X')"
 
 
+def test_lookml_export_folded_filter_protects_sql_server_datepart_abbreviations():
+    """SQL Server datepart ABBREVIATIONS (dd, mm, d, ...) in a part slot must be protected.
+
+    DATEADD/DATEDIFF accept abbreviated dateparts, but they were absent from the keyword set, so on
+    a model with a `dd`/`mm` dimension a folded filter's DATEADD(dd, 1, created_at) rewrote `dd` to
+    (${TABLE}.order_dd), producing invalid SQL. They are protected only in the part slot, so a
+    same-named column used elsewhere still resolves.
+    """
+    from sidemantic import Dimension, Model
+
+    model = Model(
+        name="orders",
+        table="raw_orders",
+        primary_key="id",
+        dimensions=[
+            Dimension(name="dd", type="time", granularity="day", sql="order_dd"),
+            Dimension(name="mm", type="time", granularity="month", sql="order_mm"),
+            Dimension(name="d", type="time", granularity="day", sql="order_d"),
+            Dimension(name="created_at", type="time", granularity="day", sql="created_at"),
+        ],
+    )
+    conds = LookMLAdapter._fold_filter_conds
+    # Abbreviated part is protected; the trailing column arguments resolve. Covers two-letter and
+    # single-letter forms and the datepart-first DATENAME.
+    assert conds(["DATEADD(dd, 1, created_at) > 1"], model) == "(DATEADD(dd, 1, (${TABLE}.created_at)) > 1)"
+    assert conds(["DATEDIFF(mm, created_at, created_at) > 1"], model) == (
+        "(DATEDIFF(mm, (${TABLE}.created_at), (${TABLE}.created_at)) > 1)"
+    )
+    assert conds(["DATEADD(d, 1, created_at) > 1"], model) == "(DATEADD(d, 1, (${TABLE}.created_at)) > 1)"
+    assert conds(["DATENAME(dd, created_at) = 'x'"], model) == "(DATENAME(dd, (${TABLE}.created_at)) = 'x')"
+    # A same-named column used outside a date function is still rewritten.
+    assert conds(["mm = '2024-01'"], model) == "((${TABLE}.order_mm) = '2024-01')"
+
+
 def test_lookml_export_template_only_folded_filter_skipped():
     """A folded filter that is ONLY a Liquid template leaves no real column -> skip the measure.
 

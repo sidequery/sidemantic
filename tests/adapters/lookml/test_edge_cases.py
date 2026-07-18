@@ -4186,6 +4186,44 @@ view: orders {
     assert "{model}.total" in model.get_metric("pct_unfiltered").sql
 
 
+def test_lookml_post_sql_measure_expands_untemplated_complete_base():
+    """A post-SQL measure over an UNTEMPLATED complete type:number base must expand its full SQL.
+
+    An unfiltered complete base like STDDEV has no native <AGG>({model}.<measure>) template, so the
+    percent_of_total resolved it to `{model}.sd` -- but complete measures are projected via
+    dedicated raw aliases, so the query referenced a missing `orders_cte.sd` and failed. Expand
+    such a base through its full SQL; a native aggregate base keeps the template form.
+    """
+    import duckdb
+
+    from sidemantic import SemanticLayer
+
+    graph = _parse_lkml(
+        """
+view: orders {
+  sql_table_name: orders ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: amount { type: number  sql: ${TABLE}.amount ;; }
+  measure: sd { type: number  sql: STDDEV(${amount}) ;; }
+  measure: total { type: sum  sql: ${amount} ;; }
+  measure: pct { type: percent_of_total  sql: ${sd} ;; }
+  measure: pct_native { type: percent_of_total  sql: ${total} ;; }
+}
+"""
+    )
+    model = graph.get_model("orders")
+    # The complete base's full SQL is inlined; the native base keeps its measure-ref template.
+    assert "STDDEV" in model.get_metric("pct").sql and "{model}.sd" not in model.get_metric("pct").sql
+    assert "{model}.total" in model.get_metric("pct_native").sql
+
+    layer = SemanticLayer(auto_register=False)
+    layer.add_model(model)
+    sql = layer.compile(metrics=["orders.pct"])
+    con = duckdb.connect()
+    con.execute("create table orders as select 1 id, 10.0 amount union all select 2, 30 union all select 3, 60")
+    assert con.execute(sql).fetchall() == [(1.0,)]  # single group -> its share is 1.0
+
+
 def test_lookml_export_running_total_roundtrips():
     """An imported running_total (cumulative + table_calculation meta) round-trips, not dropped."""
     import tempfile

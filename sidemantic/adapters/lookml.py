@@ -2904,7 +2904,14 @@ class LookMLAdapter(BaseAdapter):
                 # status='completed' THEN user_id END)). The `<AGG>({model}.<measure>)` template
                 # below carries no filter, so a percent_of_total over a filtered base would be
                 # computed across every row instead of the filtered population.
-                if ref_name in filtered_base_measures and ref_name in measure_full_sql_lookup:
+                # Expand through the full SQL when the base has no plain <AGG>({model}.<measure>)
+                # form: a FILTERED base (carries a CASE filter), OR an untemplated COMPLETE
+                # type:number base (e.g. a re-imported STDDEV/VAR_SAMP). Both are projected via
+                # dedicated raw aliases, not as `<cte>.<measure>`, so `{model}.<measure>` would
+                # reference a missing column.
+                if ref_name in measure_full_sql_lookup and (
+                    ref_name in filtered_base_measures or ref_name not in measure_agg_lookup
+                ):
                     return f"({measure_full_sql_lookup[ref_name]})"
                 agg_template = measure_agg_lookup.get(ref_name)
                 if agg_template:

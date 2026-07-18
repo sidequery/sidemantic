@@ -4790,6 +4790,39 @@ def test_lookml_export_folded_filter_date_part_guard_is_position_aware():
     )
 
 
+def test_lookml_export_folded_filter_protects_sql_server_datepart_first_functions():
+    """SQL Server functions taking the datepart FIRST must protect that part token.
+
+    DATENAME / DATEDIFF_BIG / DATE_BUCKET were absent from the datepart-position map, so on a model
+    with a `day` dimension a folded filter's DATENAME(day, created_at) rewrote `day` to
+    (${TABLE}.order_day) -- and the stddev/complete-aggregate export paths suppress the filters
+    block, so the exported LookML SQL was invalid. The trailing column arguments still resolve.
+    """
+    from sidemantic import Dimension, Model
+
+    model = Model(
+        name="orders",
+        table="raw_orders",
+        primary_key="id",
+        dimensions=[
+            Dimension(name="day", type="time", granularity="day", sql="order_day"),
+            Dimension(name="created_at", type="time", granularity="day", sql="created_at"),
+            Dimension(name="start_at", type="time", granularity="day", sql="started_at"),
+        ],
+    )
+    conds = LookMLAdapter._fold_filter_conds
+    # The datepart token is protected; the column argument(s) of the SAME call still resolve.
+    assert conds(["DATENAME(day, created_at) = 'Monday'"], model) == (
+        "(DATENAME(day, (${TABLE}.created_at)) = 'Monday')"
+    )
+    assert conds(["DATEDIFF_BIG(day, start_at, created_at) > 1"], model) == (
+        "(DATEDIFF_BIG(day, (${TABLE}.started_at), (${TABLE}.created_at)) > 1)"
+    )
+    assert conds(["DATE_BUCKET(day, 1, created_at) > 1"], model) == ("(DATE_BUCKET(day, 1, (${TABLE}.created_at)) > 1)")
+    # A keyword-named column used for real (outside a date function) is still rewritten.
+    assert conds(["UPPER(day) = 'X'"], model) == "(UPPER((${TABLE}.order_day)) = 'X')"
+
+
 def test_lookml_export_template_only_folded_filter_skipped():
     """A folded filter that is ONLY a Liquid template leaves no real column -> skip the measure.
 

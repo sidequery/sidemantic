@@ -5555,6 +5555,21 @@ def test_lookml_normal_view_graph_metric_dropped_when_model_overwritten():
     load_from_directory(layer, intact, strict=False)
     assert "pop" in layer.graph.metrics
 
+    # Overwritten by a model whose same-named metric is MODEL-SCOPED (a normal measure), not a
+    # graph-level metric: it does not replace the orphaned graph metric, so a name-only match would
+    # wrongly keep the broken one. It must still be dropped.
+    same_name = Path(tempfile.mkdtemp())
+    (same_name / "orders.view.lkml").write_text(view)
+    (same_name / "zz_native.py").write_text(
+        "from sidemantic import Dimension, Metric, Model\n"
+        'model = Model(name="orders", table="py_orders", primary_key="id",\n'
+        '              dimensions=[Dimension(name="id", type="numeric", sql="id")],\n'
+        '              metrics=[Metric(name="pop", agg="sum", sql="id")])\n'
+    )
+    layer = SemanticLayer()
+    load_from_directory(layer, same_name, strict=False)
+    assert "pop" not in layer.graph.metrics  # the stale graph-level metric is not rescued by name
+
 
 def test_lookml_included_view_does_not_extend_unincluded_parent():
     """An included view must not inherit fields from a parent no model include reaches.

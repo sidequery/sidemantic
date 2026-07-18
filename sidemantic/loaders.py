@@ -74,9 +74,13 @@ def _drop_non_registerable_models(all_models: dict, all_metrics: dict | None = N
         # whose measure/time dimension the metric needs. The parser stamps every LookML graph
         # metric with its owning model, so drop it when the SURVIVING model of that name no longer
         # defines it -- gone entirely, or replaced by a model without this measure. A later file
-        # that redefines the metric overwrites this object (no owner stamp), so it is kept.
+        # that redefines the metric AT GRAPH LEVEL overwrites this object (no owner stamp), so it is
+        # kept. The surviving model must still define it as the SAME graph-level kind: a same-named
+        # MODEL-SCOPED metric (a normal measure named revenue_yoy) does not replace the orphaned
+        # graph-level metric in all_metrics, so a name-only match would keep a broken one.
         for mn in list(all_metrics):
-            meta = all_metrics[mn].meta or {}
+            stale = all_metrics[mn]
+            meta = stale.meta or {}
             if meta.get("_lookml_template_metric"):
                 all_metrics.pop(mn, None)
                 continue
@@ -84,7 +88,8 @@ def _drop_non_registerable_models(all_models: dict, all_metrics: dict | None = N
             if owner is not None:
                 owner_model = kept.get(owner)
                 if owner_model is None or not any(
-                    getattr(x, "name", None) == mn for x in (getattr(owner_model, "metrics", None) or [])
+                    getattr(x, "name", None) == mn and getattr(x, "type", None) == stale.type
+                    for x in (getattr(owner_model, "metrics", None) or [])
                 ):
                     all_metrics.pop(mn, None)
     return kept

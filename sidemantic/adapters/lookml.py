@@ -280,6 +280,8 @@ class LookMLAdapter(BaseAdapter):
                 for _v in _allowed:
                     _view_model_count[_v] = _view_model_count.get(_v, 0) + 1
 
+        _warned_ambiguous_extends: set[tuple[str, str]] = set()
+
         def _parent_in_scope(child: str, parent: str) -> bool:
             """Whether `child` may INHERIT from `parent` under the project's include scoping.
 
@@ -289,17 +291,40 @@ class LookMLAdapter(BaseAdapter):
             not expose. Such a parent is treated as absent instead, which leaves the child's
             extends unresolved -- the child still loads, just without the inherited fields.
 
-            The parent must be visible from the CHILD's own file, not merely included somewhere in
-            the project: with several models, a parent selected only by model B is not in scope for
-            a child selected only by model A, and inheriting it would expose another model's
-            fields. A view whose source file is unknown is left alone.
+            EVERY model whose scope reaches the child must include the parent, not merely one: the
+            child is a single graph model shared by all of them, so inheriting a parent that only
+            SOME models select would expose its fields to the models that do not -- fields Looker
+            would not give them. When the models disagree the parent is treated as out of scope (the
+            conservative, no-leak choice) and the ambiguity is reported. A view whose source file is
+            unknown is left alone.
             """
             if not _scoping_active:
                 return True
             child_source = view_source_files.get(child)
             if child_source is None or parent not in view_source_files:
                 return True
-            return parent in _scope_by_file.get(Path(child_source).resolve(), set())
+            scopes = _scopes_by_file.get(Path(child_source).resolve(), [])
+            if not scopes:
+                return True  # child not reached by any model -> unscoped, leave it alone
+            including = [parent in scope for scope in scopes]
+            if all(including):
+                return True
+            if any(including) and (child, parent) not in _warned_ambiguous_extends:
+                _warned_ambiguous_extends.add((child, parent))
+                logger.warning(
+                    "LookML view %r extends %r, but only some of the models using %r include %r. "
+                    "One graph model per view name cannot inherit for some and not others, so %r is "
+                    "NOT inherited (its fields would otherwise leak to the models missing it). "
+                    "Include %r from every model that uses %r, or give them separate views.",
+                    child,
+                    parent,
+                    child,
+                    parent,
+                    parent,
+                    parent,
+                    child,
+                )
+            return False
 
         # Snapshot abstract / unsupported-derived_table flags BEFORE refinement merge:
         # merge_model REPLACES a base view's meta when the refinement carries metadata,

@@ -5889,8 +5889,51 @@ def test_lookml_extends_parent_scoped_per_model_not_project_wide():
     # One model selecting both still inherits.
     assert {"secret", "leaked"} <= fields(("a", "/views/*.view.lkml"))
 
-    # The child's file reached by a model that also selects the parent: union -> inherited.
-    assert {"secret", "leaked"} <= fields(("a", "/views/orders.view.lkml"), ("b", "/views/*.view.lkml"))
+    # The child is reached by BOTH models but only b includes the parent: EVERY model reaching the
+    # child must include the parent, else its fields would leak to a. Not inherited (see
+    # test_lookml_extends_parent_required_in_all_model_scopes for the full contract).
+    assert fields(("a", "/views/orders.view.lkml"), ("b", "/views/*.view.lkml")) == {"id"}
+
+
+def test_lookml_extends_parent_required_in_all_model_scopes(caplog):
+    """A parent only SOME models reaching the child include must not be inherited, and it warns.
+
+    `_scope_by_file` unioned the visible views of every model reaching a shared child, so a parent
+    that only one model included read as in-scope -- and the single graph `child` model inherited
+    it, exposing its fields to the models that could not see it. Require the parent in EVERY such
+    model's scope; when they disagree, do not inherit and report the ambiguity.
+    """
+    import logging
+    import tempfile
+
+    child = "view: child {\n  extends: [base]\n  sql_table_name: child_t ;;\n  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }\n}\n"
+    base = "view: base {\n  sql_table_name: base_t ;;\n  dimension: secret { sql: ${TABLE}.secret ;; }\n}\n"
+
+    def parse(*models):
+        directory = Path(tempfile.mkdtemp())
+        (directory / "views").mkdir()
+        for name, include in models:
+            (directory / f"{name}.model.lkml").write_text(include)
+        (directory / "views" / "child.view.lkml").write_text(child)
+        (directory / "views" / "base.view.lkml").write_text(base)
+        return LookMLAdapter().parse(str(directory)).get_model("child")
+
+    # a includes child + base, b includes only child: not inherited, and the ambiguity is warned.
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="sidemantic.adapters.lookml"):
+        model = parse(
+            ("a", 'include: "/views/child.view.lkml"\ninclude: "/views/base.view.lkml"\n'),
+            ("b", 'include: "/views/child.view.lkml"\n'),
+        )
+    assert "secret" not in {d.name for d in model.dimensions}
+    assert "only some of the models" in caplog.text
+
+    # Every model reaching the child includes the parent: inherited, no warning.
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="sidemantic.adapters.lookml"):
+        model = parse(("a", 'include: "/views/*.view.lkml"\n'), ("b", 'include: "/views/*.view.lkml"\n'))
+    assert "secret" in {d.name for d in model.dimensions}
+    assert "only some of the models" not in caplog.text
 
 
 def test_lookml_abstract_template_conflicting_with_active_model_is_not_skipped():

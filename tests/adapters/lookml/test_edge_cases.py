@@ -1354,6 +1354,34 @@ view: orders {
     assert "${" not in layer.compile(dimensions=["orders.elapsed_days"])
 
 
+def test_lookml_duration_group_resolves_compact_dimension_references():
+    """A ref to a COMPACT dimension (declared with no sql) resolves to its default column.
+
+    The resolver needs the declared dimension set to use its compact-dimension fallback; without
+    it a bare ${started_at} for a `dimension: started_at { type: time }` leaked into DATE_DIFF.
+    """
+    graph = _parse_lkml(
+        """
+view: orders {
+  sql_table_name: orders ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: started_at { type: time }
+  dimension: ended_at { type: time }
+  dimension_group: elapsed {
+    type: duration
+    intervals: [day]
+    sql_start: ${started_at} ;;
+    sql_end: ${ended_at} ;;
+  }
+}
+"""
+    )
+    elapsed = graph.get_model("orders").get_dimension("elapsed_days")
+    assert elapsed is not None
+    assert "${" not in elapsed.sql  # compact refs resolved to their default columns
+    assert "started_at" in elapsed.sql and "ended_at" in elapsed.sql
+
+
 def test_lookml_duration_group_cross_view_ref_dropped():
     """A duration group whose sql_start/sql_end references another view inline is dropped."""
     graph = _parse_lkml(

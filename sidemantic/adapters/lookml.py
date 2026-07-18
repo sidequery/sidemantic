@@ -1109,7 +1109,7 @@ class LookMLAdapter(BaseAdapter):
 
         # Parse dimension_group (time dimensions)
         for dim_group_def in view_def.get("dimension_groups") or []:
-            dims = self._parse_dimension_group(dim_group_def, resolved_dimension_sql)
+            dims = self._parse_dimension_group(dim_group_def, resolved_dimension_sql, declared_dim_names)
             dimensions.extend(dims)
 
         # Build a set of dimension names for measure reference resolution
@@ -1515,13 +1515,18 @@ class LookMLAdapter(BaseAdapter):
         )
 
     def _parse_dimension_group(
-        self, dim_group_def: dict, dimension_sql_lookup: dict[str, str] | None = None
+        self,
+        dim_group_def: dict,
+        dimension_sql_lookup: dict[str, str] | None = None,
+        dimension_names: set[str] | None = None,
     ) -> list[Dimension]:
         """Parse LookML dimension_group (time dimensions).
 
         Args:
             dim_group_def: Dimension group definition
             dimension_sql_lookup: Optional dict of dimension names to resolved SQL
+            dimension_names: All declared dimension names, so a ${ref} to a COMPACT dimension (no
+                explicit sql) resolves to its default column instead of leaking the literal
 
         Returns:
             List of time dimensions with different granularities
@@ -1534,7 +1539,7 @@ class LookMLAdapter(BaseAdapter):
 
         # Handle duration type separately
         if group_type == "duration":
-            return self._parse_duration_group(group_name, dim_group_def, dimension_sql_lookup)
+            return self._parse_duration_group(group_name, dim_group_def, dimension_sql_lookup, dimension_names)
 
         if group_type != "time":
             return []
@@ -1805,7 +1810,11 @@ class LookMLAdapter(BaseAdapter):
         return "\n".join(sql_parts)
 
     def _parse_duration_group(
-        self, group_name: str, dim_group_def: dict, dimension_sql_lookup: dict[str, str] | None = None
+        self,
+        group_name: str,
+        dim_group_def: dict,
+        dimension_sql_lookup: dict[str, str] | None = None,
+        dimension_names: set[str] | None = None,
     ) -> list[Dimension]:
         """Parse LookML dimension_group with type: duration.
 
@@ -1816,6 +1825,8 @@ class LookMLAdapter(BaseAdapter):
             group_name: Name of the dimension group
             dim_group_def: Dimension group definition
             dimension_sql_lookup: Resolved dimension SQL for ${ref} resolution in sql_start/sql_end
+            dimension_names: All declared dimension names, so a ${ref} to a COMPACT dimension (no
+                explicit sql) resolves to its default column rather than leaking the literal
 
         Returns:
             List of duration dimensions
@@ -1826,16 +1837,18 @@ class LookMLAdapter(BaseAdapter):
 
         # Resolve ${dimension} references (self-view refs normalized to bare ${name}) so a
         # sql_start/sql_end like ${started_at} becomes the real column instead of leaking the
-        # literal ${...} into DATE_DIFF; ${TABLE} is handled next. Without this the duration
-        # dimension carried an unresolved ${ref} and every query on it emitted invalid SQL.
+        # literal ${...} into DATE_DIFF; ${TABLE} is handled next. Pass dimension_names so a ref to
+        # a COMPACT dimension (declared with no sql) resolves to its default column, not a leak.
+        # Without this the duration dimension carried an unresolved ${ref} and any query on it
+        # emitted invalid SQL.
         if sql_start:
-            sql_start = self._resolve_dimension_references(sql_start, dimension_sql_lookup or {}).replace(
-                "${TABLE}", "{model}"
-            )
+            sql_start = self._resolve_dimension_references(
+                sql_start, dimension_sql_lookup or {}, dimension_names=dimension_names
+            ).replace("${TABLE}", "{model}")
         if sql_end:
-            sql_end = self._resolve_dimension_references(sql_end, dimension_sql_lookup or {}).replace(
-                "${TABLE}", "{model}"
-            )
+            sql_end = self._resolve_dimension_references(
+                sql_end, dimension_sql_lookup or {}, dimension_names=dimension_names
+            ).replace("${TABLE}", "{model}")
 
         # If no sql_start/sql_end, we can't create duration dimensions
         if not sql_start or not sql_end:

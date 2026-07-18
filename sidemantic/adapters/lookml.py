@@ -3798,6 +3798,20 @@ class LookMLAdapter(BaseAdapter):
                         # so accept it too rather than dropping the metric at the zero-column check
                         # below. The trailing \s+ keeps a column literally named `all` (COUNT(all))
                         # a plain argument.
+                        if self._has_subquery(col_sql):
+                            # A type: number carrying a scalar subquery (SUM({model}.amount) /
+                            # (SELECT COUNT(*) FROM other)) exports fine, but the import side's
+                            # _parse_measure rejects subquery SQL, so the measure silently vanishes
+                            # on re-import. Skip it here so export/import round-trips consistently
+                            # rather than emitting a measure the adapter cannot read back.
+                            logger.warning(
+                                "Metric %r has a scalar subquery in its aggregate SQL (%r); the LookML "
+                                "adapter cannot re-import a type: number measure containing a subquery, "
+                                "so skipping it on export to keep round-trips consistent.",
+                                metric.name,
+                                col_sql,
+                            )
+                            continue
                         _count_const = r"\*|[+-]?(?:\d+\.?\d*|\.\d+)|true|false|'(?:[^']|'')*'"
                         if not metric.filters and re.fullmatch(
                             rf"(?i)count\s*\(\s*(?:all\s+)?(?:{_count_const})\s*\)", col_sql.strip()

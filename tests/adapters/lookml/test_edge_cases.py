@@ -5136,6 +5136,38 @@ def test_lookml_export_multi_column_distinct_filter_skipped():
     assert "measure: du" not in open(out).read()  # skipped, no malformed `THEN a, b END`
 
 
+def test_lookml_export_aggregate_with_scalar_subquery_skipped():
+    """An agg-less complete measure carrying a scalar subquery is skipped, not silently lost on re-import.
+
+    SUM({model}.amount) / (SELECT COUNT(*) FROM other) would export as type: number, but the import
+    side's _parse_measure rejects subquery SQL, so the measure vanishes on re-import. Skip it on
+    export so the round-trip stays consistent rather than dropping a measure the adapter emitted.
+    """
+    import tempfile
+
+    from sidemantic import Dimension, Metric, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="orders",
+            table="t",
+            primary_key="id",
+            dimensions=[Dimension(name="id", type="numeric", sql="id")],
+            metrics=[
+                Metric(name="sq", agg=None, sql="SUM({model}.amount) / (SELECT COUNT(*) FROM other)"),
+                Metric(name="total", agg="sum", sql="{model}.amount"),
+            ],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    text = open(out).read()
+    assert "measure: sq" not in text  # subquery measure skipped rather than emitted-then-dropped
+    assert "measure: total" in text  # ordinary aggregates still export
+
+
 def test_lookml_export_folded_filter_leaves_backtick_identifier_untouched():
     """A folded filter's backtick/bracket-quoted identifier must not be rewritten inside the quotes."""
     import tempfile

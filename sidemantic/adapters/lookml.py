@@ -344,6 +344,23 @@ class LookMLAdapter(BaseAdapter):
             return c
 
         for a in aggs:
+            if isinstance(a.parent, exp.Window):
+                # A WINDOWED aggregate (SUM(...) OVER ()) runs AFTER grouping, so wrapping its
+                # argument in CASE WHEN <filter> puts the filter column inside the window, ungrouped
+                # -- the engine rejects it. When the window wraps a NESTED aggregate
+                # (SUM(COUNT(*)) OVER ()), that inner aggregate is also in `aggs` and carries the
+                # filter, so skip only the outer one. With no inner aggregate to carry it
+                # (SUM(amount) OVER ()), the predicate cannot be applied to this term consistently
+                # with the rest -> abort the fold rather than emit inconsistent or invalid SQL.
+                inner_aggs = [n for n in a.find_all(exp.AggFunc) if n is not a]
+                inner_aggs += [
+                    n
+                    for n in a.find_all(exp.Anonymous)
+                    if n is not a and (n.name or "").lower() in _ANONYMOUS_AGGREGATE_FUNCTIONS
+                ]
+                if inner_aggs:
+                    continue
+                return None
             wg = a.find_ancestor(exp.WithinGroup)
             if wg is not None:
                 # Ordered-set aggregate: fold into the ORDER BY value(s), never the percentile

@@ -3301,6 +3301,48 @@ view: orders {
     assert dict(con.execute(sql).fetchall()) == {"e": 0.1, "w": 0.9}
 
 
+def test_lookml_filtered_windowed_aggregate_folds_into_inner_aggregate():
+    """A filter on a windowed aggregate must fold into its INNER aggregate, not the window arg.
+
+    For COUNT(*) / NULLIF(SUM(COUNT(*)) OVER (), 0) with a filter, wrapping the outer windowed
+    SUM's argument put the filter column inside the window, ungrouped -- DuckDB rejected it. The
+    inner COUNT(*) is a grouped aggregate that can carry the filter, so fold there; a windowed
+    aggregate over a RAW column has nothing to carry it and is dropped rather than mis-filtered.
+    """
+    import duckdb
+
+    from sidemantic import SemanticLayer
+
+    # The predicate folds into the inner COUNT, never the outer windowed SUM's argument.
+    assert LookMLAdapter._fold_complete_sql_filters(
+        "COUNT(*) / NULLIF(SUM(COUNT(*)) OVER (), 0)", ["{model}.status = 'x'"]
+    ) == (
+        "COUNT(CASE WHEN {model}.status = 'x' THEN 1 END) / "
+        "NULLIF(SUM(COUNT(CASE WHEN {model}.status = 'x' THEN 1 END)) OVER (), 0)"
+    )
+    # No inner aggregate to carry the filter -> the fold aborts (returns None).
+    assert LookMLAdapter._fold_complete_sql_filters("SUM(amount) OVER ()", ["{model}.status = 'x'"]) is None
+
+    graph = _parse_lkml(
+        """
+view: orders {
+  sql_table_name: orders ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: status { type: string  sql: ${TABLE}.status ;; }
+  measure: pct { type: number  sql: COUNT(*) / NULLIF(SUM(COUNT(*)) OVER (), 0) ;; filters: [status: "x"] }
+}
+"""
+    )
+    model = graph.get_model("orders")
+    layer = SemanticLayer(auto_register=False)
+    layer.add_model(model)
+    sql = layer.compile(metrics=["orders.pct"])
+    con = duckdb.connect()
+    con.execute("create table orders as select 1 id, 'x' status union all select 2, 'x' union all select 3, 'y'")
+    # 2 rows match the filter; each is its own group, summed over the window = 2, so 2/2 rows -> 1.0.
+    assert con.execute(sql).fetchall() == [(1.0,)]
+
+
 def test_lookml_complete_measure_own_filter_resolves_renamed_dimension():
     """A COMPLETE (mixed) measure's OWN filter on a renamed dimension resolves to the real column."""
     import duckdb

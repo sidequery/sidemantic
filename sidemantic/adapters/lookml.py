@@ -1306,6 +1306,38 @@ class LookMLAdapter(BaseAdapter):
             if measure:
                 measures.append(measure)
 
+        # Drop measures that reference a measure which did NOT survive parsing. A row-level helper
+        # (`bad { sql: ${amount} }`) is skipped above, but a dependent (`outer { sql: ${bad} * 2 }`)
+        # still resolved ${bad} to a bare `bad` and imported as `bad * 2`, which compile cannot
+        # resolve ("Metric bad not found"). Collect each measure's UNQUALIFIED measure refs from the
+        # raw SQL, then iterate to a fixpoint so a dependent of a dependent is dropped too.
+        _measure_refs: dict[str, set[str]] = {}
+        for measure_def in view_def.get("measures") or []:
+            _mn = measure_def.get("name")
+            if not _mn:
+                continue
+            _measure_refs[_mn] = {
+                _r.group(2)
+                for _r in self._REF_RE.finditer(measure_def.get("sql") or "")
+                if _r.group(1) is None and _r.group(2) in measure_names and _r.group(2) != _mn
+            }
+        _surviving = {m.name for m in measures}
+        _changed = True
+        while _changed:
+            _changed = False
+            for _m in list(measures):
+                _dead = {r for r in _measure_refs.get(_m.name, set()) if r not in _surviving}
+                if _dead:
+                    logger.warning(
+                        "LookML measure %r references measure(s) %s that were not imported "
+                        "(e.g. a skipped row-level helper); skipping it too.",
+                        _m.name,
+                        ", ".join(sorted(_dead)),
+                    )
+                    measures.remove(_m)
+                    _surviving.discard(_m.name)
+                    _changed = True
+
         # Parse segments
         from sidemantic.core.segment import Segment
 

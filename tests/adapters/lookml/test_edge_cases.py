@@ -2367,6 +2367,55 @@ view: orders {
     assert graph.get_model("orders").get_metric("half_amount") is None  # row-level -> skipped
 
 
+def test_lookml_measure_referencing_skipped_measure_is_dropped():
+    """A measure that references a measure which did NOT survive parsing must be dropped too.
+
+    A row-level helper `bad { sql: ${amount} }` is skipped, but a dependent `outer { sql: ${bad}*2 }`
+    still resolved ${bad} to a bare `bad` and imported as `bad * 2` -- compile then failed with
+    "Metric bad not found". Drop such dependents (iterating so a dependent of a dependent goes too);
+    a dependent of a SURVIVING measure is kept and works.
+    """
+    import duckdb
+
+    from sidemantic import SemanticLayer
+
+    dropped = _parse_lkml(
+        """
+view: orders {
+  sql_table_name: orders ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: amount { type: number  sql: ${TABLE}.amount ;; }
+  measure: bad { type: number  sql: ${amount} ;; }
+  measure: outer { type: number  sql: ${bad} * 2 ;; }
+  measure: outer2 { type: number  sql: ${outer} + 1 ;; }
+}
+"""
+    ).get_model("orders")
+    # bad (row-level) is skipped, and its transitive dependents go with it.
+    assert dropped.get_metric("bad") is None
+    assert dropped.get_metric("outer") is None
+    assert dropped.get_metric("outer2") is None
+
+    # A dependent of a SURVIVING measure is kept and compiles.
+    kept = _parse_lkml(
+        """
+view: orders {
+  sql_table_name: orders ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: amount { type: number  sql: ${TABLE}.amount ;; }
+  measure: total { type: sum  sql: ${amount} ;; }
+  measure: dbl { type: number  sql: ${total} * 2 ;; }
+}
+"""
+    ).get_model("orders")
+    assert kept.get_metric("dbl") is not None
+    layer = SemanticLayer(auto_register=False)
+    layer.add_model(kept)
+    con = duckdb.connect()
+    con.execute("create table orders as select 1 id, 10 amount union all select 2, 20")
+    assert con.execute(layer.compile(metrics=["orders.dbl"])).fetchall() == [(60,)]
+
+
 def test_lookml_number_measure_compact_dimension_row_level_skipped():
     """A number measure over a COMPACT dimension with no aggregate is also a row-level expr -> skipped."""
     graph = _parse_lkml(

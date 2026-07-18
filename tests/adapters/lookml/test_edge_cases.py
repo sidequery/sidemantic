@@ -5016,7 +5016,8 @@ def test_lookml_export_dialect_renamed_aggregate_skipped():
     from sidemantic import Dimension, Metric, Model
     from sidemantic.core.semantic_graph import SemanticGraph
 
-    # The fold itself bails (returns None) on a renamed aggregate, but folds a stable one.
+    # The fold bails (returns None) on a renamed aggregate ONLY for a FORCE caller (export/inline,
+    # which skips the measure on None), but folds a stable one.
     assert (
         LookMLAdapter._fold_complete_sql_filters(
             "APPROX_COUNT_DISTINCT({model}.user_id) / COUNT(*)", ["{model}.status = 'x'"], force=True
@@ -5027,6 +5028,14 @@ def test_lookml_export_dialect_renamed_aggregate_skipped():
         LookMLAdapter._fold_complete_sql_filters("SUM({model}.amount) / COUNT(*)", ["{model}.status = 'x'"], force=True)
         is not None
     )
+    # The IMPORT caller (force=False) falls back to column-nulling on None, which would drop the
+    # filter on a zero-column COUNT(*) denominator, so it must NOT bail on a rename -- it folds,
+    # filtering BOTH the numerator and the denominator.
+    _imported = LookMLAdapter._fold_complete_sql_filters(
+        "APPROX_COUNT_DISTINCT({model}.user_id) / NULLIF(COUNT(*), 0)", ["{model}.status = 'completed'"]
+    )
+    assert _imported is not None
+    assert "COUNT(CASE" in _imported  # denominator folded, not left over all rows
 
     def _export(sql, name):
         graph = SemanticGraph()

@@ -295,18 +295,20 @@ class LookMLAdapter(BaseAdapter):
         # sqlglot canonicalizes some dialect-specific AGGREGATE spellings when it re-serializes the
         # tree below (APPROX_COUNT_DISTINCT -> APPROX_DISTINCT, VAR_POP -> VARIANCE_POP, ...). The
         # rewritten spelling can be INVALID on the warehouse the original targeted (DuckDB rejects
-        # APPROX_DISTINCT), and this fold is the only place the SQL is round-tripped through the
-        # serializer. If any aggregate would render under a name that does NOT appear as a call in
-        # the source, we cannot reproduce it faithfully -> bail so the caller skips the measure
-        # rather than emit a renamed aggregate. Only aggregate function names are checked, so a
-        # SAFE structural rewrite the target still accepts (IF -> CASE, `::t` -> CAST) is allowed.
-        for a in aggs:
-            try:
-                rendered_name = re.match(r"\s*(\w+)\s*\(", a.sql())
-            except Exception:
-                return None
-            if rendered_name and not re.search(rf"\b{re.escape(rendered_name.group(1))}\s*\(", sql, re.I):
-                return None
+        # APPROX_DISTINCT). Bail (None) so a FORCE caller -- the export/inline path, which SKIPS the
+        # measure on None -- does not emit a renamed aggregate. The import caller (force=False)
+        # instead falls back to generator column-nulling on None, which silently drops the filter on
+        # a zero-column term (a COUNT(*) denominator), so it must NOT bail here: fold and accept the
+        # rename. Only aggregate names are checked, so a SAFE structural rewrite the target still
+        # accepts (IF -> CASE, `::t` -> CAST) is allowed.
+        if force:
+            for a in aggs:
+                try:
+                    rendered_name = re.match(r"\s*(\w+)\s*\(", a.sql())
+                except Exception:
+                    return None
+                if rendered_name and not re.search(rf"\b{re.escape(rendered_name.group(1))}\s*\(", sql, re.I):
+                    return None
 
         # An ordered-set aggregate (PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY x)) keeps its
         # value column in the enclosing WithinGroup's ORDER BY, NOT inside the AggFunc (whose

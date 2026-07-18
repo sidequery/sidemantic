@@ -17,7 +17,7 @@ pytest.importorskip("httpx")
 import duckdb
 from fastapi.testclient import TestClient
 
-from sidemantic import Dimension, Metric, Model, SemanticLayer, load_from_directory
+from sidemantic import DashboardDocument, Dimension, Metric, Model, SemanticLayer, load_from_directory
 from sidemantic.api_server import create_app
 from sidemantic.db.base import BaseDatabaseAdapter
 from sidemantic.server.common import ARROW_STREAM_MEDIA_TYPE
@@ -157,6 +157,42 @@ def test_health_and_models_endpoints(tmp_path):
 
     assert graph_response.status_code == 200
     assert graph_response.json()["models"][0]["name"] == "orders"
+
+
+def test_dashboard_endpoint_is_optional_and_authenticated(tmp_path):
+    models_dir = tmp_path / "models"
+    _write_models(models_dir)
+    layer = SemanticLayer(connection="duckdb:///:memory:", auto_register=False)
+    load_from_directory(layer, models_dir)
+    dashboard = DashboardDocument.from_dict(
+        {
+            "schema": "sidemantic.dashboard.v1",
+            "title": "Orders overview",
+            "tabs": [
+                {
+                    "id": "overview",
+                    "charts": [
+                        {
+                            "id": "orders",
+                            "query": {
+                                "metrics": ["orders.order_count"],
+                                "dimensions": ["orders.created_at__day", "orders.status"],
+                            },
+                            "encoding": {"x": "orders.created_at__day", "y": "orders.order_count"},
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    configured = TestClient(create_app(layer, auth_token="secret", dashboard=dashboard))
+    unconfigured = TestClient(create_app(layer))
+
+    assert configured.get("/dashboard").status_code == 401
+    response = configured.get("/dashboard", headers=_auth_headers())
+    assert response.status_code == 200
+    assert response.json()["title"] == "Orders overview"
+    assert unconfigured.get("/dashboard").status_code == 404
 
 
 def test_describe_endpoint(tmp_path):

@@ -422,7 +422,7 @@ GROUP BY {group_by_str}"""
         connection: Any,
         source_sql: str,
         table_name: str,
-        mode: Literal["full", "incremental", "merge", "engine"] | None = None,
+        mode: Literal["auto", "full", "incremental", "merge", "engine"] | None = None,
         watermark_column: str | None = None,
         lookback: str | None = None,
         from_watermark: Any | None = None,
@@ -547,6 +547,11 @@ GROUP BY {group_by_str}"""
         start_time = time.time()
 
         # Partitioned pre-aggregations are materialized as one table per time bucket
+        # ``auto`` is the public spelling of definition-driven mode selection;
+        # keep ``None`` supported for backwards-compatible Python callers.
+        if mode == "auto":
+            mode = None
+
         # plus a covering view; delegate to build_partitions (needs the model).
         if self.partition_granularity:
             if model is None:

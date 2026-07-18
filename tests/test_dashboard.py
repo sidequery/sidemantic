@@ -383,7 +383,7 @@ def test_dashboard_typescript_is_generated_from_semantic_layer():
     assert '"orders.created_at__month": string | Date;' in ts
 
 
-def test_dashboard_cli_validate_serve_and_types(monkeypatch, tmp_path):
+def test_dashboard_cli_validate_and_types(monkeypatch, tmp_path):
     models_dir = tmp_path / "models"
     models_dir.mkdir()
     (models_dir / "models.yml").write_text(
@@ -444,14 +444,11 @@ models:
 
     called = {}
 
-    def fake_serve(self, output_dir, *, host, port):
-        called["dashboard"] = self
-        called["output_dir"] = output_dir
-        called["host"] = host
-        called["port"] = port
+    def fake_start_api_server(layer, **kwargs):
+        called["layer"] = layer
+        called.update(kwargs)
 
-    monkeypatch.setattr("sidemantic.viz.CrossfilterDashboard.serve", fake_serve)
-    output_dir = tmp_path / "dashboard-assets"
+    monkeypatch.setattr("sidemantic.api_server.start_api_server", fake_start_api_server)
     serve_result = runner.invoke(
         app,
         [
@@ -462,20 +459,17 @@ models:
             str(models_dir),
             "--db",
             str(db_path),
-            "--output-dir",
-            str(output_dir),
-            "--host",
-            "0.0.0.0",
             "--port",
             "9002",
         ],
     )
     assert serve_result.exit_code == 0
-    assert called["output_dir"] == output_dir
-    assert called["host"] == "0.0.0.0"
     assert called["port"] == 9002
-    assert called["dashboard"].tabs[0].session.interaction_preaggregations is True
-    assert called["dashboard"].tabs[0].session.chart_renderer == "plotly"
+    assert called["dashboard"].title == "Orders"
+
+    help_result = runner.invoke(app, ["dashboard", "--help"])
+    assert help_result.exit_code == 0
+    assert "serve" in help_result.output
 
     types_path = tmp_path / "sidemantic.generated.ts"
     types_result = runner.invoke(app, ["dashboard", "types", "--models", str(models_dir), "--out", str(types_path)])

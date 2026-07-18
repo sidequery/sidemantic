@@ -119,6 +119,7 @@ def start_api_server(
     require_user_attrs: bool = False,
     enforce_visibility: bool = False,
     user_header: str = "X-Sidemantic-User",
+    dashboard: Any | None = None,
 ) -> None:
     """Start the HTTP API server."""
     try:
@@ -137,6 +138,7 @@ def start_api_server(
         require_user_attrs=require_user_attrs,
         enforce_visibility=enforce_visibility,
         user_header=user_header,
+        dashboard=dashboard,
     )
     uvicorn.run(app, host=host, port=port, log_level="info")
 
@@ -157,6 +159,7 @@ def create_app(
     require_user_attrs: bool = False,
     enforce_visibility: bool = False,
     user_header: str = "X-Sidemantic-User",
+    dashboard: Any | None = None,
 ) -> FastAPI:
     """Create a FastAPI app for a loaded semantic layer.
 
@@ -190,6 +193,7 @@ def create_app(
     # per-request adapter.cursor(), so HTTP reads run concurrently.
     app.state.lock = threading.RLock()
     app.state.auth_token = auth_token
+    app.state.dashboard = dashboard.to_dict() if hasattr(dashboard, "to_dict") else dashboard
 
     if result_cache_mb and result_cache_mb > 0:
         from sidemantic.core.result_cache import ResultCache
@@ -384,6 +388,14 @@ def create_app(
         current_layer = app.state.layer
         payload = current_layer.describe_models()
         payload["dialect"] = current_layer.dialect
+        return payload
+
+    @app.get("/dashboard", dependencies=[Depends(require_auth)])
+    def dashboard_spec() -> dict[str, Any]:
+        """Return the declarative dashboard loaded for the canonical web UI."""
+        payload = app.state.dashboard
+        if payload is None:
+            raise HTTPException(status_code=404, detail="No dashboard configured")
         return payload
 
     @app.post("/compile", dependencies=[Depends(require_auth)])

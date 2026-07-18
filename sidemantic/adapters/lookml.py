@@ -2942,6 +2942,31 @@ class LookMLAdapter(BaseAdapter):
         label = dim_group_def.get("label")
         description = dim_group_def.get("description")
 
+        # minute15 / minute30 are N-minute BUCKETS, not a plain DATE_TRUNC grain -- the coarse
+        # `minute` granularity would truncate to the minute and silently re-bucket the data. Bake
+        # the N-minute bucket into the SQL and keep MINUTE granularity: the generator's later
+        # DATE_TRUNC('minute', ...) is then a no-op on the already-minute-aligned bucket, preserving
+        # the 15/30-minute grouping. `meta` still round-trips the exact timeframe on export.
+        bucket_n = self._MINUTE_BUCKET_TF.get(timeframe)
+        if bucket_n is not None:
+            base_expr = base_sql if base_sql is not None else "{model}"
+            return Dimension(
+                name=name,
+                type="time",
+                sql=self._minute_bucket_sql(base_expr, bucket_n),
+                granularity="minute",
+                label=label,
+                description=description,
+                meta={"lookml_timeframe": timeframe},
+            )
+
+        # millisecond / microsecond are FINER than the finest supported granularity (`second`), so a
+        # time dimension would truncate to the second and silently drop the sub-second precision the
+        # field name promises. The granularity enum cannot express them, so leave them unsupported
+        # rather than expose a wrong-grain field.
+        if timeframe in self._SUBSECOND_TF:
+            return None
+
         # Time-truncation timeframes -> time dimension with granularity. Remember the
         # original LookML timeframe so export can round-trip it exactly: several
         # timeframes (e.g. "time" and "second") map to the same sidemantic granularity

@@ -4116,6 +4116,51 @@ def test_lookml_native_suffix_contradicting_grain_uses_grain():
     assert grains == {"created_hour": "hour"}  # grain preserved (not silently downgraded to second)
 
 
+def test_lookml_minute_bucket_timeframes_query_at_bucket_grain():
+    """Importing minute15/minute30 must bucket at 15/30 minutes, not truncate to the minute.
+
+    These are N-minute BUCKETS, but map to the coarse `minute` granularity, so importing them with
+    the raw base timestamp made the generator emit DATE_TRUNC('minute', ts) -- collapsing the
+    bucket the field name promises. The bucket expression is baked into the SQL, so a query lands
+    on 15/30-minute boundaries; the timeframe still round-trips through export.
+    """
+    import tempfile
+
+    import duckdb
+
+    from sidemantic import SemanticLayer
+
+    graph = _parse_lkml(
+        """
+view: orders {
+  sql_table_name: orders ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension_group: created { type: time  timeframes: [minute15, minute30] sql: ${TABLE}.ts ;; }
+}
+"""
+    )
+    model = graph.get_model("orders")
+    layer = SemanticLayer(auto_register=False)
+    layer.add_model(model)
+    sql = layer.compile(dimensions=["orders.created_minute15"])
+    con = duckdb.connect()
+    con.execute(
+        "create table orders as select 1 id, TIMESTAMP '2024-01-01 12:07:33' ts "
+        "union all select 2, TIMESTAMP '2024-01-01 12:22:48' ts"
+    )
+    # 12:07 -> 12:00 and 12:22 -> 12:15 (15-minute buckets), NOT 12:07 / 12:22 (minute truncation).
+    assert sorted(str(r[0]) for r in con.execute(sql).fetchall()) == [
+        "2024-01-01 12:00:00",
+        "2024-01-01 12:15:00",
+    ]
+
+    # The timeframe still round-trips through export.
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    exported = Path(out).read_text()
+    assert "minute15" in exported and "minute30" in exported
+
+
 def test_lookml_native_minute15_name_does_not_widen_grain():
     """A native created_minute15 at MINUTE grain must not export [minute15] (15-min buckets).
 
@@ -4207,10 +4252,14 @@ def test_lookml_native_inexact_timeframe_suffix_preserves_grain_not_name():
         assert grains == [grain], f"{name}: grain not preserved -> {grains}"
 
 
-def test_lookml_uncommon_timeframe_suffix_roundtrips():
-    """Imported timeframes like millisecond/microsecond round-trip (base derived from stored timeframe)."""
-    import tempfile
+def test_lookml_subsecond_timeframes_are_unsupported():
+    """millisecond/microsecond are FINER than the finest granularity (second), so they are dropped.
 
+    A time dimension can only carry a granularity from the enum whose finest member is `second`, so
+    importing these as time dimensions truncated to the second and silently dropped the sub-second
+    precision the field name promises. Rather than expose a wrong-grain field, leave them
+    unsupported; other timeframes in the same group still import normally.
+    """
     graph = _parse_lkml(
         """
 view: v {
@@ -4218,17 +4267,15 @@ view: v {
   dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
   dimension_group: created {
     type: time
-    timeframes: [millisecond, microsecond, date]
+    timeframes: [millisecond, microsecond, second, date]
     sql: ${TABLE}.created_at ;;
   }
 }
 """
     )
-    out = tempfile.mktemp(suffix=".lkml")
-    LookMLAdapter().export(graph, out)
-    names = {d.name for d in LookMLAdapter().parse(Path(out)).get_model("v").dimensions if d.type == "time"}
-    assert {"created_millisecond", "created_microsecond"} <= names
-    assert not any(n.endswith("_millisecond_millisecond") or n.endswith("_microsecond_microsecond") for n in names)
+    names = {d.name for d in graph.get_model("v").dimensions if d.type == "time"}
+    assert "created_millisecond" not in names and "created_microsecond" not in names  # unsupported
+    assert {"created_second", "created_date"} <= names  # supported grains still import
 
 
 def test_lookml_time_grain_roundtrip():

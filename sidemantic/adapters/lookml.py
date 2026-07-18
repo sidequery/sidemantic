@@ -407,12 +407,18 @@ class LookMLAdapter(BaseAdapter):
 
         A raw ``\\bselect\\b`` scan also matches the word inside a VALUE
         (``SUM(CASE WHEN status = 'select' THEN amount END)``) or inside a quoted IDENTIFIER for a
-        column named after a reserved word (``SUM(${TABLE}."select")``, ``SUM(`select`)``) --
-        neither is a subquery, and both are valid inline aggregates. Blank out every quoted form
-        first -- single-quoted literals, and double-quote / backtick / bracket identifiers (the
-        same protected set the folded-filter splitter uses) -- so only real SQL keywords are seen.
+        column named after a reserved word (``SUM(${TABLE}."select")``, ``SUM(`select`)``), or
+        inside a SQL COMMENT (``/* select paid rows */ SUM(amount)``) -- none is a subquery, and all
+        are valid inline aggregates. Blank out every quoted form AND every comment first -- single-
+        quoted literals, double-quote / backtick / bracket identifiers, and ``--``/``/* */``
+        comments -- in one left-to-right pass so a comment inside a string (or a quote inside a
+        comment) is consumed by whichever opens first, leaving only real SQL keywords.
         """
-        stripped = re.sub(r"""'(?:[^']|'')*'|"(?:[^"]|"")*"|`[^`]*`|\[[^\]]*\]""", "''", sql or "")
+        stripped = re.sub(
+            r"""'(?:[^']|'')*'|"(?:[^"]|"")*"|`[^`]*`|\[[^\]]*\]|--[^\n]*|/\*[\s\S]*?\*/""",
+            " ",
+            sql or "",
+        )
         return bool(re.search(r"(?is)\bselect\b", stripped))
 
     @classmethod

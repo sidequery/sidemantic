@@ -2770,6 +2770,31 @@ view: orders {
     assert con.execute(layer.compile(metrics=["orders.sel"])).fetchall() == [(50,)]
 
 
+def test_lookml_number_measure_select_in_comment_is_not_a_subquery():
+    """The word `select` inside a SQL COMMENT must not be mistaken for a subquery.
+
+    A comment like `/* select paid rows */ SUM(amount)` has no subquery; leaving the comment text
+    in the scan matched `select` and dropped a valid inline aggregate. Comments are blanked with
+    quoted tokens, and a real subquery is still skipped.
+    """
+    conv = LookMLAdapter._has_subquery
+    assert conv("/* select paid rows */ SUM(amount)") is False
+    assert conv("-- select paid rows\nSUM(amount)") is False
+    assert conv("SUM(amount) / (SELECT COUNT(*) FROM t)") is True  # real subquery still detected
+
+    graph = _parse_lkml(
+        """
+view: orders {
+  sql_table_name: orders ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: amount { type: number  sql: ${TABLE}.amount ;; }
+  measure: commented { type: number  sql: /* select paid rows */ SUM(${amount}) / NULLIF(COUNT(*), 0) ;; }
+}
+"""
+    )
+    assert graph.get_model("orders").get_metric("commented") is not None  # comment is not a subquery
+
+
 def test_lookml_number_measure_unsafe_intermediate_not_expandable():
     """A number measure _parse_measure skips as unsafe must not be inlined into a later measure.
 

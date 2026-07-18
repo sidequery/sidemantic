@@ -4116,49 +4116,27 @@ def test_lookml_native_suffix_contradicting_grain_uses_grain():
     assert grains == {"created_hour": "hour"}  # grain preserved (not silently downgraded to second)
 
 
-def test_lookml_minute_bucket_timeframes_query_at_bucket_grain():
-    """Importing minute15/minute30 must bucket at 15/30 minutes, not truncate to the minute.
+def test_lookml_minute_bucket_timeframes_are_unsupported():
+    """minute15/minute30 are N-minute buckets sidemantic cannot represent portably, so drop them.
 
-    These are N-minute BUCKETS, but map to the coarse `minute` granularity, so importing them with
-    the raw base timestamp made the generator emit DATE_TRUNC('minute', ts) -- collapsing the
-    bucket the field name promises. The bucket expression is baked into the SQL, so a query lands
-    on 15/30-minute boundaries; the timeframe still round-trips through export.
+    The coarse `minute` granularity would truncate to the minute and drop the bucket, and baking
+    the bucket expression stores dialect-specific SQL (DuckDB/Postgres DATE_TRUNC + INTERVAL) into
+    Dimension.sql, which the generator does not transpile -- so it fails on BigQuery/Snowflake. The
+    import adapter has no query dialect to generate it correctly, so leave them unsupported; the
+    supported grains in the same group still import.
     """
-    import tempfile
-
-    import duckdb
-
-    from sidemantic import SemanticLayer
-
     graph = _parse_lkml(
         """
 view: orders {
   sql_table_name: orders ;;
   dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
-  dimension_group: created { type: time  timeframes: [minute15, minute30] sql: ${TABLE}.ts ;; }
+  dimension_group: created { type: time  timeframes: [minute15, minute30, minute, hour] sql: ${TABLE}.ts ;; }
 }
 """
     )
-    model = graph.get_model("orders")
-    layer = SemanticLayer(auto_register=False)
-    layer.add_model(model)
-    sql = layer.compile(dimensions=["orders.created_minute15"])
-    con = duckdb.connect()
-    con.execute(
-        "create table orders as select 1 id, TIMESTAMP '2024-01-01 12:07:33' ts "
-        "union all select 2, TIMESTAMP '2024-01-01 12:22:48' ts"
-    )
-    # 12:07 -> 12:00 and 12:22 -> 12:15 (15-minute buckets), NOT 12:07 / 12:22 (minute truncation).
-    assert sorted(str(r[0]) for r in con.execute(sql).fetchall()) == [
-        "2024-01-01 12:00:00",
-        "2024-01-01 12:15:00",
-    ]
-
-    # The timeframe still round-trips through export.
-    out = tempfile.mktemp(suffix=".lkml")
-    LookMLAdapter().export(graph, out)
-    exported = Path(out).read_text()
-    assert "minute15" in exported and "minute30" in exported
+    names = {d.name for d in graph.get_model("orders").dimensions if d.type == "time"}
+    assert "created_minute15" not in names and "created_minute30" not in names  # unsupported
+    assert {"created_minute", "created_hour"} <= names  # supported grains still import
 
 
 def test_lookml_native_minute15_name_does_not_widen_grain():

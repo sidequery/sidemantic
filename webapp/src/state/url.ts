@@ -84,6 +84,7 @@ function serializeFilters(filters: FilterState): Record<string, string[] | DimFi
 export function encodeState(state: ExplorerState): string {
   const params = new URLSearchParams();
   params.set("view", state.view);
+  if (state.dashboardTab) params.set("tab", state.dashboardTab);
   if (state.model) params.set("model", state.model);
   if (state.selectedMetric) params.set("metric", state.selectedMetric);
   if (state.grain) params.set("grain", state.grain);
@@ -111,6 +112,8 @@ export function decodeState(search: string, base: ExplorerState): ExplorerState 
 
   const view = params.get("view");
   if (view && VIEWS.includes(view as ViewKind)) next.view = view as ViewKind;
+  const tab = params.get("tab");
+  if (tab) next.dashboardTab = tab;
   const model = params.get("model");
   if (model) next.model = model;
   const metric = params.get("metric");

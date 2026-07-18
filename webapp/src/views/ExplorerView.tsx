@@ -8,6 +8,7 @@ import { EmptyState, ErrorState } from "../components/States";
 import type { BrushRange } from "../components/TimeSeriesChart";
 import { formatDelta, formatValue } from "../lib/format";
 import { graphMetricsForModel } from "../lib/catalog";
+import { dashboardTabConfig } from "../lib/dashboard";
 import { composeFilters, dimTypes, metricSeries, metricTotals } from "../lib/queries";
 import type { StructuredQuery } from "../data/types";
 import {
@@ -27,12 +28,19 @@ function metricHint(metric?: CatalogMetric) {
 }
 
 export function ExplorerView() {
-  const { state, dispatch, catalog, backend } = useExplorer();
+  const { state, dispatch, catalog, backend, dashboard } = useExplorer();
   const [expandedLeaderboard, setExpandedLeaderboard] = useState<string | null>(null);
   const model = catalog.models.find((m) => m.name === state.model);
+  const configured = useMemo(
+    () => dashboardTabConfig(catalog, dashboard, state.dashboardTab),
+    [catalog, dashboard, state.dashboardTab],
+  );
 
-  const metrics = model?.metrics ?? [];
-  const graphMetrics = graphMetricsForModel(catalog, state.model);
+  const metrics = configured?.metrics ?? model?.metrics ?? [];
+  const configuredMetricRefs = new Set(metrics.map((metric) => metric.ref));
+  const graphMetrics = graphMetricsForModel(catalog, state.model).filter(
+    (metric) => !configured || configuredMetricRefs.has(metric.ref),
+  );
   const timeRef = model?.timeDimension?.ref;
 
   // Focused metric drives the chart + leaderboard ranking. It may be a graph-level metric that
@@ -51,8 +59,8 @@ export function ExplorerView() {
 
   const types = useMemo(() => dimTypes(model?.dimensions ?? []), [model]);
   const baseFilters = useMemo(
-    () => composeFilters(state.filters, { timeRef, range: state.dateRange, types }),
-    [state.filters, timeRef, state.dateRange, types],
+    () => [...(configured?.filters ?? []), ...composeFilters(state.filters, { timeRef, range: state.dateRange, types })],
+    [configured, state.filters, timeRef, state.dateRange, types],
   );
   // Resolve the chosen comparison mode into a concrete window. `off` (or no active date range, since
   // every comparison here is relative to one) means no comparison at all — the strip cards, chart
@@ -64,8 +72,11 @@ export function ExplorerView() {
     return previousRange(state.dateRange);
   }, [state.comparison, state.dateRange, state.comparisonRange]);
   const prevFilters = useMemo(
-    () => (prevRange && timeRef ? composeFilters(state.filters, { timeRef, range: prevRange, types }) : null),
-    [state.filters, timeRef, prevRange, types],
+    () =>
+      prevRange && timeRef
+        ? [...(configured?.filters ?? []), ...composeFilters(state.filters, { timeRef, range: prevRange, types })]
+        : null,
+    [configured, state.filters, timeRef, prevRange, types],
   );
 
   // Stamp the selected timezone onto every query so the backend truncates time buckets in-zone
@@ -97,7 +108,7 @@ export function ExplorerView() {
 
   if (!model) return <div className="p-4"><EmptyState message="No model available in this semantic layer." /></div>;
 
-  const leaderboardDims = model.dimensions.filter((dim) => dim.type !== "time");
+  const leaderboardDims = (configured?.dimensions ?? model.dimensions).filter((dim) => dim.type !== "time");
   const comparisonLabel = state.comparison === "year" ? "Prev year" : state.comparison === "custom" ? "Comparison" : "Prev period";
 
   // A kept result from a previous model has different metric columns. Ignore it until the fresh one
@@ -201,6 +212,7 @@ export function ExplorerView() {
                 contextColumn={state.contextColumn}
                 metricTotal={Number.isFinite(chartTotal) ? chartTotal : undefined}
                 comparisonRange={prevRange ?? undefined}
+                baseFilters={configured?.filters}
                 expanded={expandedLeaderboard === dim.ref}
                 onExpandedChange={(expanded) => setExpandedLeaderboard(expanded ? dim.ref : null)}
               />

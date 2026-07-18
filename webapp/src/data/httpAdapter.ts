@@ -1,7 +1,7 @@
 import { buildCatalogFromDescribe, buildCatalogFromGraph, withJoinablePairs } from "../lib/catalog";
 import type { SidemanticBackend } from "./backend";
 import { decodeArrow } from "./arrow";
-import type { Catalog, QueryResult, ResultRow, StructuredQuery } from "./types";
+import type { Catalog, DashboardSpec, QueryResult, ResultRow, StructuredQuery } from "./types";
 
 const ARROW_MEDIA_TYPE = "application/vnd.apache.arrow.stream";
 
@@ -132,6 +132,21 @@ export class HttpBackend implements SidemanticBackend {
     }
     const graph = await this.getJson<unknown>("/graph");
     return buildCatalogFromGraph(graph);
+  }
+
+  async getDashboard(): Promise<DashboardSpec | null> {
+    try {
+      const res = await fetch(this.url("/dashboard"), { headers: this.headers() });
+      if (res.status === 404) return null;
+      if (!res.ok) throw new Error(await this.errorText(res, "/dashboard"));
+      // Older embedded backends may route unknown paths to the SPA HTML with status 200.
+      if (!(res.headers.get("content-type") ?? "").includes("application/json")) return null;
+      const payload = (await res.json()) as Partial<DashboardSpec>;
+      return typeof payload.title === "string" && Array.isArray(payload.tabs) ? (payload as DashboardSpec) : null;
+    } catch {
+      // Dashboard configuration is optional; catalog/query support remains the compatibility floor.
+      return null;
+    }
   }
 
   async compile(query: StructuredQuery): Promise<string> {

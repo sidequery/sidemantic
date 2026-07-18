@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { HttpBackend } from "./data/httpAdapter";
-import type { Catalog } from "./data/types";
+import type { Catalog, DashboardSpec } from "./data/types";
 import { AppShell } from "./components/AppShell";
 import { AddFilter } from "./components/AddFilter";
 import { Catalog as CatalogRail } from "./components/Catalog";
@@ -14,6 +14,7 @@ import { EmptyState, ErrorState, LoadingState } from "./components/States";
 import { ThemeToggle } from "./components/ThemeToggle";
 import { ViewSwitcher } from "./components/ViewSwitcher";
 import { grainOptions } from "./lib/time";
+import { dashboardTabConfig } from "./lib/dashboard";
 import { ExplorerProvider, useExplorer } from "./state/ExplorerContext";
 import { useQueryActive } from "./state/queryActivity";
 import { ExploreIndexView } from "./views/ExploreIndexView";
@@ -78,8 +79,9 @@ function FullScreen({ children }: { children: React.ReactNode }) {
 }
 
 function Shell() {
-  const { state, dispatch, catalog, initial } = useExplorer();
-  const isHome = state.view === "home";
+  const { state, dispatch, catalog, initial, dashboard } = useExplorer();
+  const isDashboard = Boolean(dashboard);
+  const isHome = state.view === "home" && !isDashboard;
   const model = catalog.models.find((m) => m.name === state.model);
   const dirty = state.dateRange != null || Object.keys(state.filters).length > 0;
   const hasTime = Boolean(model?.timeDimension);
@@ -114,8 +116,8 @@ function Shell() {
       aria-label="Home"
       className="flex min-w-0 items-baseline gap-2"
     >
-      <span className="text-sm font-semibold text-ink">Sidemantic</span>
-      {!isHome && model?.label ? <span className="truncate text-2xs text-faint">{model.label}</span> : null}
+      <span className="text-sm font-semibold text-ink">{dashboard?.title ?? "Sidemantic"}</span>
+      {!isHome && !isDashboard && model?.label ? <span className="truncate text-2xs text-faint">{model.label}</span> : null}
     </button>
   );
 
@@ -127,7 +129,38 @@ function Shell() {
     </>
   ) : (
     <>
-      <ViewSwitcher view={state.view} onChange={(view) => dispatch({ type: "setView", view })} />
+      {dashboard ? (
+        <div className="flex items-center border border-line bg-surface" role="tablist" aria-label="Dashboard tabs">
+          {dashboard.tabs.map((tab) => {
+            const selected = tab.id === state.dashboardTab;
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                role="tab"
+                aria-selected={selected}
+                className={`px-2 py-1 text-2xs ${selected ? "bg-accent text-white" : "text-muted hover:text-ink"}`}
+                onClick={() => {
+                  const config = dashboardTabConfig(catalog, dashboard, tab.id);
+                  if (config) {
+                    dispatch({
+                      type: "setDashboardTab",
+                      tab: config.id,
+                      model: config.model.name,
+                      metric: config.selectedMetric,
+                      grain: config.grain,
+                    });
+                  }
+                }}
+              >
+                {tab.label ?? tab.id}
+              </button>
+            );
+          })}
+        </div>
+      ) : (
+        <ViewSwitcher view={state.view} onChange={(view) => dispatch({ type: "setView", view })} />
+      )}
       <DateRangeControl
         range={state.dateRange}
         disabled={!hasTime}
@@ -176,7 +209,7 @@ function Shell() {
       toolbar={toolbar}
       filters={isHome ? undefined : filters}
       rail={<CatalogRail />}
-      showRail={!isHome}
+      showRail={!isHome && !isDashboard}
       openRailRequest={state.view === "pivot"}
       drawer={isHome ? undefined : <RowPreviewDrawer />}
     >
@@ -191,14 +224,13 @@ function Shell() {
 
 export function App() {
   const backend = useMemo(() => new HttpBackend({ transport: "json", token: API_TOKEN }), []);
-  const [catalog, setCatalog] = useState<Catalog | null>(null);
+  const [boot, setBoot] = useState<{ catalog: Catalog; dashboard: DashboardSpec | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let alive = true;
-    backend
-      .getCatalog()
-      .then((value) => alive && setCatalog(value))
+    Promise.all([backend.getCatalog(), backend.getDashboard()])
+      .then(([catalog, dashboard]) => alive && setBoot({ catalog, dashboard }))
       .catch((err: unknown) => alive && setError(err instanceof Error ? err.message : String(err)));
     return () => {
       alive = false;
@@ -206,12 +238,12 @@ export function App() {
   }, [backend]);
 
   if (error) return <FullScreen><ErrorState title="Could not load semantic layer" message={error} /></FullScreen>;
-  if (!catalog) return <FullScreen><LoadingState title="Loading semantic layer" message="Reading models and metrics…" /></FullScreen>;
-  if (!catalog.models.length)
+  if (!boot) return <FullScreen><LoadingState title="Loading semantic layer" message="Reading models and metrics…" /></FullScreen>;
+  if (!boot.catalog.models.length)
     return <FullScreen><EmptyState title="Empty semantic layer" message="No models were found." /></FullScreen>;
 
   return (
-    <ExplorerProvider catalog={catalog} backend={backend}>
+    <ExplorerProvider catalog={boot.catalog} backend={backend} dashboard={boot.dashboard}>
       <Shell />
     </ExplorerProvider>
   );

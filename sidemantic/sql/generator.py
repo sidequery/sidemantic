@@ -2226,7 +2226,10 @@ class SQLGenerator:
                 continue
             if model.get_metric(col_name):
                 continue
-            raw_expr = f"{model_table_alias}.{col_name}" if model_table_alias else col_name
+            # Quote the raw column for the dialect so a reserved-word / special column is emitted
+            # as e.g. `"select"`, not the bare `select` the engine rejects.
+            quoted_col = exp.column(col_name).sql(dialect=self.dialect)
+            raw_expr = f"{model_table_alias}.{quoted_col}" if model_table_alias else quoted_col
             select_cols.append(f"{raw_expr} AS {self._quote_alias(col_name)}")
             columns_added.add(col_name)
 
@@ -2298,7 +2301,11 @@ class SQLGenerator:
                 raw_alias = self._complete_sql_raw_alias(measure.name, col_name)
                 if raw_alias in columns_added:
                     continue
-                raw_expr = f"{model_table_alias}.{col_name}" if model_table_alias else col_name
+                # Quote the column for the dialect so a reserved-word / special column (e.g. a
+                # LookML `${TABLE}."select"`) is emitted as `"select"`, not the bare `select` the
+                # engine rejects. sqlglot leaves ordinary identifiers unquoted.
+                quoted_col = exp.column(col_name).sql(dialect=self.dialect)
+                raw_expr = f"{model_table_alias}.{quoted_col}" if model_table_alias else quoted_col
                 if filter_sql:
                     raw_expr = f"CASE WHEN {filter_sql} THEN {raw_expr} ELSE NULL END"
                 select_cols.append(f"{raw_expr} AS {self._quote_alias(raw_alias)}")

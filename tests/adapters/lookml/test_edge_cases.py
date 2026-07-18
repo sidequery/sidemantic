@@ -2735,6 +2735,55 @@ view: orders {
     assert model.get_metric("s") is not None  # was dropped as a phantom subquery
     assert model.get_metric("subq") is None  # a real subquery is still skipped
 
+    # The quoted column must round-trip all the way to a WORKING query -- the complete-SQL CTE
+    # projection has to keep the quoting (`"select" AS s__select__cmpl`), not emit a bare `select`.
+    import duckdb
+
+    from sidemantic import SemanticLayer
+
+    layer = SemanticLayer(auto_register=False)
+    layer.add_model(model)
+    sql = layer.compile(metrics=["orders.s"])
+    con = duckdb.connect()
+    con.execute('create table orders as select 1 id, 5 "select" union all select 2, 15')
+    assert con.execute(sql).fetchall() == [(20,)]  # SUM of the quoted `select` column
+
+
+def test_lookml_number_measure_dimension_ref_expanding_to_subquery_is_skipped():
+    """A dimension ref that EXPANDS to a subquery must be caught after resolution, not just raw.
+
+    The pre-resolution guard only sees `SUM(${target})`; once `target` expands to a scalar subquery
+    the complete-SQL builder would rewrite the subquery's OWN columns to this measure's CTE aliases,
+    producing wrong correlated SQL. Re-checking the resolved expression skips it; a normal complete
+    measure over the same shape is still imported.
+    """
+    skipped = _parse_lkml(
+        """
+view: orders {
+  sql_table_name: orders ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: amount { type: number  sql: ${TABLE}.amount ;; }
+  dimension: target { type: number  sql: (SELECT target FROM targets WHERE targets.id = ${TABLE}.id) ;; }
+  measure: total { type: sum  sql: ${amount} ;; }
+  measure: m { type: number  sql: SUM(${target}) / NULLIF(${total}, 0) ;; }
+}
+"""
+    ).get_model("orders")
+    assert skipped.get_metric("m") is None  # dim ref expanded to a subquery -> skipped
+
+    kept = _parse_lkml(
+        """
+view: orders {
+  sql_table_name: orders ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: amount { type: number  sql: ${TABLE}.amount ;; }
+  measure: total { type: sum  sql: ${amount} ;; }
+  measure: m { type: number  sql: SUM(${amount}) / NULLIF(${total}, 0) ;; }
+}
+"""
+    ).get_model("orders")
+    assert kept.get_metric("m") is not None  # ordinary complete measure still imported
+
 
 def test_lookml_number_measure_select_in_string_literal_is_not_a_subquery():
     """The word `select` inside a string VALUE must not be mistaken for a subquery.

@@ -2062,6 +2062,18 @@ class LookMLAdapter(BaseAdapter):
 
                 sql = self._REF_RE.sub(resolve_reference, sql)
 
+                # Re-check the RESOLVED expression for a SUBQUERY: a dimension ref may have EXPANDED
+                # into one, and the pre-resolution guard above only saw the raw ${refs}. The
+                # complete-SQL builder rewrites EVERY column -- including those INSIDE the subquery --
+                # to this measure's CTE raw aliases, producing wrong correlated SQL, so skip it.
+                if needs_complete and self._has_subquery(sql):
+                    logger.warning(
+                        "LookML number measure %r resolves to a scalar subquery (via a dimension "
+                        "reference), which the complete-SQL path cannot represent; skipping on import.",
+                        name,
+                    )
+                    return None
+
                 # A number measure that references ONLY raw dimension columns with NO
                 # aggregate (e.g. ${amount} / 2) is a row-level expression, not a valid
                 # aggregate measure: as a metric it returns one value per input row, not a

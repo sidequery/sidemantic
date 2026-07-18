@@ -190,9 +190,16 @@ class LookMLAdapter(BaseAdapter):
         # would scope an include-free project down to its model files alone.
         _scoping_active = any(f in includes_by_file for f in _model_files)
         included_paths: set[Path] = set()
+        # Per-model include closure, so a duplicate view name can be told apart: two copies each
+        # reached by a DIFFERENT model (prod model -> prod/orders, stage model -> stage/orders) is a
+        # valid multi-model layout, whereas ONE model reaching two copies is a real within-model
+        # duplicate. Union of all closures still drives the archived-vs-live single-copy decision.
+        closures_by_model_file: dict[Path, set[Path]] = {}
         if _scoping_active:
             for _model_file in _model_files:
-                included_paths |= _include_closure(_model_file)
+                _closure = _include_closure(_model_file)
+                closures_by_model_file[_model_file] = _closure
+                included_paths |= _closure
 
         # Install base views, resolving a SAME-NAME collision between files by include: an
         # archived copy of a view alongside the live one would otherwise make add_model raise
@@ -221,15 +228,33 @@ class LookMLAdapter(BaseAdapter):
                                 winner[0],
                             )
                 elif len(_included) >= 2 or not _scoping_active:
-                    # A REAL duplicate in the active project: several copies the includes reach, or
-                    # (scoping off) no include information to tell an archive from the live view.
-                    # Install every copy and let add_model surface the conflict rather than loading
-                    # one at random.
-                    for _file, _view_def, _model in _candidates:
-                        raw_view_defs[_name] = _view_def
-                        view_source_files[_name] = str(_file)
-                        graph.add_model(_model)
-                    continue
+                    # Several copies the includes reach, or (scoping off) no include information.
+                    # A genuine WITHIN-model duplicate -- ONE model's closure reaches 2+ copies -- is
+                    # a real conflict: install every copy and let add_model surface it. But when each
+                    # copy is reached by a DIFFERENT model (a valid multi-model layout where every
+                    # model namespace has its own `orders`), sidemantic's single graph can hold only
+                    # one, so keep the first included copy and warn rather than aborting the whole
+                    # directory load over a layout LookML considers valid.
+                    within_model_dup = _scoping_active and any(
+                        sum(1 for c in _included if c[0].resolve() in _closure) >= 2
+                        for _closure in closures_by_model_file.values()
+                    )
+                    if within_model_dup or not _scoping_active:
+                        for _file, _view_def, _model in _candidates:
+                            raw_view_defs[_name] = _view_def
+                            view_source_files[_name] = str(_file)
+                            graph.add_model(_model)
+                        continue
+                    winner = _included[0]
+                    for _file, _, _ in _included[1:]:
+                        logger.warning(
+                            "LookML view %r is defined by multiple models (%s and %s); sidemantic has "
+                            "a single model namespace, so keeping %s and ignoring the other copy.",
+                            _name,
+                            winner[0],
+                            _file,
+                            winner[0],
+                        )
                 else:
                     # Scoping is ON and NO copy is included: every copy is archived / unreachable
                     # from any model. Skip them all -- raising here would fail a valid project over

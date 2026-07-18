@@ -6271,6 +6271,33 @@ def test_lookml_project_parse_handles_duplicate_views_and_extensionless_includes
         build(None, duplicate_dir="archive")
 
 
+def test_lookml_project_parse_allows_per_model_duplicate_views(caplog):
+    """Two models each including their OWN `orders` view is valid and must not abort the load.
+
+    A single graph can hold only one `orders`, but the duplication is ACROSS models (prod model ->
+    prod/orders, stage model -> stage/orders), a layout LookML considers valid, so keep the first
+    and warn rather than raising `Model orders already exists` over the whole directory.
+    """
+    import logging
+    import tempfile
+
+    directory = Path(tempfile.mkdtemp())
+    (directory / "prod").mkdir()
+    (directory / "stage").mkdir()
+    (directory / "prod.model.lkml").write_text('include: "/prod/orders.view.lkml"\n')
+    (directory / "stage.model.lkml").write_text('include: "/stage/orders.view.lkml"\n')
+    view = "view: orders {\n  sql_table_name: %s ;;\n  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }\n}\n"
+    (directory / "prod" / "orders.view.lkml").write_text(view % "prod.orders")
+    (directory / "stage" / "orders.view.lkml").write_text(view % "stage.orders")
+
+    with caplog.at_level(logging.WARNING):
+        graph = LookMLAdapter().parse(str(directory))
+    orders = graph.get_model("orders")
+    assert orders is not None  # loaded, not aborted
+    assert orders.table in ("prod.orders", "stage.orders")  # one winner kept
+    assert any("multiple models" in rec.getMessage() for rec in caplog.records)
+
+
 def test_lookml_project_parse_resolves_view_with_several_archived_copies():
     """SEVERAL archived copies plus one included copy must still resolve to the included one.
 

@@ -4951,6 +4951,39 @@ def test_lookml_export_folded_filter_protects_sql_server_datepart_first_function
     assert conds(["UPPER(day) = 'X'"], model) == "(UPPER((${TABLE}.order_day)) = 'X')"
 
 
+def test_lookml_export_folded_filter_protects_snowflake_timeadd_and_trunc_parts():
+    """Snowflake TIMEADD/TIMEDIFF (datepart first) and TRUNC/TRUNCATE (datepart last) protect the part.
+
+    Without these aliases a folded filter's TIMEADD(day, 1, x) or TRUNC(x, month) rewrote the unit
+    to a same-named dimension's SQL. Numeric TRUNC(n, 2) is unaffected -- the trailing 2 is not a
+    date part.
+    """
+    from sidemantic import Dimension, Model
+
+    model = Model(
+        name="orders",
+        table="t",
+        primary_key="id",
+        dimensions=[
+            Dimension(name="day", type="time", granularity="day", sql="order_day"),
+            Dimension(name="month", type="time", granularity="month", sql="order_month"),
+            Dimension(name="created_at", type="time", granularity="day", sql="created_at"),
+            Dimension(name="n", type="numeric", sql="num_col"),
+        ],
+    )
+    conds = LookMLAdapter._fold_filter_conds
+    assert conds(["TIMEADD(day, 1, created_at) > 1"], model) == "(TIMEADD(day, 1, (${TABLE}.created_at)) > 1)"
+    assert conds(["TIMEDIFF(day, created_at, created_at) > 1"], model) == (
+        "(TIMEDIFF(day, (${TABLE}.created_at), (${TABLE}.created_at)) > 1)"
+    )
+    # TRUNC(expr, part): the LAST arg is the part -> month protected, created_at resolves.
+    assert conds(["TRUNC(created_at, month) = DATE '2024-01-01'"], model) == (
+        "(TRUNC((${TABLE}.created_at), month) = DATE '2024-01-01')"
+    )
+    # Numeric TRUNC(n, 2): the trailing 2 is not a date part, so the real column resolves.
+    assert conds(["TRUNC(n, 2) > 5"], model) == "(TRUNC((${TABLE}.num_col), 2) > 5)"
+
+
 def test_lookml_export_folded_filter_quoted_date_trunc_unit_resolves_value_column():
     """A QUOTED DATE_TRUNC unit (part) is decided by its quotes, so a same-named value column resolves.
 

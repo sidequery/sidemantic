@@ -553,6 +553,12 @@ class LookMLAdapter(BaseAdapter):
         # datepart-first family. Without them a folded filter's DATENAME(day, col) leaves `day`
         # unprotected, so a model with a `day` dimension rewrites it to (${TABLE}.order_day).
         "datename": 0, "datediff_big": 0, "date_bucket": 0,
+        # Snowflake TIMEADD/TIMEDIFF are documented aliases of DATEADD/DATEDIFF (datepart first).
+        "timeadd": 0, "timediff": 0,
+        # Snowflake's reversed-argument TRUNC/TRUNCATE alternative to DATE_TRUNC: TRUNC(expr, part),
+        # so the date part is the LAST argument. A numeric TRUNC(n, 2) is unaffected -- the trailing
+        # `2` is not a date-part keyword, so it is never treated as a part.
+        "trunc": -1, "truncate": -1,
     }  # fmt: skip
     # DATE_TRUNC has NO fixed part position: BigQuery is DATE_TRUNC(value, part) while Snowflake is
     # DATE_TRUNC(part, expr), and the adapter has no dialect context. Disambiguate by CONTENT --

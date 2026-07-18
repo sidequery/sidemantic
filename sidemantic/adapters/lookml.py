@@ -520,6 +520,14 @@ class LookMLAdapter(BaseAdapter):
         "hour": 8, "time": 8, "minute": 9, "second": 10,
         "millisecond": 11, "microsecond": 12, "nanosecond": 13, "epoch": 14,
     }  # fmt: skip
+    # Keywords that are valid DATE_TRUNC truncation UNITS. The rest of _DATE_PART_KEYWORDS are
+    # extraction parts only (date, dow, doy, weekday, epoch, ...) -- you EXTRACT them but do not
+    # DATE_TRUNC to them. Used to break an equal-coarseness tie: DATE_TRUNC(day, date) shares rank 7
+    # for both args, but only `day` is a trunc unit, so it is the part and `date` is the column.
+    _DATE_TRUNC_UNITS = frozenset(
+        {"millennium", "century", "decade", "year", "quarter", "month", "week", "day",
+         "hour", "minute", "second", "millisecond", "microsecond", "nanosecond"}
+    )  # fmt: skip
 
     @staticmethod
     def _enclosing_call(pre: str) -> tuple[str | None, int, int]:
@@ -601,10 +609,24 @@ class LookMLAdapter(BaseAdapter):
             elif first_kw and second_kw:
                 # A model with e.g. BOTH `date` and `month` dimensions makes both arguments look
                 # like parts. Truncation goes finer -> coarser, so the COARSER one is the part --
-                # month truncates date under either order. Ties fall back to BigQuery's order.
+                # month truncates date under either order.
                 first_rank = cls._DATE_PART_RANK.get(first, 99)
                 second_rank = cls._DATE_PART_RANK.get(second, 99)
-                part_index = 0 if first_rank < second_rank else 1
+                if first_rank != second_rank:
+                    part_index = 0 if first_rank < second_rank else 1
+                else:
+                    # Equal coarseness (DATE_TRUNC(day, date): both rank 7) gives no finer/coarser
+                    # signal. A DATE_TRUNC part must be a truncation UNIT, so if exactly one
+                    # argument is a real unit (day) and the other an extraction-only keyword that is
+                    # also a column (date), the unit is the part and the other resolves as a column.
+                    first_unit = first in cls._DATE_TRUNC_UNITS
+                    second_unit = second in cls._DATE_TRUNC_UNITS
+                    if first_unit and not second_unit:
+                        part_index = 0
+                    elif second_unit and not first_unit:
+                        part_index = 1
+                    else:
+                        part_index = 1  # both or neither a unit: fall back to BigQuery's order
             else:
                 return False
             return arg_index == part_index

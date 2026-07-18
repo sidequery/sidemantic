@@ -4819,6 +4819,36 @@ def test_lookml_export_folded_filter_date_part_guard_is_position_aware():
     )
 
 
+def test_lookml_export_folded_filter_equal_rank_date_trunc_uses_trunc_unit_as_part():
+    """When both DATE_TRUNC args share coarseness, the truncation UNIT is the part.
+
+    DATE_TRUNC(day, date) has both args at rank 7, so the coarseness tie-break gave no signal and
+    fell back to a fixed position -- picking `date` as the part and leaving the real `date` column
+    unresolved (or rewriting `day`). A DATE_TRUNC part must be a truncation unit, and only `day`
+    is one (`date`/`dow`/`doy` are extraction-only), so `day` is the part and `date` resolves.
+    """
+    from sidemantic import Dimension, Model
+
+    model = Model(
+        name="orders",
+        table="raw",
+        primary_key="id",
+        dimensions=[
+            Dimension(name="date", type="time", granularity="day", sql="order_date"),
+            Dimension(name="day", type="time", granularity="day", sql="order_day"),
+        ],
+    )
+    conds = LookMLAdapter._fold_filter_conds
+    # Snowflake order (part first): day is the part, date resolves to its column.
+    assert conds(["DATE_TRUNC(day, date) = DATE '2024-01-01'"], model) == (
+        "(DATE_TRUNC(day, (${TABLE}.order_date)) = DATE '2024-01-01')"
+    )
+    # BigQuery order (part last): still day is the part, date resolves.
+    assert conds(["DATE_TRUNC(date, day) = DATE '2024-01-01'"], model) == (
+        "(DATE_TRUNC((${TABLE}.order_date), day) = DATE '2024-01-01')"
+    )
+
+
 def test_lookml_export_folded_filter_protects_sql_server_datepart_first_functions():
     """SQL Server functions taking the datepart FIRST must protect that part token.
 

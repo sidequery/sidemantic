@@ -402,6 +402,54 @@ class LookMLAdapter(BaseAdapter):
         except Exception:
             return None
 
+    @classmethod
+    def _generator_column_nulling_suffices(cls, sql: str) -> bool:
+        """True if the generator's column-nulling can faithfully apply a filter to this complete SQL.
+
+        Mirrors the early-return in ``_fold_complete_sql_filters``: nulling the columns each
+        aggregate references filters it only when EVERY aggregate has a column to null and no
+        unsafe-nulling construct (NULL-test, COALESCE, HASH, CASE/IF/IFF-with-default, multi-column
+        DISTINCT) is present. When this is False AND folding also aborts, the filter cannot be
+        applied at all -- a zero-column aggregate like ``COUNT(*) FILTER (WHERE ...) OVER ()`` has no
+        column to null, so the imported filter would silently count every row.
+        """
+        import sqlglot
+        from sqlglot import expressions as exp
+
+        from sidemantic.sql.aggregation_detection import _ANONYMOUS_AGGREGATE_FUNCTIONS
+
+        try:
+            tree = sqlglot.parse_one(sql.replace("{model}", "__M__"))
+        except Exception:
+            return False
+        aggs = list(tree.find_all(exp.AggFunc))
+        aggs += [n for n in tree.find_all(exp.Anonymous) if (n.name or "").lower() in _ANONYMOUS_AGGREGATE_FUNCTIONS]
+        if not aggs:
+            return False
+        unsafe = (
+            tree.find(exp.Is) is not None
+            or tree.find(exp.Coalesce) is not None
+            or "hash(" in sql.lower()
+            or any(c.args.get("default") is not None for c in tree.find_all(exp.Case))
+            or any(n.args.get("false") is not None for n in tree.find_all(exp.If))
+            or any(
+                (n.name or "").lower() in ("iff", "if") and len(n.expressions) >= 3
+                for n in tree.find_all(exp.Anonymous)
+            )
+            or any(
+                len(d.expressions) > 1 or any(isinstance(e, exp.Tuple) and len(e.expressions) > 1 for e in d.expressions)
+                for d in tree.find_all(exp.Distinct)
+            )
+        )
+        if unsafe:
+            return False
+
+        def _scope(a):
+            wg = a.find_ancestor(exp.WithinGroup)
+            return wg if wg is not None else a
+
+        return all(any(True for _ in _scope(a).find_all(exp.Column)) for a in aggs)
+
     @staticmethod
     def _sql_has_list_aggregate(sql: str) -> bool:
         """True if ``sql`` contains a ``LIST(...)`` collector (sqlglot's ``exp.List``).
@@ -500,7 +548,13 @@ class LookMLAdapter(BaseAdapter):
                     # per-row argument, so only a NON-windowed aggregate groups it. A nested
                     # aggregate inside a window -- SUM(SUM(x)) OVER () -- is reached here at the
                     # inner SUM, whose parent is the outer SUM (not the Window), so it is grouped.
-                    return not isinstance(node.parent, exp.Window)
+                    # An aggregate FILTER clause nests exp.Filter between the aggregate and its OVER
+                    # window (SUM(x) FILTER (WHERE ...) OVER ()), so walk past Filter wrappers to see
+                    # the window -- otherwise a raw windowed aggregate reads as grouped.
+                    _p = node.parent
+                    while isinstance(_p, exp.Filter):
+                        _p = _p.parent
+                    return not isinstance(_p, exp.Window)
                 node = node.parent
             return False
 
@@ -2324,6 +2378,16 @@ class LookMLAdapter(BaseAdapter):
             if folded is not None:
                 sql = folded
                 filters = None
+            elif not self._generator_column_nulling_suffices(sql):
+                # Folding aborted AND column-nulling cannot apply the filter (a zero-column /
+                # windowed aggregate has no column to null), so keeping the filter would silently
+                # count every row. Drop the measure rather than import ineffective filters.
+                logger.warning(
+                    "LookML measure %r has filters that can be applied neither by folding nor by "
+                    "generator column-nulling (e.g. a zero-column windowed aggregate); dropping it.",
+                    name,
+                )
+                return None
 
         return Metric(
             name=name,

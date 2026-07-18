@@ -2766,6 +2766,47 @@ view: orders {
     assert con.execute(layer.compile(metrics=["orders.outer_ok"])).fetchall() == [(2.0,)]
 
 
+def test_lookml_filter_wrapped_windowed_aggregate_is_not_grouped():
+    """A FILTER clause between an aggregate and its OVER window must not read as grouped.
+
+    SUM(x) FILTER (WHERE ...) OVER () nests exp.Filter between the SUM and its window, so a
+    direct-parent check saw a non-Window parent and treated the raw windowed aggregate as grouped.
+    Walk past Filter so it is correctly rejected as ungrouped (aggregate-unsafe).
+    """
+    is_safe = LookMLAdapter._mixed_is_aggregate_safe
+    assert is_safe("SUM({model}.amount) FILTER (WHERE TRUE) OVER ()", lambda rn: False) is False
+    assert is_safe("SUM({model}.amount) OVER ()", lambda rn: False) is False
+    # A nested aggregate inside a window still groups its column; a plain aggregate is safe.
+    assert is_safe("SUM(COUNT({model}.x)) OVER ()", lambda rn: False) is True
+    assert is_safe("SUM({model}.a) / COUNT(*)", lambda rn: False) is True
+
+
+def test_lookml_zero_column_windowed_filtered_measure_dropped():
+    """A filtered complete measure whose filter can be applied neither by folding nor column-nulling
+    (a zero-column windowed aggregate) is dropped, not imported with ineffective filters."""
+    graph = _parse_lkml(
+        """
+view: orders {
+  sql_table_name: orders ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: status { type: string  sql: ${TABLE}.status ;; }
+  measure: winct {
+    type: number
+    sql: COUNT(*) FILTER (WHERE TRUE) OVER () ;;
+    filters: [status: "x"]
+  }
+  measure: colnull { type: number  sql: STDDEV(${TABLE}.amount) ;; filters: [status: "x"] }
+}
+"""
+    )
+    names = {m.name for m in graph.get_model("orders").metrics}
+    assert "winct" not in names  # filter cannot be applied any way -> dropped
+    assert "colnull" in names  # a column-nullable filtered aggregate is kept
+    # The helper distinguishes the two.
+    assert LookMLAdapter._generator_column_nulling_suffices("COUNT(*) FILTER (WHERE TRUE) OVER ()") is False
+    assert LookMLAdapter._generator_column_nulling_suffices("STDDEV({model}.amount)") is True
+
+
 def test_lookml_number_measure_case_with_else_folds_filter():
     """A CASE with an ELSE default survives column-nulling, so its filter must be FOLDED.
 

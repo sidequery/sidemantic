@@ -3264,9 +3264,12 @@ class LookMLAdapter(BaseAdapter):
             # Rewrite refs only in the remaining (even-index) segments so string VALUES, quoted
             # identifiers, typed literals, and template variables are untouched. The template
             # patterns require DOUBLE braces / brace-percent, so the single-brace {model} is safe.
+            # They use [\s\S]*? (not .*?) so a Liquid/Jinja tag that SPANS NEWLINES is still one
+            # protected segment -- otherwise a bare dimension name on an inner line of a multiline
+            # {% ... %} / {{ ... }} would be rewritten, corrupting the template.
             parts = re.split(
                 r"""((?i:\b(?:date|time|timestamp|timestamptz|datetime|interval)\s+'(?:[^']|'')*')"""
-                r"""|'(?:[^']|'')*'|"(?:[^"]|"")*"|`[^`]*`|\[[^\]]*\]|\{\{.*?\}\}|\{%.*?%\})""",
+                r"""|'(?:[^']|'')*'|"(?:[^"]|"")*"|`[^`]*`|\[[^\]]*\]|\{\{[\s\S]*?\}\}|\{%[\s\S]*?%\})""",
                 fstr,
             )
             offset = 0
@@ -3296,7 +3299,8 @@ class LookMLAdapter(BaseAdapter):
         import sqlglot
         from sqlglot import expressions as exp
 
-        neutralised = re.sub(r"\{\{.*?\}\}|\{%.*?%\}", "NULL", sql or "")
+        # [\s\S]*? (not .*?) so a Liquid/Jinja tag spanning newlines is neutralised as one unit.
+        neutralised = re.sub(r"\{\{[\s\S]*?\}\}|\{%[\s\S]*?%\}", "NULL", sql or "")
         # sqlglot cannot parse an aggregate's ALL modifier (COUNT(ALL x)), which would send every
         # such expression to the has-columns fallback below instead of a real check. ALL is the
         # default modifier and irrelevant to which columns are referenced, so drop it first.

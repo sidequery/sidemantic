@@ -4590,6 +4590,35 @@ def test_lookml_export_folded_filter_does_not_rewrite_template_variable():
     assert "order_status" in text  # the real column operand IS resolved
 
 
+def test_lookml_export_folded_filter_protects_multiline_liquid_block():
+    """A Liquid/Jinja tag that SPANS NEWLINES must be protected whole, not corrupted mid-tag.
+
+    The template patterns used `.*?` without DOTALL, so a `{% ... %}` / `{{ ... }}` spanning a
+    newline was not split out as one protected segment, and a bare dimension name on an inner line
+    was rewritten to its column -- corrupting the template. Using `[\\s\\S]*?` spans newlines.
+    """
+    from sidemantic import Dimension, Model
+
+    model = Model(
+        name="orders",
+        table="raw",
+        primary_key="id",
+        dimensions=[Dimension(name="status", type="categorical", sql="order_status")],
+    )
+    conds = LookMLAdapter._fold_filter_conds
+
+    # Each tag itself spans a newline: the inner `status` must NOT become `order_status`.
+    for predicate in (
+        "{% condition\n status %}\n1\n{% endcondition %}",
+        "{{\n  status\n}} = 1",
+        "{% condition\nstatus\n%} 1 {% endcondition %}",
+    ):
+        assert "order_status" not in conds([predicate], model), predicate
+
+    # A real bare-dimension filter (no template) still resolves to its column.
+    assert conds(["status = 'x'"], model) == "((${TABLE}.order_status) = 'x')"
+
+
 def test_lookml_export_folded_filter_no_dimensions_does_not_crash():
     """Folding a qualified filter on a model with NO dimensions must not IndexError.
 

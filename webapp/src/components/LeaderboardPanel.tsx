@@ -17,6 +17,7 @@ const CONTEXT_OPTIONS: { key: ContextColumn; label: string; title: string }[] = 
   { key: "delta", label: "Δ", title: "Absolute change vs comparison period" },
   { key: "deltaPct", label: "Δ%", title: "Percent change vs comparison period" },
 ];
+const EMPTY_FILTERS: string[] = [];
 
 /** A self-contained leaderboard: ranks one dimension by a metric, owning its own query so panels
  * load independently and crossfilter clicks toggle the dimension's filter. When a context column is
@@ -28,6 +29,7 @@ export function LeaderboardPanel({
   contextColumn,
   metricTotal,
   comparisonRange,
+  baseFilters = EMPTY_FILTERS,
   limit = 6,
   expanded = false,
   onExpandedChange,
@@ -40,6 +42,8 @@ export function LeaderboardPanel({
   metricTotal?: number;
   /** Resolved comparison window for the delta columns; undefined when comparison is off. */
   comparisonRange?: DateRange;
+  /** Filters declared by a dashboard spec; always applied in addition to interactive filters. */
+  baseFilters?: string[];
   limit?: number;
   expanded?: boolean;
   onExpandedChange?: (expanded: boolean) => void;
@@ -49,8 +53,8 @@ export function LeaderboardPanel({
   const types = useMemo(() => dimTypes(model.dimensions), [model]);
   const filters = useMemo(
     // Exclude this dimension's own filter so its leaderboard keeps showing every value.
-    () => composeFilters(state.filters, { timeRef, range: state.dateRange, excludeDim: dim.ref, types }),
-    [state.filters, timeRef, state.dateRange, dim.ref, types],
+    () => [...baseFilters, ...composeFilters(state.filters, { timeRef, range: state.dateRange, excludeDim: dim.ref, types })],
+    [baseFilters, state.filters, timeRef, state.dateRange, dim.ref, types],
   );
   const { result, loading, error } = useQueryResult(
     backend,
@@ -91,11 +95,12 @@ export function LeaderboardPanel({
     () =>
       wantsDelta && comparisonRange && timeRef && currentValueConstraint
         ? [
+            ...baseFilters,
             ...composeFilters(state.filters, { timeRef, range: comparisonRange, excludeDim: dim.ref, types }),
             currentValueConstraint,
           ]
         : null,
-    [wantsDelta, comparisonRange, timeRef, state.filters, dim.ref, types, currentValueConstraint],
+    [wantsDelta, comparisonRange, timeRef, state.filters, dim.ref, types, currentValueConstraint, baseFilters],
   );
   const prev = useQueryResult(backend, prevFilters ? dimensionLeaderboard(rankMetric.ref, dim.ref, prevFilters, limit) : null);
   const metricAlias = aliasOf(rankMetric.ref);

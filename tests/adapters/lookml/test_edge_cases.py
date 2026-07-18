@@ -5284,6 +5284,10 @@ def test_lookml_export_sample_aggregate_complete_measures_survive():
         "VARIANCE({model}.amount)",
         "STDDEV_POP({model}.amount)",
         "VAR_POP({model}.amount)",
+        # An explicit ALL modifier makes sqlglot fail; detection must run on the ALL-stripped
+        # col_sql, not the raw metric.sql, so these are not dropped.
+        "VAR_SAMP(ALL {model}.amount)",
+        "STDDEV_SAMP(ALL {model}.amount)",
     ):
         assert exports(sql), sql
 

@@ -3751,13 +3751,12 @@ class LookMLAdapter(BaseAdapter):
                     elif (
                         metric.agg is None
                         and col_sql
-                        # Neutralize {model} before detection (as the other call sites do). sqlglot
-                        # happens to parse {model}.col as a struct so VAR_SAMP({model}.amount) is
-                        # detected today, but that is incidental -- if it ever failed to parse, the
-                        # regex fallback (which omits var_samp/stddev_samp) would drop a valid
-                        # sample-aggregate measure on export. A clean column keeps sqlglot on the
-                        # accurate path.
-                        and _sql_has_aggregate((metric.sql or "").replace("{model}", "x"))
+                        # Detect on the NORMALIZED col_sql (ALL modifier already stripped, {model}
+                        # -> ${TABLE}), not the raw metric.sql: an explicit ALL -- VAR_SAMP(ALL x) --
+                        # makes sqlglot fail, and the regex fallback omits var_samp/stddev_samp, so
+                        # checking the raw form drops a valid sample-aggregate measure. Neutralize
+                        # ${TABLE} to a clean column so sqlglot stays on the accurate parse path.
+                        and _sql_has_aggregate(col_sql.replace("${TABLE}", "x"))
                     ):
                         # An agg-less measure whose SQL is itself an aggregate (a complete
                         # SUM({model}.amount) imported from Cube, or an inline aggregate

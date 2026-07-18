@@ -353,7 +353,15 @@ class LookMLAdapter(BaseAdapter):
             return c
 
         for a in aggs:
-            if isinstance(a.parent, exp.Window):
+            # Is `a` itself windowed? Its OVER wrapper (exp.Window) is normally the direct parent,
+            # but an aggregate FILTER clause (COUNT(*) FILTER (WHERE ...) OVER ()) nests an exp.Filter
+            # between the aggregate and the Window, so walk past any Filter wrapper. (A NESTED
+            # aggregate like the inner COUNT of SUM(COUNT(*)) OVER () has a non-Filter/-Window parent,
+            # so it is correctly NOT treated as windowed and still folds.)
+            _windowed = a.parent
+            while isinstance(_windowed, exp.Filter):
+                _windowed = _windowed.parent
+            if isinstance(_windowed, exp.Window):
                 # A WINDOWED aggregate (SUM(...) OVER ()) runs AFTER grouping, so wrapping its
                 # argument in CASE WHEN <filter> puts the filter column inside the window, ungrouped
                 # -- the engine rejects it. When the window wraps a NESTED aggregate
@@ -1367,6 +1375,18 @@ class LookMLAdapter(BaseAdapter):
                 )
                 # Replace ${TABLE} with {model} placeholder
                 segment_sql = segment_sql.replace("${TABLE}", "{model}")
+                # A cross-view reference cannot be represented inline, so an unresolved
+                # ${other_view.field} would leak into the WHERE clause when the segment is used.
+                # Drop the segment rather than import an unqueryable one, mirroring how
+                # dimensions/measures with the same leak are dropped.
+                if self._leaks_cross_view_ref(segment_sql):
+                    logger.warning(
+                        "LookML segment %r references another view inline (%s), which sidemantic "
+                        "cannot represent; dropping the segment instead of importing unqueryable SQL.",
+                        segment_name,
+                        segment_sql,
+                    )
+                    continue
                 segments.append(
                     Segment(
                         name=segment_name,

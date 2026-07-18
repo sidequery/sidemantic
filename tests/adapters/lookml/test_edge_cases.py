@@ -2465,6 +2465,28 @@ view: customers {
     assert "${" not in sql
 
 
+def test_lookml_cross_view_segment_dropped():
+    """A view-level filter (segment) with a cross-view ref is dropped, not imported unqueryable.
+
+    Otherwise the unresolved ${customers.active} leaks into the WHERE clause when the segment is
+    used, while dimensions/measures with the same leak are dropped. A normal segment is kept.
+    """
+    graph = _parse_lkml(
+        """
+view: orders {
+  sql_table_name: orders ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  filter: active_customers { type: yesno  sql: ${customers.active} ;; }
+  filter: big { type: number  sql: ${TABLE}.amount > 100 ;; }
+}
+view: customers { sql_table_name: customers ;; dimension: active { type: yesno  sql: ${TABLE}.active ;; } }
+"""
+    )
+    names = {s.name for s in graph.get_model("orders").segments}
+    assert "active_customers" not in names  # cross-view segment dropped
+    assert "big" in names  # ordinary segment kept
+
+
 def test_lookml_number_measure_row_level_dimension_expr_skipped():
     """A type: number measure that is a ROW-LEVEL dimension expression (no aggregate) is skipped.
 
@@ -3627,6 +3649,15 @@ def test_lookml_filtered_windowed_aggregate_folds_into_inner_aggregate():
     )
     # No inner aggregate to carry the filter -> the fold aborts (returns None).
     assert LookMLAdapter._fold_complete_sql_filters("SUM(amount) OVER ()", ["{model}.status = 'x'"]) is None
+    # A FILTER clause nests exp.Filter between the aggregate and its OVER window; the windowed
+    # check must still see the window (via the Filter) and abort rather than fold the arg into the
+    # window -- COUNT(CASE ...) OVER () would put the filter column ungrouped inside the window.
+    assert (
+        LookMLAdapter._fold_complete_sql_filters(
+            "COUNT(*) FILTER (WHERE TRUE) OVER ()", ["{model}.status = 'x'"], force=True
+        )
+        is None
+    )
 
     graph = _parse_lkml(
         """

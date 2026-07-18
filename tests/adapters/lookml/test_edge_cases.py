@@ -4224,6 +4224,37 @@ view: orders {
     assert con.execute(sql).fetchall() == [(1.0,)]  # single group -> its share is 1.0
 
 
+def test_lookml_post_sql_measure_with_unresolvable_base_dropped():
+    """A percent_of_total over a filtered type:number base whose complete SQL can't be cached is dropped.
+
+    A filtered type: number using a dialect-renamed aggregate (APPROX_COUNT_DISTINCT) has its
+    force-fold prepass bail, so the base is not in measure_full_sql_lookup; the ref would fall
+    through to a bare {model}.<measure> the complete measure never projects as a column. Drop the
+    post-SQL measure instead of emitting a missing-column CTE. A resolvable base still works.
+    """
+    graph = _parse_lkml(
+        """
+view: orders {
+  sql_table_name: orders ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: status { type: string  sql: ${TABLE}.status ;; }
+  measure: approx_ratio {
+    type: number
+    sql: APPROX_COUNT_DISTINCT(${TABLE}.user_id) / NULLIF(COUNT(*), 0) ;;
+    filters: [status: "completed"]
+  }
+  measure: total { type: sum  sql: ${TABLE}.amount ;; }
+  measure: pct_bad { type: percent_of_total  sql: ${approx_ratio} ;; }
+  measure: pct_ok { type: percent_of_total  sql: ${total} ;; }
+}
+"""
+    )
+    names = {m.name for m in graph.get_model("orders").metrics}
+    assert "pct_bad" not in names  # unresolvable base -> dropped
+    assert "pct_ok" in names  # resolvable native base -> kept
+    assert "approx_ratio" in names  # the base measure itself still imports
+
+
 def test_lookml_export_running_total_roundtrips():
     """An imported running_total (cumulative + table_calculation meta) round-trips, not dropped."""
     import tempfile

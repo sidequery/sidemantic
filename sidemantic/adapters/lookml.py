@@ -3054,6 +3054,32 @@ class LookMLAdapter(BaseAdapter):
                 format=measure_def.get("value_format"),
             )
 
+        # A base ${ref} that is a measure but has NO resolvable form -- not a simple aggregate
+        # (measure_agg_lookup) and not a cached complete SQL (measure_full_sql_lookup, e.g. a
+        # filtered type: number whose force-fold prepass bailed on a dialect rename) -- would fall
+        # through to a bare {model}.<measure>. A complete number measure is projected via a raw
+        # alias, not a <measure> column, so this post-SQL measure would compile against a missing
+        # column. Drop it rather than emit an empty/missing-column CTE.
+        for _m in self._REF_RE.finditer(sql):
+            _rn = _m.group(2)
+            if (
+                _m.group(1) is None
+                and _rn != "TABLE"
+                and _rn in measure_names
+                and _rn not in measure_agg_lookup
+                and _rn not in measure_full_sql_lookup
+                and _rn not in dimension_sql_lookup
+            ):
+                logger.warning(
+                    "LookML %s measure %r references base measure %r whose complete SQL could not be "
+                    "resolved (e.g. a filtered type: number with a dialect-renamed aggregate); "
+                    "dropping the measure rather than compiling a missing-column reference.",
+                    measure_type,
+                    name,
+                    _rn,
+                )
+                return None
+
         # percent_of_total / percent_of_previous build window aggregates inline,
         # so qualify base measure refs with {model} (for the generator's _raw
         # column rewrite) and wrap them in the base measure's aggregate function.

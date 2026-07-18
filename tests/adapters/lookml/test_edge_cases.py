@@ -6539,6 +6539,48 @@ def test_lookml_refinement_deep_merges_partial_field_properties():
     check(LookMLAdapter().parse(str(directory)).get_model("base"))
 
 
+def test_lookml_refinement_of_inherited_field_keeps_inherited_definition():
+    """A partial refinement of a field a view only has via `extends` must keep the inherited props.
+
+    The target's own raw view does not contain the field, so the refinement was added as a bare new
+    field that re-parsed to a categorical with no sql and then OVERRODE the inherited definition --
+    turning an inherited numeric `amount` into a categorical dimension with no SQL. The refinement
+    now seeds from the inherited definition, so the partial props merge onto the real field.
+    """
+    import tempfile
+
+    base = (
+        "view: base {\n  sql_table_name: base_t ;;\n"
+        "  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }\n"
+        "  dimension: amount { type: number  sql: ${TABLE}.amount ;; }\n}\n"
+    )
+    child = "view: orders {\n  extends: [base]\n  sql_table_name: orders ;;\n}\n"
+
+    def amount(model):
+        return next(d for d in model.dimensions if d.name == "amount")
+
+    # A partial refinement (label only) keeps the inherited numeric type and sql.
+    partial = _parse_lkml(base + child + 'view: +orders {\n  dimension: amount { label: "Amount" }\n}\n').get_model(
+        "orders"
+    )
+    assert amount(partial).type == "numeric"
+    assert amount(partial).sql == "{model}.amount"
+    assert amount(partial).label == "Amount"
+
+    # An explicit override still applies (type -> string/categorical) while keeping inherited sql.
+    override = _parse_lkml(base + child + "view: +orders {\n  dimension: amount { type: string }\n}\n").get_model(
+        "orders"
+    )
+    assert amount(override).type == "categorical"
+    assert amount(override).sql == "{model}.amount"
+
+    # A genuinely new field (not inherited) is still added as a normal field.
+    directory = Path(tempfile.mkdtemp())
+    (directory / "v.lkml").write_text(base + child + 'view: +orders {\n  dimension: brand_new { label: "New" }\n}\n')
+    new_model = LookMLAdapter().parse(str(directory)).get_model("orders")
+    assert any(d.name == "brand_new" for d in new_model.dimensions)
+
+
 def test_lookml_project_parse_merges_refinements_deterministically():
     """Refinements merge in sorted file order, not filesystem traversal order.
 

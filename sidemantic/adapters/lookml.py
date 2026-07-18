@@ -402,7 +402,10 @@ class LookMLAdapter(BaseAdapter):
                 ref_raw = refinement_raw_defs[_ridx] if _ridx < len(refinement_raw_defs) else None
                 remerged = None
                 if base_raw is not None and ref_raw is not None:
-                    merged_raw = self._merge_view_defs(base_raw, ref_raw)
+                    # A refinement can touch a field the base only has via `extends`; seed those from
+                    # the inherited definition so the partial refinement does not clobber it.
+                    inherited_fields = self._inherited_raw_fields(base_name, raw_view_defs)
+                    merged_raw = self._merge_view_defs(base_raw, ref_raw, inherited_fields)
                     remerged = self._parse_view(merged_raw)
                     if remerged is not None:
                         # Keep the merged raw so a SECOND refinement of the same view stacks
@@ -1068,8 +1071,40 @@ class LookMLAdapter(BaseAdapter):
                 graph.metrics[metric.name] = metric
         graph._mark_dirty()
 
+    @staticmethod
+    def _raw_extends_parent(raw: dict) -> str | None:
+        """The immediate ``extends`` parent name of a raw view dict, or None (first parent only)."""
+        extends_list = raw.get("extends") or raw.get("extends__all")
+        if isinstance(extends_list, list):
+            flat = extends_list
+            while flat and isinstance(flat[0], list):
+                flat = flat[0]
+            return flat[0] if flat else None
+        return extends_list if isinstance(extends_list, str) else None
+
     @classmethod
-    def _merge_view_defs(cls, base: dict, refinement: dict) -> dict:
+    def _inherited_raw_fields(cls, base_name: str, raw_view_defs: dict) -> dict:
+        """Fields a view inherits via ``extends``, as ``{(list_key, field_name): field_def}``.
+
+        Walks the extends chain through the raw view dicts (nearest parent wins). Lets a refinement
+        of an INHERITED field seed from the real definition instead of adding a bare partial field
+        that re-parses to a categorical default and then overrides the inherited one.
+        """
+        fields: dict[tuple[str, str], dict] = {}
+        seen: set[str] = {base_name}
+        parent = cls._raw_extends_parent(raw_view_defs.get(base_name) or {})
+        while parent is not None and parent not in seen:
+            seen.add(parent)
+            parent_raw = raw_view_defs.get(parent) or {}
+            for key in cls._VIEW_FIELD_LIST_KEYS:
+                for item in parent_raw.get(key) or []:
+                    if isinstance(item, dict) and item.get("name"):
+                        fields.setdefault((key, item["name"]), copy.deepcopy(item))  # nearest wins
+            parent = cls._raw_extends_parent(parent_raw)
+        return fields
+
+    @classmethod
+    def _merge_view_defs(cls, base: dict, refinement: dict, inherited_fields: dict | None = None) -> dict:
         """Merge a `view: +name` refinement's RAW LookML dict onto the base view's RAW dict.
 
         Merging at the RAW level (then re-parsing) is what makes a PARTIAL field refinement work:
@@ -1102,7 +1137,18 @@ class LookMLAdapter(BaseAdapter):
                         # Field-level refinement: override ONLY the properties it specifies.
                         by_name[fname].update({k: copy.deepcopy(v) for k, v in item.items() if k != "name"})
                     else:
-                        by_name[fname] = copy.deepcopy(item)
+                        # The base view does not define this field itself. If it INHERITS the field
+                        # via `extends`, seed from the inherited definition so a partial refinement
+                        # (`dimension: amount { label: "Amount" }`) keeps the inherited sql/type
+                        # instead of re-parsing to a bare categorical field that then overrides the
+                        # inherited one. Otherwise it is a genuinely new field.
+                        inherited = (inherited_fields or {}).get((key, fname))
+                        if inherited is not None:
+                            seed = copy.deepcopy(inherited)
+                            seed.update({k: copy.deepcopy(v) for k, v in item.items() if k != "name"})
+                            by_name[fname] = seed
+                        else:
+                            by_name[fname] = copy.deepcopy(item)
                 merged[key] = list(by_name.values()) + extras
             else:
                 merged[key] = copy.deepcopy(value)

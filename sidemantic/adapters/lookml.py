@@ -553,6 +553,22 @@ class LookMLAdapter(BaseAdapter):
         resolvable = {n: m for n, m in graph.models.items() if _chain_resolvable(n)}
         unresolvable = {n: m for n, m in graph.models.items() if n not in resolvable}
 
+        # Clear the extends link on a model whose parent was INTENTIONALLY rejected -- it exists but
+        # is out of the child's include scope, or is an unsupported derived table. The scoped parse
+        # omitted its inherited fields on purpose, but leaving `extends` set lets a downstream
+        # re-resolution WITHOUT the include scope (e.g. LookMLAdapter.export or a serialization
+        # helper) merge the rejected parent back in, reintroducing the removed fields. A parent that
+        # is genuinely MISSING (or a circular chain) is a real error, so keep its extends so
+        # validation still surfaces it.
+        for _name, _m in unresolvable.items():
+            _parent = _m.extends
+            if (
+                _parent
+                and _parent in graph.models
+                and (not _parent_in_scope(_name, _parent) or _parent in unsupported_dt_views)
+            ):
+                _m.extends = None
+
         if resolvable:
             resolved = resolve_model_inheritance(resolvable)
             resolved.update(unresolvable)

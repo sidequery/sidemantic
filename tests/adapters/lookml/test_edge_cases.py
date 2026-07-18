@@ -6133,6 +6133,39 @@ view: child {
     assert "id" in dims  # the child keeps its own field
 
 
+def test_lookml_rejected_extends_link_cleared_so_reresolution_does_not_remerge():
+    """A rejected extends link (out-of-scope / unsupported parent) is cleared so a downstream
+    unscoped re-resolution cannot merge the parent's fields back in. A MISSING parent is kept."""
+    from sidemantic.core.inheritance import resolve_model_inheritance
+
+    # Unsupported derived-table parent: extends cleared, so an unscoped re-resolve does not
+    # reintroduce the PDT's fields.
+    graph = _parse_lkml(
+        """
+view: pdt_base {
+  derived_table: { persist_for: "24 hours" }
+  dimension: pdt_only { type: string  sql: ${TABLE}.secret ;; }
+}
+view: child {
+  extends: [pdt_base]
+  sql_table_name: child_t ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+}
+"""
+    )
+    child = graph.get_model("child")
+    assert child.extends is None  # rejected link cleared
+    reresolved = resolve_model_inheritance(dict(graph.models))
+    assert "pdt_only" not in {d.name for d in reresolved["child"].dimensions}  # no re-merge
+
+    # A genuinely MISSING parent is a real error, so its extends is preserved for validation.
+    graph2 = _parse_lkml(
+        "view: orphan { sql_table_name: t ;; extends: [nonexistent]  "
+        "dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; } }"
+    )
+    assert graph2.get_model("orphan").extends == "nonexistent"
+
+
 def test_lookml_refinement_of_unsupported_parent_field_is_dropped():
     """Refining a field that exists only on an unsupported derived-table parent must not add it.
 

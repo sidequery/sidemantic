@@ -5094,9 +5094,12 @@ def test_lookml_export_folded_filter_keeps_sql_operator_keywords():
         primary_key="id",
         dimensions=[
             Dimension(name="status", type="categorical", sql="status_col"),
+            Dimension(name="created_at", type="time", sql="created_col"),
             Dimension(name="or", type="categorical", sql="or_col"),
             Dimension(name="and", type="categorical", sql="and_col"),
             Dimension(name="in", type="categorical", sql="in_col"),
+            Dimension(name="from", type="categorical", sql="from_col"),
+            Dimension(name="as", type="categorical", sql="as_col"),
         ],
     )
     conds = LookMLAdapter._fold_filter_conds
@@ -5105,6 +5108,12 @@ def test_lookml_export_folded_filter_keeps_sql_operator_keywords():
     )
     assert conds(["status in ('a', 'b') and status = 'c'"], model) == (
         "((${TABLE}.status_col) in ('a', 'b') and (${TABLE}.status_col) = 'c')"
+    )
+    # Grammar keywords inside an expression (EXTRACT ... FROM, CAST ... AS) stay keywords; the real
+    # column argument still resolves.
+    assert conds(["extract(day from created_at) = 5"], model) == ("(extract(day from (${TABLE}.created_col)) = 5)")
+    assert conds(["cast(created_at as date) = '2024-01-01'"], model) == (
+        "(cast((${TABLE}.created_col) as date) = '2024-01-01')"
     )
 
 

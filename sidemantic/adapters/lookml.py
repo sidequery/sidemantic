@@ -508,6 +508,14 @@ class LookMLAdapter(BaseAdapter):
             "and", "or", "not", "is", "in", "like", "ilike", "rlike", "similar",
             "between", "exists", "escape", "all", "any", "some",
             "case", "when", "then", "else", "end",
+            # Reserved grammar keywords that appear INSIDE an expression/subquery of a predicate --
+            # EXTRACT(day FROM x), CAST(x AS t), a scalar subquery's SELECT/FROM/WHERE/GROUP/ORDER/
+            # JOIN clauses, DISTINCT, set operators. An unquoted column with any of these names is
+            # invalid SQL (they must be quoted), so a bare token is always the keyword.
+            "as", "from", "where", "select", "distinct", "group", "order", "by", "having",
+            "join", "inner", "outer", "left", "right", "full", "cross", "natural", "on", "using",
+            "union", "intersect", "except", "with", "asc", "desc", "nulls", "over", "partition",
+            "within",
         }
     )  # fmt: skip
 

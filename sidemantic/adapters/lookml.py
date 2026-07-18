@@ -3283,6 +3283,13 @@ class LookMLAdapter(BaseAdapter):
                     # read group 2 defensively (m.group(2) would raise IndexError otherwise).
                     bare = m.group(2) if m.re.groups >= 2 else None
                     if bare is not None:
+                        # A bare token equal to a SQL boolean/NULL literal (true/false/null) is a
+                        # VALUE, not a column -- SQL requires an actual column named `true` to be
+                        # quoted. When a dimension happens to share the name, rewriting the literal
+                        # to that dimension's SQL silently changes the predicate (`status = true`
+                        # -> `status = (${TABLE}.is_active)`), so leave the literal intact.
+                        if bare.lower() in ("true", "false", "null"):
+                            return m.group(0)
                         # Bare dimension-name alternative: skip when it sits in a SQL TYPE context
                         # (a cast target), not a column operand -- e.g. CAST(x AS date) or x::date
                         # with a `date` dimension. Rewriting the type token to a column would emit
@@ -3383,6 +3390,11 @@ class LookMLAdapter(BaseAdapter):
         ``ABS(SUM(x))``), but a MULTI-argument aggregate -- ``WEIGHTED_AVG(a, b)`` or a multi-column
         ``COUNT(DISTINCT a, b)`` -- would fold to a malformed ``FUNC(CASE..., CASE...)`` the engine
         rejects. A DISTINCT wrapping a single tuple ``(a, b)`` is one argument and stays safe.
+
+        An ORDERED-set aggregate (``SUM(x ORDER BY y)``, ``ARRAY_AGG(x ORDER BY y)``) is also
+        unsafe: the folder wraps only the argument, so the ORDER BY lands INSIDE the CASE
+        (``SUM(CASE WHEN ... THEN x ORDER BY y END)``) rather than on the aggregate call. Reject
+        it so the measure is skipped instead of exporting malformed LookML SQL.
         """
         import sqlglot
         from sqlglot import expressions as exp
@@ -3392,6 +3404,10 @@ class LookMLAdapter(BaseAdapter):
         try:
             tree = sqlglot.parse_one(sql.replace("{model}", "__m__"))
         except Exception:
+            return False
+        # An ORDER BY here can only be an aggregate-local ordered-set clause (the input is an
+        # aggregate expression, never a full SELECT); folding would bury it inside the CASE.
+        if any(True for _ in tree.find_all(exp.Order)):
             return False
         for n in tree.find_all(exp.Anonymous):
             if (n.name or "").lower() in _ANONYMOUS_AGGREGATE_FUNCTIONS and len(n.expressions) > 1:

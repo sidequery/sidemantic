@@ -4954,6 +4954,80 @@ def test_lookml_export_folded_filter_protects_sql_server_datepart_abbreviations(
     assert conds(["mm = '2024-01'"], model) == "((${TABLE}.order_mm) = '2024-01')"
 
 
+def test_lookml_export_folded_filter_keeps_boolean_null_literals():
+    """A bare true/false/null in a folded filter stays a literal even when a dimension shares the name.
+
+    SQL requires a real column named `true` to be quoted, so a bare token is always the literal.
+    Rewriting it to a same-named dimension's SQL silently changed the predicate
+    (`status = true` -> `status = (${TABLE}.is_active)`). The literal must survive; a genuine
+    same-named column used as an operand (LHS) still resolves.
+    """
+    from sidemantic import Dimension, Model
+
+    model = Model(
+        name="orders",
+        table="t",
+        primary_key="id",
+        dimensions=[
+            Dimension(name="status", type="categorical", sql="status_col"),
+            Dimension(name="true", type="boolean", sql="is_active"),
+            Dimension(name="false", type="boolean", sql="is_closed"),
+            Dimension(name="null", type="categorical", sql="missing_col"),
+        ],
+    )
+    conds = LookMLAdapter._fold_filter_conds
+    # RHS literals are preserved, not rewritten to the same-named dimension SQL.
+    assert conds(["{model}.status = true"], model) == "((${TABLE}.status_col) = true)"
+    assert conds(["{model}.status = false"], model) == "((${TABLE}.status_col) = false)"
+    assert conds(["{model}.status IS NOT null"], model) == "((${TABLE}.status_col) IS NOT null)"
+    # Case-insensitive: TRUE / NULL keywords are literals too.
+    assert conds(["{model}.status = TRUE"], model) == "((${TABLE}.status_col) = TRUE)"
+
+
+def test_lookml_export_ordered_set_aggregate_with_filter_skipped():
+    """A filtered ordered-set aggregate can't fold (ORDER BY would land inside the CASE) -> skipped.
+
+    Folding wraps only the aggregate ARGUMENT in CASE, so SUM(x ORDER BY y) would become
+    SUM(CASE WHEN ... THEN x ORDER BY y END) -- ORDER BY buried inside the CASE, malformed LookML
+    SQL. _complete_sql_fold_is_safe must reject it so the measure is skipped, not emitted broken.
+    """
+    import tempfile
+
+    from sidemantic import Dimension, Metric, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    assert LookMLAdapter._complete_sql_fold_is_safe("SUM({model}.amount ORDER BY {model}.created_at)") is False
+    # A plain aggregate (no ORDER BY) is still foldable.
+    assert LookMLAdapter._complete_sql_fold_is_safe("SUM({model}.amount) / COUNT({model}.id)") is True
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="orders",
+            table="t",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(name="status", type="categorical", sql="status"),
+            ],
+            metrics=[
+                Metric(
+                    name="oa",
+                    agg=None,
+                    sql="SUM({model}.amount ORDER BY {model}.created_at)",
+                    sql_is_complete=True,
+                    filters=["{model}.status = 'x'"],
+                )
+            ],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    text = open(out).read()
+    assert "measure: oa" not in text  # skipped, not emitted with ORDER BY inside the CASE
+    assert "ORDER BY ${TABLE}.created_at END" not in text  # never the malformed inside-CASE form
+
+
 def test_lookml_export_template_only_folded_filter_skipped():
     """A folded filter that is ONLY a Liquid template leaves no real column -> skip the measure.
 

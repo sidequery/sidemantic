@@ -674,14 +674,25 @@ class LookMLAdapter(BaseAdapter):
             # the literal splitter, but it must still be RECOGNISED as the part here -- otherwise
             # the other argument looks like the only keyword and a real column named `date` is
             # left unresolved.
-            first, second = (a.strip().strip("'\"").lower() for a in (args[0], args[1]))
+            first_raw, second_raw = (a.strip() for a in (args[0], args[1]))
+            first_quoted = first_raw[:1] in ("'", '"')
+            second_quoted = second_raw[:1] in ("'", '"')
+            first, second = (a.strip("'\"").lower() for a in (first_raw, second_raw))
             first_kw = first in cls._DATE_PART_KEYWORDS
             second_kw = second in cls._DATE_PART_KEYWORDS
             # Normalize an abbreviation (mm, dd, ...) to its canonical name so rank/unit lookups
             # below see the real coarseness rather than defaulting to 99 / not-a-unit.
             first_n = cls._DATE_PART_ABBR.get(first, first)
             second_n = cls._DATE_PART_ABBR.get(second, second)
-            if first_kw and not second_kw:
+            if first_quoted and not second_quoted:
+                # A QUOTED argument is a string literal -> can only be the date PART, never the
+                # value column. Decide by quoting BEFORE the by-keyword tie-break, which would
+                # otherwise leave a value column sharing the unit's name (DATE_TRUNC('week', week))
+                # unresolved.
+                part_index = 0
+            elif second_quoted and not first_quoted:
+                part_index = 1
+            elif first_kw and not second_kw:
                 part_index = 0  # Snowflake order
             elif second_kw and not first_kw:
                 part_index = 1  # BigQuery order
@@ -3483,6 +3494,15 @@ class LookMLAdapter(BaseAdapter):
             return False
         for n in tree.find_all(exp.Anonymous):
             if (n.name or "").lower() in _ANONYMOUS_AGGREGATE_FUNCTIONS and len(n.expressions) > 1:
+                return False
+        # The folder wraps ONLY an aggregate's `this` argument, so a standard multi-INPUT aggregate
+        # (CORR(x, y), COVAR_POP, REGR_*) would filter only its first input and leave the second over
+        # all rows -- a wrong statistic. Reject any AggFunc that has a column in an argument OTHER
+        # than `this`. (A WITHIN GROUP aggregate keeps its column in the enclosing WithinGroup, not
+        # inside the AggFunc, so it has none here and stays safe.)
+        for a in tree.find_all(exp.AggFunc):
+            this_col_ids = {id(c) for c in (a.this.find_all(exp.Column) if a.this else [])}
+            if any(id(c) not in this_col_ids for c in a.find_all(exp.Column)):
                 return False
         return all(len(d.expressions) <= 1 for d in tree.find_all(exp.Distinct))
 

@@ -4920,6 +4920,38 @@ def test_lookml_export_folded_filter_protects_sql_server_datepart_first_function
     assert conds(["UPPER(day) = 'X'"], model) == "(UPPER((${TABLE}.order_day)) = 'X')"
 
 
+def test_lookml_export_folded_filter_quoted_date_trunc_unit_resolves_value_column():
+    """A QUOTED DATE_TRUNC unit (part) is decided by its quotes, so a same-named value column resolves.
+
+    DATE_TRUNC('week', week) on a model with a `week` dimension: the quoted 'week' is the part and
+    the bare `week` is the value column. Stripping quotes made both look like the unit, and the
+    tie-break picked the value column as the part, leaving it unresolved. Quoting decides the part.
+    """
+    from sidemantic import Dimension, Model
+
+    model = Model(
+        name="orders",
+        table="t",
+        primary_key="id",
+        dimensions=[
+            Dimension(name="week", type="time", granularity="week", sql="order_week"),
+            Dimension(name="date", type="time", granularity="day", sql="order_date"),
+        ],
+    )
+    conds = LookMLAdapter._fold_filter_conds
+    # Postgres/DuckDB order (quoted part first): the value column resolves, the quoted part stays.
+    assert conds(["DATE_TRUNC('week', week) = DATE '2024-01-01'"], model) == (
+        "(DATE_TRUNC('week', (${TABLE}.order_week)) = DATE '2024-01-01')"
+    )
+    assert conds(["DATE_TRUNC('month', date) = DATE '2024-01-01'"], model) == (
+        "(DATE_TRUNC('month', (${TABLE}.order_date)) = DATE '2024-01-01')"
+    )
+    # BigQuery order (unquoted, value first) is unaffected: date resolves, month is the part.
+    assert conds(["DATE_TRUNC(date, month) = DATE '2024-01-01'"], model) == (
+        "(DATE_TRUNC((${TABLE}.order_date), month) = DATE '2024-01-01')"
+    )
+
+
 def test_lookml_export_folded_filter_protects_sql_server_datepart_abbreviations():
     """SQL Server datepart ABBREVIATIONS (dd, mm, d, ...) in a part slot must be protected.
 
@@ -5355,6 +5387,47 @@ def test_lookml_export_multi_column_distinct_filter_skipped():
     out = tempfile.mktemp(suffix=".lkml")
     LookMLAdapter().export(graph, out)
     assert "measure: du" not in open(out).read()  # skipped, no malformed `THEN a, b END`
+
+
+def test_lookml_export_multi_input_aggregate_filter_skipped():
+    """A filtered two-input aggregate (CORR(x, y)) can't fold consistently -> skipped, not mis-filtered.
+
+    The folder wraps only the aggregate's first argument, so CORR(CASE WHEN ... THEN x END, y) would
+    filter x but leave y over all rows -- a wrong statistic. _complete_sql_fold_is_safe rejects it.
+    """
+    import tempfile
+
+    from sidemantic import Dimension, Metric, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    assert LookMLAdapter._complete_sql_fold_is_safe("CORR({model}.x, {model}.y)") is False
+    assert LookMLAdapter._complete_sql_fold_is_safe("COVAR_POP({model}.x, {model}.y)") is False
+    assert LookMLAdapter._complete_sql_fold_is_safe("SUM({model}.amount) / COUNT(*)") is True
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="orders",
+            table="t",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(name="status", type="categorical", sql="status"),
+            ],
+            metrics=[
+                Metric(
+                    name="c",
+                    agg=None,
+                    sql="CORR({model}.x, {model}.y)",
+                    sql_is_complete=True,
+                    filters=["{model}.status = 'x'"],
+                )
+            ],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    assert "measure: c" not in open(out).read()  # skipped rather than filtering only the first input
 
 
 def test_lookml_export_aggregate_with_scalar_subquery_skipped():

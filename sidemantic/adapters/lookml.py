@@ -542,6 +542,11 @@ class LookMLAdapter(BaseAdapter):
                 return True
             if not _parent_in_scope(name, model.extends):
                 return False
+            if model.extends in unsupported_dt_views:
+                # The parent is an unsupported derived table (dropped by the loader). Treating the
+                # chain as resolvable would inherit the PDT's fields onto the child's own real table
+                # (secret AS pdt_only FROM child_t), so leave the chain unresolved instead.
+                return False
             visited.add(name)
             return _chain_resolvable(model.extends, visited)
 

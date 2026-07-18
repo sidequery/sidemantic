@@ -6108,6 +6108,31 @@ view: child {
     assert "a_field" in dims  # the supported parent still contributes
 
 
+def test_lookml_extends_unsupported_derived_table_first_parent_not_inherited():
+    """A concrete view extending an unsupported derived table as its FIRST parent must not inherit it.
+
+    The PDT is dropped by the loader, so inheriting its fields onto the child's real table would
+    compile `secret AS pdt_only FROM child_t`. The chain is treated as unresolvable so the fields
+    are left off; the child keeps its own. A supported first parent still inherits normally.
+    """
+    graph = _parse_lkml(
+        """
+view: pdt_base {
+  derived_table: { persist_for: "24 hours" }
+  dimension: pdt_only { type: string  sql: ${TABLE}.secret ;; }
+}
+view: child {
+  extends: [pdt_base]
+  sql_table_name: child_t ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+}
+"""
+    )
+    dims = {d.name for d in graph.get_model("child").dimensions}
+    assert "pdt_only" not in dims  # unsupported PDT parent not inherited onto the child's table
+    assert "id" in dims  # the child keeps its own field
+
+
 def test_lookml_refinement_of_unsupported_parent_field_is_dropped():
     """Refining a field that exists only on an unsupported derived-table parent must not add it.
 

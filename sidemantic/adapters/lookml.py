@@ -525,6 +525,11 @@ class LookMLAdapter(BaseAdapter):
                 parent = graph.models.get(parent_name)
                 if parent is None or not _parent_in_scope(name, parent_name):
                     continue
+                if parent_name in unsupported_dt_views:
+                    # An unsupported derived-table parent is dropped by the loader; copying its
+                    # fields would leave the child querying a column from a table that never gets
+                    # registered. The first-parent chain already skips these -- do the same here.
+                    continue
                 have_dims = {d.name for d in model.dimensions}
                 model.dimensions.extend(d.model_copy(deep=True) for d in parent.dimensions if d.name not in have_dims)
                 have_metrics = {mm.name for mm in model.metrics}

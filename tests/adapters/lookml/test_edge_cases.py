@@ -6082,6 +6082,32 @@ view: +child {
     assert amount.type == "numeric"
 
 
+def test_lookml_multi_parent_extends_skips_unsupported_derived_table_parent():
+    """An extra extends parent that is an unsupported derived table has its fields skipped.
+
+    Its table is never registered (the loader drops it), so copying its fields would leave the
+    child querying a nonexistent column. The supported parent's fields still come through.
+    """
+    graph = _parse_lkml(
+        """
+view: base_a { sql_table_name: base_a ;; dimension: a_field { type: string  sql: ${TABLE}.a_field ;; } }
+view: pdt_base {
+  derived_table: { persist_for: "24 hours" }
+  dimension: pdt_only { type: string  sql: ${TABLE}.pdt_only ;; }
+}
+view: child {
+  sql_table_name: child ;;
+  extends: [base_a, pdt_base]
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+}
+"""
+    )
+    model = graph.get_model("child")
+    dims = {d.name for d in model.dimensions}
+    assert "pdt_only" not in dims  # not copied from the unsupported derived-table parent
+    assert "a_field" in dims  # the supported parent still contributes
+
+
 def test_lookml_extends_parent_required_in_all_model_scopes(caplog):
     """A parent only SOME models reaching the child include must not be inherited, and it warns.
 

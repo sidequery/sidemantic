@@ -521,6 +521,17 @@ class LookMLAdapter(BaseAdapter):
         }
     )  # fmt: skip
 
+    # Nullary SQL constants that read like a bare identifier but are VALUES, not columns -- a folded
+    # filter must NOT table-qualify a resolved dimension SQL equal to one of these (${TABLE}.CURRENT_DATE
+    # is invalid; the constant should stay bare).
+    _SQL_NULLARY_CONSTANTS = frozenset(
+        {
+            "current_date", "current_time", "current_timestamp", "localtime", "localtimestamp",
+            "current_user", "session_user", "system_user", "current_role", "current_catalog",
+            "current_schema", "current_database", "sysdate", "user",
+        }
+    )  # fmt: skip
+
     _DATE_PART_KEYWORDS = frozenset(
         {
             "year", "quarter", "month", "week", "day", "hour", "minute", "second",
@@ -3357,10 +3368,16 @@ class LookMLAdapter(BaseAdapter):
         def _qualify(val: str) -> str:
             # Bare column -> qualify with {model}. so it stays unambiguous in joins; any resolved
             # expression is parenthesized to preserve precedence. But an identifier-shaped SQL
-            # LITERAL -- a numeric constant (`1`) or true/false/null -- is a VALUE, not a column, so
-            # parenthesize it WITHOUT a table qualifier (${TABLE}.1 is invalid SQL). A column name
-            # cannot start with a digit unquoted, so a leading digit marks a numeric literal.
-            if re.fullmatch(r"\w+", val) and not val[0].isdigit() and val.lower() not in ("true", "false", "null"):
+            # LITERAL -- a numeric constant (`1`), true/false/null, or a nullary SQL constant
+            # (CURRENT_DATE, CURRENT_TIMESTAMP, ...) -- is a VALUE, not a column, so parenthesize it
+            # WITHOUT a table qualifier (${TABLE}.1 / ${TABLE}.CURRENT_DATE are invalid SQL). A column
+            # name cannot start with a digit unquoted, so a leading digit marks a numeric literal.
+            if (
+                re.fullmatch(r"\w+", val)
+                and not val[0].isdigit()
+                and val.lower() not in ("true", "false", "null")
+                and val.lower() not in cls._SQL_NULLARY_CONSTANTS
+            ):
                 return f"({{model}}.{val})"
             return f"({val})"
 

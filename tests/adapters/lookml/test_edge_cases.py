@@ -5575,12 +5575,17 @@ def test_lookml_export_folded_filter_keeps_constant_dimension_sql_unqualified():
             Dimension(name="status", type="categorical", sql="status_col"),
             Dimension(name="flag", type="numeric", sql="1"),  # constant-valued dimension
             Dimension(name="active", type="boolean", sql="TRUE"),
+            Dimension(name="today", type="time", sql="CURRENT_DATE"),  # nullary SQL constant
+            Dimension(name="ts", type="time", sql="current_timestamp"),
         ],
     )
     conds = LookMLAdapter._fold_filter_conds
     # A constant/literal resolved SQL is parenthesized WITHOUT a table qualifier.
     assert conds(["{model}.flag = 1"], model) == "((1) = 1)"
     assert conds(["{model}.active = true"], model) == "((TRUE) = true)"
+    # A nullary SQL constant (CURRENT_DATE / current_timestamp) is a value, not a column.
+    assert conds(["{model}.today = CURRENT_DATE"], model) == "((CURRENT_DATE) = CURRENT_DATE)"
+    assert conds(["{model}.ts > current_timestamp"], model) == "((current_timestamp) > current_timestamp)"
     # A genuine column still gets qualified.
     assert conds(["{model}.status = 'x'"], model) == "((${TABLE}.status_col) = 'x')"
 

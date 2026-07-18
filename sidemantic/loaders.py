@@ -31,7 +31,9 @@ def _is_registerable_model(model) -> bool:
     return not (model.meta or {}).get("lookml_template")
 
 
-def _drop_non_registerable_models(all_models: dict, all_metrics: dict | None = None) -> dict:
+def _drop_non_registerable_models(
+    all_models: dict, all_metrics: dict | None = None, template_target_names: set | None = None
+) -> dict:
     """Filter to registerable models AND strip any relationship targeting a dropped one.
 
     An explore may have already added a relationship pointing at a now-skipped template
@@ -39,6 +41,11 @@ def _drop_non_registerable_models(all_models: dict, all_metrics: dict | None = N
     ``sidemantic validate``. Only relationships to models THIS function drops are removed
     -- a relationship to a never-defined model is a real error that validation must still
     surface, so it is left intact. Returns the filtered dict (mutating survivors' rels).
+
+    ``template_target_names`` names models that were parsed as non-registerable templates at some
+    point. A relationship to such a name is stripped even when a later same-name real model
+    OVERWROTE the template (so the name is now registerable): the join was defined against the
+    template, so it would otherwise silently point at the replacement model.
 
     When ``all_metrics`` is given, also drop graph-level metrics contributed by a dropped
     model -- ``SemanticGraph.add_model()`` auto-registers a model's ``time_comparison`` /
@@ -49,10 +56,13 @@ def _drop_non_registerable_models(all_models: dict, all_metrics: dict | None = N
     """
     kept = {name: model for name, model in all_models.items() if _is_registerable_model(model)}
     dropped = set(all_models) - set(kept)
+    # Also strip joins to a name that WAS a template but got overwritten by a real model (so it is
+    # in `kept`, not `dropped`): the join was defined against the template, not the replacement.
+    strip_targets = dropped | (set(template_target_names or set()) & set(kept))
     for model in kept.values():
         rels = getattr(model, "relationships", None)
         if rels:
-            model.relationships = [r for r in rels if r.name not in dropped]
+            model.relationships = [r for r in rels if r.name not in strip_targets]
     if all_metrics is not None:
         # add_model auto-registers a model's GRAPH-LEVEL measures (time_comparison/conversion)
         # into the graph; a dropped template's such measure would linger in all_metrics with
@@ -152,6 +162,9 @@ def load_from_directory(
     # Snowflake relationship definitions whose tables live in other files.
     all_pending_relationships: list = []
     import_warnings: list[dict[str, object]] = []
+    # Model names that were parsed as non-registerable templates at some point, tracked so a join
+    # relationship targeting a template survives being OVERWRITTEN by a later same-name real model.
+    template_target_names: set[str] = set()
 
     # Project-level formats (SML/TMDL/Graphene) are directory-based; in single-file
     # mode (only_file set) skip their whole-directory scans and parse just that file.
@@ -218,6 +231,10 @@ def load_from_directory(
                         pass
                 else:
                     model._source_file = str(lookml_root.relative_to(directory))
+            # Record template / unsupported-derived-table names before a later same-name file can
+            # overwrite them, so their dangling join relationships are still stripped (see
+            # _drop_non_registerable_models).
+            template_target_names |= {n for n, m in graph.models.items() if not _is_registerable_model(m)}
             all_models.update(graph.models)
             all_metrics.update(graph.metrics)
             all_parameters.update(graph.parameters)
@@ -426,6 +443,10 @@ def load_from_directory(
                         metric._source_format = adapter_name
                     if not hasattr(metric, "_source_file"):
                         metric._source_file = str(file_path.relative_to(directory))
+                # Record non-registerable (template / unsupported-derived-table) model names BEFORE
+                # a later same-name file overwrites them, so their dangling join relationships can
+                # still be stripped even when the name is reused by a registerable model.
+                template_target_names |= {n for n, m in graph.models.items() if not _is_registerable_model(m)}
                 all_models.update(graph.models)
                 all_metrics.update(graph.metrics)
                 all_parameters.update(graph.parameters)
@@ -463,7 +484,7 @@ def load_from_directory(
     # unsupported derived tables) BEFORE inference + registration, so FK inference never
     # targets a model that won't be registered (which would leave a dangling relationship)
     # and add_model never rejects a template that was never meant to be queried.
-    all_models = _drop_non_registerable_models(all_models, all_metrics)
+    all_models = _drop_non_registerable_models(all_models, all_metrics, template_target_names)
 
     # Infer cross-model relationships based on naming conventions
     _infer_relationships(all_models)

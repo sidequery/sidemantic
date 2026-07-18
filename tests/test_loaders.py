@@ -454,3 +454,37 @@ def test_load_from_directory_lenient_does_not_partially_parse_tmdl_project_after
             "message": "simulated project-level failure",
         }
     ]
+
+
+def test_load_from_directory_strips_template_join_after_native_overwrite(tmp_path):
+    """A LookML explore join to an `extension: required` template must be stripped even when a later
+    native model of the same name overwrites the template (so the join does not silently retarget it)."""
+    (tmp_path / "a.model.lkml").write_text(
+        "view: base {\n"
+        "  extension: required\n"
+        "  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }\n"
+        "}\n"
+        "view: orders {\n"
+        "  sql_table_name: orders ;;\n"
+        "  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }\n"
+        "  dimension: ref_col { type: number  sql: ${TABLE}.ref_col ;; }\n"
+        "}\n"
+        "explore: orders {\n"
+        "  join: base { sql_on: ${orders.ref_col} = ${base.id} ;; relationship: many_to_one }\n"
+        "}\n"
+    )
+    (tmp_path / "native.py").write_text(
+        "from sidemantic import Model, Dimension\n"
+        "base = Model(name='base', table='real_base', primary_key='id',\n"
+        "             dimensions=[Dimension(name='id', type='numeric', sql='id')])\n"
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path, strict=False)
+
+    orders = layer.graph.models.get("orders")
+    assert orders is not None
+    # The template-defined explore join is stripped; it must not point at the overwriting real model.
+    assert "base" not in {r.name for r in (orders.relationships or [])}
+    # The real model still loads.
+    assert layer.graph.models["base"].table == "real_base"

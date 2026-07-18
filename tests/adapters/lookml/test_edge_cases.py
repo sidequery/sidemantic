@@ -5245,6 +5245,49 @@ def test_lookml_export_normalizes_all_modifier_for_roundtrip():
     assert block and "(ALL x)" in block and "SUM(ALL" not in block, block
 
 
+def test_lookml_export_sample_aggregate_complete_measures_survive():
+    """Agg-less complete measures using sample-aggregate aliases must export, not be dropped.
+
+    The agg-detection at the export gate ran on the raw {model} SQL. sqlglot happens to parse
+    {model}.col as a struct so VAR_SAMP/STDDEV_SAMP are detected today, but if that ever failed the
+    regex fallback (which omits var_samp/stddev_samp) would skip the measure. Neutralizing {model}
+    first (as the sibling call sites do) keeps detection on sqlglot's accurate path.
+    """
+    import tempfile
+
+    from sidemantic import Dimension, Metric, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    def exports(sql):
+        graph = SemanticGraph()
+        graph.add_model(
+            Model(
+                name="orders",
+                table="t",
+                primary_key="id",
+                dimensions=[
+                    Dimension(name="id", type="numeric", sql="id"),
+                    Dimension(name="amount", type="numeric", sql="amount"),
+                ],
+                metrics=[Metric(name="m", agg=None, sql=sql, sql_is_complete=True)],
+            )
+        )
+        out = tempfile.mktemp(suffix=".lkml")
+        LookMLAdapter().export(graph, out)
+        text = open(out).read()
+        reimported = "m" in {x.name for x in LookMLAdapter().parse(Path(out)).get_model("orders").metrics}
+        return "measure: m" in text and reimported
+
+    for sql in (
+        "VAR_SAMP({model}.amount)",
+        "STDDEV_SAMP({model}.amount)",
+        "VARIANCE({model}.amount)",
+        "STDDEV_POP({model}.amount)",
+        "VAR_POP({model}.amount)",
+    ):
+        assert exports(sql), sql
+
+
 def test_lookml_export_zero_column_stddev_skipped():
     """A stddev/variance over a CONSTANT also emits type: number -> needs the zero-column guard.
 

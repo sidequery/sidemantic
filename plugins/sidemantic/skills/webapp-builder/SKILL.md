@@ -7,6 +7,17 @@ description: Build interactive analytics webapps, demos, dashboards, or embedded
 
 Build webapps around a validated Sidemantic semantic layer. Use the canonical built UI distribution, then wire runtime-specific data adapters to its documented props or mount functions.
 
+For a declarative Sidemantic dashboard, run the official application from the project root:
+
+```bash
+uv run sidemantic dashboard validate
+uv run sidemantic dashboard serve
+```
+
+Use `sidemantic dashboard validate` and `sidemantic dashboard types` for authoring. Do not create a
+separate crossfilter server or use the experimental cross-library renderers as a product surface;
+those APIs are retained for renderer examples and library experimentation only.
+
 In command examples, set `SIDEMANTIC_PLUGIN_ROOT` to the installed `sidemantic` plugin directory.
 
 ## Component-First Pattern
@@ -57,20 +68,21 @@ Use those static helpers before writing one-off DOM wiring. They are intentional
 
 ## Core Workflow
 
-1. Load-check the semantic layer before building UI. Use `info` and the inspector in noninteractive agent work. Use `validate` only when the current CLI exits cleanly in your environment:
+1. From the project root, validate and inspect the semantic layer before building UI:
 
 ```bash
-uv run sidemantic info path/to/models
-uv run ${SIDEMANTIC_PLUGIN_ROOT}/skills/webapp-builder/scripts/inspect_layer.py path/to/models \
-  --db path/to/data.duckdb \
+uv run sidemantic validate
+uv run sidemantic info
+uv run ${SIDEMANTIC_PLUGIN_ROOT}/skills/webapp-builder/scripts/inspect_layer.py models \
+  --db data/warehouse.duckdb \
   --require-execute
 ```
 
 2. Generate an app inventory:
 
 ```bash
-uv run ${SIDEMANTIC_PLUGIN_ROOT}/skills/webapp-builder/scripts/inspect_layer.py path/to/models \
-  --db path/to/data.duckdb \
+uv run ${SIDEMANTIC_PLUGIN_ROOT}/skills/webapp-builder/scripts/inspect_layer.py models \
+  --db data/warehouse.duckdb \
   --require-execute \
   --output docs/sidemantic-app-spec.json
 ```
@@ -105,7 +117,7 @@ The scaffold copies readable source from `assets/templates/static-dashboard/` an
 - Python-backed analytics app: use `sidemantic.api_server.create_app()` or `start_api_server()` when a FastAPI API is acceptable.
 - Browser-only demo: use the `sidemantic-wasm` npm package (Sidemantic Rust WASM) + DuckDB-WASM, or Pyodide + DuckDB-WASM, only for static demos or docs pages that must run without a backend.
 - Notebook or Python embedded view: use `sidemantic.widget.MetricsExplorer` instead of rebuilding the widget.
-- MCP app surface: use `sidemantic mcp-serve --apps --http --port 4100` and existing chart resources when the target is an MCP Apps-compatible host.
+- MCP app surface: use `sidemantic server mcp --apps --http --port 4100` and existing chart resources when the target is an MCP Apps-compatible host.
 
 5. Implement a narrow query contract. Prefer structured query payloads over ad hoc SQL strings:
 
@@ -132,9 +144,10 @@ If a control is visible, it must change the app state or data. Do not satisfy in
 7. Verify end to end:
 
 ```bash
-uv run sidemantic info path/to/models
-uv run ${SIDEMANTIC_PLUGIN_ROOT}/skills/webapp-builder/scripts/inspect_layer.py path/to/models --db path/to/data.duckdb --require-execute
-uv run sidemantic query "SELECT metric_name FROM model_name LIMIT 5" --models path/to/models --db path/to/data.duckdb
+uv run sidemantic validate
+uv run sidemantic info
+uv run ${SIDEMANTIC_PLUGIN_ROOT}/skills/webapp-builder/scripts/inspect_layer.py models --db data/warehouse.duckdb --require-execute
+uv run sidemantic query "SELECT metric_name FROM model_name LIMIT 5"
 uv run ${SIDEMANTIC_PLUGIN_ROOT}/skills/webapp-builder/scripts/verify_static_app.py dist/sidemantic-dashboard
 bunx --bun -p playwright node ${SIDEMANTIC_PLUGIN_ROOT}/skills/webapp-builder/scripts/verify_static_interactions.mjs --url http://127.0.0.1:5174/
 bun run build
@@ -181,7 +194,8 @@ Run DuckDB validation serially against a file database. Do not run the inspector
 
 ## API Modes
 
-When the app can call Python directly, prefer the existing HTTP API:
+When the app can call Python directly, start the existing HTTP API with
+`sidemantic server api` and use its stable endpoints:
 
 - `GET /health`
 - `GET /models`
@@ -238,7 +252,7 @@ Analytics webapps should feel work-focused:
 ## Common Failures
 
 - Building UI before the model validates. Validate first.
-- Running interactive validation in automation. If `sidemantic validate` requires `textual` or opens a TUI, use `sidemantic info` plus `inspect_layer.py` as the noninteractive check.
+- Skipping semantic validation. `sidemantic validate` is noninteractive; run it before the inspector and UI checks.
 - Trusting compiled SQL alone. Use `inspect_layer.py --require-execute` when possible so result columns and sample rows are checked and failures are nonzero.
 - Running parallel DuckDB checks against the same database file. Run them serially or use separate database copies.
 - Treating Python API examples as the default user path. Sidemantic is CLI-first; use API calls as app internals.

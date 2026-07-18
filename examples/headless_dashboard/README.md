@@ -1,11 +1,11 @@
-# Headless Dashboard Example
+# Declarative Dashboard Example
 
-This example shows the declarative dashboard authoring path.
+This example shows the declarative dashboard authoring path in the canonical React application.
 
 The dashboard is defined in committed files:
 
 - `models.yml` defines the semantic model.
-- `dashboard.yml` defines the dashboard served by the Sidemantic CLI.
+- `dashboard.yml` configures the official Sidemantic web UI.
 - `dashboard.ts` shows the same dashboard shape with generated TypeScript field types.
 - `sidemantic.generated.ts` is generated from the semantic model and committed here so the typing contract is visible.
 
@@ -14,29 +14,28 @@ The dashboard is defined in committed files:
 ## Run It
 
 ```bash
-uv run examples/headless_dashboard/setup_data.py
-uv run sidemantic dashboard validate examples/headless_dashboard/dashboard.yml \
-  --models examples/headless_dashboard \
-  --db examples/headless_dashboard/data/orders.db
-uv run sidemantic dashboard serve examples/headless_dashboard/dashboard.yml \
-  --models examples/headless_dashboard \
-  --db examples/headless_dashboard/data/orders.db \
-  --port 8877
+cd examples/headless_dashboard
+uv run setup_data.py
+uv run sidemantic dashboard validate
+uv run sidemantic dashboard serve
 ```
 
 Then open:
 
 ```text
-http://127.0.0.1:8877/crossfilter.html
+http://127.0.0.1:4400/
 ```
 
 ## Regenerate TypeScript Types
 
 ```bash
 uv run sidemantic dashboard types \
-  --models examples/headless_dashboard \
-  --out examples/headless_dashboard/sidemantic.generated.ts
+  --out sidemantic.generated.ts
 ```
 
-The CLI serves YAML or JSON dashboard specs. The TypeScript file is for app authors who want editor-checked metric and dimension names while producing the same dashboard configuration shape.
+`dashboard serve` discovers the project model, database, and YAML or JSON dashboard spec, validates
+them, and serves the canonical React UI. The TypeScript file is for app authors who want
+editor-checked metric and dimension names while producing the same dashboard configuration shape.
 
+The cross-library renderers remain available as Python library examples under
+`examples/integrations/`; they are not a second dashboard product or CLI frontend.

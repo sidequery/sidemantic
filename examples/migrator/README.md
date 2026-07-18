@@ -28,23 +28,23 @@ Generate model definitions and rewritten queries from your raw SQL:
 cd examples/migrator
 
 # Generate models and rewritten queries
-uv run sidemantic migrator --queries raw_queries/ --generate-models output/
+uv run sidemantic migrate generate raw_queries/ --output output/
 ```
 
 This will create:
 - `output/models/` - YAML model definitions for each table
-- `output/rewritten_queries/` - Python code showing how to query using the semantic layer
+- `output/rewritten_queries/` - semantic SQL rewrites
 
 ### Analyze Coverage
 
 If you already have a semantic layer, analyze which queries can be rewritten:
 
 ```bash
-# Compare queries against existing semantic layer
-uv run sidemantic migrator models/ --queries raw_queries/
+# Compare queries against an existing semantic layer
+uv run sidemantic migrate check raw_queries/ --models path/to/models/
 
 # Show detailed analysis for each query
-uv run sidemantic migrator models/ --queries raw_queries/ --verbose
+uv run sidemantic migrate check raw_queries/ --models path/to/models/ --verbose
 ```
 
 ## What Gets Generated

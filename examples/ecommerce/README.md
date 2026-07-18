@@ -85,7 +85,7 @@ sidemantic query "SELECT order_items.net_revenue, products.category FROM order_i
 Start a server that BI tools can connect to:
 
 ```bash
-uvx --from "sidemantic[serve]" sidemantic serve examples/ecommerce/models \
+uvx --from "sidemantic[serve]" sidemantic server postgres examples/ecommerce/models \
   --db examples/ecommerce/data/ecommerce.db \
   --port 5433
 ```

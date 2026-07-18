@@ -15,8 +15,8 @@ When `connection` is provided, the Migrator queries `information_schema` for pri
 CLI-first for normal usage:
 
 ```bash
-sidemantic migrator --queries queries/ --generate-models output/
-sidemantic migrator models/ --queries queries/ --verbose
+sidemantic migrate generate queries/ --output output/
+sidemantic migrate check queries/ --models models/ --verbose
 ```
 
 ### Core Methods
@@ -116,7 +116,7 @@ Console coverage report: total/parseable/rewritable counts, missing models/dimen
 ### Bootstrap: generate models from queries
 
 ```bash
-sidemantic migrator --queries queries/ --generate-models output/
+sidemantic migrate generate queries/ --output output/
 ```
 
 Creates `output/models/` (YAML per model) and `output/rewritten_queries/` (semantic SQL).
@@ -124,19 +124,23 @@ Creates `output/models/` (YAML per model) and `output/rewritten_queries/` (seman
 ### Coverage analysis: check existing models against queries
 
 ```bash
-sidemantic migrator models/ --queries queries/ --verbose
+sidemantic migrate check queries/ --models models/ --verbose
 ```
 
 Reports which queries can be rewritten, which cannot, and what's missing.
 
 ### Parameters
 
-| Flag | Type | Description |
-|------|------|-------------|
-| `directory` | Path | Semantic layer files (default: `.`) |
-| `--queries / -q` | Path | Required. SQL file or directory |
-| `--verbose / -v` | bool | Per-query analysis details |
-| `--generate-models / -g` | Path | Output directory for generated models |
+Both commands discover `queries/` from the project root when `QUERIES` is omitted.
+
+| Command | Important options |
+|---------|-------------------|
+| `migrate generate [QUERIES]` | `--output/-o`, `--history`, `--connection`, `--days`, `--limit` |
+| `migrate check [QUERIES]` | `--models/-m`, `--history`, `--connection`, `--days`, `--limit`, `--verbose/-v` |
+
+`--history` reads warehouse query history through the configured connection. A command-line
+`--connection` is an override for `--history`, not a replacement for the project database used by
+ordinary semantic queries.
 
 ## Database Schema Introspection
 

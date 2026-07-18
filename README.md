@@ -7,7 +7,7 @@ Sidemantic is an open-source semantic runtime. Define governed metrics once—or
 - **Run on your warehouse:** DuckDB, MotherDuck, PostgreSQL, BigQuery, Snowflake, ClickHouse, Databricks, Spark SQL, and ADBC sources
 - **Consume metrics anywhere:** semantic SQL, CLI, Python, HTTP/Arrow, PostgreSQL wire protocol, MCP, notebooks, TypeScript/WASM, and embedded analytics
 
-[Documentation](https://sidemantic.com) | [GitHub](https://github.com/sidequery/sidemantic) | [Docker Hub](https://hub.docker.com/repository/docker/sidequery/sidemantic) | [Discord](https://discord.com/invite/7MZ4UgSVvF) | [Demo](https://sidemantic.com/demo) (50+ MB data download, runs in your browser with Pyodide + DuckDB)
+[Documentation](https://sidemantic.com) | [CLI conventions](docs/cli.md) | [GitHub](https://github.com/sidequery/sidemantic) | [Docker Hub](https://hub.docker.com/repository/docker/sidequery/sidemantic) | [Discord](https://discord.com/invite/7MZ4UgSVvF) | [Demo](https://sidemantic.com/demo) (50+ MB data download, runs in your browser with Pyodide + DuckDB)
 
 ![Jupyter Widget Preview](preview.png)
 
@@ -41,14 +41,34 @@ models:
         agg: count
 ```
 
-Query it directly—no database setup or package installation required:
+Add `dashboard.yml` when you want the official browser dashboard:
+
+```yaml
+schema: sidemantic.dashboard.v1
+title: Orders
+tabs:
+  - id: overview
+    charts:
+      - id: revenue_by_status
+        type: bar
+        query:
+          metrics: [orders.revenue]
+          dimensions: [orders.status]
+        encoding:
+          x: orders.status
+          y: orders.revenue
+```
+
+Run from the project root. Sidemantic discovers `models/`, `dashboard.yml`, and a
+single `data/*.db` or `data/*.duckdb` automatically; explicit paths and connection
+flags are overrides:
 
 ```bash
+uvx sidemantic validate
 uvx sidemantic query \
   "SELECT orders.status, orders.revenue, orders.order_count
    FROM orders
-   ORDER BY orders.status" \
-  --models ./models
+   ORDER BY orders.status"
 ```
 
 ```csv
@@ -57,16 +77,21 @@ paid,200.00,2
 pending,50.00,1
 ```
 
-From here, inspect generated warehouse SQL or open an interactive explorer:
+Serve `dashboard.yml` in the official React application:
+
+```bash
+uvx --from "sidemantic[api]" sidemantic dashboard serve
+```
+
+From here, inspect generated warehouse SQL or open the terminal workbench:
 
 ```bash
 # Compile without executing
 uvx sidemantic query \
-  "SELECT orders.status, orders.revenue FROM orders" \
-  --models ./models --dry-run
+  "SELECT orders.status, orders.revenue FROM orders" --dry-run
 
 # Explore in the terminal
-uvx --from "sidemantic[workbench]" sidemantic workbench ./models
+uvx --from "sidemantic[workbench]" sidemantic workbench
 ```
 
 ## Choose your path
@@ -130,11 +155,13 @@ sidemantic query "SELECT revenue FROM orders" --db data.duckdb
 # Interactive workbench (TUI with SQL editor + charts)
 uvx --from "sidemantic[workbench]" sidemantic workbench models/ --db data.duckdb
 
-# PostgreSQL server (connect Tableau, DBeaver, etc.)
-uvx --from "sidemantic[serve]" sidemantic serve models/ --port 5433
+# Official browser dashboard (discovers dashboard.yml)
+uvx --from "sidemantic[api]" sidemantic dashboard serve
 
-# HTTP API server (JSON or Arrow)
-uvx --from "sidemantic[api]" sidemantic api-serve models/ --port 4400 --auth-token secret
+# Servers
+uvx --from "sidemantic[api]" sidemantic server api --port 4400 --auth-token secret
+uvx --from "sidemantic[serve]" sidemantic server postgres --port 5433
+uvx --from "sidemantic[mcp]" sidemantic server mcp
 
 # Validate definitions
 sidemantic validate models/
@@ -145,8 +172,13 @@ sidemantic info models/
 # Pre-aggregation recommendations
 sidemantic preagg recommend --db data.duckdb
 
-# Migrate SQL queries to semantic layer
-sidemantic migrator --queries legacy/ --generate-models output/
+# Generate models from queries, or check migration coverage
+sidemantic migrate generate legacy/ --output output/
+sidemantic migrate check legacy/
+
+# Generate typed clients and convert semantic formats
+sidemantic generate client --output sidemantic.generated.ts
+sidemantic convert lookml/ --to sidemantic --output converted.yml
 ```
 
 ## Demos
@@ -158,12 +190,12 @@ uvx --from "sidemantic[workbench]" sidemantic workbench --demo
 
 **PostgreSQL server** (connect Tableau, DBeaver, etc.):
 ```bash
-uvx --from "sidemantic[serve]" sidemantic serve --demo --port 5433
+uvx --from "sidemantic[serve]" sidemantic server postgres --demo --port 5433
 ```
 
 **HTTP API server** (JSON or Arrow):
 ```bash
-uvx --from "sidemantic[api]" sidemantic api-serve --demo --port 4400 --auth-token secret
+uvx --from "sidemantic[api]" sidemantic server api --demo --port 4400 --auth-token secret
 ```
 
 **Colab notebooks:**
@@ -284,7 +316,7 @@ For Cloudflare Worker + Container deployment, see [`examples/cloudflare_containe
 Start the API server:
 
 ```bash
-uvx --from "sidemantic[api]" sidemantic api-serve models/ --db data.duckdb --port 4400 --auth-token secret
+uvx --from "sidemantic[api]" sidemantic server api models/ --db data.duckdb --port 4400 --auth-token secret
 ```
 
 Compile a structured semantic query:

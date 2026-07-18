@@ -209,7 +209,7 @@ class LookMLAdapter(BaseAdapter):
                 # Decide over ALL candidates for the name at once: deciding pairwise as files
                 # stream in mis-handles two archived copies followed by the included one (the
                 # first pair looks unresolvable before the winner is even seen).
-                _included = [c for c in _candidates if c[0].resolve() in included_paths] if included_paths else []
+                _included = [c for c in _candidates if c[0].resolve() in included_paths]
                 if len(_included) == 1:
                     winner = _included[0]  # exactly one live copy: the rest are archived
                     for _file, _, _ in _candidates:
@@ -220,14 +220,26 @@ class LookMLAdapter(BaseAdapter):
                                 _file,
                                 winner[0],
                             )
-                else:
-                    # Zero or several included copies: nothing distinguishes them, so this is a
-                    # real duplicate in the active project. Install every copy and let add_model
-                    # surface the conflict rather than silently loading one at random.
+                elif len(_included) >= 2 or not _scoping_active:
+                    # A REAL duplicate in the active project: several copies the includes reach, or
+                    # (scoping off) no include information to tell an archive from the live view.
+                    # Install every copy and let add_model surface the conflict rather than loading
+                    # one at random.
                     for _file, _view_def, _model in _candidates:
                         raw_view_defs[_name] = _view_def
                         view_source_files[_name] = str(_file)
                         graph.add_model(_model)
+                    continue
+                else:
+                    # Scoping is ON and NO copy is included: every copy is archived / unreachable
+                    # from any model. Skip them all -- raising here would fail a valid project over
+                    # views it never selects, and a lone unincluded view (no rival) still loads via
+                    # the single-candidate path, so this only drops genuinely-ambiguous dead copies.
+                    logger.debug(
+                        "Ignoring %d unincluded duplicate copies of LookML view %r: no model include reaches them.",
+                        len(_candidates),
+                        _name,
+                    )
                     continue
             _file, _view_def, _model = winner
             raw_view_defs[_name] = _view_def
@@ -564,6 +576,19 @@ class LookMLAdapter(BaseAdapter):
                         gm = graph.metrics.get(mt.name)
                         if gm is not None:
                             gm.meta = {**(gm.meta or {}), "_lookml_template_metric": True}
+
+        # Stamp EVERY graph-level metric (time_comparison / conversion, auto-registered into
+        # graph.metrics by add_model) with its OWNING model. In a directory load the LookML project
+        # is parsed before the per-file scan, so a later Python/YAML file can overwrite a model name
+        # this metric depends on; the loader uses this owner to drop the metric when the surviving
+        # model no longer defines it (its base measure / time dimension would be gone). Covers the
+        # normal-view case that carries no template marker.
+        for model_name, model in graph.models.items():
+            for mt in model.metrics or []:
+                if mt.type in self._GRAPH_LEVEL_METRIC_TYPES:
+                    gm = graph.metrics.get(mt.name)
+                    if gm is not None:
+                        gm.meta = {**(gm.meta or {}), "_lookml_graph_metric_owner": model_name}
 
         # Rebuild adjacency graph now that relationships have been added
         graph.build_adjacency()

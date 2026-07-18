@@ -68,9 +68,25 @@ def _drop_non_registerable_models(all_models: dict, all_metrics: dict | None = N
         # dropped, yet the template's orphaned graph metric survives and breaks compile/info.
         # A same-named metric redefined by that later file overwrites this one and carries no
         # marker, so it is kept.
+        #
+        # A NORMAL (non-template) LookML view's graph metric carries no template marker, but the
+        # same overwrite orphans it: a later Python/YAML model of the same name replaces the model
+        # whose measure/time dimension the metric needs. The parser stamps every LookML graph
+        # metric with its owning model, so drop it when the SURVIVING model of that name no longer
+        # defines it -- gone entirely, or replaced by a model without this measure. A later file
+        # that redefines the metric overwrites this object (no owner stamp), so it is kept.
         for mn in list(all_metrics):
-            if (all_metrics[mn].meta or {}).get("_lookml_template_metric"):
+            meta = all_metrics[mn].meta or {}
+            if meta.get("_lookml_template_metric"):
                 all_metrics.pop(mn, None)
+                continue
+            owner = meta.get("_lookml_graph_metric_owner")
+            if owner is not None:
+                owner_model = kept.get(owner)
+                if owner_model is None or not any(
+                    getattr(x, "name", None) == mn for x in (getattr(owner_model, "metrics", None) or [])
+                ):
+                    all_metrics.pop(mn, None)
     return kept
 
 

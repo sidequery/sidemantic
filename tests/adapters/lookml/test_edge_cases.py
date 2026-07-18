@@ -5463,6 +5463,52 @@ def test_lookml_template_metric_dropped_when_later_file_overwrites_template():
     assert "pop" not in layer.graph.metrics  # the template's orphan did not survive it
 
 
+def test_lookml_normal_view_graph_metric_dropped_when_model_overwritten():
+    """A NORMAL view's graph metric must go when a later file overwrites its model without it.
+
+    A period_over_period on a plain (non-template) view auto-registers graph metric `pop`. The
+    project-level LookML load runs before the per-file scan, so a later Python model of the same
+    name replaces the model whose measure/time dimension `pop` needs -- but `pop` carries no
+    template marker, so it lingered and `compile(["pop"])` failed with "No models found". The
+    parser stamps every LookML graph metric with its owner, so the load drops it here; when the
+    model is NOT overwritten the metric survives.
+    """
+    import tempfile
+
+    from sidemantic import SemanticLayer
+    from sidemantic.loaders import load_from_directory
+
+    view = """view: orders {
+  sql_table_name: real_orders ;;
+  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }
+  dimension_group: created { type: time  timeframes: [date]  sql: ${TABLE}.created ;; }
+  measure: revenue { type: sum  sql: ${TABLE}.amount ;; }
+  measure: pop { type: period_over_period  based_on: revenue  based_on_time: created_date  period: year }
+}
+"""
+
+    # Overwritten by a later Python model that does not define `pop` -> the orphan is dropped.
+    overwritten = Path(tempfile.mkdtemp())
+    (overwritten / "orders.view.lkml").write_text(view)
+    (overwritten / "zz_native.py").write_text(
+        "from sidemantic import Dimension, Metric, Model\n"
+        'model = Model(name="orders", table="py_orders", primary_key="id",\n'
+        '              dimensions=[Dimension(name="id", type="numeric", sql="id")],\n'
+        '              metrics=[Metric(name="cnt", agg="count", sql="id")])\n'
+    )
+    layer = SemanticLayer()
+    load_from_directory(layer, overwritten, strict=False)
+    assert layer.graph.models["orders"].table == "py_orders"  # the Python model won
+    assert "pop" not in layer.graph.metrics  # its orphan did not survive
+
+    # Not overwritten: the metric is a normal, working graph metric and must be kept.
+    intact = Path(tempfile.mkdtemp())
+    (intact / "orders.view.lkml").write_text(view)
+    layer = SemanticLayer()
+    load_from_directory(layer, intact, strict=False)
+    assert "pop" in layer.graph.metrics
+
+
 def test_lookml_included_view_does_not_extend_unincluded_parent():
     """An included view must not inherit fields from a parent no model include reaches.
 
@@ -5948,6 +5994,42 @@ def test_lookml_project_parse_resolves_view_with_several_archived_copies():
     (directory / "views" / "o.view.lkml").write_text(view % "real_orders")
 
     assert LookMLAdapter().parse(str(directory)).get_model("orders").table == "real_orders"
+
+
+def test_lookml_project_parse_skips_duplicate_views_no_model_includes():
+    """Several archived copies of a view that NO model include reaches must not fail the load.
+
+    When scoping is active, a duplicate the includes can distinguish resolves to the included copy.
+    But two archived copies with no included rival used to install both and raise
+    "Model X already exists" -- failing a valid project over views it never selects. Skip them
+    instead; a lone unincluded view (no rival) still loads, so only genuinely-ambiguous dead
+    copies are dropped. A real duplicate (both included, or scoping off) still surfaces.
+    """
+    import tempfile
+
+    view = "view: %s {\n  sql_table_name: %s ;;\n  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }\n}\n"
+
+    directory = Path(tempfile.mkdtemp())
+    for name in ("views", "archive1", "archive2"):
+        (directory / name).mkdir()
+    (directory / "m.model.lkml").write_text('include: "/views/orders.view.lkml"\n')
+    (directory / "views" / "orders.view.lkml").write_text(view % ("orders", "real_orders"))
+    # Two archived copies of `legacy`; no model include reaches either.
+    (directory / "archive1" / "legacy.view.lkml").write_text(view % ("legacy", "legacy_v1"))
+    (directory / "archive2" / "legacy.view.lkml").write_text(view % ("legacy", "legacy_v2"))
+
+    graph = LookMLAdapter().parse(str(directory))  # must not raise
+    assert graph.get_model("orders").table == "real_orders"
+    assert "legacy" not in graph.models  # unreachable dead copies dropped, not installed
+
+    # One of the copies IS included: it wins, the other is ignored (unchanged behavior).
+    scoped = Path(tempfile.mkdtemp())
+    (scoped / "views").mkdir()
+    (scoped / "archive").mkdir()
+    (scoped / "m.model.lkml").write_text('include: "/views/*.view.lkml"\n')
+    (scoped / "views" / "legacy.view.lkml").write_text(view % ("legacy", "live_legacy"))
+    (scoped / "archive" / "legacy.view.lkml").write_text(view % ("legacy", "dead_legacy"))
+    assert LookMLAdapter().parse(str(scoped)).get_model("legacy").table == "live_legacy"
 
 
 def test_lookml_include_scoping_follows_closure_from_model_files():

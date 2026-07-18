@@ -1303,6 +1303,18 @@ class LookMLAdapter(BaseAdapter):
                 view_name=name.lstrip("+"),
                 filter_sensitive_measures=filter_sensitive_measures,
             )
+            if measure and self._leaks_cross_view_ref(measure.sql):
+                # Like a cross-view dimension, a measure whose SQL references another view
+                # inline (${other_view.field}) would leak that literal into the model CTE
+                # (SELECT ${customers.balance} ...). Drop it; the fixpoint below then drops any
+                # measure that depended on it.
+                logger.warning(
+                    "LookML measure %r references another view inline (%s), which sidemantic "
+                    "cannot represent; dropping the measure instead of importing unqueryable SQL.",
+                    measure.name,
+                    measure.sql,
+                )
+                measure = None
             if measure:
                 measures.append(measure)
 
@@ -1414,6 +1426,22 @@ class LookMLAdapter(BaseAdapter):
 
         return Model(**model_kwargs)
 
+    # A ${...} reference containing a dot is a cross-view reference (${other_view.field}).
+    # ${TABLE} has no dot inside the braces, and self-view qualifiers are normalized away
+    # before resolution, so any remaining dotted ${...} is an unresolvable cross-view ref
+    # that sidemantic cannot represent inline.
+    _CROSS_VIEW_REF_RE = re.compile(r"\$\{[^}]*\.[^}]*\}")
+
+    @classmethod
+    def _leaks_cross_view_ref(cls, sql: str | None) -> bool:
+        """True if ``sql`` still carries an unresolved cross-view ``${view.field}`` reference.
+
+        A resolved reference is a plain/qualified column or a parenthesized expression; a
+        remaining dotted ``${...}`` would leak the literal into generated SQL (e.g.
+        ``SELECT ${customers.name} ...``), a guaranteed syntax error.
+        """
+        return bool(sql) and bool(cls._CROSS_VIEW_REF_RE.search(sql))
+
     def _parse_dimension(self, dim_def: dict, dimension_sql_lookup: dict[str, str] | None = None) -> Dimension | None:
         """Parse LookML dimension.
 
@@ -1461,6 +1489,20 @@ class LookMLAdapter(BaseAdapter):
         if dim_def.get("can_filter") in ("no", False):
             meta["can_filter"] = False
 
+        # A queryable dimension whose SQL still references another view inline
+        # (${other_view.field}) would emit that literal into the model CTE -- e.g.
+        # SELECT ${customers.name} AS cust_name FROM orders -- so every query touching it
+        # fails with invalid SQL. Sidemantic has no inline cross-model column, so drop the
+        # dimension rather than import an unqueryable field.
+        if self._leaks_cross_view_ref(sql):
+            logger.warning(
+                "LookML dimension %r references another view inline (%s), which sidemantic "
+                "cannot represent; dropping the dimension instead of importing unqueryable SQL.",
+                name,
+                sql,
+            )
+            return None
+
         return Dimension(
             name=name,
             type=sidemantic_type,
@@ -1507,6 +1549,18 @@ class LookMLAdapter(BaseAdapter):
             base_sql = dim_group_def.get("sql")
             if base_sql:
                 base_sql = base_sql.replace("${TABLE}", "{model}")
+
+        # A dimension_group whose base SQL references another view inline (${other.ts})
+        # would leak that literal into every generated timeframe field, so drop the whole
+        # group rather than import unqueryable time dimensions (see _parse_dimension).
+        if self._leaks_cross_view_ref(base_sql):
+            logger.warning(
+                "LookML dimension_group %r references another view inline (%s), which sidemantic "
+                "cannot represent; dropping the group instead of importing unqueryable SQL.",
+                group_name,
+                base_sql,
+            )
+            return []
 
         # Create a dimension for each timeframe
         dimensions = []

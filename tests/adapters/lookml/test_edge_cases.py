@@ -1440,7 +1440,11 @@ view: percentile_test {
 
 
 def test_lookml_cross_view_reference():
-    """Test parsing cross-view field references (${other_view.field})."""
+    """A cross-view field reference (${other_view.field}) is unqueryable, so it is dropped.
+
+    Sidemantic has no inline cross-model column; keeping the dimension would leak the literal
+    ${customers.name} into the model CTE, so every query touching it fails. Drop the field.
+    """
     import tempfile
 
     lkml_content = """
@@ -1463,10 +1467,10 @@ view: orders {
         graph = adapter.parse(Path(f.name))
         orders = graph.get_model("orders")
 
-        # Cross-view references should be preserved
-        customer_name = orders.get_dimension("customer_name")
-        assert customer_name is not None
-        assert "customers.name" in customer_name.sql
+        # The cross-view dimension is dropped rather than imported with a leaked literal.
+        assert orders.get_dimension("customer_name") is None
+        # The ordinary dimension is unaffected.
+        assert orders.get_dimension("id") is not None
 
 
 def test_lookml_recursive_dimension_references():
@@ -2292,12 +2296,11 @@ view: orders {
     assert "{model}.amount" in total.sql
 
 
-def test_lookml_self_view_resolved_cross_view_left_unsupported(caplog):
-    """Self-view refs resolve; cross-view refs are unsupported -> left literal + warned.
+def test_lookml_self_view_resolved_cross_view_dropped(caplog):
+    """Self-view refs resolve; a cross-view ref is unqueryable, so the field is dropped + warned.
 
-    Sidemantic has no inline cross-model column, so emitting a qualified column would
-    crash the generator ("no join path"); the honest behavior is to leave the literal
-    and warn rather than produce something that looks valid but fails.
+    Sidemantic has no inline cross-model column. Leaving the literal ${customers.name} would leak
+    it into the model CTE, so any query on the field fails; drop the dimension entirely instead.
     """
     import logging
 
@@ -2319,13 +2322,13 @@ view: customers {
     orders = graph.get_model("orders")
     # self-view ref resolves to the model column (no literal left)
     assert orders.get_dimension("self_x2").sql == "({model}.id) * 2"
-    # cross-view ref is left as the literal and a warning is emitted
-    assert orders.get_dimension("cust_name").sql == "${customers.name}"
-    assert any("cross-view reference" in rec.getMessage() for rec in caplog.records)
+    # cross-view ref field is dropped (not importable), with a warning
+    assert orders.get_dimension("cust_name") is None
+    assert any("references another view inline" in rec.getMessage() for rec in caplog.records)
 
 
-def test_lookml_number_measure_cross_view_left_unsupported():
-    """type: number measures resolve self-view refs but leave cross-view refs literal (no crash)."""
+def test_lookml_number_measure_cross_view_dropped():
+    """type: number measures resolve self-view refs; a measure with a cross-view ref is dropped."""
     graph = _parse_lkml(
         """
 view: orders {
@@ -2342,10 +2345,43 @@ view: customers {
 """
     )
     orders = graph.get_model("orders")
-    # self-view measure ref resolves (no literal)
+    # self-view measure ref resolves (no literal) and is kept
     assert "${" not in orders.get_metric("self_ratio").sql
-    # cross-view ref is left literal (unsupported) rather than emitting a crashing column
-    assert "${customers.total}" in orders.get_metric("margin_pct").sql
+    # a measure that references another view inline is dropped, not imported with a leaked literal
+    assert orders.get_metric("margin_pct") is None
+
+
+def test_lookml_cross_view_dimension_group_dropped_and_no_leak_on_compile():
+    """A dimension_group with a cross-view base SQL is dropped; surviving fields compile cleanly."""
+    from sidemantic.core.semantic_layer import SemanticLayer
+
+    graph = _parse_lkml(
+        """
+view: orders {
+  sql_table_name: orders ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: amount { type: number  sql: ${TABLE}.amount ;; }
+  dimension_group: cust_created {
+    type: time
+    timeframes: [date, month]
+    sql: ${customers.created_at} ;;
+  }
+}
+view: customers {
+  sql_table_name: customers ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: created_at { type: time  sql: ${TABLE}.created_at ;; }
+}
+"""
+    )
+    orders = graph.get_model("orders")
+    # every timeframe field of the cross-view group is dropped
+    assert not any(d.name.startswith("cust_created") for d in orders.dimensions)
+    # a surviving field still compiles without a leaked ${...}
+    layer = SemanticLayer()
+    layer.graph = graph
+    sql = layer.compile(dimensions=["orders.amount"])
+    assert "${" not in sql
 
 
 def test_lookml_number_measure_row_level_dimension_expr_skipped():

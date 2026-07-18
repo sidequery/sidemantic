@@ -511,6 +511,25 @@ class LookMLAdapter(BaseAdapter):
             resolved.update(unresolvable)
             graph.models = resolved
 
+        # Looker allows a view to extend SEVERAL parents (`extends: [a, b]`, and additive
+        # refinement extends). Model.extends is single, so core resolution above followed only the
+        # FIRST parent; merge the fields of any EXTRA in-scope parents so none are silently lost.
+        # Fields already present (the child's own and its first-parent chain) win; extra parents
+        # only fill gaps -- exact left-to-right override precedence on CONFLICTING field names is
+        # not modeled, but the common case of parents contributing disjoint fields is correct.
+        for name, model in graph.models.items():
+            raw = raw_view_defs.get(name)
+            if raw is None:
+                continue
+            for parent_name in self._all_extends_parents(raw)[1:]:
+                parent = graph.models.get(parent_name)
+                if parent is None or not _parent_in_scope(name, parent_name):
+                    continue
+                have_dims = {d.name for d in model.dimensions}
+                model.dimensions.extend(d.model_copy(deep=True) for d in parent.dimensions if d.name not in have_dims)
+                have_metrics = {mm.name for mm in model.metrics}
+                model.metrics.extend(mm.model_copy(deep=True) for mm in parent.metrics if mm.name not in have_metrics)
+
         def _extends_chain_has(name: str, flagset: set[str]) -> bool:
             """True if name or any of its extends-ancestors is in flagset."""
             seen: set[str] = set()
@@ -1117,15 +1136,35 @@ class LookMLAdapter(BaseAdapter):
         graph._mark_dirty()
 
     @staticmethod
+    def _all_extends_parents(raw: dict) -> list[str]:
+        """All ``extends`` parent names of a raw view dict, in order and de-duplicated.
+
+        lkml stores extends as ``extends__all`` -- a list of per-statement lists
+        (``[["base_a"], ["base_b"]]`` for additive statements, ``[["base_a", "base_b"]]`` for a
+        single multi-parent statement); both flatten to ``["base_a", "base_b"]``.
+        """
+        parents: list[str] = []
+        raw_all = raw.get("extends__all")
+        if isinstance(raw_all, list):
+            for stmt in raw_all:
+                if isinstance(stmt, list):
+                    parents.extend(p for p in stmt if isinstance(p, str))
+                elif isinstance(stmt, str):
+                    parents.append(stmt)
+        else:
+            ev = raw.get("extends")
+            if isinstance(ev, str):
+                parents.append(ev)
+            elif isinstance(ev, list):
+                parents.extend(p for p in ev if isinstance(p, str))
+        seen: set = set()
+        return [p for p in parents if not (p in seen or seen.add(p))]
+
+    @staticmethod
     def _raw_extends_parent(raw: dict) -> str | None:
-        """The immediate ``extends`` parent name of a raw view dict, or None (first parent only)."""
-        extends_list = raw.get("extends") or raw.get("extends__all")
-        if isinstance(extends_list, list):
-            flat = extends_list
-            while flat and isinstance(flat[0], list):
-                flat = flat[0]
-            return flat[0] if flat else None
-        return extends_list if isinstance(extends_list, str) else None
+        """The FIRST ``extends`` parent name of a raw view dict, or None."""
+        parents = LookMLAdapter._all_extends_parents(raw)
+        return parents[0] if parents else None
 
     @classmethod
     def _inherited_raw_fields(cls, base_name: str, raw_view_defs: dict, parent_in_scope=None) -> dict:
@@ -1204,6 +1243,14 @@ class LookMLAdapter(BaseAdapter):
                         else:
                             by_name[fname] = copy.deepcopy(item)
                 merged[key] = list(by_name.values()) + extras
+            elif key in ("extends", "extends__all") and isinstance(value, list):
+                # Looker refinements are ADDITIVE for `extends`: a refinement's parents are appended
+                # to the view's existing extends chain, not replaced
+                # (https://cloud.google.com/looker/docs/lookml-refinements#refinement_extends_are_additive).
+                # Wholesale replacement dropped fields inherited only from the base's original
+                # parents. lkml stores this as `extends__all`, a list of per-statement lists
+                # ([["base_a"]]); concatenate the base's statements first, then the refinement's.
+                merged[key] = list(merged.get(key) or []) + list(value)
             else:
                 merged[key] = copy.deepcopy(value)
         merged["name"] = base.get("name")
@@ -2694,18 +2741,11 @@ class LookMLAdapter(BaseAdapter):
         if view_def.get("tags"):
             model_meta["tags"] = view_def["tags"]
 
-        # Extract extends (lkml parses as list, e.g. ["base_view"])
-        extends_list = view_def.get("extends") or view_def.get("extends__all")
-        extends = None
-        if extends_list:
-            if isinstance(extends_list, list):
-                # Flatten nested lists from extends__all format
-                flat = extends_list
-                while flat and isinstance(flat[0], list):
-                    flat = flat[0]
-                extends = flat[0] if flat else None
-            elif isinstance(extends_list, str):
-                extends = extends_list
+        # Extract extends. Model.extends is a single parent, so keep the FIRST here for the
+        # single-parent chain resolution; any ADDITIONAL parents (extends: [a, b] or additive
+        # refinement extends) are merged into the child after resolution (see the project parse).
+        _all_parents = self._all_extends_parents(view_def)
+        extends = _all_parents[0] if _all_parents else None
 
         # A LookML view with no sql_table_name/derived_table implicitly uses a table
         # named after the view (Looker's default). A view with a derived_table the

@@ -5960,6 +5960,48 @@ def test_lookml_extends_parent_scoped_per_model_not_project_wide():
     assert fields(("a", "/views/orders.view.lkml"), ("b", "/views/*.view.lkml")) == {"id"}
 
 
+def test_lookml_refinement_extends_is_additive():
+    """A refinement's `extends` is APPENDED to the base's chain, not replaced (Looker semantics).
+
+    `view: orders { extends: [base_a] }` then `view: +orders { extends: [base_b] }` must inherit
+    from BOTH bases; wholesale replacement dropped every field defined only in base_a.
+    """
+    graph = _parse_lkml(
+        """
+view: base_a { sql_table_name: base_a ;; dimension: a_field { type: string  sql: ${TABLE}.a_field ;; } }
+view: base_b { sql_table_name: base_b ;; dimension: b_field { type: string  sql: ${TABLE}.b_field ;; } }
+view: orders {
+  sql_table_name: orders ;;
+  extends: [base_a]
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+}
+view: +orders {
+  extends: [base_b]
+}
+"""
+    )
+    dims = {d.name for d in graph.get_model("orders").dimensions}
+    assert {"a_field", "b_field", "id"} <= dims  # both bases inherited, base_a not dropped
+
+
+def test_lookml_multi_parent_extends_inherits_all_bases():
+    """A single `extends: [base_a, base_b]` statement inherits from every listed parent."""
+    graph = _parse_lkml(
+        """
+view: base_a { sql_table_name: base_a ;; dimension: a_field { type: string  sql: ${TABLE}.a_field ;; } }
+view: base_b { sql_table_name: base_b ;; measure: b_total { type: sum  sql: ${TABLE}.amount ;; } }
+view: orders {
+  sql_table_name: orders ;;
+  extends: [base_a, base_b]
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+}
+"""
+    )
+    model = graph.get_model("orders")
+    assert {"a_field", "id"} <= {d.name for d in model.dimensions}
+    assert "b_total" in {m.name for m in model.metrics}
+
+
 def test_lookml_extends_parent_required_in_all_model_scopes(caplog):
     """A parent only SOME models reaching the child include must not be inherited, and it warns.
 

@@ -280,6 +280,27 @@ class LookMLAdapter(BaseAdapter):
                 for _v in _allowed:
                     _view_model_count[_v] = _view_model_count.get(_v, 0) + 1
 
+        def _parent_in_scope(child: str, parent: str) -> bool:
+            """Whether `child` may INHERIT from `parent` under the project's include scoping.
+
+            A unique view is installed even when no include reaches it (an imperfectly-resolved
+            include must never silently drop a view), but being loaded is not being in a model's
+            scope: letting an included child extend an archived parent merges fields Looker would
+            not expose. Such a parent is treated as absent instead, which leaves the child's
+            extends unresolved -- the child still loads, just without the inherited fields.
+
+            The parent must be visible from the CHILD's own file, not merely included somewhere in
+            the project: with several models, a parent selected only by model B is not in scope for
+            a child selected only by model A, and inheriting it would expose another model's
+            fields. A view whose source file is unknown is left alone.
+            """
+            if not _scoping_active:
+                return True
+            child_source = view_source_files.get(child)
+            if child_source is None or parent not in view_source_files:
+                return True
+            return parent in _scope_by_file.get(Path(child_source).resolve(), set())
+
         # Snapshot abstract / unsupported-derived_table flags BEFORE refinement merge:
         # merge_model REPLACES a base view's meta when the refinement carries metadata,
         # which would otherwise drop these markers.
@@ -403,8 +424,11 @@ class LookMLAdapter(BaseAdapter):
                 remerged = None
                 if base_raw is not None and ref_raw is not None:
                     # A refinement can touch a field the base only has via `extends`; seed those from
-                    # the inherited definition so the partial refinement does not clobber it.
-                    inherited_fields = self._inherited_raw_fields(base_name, raw_view_defs)
+                    # the inherited definition so the partial refinement does not clobber it. Only
+                    # seed from parents IN the base's include scope, mirroring the extends resolution
+                    # below -- otherwise a table-backed view would expose an archived parent's field
+                    # Looker (and the resolved extends) would not include.
+                    inherited_fields = self._inherited_raw_fields(base_name, raw_view_defs, _parent_in_scope)
                     merged_raw = self._merge_view_defs(base_raw, ref_raw, inherited_fields)
                     remerged = self._parse_view(merged_raw)
                     if remerged is not None:
@@ -436,27 +460,6 @@ class LookMLAdapter(BaseAdapter):
             | {n for n, m in graph.models.items() if (m.meta or {}).get("unsupported_derived_table")}
         )
         extends_parent = {n: m.extends for n, m in graph.models.items() if m.extends}
-
-        def _parent_in_scope(child: str, parent: str) -> bool:
-            """Whether `child` may INHERIT from `parent` under the project's include scoping.
-
-            A unique view is installed even when no include reaches it (an imperfectly-resolved
-            include must never silently drop a view), but being loaded is not being in a model's
-            scope: letting an included child extend an archived parent merges fields Looker would
-            not expose. Such a parent is treated as absent instead, which leaves the child's
-            extends unresolved -- the child still loads, just without the inherited fields.
-
-            The parent must be visible from the CHILD's own file, not merely included somewhere in
-            the project: with several models, a parent selected only by model B is not in scope for
-            a child selected only by model A, and inheriting it would expose another model's
-            fields. A view whose source file is unknown is left alone.
-            """
-            if not _scoping_active:
-                return True
-            child_source = view_source_files.get(child)
-            if child_source is None or parent not in view_source_files:
-                return True
-            return parent in _scope_by_file.get(Path(child_source).resolve(), set())
 
         # Resolve extends chains. Pre-filter to models whose full chain
         # is present so one broken/missing parent doesn't block valid ones.
@@ -1100,23 +1103,32 @@ class LookMLAdapter(BaseAdapter):
         return extends_list if isinstance(extends_list, str) else None
 
     @classmethod
-    def _inherited_raw_fields(cls, base_name: str, raw_view_defs: dict) -> dict:
+    def _inherited_raw_fields(cls, base_name: str, raw_view_defs: dict, parent_in_scope=None) -> dict:
         """Fields a view inherits via ``extends``, as ``{(list_key, field_name): field_def}``.
 
         Walks the extends chain through the raw view dicts (nearest parent wins). Lets a refinement
         of an INHERITED field seed from the real definition instead of adding a bare partial field
         that re-parses to a categorical default and then overrides the inherited one.
+
+        ``parent_in_scope(child, parent)`` gates each extends LINK the same way the extends
+        resolution does: an out-of-scope parent leaves the extends unresolved, so its fields must
+        NOT be seeded either (else a table-backed view would expose an archived parent's field).
+        Walking stops at the first out-of-scope link, since nothing beyond it is inherited.
         """
         fields: dict[tuple[str, str], dict] = {}
         seen: set[str] = {base_name}
+        child = base_name
         parent = cls._raw_extends_parent(raw_view_defs.get(base_name) or {})
         while parent is not None and parent not in seen:
+            if parent_in_scope is not None and not parent_in_scope(child, parent):
+                break
             seen.add(parent)
             parent_raw = raw_view_defs.get(parent) or {}
             for key in cls._VIEW_FIELD_LIST_KEYS:
                 for item in parent_raw.get(key) or []:
                     if isinstance(item, dict) and item.get("name"):
                         fields.setdefault((key, item["name"]), copy.deepcopy(item))  # nearest wins
+            child = parent
             parent = cls._raw_extends_parent(parent_raw)
         return fields
 

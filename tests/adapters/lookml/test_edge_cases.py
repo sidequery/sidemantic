@@ -6612,6 +6612,51 @@ def test_lookml_refinement_of_inherited_field_keeps_inherited_definition():
     assert any(d.name == "brand_new" for d in new_model.dimensions)
 
 
+def test_lookml_refinement_seeding_respects_include_scope():
+    """Seeding an inherited field must only pull from parents IN the model's include scope.
+
+    When include scoping is active and an included `orders` extends `base` but the model does NOT
+    include `base.view.lkml`, the extends resolution leaves it unresolved -- but the refinement
+    seeding walked the unscoped raw dicts and copied the archived `base.amount` into `orders`,
+    exposing a parent field Looker would not include. Seeding now gates each extends link the same
+    way; when the parent IS included it still seeds.
+    """
+    import tempfile
+
+    child = "view: orders {\n  extends: [base]\n  sql_table_name: orders ;;\n}\n"
+    base = (
+        "view: base {\n  sql_table_name: base_t ;;\n  dimension: amount { type: number  sql: ${TABLE}.amount ;; }\n}\n"
+    )
+    refine = 'view: +orders {\n  dimension: amount { label: "Amount" }\n}\n'
+
+    def amount(directory):
+        model = LookMLAdapter().parse(str(directory)).get_model("orders")
+        return next((d for d in model.dimensions if d.name == "amount"), None)
+
+    # base is archived (NOT included): the refinement must not seed base's numeric amount.
+    unscoped_parent = Path(tempfile.mkdtemp())
+    (unscoped_parent / "views").mkdir()
+    (unscoped_parent / "archive").mkdir()
+    (unscoped_parent / "orders.model.lkml").write_text(
+        'include: "/views/orders.view.lkml"\ninclude: "/views/refine.view.lkml"\n'
+    )
+    (unscoped_parent / "views" / "orders.view.lkml").write_text(child)
+    (unscoped_parent / "archive" / "base.view.lkml").write_text(base)
+    (unscoped_parent / "views" / "refine.view.lkml").write_text(refine)
+    leaked = amount(unscoped_parent)
+    assert leaked is None or leaked.sql != "{model}.amount"  # base's field is NOT exposed
+
+    # base IS included: the inherited field is seeded (numeric sql kept, label applied).
+    scoped_parent = Path(tempfile.mkdtemp())
+    (scoped_parent / "views").mkdir()
+    (scoped_parent / "orders.model.lkml").write_text('include: "/views/*.view.lkml"\n')
+    (scoped_parent / "views" / "orders.view.lkml").write_text(child)
+    (scoped_parent / "views" / "base.view.lkml").write_text(base)
+    (scoped_parent / "views" / "refine.view.lkml").write_text(refine)
+    kept = amount(scoped_parent)
+    assert kept is not None and kept.type == "numeric" and kept.sql == "{model}.amount" and kept.label == "Amount"
+
+
 def test_lookml_project_parse_merges_refinements_deterministically():
     """Refinements merge in sorted file order, not filesystem traversal order.
 

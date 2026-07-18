@@ -613,6 +613,16 @@ class SQLGenerator:
         """
         return _quote_identifier_cached(name, self.dialect, self._is_simple_identifier(name))
 
+    def _raw_column_ref(self, col_name: str, quoted: bool) -> str:
+        """A raw column reference for a CTE projection, mirroring the SOURCE's quoting.
+
+        A column QUOTED in the source (a reserved word like ``"group"``, or a case-sensitive name)
+        is re-quoted; an unquoted one is left bare. This is exact where sqlglot's default is not:
+        ``exp.column("group").sql()`` leaves ``group`` unquoted (DuckDB then rejects it), yet
+        force-quoting every column would fold-break a case-sensitive unquoted column on Postgres.
+        """
+        return exp.column(exp.to_identifier(col_name, quoted=quoted)).sql(dialect=self.dialect)
+
     def _dimension_base_expr(self, dimension, *, window: bool = False) -> str:
         """Row-level SQL expression for a dimension, with bare column names quoted.
 
@@ -2091,6 +2101,10 @@ class SQLGenerator:
         # Collect all measures needed for metrics
         measures_needed = set()
         extra_metric_sql_columns: set[str] = set()
+        # Raw columns whose name was QUOTED in the source SQL (e.g. a reserved word `"group"`).
+        # They must be re-quoted in the CTE projection; sqlglot's default quoting misses some
+        # reserved words, and force-quoting every column would break case-folded unquoted columns.
+        quoted_raw_columns: set[str] = set()
         # Opaque complete-sql measures (Cube/Tesseract number_agg/time/string/boolean):
         # each is projected into the CTE under dedicated raw aliases so the preserved
         # expression sees raw column values (never dimension-transformed) and honors
@@ -2107,6 +2121,8 @@ class SQLGenerator:
                     if col.table and col.table.replace("_cte", "") != model_name:
                         continue
                     extra_metric_sql_columns.add(col.name)
+                    if isinstance(col.this, exp.Identifier) and col.this.args.get("quoted"):
+                        quoted_raw_columns.add(col.name)
             except Exception:
                 logging.debug("Failed to parse metric SQL for columns: %s", sql_expr, exc_info=True)
 
@@ -2213,6 +2229,14 @@ class SQLGenerator:
 
         all_metric_columns = set(metric_filter_columns or set()) | extra_metric_sql_columns
 
+        # A complete measure's columns also reach all_metric_columns via metric-filter extraction,
+        # which drops the quoted flag. Recover it from the complete measures (already parsed) so a
+        # reserved column projected on THIS path is quoted too, not just on the dedicated-alias path.
+        for measure in complete_sql_measures.values():
+            for _cn, _cq in self._complete_sql_columns(measure):
+                if _cq:
+                    quoted_raw_columns.add(_cn)
+
         # Add raw columns referenced by inline aggregate SQL (if they are not dimensions/measures)
         for col_name in all_metric_columns:
             if col_name in columns_added:
@@ -2226,10 +2250,10 @@ class SQLGenerator:
                 continue
             if model.get_metric(col_name):
                 continue
-            # Quote the raw column for the dialect so a reserved-word / special column is emitted
-            # as e.g. `"select"`, not the bare `select` the engine rejects.
-            quoted_col = exp.column(col_name).sql(dialect=self.dialect)
-            raw_expr = f"{model_table_alias}.{quoted_col}" if model_table_alias else quoted_col
+            # Mirror the source's quoting so a reserved-word column (`"group"`) is emitted quoted,
+            # not the bare `group` the engine rejects, without force-quoting ordinary columns.
+            raw_col = self._raw_column_ref(col_name, col_name in quoted_raw_columns)
+            raw_expr = f"{model_table_alias}.{raw_col}" if model_table_alias else raw_col
             select_cols.append(f"{raw_expr} AS {self._quote_alias(col_name)}")
             columns_added.add(col_name)
 
@@ -2297,15 +2321,15 @@ class SQLGenerator:
             for filter_str in measure.filters or []:
                 filter_conditions.append(filter_str.replace("{model}.", "").replace("{model}", ""))
             filter_sql = " AND ".join(filter_conditions) if filter_conditions else None
-            for col_name in self._complete_sql_columns(measure):
+            for col_name, col_quoted in self._complete_sql_columns(measure):
                 raw_alias = self._complete_sql_raw_alias(measure.name, col_name)
                 if raw_alias in columns_added:
                     continue
-                # Quote the column for the dialect so a reserved-word / special column (e.g. a
-                # LookML `${TABLE}."select"`) is emitted as `"select"`, not the bare `select` the
-                # engine rejects. sqlglot leaves ordinary identifiers unquoted.
-                quoted_col = exp.column(col_name).sql(dialect=self.dialect)
-                raw_expr = f"{model_table_alias}.{quoted_col}" if model_table_alias else quoted_col
+                # Mirror the source's quoting so a reserved-word column (e.g. a LookML
+                # `${TABLE}."group"`) is emitted as `"group"`, not the bare `group` the engine
+                # rejects, without force-quoting ordinary columns.
+                raw_col = self._raw_column_ref(col_name, col_quoted)
+                raw_expr = f"{model_table_alias}.{raw_col}" if model_table_alias else raw_col
                 if filter_sql:
                     raw_expr = f"CASE WHEN {filter_sql} THEN {raw_expr} ELSE NULL END"
                 select_cols.append(f"{raw_expr} AS {self._quote_alias(raw_alias)}")
@@ -3421,10 +3445,14 @@ class SQLGenerator:
         """
         return f"{measure_name}__{column}__cmpl"
 
-    def _complete_sql_columns(self, measure) -> list[str]:
-        """Model-local column names referenced by an opaque complete-sql measure."""
+    def _complete_sql_columns(self, measure) -> list[tuple[str, bool]]:
+        """(column name, was_quoted) pairs referenced by an opaque complete-sql measure.
+
+        ``was_quoted`` records whether the name was a quoted identifier in the source, so the CTE
+        projection can re-quote a reserved column (``"group"``) without force-quoting all columns.
+        """
         sql_expr = (measure.sql or "").replace("{model}.", "").replace("{model}", "")
-        columns: list[str] = []
+        columns: list[tuple[str, bool]] = []
         seen: set[str] = set()
         try:
             parsed = _parse_fragment(sql_expr, self.dialect)
@@ -3432,7 +3460,8 @@ class SQLGenerator:
                 if col.name in seen:
                     continue
                 seen.add(col.name)
-                columns.append(col.name)
+                quoted = isinstance(col.this, exp.Identifier) and bool(col.this.args.get("quoted"))
+                columns.append((col.name, quoted))
         except Exception:
             logging.debug("Failed to parse complete-sql measure for columns: %s", sql_expr, exc_info=True)
         return columns

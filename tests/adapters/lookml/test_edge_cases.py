@@ -2749,6 +2749,44 @@ view: orders {
     assert con.execute(sql).fetchall() == [(20,)]  # SUM of the quoted `select` column
 
 
+def test_lookml_complete_measure_reserved_column_sqlglot_misses_is_quoted():
+    """A reserved column sqlglot does NOT auto-quote (e.g. `group`) must still round-trip.
+
+    sqlglot's DuckDB dialect leaves `group` bare as a column, but DuckDB rejects `group AS ...`. The
+    CTE projection mirrors the SOURCE quoting instead: a column quoted in the source stays quoted on
+    BOTH projection paths (the dedicated __cmpl alias and the metric-filter raw column), while an
+    ordinary column is NOT over-quoted (over-quoting would fold-break case-sensitive Postgres names).
+    """
+    import duckdb
+
+    from sidemantic import SemanticLayer
+
+    graph = _parse_lkml(
+        """
+view: orders {
+  sql_table_name: orders ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: grp { type: number  sql: ${TABLE}."group" ;; }
+  dimension: amount { type: number  sql: ${TABLE}.amount ;; }
+  measure: total { type: sum  sql: ${amount} ;; }
+  measure: m { type: number  sql: SUM(${grp}) / NULLIF(${total}, 0) ;; }
+}
+"""
+    )
+    model = graph.get_model("orders")
+    layer = SemanticLayer(auto_register=False)
+    layer.add_model(model)
+    sql = layer.compile(metrics=["orders.m"])
+
+    assert "group AS group" not in sql  # the reserved column is not projected bare
+    assert '"amount" AS' not in sql  # an ordinary column is NOT over-quoted
+
+    con = duckdb.connect()
+    con.execute('create table orders as select 1 id, 5 "group", 10 amount union all select 2, 15, 20')
+    # SUM("group") = 20, SUM(amount) = 30 -> 20/30.
+    assert con.execute(sql).fetchall() == [(20 / 30,)]
+
+
 def test_lookml_number_measure_dimension_ref_expanding_to_subquery_is_skipped():
     """A dimension ref that EXPANDS to a subquery must be caught after resolution, not just raw.
 

@@ -529,6 +529,10 @@ class LookMLAdapter(BaseAdapter):
                 model.dimensions.extend(d.model_copy(deep=True) for d in parent.dimensions if d.name not in have_dims)
                 have_metrics = {mm.name for mm in model.metrics}
                 model.metrics.extend(mm.model_copy(deep=True) for mm in parent.metrics if mm.name not in have_metrics)
+                # Also copy the parent's segments (LookML `filter:` fields); otherwise a base
+                # contributing only segments would have them silently dropped from the child.
+                have_segments = {s.name for s in model.segments}
+                model.segments.extend(s.model_copy(deep=True) for s in parent.segments if s.name not in have_segments)
 
         def _extends_chain_has(name: str, flagset: set[str]) -> bool:
             """True if name or any of its extends-ancestors is in flagset."""
@@ -1176,24 +1180,31 @@ class LookMLAdapter(BaseAdapter):
 
         ``parent_in_scope(child, parent)`` gates each extends LINK the same way the extends
         resolution does: an out-of-scope parent leaves the extends unresolved, so its fields must
-        NOT be seeded either (else a table-backed view would expose an archived parent's field).
-        Walking stops at the first out-of-scope link, since nothing beyond it is inherited.
+        NOT be seeded either (else a table-backed view would expose an archived parent's field). An
+        out-of-scope link is skipped (with its ancestors), but OTHER parents are still walked.
+
+        A view can extend SEVERAL parents (``extends: [a, b]``), so this walks EVERY parent, not
+        just the first -- otherwise a refinement of a field inherited only from a non-first parent
+        would not seed from its real definition and would re-parse to a bare categorical field.
         """
         fields: dict[tuple[str, str], dict] = {}
         seen: set[str] = {base_name}
-        child = base_name
-        parent = cls._raw_extends_parent(raw_view_defs.get(base_name) or {})
-        while parent is not None and parent not in seen:
+        # Breadth-first over all extends parents: nearer parents before their ancestors, and
+        # earlier-listed before later, so the nearest/earliest definition of a field wins (setdefault).
+        queue = [(base_name, p) for p in cls._all_extends_parents(raw_view_defs.get(base_name) or {})]
+        while queue:
+            child, parent = queue.pop(0)
+            if parent in seen:
+                continue
             if parent_in_scope is not None and not parent_in_scope(child, parent):
-                break
+                continue  # skip this link (and its ancestors); other parents still apply
             seen.add(parent)
             parent_raw = raw_view_defs.get(parent) or {}
             for key in cls._VIEW_FIELD_LIST_KEYS:
                 for item in parent_raw.get(key) or []:
                     if isinstance(item, dict) and item.get("name"):
                         fields.setdefault((key, item["name"]), copy.deepcopy(item))  # nearest wins
-            child = parent
-            parent = cls._raw_extends_parent(parent_raw)
+            queue.extend((parent, gp) for gp in cls._all_extends_parents(parent_raw))
         return fields
 
     @classmethod

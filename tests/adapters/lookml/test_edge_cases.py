@@ -6050,6 +6050,38 @@ view: orders {
     assert "b_total" in {m.name for m in model.metrics}
 
 
+def test_lookml_multi_parent_extends_copies_segments_and_seeds_refinements():
+    """Extra extends parents contribute segments too, and a refinement of a non-first-parent field
+    seeds from the real inherited definition (not a bare categorical re-parse)."""
+    graph = _parse_lkml(
+        """
+view: base_a { sql_table_name: base_a ;; dimension: a_field { type: string  sql: ${TABLE}.a_field ;; } }
+view: base_b {
+  sql_table_name: base_b ;;
+  dimension: amount { type: number  sql: ${TABLE}.amount ;; }
+  filter: big_orders { type: number  sql: ${TABLE}.amount > 100 ;; }
+}
+view: child {
+  sql_table_name: child ;;
+  extends: [base_a, base_b]
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+}
+view: +child {
+  dimension: amount { label: "The Amount" }
+}
+"""
+    )
+    model = graph.get_model("child")
+    # A segment defined only by the non-first parent is inherited.
+    assert model.get_segment("big_orders") is not None
+    amount = model.get_dimension("amount")
+    # The partial refinement seeded from base_b's real definition: SQL preserved, label applied --
+    # not re-parsed to a bare categorical field with no sql.
+    assert amount is not None and amount.sql and "amount" in amount.sql
+    assert amount.label == "The Amount"
+    assert amount.type == "numeric"
+
+
 def test_lookml_extends_parent_required_in_all_model_scopes(caplog):
     """A parent only SOME models reaching the child include must not be inherited, and it warns.
 

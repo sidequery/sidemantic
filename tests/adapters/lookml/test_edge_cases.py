@@ -5080,6 +5080,34 @@ def test_lookml_export_folded_filter_keeps_boolean_null_literals():
     assert conds(["{model}.status = TRUE"], model) == "((${TABLE}.status_col) = TRUE)"
 
 
+def test_lookml_export_folded_filter_keeps_sql_operator_keywords():
+    """Bare SQL operators/keywords (or/and/in/between) stay operators even when a dimension shares the name.
+
+    An unquoted `or` is always the operator, never a column, so a folded filter must not rewrite it
+    to a same-named `or` dimension's SQL (which produced invalid `... 'done' (${TABLE}.or_col) ...`).
+    """
+    from sidemantic import Dimension, Model
+
+    model = Model(
+        name="orders",
+        table="t",
+        primary_key="id",
+        dimensions=[
+            Dimension(name="status", type="categorical", sql="status_col"),
+            Dimension(name="or", type="categorical", sql="or_col"),
+            Dimension(name="and", type="categorical", sql="and_col"),
+            Dimension(name="in", type="categorical", sql="in_col"),
+        ],
+    )
+    conds = LookMLAdapter._fold_filter_conds
+    assert conds(["status = 'done' or status = 'paid'"], model) == (
+        "((${TABLE}.status_col) = 'done' or (${TABLE}.status_col) = 'paid')"
+    )
+    assert conds(["status in ('a', 'b') and status = 'c'"], model) == (
+        "((${TABLE}.status_col) in ('a', 'b') and (${TABLE}.status_col) = 'c')"
+    )
+
+
 def test_lookml_export_ordered_set_aggregate_with_filter_skipped():
     """A filtered ordered-set aggregate can't fold (ORDER BY would land inside the CASE) -> skipped.
 
@@ -5122,6 +5150,11 @@ def test_lookml_export_ordered_set_aggregate_with_filter_skipped():
     text = open(out).read()
     assert "measure: oa" not in text  # skipped, not emitted with ORDER BY inside the CASE
     assert "ORDER BY ${TABLE}.created_at END" not in text  # never the malformed inside-CASE form
+    # A WITHIN GROUP ordered-set aggregate IS foldable (the folder targets the ORDER BY value), so
+    # it must NOT be rejected -- filtered percentile/median metrics still export.
+    assert (
+        LookMLAdapter._complete_sql_fold_is_safe("PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY {model}.amount)") is True
+    )
 
 
 def test_lookml_export_template_only_folded_filter_skipped():

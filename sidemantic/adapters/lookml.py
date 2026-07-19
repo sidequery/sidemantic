@@ -269,6 +269,11 @@ class LookMLAdapter(BaseAdapter):
             _file, _view_def, _model = winner
             raw_view_defs[_name] = _view_def
             view_source_files[_name] = str(_file)
+            if _scoping_active and _file.resolve() not in included_paths:
+                # Scoping is on but this view is in NO model's include closure -- Looker cannot see
+                # it. It is kept only so an imperfectly-resolved include never silently drops a view,
+                # but downstream FK inference must NOT join to it. Mark it so the loader skips it.
+                _model.meta = {**(_model.meta or {}), "_lookml_unincluded": True}
             graph.add_model(_model)
 
         # The view scope of every file a model reaches: the views that model defines inline plus

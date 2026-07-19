@@ -1370,7 +1370,14 @@ def _infer_relationships(models: dict) -> None:
     """
     from sidemantic.core.relationship import Relationship
 
+    def _unincluded(m) -> bool:
+        # A LookML view outside every model's include closure: Looker cannot see it, so it must
+        # neither originate nor receive an inferred join (see LookMLAdapter's `_lookml_unincluded`).
+        return bool((getattr(m, "meta", None) or {}).get("_lookml_unincluded"))
+
     for model_name, model in models.items():
+        if _unincluded(model):
+            continue
         # Look at all dimensions to find potential foreign keys
         for dimension in model.dimensions:
             dim_name = dimension.name.lower()
@@ -1391,7 +1398,7 @@ def _infer_relationships(models: dict) -> None:
 
             # Find if any of these tables exist
             for target in potential_targets:
-                if target in models and target != model_name:
+                if target in models and target != model_name and not _unincluded(models[target]):
                     # Check if this relationship already exists
                     existing = [r for r in model.relationships if r.name == target]
                     if not existing:

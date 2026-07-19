@@ -516,3 +516,30 @@ def test_load_from_directory_preserves_native_join_to_overwritten_template_name(
     # The native-authored relationship to the real customer is preserved, not stripped as a template join.
     assert "customer" in {r.name for r in (orders.relationships or [])}
     assert layer.graph.models["customer"].table == "real_customer"
+
+
+def test_load_from_directory_no_fk_inference_to_unincluded_lookml_view(tmp_path):
+    """FK inference must not join to a LookML view outside every model's include closure.
+
+    An archived `customers` view no model includes is kept (so an imperfect include never silently
+    drops a view), but Looker cannot see it, so `orders.customer_id -> customers` must NOT be
+    inferred against it. An INCLUDED customers view is still inferred normally."""
+    (tmp_path / "views").mkdir()
+    (tmp_path / "archive").mkdir()
+    (tmp_path / "orders.model.lkml").write_text('include: "/views/orders.view.lkml"\n')
+    (tmp_path / "views" / "orders.view.lkml").write_text(
+        "view: orders {\n  sql_table_name: orders ;;\n"
+        "  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }\n"
+        "  dimension: customer_id { type: number  sql: ${TABLE}.customer_id ;; }\n}\n"
+    )
+    (tmp_path / "archive" / "customers.view.lkml").write_text(
+        "view: customers { dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; } }\n"
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path, strict=False)
+
+    orders = layer.graph.models.get("orders")
+    assert orders is not None
+    # No inferred join to the unincluded archived customers view.
+    assert "customers" not in {r.name for r in (orders.relationships or [])}

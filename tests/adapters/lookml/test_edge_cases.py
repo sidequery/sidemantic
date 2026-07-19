@@ -5678,6 +5678,25 @@ def test_lookml_export_folded_filter_leaves_backtick_identifier_untouched():
     assert "`(${TABLE}" not in text  # not rewritten inside the backticks
 
 
+def test_lookml_export_folded_filter_model_placeholder_in_string_literal_preserved():
+    """A `{model}` inside a string LITERAL is a value, not a placeholder, so it must not become ${TABLE}."""
+    from sidemantic import Dimension, Model
+
+    model = Model(
+        name="orders",
+        table="t",
+        primary_key="id",
+        dimensions=[
+            Dimension(name="label", type="categorical", sql="label_col"),
+            Dimension(name="status", type="categorical", sql="status_col"),
+        ],
+    )
+    conds = LookMLAdapter._fold_filter_conds
+    # The literal value keeps `{model}`; a real placeholder outside the quotes is converted.
+    assert conds(["{model}.label = '{model}.status'"], model) == "((${TABLE}.label_col) = '{model}.status')"
+    assert conds(["{model}.label = {model}.status"], model) == "((${TABLE}.label_col) = (${TABLE}.status_col))"
+
+
 def test_lookml_export_string_literal_paren_in_aggregate_arg_folds():
     """A valid aggregate whose arg has a paren inside a STRING LITERAL must fold, not be rejected."""
     import tempfile

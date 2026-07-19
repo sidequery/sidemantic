@@ -621,6 +621,19 @@ class LookMLAdapter(BaseAdapter):
         return "".join(out)
 
     @staticmethod
+    def _model_to_table_outside_quotes(s: str) -> str:
+        """Replace the ``{model}`` placeholder with ``${TABLE}`` OUTSIDE quoted literals/identifiers.
+
+        A blanket ``.replace`` would rewrite a ``{model}`` that is part of a string VALUE
+        (``label = '{model}.status'``), changing the matched literal; only real placeholders are
+        converted here.
+        """
+        parts = re.split(r"""('(?:[^']|'')*'|"(?:[^"]|"")*"|`[^`]*`|\[[^\]]*\])""", s)
+        for i in range(0, len(parts), 2):  # even indices sit OUTSIDE quoted segments
+            parts[i] = parts[i].replace("{model}", "${TABLE}")
+        return "".join(parts)
+
+    @staticmethod
     def _enclosing_call(pre: str) -> tuple[str | None, int, int]:
         """Describe the call a token sits in, given the text ``pre`` before it.
 
@@ -3503,7 +3516,7 @@ class LookMLAdapter(BaseAdapter):
                 offset += len(part)
             return "".join(parts)
 
-        return " AND ".join("(" + _resolve(f).replace("{model}", "${TABLE}") + ")" for f in filters)
+        return " AND ".join("(" + cls._model_to_table_outside_quotes(_resolve(f)) + ")" for f in filters)
 
     @staticmethod
     def _aggregate_references_column(sql: str) -> bool:

@@ -72,6 +72,8 @@ def enforce_field_visibility(
     ``public: false`` cannot be bypassed by switching protocols or by using a
     hidden field only as a filter/order oracle.
     """
+    from sqlglot import exp, parse_one
+
     from sidemantic.core.semantic_layer import SecurityError
 
     def field_is_public(model_name: str, field_name: str) -> bool:
@@ -116,11 +118,38 @@ def enforce_field_visibility(
             raise SecurityError(f"Segment '{model_name}.{segment_name}' is not public")
 
     ref_pattern = re.compile(r"\b([A-Za-z_]\w*)\.([A-Za-z_]\w*)\b")
-    for raw in [*(filters or []), *(order_by or [])]:
+    expression_refs = [*(filters or []), *(order_by or [])]
+    candidate_models = {
+        ref.split(".", 1)[0]
+        for ref in [*(metrics or []), *(dimensions or []), *(segments or [])]
+        if "." in ref and ref.split(".", 1)[0] in graph.models
+    }
+    candidate_models.update(
+        model_name
+        for raw in expression_refs
+        for model_name, _field_name in ref_pattern.findall(raw)
+        if model_name in graph.models
+    )
+    if not candidate_models and len(graph.models) == 1:
+        candidate_models.update(graph.models)
+
+    for raw in expression_refs:
         for model_name, field_name in ref_pattern.findall(raw):
             field_name = field_name.rsplit("__", 1)[0] if "__" in field_name else field_name
             if not field_is_public(model_name, field_name):
                 raise SecurityError(f"Field '{model_name}.{field_name}' is not public")
+
+        try:
+            parsed = parse_one(raw)
+        except Exception:
+            continue
+        for column in parsed.find_all(exp.Column):
+            if column.table:
+                continue
+            field_name = column.name.rsplit("__", 1)[0] if "__" in column.name else column.name
+            for model_name in candidate_models:
+                if not field_is_public(model_name, field_name):
+                    raise SecurityError(f"Field '{model_name}.{field_name}' is not public")
 
 
 def _sql_literal(value) -> str:

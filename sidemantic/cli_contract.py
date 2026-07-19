@@ -6,6 +6,7 @@ import csv
 import dataclasses
 import io
 import json
+import math
 import os
 import sys
 from collections.abc import Iterator, Sequence
@@ -272,6 +273,26 @@ def _json_default(value: object) -> Any:
     raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
 
 
+def _json_safe(value: object) -> object:
+    """Normalize values that the JSON specification cannot represent."""
+
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if value is None or isinstance(value, (str, int, bool)):
+        return value
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    return _json_safe(_json_default(value))
+
+
+def _json_dumps(value: object, **kwargs: Any) -> str:
+    """Serialize strict JSON after normalizing unsupported scalar values."""
+
+    return json.dumps(_json_safe(value), allow_nan=False, **kwargs)
+
+
 OUTPUT_FORMATS = ("table", "csv", "json", "jsonl")
 
 
@@ -310,7 +331,7 @@ def _record_value(value: object) -> object:
         return str(value)
     if isinstance(value, (bytes, bytearray, memoryview)):
         return bytes(value).hex()
-    return json.dumps(value, sort_keys=True, default=_json_default)
+    return _json_dumps(value, sort_keys=True)
 
 
 def render_records(
@@ -324,11 +345,9 @@ def render_records(
 
     selected_columns = list(columns or (records[0].keys() if records else []))
     if output_format == "json":
-        return json.dumps(
-            json_value if json_value is not None else list(records), indent=2, sort_keys=True, default=_json_default
-        )
+        return _json_dumps(json_value if json_value is not None else list(records), indent=2, sort_keys=True)
     if output_format == "jsonl":
-        return "\n".join(json.dumps(record, sort_keys=True, default=_json_default) for record in records)
+        return "\n".join(_json_dumps(record, sort_keys=True) for record in records)
 
     buffer = io.StringIO()
     if output_format == "csv":
@@ -386,8 +405,8 @@ def render_rows(
         object_columns = _unique_column_names(selected_columns)
         records = [dict(zip(object_columns, row, strict=True)) for row in rows]
         if output_format == "json":
-            return json.dumps(records, indent=2, sort_keys=True, default=_json_default)
-        return "\n".join(json.dumps(record, sort_keys=True, default=_json_default) for record in records)
+            return _json_dumps(records, indent=2, sort_keys=True)
+        return "\n".join(_json_dumps(record, sort_keys=True) for record in records)
 
     rendered_rows = [[str(_record_value(value)) for value in row] for row in rows]
     buffer = io.StringIO()
@@ -488,7 +507,7 @@ def emit_json(value: object) -> None:
     """Write stable, valid JSON and nothing else to stdout."""
 
     cli_state().machine_output = True
-    emit_result(json.dumps(value, indent=2, sort_keys=True, default=_json_default))
+    emit_result(_json_dumps(value, indent=2, sort_keys=True))
 
 
 def fail(exc: Exception | str, *, usage: bool = False) -> NoReturn:

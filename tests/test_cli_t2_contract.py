@@ -261,6 +261,29 @@ def test_plain_query_preserves_duplicate_columns_by_position(project: Path):
     assert result.stdout.splitlines() == ["x\tx", "1\t2"]
 
 
+@pytest.mark.parametrize("output_format", ["json", "jsonl"])
+def test_query_json_formats_normalize_non_finite_floats(project: Path, output_format: str):
+    result = runner.invoke(
+        app,
+        [
+            "query",
+            "SELECT 'NaN'::DOUBLE AS nan, 'Infinity'::DOUBLE AS positive, '-Infinity'::DOUBLE AS negative",
+            "--project",
+            str(project),
+            "--format",
+            output_format,
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(
+        result.stdout,
+        parse_constant=lambda constant: pytest.fail(f"non-standard JSON constant: {constant}"),
+    )
+    row = payload[0] if output_format == "json" else payload
+    assert row == {"nan": None, "negative": None, "positive": None}
+
+
 def test_query_dry_run_honors_csv_format(project: Path):
     result = runner.invoke(
         app,
@@ -463,6 +486,28 @@ def test_invalid_global_format_fails_before_unstructured_commands(
     assert result.exit_code == 2
     assert result.stdout == ""
     assert "--format must be one of: table, csv, json, jsonl" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["rewrite", "SELECT status FROM orders"],
+        ["server", "api", "--no-ui"],
+        ["dashboard", "types"],
+    ],
+)
+def test_valid_global_format_is_rejected_by_unstructured_commands(
+    project: Path,
+    arguments: list[str],
+):
+    result = runner.invoke(
+        app,
+        [*arguments, "--project", str(project), "--format", "json"],
+    )
+
+    assert result.exit_code == 2
+    assert result.stdout == ""
+    assert "does not support --format" in result.stderr
 
 
 @pytest.mark.parametrize("command", ["info", "validate"])

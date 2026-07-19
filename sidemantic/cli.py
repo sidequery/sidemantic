@@ -68,6 +68,9 @@ ROOT_EPILOG = f"""Examples:
 Documentation: {DOCS_URL}
 Support: {SUPPORT_URL}"""
 GROUP_EPILOG = f"Documentation: {DOCS_URL}\nSupport: {SUPPORT_URL}"
+FORMATTED_COMMANDS = frozenset(
+    {"dashboard", "explain", "explain-sql", "info", "migrate", "migrator", "preagg", "query", "validate"}
+)
 
 
 app = typer.Typer(
@@ -333,6 +336,8 @@ def main(
     # the time the root callback runs, so skip project discovery for this path.
     if ctx.meta.get(HELP_REQUESTED_META_KEY) or ctx.invoked_subcommand == "help":
         return
+    if format_explicit and ctx.invoked_subcommand not in FORMATTED_COMMANDS:
+        raise InvocationError(f"{ctx.invoked_subcommand} does not support --format")
 
     try:
         _project_context = ProjectContext.discover(start_dir=project, config_path=config)
@@ -375,6 +380,16 @@ def main(
         color=selected_color,
     )
     ctx.color = selected_color
+
+
+@dashboard_app.callback()
+def dashboard_main(ctx: typer.Context) -> None:
+    """Apply dashboard-group presentation contracts."""
+
+    if ctx.find_root().meta.get(HELP_REQUESTED_META_KEY):
+        return
+    if cli_state().format_explicit and ctx.invoked_subcommand != "validate":
+        raise InvocationError(f"dashboard {ctx.invoked_subcommand} does not support --format")
 
 
 @app.command("help", context_settings=CLI_CONTEXT_SETTINGS)

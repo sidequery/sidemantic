@@ -281,6 +281,23 @@ def test_query_dry_run_honors_csv_format(project: Path):
     assert "," in rows[1][0]
 
 
+def test_query_dry_run_defaults_to_raw_sql(project: Path):
+    result = runner.invoke(
+        app,
+        [
+            "query",
+            "SELECT status, order_count FROM orders",
+            "--project",
+            str(project),
+            "--dry-run",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "SELECT" in result.stdout.upper()
+    assert not result.stdout.startswith("sql\n")
+
+
 @pytest.mark.parametrize("command", ["info", "validate"])
 @pytest.mark.parametrize("output_format", ["table", "csv", "json", "jsonl"])
 def test_structured_inspection_commands_support_formats(

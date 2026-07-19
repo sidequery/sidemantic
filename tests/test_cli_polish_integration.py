@@ -66,6 +66,13 @@ def test_legacy_alias_warns_with_target_release_and_quiet_suppresses_it() -> Non
     assert "Deprecated" not in quiet.stderr
 
 
+def test_supported_nested_command_does_not_inherit_top_level_deprecation() -> None:
+    result = CliRunner().invoke(_cli(), ["dashboard", "serve", "/does-not-exist"])
+
+    assert result.exit_code != 0
+    assert "use 'server postgres'" not in result.stderr
+
+
 def test_common_error_adds_safe_recovery_but_never_mutates(tmp_path: Path) -> None:
     source = _write_model(tmp_path) / "orders.yml"
     output = tmp_path / "converted.yml"

@@ -77,7 +77,7 @@ class SuggestionGroup(TyperGroup):
                 ctx=ctx,
             ) from exc
         command_name = resolved[0]
-        if command_name and find_deprecation(command_name) is not None:
+        if ctx.parent is None and command_name and find_deprecation(command_name) is not None:
             ctx.meta.setdefault("deprecated_commands", []).append(command_name)
         return resolved
 

@@ -220,8 +220,10 @@ class SemanticLayerConnection(riffq.BaseConnection):
                 error = None
                 row_count = None
                 response_bytes = None
+                execution_started = False
                 try:
                     bounded_sql = limit_query_sql(rendered_sql, query_limits.max_rows, self.layer.dialect)
+                    execution_started = True
                     bounded = execute_bounded(
                         self.layer,
                         bounded_sql,
@@ -264,9 +266,12 @@ class SemanticLayerConnection(riffq.BaseConnection):
                     except Exception:
                         logging.exception("Error recording query telemetry")
                     finally:
-                        close = getattr(execution_cursor, "close", None)
-                        if callable(close):
-                            close()
+                        # execute_bounded owns cursor cleanup once entered. Only
+                        # close here if SQL limiting failed before execution began.
+                        if not execution_started:
+                            close = getattr(execution_cursor, "close", None)
+                            if callable(close):
+                                close()
                         with self._active_controls_lock:
                             self._active_controls.discard(control)
                         query_admission.release()

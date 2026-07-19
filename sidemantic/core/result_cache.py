@@ -87,6 +87,10 @@ class _InFlight:
         self.error: BaseException | None = None
 
 
+class ResultCacheWaitCancelledError(RuntimeError):
+    """Raised when a singleflight follower stops waiting for its leader."""
+
+
 class ResultCache:
     """LRU-by-bytes Arrow result cache with TTL and singleflight dedup.
 
@@ -126,7 +130,13 @@ class ResultCache:
         table, _cache_hit = self.get_or_compute_with_status(key, compute)
         return table
 
-    def get_or_compute_with_status(self, key: str, compute: Callable[[], pa.Table]) -> tuple[pa.Table, bool]:
+    def get_or_compute_with_status(
+        self,
+        key: str,
+        compute: Callable[[], pa.Table],
+        *,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> tuple[pa.Table, bool]:
         """Return ``(table, cache_hit)`` while preserving singleflight behavior."""
         with self._lock:
             entry = self._get_live_entry_locked(key)
@@ -147,7 +157,11 @@ class ResultCache:
 
         if not leader:
             # Wait for the leader of this generation, then share its outcome.
-            inflight.event.wait()
+            while True:
+                if cancelled is not None and cancelled():
+                    raise ResultCacheWaitCancelledError("result cache wait was cancelled")
+                if inflight.event.wait(timeout=0.05):
+                    break
             if inflight.error is not None:
                 raise inflight.error
             return inflight.result, False

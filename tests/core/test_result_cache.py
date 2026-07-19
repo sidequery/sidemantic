@@ -5,13 +5,14 @@
 from __future__ import annotations
 
 import threading
+import time
 
 import pytest
 
 pa = pytest.importorskip("pyarrow")
 
 from sidemantic import Metric, Model, SemanticLayer
-from sidemantic.core.result_cache import ResultCache, build_result_key
+from sidemantic.core.result_cache import ResultCache, ResultCacheWaitCancelledError, build_result_key
 
 
 class _Clock:
@@ -151,6 +152,46 @@ def test_singleflight_runs_compute_once():
 
     assert calls["n"] == 1
     assert results["t1"] is results["t2"]
+
+
+def test_singleflight_follower_can_cancel_without_waiting_for_leader():
+    cache = ResultCache(max_bytes=10 * 1024 * 1024)
+    leader_entered = threading.Event()
+    release_leader = threading.Event()
+    cancel_waiter = threading.Event()
+
+    def compute():
+        leader_entered.set()
+        assert release_leader.wait(timeout=5.0)
+        return _table()
+
+    leader = threading.Thread(target=lambda: cache.get_or_compute("k", compute))
+    leader.start()
+    assert leader_entered.wait(timeout=1.0)
+
+    errors = []
+
+    def wait_for_leader():
+        try:
+            cache.get_or_compute_with_status("k", compute, cancelled=cancel_waiter.is_set)
+        except BaseException as exc:  # noqa: BLE001 - capture for assertion
+            errors.append(exc)
+
+    follower = threading.Thread(target=wait_for_leader)
+    follower.start()
+    deadline = time.monotonic() + 1.0
+    while cache.stats()["misses"] < 2 and time.monotonic() < deadline:
+        time.sleep(0.001)
+
+    cancel_waiter.set()
+    follower.join(timeout=1.0)
+
+    assert not follower.is_alive()
+    assert isinstance(errors[0], ResultCacheWaitCancelledError)
+    assert leader.is_alive()
+
+    release_leader.set()
+    leader.join(timeout=1.0)
 
 
 def test_singleflight_compute_raises_propagates_without_deadlock():

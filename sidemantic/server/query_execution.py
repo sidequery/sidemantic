@@ -106,6 +106,12 @@ class QueryExecutionControl:
         with self._lock:
             return self._cancel_outcome
 
+    @property
+    def cancel_requested(self) -> bool:
+        """Whether the caller has requested that execution stop."""
+        with self._lock:
+            return self._cancel_requested
+
     def register(self, adapter: Any, handle: Any) -> None:
         with self._lock:
             self._adapter = adapter

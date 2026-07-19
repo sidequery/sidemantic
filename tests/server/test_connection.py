@@ -197,8 +197,11 @@ def test_pg_wire_timeout_returns_before_uncancellable_worker_finishes(monkeypatc
     def blocking_execute(*args, **kwargs):
         kwargs["control"].register(args[0].adapter, kwargs["cursor"])
         worker_started.set()
-        assert release_worker.wait(timeout=2)
-        raise RuntimeError("worker released")
+        try:
+            assert release_worker.wait(timeout=2)
+            raise RuntimeError("worker released")
+        finally:
+            kwargs["cursor"].close()
 
     monkeypatch.setattr("sidemantic.server.connection.execute_bounded", blocking_execute)
     monkeypatch.setattr("sidemantic.server.connection.QueryRewriter.rewrite", lambda *args, **kwargs: "SELECT 1")
@@ -239,6 +242,63 @@ def test_pg_wire_timeout_returns_before_uncancellable_worker_finishes(monkeypatc
         time.sleep(0.001)
     assert conn.query_admission.stats()["active"] == 0
     cursor.close.assert_called_once()
+
+
+def test_pg_wire_bounded_query_closes_cursor_once(monkeypatch):
+    from tests.optional_dep_stubs import ensure_fake_riffq
+
+    ensure_fake_riffq()
+    pa = pytest.importorskip("pyarrow")
+    from unittest.mock import MagicMock
+
+    from sidemantic.core.query_telemetry import QueryTelemetry
+    from sidemantic.server.connection import SemanticLayerConnection
+    from sidemantic.server.query_execution import QueryAdmission, QueryLimits
+
+    class NonIdempotentCursor:
+        def __init__(self):
+            self.close_count = 0
+
+        def execute(self, _sql):
+            reader = pa.table({"value": [1]}).to_reader()
+
+            class Result:
+                def fetch_record_batch(self):
+                    return reader
+
+            return Result()
+
+        def close(self):
+            self.close_count += 1
+            if self.close_count > 1:
+                raise RuntimeError("cursor closed twice")
+
+    cursor = NonIdempotentCursor()
+    layer = MagicMock()
+    layer.adapter.cursor.return_value = cursor
+    layer.adapter.configure_statement_timeout.return_value = "test timeout configured"
+    layer.graph.models = {}
+    layer.dialect = "duckdb"
+    layer.query_telemetry = QueryTelemetry()
+
+    monkeypatch.setattr("sidemantic.server.connection.QueryRewriter.rewrite", lambda *args, **kwargs: "SELECT 1")
+
+    conn = SemanticLayerConnection.__new__(SemanticLayerConnection)
+    conn.layer = layer
+    conn.user_attrs_map = {}
+    conn.session_user = None
+    conn.connection_id = 1
+    conn.query_limits = QueryLimits()
+    conn.query_admission = QueryAdmission(1, 0)
+    conn._active_controls = set()
+    conn._active_controls_lock = threading.Lock()
+    conn.send_reader = MagicMock()
+
+    conn._handle_query("SELECT 1", MagicMock())
+
+    assert cursor.close_count == 1
+    assert conn.query_admission.stats()["active"] == 0
+    conn.send_reader.assert_called_once()
 
 
 def test_query_error_raises_exception():

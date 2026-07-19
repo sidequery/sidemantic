@@ -621,6 +621,7 @@ def _query_table(
     return cache.get_or_compute_with_status(
         key,
         lambda: _execute_to_table(layer, sql, app.state.query_limits, control),
+        cancelled=lambda: control.cancel_requested,
     )
 
 

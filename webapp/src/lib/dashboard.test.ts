@@ -99,4 +99,46 @@ describe("dashboardTabConfig", () => {
     expect(config?.segments).toEqual(["orders.completed"]);
     expect(config?.selectedMetric).toBe("orders.order_count");
   });
+
+  test("selects the owner model for a graph-only metric", () => {
+    const multiModelCatalog: Catalog = {
+      models: [
+        {
+          name: "customers",
+          label: "Customers",
+          metrics: [{ ref: "customers.count", name: "count", model: "customers", label: "Customers" }],
+          dimensions: [],
+        },
+        catalog.models[0],
+      ],
+      graphMetrics: [
+        {
+          ref: "gross_margin_rate",
+          name: "gross_margin_rate",
+          ownerModel: "orders",
+          label: "Gross Margin Rate",
+        },
+      ],
+    };
+    const graphMetricDashboard: DashboardSpec = {
+      title: "Margin dashboard",
+      tabs: [
+        {
+          id: "margin",
+          charts: [
+            {
+              id: "gross-margin",
+              query: { metrics: ["gross_margin_rate"] },
+              encoding: { y: "gross_margin_rate" },
+            },
+          ],
+        },
+      ],
+    };
+
+    const config = dashboardTabConfig(multiModelCatalog, graphMetricDashboard);
+    expect(config?.model.name).toBe("orders");
+    expect(config?.metrics.map((metric) => metric.ref)).toEqual(["gross_margin_rate"]);
+    expect(config?.selectedMetric).toBe("gross_margin_rate");
+  });
 });

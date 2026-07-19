@@ -945,6 +945,8 @@ class SemanticLayer:
             dimensions = list(contract.default_dimensions)
         metrics = [self._consumption_metric_reference(ref, contract.model) for ref in metrics]
         dimensions = [self._consumption_reference(ref, contract.model) for ref in dimensions]
+        if segments is not None:
+            segments = [self._consumption_reference(ref, contract.model) for ref in segments]
 
         if contract.allowed_metrics is not None:
             allowed = {self._consumption_metric_reference(ref, contract.model) for ref in contract.allowed_metrics}
@@ -1343,6 +1345,8 @@ class SemanticLayer:
             model = self.graph.models.get(model_name)
             if model is None:
                 continue
+            if model.visibility != "public":
+                raise SecurityError(f"Segment '{model_name}.{segment_name}' is not public")
             segment = model.get_segment(segment_name) if hasattr(model, "get_segment") else None
             if segment is not None and not getattr(segment, "public", True):
                 raise SecurityError(f"Segment '{model_name}.{segment_name}' is not public")

@@ -267,6 +267,8 @@ def test_validation_preflights_saved_query_segments():
     )
     errors, _warnings = validate_saved_query(valid, layer.graph)
     assert errors == []
+    layer.graph.add_saved_query(valid)
+    assert "status = 'paid'" in layer.compile(saved_query="valid_segment")
 
     invalid = valid.model_copy(update={"name": "invalid_segment", "segments": ["orders.missing"]})
     errors, _warnings = validate_saved_query(invalid, layer.graph)
@@ -329,6 +331,22 @@ def test_visibility_enforcement_rejects_graph_metrics_sourced_from_private_model
     assert layer.describe_models()["metrics"] == []
     assert layer.get_catalog_metadata()["semantic_metrics"] == []
     assert "graph_metrics" not in TestClient(create_app(layer)).get("/graph").json()
+
+
+def test_visibility_enforcement_rejects_segments_on_private_models():
+    layer = _layer()
+    layer.add_model(
+        Model(
+            name="secret_orders",
+            table="secret_orders",
+            visibility="private",
+            segments=[Segment(name="visible_segment", sql="{model}.status = 'paid'")],
+        )
+    )
+    layer.enforce_visibility = True
+
+    with pytest.raises(SecurityError, match="secret_orders.visible_segment.*not public"):
+        layer.compile(metrics=["orders.revenue"], segments=["secret_orders.visible_segment"])
 
 
 def test_meta_api_exposes_consumption_contracts():

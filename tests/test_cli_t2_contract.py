@@ -840,9 +840,12 @@ def test_color_policy_precedence(monkeypatch: pytest.MonkeyPatch):
 
 
 def test_terminal_detection_does_not_override_click_capture(monkeypatch: pytest.MonkeyPatch):
+    import typer.rich_utils as typer_rich_utils
+
     import sidemantic.cli_contract as cli_contract
 
     monkeypatch.setattr(cli_contract, "color_enabled", lambda **_kwargs: True)
+    monkeypatch.setattr(typer_rich_utils, "FORCE_TERMINAL", True)
     result = runner.invoke(app, ["--help"], color=False)
 
     assert result.exit_code == 0, result.output

@@ -202,8 +202,7 @@ def _format_join_key_pairs(
 mcp = FastMCP("sidemantic")
 
 
-def _visible_default_time_dimension(model: Any, enforce_visibility: bool) -> str | None:
-    name = model.default_time_dimension
+def _visible_dimension_name(model: Any, name: str | None, enforce_visibility: bool) -> str | None:
     if not name or not enforce_visibility:
         return name
     dimension = model.get_dimension(name)
@@ -359,18 +358,21 @@ def get_models(model_names: list[str]) -> dict[str, Any]:
         detail: dict[str, Any] = {
             "name": model_name,
             "table": model.table,
-            "primary_key": model.primary_key,
             "dimensions": dims,
             "metrics": metrics,
             "relationships": rels,
         }
+        if primary_key := _visible_dimension_name(model, model.primary_key, layer.enforce_visibility):
+            detail["primary_key"] = primary_key
         if segments:
             detail["segments"] = segments
         if model.description:
             detail["description"] = model.description
         if model.sql:
             detail["sql"] = model.sql
-        if default_time_dimension := _visible_default_time_dimension(model, layer.enforce_visibility):
+        if default_time_dimension := _visible_dimension_name(
+            model, model.default_time_dimension, layer.enforce_visibility
+        ):
             detail["default_time_dimension"] = default_time_dimension
         if model.default_grain:
             detail["default_grain"] = model.default_grain
@@ -723,9 +725,11 @@ def get_semantic_graph() -> dict[str, Any]:
         visible_segments = [s.name for s in model.segments if not layer.enforce_visibility or s.public]
         if visible_segments:
             model_info["segments"] = visible_segments
-        if model.primary_key:
-            model_info["primary_key"] = model.primary_key
-        if default_time_dimension := _visible_default_time_dimension(model, layer.enforce_visibility):
+        if primary_key := _visible_dimension_name(model, model.primary_key, layer.enforce_visibility):
+            model_info["primary_key"] = primary_key
+        if default_time_dimension := _visible_dimension_name(
+            model, model.default_time_dimension, layer.enforce_visibility
+        ):
             model_info["default_time_dimension"] = default_time_dimension
         models.append(model_info)
 

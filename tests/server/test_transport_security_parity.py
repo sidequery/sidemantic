@@ -515,10 +515,14 @@ def test_hidden_column_is_rejected_and_omitted_across_transports(tmp_path):
         Dimension(name="hidden_time", sql="tenant_id", type="time", granularity="day", public=False)
     )
     mcp_model.default_time_dimension = "hidden_time"
+    mcp_model.primary_key = "secret_note"
     graph = get_semantic_graph()
     assert "secret_note" not in graph["models"][0]["dimensions"]
     assert "default_time_dimension" not in graph["models"][0]
-    assert "default_time_dimension" not in get_models(["orders"])["models"][0]
+    assert "primary_key" not in graph["models"][0]
+    model_details = get_models(["orders"])["models"][0]
+    assert "default_time_dimension" not in model_details
+    assert "primary_key" not in model_details
     with pytest.raises(SecurityError, match="not public"):
         mcp_run_query(dimensions=["orders.secret_note"], metrics=["orders.total_amount"])
     with pytest.raises(SecurityError, match="not public"):

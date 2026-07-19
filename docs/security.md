@@ -183,7 +183,8 @@ with `--user-attrs-file`; it is applied to `run_query`, `create_chart`, and
 `run_sql`. `run_sql` uses the same policy-aware semantic rewrite as other transports
 and rejects unproven passthrough SQL. `--enforce-visibility` hides restricted fields
 from MCP model/graph/catalog discovery and rejects them in structured and SQL tools.
-Hidden default time dimensions are omitted from model metadata as well as field lists.
+Hidden default time dimensions and primary keys are omitted from model metadata as
+well as field lists.
 
 For example:
 

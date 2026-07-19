@@ -1438,6 +1438,8 @@ def explain_sql_command(
             raise InvocationError("explain does not support --plain; use --format json")
         if state.requested_format not in {None, "json"}:
             raise InvocationError("explain supports only --format json")
+        if state.requested_format == "json":
+            resolve_output_format(default="json")
 
         sql = read_sql_input(sql)
         layer = _load_query_layer(

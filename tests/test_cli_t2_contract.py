@@ -300,7 +300,19 @@ def test_query_dry_run_defaults_to_raw_sql(project: Path):
     assert not result.stdout.startswith("sql\n")
 
 
-def test_explain_accepts_json_format(project: Path):
+@pytest.mark.parametrize(("arguments", "machine_output"), [([], False), (["--format", "json"], True)])
+def test_explain_activates_machine_mode_only_for_requested_json(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    arguments: list[str],
+    machine_output: bool,
+):
+    modes_at_emission: list[bool] = []
+
+    def capture_json(_value: object) -> None:
+        modes_at_emission.append(cli_module.cli_state().machine_output)
+
+    monkeypatch.setattr("sidemantic.cli.emit_json", capture_json)
     result = runner.invoke(
         app,
         [
@@ -308,13 +320,12 @@ def test_explain_accepts_json_format(project: Path):
             "SELECT status, order_count FROM orders",
             "--project",
             str(project),
-            "--format",
-            "json",
+            *arguments,
         ],
     )
 
     assert result.exit_code == 0, result.output
-    assert "rewritten_sql" in json.loads(result.stdout)
+    assert modes_at_emission == [machine_output]
 
 
 @pytest.mark.parametrize(

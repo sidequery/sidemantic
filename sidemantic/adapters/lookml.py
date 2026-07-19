@@ -4463,7 +4463,9 @@ class LookMLAdapter(BaseAdapter):
             # filters flow through the normal semantic query compiler and therefore
             # need real semantic model references. Keep separate translations so a
             # LookML mandatory filter is executable in both paths.
-            consumption_filter = re.sub(r"\$\{(\w+)\.(\w+)\}", r"\1.\2", sql_always_where)
+            consumption_filter = sql_always_where.replace("${TABLE}", base_model_name)
+            consumption_filter = re.sub(r"\$\{(\w+)\.(\w+)\}", r"\1.\2", consumption_filter)
+            sql_always_where = sql_always_where.replace("${TABLE}", "{model}")
             sql_always_where = re.sub(r"\$\{(\w+)\.(\w+)\}", r"{model}.\2", sql_always_where)
             consumption_filters.append(consumption_filter)
             segment_name = f"_sql_always_where_{explore_name}"

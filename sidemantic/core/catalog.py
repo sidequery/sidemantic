@@ -102,9 +102,14 @@ def get_catalog_metadata(graph: SemanticGraph, schema: str = "public", enforce_v
     columns = []
     constraints = []
     key_column_usage = []
+    visible_model_names = {
+        model_name
+        for model_name, model in graph.models.items()
+        if not enforce_visibility or model.visibility == "public"
+    }
 
     for model_name, model in graph.models.items():
-        if enforce_visibility and model.visibility != "public":
+        if model_name not in visible_model_names:
             continue
         # Add table entry
         table_meta = {
@@ -248,6 +253,8 @@ def get_catalog_metadata(graph: SemanticGraph, schema: str = "public", enforce_v
 
         # Add foreign key constraints from relationships
         for rel in model.relationships:
+            if rel.name not in visible_model_names:
+                continue
             if rel.type in ("many_to_one", "one_to_one"):
                 # This model has a foreign key to another model
                 fk_column = rel.foreign_key

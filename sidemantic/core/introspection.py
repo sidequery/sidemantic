@@ -17,10 +17,13 @@ def describe_graph(
 ) -> dict[str, Any]:
     warnings = _warnings(graph)
     requested = set(model_names or [])
+    visible_model_names = {
+        model.name for model in graph.models.values() if not enforce_visibility or model.visibility == "public"
+    }
     models = [
-        _describe_model(model, warnings, enforce_visibility)
+        _describe_model(model, warnings, enforce_visibility, visible_model_names)
         for model in graph.models.values()
-        if (not requested or model.name in requested) and not (enforce_visibility and model.visibility != "public")
+        if (not requested or model.name in requested) and model.name in visible_model_names
     ]
     metrics = [
         _describe_metric(metric, warnings, model_name=None)
@@ -67,7 +70,12 @@ def _metric_owner_model(metric: Metric) -> str | None:
     return None
 
 
-def _describe_model(model: Model, warnings: list[dict[str, Any]], enforce_visibility: bool = False) -> dict[str, Any]:
+def _describe_model(
+    model: Model,
+    warnings: list[dict[str, Any]],
+    enforce_visibility: bool = False,
+    visible_model_names: set[str] | None = None,
+) -> dict[str, Any]:
     model_kind = _model_kind(model)
     dimensions = model.dimensions if not enforce_visibility else [d for d in model.dimensions if d.public]
     metrics = (
@@ -82,7 +90,9 @@ def _describe_model(model: Model, warnings: list[dict[str, Any]], enforce_visibi
         "dimensions": [_describe_dimension(dimension, warnings, model) for dimension in dimensions],
         "metrics": [_describe_metric(metric, warnings, model.name, model=model) for metric in metrics],
         "relationships": [
-            _describe_relationship(relationship, warnings, model=model) for relationship in model.relationships
+            _describe_relationship(relationship, warnings, model=model)
+            for relationship in model.relationships
+            if not enforce_visibility or visible_model_names is None or relationship.name in visible_model_names
         ],
         "segments": [segment.name for segment in model.segments],
     }

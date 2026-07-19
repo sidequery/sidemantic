@@ -332,6 +332,12 @@ def test_meta_api_does_not_leak_private_relationship_targets():
     assert graph["models"][0]["relationships"] == []
     assert graph["joinable_pairs"] == []
 
+    catalog = layer.get_catalog_metadata()
+    assert all(item.get("referenced_table_name") != "private_customers" for item in catalog["key_column_usage"])
+
+    description = layer.describe_models()
+    assert not description["models"][0].get("relationships")
+
 
 def test_schema_and_cli_expose_contracts(tmp_path: Path):
     schema = generate_yaml_schema()
@@ -420,6 +426,7 @@ view: customers {
   dimension: region { sql: ${TABLE}.region ;; }
 }
 explore: orders {
+  sql_always_where: ${TABLE}.id > 0 ;;
   always_filter: { filters: [customers.region: "West"] }
   join: customers {
     relationship: many_to_one
@@ -430,13 +437,14 @@ explore: orders {
     )
 
     graph = LookMLAdapter().parse(source)
-    assert graph.explores["orders"].filters == ["customers.region = 'West'"]
+    assert graph.explores["orders"].filters == ["orders.id > 0", "customers.region = 'West'"]
 
     layer = SemanticLayer(auto_register=False)
     layer.graph = graph
     sql = layer.compile(explore="orders", metrics=["orders.count"])
     assert "FROM customers" in sql
     assert "WHERE region = 'West'" in sql
+    assert "WHERE id > 0" in sql
     assert "orders_cte.customer_id = customers_cte.id" in sql
 
 

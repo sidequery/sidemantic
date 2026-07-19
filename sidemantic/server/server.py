@@ -63,7 +63,7 @@ def start_server(
     # the map (e.g. an admin) and satisfy access gates, so refuse to start in that configuration.
     if user_attrs_map and username is None:
         raise ValueError(
-            "A user-attrs map requires authentication: pass --username/--password so the "
+            "A user-attrs map requires authentication: pass --username with --password-file so the "
             "connecting username cannot be spoofed to select another user's security attributes."
         )
 

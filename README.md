@@ -131,10 +131,10 @@ sidemantic query "SELECT revenue FROM orders" --db data.duckdb
 uvx --from "sidemantic[workbench]" sidemantic workbench models/ --db data.duckdb
 
 # PostgreSQL server (connect Tableau, DBeaver, etc.)
-uvx --from "sidemantic[serve]" sidemantic serve models/ --port 5433
+uvx --from "sidemantic[serve]" sidemantic server postgres models/ --port 5433
 
 # HTTP API server (JSON or Arrow)
-uvx --from "sidemantic[api]" sidemantic api-serve models/ --port 4400 --auth-token secret
+uvx --from "sidemantic[api]" sidemantic server api models/ --port 4400 --auth-token-file .secrets/api-token
 
 # Validate definitions
 sidemantic validate models/
@@ -146,8 +146,11 @@ sidemantic info models/
 sidemantic preagg recommend --db data.duckdb
 
 # Migrate SQL queries to semantic layer
-sidemantic migrator --queries legacy/ --generate-models output/
+sidemantic migrate generate legacy/ --output output/
 ```
+
+See [the CLI contract](docs/cli.md) for help aliases, JSON output, stdin/stdout,
+exit codes, debugging, and secure credential input.
 
 ## Demos
 
@@ -158,12 +161,12 @@ uvx --from "sidemantic[workbench]" sidemantic workbench --demo
 
 **PostgreSQL server** (connect Tableau, DBeaver, etc.):
 ```bash
-uvx --from "sidemantic[serve]" sidemantic serve --demo --port 5433
+uvx --from "sidemantic[serve]" sidemantic server postgres --demo --port 5433
 ```
 
 **HTTP API server** (JSON or Arrow):
 ```bash
-uvx --from "sidemantic[api]" sidemantic api-serve --demo --port 4400 --auth-token secret
+uvx --from "sidemantic[api]" sidemantic server api --demo --port 4400 --auth-token-file .secrets/api-token
 ```
 
 **Colab notebooks:**
@@ -284,7 +287,7 @@ For Cloudflare Worker + Container deployment, see [`examples/cloudflare_containe
 Start the API server:
 
 ```bash
-uvx --from "sidemantic[api]" sidemantic api-serve models/ --db data.duckdb --port 4400 --auth-token secret
+uvx --from "sidemantic[api]" sidemantic server api models/ --db data.duckdb --port 4400 --auth-token-file .secrets/api-token
 ```
 
 Compile a structured semantic query:

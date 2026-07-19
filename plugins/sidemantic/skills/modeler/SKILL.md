@@ -38,8 +38,9 @@ YAML
 
 uv run sidemantic validate models/ --verbose
 uv run sidemantic info models/
-uv run sidemantic query models/ -c duckdb:///data.duckdb \
-  "SELECT revenue, status FROM orders ORDER BY revenue DESC LIMIT 5"
+uv run sidemantic query \
+  "SELECT revenue, status FROM orders ORDER BY revenue DESC LIMIT 5" \
+  --models models/ --connection duckdb:///data.duckdb
 ```
 
 Assumes an `orders` table already exists in `data.duckdb` with `status` and `order_amount` columns.
@@ -105,10 +106,10 @@ The fastest path when existing queries are available. The Migrator reverse-engin
 
 ```bash
 # Generate model YAML + rewritten queries from raw SQL
-sidemantic migrator --queries queries/ --generate-models output/
+sidemantic migrate generate queries/ --output output/
 
 # Check coverage: how well do existing models handle these queries?
-sidemantic migrator models/ --queries queries/ --verbose
+sidemantic migrate check queries/ --models models/ --verbose
 ```
 
 ### Python API (advanced/automation only)
@@ -265,8 +266,9 @@ uv run sidemantic validate models/ --verbose
 uv run sidemantic info models/
 
 # Execute semantic SQL through CLI
-uv run sidemantic query models/ -c duckdb:///data.duckdb \
-  "SELECT revenue, status FROM orders WHERE status = 'completed'"
+uv run sidemantic query \
+  "SELECT revenue, status FROM orders WHERE status = 'completed'" \
+  --models models/ --connection duckdb:///data.duckdb
 ```
 
 Python API (optional):
@@ -306,8 +308,9 @@ models:
 Segments are model-scoped and used as `model.segment` references at query time:
 
 ```bash
-uv run sidemantic query models/ -c duckdb:///data.duckdb \
-  "SELECT revenue, status FROM orders WHERE completed_orders"
+uv run sidemantic query \
+  "SELECT revenue, status FROM orders WHERE completed_orders" \
+  --models models/ --connection duckdb:///data.duckdb
 ```
 
 Python API (optional):

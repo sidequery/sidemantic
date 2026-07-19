@@ -180,7 +180,7 @@ def test_migrator_rejects_queries_and_connection_together(tmp_path):
         ],
     )
 
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "mutually exclusive" in result.output
 
 
@@ -629,7 +629,7 @@ def test_serve_rejects_partial_auth(monkeypatch, tmp_path):
     _write_min_model(tmp_path)
     result = runner.invoke(app, ["serve", str(tmp_path), "--username", "u"])
 
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "both --username and --password" in result.output
 
 

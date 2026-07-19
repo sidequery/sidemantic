@@ -3,6 +3,7 @@
 import re
 import threading
 from abc import ABC, abstractmethod
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
@@ -133,10 +134,10 @@ class _SerializedCursor:
 
     Adapters that do not expose an independent concurrent handle fall back to this
     wrapper. It preserves the pre-existing serialized single-connection behavior: the
-    query AND its full result materialization run under a per-adapter lock, so callers
-    that switch to ``adapter.cursor()`` for concurrency cannot interleave fetches on a
-    driver that does not support concurrent handles. The result is returned already
-    materialized so no connection access happens after the lock is released.
+    query and result consumption run under a per-adapter lock, so callers that switch
+    to ``adapter.cursor()`` for concurrency cannot interleave fetches on a driver that
+    does not support concurrent handles. Server query paths use ``execute_stream`` to
+    enforce result limits batch-by-batch before materializing a complete Arrow table.
     """
 
     def __init__(self, adapter: "BaseDatabaseAdapter", lock: threading.Lock):
@@ -153,6 +154,23 @@ class _SerializedCursor:
             reader = self._adapter.fetch_record_batch(result)
             table = reader.read_all()
         return _MaterializedResult(table)
+
+    @contextmanager
+    def execute_stream(self, sql: str):
+        """Yield a reader while retaining exclusive access to the shared connection."""
+        with self._lock:
+            result = self._adapter.execute(sql)
+            reader = self._adapter.fetch_record_batch(result)
+            try:
+                yield reader
+            finally:
+                reader_close = getattr(reader, "close", None)
+                if callable(reader_close):
+                    reader_close()
+                result_cursor = getattr(result, "cursor", None)
+                result_close = getattr(result_cursor or result, "close", None)
+                if callable(result_close):
+                    result_close()
 
     def execute_control(self, sql: str) -> None:
         """Execute a session control command without trying to fetch rows."""

@@ -575,6 +575,19 @@ class _CancellableAdapter(_ArrowOnlyAdapter):
         return CancellationOutcome(True, True, "duckdb cancellation requested via test handle")
 
 
+class _WorkerTimeoutCursor:
+    def execute(self, _sql: str):
+        raise TimeoutError("warehouse statement timed out")
+
+    def close(self):
+        return None
+
+
+class _WorkerTimeoutAdapter(_ArrowOnlyAdapter):
+    def cursor(self):
+        return _WorkerTimeoutCursor()
+
+
 def test_execution_timeout_cancels_and_records_diagnostic():
     adapter = _CancellableAdapter()
     layer = SemanticLayer(connection=adapter, auto_register=False)
@@ -597,6 +610,19 @@ def test_execution_timeout_cancels_and_records_diagnostic():
     assert event.timed_out is True
     assert event.cancelled is True
     assert event.error == "QueryExecutionTimeout"
+
+
+def test_worker_timeout_error_is_not_swallowed_as_poll_timeout():
+    adapter = _WorkerTimeoutAdapter()
+    layer = SemanticLayer(connection=adapter, auto_register=False)
+    client = TestClient(create_app(layer, execution_timeout_seconds=1.0))
+
+    with pytest.raises(TimeoutError, match="warehouse statement timed out"):
+        client.post("/raw", json={"query": "SELECT 1"})
+
+    event = layer.query_telemetry.history()[0]
+    assert event.error == "TimeoutError"
+    assert event.timed_out is False
 
 
 def test_sql_with_semicolon_in_string_literal(tmp_path):

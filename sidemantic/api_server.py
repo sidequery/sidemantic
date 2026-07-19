@@ -771,6 +771,12 @@ async def _execute_http_query(
                 table, cache_hit = await asyncio.wait_for(asyncio.shield(task), timeout=min(0.1, remaining))
                 break
             except TimeoutError:
+                # ``wait_for`` and the worker can both raise the built-in
+                # TimeoutError. A completed worker must propagate its own
+                # exception instead of being mistaken for a polling tick.
+                if task.done():
+                    table, cache_hit = task.result()
+                    break
                 if await request.is_disconnected():
                     outcome = await asyncio.to_thread(control.cancel)
                     task.add_done_callback(_consume_background_task)

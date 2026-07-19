@@ -2,11 +2,18 @@
 
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
 from sidemantic.db.base import BaseDatabaseAdapter
-from sidemantic.server.query_execution import QueryAdmission, QueryExecutionControl, QueryLimits
+from sidemantic.server.query_execution import (
+    QueryAdmission,
+    QueryExecutionControl,
+    QueryLimits,
+    QueryResponseTooLargeError,
+    execute_bounded,
+)
 
 
 class _ControlCommandAdapter(BaseDatabaseAdapter):
@@ -52,6 +59,35 @@ class _ControlCommandAdapter(BaseDatabaseAdapter):
 
     def close(self):
         return None
+
+
+class _StreamingLimitAdapter(_ControlCommandAdapter):
+    @property
+    def dialect(self):
+        return "test"
+
+    def execute(self, sql):
+        self.statements.append(sql)
+        return object()
+
+    def fetch_record_batch(self, result):
+        import pyarrow as pa
+
+        batch = pa.record_batch([["x" * 1024]], names=["payload"])
+
+        class Reader:
+            schema = batch.schema
+
+            def __iter__(self):
+                yield batch
+
+            def read_all(self):
+                raise AssertionError("bounded serving must not call read_all()")
+
+            def close(self):
+                return None
+
+        return Reader()
 
 
 def test_query_limits_validate_conservative_values():
@@ -113,3 +149,18 @@ def test_statement_timeout_requires_positive_value():
 
     with pytest.raises(ValueError, match="must be positive"):
         adapter.configure_statement_timeout(adapter.cursor(), 0)
+
+
+def test_fallback_cursor_enforces_byte_limit_before_full_materialization():
+    adapter = _StreamingLimitAdapter()
+    layer = SimpleNamespace(adapter=adapter)
+
+    with pytest.raises(QueryResponseTooLargeError):
+        execute_bounded(
+            layer,
+            "SELECT payload",
+            limits=QueryLimits(max_response_bytes=32),
+            control=QueryExecutionControl(),
+        )
+
+    assert adapter.statements == ["SELECT payload"]

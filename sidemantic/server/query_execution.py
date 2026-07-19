@@ -160,13 +160,7 @@ def execute_bounded(
     """Execute and consume Arrow batches without reading past ``max_rows + 1``."""
     import pyarrow as pa
 
-    if cursor is None:
-        cursor = layer.adapter.cursor()
-    control.register(layer.adapter, cursor)
-    try:
-        control.timeout_diagnostic = layer.adapter.configure_statement_timeout(cursor, limits.execution_timeout_seconds)
-        result = cursor.execute(sql)
-        reader = result_to_record_batch_reader(result, layer.adapter)
+    def consume(reader: Any) -> BoundedQueryResult:
         batches = []
         row_count = 0
         buffered_bytes = 0
@@ -192,6 +186,18 @@ def execute_bounded(
             batches.append(batch)
         table = pa.Table.from_batches(batches, schema=reader.schema)
         return BoundedQueryResult(table=table, row_count=row_count)
+
+    if cursor is None:
+        cursor = layer.adapter.cursor()
+    control.register(layer.adapter, cursor)
+    try:
+        control.timeout_diagnostic = layer.adapter.configure_statement_timeout(cursor, limits.execution_timeout_seconds)
+        execute_stream = getattr(cursor, "execute_stream", None)
+        if callable(execute_stream):
+            with execute_stream(sql) as reader:
+                return consume(reader)
+        result = cursor.execute(sql)
+        return consume(result_to_record_batch_reader(result, layer.adapter))
     finally:
         control.unregister(cursor)
         close = getattr(cursor, "close", None)

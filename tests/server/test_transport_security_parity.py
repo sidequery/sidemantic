@@ -291,6 +291,7 @@ def test_hidden_column_is_rejected_and_omitted_across_transports(tmp_path):
     for path, payload in [
         ("/query", {"dimensions": ["orders.secret_note"], "metrics": ["orders.total_amount"]}),
         ("/sql", {"query": "SELECT secret_note, total_amount FROM orders"}),
+        ("/sql", {"query": "SELECT MIN(secret_note) FROM orders"}),
     ]:
         response = client.post(path, json=payload, headers=_headers(attrs))
         assert response.status_code == 403, response.text
@@ -303,10 +304,18 @@ def test_hidden_column_is_rejected_and_omitted_across_transports(tmp_path):
         mcp_run_query(dimensions=["orders.secret_note"], metrics=["orders.total_amount"])
     with pytest.raises(SecurityError, match="not public"):
         mcp_run_sql("SELECT secret_note, total_amount FROM orders")
+    with pytest.raises(SecurityError, match="not public"):
+        mcp_run_sql("SELECT MIN(secret_note) FROM orders")
 
     with pytest.raises(SecurityError, match="not public"):
         _pg_rewrite(
             _layer(enforce_visibility=True),
             "SELECT secret_note, total_amount FROM orders",
+            attrs,
+        )
+    with pytest.raises(SecurityError, match="not public"):
+        _pg_rewrite(
+            _layer(enforce_visibility=True),
+            "SELECT MIN(secret_note) FROM orders",
             attrs,
         )

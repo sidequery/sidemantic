@@ -5739,6 +5739,18 @@ class QueryRewriter:
             nonlocal adhoc_index
             model_name = ad_hoc_metric_model(node)
 
+            # The generated temporary metric name is always public, so the
+            # generator's normal visibility check cannot see fields referenced
+            # inside its SQL. Validate those original semantic references before
+            # replacing the aggregate with a temporary metric.
+            if self.enforce_visibility:
+                from sidemantic.core.security import enforce_field_visibility
+
+                referenced_fields = [
+                    ref for column in node.find_all(exp.Column) if (ref := self._resolve_column(column)) is not None
+                ]
+                enforce_field_visibility(self.graph, referenced_fields, None)
+
             metric_name = f"__adhoc_metric_{adhoc_index}"
             adhoc_index += 1
             metric = Metric(name=metric_name, sql=normalize_adhoc_metric_sql(node, model_name))

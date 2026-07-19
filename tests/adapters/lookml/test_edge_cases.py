@@ -4984,6 +4984,65 @@ def test_lookml_export_folded_filter_protects_snowflake_timeadd_and_trunc_parts(
     assert conds(["TRUNC(n, 2) > 5"], model) == "(TRUNC((${TABLE}.num_col), 2) > 5)"
 
 
+def test_lookml_export_folded_filter_numeric_trunc_scale_column_resolves():
+    """TRUNC's numeric overload must not protect a scale column named like a date part.
+
+    TRUNC(amount, month) where amount is numeric is TRUNC(number, scale), so `month` is a scale
+    COLUMN and must resolve to its dimension SQL -- only a date/time value argument makes the last
+    arg a date part (TRUNC(created_at, month)).
+    """
+    from sidemantic import Dimension, Model
+
+    numeric = Model(
+        name="orders",
+        table="t",
+        primary_key="id",
+        dimensions=[
+            Dimension(name="amount", type="numeric", sql="amt"),
+            Dimension(name="month", type="numeric", sql="scale_col"),
+        ],
+    )
+    conds = LookMLAdapter._fold_filter_conds
+    # Numeric value arg -> `month` is a scale column, resolved (not protected as a part).
+    assert conds(["TRUNC(amount, month) > 0"], numeric) == "(TRUNC((${TABLE}.amt), (${TABLE}.scale_col)) > 0)"
+
+    dated = Model(
+        name="orders",
+        table="t",
+        primary_key="id",
+        dimensions=[
+            Dimension(name="created_at", type="time", granularity="day", sql="created_at"),
+            Dimension(name="month", type="time", granularity="month", sql="order_month"),
+        ],
+    )
+    # Time value arg -> `month` is the date part, protected.
+    assert conds(["TRUNC(created_at, month) = DATE '2024-01-01'"], dated) == (
+        "(TRUNC((${TABLE}.created_at), month) = DATE '2024-01-01')"
+    )
+
+
+def test_lookml_export_folded_filter_iso_date_trunc_units_resolve_value_column():
+    """DATE_TRUNC ISO units (isoweek/isoyear) are recognized so the value column still resolves."""
+    from sidemantic import Dimension, Model
+
+    model = Model(
+        name="orders",
+        table="t",
+        primary_key="id",
+        dimensions=[
+            Dimension(name="week", type="time", granularity="week", sql="order_week"),
+            Dimension(name="year", type="time", granularity="year", sql="order_year"),
+        ],
+    )
+    conds = LookMLAdapter._fold_filter_conds
+    assert conds(["DATE_TRUNC(week, isoweek) = DATE '2024-01-01'"], model) == (
+        "(DATE_TRUNC((${TABLE}.order_week), isoweek) = DATE '2024-01-01')"
+    )
+    assert conds(["DATE_TRUNC(year, isoyear) = DATE '2024-01-01'"], model) == (
+        "(DATE_TRUNC((${TABLE}.order_year), isoyear) = DATE '2024-01-01')"
+    )
+
+
 def test_lookml_export_folded_filter_quoted_date_trunc_unit_resolves_value_column():
     """A QUOTED DATE_TRUNC unit (part) is decided by its quotes, so a same-named value column resolves.
 

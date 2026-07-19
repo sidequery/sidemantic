@@ -595,7 +595,10 @@ class LookMLAdapter(BaseAdapter):
     # for both args, but only `day` is a trunc unit, so it is the part and `date` is the column.
     _DATE_TRUNC_UNITS = frozenset(
         {"millennium", "century", "decade", "year", "quarter", "month", "week", "day",
-         "hour", "minute", "second", "millisecond", "microsecond", "nanosecond"}
+         "hour", "minute", "second", "millisecond", "microsecond", "nanosecond",
+         # ISO truncation units (BigQuery isoweek/isoyear). Without them a DATE_TRUNC(week, isoweek)
+         # tie-break saw only `week` as a unit and treated the value column as the part.
+         "isoweek", "isoyear"}
     )  # fmt: skip
 
     @staticmethod
@@ -666,13 +669,21 @@ class LookMLAdapter(BaseAdapter):
         call_args = pre[open_pos + 1 :] + token + suf[:end]
         return [a.strip() for a in cls._split_top_level_commas(call_args, quote_aware=True)]
 
+    # Functions with a NUMERIC overload as well as a date/time one: TRUNC(date, part) vs
+    # TRUNC(number, scale). Only guard their part slot with evidence the value argument is date/time.
+    _DATE_PART_NUMERIC_OVERLOAD = frozenset({"trunc", "truncate"})
+
     @classmethod
-    def _is_date_part_argument(cls, pre: str, suf: str, token: str) -> bool:
+    def _is_date_part_argument(cls, pre: str, suf: str, token: str, time_dim_names: set | None = None) -> bool:
         """True if ``token`` occupies the date-PART argument slot of a date/time call.
 
         Position-aware on purpose: DATE_TRUNC(date, month) on a model with both a `date` and a
         `month` dimension means column `date` truncated to part `month` -- only the LAST argument
         is the part, so the `date` column must still resolve.
+
+        ``time_dim_names`` disambiguates a numeric-overloaded function (TRUNC): its part slot is
+        guarded only when the value argument is a known time dimension, so a numeric
+        ``TRUNC(amount, month)`` (month = a scale column) still resolves `month` to its dimension.
         """
         if token.lower() not in cls._DATE_PART_KEYWORDS:
             return False
@@ -743,6 +754,14 @@ class LookMLAdapter(BaseAdapter):
         want = cls._DATE_PART_ARG_POS.get(func.lower())
         if want is None:
             return False
+        if func.lower() in cls._DATE_PART_NUMERIC_OVERLOAD:
+            # TRUNC/TRUNCATE is also numeric (TRUNC(number, scale)). Only treat the part slot as a
+            # date part when the VALUE argument is a known time dimension; otherwise a scale column
+            # named like a unit (TRUNC(amount, month)) must still resolve to its dimension SQL.
+            _args = cls._enclosing_call_arg_texts(pre, suf, token)
+            _value = _args[0].strip().strip("`\"[]'") if _args else ""
+            if not (time_dim_names and _value in time_dim_names):
+                return False
         if want >= 0:
             return arg_index == want
         # want == -1: the part is the LAST argument -- true when no top-level comma follows the
@@ -3364,6 +3383,9 @@ class LookMLAdapter(BaseAdapter):
         """
         dim_sql = {d.name: d.sql for d in model.dimensions if d.sql}
         dim_names = {d.name for d in model.dimensions}
+        # Time-dimension names disambiguate a numeric-overloaded date function (TRUNC): its part
+        # slot is only guarded when the value argument is one of these (see _is_date_part_argument).
+        time_dim_names = {d.name for d in model.dimensions if getattr(d, "type", None) == "time"}
 
         def _qualify(val: str) -> str:
             # Bare column -> qualify with {model}. so it stays unambiguous in joins; any resolved
@@ -3449,7 +3471,7 @@ class LookMLAdapter(BaseAdapter):
                             # DATE_DIFF(a, b, day). Position-aware so a real column in another
                             # slot of the SAME call still resolves -- DATE_TRUNC(date, month) is
                             # column `date` truncated to part `month`.
-                            or cls._is_date_part_argument(pre, suf, bare)
+                            or cls._is_date_part_argument(pre, suf, bare, time_dim_names)
                         ):
                             return m.group(0)
                     name = m.group(1) or bare

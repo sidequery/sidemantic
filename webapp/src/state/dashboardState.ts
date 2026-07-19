@@ -1,10 +1,14 @@
 import type { DashboardChart, DashboardDocument, DashboardTab } from "../data/dashboardTypes";
 import { aliasOf, NULL_TOKEN, type ResultRow, type StructuredQuery } from "../data/types";
+import { displayDimValue, sqlLiteral } from "../lib/format";
 import { filterExprs, type DimTypes, type FilterState } from "../lib/queries";
+
+export type DashboardRange = { from: string; to: string };
 
 export type DashboardViewState = {
   tab: string;
   filters: Record<string, string>;
+  ranges: Record<string, DashboardRange>;
 };
 
 export type SavedDashboardView = {
@@ -13,6 +17,7 @@ export type SavedDashboardView = {
 };
 
 const FILTER_PARAM = "dashboard_filters";
+const RANGE_PARAM = "dashboard_ranges";
 
 export function shouldUseExplorer(pathname: string, search: string): boolean {
   if (pathname === "/explore") return true;
@@ -26,6 +31,14 @@ export function selectableDashboardDimension(chart: DashboardChart, dimension: s
   if (select === true) return true;
   if (!select) return false;
   return !select.fields?.length || select.fields.includes(dimension);
+}
+
+export function brushableDashboardDimension(chart: DashboardChart, dimension: string): boolean {
+  if (!dimension || !(chart.query.dimensions ?? []).includes(dimension)) return false;
+  const brush = chart.interactions?.brush;
+  if (brush === true) return true;
+  if (!brush || (brush.channel && brush.channel !== "x")) return false;
+  return !brush.fields?.length || brush.fields.includes(dimension);
 }
 
 export function dashboardFilterValue(value: unknown): string {
@@ -58,6 +71,7 @@ export function dashboardStructuredQuery(
   chart: DashboardChart,
   filters: DashboardViewState["filters"],
   types: DimTypes,
+  ranges: DashboardViewState["ranges"] = {},
 ): StructuredQuery {
   const filterState: FilterState = Object.fromEntries(
     Object.entries(filters).map(([dimension, value]) => [dimension, { mode: "include", values: [value] }]),
@@ -65,7 +79,13 @@ export function dashboardStructuredQuery(
   const request: StructuredQuery = {
     metrics: chart.query.metrics,
     dimensions: chart.query.dimensions,
-    filters: [...(chart.query.filters ?? []), ...filterExprs(filterState, { types })],
+    filters: [
+      ...(chart.query.filters ?? []),
+      ...filterExprs(filterState, { types }),
+      ...Object.entries(ranges).map(
+        ([dimension, range]) => `${dimension} >= ${sqlLiteral(range.from)} AND ${dimension} <= ${sqlLiteral(range.to)}`,
+      ),
+    ],
     segments: chart.query.segments,
     orderBy: chart.query.order_by ?? chart.query.orderBy,
     limit: chart.query.limit ?? 500,
@@ -83,6 +103,32 @@ export type DashboardTimeSeries = {
   label: string;
   points: { x: string; y: number }[];
 };
+
+export type DashboardCategorySeries = {
+  label: string;
+  data: { label: string; filterValue: string; value: number }[];
+};
+
+export function dashboardCategorySeries(
+  rows: ResultRow[],
+  xColumn: string,
+  yColumn: string,
+  seriesColumns: string[],
+): DashboardCategorySeries[] {
+  const grouped = new Map<string, DashboardCategorySeries>();
+  for (const row of rows) {
+    const value = Number(row[yColumn]);
+    if (!Number.isFinite(value)) continue;
+    const seriesValues = seriesColumns.map((column) => dashboardFilterValue(row[column]));
+    const key = JSON.stringify(seriesValues);
+    const label = seriesValues.length ? seriesValues.map(displayDimValue).join(" · ") : "Current";
+    const series = grouped.get(key) ?? { label, data: [] };
+    const filterValue = dashboardFilterValue(row[xColumn]);
+    series.data.push({ label: displayDimValue(filterValue), filterValue, value });
+    grouped.set(key, series);
+  }
+  return [...grouped.values()];
+}
 
 export function dashboardTimeSeries(
   rows: ResultRow[],
@@ -105,7 +151,7 @@ export function dashboardTimeSeries(
     }
     const seriesValues = seriesColumns.map((column) => dashboardFilterValue(row[column]));
     const key = JSON.stringify(seriesValues);
-    const label = seriesValues.length ? seriesValues.map((value) => (value === NULL_TOKEN ? "—" : value)).join(" · ") : "Current";
+    const label = seriesValues.length ? seriesValues.map(displayDimValue).join(" · ") : "Current";
     const series = grouped.get(key) ?? { label, values: new Map<string, number>() };
     series.values.set(x, y);
     grouped.set(key, series);
@@ -126,6 +172,19 @@ function validFilters(value: unknown, allowedDimensions: Set<string>): Record<st
   return filters;
 }
 
+function validRanges(value: unknown, allowedDimensions: Set<string>): Record<string, DashboardRange> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return {};
+  const ranges: Record<string, DashboardRange> = {};
+  for (const [dimension, candidate] of Object.entries(value as Record<string, unknown>)) {
+    if (!allowedDimensions.has(dimension) || typeof candidate !== "object" || candidate === null || Array.isArray(candidate)) continue;
+    const range = candidate as { from?: unknown; to?: unknown };
+    if (typeof range.from === "string" && typeof range.to === "string") {
+      ranges[dimension] = { from: range.from, to: range.to };
+    }
+  }
+  return ranges;
+}
+
 export function dashboardDimensions(document: DashboardDocument): Set<string> {
   return new Set(document.tabs.flatMap((tab) => tab.charts.flatMap((chart) => chart.query.dimensions ?? [])));
 }
@@ -136,18 +195,30 @@ export function decodeDashboardState(search: string, document: DashboardDocument
   const requestedTab = params.get("tab");
   const tab = document.tabs.some((candidate) => candidate.id === requestedTab) ? requestedTab ?? fallbackTab : fallbackTab;
   let parsedFilters: unknown;
+  let parsedRanges: unknown;
   try {
     parsedFilters = JSON.parse(params.get(FILTER_PARAM) ?? "{}");
   } catch {
     parsedFilters = {};
   }
-  return { tab, filters: validFilters(parsedFilters, dashboardDimensions(document)) };
+  try {
+    parsedRanges = JSON.parse(params.get(RANGE_PARAM) ?? "{}");
+  } catch {
+    parsedRanges = {};
+  }
+  const dimensions = dashboardDimensions(document);
+  return {
+    tab,
+    filters: validFilters(parsedFilters, dimensions),
+    ranges: validRanges(parsedRanges, dimensions),
+  };
 }
 
 export function encodeDashboardState(state: DashboardViewState, document: DashboardDocument): string {
   const params = new URLSearchParams();
   if (state.tab && state.tab !== document.tabs[0]?.id) params.set("tab", state.tab);
   if (Object.keys(state.filters).length) params.set(FILTER_PARAM, JSON.stringify(state.filters));
+  if (Object.keys(state.ranges).length) params.set(RANGE_PARAM, JSON.stringify(state.ranges));
   return params.toString();
 }
 
@@ -170,7 +241,14 @@ export function loadSavedDashboardViews(document: DashboardDocument): SavedDashb
       const tab = document.tabs.some((entry) => entry.id === rawState.tab)
         ? String(rawState.tab)
         : document.tabs[0]?.id ?? "";
-      return [{ name: candidate.name, state: { tab, filters: validFilters(rawState.filters, dimensions) } }];
+      return [{
+        name: candidate.name,
+        state: {
+          tab,
+          filters: validFilters(rawState.filters, dimensions),
+          ranges: validRanges((rawState as { ranges?: unknown }).ranges, dimensions),
+        },
+      }];
     });
   } catch {
     return [];

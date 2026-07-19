@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import type { DashboardChart, DashboardDocument } from "../data/dashboardTypes";
 import { NULL_TOKEN } from "../data/types";
 import {
+  brushableDashboardDimension,
+  dashboardCategorySeries,
   dashboardFilterValue,
   dashboardMetricRefs,
   dashboardResultColumn,
@@ -32,12 +34,17 @@ const document: DashboardDocument = {
 describe("dashboard URL state", () => {
   test("round-trips the active tab and allowed filters", () => {
     const encoded = encodeDashboardState(
-      { tab: "customers", filters: { "orders.region": "North", "customers.tier": "Gold" } },
+      {
+        tab: "customers",
+        filters: { "orders.region": "North", "customers.tier": "Gold" },
+        ranges: { "orders.region": { from: "A", to: "Z" } },
+      },
       document,
     );
     expect(decodeDashboardState(encoded, document)).toEqual({
       tab: "customers",
       filters: { "orders.region": "North", "customers.tier": "Gold" },
+      ranges: { "orders.region": { from: "A", to: "Z" } },
     });
   });
 
@@ -46,6 +53,7 @@ describe("dashboard URL state", () => {
     expect(decodeDashboardState(`?tab=missing&dashboard_filters=${filters}`, document)).toEqual({
       tab: "overview",
       filters: { "orders.region": "North" },
+      ranges: {},
     });
   });
 });
@@ -78,6 +86,16 @@ describe("dashboard selections", () => {
     expect(selectableDashboardDimension(chart(true), "orders.status")).toBe(true);
     expect(selectableDashboardDimension(chart({ fields: ["orders.country"] }), "orders.status")).toBe(false);
     expect(selectableDashboardDimension(chart({ fields: ["orders.status"] }), "orders.status")).toBe(true);
+  });
+
+  test("honors horizontal brush interactions", () => {
+    const brushed: DashboardChart = {
+      id: "trend",
+      query: { metrics: ["orders.order_count"], dimensions: ["orders.created_at__month", "orders.region"] },
+      interactions: { brush: { fields: ["orders.created_at__month"], channel: "x" } },
+    };
+    expect(brushableDashboardDimension(brushed, "orders.created_at__month")).toBe(true);
+    expect(brushableDashboardDimension(brushed, "orders.region")).toBe(false);
   });
 
   test("preserves the null sentinel instead of filtering for its display label", () => {
@@ -114,6 +132,39 @@ describe("dashboard selections", () => {
       {},
     );
     expect(explicit.usePreaggregations).toBe(false);
+  });
+
+  test("adds shared brush ranges to dashboard queries", () => {
+    const chart: DashboardChart = {
+      id: "trend",
+      query: { metrics: ["orders.revenue"], dimensions: ["orders.created_at__month"] },
+    };
+    const query = dashboardStructuredQuery(
+      document,
+      chart,
+      {},
+      {},
+      { "orders.created_at__month": { from: "2026-01-01", to: "2026-03-01" } },
+    );
+    expect(query.filters).toContain(
+      "orders.created_at__month >= '2026-01-01' AND orders.created_at__month <= '2026-03-01'",
+    );
+  });
+
+  test("separates categorical series before plotting bars", () => {
+    const series = dashboardCategorySeries(
+      [
+        { status: "Open", region: "West", count: 10 },
+        { status: "Open", region: "East", count: 12 },
+      ],
+      "status",
+      "count",
+      ["region"],
+    );
+    expect(series).toEqual([
+      { label: "West", data: [{ label: "Open", filterValue: "Open", value: 10 }] },
+      { label: "East", data: [{ label: "Open", filterValue: "Open", value: 12 }] },
+    ]);
   });
 
   test("keeps time-series dimension combinations separate and aligns their buckets", () => {

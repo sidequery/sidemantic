@@ -13,7 +13,9 @@ import type { Catalog, ResultRow } from "../data/types";
 import { displayDimValue, formatValue, labelize } from "../lib/format";
 import { dimTypes } from "../lib/queries";
 import {
+  brushableDashboardDimension,
   decodeDashboardState,
+  dashboardCategorySeries,
   dashboardFilterValue,
   dashboardMetricRefs,
   dashboardResultColumn,
@@ -142,6 +144,7 @@ function DashboardChartPanel({
   backend,
   state,
   setFilter,
+  setRange,
 }: {
   document: DashboardDocument;
   chart: DashboardChart;
@@ -149,11 +152,12 @@ function DashboardChartPanel({
   backend: SidemanticBackend;
   state: DashboardViewState;
   setFilter: (dimension: string, value: string) => void;
+  setRange: (dimension: string, range: { from: string; to: string } | null) => void;
 }) {
   const [detailsOpen, setDetailsOpen] = useState(false);
   const types = useMemo(() => dimensionTypes(catalog), [catalog]);
   const request = useMemo(
-    () => dashboardStructuredQuery(document, chart, state.filters, types),
+    () => dashboardStructuredQuery(document, chart, state.filters, types, state.ranges),
     [chart, document, state.filters, types],
   );
   const query = useQueryResult(backend, request);
@@ -166,7 +170,12 @@ function DashboardChartPanel({
   const xColumn = dashboardResultColumn(xRef, columns);
   const chartType = chart.type === "auto" || !chart.type ? (xRef.includes("__") ? "line" : "bar") : chart.type;
   const canSelect = selectableDashboardDimension(chart, xRef);
+  const canBrush = brushableDashboardDimension(chart, xRef);
   const chartTitle = chart.title?.trim() || labelize(chart.id);
+  const seriesRefs = [chart.encoding?.color, ...dimensions.filter((dimension) => dimension !== xRef)].filter(
+    (dimension, index, refs): dimension is string => Boolean(dimension) && refs.indexOf(dimension) === index,
+  );
+  const seriesColumns = seriesRefs.map((dimension) => dashboardResultColumn(dimension, columns));
 
   let visualization: React.ReactNode;
   if (query.loading && !query.result) {
@@ -191,10 +200,6 @@ function DashboardChartPanel({
       </div>
     );
   } else if (chartType === "line" || chartType === "area") {
-    const seriesRefs = [chart.encoding?.color, ...dimensions.filter((dimension) => dimension !== xRef)].filter(
-      (dimension, index, refs): dimension is string => Boolean(dimension) && refs.indexOf(dimension) === index,
-    );
-    const seriesColumns = seriesRefs.map((dimension) => dashboardResultColumn(dimension, columns));
     visualization = (
       <div className="grid grid-cols-[repeat(auto-fit,minmax(260px,1fr))] gap-3">
         {yRefs.map((metric) => {
@@ -215,6 +220,7 @@ function DashboardChartPanel({
                 additionalSeries={series.slice(1)}
                 formatValue={(value) => formatValue(value, format)}
                 ariaLabel={`${chartTitle}, ${labelize(metric)}, ${series.length} series and ${primary.points.length} buckets`}
+                onBrush={canBrush ? (range) => setRange(xRef, range) : undefined}
               />
             </div>
           );
@@ -226,24 +232,25 @@ function DashboardChartPanel({
       <div className="grid grid-cols-[repeat(auto-fit,minmax(260px,1fr))] gap-3">
         {yRefs.map((metric) => {
           const yColumn = dashboardResultColumn(metric, columns);
-          const data = rows
-            .map((row) => {
-              const filterValue = dashboardFilterValue(row[xColumn]);
-              return { label: displayDimValue(filterValue), filterValue, value: Number(row[yColumn]) };
-            })
-            .filter((item) => Number.isFinite(item.value))
-            .slice(0, 30);
-          return (
-            <div key={metric} className="min-w-0">
-              {yRefs.length > 1 ? <h3 className="mb-1 text-2xs font-semibold text-muted">{labelize(metric)}</h3> : null}
-              <ColumnChart
-                data={data}
-                ariaLabel={`${chartTitle}, ${labelize(metric)}, ${data.length} categories`}
-                selectedLabel={state.filters[xRef]}
-                onSelect={canSelect ? (value) => { setFilter(xRef, value); setDetailsOpen(true); } : undefined}
-              />
-            </div>
-          );
+          const series = dashboardCategorySeries(rows, xColumn, yColumn, seriesColumns);
+          return series.map((entry, seriesIndex) => {
+            const data = entry.data.slice(0, 30);
+            const showSeriesLabel = yRefs.length > 1 || series.length > 1;
+            const seriesLabel = [yRefs.length > 1 ? labelize(metric) : "", series.length > 1 ? entry.label : ""]
+              .filter(Boolean)
+              .join(" · ");
+            return (
+              <div key={`${metric}-${entry.label}-${seriesIndex}`} className="min-w-0">
+                {showSeriesLabel ? <h3 className="mb-1 text-2xs font-semibold text-muted">{seriesLabel}</h3> : null}
+                <ColumnChart
+                  data={data}
+                  ariaLabel={`${chartTitle}, ${seriesLabel || labelize(metric)}, ${data.length} categories`}
+                  selectedLabel={state.filters[xRef]}
+                  onSelect={canSelect ? (value) => { setFilter(xRef, value); setDetailsOpen(true); } : undefined}
+                />
+              </div>
+            );
+          });
         })}
       </div>
     );
@@ -349,7 +356,7 @@ function ShareUrlButton() {
   return (
     <button
       type="button"
-      title="Copies the active tab and filters. Data is queried live; local saved views are not shared."
+      title="Copies the active tab, filters, and brushed ranges. Data is queried live; local saved views are not shared."
       onClick={async () => {
         await navigator.clipboard.writeText(window.location.href);
         setCopied(true);
@@ -387,6 +394,15 @@ export function DashboardDocumentView({
     setState((current) => ({ ...current, filters: { ...current.filters, [dimension]: value } }));
   }
 
+  function setRange(dimension: string, range: { from: string; to: string } | null) {
+    setState((current) => {
+      const ranges = { ...current.ranges };
+      if (range) ranges[dimension] = range;
+      else delete ranges[dimension];
+      return { ...current, ranges };
+    });
+  }
+
   const toolbar = (
     <>
       <SavedViews document={document} state={state} onLoad={setState} />
@@ -395,7 +411,7 @@ export function DashboardDocumentView({
       <DashboardQueryStatus />
     </>
   );
-  const filters = Object.entries(state.filters).length ? (
+  const filters = Object.entries(state.filters).length || Object.entries(state.ranges).length ? (
     <>
       <span className="shrink-0 text-2xs font-semibold uppercase tracking-wide text-faint">Filters</span>
       {Object.entries(state.filters).map(([dimension, value]) => (
@@ -413,7 +429,18 @@ export function DashboardDocumentView({
           {labelize(dimension)} = {value} ×
         </button>
       ))}
-      <button type="button" onClick={() => setState((current) => ({ ...current, filters: {} }))} className="text-2xs text-muted hover:text-ink">
+      {Object.entries(state.ranges).map(([dimension, range]) => (
+        <button
+          key={`range-${dimension}`}
+          type="button"
+          aria-label={`Remove range ${labelize(dimension)} ${range.from} to ${range.to}`}
+          onClick={() => setRange(dimension, null)}
+          className="border border-line bg-surface px-2 py-1 text-2xs text-muted hover:border-danger"
+        >
+          {labelize(dimension)}: {range.from}–{range.to} ×
+        </button>
+      ))}
+      <button type="button" onClick={() => setState((current) => ({ ...current, filters: {}, ranges: {} }))} className="text-2xs text-muted hover:text-ink">
         Clear all
       </button>
     </>
@@ -454,6 +481,7 @@ export function DashboardDocumentView({
                 backend={backend}
                 state={state}
                 setFilter={setFilter}
+                setRange={setRange}
               />
             ))}
           </section>

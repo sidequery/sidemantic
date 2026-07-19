@@ -42,6 +42,16 @@ def test_manpage_is_deterministic_and_covers_visible_commands() -> None:
     assert "LEGACY" not in first
 
 
+def test_manpage_supports_legacy_click_metavar_signature(monkeypatch) -> None:
+    monkeypatch.setattr(click.Argument, "make_metavar", lambda self: self.metavar or self.name.upper())
+    monkeypatch.setattr(click.Option, "make_metavar", lambda self: self.metavar or "TEXT")
+
+    rendered = render_manpage(_sample_cli(), version="1.2.3")
+
+    assert "[MODELS]" in rendered
+    assert r"\fB\-\-debug\fR" in rendered
+
+
 def test_checked_in_manpage_exists() -> None:
     path = Path(__file__).parents[1] / "sidemantic" / "man" / "sidemantic.1"
     assert path.exists()

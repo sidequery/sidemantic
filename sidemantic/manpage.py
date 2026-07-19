@@ -23,6 +23,14 @@ def _paragraphs(text: str | None) -> list[str]:
     return [" ".join(part.split()) for part in inspect.cleandoc(text).split("\n\n") if part.strip()]
 
 
+def _make_metavar(param: click.Parameter, ctx: click.Context) -> str:
+    """Call Click's version-dependent metavar API."""
+
+    if "ctx" in inspect.signature(param.make_metavar).parameters:
+        return param.make_metavar(ctx)
+    return param.make_metavar()
+
+
 def _walk_commands(
     command: click.Command,
     *,
@@ -47,7 +55,7 @@ def _synopsis(path: tuple[str, ...], command: click.Command, ctx: click.Context)
     for param in command.params:
         if not isinstance(param, click.Argument):
             continue
-        metavar = param.make_metavar(ctx)
+        metavar = _make_metavar(param, ctx)
         pieces.append(metavar if param.required else f"[{metavar}]")
     if isinstance(command, click.Group):
         pieces.extend(("COMMAND", "[ARGS]..."))
@@ -62,7 +70,7 @@ def _render_parameters(command: click.Command, ctx: click.Context) -> list[str]:
         declarations = [*param.opts, *param.secondary_opts]
         label = ", ".join(declarations)
         if not param.is_flag:
-            label += f" {param.make_metavar(ctx)}"
+            label += f" {_make_metavar(param, ctx)}"
         lines.extend((".TP", f"\\fB{_roff(label)}\\fR", _roff(param.help or "")))
     return lines
 

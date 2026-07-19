@@ -16,6 +16,7 @@ from sqlglot import exp
 from sqlglot.tokens import TokenType
 
 from sidemantic.sql.aggregation_detection import _ANONYMOUS_AGGREGATE_FUNCTIONS
+from sidemantic.sql.fragment import mask_sql_literals_comments_and_quoted_identifiers
 
 _PROTECTED_PREFIX = "__sidemantic_lookml_fragment_"
 
@@ -429,6 +430,29 @@ def parse_lookml_expression(
     if best is None:
         return None
     return ParsedLookMLSQL(protected, best[1], best[2])
+
+
+def lookml_expression_has_subquery(sql: str) -> bool:
+    """Whether executable LookML SQL contains a real ``SELECT``.
+
+    Prefer the parsed AST.  Some otherwise valid SQL fragments cannot be parsed
+    after Liquid control tags are replaced by identifier sentinels, however.  In
+    that case SQLGlot's tokenizer provides the conservative syntax boundary after
+    strings, quoted identifiers, comments, dollar literals, and LookML fragments
+    have been hidden.  This fails closed for genuine subqueries without reviving
+    the old false positives from literal or template contents.
+    """
+    parsed = parse_lookml_expression(sql)
+    if parsed is not None:
+        return parsed.tree.find(exp.Select) is not None
+
+    protected = protect_lookml_sql(sql)
+    masked = mask_sql_literals_comments_and_quoted_identifiers(protected.text)
+    try:
+        tokens = sqlglot.Tokenizer().tokenize(masked)
+    except Exception:
+        return False
+    return any(token.token_type is TokenType.SELECT for token in tokens)
 
 
 ColumnResolver = Callable[[str, tuple[str, ...], bool], str | None]

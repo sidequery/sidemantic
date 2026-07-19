@@ -212,7 +212,7 @@ markers = [
     "integration: marks tests as integration tests requiring external services (deselect with '-m \"not integration\"')",
     "yardstick_upstream: opt-in tests that fetch and replay live upstream Yardstick SQL tests",
 ]
-addopts = "-m 'not integration' --cov=sidemantic --cov-report=term-missing --cov-fail-under=76"
+addopts = "-m 'not integration' --cov=sidemantic --cov-report=term-missing"
 
 [tool.coverage.run]
 source = ["sidemantic"]

@@ -69,7 +69,7 @@ jobs:
         run: uv run ruff format --check . --exclude docs/_extensions --exclude sidemantic-duckdb/extension-ci-tools --exclude sidemantic-duckdb/scripts --exclude sidemantic-duckdb/duckdb --exclude sidemantic/adapters/malloy_grammar --exclude sidemantic/adapters/holistics_grammar
 
       - name: Run tests
-        run: uv run pytest -v
+        run: uv run pytest -v --cov-fail-under=76
 
       - name: Run installed-wheel DAX smoke
         run: |

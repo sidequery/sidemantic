@@ -147,7 +147,7 @@ jobs:
           uv run ruff check . --exclude docs/_extensions --exclude sidemantic-duckdb/extension-ci-tools --exclude sidemantic-duckdb/scripts --exclude sidemantic-duckdb/duckdb --exclude sidemantic/adapters/malloy_grammar --exclude sidemantic/adapters/holistics_grammar
           uv run ruff format --check . --exclude docs/_extensions --exclude sidemantic-duckdb/extension-ci-tools --exclude sidemantic-duckdb/scripts --exclude sidemantic-duckdb/duckdb --exclude sidemantic/adapters/malloy_grammar --exclude sidemantic/adapters/holistics_grammar
           uv run mypy
-          uv run pytest -v
+          uv run pytest -v --cov-fail-under=76
           uv run python scripts/build_widget.py --check
           uv run python scripts/build_webapp.py --check
           uv run python scripts/build_ui_distribution.py --check

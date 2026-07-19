@@ -230,6 +230,21 @@ def test_meta_api_exposes_consumption_contracts():
     assert compiled.status_code == 200, compiled.text
     assert "LIMIT 10" in compiled.json()["sql"]
 
+    explicit_empty = client.post(
+        "/compile",
+        json={
+            "explore": "revenue_overview",
+            "dimensions": ["orders.status"],
+            "metrics": [],
+            "filters": [],
+        },
+    )
+    assert explicit_empty.status_code == 200, explicit_empty.text
+    explicit_sql = explicit_empty.json()["sql"]
+    assert "SUM(" not in explicit_sql
+    assert "status = 'paid'" not in explicit_sql
+    assert "status <> 'deleted'" in explicit_sql
+
 
 def test_schema_and_cli_expose_contracts(tmp_path: Path):
     schema = generate_yaml_schema()
@@ -300,3 +315,35 @@ def test_lossless_adapter_bridges_create_typed_contracts():
     sql = lookml_layer.compile(explore="completed_orders", dimensions=["fact_orders.status"])
     assert "{'model': model}" not in sql
     assert "status = 'completed'" in sql
+
+
+def test_metricflow_metric_ordering_is_preserved_but_not_executable(tmp_path: Path):
+    source = tmp_path / "metricflow.yml"
+    source.write_text(
+        """
+semantic_models:
+  - name: bookings
+    model: ref('bookings')
+    measures:
+      - name: booking_count
+        expr: "1"
+        agg: sum
+saved_queries:
+  - name: ordered_bookings
+    query_params:
+      metrics: [booking_count]
+      order_by:
+        - Metric('booking_count').descending(True)
+""".strip()
+    )
+
+    graph = MetricFlowAdapter().parse(source)
+    saved_query = graph.saved_queries["ordered_bookings"]
+    metadata = saved_query.metadata["metricflow"]
+    assert metadata["executable"] is False
+    assert "Metric()" in metadata["compatibility_message"]
+
+    layer = SemanticLayer(auto_register=False)
+    layer.graph = graph
+    with pytest.raises(ValueError, match="cannot execute"):
+        layer.compile(saved_query="ordered_bookings")

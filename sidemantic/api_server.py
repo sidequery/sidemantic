@@ -53,16 +53,31 @@ class StructuredQueryRequest(BaseModel):
     explore: str | None = None
     saved_query: str | None = None
 
-    def resolved_filters(self) -> list[str]:
+    def optional_list(self, field_name: str) -> list[str] | None:
+        """Preserve an explicitly supplied empty list while treating omission as unset."""
+        if field_name not in self.model_fields_set:
+            return None
+        return getattr(self, field_name)
+
+    def resolved_filters(self) -> list[str] | None:
         filters = list(self.filters)
+        supplied = "filters" in self.model_fields_set
         if self.where:
             filters.append(self.where)
-        return filters
+            supplied = True
+        return filters if supplied else None
 
     @model_validator(mode="after")
     def validate_saved_query_contract(self) -> StructuredQueryRequest:
+        explicit_list_overrides = self.model_fields_set & {
+            "dimensions",
+            "metrics",
+            "filters",
+            "segments",
+            "order_by",
+        }
         if self.saved_query and (
-            self.dimensions
+            explicit_list_overrides
             or self.metrics
             or self.where is not None
             or self.filters
@@ -465,14 +480,14 @@ def create_app(
         current_layer = app.state.layer
         user_attributes = resolve_user_attributes(request)
         filters = payload.resolved_filters()
-        for filter_str in filters:
+        for filter_str in filters or []:
             validate_filter_expression(filter_str, dialect=current_layer.dialect)
         sql = current_layer.compile(
-            dimensions=payload.dimensions or None,
-            metrics=payload.metrics or None,
-            filters=filters or None,
-            segments=payload.segments or None,
-            order_by=payload.order_by or None,
+            dimensions=payload.optional_list("dimensions"),
+            metrics=payload.optional_list("metrics"),
+            filters=filters,
+            segments=payload.optional_list("segments"),
+            order_by=payload.optional_list("order_by"),
             limit=payload.limit,
             offset=payload.offset,
             ungrouped=payload.ungrouped,
@@ -497,14 +512,14 @@ def create_app(
         current_layer = app.state.layer
         user_attributes = resolve_user_attributes(request)
         filters = payload.resolved_filters()
-        for filter_str in filters:
+        for filter_str in filters or []:
             validate_filter_expression(filter_str, dialect=current_layer.dialect)
         sql = current_layer.compile(
-            dimensions=payload.dimensions or None,
-            metrics=payload.metrics or None,
-            filters=filters or None,
-            segments=payload.segments or None,
-            order_by=payload.order_by or None,
+            dimensions=payload.optional_list("dimensions"),
+            metrics=payload.optional_list("metrics"),
+            filters=filters,
+            segments=payload.optional_list("segments"),
+            order_by=payload.optional_list("order_by"),
             limit=payload.limit,
             offset=payload.offset,
             ungrouped=payload.ungrouped,

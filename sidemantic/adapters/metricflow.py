@@ -97,7 +97,7 @@ class MetricFlowAdapter(BaseAdapter):
                     token in value
                     for value in [*(definition.get("group_by") or []), *where, *order_by]
                     if isinstance(value, str)
-                    for token in ("Dimension(", "TimeDimension(", "{{")
+                    for token in ("Dimension(", "TimeDimension(", "Metric(", "{{")
                 )
                 graph.add_saved_query(
                     SavedQuery(
@@ -119,7 +119,7 @@ class MetricFlowAdapter(BaseAdapter):
                                 **(
                                     {
                                         "compatibility_message": (
-                                            "MetricFlow Dimension()/TimeDimension() expressions are preserved "
+                                            "MetricFlow Dimension()/TimeDimension()/Metric() expressions are preserved "
                                             "losslessly but must be converted to Sidemantic field references before execution"
                                         )
                                     }

@@ -292,6 +292,8 @@ def validate_relationships(graph: "SemanticGraph") -> list[str]:
 
     for source_name, source in graph.models.items():
         for relationship in source.relationships:
+            if not relationship.active:
+                continue
             target = graph.models.get(relationship.name)
             if target is None:
                 add_error(source_name, relationship, "target model does not exist")
@@ -663,7 +665,7 @@ def validate_query(metrics: list[str], dimensions: list[str], graph: "SemanticGr
         for relationship_error in validate_relationships(graph):
             relationship_ref = relationship_error.split("'", 2)[1]
             source_name, _, target_name = relationship_ref.partition(".")
-            if source_name in selected or target_name in selected:
+            if source_name in selected and target_name in selected:
                 relationship_errors.append(relationship_error)
         errors.extend(relationship_errors)
 

@@ -9,6 +9,7 @@ from sidemantic.validation import (
     ModelValidationError,
     QueryValidationError,
     validate_model_warnings,
+    validate_relationships,
 )
 from sidemantic.validation_runner import validate_directory
 
@@ -26,6 +27,22 @@ def test_model_without_primary_key_remains_explicitly_keyless(layer):
     layer.add_model(model)
     assert model.primary_key is None
     assert model.primary_key_columns == []
+
+
+def test_inactive_relationships_are_ignored_by_structural_validation():
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="orders",
+            table="orders",
+            primary_key="order_id",
+            relationships=[Relationship(name="removed_model", type="many_to_one", active=False)],
+        )
+    )
+
+    assert validate_relationships(graph) == []
 
 
 def test_model_validation_no_table(layer):
@@ -225,6 +242,39 @@ def test_query_validation_no_join_path(layer):
     assert "No join path found between models" in str(exc_info.value)
     assert "'orders'" in str(exc_info.value)
     assert "'products'" in str(exc_info.value)
+
+
+def test_query_validation_ignores_unrelated_broken_relationship(layer):
+    layer.add_model(
+        Model(
+            name="orders",
+            table="orders",
+            primary_key="order_id",
+            relationships=[
+                Relationship(
+                    name="products",
+                    type="many_to_one",
+                    foreign_key="product_id",
+                    primary_key="product_id",
+                ),
+                Relationship(name="customers", type="many_to_one"),
+            ],
+            metrics=[Metric(name="revenue", agg="sum", sql="amount")],
+        )
+    )
+    layer.add_model(
+        Model(
+            name="products",
+            table="products",
+            primary_key="product_id",
+            dimensions=[Dimension(name="category", type="categorical")],
+        )
+    )
+    layer.add_model(Model(name="customers", table="customers", primary_key="customer_id"))
+
+    sql = layer.compile(metrics=["orders.revenue"], dimensions=["products.category"])
+
+    assert "products_cte" in sql
 
 
 def test_query_validation_invalid_granularity(layer):

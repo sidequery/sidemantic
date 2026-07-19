@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::core::{
     Aggregation, CohortInnerMetric, ComparisonCalculation, ComparisonType, Dimension,
@@ -50,8 +50,8 @@ pub struct ModelConfig {
     pub table: Option<String>,
     pub sql: Option<String>,
     pub source_uri: Option<String>,
-    #[serde(default)]
-    pub primary_key: Option<KeyConfig>,
+    #[serde(default, deserialize_with = "deserialize_present_option")]
+    pub primary_key: Option<Option<KeyConfig>>,
     #[serde(default)]
     pub primary_key_columns: Option<Vec<String>>,
     #[serde(default)]
@@ -309,6 +309,14 @@ fn default_active() -> bool {
     true
 }
 
+fn deserialize_present_option<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
+}
+
 fn default_index_type() -> String {
     "regular".to_string()
 }
@@ -517,7 +525,13 @@ fn inherit_omitted_primary_keys(models: &mut [ModelConfig]) {
             model
                 .primary_key_columns
                 .clone()
-                .or_else(|| model.primary_key.clone().map(KeyConfig::into_columns))
+                .or_else(|| {
+                    model
+                        .primary_key
+                        .clone()
+                        .flatten()
+                        .map(KeyConfig::into_columns)
+                })
                 .map(|columns| (model.name.clone(), columns))
         })
         .collect();
@@ -554,6 +568,7 @@ impl ModelConfig {
             Some(columns) => columns,
             None => self
                 .primary_key
+                .flatten()
                 .map(KeyConfig::into_columns)
                 .unwrap_or_default(),
         };
@@ -1302,6 +1317,31 @@ models:
             .unwrap();
 
         assert_eq!(child.primary_keys(), vec!["event_id".to_string()]);
+    }
+
+    #[test]
+    fn test_explicit_null_child_primary_key_clears_parent_key() {
+        let yaml = r#"
+models:
+  - name: events
+    table: events
+    primary_key: event_id
+  - name: event_rollup
+    table: event_rollup
+    extends: events
+    primary_key: null
+"#;
+
+        let models = serde_yaml::from_str::<SidemanticConfig>(yaml)
+            .unwrap()
+            .into_models()
+            .unwrap();
+        let child = models
+            .iter()
+            .find(|model| model.name == "event_rollup")
+            .unwrap();
+
+        assert!(child.primary_keys().is_empty());
     }
 
     #[test]

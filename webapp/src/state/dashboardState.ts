@@ -1,5 +1,5 @@
-import type { DashboardDocument, DashboardTab } from "../data/dashboardTypes";
-import type { ResultRow } from "../data/types";
+import type { DashboardChart, DashboardDocument, DashboardTab } from "../data/dashboardTypes";
+import { NULL_TOKEN, type ResultRow } from "../data/types";
 
 export type DashboardViewState = {
   tab: string;
@@ -12,6 +12,24 @@ export type SavedDashboardView = {
 };
 
 const FILTER_PARAM = "dashboard_filters";
+
+export function shouldUseExplorer(pathname: string, search: string): boolean {
+  if (pathname === "/explore") return true;
+  const view = new URLSearchParams(search).get("view");
+  return view === "explore" || view === "pivot";
+}
+
+export function selectableDashboardDimension(chart: DashboardChart, dimension: string): boolean {
+  if (!dimension || !(chart.query.dimensions ?? []).includes(dimension)) return false;
+  const select = chart.interactions?.select;
+  if (select === true) return true;
+  if (!select) return false;
+  return !select.fields?.length || select.fields.includes(dimension);
+}
+
+export function dashboardFilterValue(value: unknown): string {
+  return value == null ? NULL_TOKEN : String(value);
+}
 
 function validFilters(value: unknown, allowedDimensions: Set<string>): Record<string, string> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return {};

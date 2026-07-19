@@ -1,6 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import type { DashboardDocument } from "../data/dashboardTypes";
-import { decodeDashboardState, encodeDashboardState, rowsToCsv } from "./dashboardState";
+import type { DashboardChart, DashboardDocument } from "../data/dashboardTypes";
+import { NULL_TOKEN } from "../data/types";
+import {
+  dashboardFilterValue,
+  decodeDashboardState,
+  encodeDashboardState,
+  rowsToCsv,
+  selectableDashboardDimension,
+  shouldUseExplorer,
+} from "./dashboardState";
 
 const document: DashboardDocument = {
   schema: "sidemantic.dashboard.v1",
@@ -42,4 +50,35 @@ test("rowsToCsv quotes commas, quotes, and newlines", () => {
   expect(rowsToCsv(["name", "amount"], [{ name: "A, \"quoted\" row", amount: 12 }, { name: "two\nlines", amount: null }])).toBe(
     'name,amount\r\n"A, ""quoted"" row",12\r\n"two\nlines",',
   );
+});
+
+describe("dashboard routing", () => {
+  test("preserves legacy root explorer and pivot links", () => {
+    expect(shouldUseExplorer("/", "?view=explore&model=orders")).toBe(true);
+    expect(shouldUseExplorer("/", "?view=pivot&model=orders")).toBe(true);
+    expect(shouldUseExplorer("/explore", "")).toBe(true);
+    expect(shouldUseExplorer("/", "?tab=overview")).toBe(false);
+  });
+});
+
+describe("dashboard selections", () => {
+  type SelectInteraction = NonNullable<DashboardChart["interactions"]>["select"];
+  const chart = (select: SelectInteraction): DashboardChart => ({
+    id: "status",
+    query: { metrics: ["orders.order_count"], dimensions: ["orders.status", "orders.country"] },
+    interactions: { select },
+  });
+
+  test("honors disabled and field-scoped select interactions", () => {
+    expect(selectableDashboardDimension(chart(false), "orders.status")).toBe(false);
+    expect(selectableDashboardDimension(chart(true), "orders.status")).toBe(true);
+    expect(selectableDashboardDimension(chart({ fields: ["orders.country"] }), "orders.status")).toBe(false);
+    expect(selectableDashboardDimension(chart({ fields: ["orders.status"] }), "orders.status")).toBe(true);
+  });
+
+  test("preserves the null sentinel instead of filtering for its display label", () => {
+    expect(dashboardFilterValue(null)).toBe(NULL_TOKEN);
+    expect(dashboardFilterValue(undefined)).toBe(NULL_TOKEN);
+    expect(dashboardFilterValue("—")).toBe("—");
+  });
 });

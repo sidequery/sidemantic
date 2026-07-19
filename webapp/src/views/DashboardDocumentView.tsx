@@ -10,13 +10,15 @@ import { TimeSeriesChart } from "../components/TimeSeriesChart";
 import type { SidemanticBackend } from "../data/backend";
 import type { DashboardChart, DashboardDocument } from "../data/dashboardTypes";
 import { aliasOf, type Catalog, type ResultRow, type StructuredQuery } from "../data/types";
-import { formatValue, labelize } from "../lib/format";
+import { displayDimValue, formatValue, labelize } from "../lib/format";
 import { dimTypes, filterExprs, type FilterState } from "../lib/queries";
 import {
   decodeDashboardState,
+  dashboardFilterValue,
   encodeDashboardState,
   loadSavedDashboardViews,
   rowsToCsv,
+  selectableDashboardDimension,
   storeSavedDashboardViews,
   tabLabel,
   type DashboardViewState,
@@ -187,7 +189,7 @@ function DashboardChartPanel({
   const xColumn = resultColumn(xRef, columns);
   const yColumn = resultColumn(yRef, columns);
   const chartType = chart.type === "auto" || !chart.type ? (xRef.includes("__") ? "line" : "bar") : chart.type;
-  const canSelect = Boolean(xRef && dimensions.includes(xRef));
+  const canSelect = selectableDashboardDimension(chart, xRef);
   const chartTitle = chart.title?.trim() || labelize(chart.id);
   const format = metricFormat(catalog, yRef);
 
@@ -226,7 +228,10 @@ function DashboardChartPanel({
     );
   } else {
     const data = rows
-      .map((row) => ({ label: String(row[xColumn] ?? "—"), value: Number(row[yColumn]) }))
+      .map((row) => {
+        const filterValue = dashboardFilterValue(row[xColumn]);
+        return { label: displayDimValue(filterValue), filterValue, value: Number(row[yColumn]) };
+      })
       .filter((item) => Number.isFinite(item.value))
       .slice(0, 30);
     visualization = (

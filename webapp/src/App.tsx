@@ -17,6 +17,7 @@ import { ViewSwitcher } from "./components/ViewSwitcher";
 import { grainOptions } from "./lib/time";
 import { ExplorerProvider, useExplorer } from "./state/ExplorerContext";
 import { useQueryActive } from "./state/queryActivity";
+import { shouldUseExplorer } from "./state/dashboardState";
 import { ExploreIndexView } from "./views/ExploreIndexView";
 import { ExplorerView } from "./views/ExplorerView";
 import { PivotView } from "./views/PivotView";
@@ -196,7 +197,7 @@ export function App() {
   const [catalog, setCatalog] = useState<Catalog | null>(null);
   const [dashboard, setDashboard] = useState<DashboardDocument | null | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
-  const forceExplorer = window.location.pathname === "/explore";
+  const forceExplorer = shouldUseExplorer(window.location.pathname, window.location.search);
 
   useEffect(() => {
     let alive = true;

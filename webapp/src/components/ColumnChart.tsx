@@ -5,6 +5,7 @@ import { formatCompact, formatValue } from "../lib/format";
 type ColumnChartDatum = {
   label: string;
   value: number;
+  filterValue?: string;
 };
 
 type ColumnChartProps = {
@@ -70,6 +71,7 @@ export function ColumnChart({ data, height = 200, ariaLabel, selectedLabel, onSe
         })}
         <line x1={MARGIN.left} x2={width - MARGIN.right} y1={baselineY} y2={baselineY} className="stroke-line" />
         {data.map((item, index) => {
+          const filterValue = item.filterValue ?? item.label;
           const value = values[index] ?? 0;
           const valueY = yForValue(value);
           const barHeight = Math.abs(valueY - baselineY);
@@ -77,14 +79,14 @@ export function ColumnChart({ data, height = 200, ariaLabel, selectedLabel, onSe
           const y = Math.min(valueY, baselineY);
           return (
             <g
-              key={item.label}
+              key={`${filterValue}-${index}`}
               role={onSelect ? "button" : undefined}
               tabIndex={onSelect ? 0 : undefined}
               aria-label={onSelect ? `Filter to ${item.label}` : undefined}
-              aria-pressed={onSelect ? selectedLabel === item.label : undefined}
-              onClick={onSelect ? () => onSelect(item.label) : undefined}
+              aria-pressed={onSelect ? selectedLabel === filterValue : undefined}
+              onClick={onSelect ? () => onSelect(filterValue) : undefined}
               onKeyDown={onSelect ? (event) => {
-                if (event.key === "Enter" || event.key === " ") onSelect(item.label);
+                if (event.key === "Enter" || event.key === " ") onSelect(filterValue);
               } : undefined}
               className={onSelect ? "cursor-pointer" : undefined}
             >
@@ -97,7 +99,7 @@ export function ColumnChart({ data, height = 200, ariaLabel, selectedLabel, onSe
                 data-label={item.label}
                 data-value={value}
                 data-tone={value < 0 ? "negative" : "positive"}
-                className={selectedLabel === item.label ? "fill-accent" : value < 0 ? "fill-danger" : "fill-chart-primary"}
+                className={selectedLabel === filterValue ? "fill-accent" : value < 0 ? "fill-danger" : "fill-chart-primary"}
                 {...handlers(`${item.label}: ${formatValue(value)}`)}
               />
               <text x={x + barWidth / 2} y={height - 8} textAnchor="middle" className="fill-muted text-[10px]">

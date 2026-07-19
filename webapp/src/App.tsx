@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { HttpBackend } from "./data/httpAdapter";
+import type { DashboardDocument } from "./data/dashboardTypes";
 import type { Catalog } from "./data/types";
 import { AppShell } from "./components/AppShell";
 import { AddFilter } from "./components/AddFilter";
@@ -19,6 +20,7 @@ import { useQueryActive } from "./state/queryActivity";
 import { ExploreIndexView } from "./views/ExploreIndexView";
 import { ExplorerView } from "./views/ExplorerView";
 import { PivotView } from "./views/PivotView";
+import { DashboardDocumentView } from "./views/DashboardDocumentView";
 
 function QueryStatus() {
   const active = useQueryActive();
@@ -192,23 +194,30 @@ function Shell() {
 export function App() {
   const backend = useMemo(() => new HttpBackend({ transport: "json", token: API_TOKEN }), []);
   const [catalog, setCatalog] = useState<Catalog | null>(null);
+  const [dashboard, setDashboard] = useState<DashboardDocument | null | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
+  const forceExplorer = window.location.pathname === "/explore";
 
   useEffect(() => {
     let alive = true;
-    backend
-      .getCatalog()
-      .then((value) => alive && setCatalog(value))
+    Promise.all([backend.getCatalog(), forceExplorer ? Promise.resolve(null) : backend.getDashboard()])
+      .then(([catalogValue, dashboardValue]) => {
+        if (!alive) return;
+        setCatalog(catalogValue);
+        setDashboard(dashboardValue);
+      })
       .catch((err: unknown) => alive && setError(err instanceof Error ? err.message : String(err)));
     return () => {
       alive = false;
     };
-  }, [backend]);
+  }, [backend, forceExplorer]);
 
   if (error) return <FullScreen><ErrorState title="Could not load semantic layer" message={error} /></FullScreen>;
-  if (!catalog) return <FullScreen><LoadingState title="Loading semantic layer" message="Reading models and metrics…" /></FullScreen>;
+  if (!catalog || dashboard === undefined) return <FullScreen><LoadingState title="Loading semantic layer" message="Reading models and metrics…" /></FullScreen>;
   if (!catalog.models.length)
     return <FullScreen><EmptyState title="Empty semantic layer" message="No models were found." /></FullScreen>;
+
+  if (dashboard) return <DashboardDocumentView document={dashboard} catalog={catalog} backend={backend} />;
 
   return (
     <ExplorerProvider catalog={catalog} backend={backend}>

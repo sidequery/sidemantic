@@ -238,6 +238,9 @@ jobs:
               - 'webapp/**'
               - 'scripts/build_webapp.py'
               - 'scripts/build_ui_distribution.py'
+              - 'sidemantic/api_server.py'
+              - 'sidemantic/cli.py'
+              - 'sidemantic/dashboard.py'
               - 'sidemantic/ui/static/**'
               - 'sidemantic-rs/ui/**'
               - 'plugins/sidemantic/skills/webapp-builder/assets/ui-dist/**'
@@ -431,7 +434,7 @@ jobs:
         run: make test
 
   webapp:
-    name: Webapp (types + unit)
+    name: Webapp (types + unit + browser)
     needs: check-rust-changes
     if: needs.check-rust-changes.outputs.webapp_changed == 'true'
     runs-on: ubuntu-latest
@@ -444,6 +447,15 @@ jobs:
       - name: Install bun
         uses: oven-sh/setup-bun@v2
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install Python dependencies
+        working-directory: .
+        run: uv sync --extra dev
+
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
@@ -452,6 +464,12 @@ jobs:
 
       - name: Unit tests
         run: bun test src
+
+      - name: Install Playwright browser
+        run: bunx playwright install --with-deps chromium
+
+      - name: Browser contract tests
+        run: bun run test
 
       - name: Check committed bundles
         run: |

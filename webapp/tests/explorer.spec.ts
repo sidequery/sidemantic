@@ -82,7 +82,7 @@ test("brush-to-zoom on the chart sets a date range and shows the comparison over
   await page.mouse.up();
 
   await expect.poll(() => new URL(page.url()).searchParams.get("from")).not.toBeNull();
-  await expect(page.getByText("Prev period")).toBeVisible();
+  await expect(page.getByText("Prev period", { exact: true })).toBeVisible();
   const resetZoom = page.getByRole("button", { name: "Reset zoom" });
   await expect(resetZoom).toBeVisible();
   expect((await resetZoom.boundingBox())?.height).toBeLessThanOrEqual(26);

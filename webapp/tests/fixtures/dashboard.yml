@@ -1,0 +1,70 @@
+schema: sidemantic.dashboard.v1
+title: Revenue Operations
+defaults:
+  renderer: crossfilter
+  query:
+    use_preaggregations: false
+tabs:
+  - id: overview
+    label: Overview
+    charts:
+      - id: revenue_trend
+        title: Monthly Revenue
+        type: line
+        query:
+          metrics:
+            - orders.revenue
+          dimensions:
+            - orders.created_at__month
+          order_by:
+            - orders.created_at__month ASC
+        encoding:
+          x: orders.created_at__month
+          y: orders.revenue
+      - id: orders_by_status
+        title: Orders by Status
+        type: bar
+        query:
+          metrics:
+            - orders.order_count
+          dimensions:
+            - orders.status
+          order_by:
+            - orders.order_count DESC
+        encoding:
+          x: orders.status
+          y: orders.order_count
+        interactions:
+          select:
+            fields:
+              - orders.status
+  - id: customers
+    label: Customers
+    charts:
+      - id: customers_by_country
+        title: Customers by Country
+        type: bar
+        query:
+          metrics:
+            - customers.customer_count
+          dimensions:
+            - customers.country
+          order_by:
+            - customers.customer_count DESC
+          limit: 12
+        encoding:
+          x: customers.country
+          y: customers.customer_count
+      - id: customers_by_tier
+        title: Customers by Tier
+        type: bar
+        query:
+          metrics:
+            - customers.customer_count
+          dimensions:
+            - customers.tier
+          order_by:
+            - customers.customer_count DESC
+        encoding:
+          x: customers.tier
+          y: customers.customer_count

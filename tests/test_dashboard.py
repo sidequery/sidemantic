@@ -15,7 +15,7 @@ from sidemantic import (
     load_from_directory,
 )
 from sidemantic.cli import app
-from sidemantic.dashboard import generate_dashboard_typescript
+from sidemantic.dashboard import DashboardSpecError, generate_dashboard_typescript
 from sidemantic.viz import CrossfilterDashboard, CrossfilterTab
 
 runner = CliRunner()
@@ -236,6 +236,52 @@ def test_dashboard_document_rejects_unknown_fields():
     errors = DashboardDocument.from_dict(payload).validate(layer)
 
     assert "unknown metric 'orders.revneue'" in errors[0]
+
+
+def test_dashboard_document_supports_multiple_charts_per_tab():
+    layer = _build_layer()
+    payload = _dashboard_payload()
+    second_chart = {
+        "id": "orders_by_status",
+        "title": "Orders by status",
+        "type": "bar",
+        "query": {
+            "metrics": ["orders.order_count"],
+            "dimensions": ["orders.status"],
+            "order_by": ["orders.order_count DESC"],
+        },
+        "encoding": {"x": "orders.status", "y": "orders.order_count"},
+    }
+    payload["tabs"][0]["charts"].append(second_chart)
+
+    assert DashboardDocument.from_dict(payload).validate(layer, execute_sql=True) == []
+
+
+def test_legacy_crossfilter_adapter_reports_multi_chart_limit():
+    layer = _build_layer()
+    payload = _dashboard_payload()
+    payload["tabs"][0]["charts"].append(
+        {
+            "id": "orders_by_status",
+            "query": {"metrics": ["orders.order_count"], "dimensions": ["orders.status"]},
+        }
+    )
+
+    with pytest.raises(DashboardSpecError, match="dashboard serve.*multi-chart"):
+        DashboardDocument.from_dict(payload).to_crossfilter_dashboard(layer)
+
+
+def test_dashboard_document_requires_unique_nonempty_chart_ids():
+    layer = _build_layer()
+    payload = _dashboard_payload()
+    duplicate = dict(payload["tabs"][0]["charts"][0])
+    payload["tabs"][0]["charts"].append(duplicate)
+    payload["tabs"][0]["charts"].append({**duplicate, "id": ""})
+
+    errors = DashboardDocument.from_dict(payload).validate(layer)
+
+    assert any("id duplicates 'revenue_trend'" in error for error in errors)
+    assert any("id is required" in error for error in errors)
 
 
 def test_dashboard_document_rejects_unknown_order_by_fields():

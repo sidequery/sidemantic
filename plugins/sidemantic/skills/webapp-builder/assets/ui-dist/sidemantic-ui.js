@@ -154,7 +154,7 @@ function axisTicks(min, max, count = 4) {
   const step = (max - min) / (count - 1);
   return Array.from({ length: count }, (_, index) => min + step * index);
 }
-function ColumnChart({ data, height = 200, ariaLabel }) {
+function ColumnChart({ data, height = 200, ariaLabel, selectedLabel, onSelect }) {
   const ref = useRef(null);
   const [width, setWidth] = useState2(640);
   const { tip, handlers } = useChartTooltip();
@@ -225,6 +225,16 @@ function ColumnChart({ data, height = 200, ariaLabel }) {
             const x = MARGIN.left + slot * index + (slot - barWidth) / 2;
             const y = Math.min(valueY, baselineY);
             return /* @__PURE__ */ jsxs("g", {
+              role: onSelect ? "button" : undefined,
+              tabIndex: onSelect ? 0 : undefined,
+              "aria-label": onSelect ? `Filter to ${item.label}` : undefined,
+              "aria-pressed": onSelect ? selectedLabel === item.label : undefined,
+              onClick: onSelect ? () => onSelect(item.label) : undefined,
+              onKeyDown: onSelect ? (event) => {
+                if (event.key === "Enter" || event.key === " ")
+                  onSelect(item.label);
+              } : undefined,
+              className: onSelect ? "cursor-pointer" : undefined,
               children: [
                 /* @__PURE__ */ jsx2("rect", {
                   x,
@@ -235,7 +245,7 @@ function ColumnChart({ data, height = 200, ariaLabel }) {
                   "data-label": item.label,
                   "data-value": value,
                   "data-tone": value < 0 ? "negative" : "positive",
-                  className: value < 0 ? "fill-danger" : "fill-chart-primary",
+                  className: selectedLabel === item.label ? "fill-accent" : value < 0 ? "fill-danger" : "fill-chart-primary",
                   ...handlers(`${item.label}: ${formatValue(value)}`)
                 }),
                 /* @__PURE__ */ jsx2("text", {

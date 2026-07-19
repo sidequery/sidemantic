@@ -11,6 +11,11 @@ and deep-linkable URL state.
 
 ## Views
 
+- **Dashboard document** — when the Python server exposes `GET /dashboard`, the root renders its
+  authored title, tabs, and responsive multi-chart layout. Charts support drill filters, details,
+  CSV export, and a direct **Explore from here** handoff. Share URLs contain the active tab and
+  filters; named saved views stay local to that browser and are never presented as collaborative
+  persistence.
 - **Explore** — a KPI scorecard strip (sparklines + period-over-period deltas), an interactive time
   series for the focused metric, and dimension leaderboards. Click a KPI to focus it; click a
   leaderboard row to toggle a crossfilter (a dimension's own leaderboard excludes its own filter, so
@@ -67,7 +72,8 @@ uv run scripts/build_webapp.py     # -> sidemantic/ui/static and sidemantic-rs/u
   formatting, time/grain helpers.
 - `src/state/` — small serializable explorer state + URL (de)serialization + the async query hook
   (stale-response-guarded).
-- `src/components/`, `src/views/` — presentational components and the two views (Explore, Pivot).
+- `src/components/`, `src/views/` — presentational components and the dashboard, Explore, and Pivot
+  views.
 
 ## Embedding
 

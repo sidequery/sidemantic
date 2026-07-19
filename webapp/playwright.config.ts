@@ -1,11 +1,5 @@
 import { defineConfig, devices } from "@playwright/test";
 
-// Smoke tests assume a backend (sidemantic api-serve / sidemantic-server) AND the Vite dev server
-// are already running. Start them first:
-//   uv run --extra dev sidemantic api-serve examples/ecommerce/models \
-//     --db examples/ecommerce/data/ecommerce.db --port 4400
-//   bun run dev
-// Override the UI URL with BASE_URL=... when needed.
 export default defineConfig({
   testDir: "./tests",
   // The dev backend is single-threaded (serialized by a lock), so parallel workers just contend
@@ -15,8 +9,22 @@ export default defineConfig({
   reporter: "list",
   expect: { timeout: 10_000 },
   use: {
-    baseURL: process.env.BASE_URL ?? "http://localhost:4321",
+    baseURL: process.env.BASE_URL ?? "http://127.0.0.1:4327",
     trace: "on-first-retry",
   },
+  webServer: [
+    {
+      command: "uv run --project .. sidemantic api-serve ../examples/ecommerce/models --db ../examples/ecommerce/data/ecommerce.db --port 4460",
+      url: "http://127.0.0.1:4460/readyz",
+      reuseExistingServer: false,
+      timeout: 30_000,
+    },
+    {
+      command: "SIDEMANTIC_API=http://127.0.0.1:4460 bun run dev --host 127.0.0.1 --port 4327",
+      url: "http://127.0.0.1:4327",
+      reuseExistingServer: false,
+      timeout: 30_000,
+    },
+  ],
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
 });

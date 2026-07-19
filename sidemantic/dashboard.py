@@ -128,8 +128,6 @@ class DashboardDocument:
             if not isinstance(charts, list) or not charts:
                 errors.append(f"{path}.charts must be a non-empty list")
                 continue
-            if len(charts) != 1:
-                errors.append(f"{path}.charts currently supports exactly one chart in the canonical dashboard UI")
 
             chart_ids: set[str] = set()
             for chart_index, chart in enumerate(charts):
@@ -150,9 +148,11 @@ class DashboardDocument:
                     )
                 )
                 chart_id = chart.get("id")
-                if isinstance(chart_id, str):
-                    if chart_id in chart_ids:
-                        errors.append(f"{chart_path}.id duplicates {chart_id!r}")
+                if not isinstance(chart_id, str) or not chart_id:
+                    errors.append(f"{chart_path}.id is required")
+                elif chart_id in chart_ids:
+                    errors.append(f"{chart_path}.id duplicates {chart_id!r}")
+                else:
                     chart_ids.add(chart_id)
         return errors
 
@@ -161,6 +161,11 @@ class DashboardDocument:
         errors = self.validate(layer)
         if errors:
             raise DashboardSpecError("; ".join(errors))
+        if any(len(tab.get("charts") or []) != 1 for tab in self.tabs):
+            raise DashboardSpecError(
+                "to_crossfilter_dashboard supports exactly one chart per tab; "
+                "use `sidemantic dashboard serve` for canonical multi-chart dashboards"
+            )
 
         tabs: list[CrossfilterTab] = []
         for tab in self.tabs:

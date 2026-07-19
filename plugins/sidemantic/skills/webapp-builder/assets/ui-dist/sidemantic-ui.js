@@ -154,7 +154,7 @@ function axisTicks(min, max, count = 4) {
   const step = (max - min) / (count - 1);
   return Array.from({ length: count }, (_, index) => min + step * index);
 }
-function ColumnChart({ data, height = 200, ariaLabel }) {
+function ColumnChart({ data, height = 200, ariaLabel, selectedLabel, onSelect }) {
   const ref = useRef(null);
   const [width, setWidth] = useState2(640);
   const { tip, handlers } = useChartTooltip();
@@ -219,12 +219,23 @@ function ColumnChart({ data, height = 200, ariaLabel }) {
             className: "stroke-line"
           }),
           data.map((item, index) => {
+            const filterValue = item.filterValue ?? item.label;
             const value = values[index] ?? 0;
             const valueY = yForValue(value);
             const barHeight = Math.abs(valueY - baselineY);
             const x = MARGIN.left + slot * index + (slot - barWidth) / 2;
             const y = Math.min(valueY, baselineY);
             return /* @__PURE__ */ jsxs("g", {
+              role: onSelect ? "button" : undefined,
+              tabIndex: onSelect ? 0 : undefined,
+              "aria-label": onSelect ? `Filter to ${item.label}` : undefined,
+              "aria-pressed": onSelect ? selectedLabel === filterValue : undefined,
+              onClick: onSelect ? () => onSelect(filterValue) : undefined,
+              onKeyDown: onSelect ? (event) => {
+                if (event.key === "Enter" || event.key === " ")
+                  onSelect(filterValue);
+              } : undefined,
+              className: onSelect ? "cursor-pointer" : undefined,
               children: [
                 /* @__PURE__ */ jsx2("rect", {
                   x,
@@ -235,7 +246,7 @@ function ColumnChart({ data, height = 200, ariaLabel }) {
                   "data-label": item.label,
                   "data-value": value,
                   "data-tone": value < 0 ? "negative" : "positive",
-                  className: value < 0 ? "fill-danger" : "fill-chart-primary",
+                  className: selectedLabel === filterValue ? "fill-accent" : value < 0 ? "fill-danger" : "fill-chart-primary",
                   ...handlers(`${item.label}: ${formatValue(value)}`)
                 }),
                 /* @__PURE__ */ jsx2("text", {
@@ -246,7 +257,7 @@ function ColumnChart({ data, height = 200, ariaLabel }) {
                   children: item.label.slice(0, 8)
                 })
               ]
-            }, item.label);
+            }, `${filterValue}-${index}`);
           })
         ]
       }),
@@ -419,11 +430,17 @@ import { useEffect as useEffect3, useRef as useRef2, useState as useState4 } fro
 import { jsx as jsx5, jsxs as jsxs4 } from "react/jsx-runtime";
 var HEIGHT = 280;
 var PAD = { top: 14, right: 18, bottom: 26, left: 60 };
+var SERIES_COLORS = ["var(--accent)", "var(--danger)", "#0f9f8f", "#d98921", "#a66dd4", "#3b82c4"];
+function seriesColor(index) {
+  return SERIES_COLORS[index % SERIES_COLORS.length];
+}
 function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
 }
 function TimeSeriesChart({
   points,
+  seriesLabel = "Current",
+  additionalSeries = [],
   comparison,
   formatValue: formatValue2,
   formatAxis = formatValue2,
@@ -451,7 +468,8 @@ function TimeSeriesChart({
     return () => observer.disconnect();
   }, []);
   const count = points.length;
-  const all = [...points, ...comparison ?? []].map((point) => point.y).filter(Number.isFinite);
+  const chartSeries = [{ label: seriesLabel, points }, ...additionalSeries];
+  const all = [...chartSeries.flatMap((series) => series.points), ...comparison ?? []].map((point) => point.y).filter(Number.isFinite);
   const empty = count < 2 || all.length === 0;
   const min = empty ? 0 : Math.min(0, ...all);
   const max = empty ? 1 : Math.max(...all);
@@ -461,7 +479,6 @@ function TimeSeriesChart({
   const xAt = (index) => PAD.left + (count <= 1 ? 0 : index / (count - 1) * plotW);
   const yAt = (value) => PAD.top + (1 - (value - min) / span) * plotH;
   const indexAtX = (px) => clamp(Math.round((px - PAD.left) / plotW * (count - 1)), 0, count - 1);
-  const pathFor = (series) => series.map((point, index) => `${xAt(index).toFixed(1)},${yAt(point.y).toFixed(1)}`).join(" L ");
   const gappedPath = (series) => {
     const segments = [];
     let run = [];
@@ -477,8 +494,7 @@ function TimeSeriesChart({
       segments.push(run.join(" L "));
     return segments.map((segment) => `M ${segment}`).join(" ");
   };
-  const line = pathFor(points);
-  const area = empty ? "" : `M ${xAt(0).toFixed(1)},${yAt(min).toFixed(1)} L ${line} L ${xAt(count - 1).toFixed(1)},${yAt(min).toFixed(1)} Z`;
+  const area = empty || points.some((point) => !Number.isFinite(point.y)) ? "" : `M ${xAt(0).toFixed(1)},${yAt(min).toFixed(1)} L ${points.map((point, index) => `${xAt(index).toFixed(1)},${yAt(point.y).toFixed(1)}`).join(" L ")} L ${xAt(count - 1).toFixed(1)},${yAt(min).toFixed(1)} Z`;
   function pxFromEvent(event) {
     const rect = svgRef.current?.getBoundingClientRect();
     return rect ? event.clientX - rect.left : 0;
@@ -526,7 +542,13 @@ function TimeSeriesChart({
   const labelEvery = Math.max(1, Math.ceil(count / 8));
   const ticks = [max, min + span * 0.66, min + span * 0.33, min];
   const safeHover = hover != null && hover >= 0 && hover < count ? hover : null;
-  const hoverCur = safeHover != null ? points[safeHover] : null;
+  const hoverCurRaw = safeHover != null ? points[safeHover] : null;
+  const hoverCur = hoverCurRaw && Number.isFinite(hoverCurRaw.y) ? hoverCurRaw : null;
+  const hoverLabel = safeHover != null ? points[safeHover]?.x : null;
+  const hoverSeries = safeHover == null ? [] : chartSeries.flatMap((series, index) => {
+    const point = series.points[safeHover];
+    return point && Number.isFinite(point.y) ? [{ ...series, point, index }] : [];
+  });
   const hoverPrevRaw = safeHover != null ? comparison?.[safeHover] ?? null : null;
   const hoverPrev = hoverPrevRaw && Number.isFinite(hoverPrevRaw.y) ? hoverPrevRaw : null;
   const tooltipLeft = safeHover != null ? clamp(xAt(safeHover), 80, width - 80) : 0;
@@ -536,17 +558,19 @@ function TimeSeriesChart({
     className: "relative border border-line bg-surface text-accent",
     children: [
       /* @__PURE__ */ jsxs4("div", {
-        className: "absolute right-3 top-2 z-10 flex items-center gap-3 text-2xs text-faint",
+        className: "absolute right-3 top-2 z-10 flex max-w-[80%] flex-wrap items-center justify-end gap-x-3 gap-y-0.5 text-2xs text-faint",
         children: [
-          /* @__PURE__ */ jsxs4("span", {
+          chartSeries.map((series, index) => /* @__PURE__ */ jsxs4("span", {
             className: "flex items-center gap-1",
             children: [
               /* @__PURE__ */ jsx5("span", {
-                className: "inline-block h-0.5 w-3 bg-accent"
+                className: "inline-block h-0.5 w-3",
+                style: { backgroundColor: seriesColor(index) }
               }),
-              " Current"
+              " ",
+              series.label
             ]
-          }),
+          }, `${series.label}-${index}`)),
           comparison?.length ? /* @__PURE__ */ jsxs4("span", {
             className: "flex items-center gap-1",
             children: [
@@ -625,16 +649,16 @@ function TimeSeriesChart({
               strokeWidth: 1.25,
               strokeDasharray: "4 3"
             }) : null,
-            /* @__PURE__ */ jsx5("path", {
+            area ? /* @__PURE__ */ jsx5("path", {
               d: area,
               fill: "url(#ts-fill)"
-            }),
-            /* @__PURE__ */ jsx5("path", {
-              d: `M ${line}`,
+            }) : null,
+            chartSeries.map((series, index) => /* @__PURE__ */ jsx5("path", {
+              d: gappedPath(series.points),
               fill: "none",
-              stroke: "currentColor",
+              stroke: seriesColor(index),
               strokeWidth: 1.75
-            }),
+            }, `${series.label}-${index}`)),
             brush ? /* @__PURE__ */ jsx5("rect", {
               x: Math.min(brush.a, brush.b),
               y: PAD.top,
@@ -643,7 +667,7 @@ function TimeSeriesChart({
               className: "fill-accent",
               opacity: 0.12
             }) : null,
-            safeHover != null && hoverCur ? /* @__PURE__ */ jsxs4("g", {
+            safeHover != null && hoverSeries.length ? /* @__PURE__ */ jsxs4("g", {
               children: [
                 /* @__PURE__ */ jsx5("line", {
                   x1: xAt(safeHover),
@@ -659,12 +683,12 @@ function TimeSeriesChart({
                   r: 3,
                   className: "fill-faint"
                 }) : null,
-                /* @__PURE__ */ jsx5("circle", {
+                hoverSeries.map((series) => /* @__PURE__ */ jsx5("circle", {
                   cx: xAt(safeHover),
-                  cy: yAt(hoverCur.y),
+                  cy: yAt(series.point.y),
                   r: 3.5,
-                  fill: "currentColor"
-                })
+                  fill: seriesColor(series.index)
+                }, `${series.label}-${series.index}`))
               ]
             }) : null,
             points.map((point, index) => index % labelEvery === 0 || index === count - 1 ? /* @__PURE__ */ jsx5("text", {
@@ -677,27 +701,27 @@ function TimeSeriesChart({
           ]
         })
       }),
-      hoverCur ? /* @__PURE__ */ jsxs4("div", {
+      hoverSeries.length && hoverLabel ? /* @__PURE__ */ jsxs4("div", {
         className: "pointer-events-none absolute top-8 z-20 -translate-x-1/2 whitespace-nowrap border border-line bg-surface px-2 py-1.5 text-2xs shadow-[var(--shadow)]",
         style: { left: tooltipLeft },
         children: [
           /* @__PURE__ */ jsx5("div", {
             className: "mb-0.5 font-mono text-faint",
-            children: formatLabel(hoverCur.x)
+            children: formatLabel(hoverLabel)
           }),
-          /* @__PURE__ */ jsxs4("div", {
+          hoverSeries.map((series) => /* @__PURE__ */ jsxs4("div", {
             className: "flex items-center justify-between gap-3",
             children: [
               /* @__PURE__ */ jsx5("span", {
                 className: "text-muted",
-                children: "Current"
+                children: series.label
               }),
               /* @__PURE__ */ jsx5("span", {
                 className: "font-mono tnum font-medium text-ink",
-                children: formatValue2(hoverCur.y)
+                children: formatValue2(series.point.y)
               })
             ]
-          }),
+          }, `${series.label}-${series.index}`)),
           hoverPrev ? /* @__PURE__ */ jsxs4("div", {
             className: "flex items-center justify-between gap-3",
             children: [

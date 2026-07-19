@@ -1,6 +1,7 @@
 import { buildCatalogFromDescribe, buildCatalogFromGraph, withJoinablePairs } from "../lib/catalog";
 import type { SidemanticBackend } from "./backend";
 import { decodeArrow } from "./arrow";
+import { normalizeDashboardDocument, type DashboardDocument } from "./dashboardTypes";
 import type { Catalog, QueryResult, ResultRow, StructuredQuery } from "./types";
 
 const ARROW_MEDIA_TYPE = "application/vnd.apache.arrow.stream";
@@ -132,6 +133,18 @@ export class HttpBackend implements SidemanticBackend {
     }
     const graph = await this.getJson<unknown>("/graph");
     return buildCatalogFromGraph(graph);
+  }
+
+  async getDashboard(): Promise<DashboardDocument | null> {
+    const res = await fetch(this.url("/dashboard"), { headers: this.headers() });
+    if (res.status === 404) return null;
+    if (!res.ok) throw new Error(await this.errorText(res, "/dashboard"));
+    // Some embedded SPA hosts (notably the Rust server) serve index.html for unknown routes.
+    // Treat that fallback like an absent dashboard instead of trying to parse HTML as JSON and
+    // breaking the generic explorer.
+    const contentType = res.headers.get("Content-Type")?.toLowerCase() ?? "";
+    if (!contentType.includes("json")) return null;
+    return normalizeDashboardDocument((await res.json()) as DashboardDocument);
   }
 
   async compile(query: StructuredQuery): Promise<string> {

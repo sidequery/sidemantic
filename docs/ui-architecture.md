@@ -6,9 +6,9 @@ Sidemantic supports several HTML hosts through one React component implementatio
 
 | Concern | Canonical source | Other surfaces |
 | --- | --- | --- |
-| Product application shell, catalog, query orchestration, date controls, and interactive time series | `webapp/src/` | Built into the Python and Rust servers |
+| Product application shell, declarative dashboards, catalog, query orchestration, date controls, and interactive time series | `webapp/src/` | Built into the Python and Rust servers; `dashboard serve` supplies `GET /dashboard` |
 | Reusable charts, leaderboards, previews, query debugging, and state primitives | `webapp/src/components/` via `webapp/src/ui.ts` | Built as React ESM and self-contained browser distributions |
-| Portable standalone charts and live crossfilter dashboards | `sidemantic/viz.py` | Used by `sidemantic chart` and `sidemantic dashboard serve` |
+| Portable standalone charts and experimental live crossfilter adapters | `sidemantic/viz.py` | Used by `sidemantic chart` and library callers |
 | Notebook trait synchronization and mounting | `js/widget.js` and `sidemantic/widget/` | Mounts the canonical React distribution |
 | MCP Apps chart embedding | `sidemantic/apps/chart_widget.html` | Returned by the MCP `create_chart` tool |
 

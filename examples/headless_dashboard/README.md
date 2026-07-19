@@ -24,10 +24,10 @@ uv run sidemantic dashboard serve examples/headless_dashboard/dashboard.yml \
   --port 8877
 ```
 
-Then open:
+Then open the authored dashboard:
 
 ```text
-http://127.0.0.1:8877/crossfilter.html
+http://127.0.0.1:8877/
 ```
 
 ## Regenerate TypeScript Types
@@ -39,4 +39,3 @@ uv run sidemantic dashboard types \
 ```
 
 The CLI serves YAML or JSON dashboard specs. The TypeScript file is for app authors who want editor-checked metric and dimension names while producing the same dashboard configuration shape.
-

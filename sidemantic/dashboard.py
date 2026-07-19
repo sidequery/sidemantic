@@ -21,7 +21,7 @@ from sidemantic.viz import CrossfilterDashboard, CrossfilterTab, _unique_field_a
 
 DASHBOARD_SCHEMA = "sidemantic.dashboard.v1"
 TS_SCHEMA = "sidemantic.schema.v1"
-VALID_CHART_TYPES = {"auto", "bar", "line", "area", "scatter", "point"}
+VALID_CHART_TYPES = {"auto", "bar", "line", "area"}
 VALID_RENDERERS = {"vega-lite", "plotly", "observable-plot", "d3", "crossfilter"}
 TIME_GRANULARITIES = ["second", "minute", "hour", "day", "week", "month", "quarter", "year"]
 __all__ = [
@@ -100,10 +100,21 @@ class DashboardDocument:
         defaults = self.payload.get("defaults") or {}
         if defaults and not isinstance(defaults, Mapping):
             errors.append("defaults must be a mapping")
-        elif isinstance(defaults, Mapping) and "renderer" in defaults:
-            default_renderer = _normalize_renderer(str(defaults.get("renderer")))
-            if default_renderer not in VALID_RENDERERS:
-                errors.append(f"defaults.renderer must be one of: {', '.join(sorted(VALID_RENDERERS))}")
+        elif isinstance(defaults, Mapping):
+            if "renderer" in defaults:
+                default_renderer = _normalize_renderer(str(defaults.get("renderer")))
+                if default_renderer not in VALID_RENDERERS:
+                    errors.append(f"defaults.renderer must be one of: {', '.join(sorted(VALID_RENDERERS))}")
+            interactions = defaults.get("interactions") or {}
+            if interactions and not isinstance(interactions, Mapping):
+                errors.append("defaults.interactions must be a mapping")
+            elif isinstance(interactions, Mapping) and interactions.get("scope") not in (
+                None,
+                "chart",
+                "tab",
+                "dashboard",
+            ):
+                errors.append("defaults.interactions.scope must be one of: chart, dashboard, tab")
 
         tabs = self.payload.get("tabs")
         if not isinstance(tabs, list) or not tabs:
@@ -128,8 +139,6 @@ class DashboardDocument:
             if not isinstance(charts, list) or not charts:
                 errors.append(f"{path}.charts must be a non-empty list")
                 continue
-            if len(charts) != 1:
-                errors.append(f"{path}.charts currently supports exactly one chart in the canonical dashboard UI")
 
             chart_ids: set[str] = set()
             for chart_index, chart in enumerate(charts):
@@ -150,9 +159,11 @@ class DashboardDocument:
                     )
                 )
                 chart_id = chart.get("id")
-                if isinstance(chart_id, str):
-                    if chart_id in chart_ids:
-                        errors.append(f"{chart_path}.id duplicates {chart_id!r}")
+                if not isinstance(chart_id, str) or not chart_id:
+                    errors.append(f"{chart_path}.id is required")
+                elif chart_id in chart_ids:
+                    errors.append(f"{chart_path}.id duplicates {chart_id!r}")
+                else:
                     chart_ids.add(chart_id)
         return errors
 
@@ -161,6 +172,11 @@ class DashboardDocument:
         errors = self.validate(layer)
         if errors:
             raise DashboardSpecError("; ".join(errors))
+        if any(len(tab.get("charts") or []) != 1 for tab in self.tabs):
+            raise DashboardSpecError(
+                "to_crossfilter_dashboard supports exactly one chart per tab; "
+                "use `sidemantic dashboard serve` for canonical multi-chart dashboards"
+            )
 
         tabs: list[CrossfilterTab] = []
         for tab in self.tabs:
@@ -268,7 +284,7 @@ export type Metric = typeof {schema_name}.metrics[number];
 export type Dimension = typeof {schema_name}.dimensions[number];
 export type SemanticField = typeof {schema_name}.fields[number];
 export type DashboardRenderer = "vega-lite" | "plotly" | "observable-plot" | "d3" | "crossfilter";
-export type ChartType = "auto" | "bar" | "line" | "area" | "scatter" | "point";
+export type ChartType = "auto" | "bar" | "line" | "area";
 
 export interface FieldValueMap {{
 {value_map}

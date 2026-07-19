@@ -70,14 +70,17 @@ def _model() -> Model:
     )
 
 
-def _layer(*, enforce_visibility: bool = False) -> SemanticLayer:
+def _layer(*, enforce_visibility: bool = False, yardstick: bool = False) -> SemanticLayer:
     layer = SemanticLayer(enforce_visibility=enforce_visibility)
     layer.adapter.execute("create table orders (id integer, tenant_id integer, amount double, secret_note varchar)")
     layer.adapter.executemany(
         "insert into orders values (?, ?, ?, ?)",
         [(1, 1, 10.0, "a"), (2, 1, 20.0, "b"), (3, 2, 5.0, "c"), (4, 2, 7.0, "d")],
     )
-    layer.add_model(_model())
+    model = _model()
+    if yardstick:
+        model.metadata = {"yardstick": {}}
+    layer.add_model(model)
     return layer
 
 
@@ -109,7 +112,13 @@ models:
     )
 
 
-def _mcp_layer(directory: Path, attrs: dict, *, enforce_visibility: bool = False) -> SemanticLayer:
+def _mcp_layer(
+    directory: Path,
+    attrs: dict,
+    *,
+    enforce_visibility: bool = False,
+    yardstick: bool = False,
+) -> SemanticLayer:
     _write_model(directory)
     layer = initialize_layer(
         str(directory),
@@ -122,6 +131,8 @@ def _mcp_layer(directory: Path, attrs: dict, *, enforce_visibility: bool = False
         "insert into orders values (?, ?, ?, ?)",
         [(1, 1, 10.0, "a"), (2, 1, 20.0, "b"), (3, 2, 5.0, "c"), (4, 2, 7.0, "d")],
     )
+    if yardstick:
+        layer.graph.models["orders"].metadata = {"yardstick": {}}
     return layer
 
 
@@ -250,19 +261,26 @@ def test_raw_and_unproven_sql_fail_closed_across_sql_transports(tmp_path):
 
 def test_yardstick_sql_fails_closed_across_sql_transports(tmp_path):
     attrs = {"role": "analyst", "tenant_id": 1}
-    query = "SELECT AGGREGATE(total_amount) FROM orders"
-    client = TestClient(create_app(_layer(), auth_token="secret"))
+    queries = [
+        "SELECT AGGREGATE(total_amount) FROM orders",
+        "SELECT total_amount FROM orders",
+    ]
+    client = TestClient(create_app(_layer(yardstick=True), auth_token="secret"))
 
-    response = client.post("/sql", json={"query": query}, headers=_headers(attrs))
-    assert response.status_code == 403
-    assert "Yardstick semantic SQL" in response.json()["error"]
+    for query in queries:
+        response = client.post("/sql", json={"query": query}, headers=_headers(attrs))
+        assert response.status_code == 403
+        assert "Yardstick semantic SQL" in response.json()["error"]
 
-    _mcp_layer(tmp_path / "mcp-yardstick", attrs)
-    with pytest.raises(SecurityError, match="Yardstick semantic SQL"):
-        mcp_run_sql(query)
+    _mcp_layer(tmp_path / "mcp-yardstick", attrs, yardstick=True)
+    for query in queries:
+        with pytest.raises(SecurityError, match="Yardstick semantic SQL"):
+            mcp_run_sql(query)
 
-    with pytest.raises(SecurityError, match="Yardstick semantic SQL"):
-        _pg_rewrite(_layer(), query, attrs)
+    pg_layer = _layer(yardstick=True)
+    for query in queries:
+        with pytest.raises(SecurityError, match="Yardstick semantic SQL"):
+            _pg_rewrite(pg_layer, query, attrs)
 
 
 def test_hidden_column_is_rejected_and_omitted_across_transports(tmp_path):

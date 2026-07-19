@@ -2988,6 +2988,18 @@ class QueryRewriter:
 
         return False
 
+    def would_use_yardstick_rewrite(self, sql: str) -> bool:
+        """Return whether SQL would take an explicit or implicit Yardstick rewrite path."""
+        if self._looks_like_yardstick_query(sql):
+            return True
+        if not self._graph_has_yardstick_models():
+            return False
+        try:
+            parsed = sqlglot.parse_one(sql, dialect=self.dialect)
+        except Exception:
+            return False
+        return isinstance(parsed, exp.Select) and self._contains_implicit_yardstick_measure_query(parsed)
+
     def _graph_has_yardstick_models(self) -> bool:
         return any(
             isinstance(model.metadata, dict) and "yardstick" in model.metadata for model in self.graph.models.values()

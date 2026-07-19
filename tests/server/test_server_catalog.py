@@ -103,7 +103,7 @@ def test_start_server_registers_metrics_table_and_binds_connection(monkeypatch):
     monkeypatch.setattr("sidemantic.server.server.SemanticLayerConnection", FakeSemanticLayerConnection)
     monkeypatch.setattr("riffq.RiffqServer", FakeServer)
 
-    layer = SemanticLayer(connection="duckdb:///:memory:")
+    layer = SemanticLayer(connection="duckdb:///:memory:", enforce_visibility=True)
     layer.adapter.execute("CREATE TABLE source_table (id INTEGER, created_at TIMESTAMP, is_active BOOLEAN)")
     layer.add_model(
         Model(
@@ -113,11 +113,13 @@ def test_start_server_registers_metrics_table_and_binds_connection(monkeypatch):
             dimensions=[
                 Dimension(name="created_at", sql="created_at", type="time", granularity="day"),
                 Dimension(name="is_active", sql="is_active", type="boolean"),
+                Dimension(name="secret_note", sql="secret_note", type="categorical", public=False),
             ],
-            metrics=[Metric(name="order_count", agg="count")],
+            metrics=[Metric(name="order_count", agg="count"), Metric(name="internal_total", agg="count", public=False)],
         )
     )
     layer.add_metric(Metric(name="global_ratio", type="derived", sql="1"))
+    layer.add_metric(Metric(name="hidden_ratio", type="derived", sql="1", public=False))
 
     start_server(layer, host="0.0.0.0", port=5546, username="api-user", password="api-pass")
 
@@ -126,6 +128,8 @@ def test_start_server_registers_metrics_table_and_binds_connection(monkeypatch):
     assert any("global_ratio" in column for column in metric_columns)
     assert any("created_at" in column and column["created_at"]["type"] == "timestamp" for column in metric_columns)
     assert any("is_active" in column and column["is_active"]["type"] == "boolean" for column in metric_columns)
+    assert not any("secret_note" in column for column in metric_columns)
+    assert not any("hidden_ratio" in column for column in metric_columns)
     assert calls["bound"]["layer"] is layer
     assert calls["bound"]["username"] == "api-user"
     assert calls["bound"]["password"] == "api-pass"

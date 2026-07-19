@@ -141,12 +141,16 @@ def start_server(
     if layer.graph.metrics:
         metric_columns = []
         for metric in layer.graph.metrics.values():
+            if layer.enforce_visibility and not getattr(metric, "public", True):
+                continue
             metric_columns.append({metric.name: {"type": "numeric", "nullable": True}})
 
         # Add all dimension columns from all models
         all_dims = set()
         for model in layer.graph.models.values():
             for dim in model.dimensions:
+                if layer.enforce_visibility and not getattr(dim, "public", True):
+                    continue
                 all_dims.add((dim.name, dim.type))
 
         for dim_name, dim_type in all_dims:

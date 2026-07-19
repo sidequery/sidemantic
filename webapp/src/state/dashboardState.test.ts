@@ -249,6 +249,27 @@ describe("dashboard selections", () => {
     expect(JSON.parse(url.searchParams.get("filters") ?? "{}")).toEqual({ "orders.region": ["West"] });
   });
 
+  test("expands selected time buckets in explorer links", () => {
+    const chart: DashboardChart = {
+      id: "trend",
+      query: { metrics: ["orders.revenue"], dimensions: ["orders.created_at__month"] },
+      encoding: { x: "orders.created_at__month" },
+    };
+    const url = new URL(
+      dashboardExploreUrl(document, chart, {
+        tab: "overview",
+        filters: { "orders.created_at__month": "2026-02-01" },
+        ranges: {},
+        filterSources: {},
+        rangeSources: {},
+      }),
+      "https://example.test",
+    );
+    expect(url.searchParams.get("from")).toBe("2026-02-01");
+    expect(url.searchParams.get("to")).toBe("2026-02-28");
+    expect(url.searchParams.has("filters")).toBe(false);
+  });
+
   test("carries a model-scoped time range into categorical explorer links", () => {
     const chart: DashboardChart = {
       id: "status",

@@ -51,3 +51,40 @@ export type DashboardChart = {
     select?: boolean | { fields?: FieldRef[] };
   };
 };
+
+function listValue<T>(value: unknown): T[] | undefined {
+  if (value == null) return undefined;
+  return (Array.isArray(value) ? value : [value]) as T[];
+}
+
+/** Match the Python dashboard loader's scalar-or-list authoring convenience at the HTTP boundary. */
+export function normalizeDashboardDocument(document: DashboardDocument): DashboardDocument {
+  return {
+    ...document,
+    tabs: document.tabs.map((tab) => ({
+      ...tab,
+      charts: tab.charts.map((chart) => {
+        const rawQuery = chart.query as DashboardChart["query"] & Record<string, unknown>;
+        const brush = chart.interactions?.brush;
+        const select = chart.interactions?.select;
+        return {
+          ...chart,
+          query: {
+            ...rawQuery,
+            metrics: listValue<FieldRef>(rawQuery.metrics) ?? [],
+            dimensions: listValue<FieldRef>(rawQuery.dimensions),
+            filters: listValue<string>(rawQuery.filters),
+            segments: listValue<string>(rawQuery.segments),
+            order_by: listValue<string>(rawQuery.order_by),
+            orderBy: listValue<string>(rawQuery.orderBy),
+          },
+          interactions: chart.interactions ? {
+            ...chart.interactions,
+            brush: typeof brush === "object" ? { ...brush, fields: listValue<FieldRef>(brush.fields) } : brush,
+            select: typeof select === "object" ? { ...select, fields: listValue<FieldRef>(select.fields) } : select,
+          } : undefined,
+        };
+      }),
+    })),
+  };
+}

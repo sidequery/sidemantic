@@ -1,7 +1,7 @@
 import { buildCatalogFromDescribe, buildCatalogFromGraph, withJoinablePairs } from "../lib/catalog";
 import type { SidemanticBackend } from "./backend";
 import { decodeArrow } from "./arrow";
-import type { DashboardDocument } from "./dashboardTypes";
+import { normalizeDashboardDocument, type DashboardDocument } from "./dashboardTypes";
 import type { Catalog, QueryResult, ResultRow, StructuredQuery } from "./types";
 
 const ARROW_MEDIA_TYPE = "application/vnd.apache.arrow.stream";
@@ -144,7 +144,7 @@ export class HttpBackend implements SidemanticBackend {
     // breaking the generic explorer.
     const contentType = res.headers.get("Content-Type")?.toLowerCase() ?? "";
     if (!contentType.includes("json")) return null;
-    return (await res.json()) as DashboardDocument;
+    return normalizeDashboardDocument((await res.json()) as DashboardDocument);
   }
 
   async compile(query: StructuredQuery): Promise<string> {

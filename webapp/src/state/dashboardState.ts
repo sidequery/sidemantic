@@ -248,11 +248,24 @@ export function dashboardExploreUrl(
   const dimensions = chart.query.dimensions ?? [];
   const model = metric.includes(".") ? metric.split(".")[0] : dimensions[0]?.split(".")[0] ?? "";
   const scoped = dashboardScopedInteractions(document, chart, state);
-  const explorerFilters = Object.fromEntries(Object.entries(scoped.filters).map(([dimension, value]) => [dimension, [value]]));
+  const grainedSelections = Object.entries(scoped.filters).flatMap(([dimension, value]) => {
+    const grained = timeGrain(dimension);
+    return grained ? [{ dimension, value, baseDimension: grained.baseDimension }] : [];
+  });
+  const explorerFilters = Object.fromEntries(
+    Object.entries(scoped.filters).flatMap(([dimension, value]) => {
+      const grained = timeGrain(dimension);
+      if (!grained) return [[dimension, [value]]];
+      return value === NULL_TOKEN ? [[grained.baseDimension, [value]]] : [];
+    }),
+  );
   const params = new URLSearchParams({ view: "explore", model, metric });
   if (Object.keys(explorerFilters).length) params.set("filters", JSON.stringify(explorerFilters));
 
   const xDimension = chart.encoding?.x ?? dimensions[0];
+  const selectedBucket = grainedSelections.find(
+    ({ baseDimension, value }) => value !== NULL_TOKEN && (!model || baseDimension.startsWith(`${model}.`)),
+  );
   const rangeDimensions = Object.keys(scoped.ranges);
   const rangeDimension = [xDimension, ...rangeDimensions].find((dimension, index, candidates) => {
     if (!dimension || candidates.indexOf(dimension) !== index || !scoped.ranges[dimension]) return false;
@@ -262,7 +275,11 @@ export function dashboardExploreUrl(
     return isTime && (!model || dimension.startsWith(`${model}.`));
   });
   const range = rangeDimension ? scoped.ranges[rangeDimension] : undefined;
-  const dateRange = rangeDimension && range ? explorerRange(rangeDimension, range) : null;
+  const dateRange = selectedBucket
+    ? explorerRange(selectedBucket.dimension, { from: selectedBucket.value, to: selectedBucket.value })
+    : rangeDimension && range
+      ? explorerRange(rangeDimension, range)
+      : null;
   if (dateRange) {
     params.set("from", dateRange.from);
     params.set("to", dateRange.to);

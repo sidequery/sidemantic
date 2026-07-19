@@ -583,10 +583,137 @@ def lookml_expression_references_column(sql: str) -> bool:
     return bool(_real_columns(parsed))
 
 
-def _predicate_fragment_is_safe(parsed: ParsedLookMLSQL) -> bool:
-    """Whether raw predicate text can be inserted inside ``CASE WHEN`` unchanged."""
+_TEMPLATE_BLOCK_ENDS = {
+    "autoescape": "endautoescape",
+    "block": "endblock",
+    "call": "endcall",
+    "capture": "endcapture",
+    "case": "endcase",
+    "comment": "endcomment",
+    "condition": "endcondition",
+    "filter": "endfilter",
+    "for": "endfor",
+    "if": "endif",
+    "macro": "endmacro",
+    "raw": "endraw",
+    "set": "endset",
+    "trans": "endtrans",
+    "unless": "endunless",
+    "with": "endwith",
+}
+_TEMPLATE_BRANCH_TAGS = frozenset({"elif", "else", "elsif", "when"})
+_TEMPLATE_BRANCH_PARENTS = {
+    "elif": frozenset({"if"}),
+    "else": frozenset({"case", "for", "if", "unless"}),
+    "elsif": frozenset({"if", "unless"}),
+    "when": frozenset({"case"}),
+}
+
+
+def _template_control_blocks_are_balanced(protected: ProtectedLookMLSQL) -> tuple[bool, bool]:
+    """Return whether executable Liquid/Jinja control blocks exist and are balanced."""
+    stack: list[str] = []
+    has_control_block = False
+    end_tags = {end: start for start, end in _TEMPLATE_BLOCK_ENDS.items()}
+    for _, original in protected.replacements:
+        if not original.startswith("{%"):
+            continue
+        body = original[2:-2].strip().strip("-").strip()
+        if not body:
+            continue
+        parts = body.split(maxsplit=1)
+        tag = parts[0].lower()
+        arguments = parts[1] if len(parts) > 1 else ""
+        if stack and stack[-1] in {"comment", "raw"}:
+            if tag == _TEMPLATE_BLOCK_ENDS[stack[-1]]:
+                stack.pop()
+            continue
+        before_equals, equals, _ = arguments.partition("=")
+        if tag == "set" and equals and "|" not in before_equals:
+            # Jinja assignment syntax is a standalone tag; only capture-style
+            # ``{% set name %}...{% endset %}`` opens a control block.
+            continue
+        if tag in _TEMPLATE_BLOCK_ENDS:
+            has_control_block = True
+            stack.append(tag)
+        elif tag in end_tags:
+            has_control_block = True
+            if not stack or stack.pop() != end_tags[tag]:
+                return True, False
+        elif tag in _TEMPLATE_BRANCH_TAGS:
+            has_control_block = True
+            if not stack or stack[-1] not in _TEMPLATE_BRANCH_PARENTS[tag]:
+                return True, False
+    return has_control_block, not stack
+
+
+def _contains_sql_comment(sql: str) -> bool:
+    """Detect statement comments outside SQL quotes across supported dialects."""
+    i = 0
+    temp_identifiers: set[str] = set()
+    while i < len(sql):
+        ch = sql[i]
+        if ch in "'\"`":
+            i = _quoted_end(sql, i, ch)
+            continue
+        if ch == "[":
+            i = _quoted_end(sql, i, "]")
+            continue
+        hash_identifier = ""
+        previous_word = ""
+        if ch == "#" and not sql.startswith(("#>", "#>>", "#-"), i):
+            identifier_end = i + 1
+            if identifier_end < len(sql) and sql[identifier_end] == "#":
+                identifier_end += 1
+            while identifier_end < len(sql) and (sql[identifier_end].isalnum() or sql[identifier_end] in {"_", "$"}):
+                identifier_end += 1
+            hash_identifier = sql[i:identifier_end].lower()
+            prefix = sql[:i].rstrip()
+            word_start = len(prefix)
+            while word_start and (prefix[word_start - 1].isalnum() or prefix[word_start - 1] == "_"):
+                word_start -= 1
+            previous_word = prefix[word_start:].upper()
+            previous_nonspace = prefix[-1:] if prefix else ""
+            introduces_temp_identifier = previous_word in {"FROM", "INTO", "JOIN", "TABLE", "UPDATE"} or (
+                previous_nonspace == "," and bool(temp_identifiers)
+            )
+            if hash_identifier and introduces_temp_identifier:
+                temp_identifiers.add(hash_identifier)
+        known_temp_identifier = bool(hash_identifier and hash_identifier in temp_identifiers)
+        hash_starts_line = ch == "#" and not known_temp_identifier and not sql[sql.rfind("\n", 0, i) + 1 : i].strip()
+        hash_starts_inline_comment = False
+        if (
+            ch == "#"
+            and i > 0
+            and sql[i - 1].isspace()
+            and not known_temp_identifier
+            and not sql.startswith(("#>", "#>>", "#-"), i)
+        ):
+            # BigQuery/MySQL accept both ``# comment`` and ``#comment``. Preserve
+            # SQL Server temporary identifiers after relation-introducing keywords.
+            hash_starts_inline_comment = previous_word not in {"FROM", "INTO", "JOIN", "TABLE", "UPDATE"}
+        if sql.startswith("--", i) or sql.startswith("/*", i) or hash_starts_line or hash_starts_inline_comment:
+            return True
+        i += 1
+    return False
+
+
+def _predicate_fragment_is_safe(filter_sql: str, parsed: ParsedLookMLSQL | None) -> bool:
+    """Whether raw predicate text can be inserted inside ``CASE WHEN`` unchanged.
+
+    A balanced Liquid/Jinja block may render a valid predicate even though its protected
+    control-tag sentinels do not form a parseable SQL AST. The folder restores the exact
+    predicate bytes after transforming the aggregate, so lexical statement safety and
+    balanced template control flow are sufficient for that special case.
+    """
+    protected = parsed.protected if parsed is not None else protect_lookml_sql(filter_sql)
+    has_control_block, blocks_are_balanced = _template_control_blocks_are_balanced(protected)
+    if not blocks_are_balanced or (parsed is None and not has_control_block):
+        return False
+    if _contains_sql_comment(protected.text):
+        return False
     try:
-        tokens = sqlglot.tokenize(parsed.protected.text, dialect=parsed.dialect)
+        tokens = sqlglot.tokenize(protected.text, dialect=parsed.dialect if parsed is not None else None)
     except Exception:
         return False
     return not any(token.token_type == TokenType.SEMICOLON or token.comments for token in tokens)
@@ -602,7 +729,9 @@ def fold_lookml_aggregate_filters(sql: str, filters: list[str], *, force: bool =
     """
     parsed = parse_lookml_expression(sql)
     parsed_filters = [parse_lookml_expression(filter_sql) for filter_sql in filters]
-    if parsed is None or any(item is None or not _predicate_fragment_is_safe(item) for item in parsed_filters):
+    if parsed is None or any(
+        not _predicate_fragment_is_safe(filter_sql, item) for filter_sql, item in zip(filters, parsed_filters)
+    ):
         return None
     forbidden_markers = "\n".join((parsed.protected.text, *filters))
     used_markers: set[str] = set()

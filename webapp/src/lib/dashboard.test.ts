@@ -121,6 +121,43 @@ describe("dashboardTabConfig", () => {
     expect(dashboardTabConfig(catalog, configured)?.usePreaggregations).toBe(false);
   });
 
+  test("inherits pre-aggregation opt-outs from dashboard query defaults", () => {
+    for (const key of ["use_preaggregations", "usePreaggregations"] as const) {
+      const configured: DashboardSpec = {
+        title: "Raw orders",
+        defaults: { query: { [key]: false } },
+        tabs: [
+          {
+            id: "raw",
+            charts: [{ id: "orders", query: { metrics: ["orders.order_count"] } }],
+          },
+        ],
+      };
+
+      expect(dashboardTabConfig(catalog, configured)?.usePreaggregations).toBe(false);
+    }
+  });
+
+  test("lets chart pre-aggregation settings override dashboard defaults", () => {
+    const configured: DashboardSpec = {
+      title: "Fresh rollups",
+      defaults: { query: { use_preaggregations: false } },
+      tabs: [
+        {
+          id: "rollups",
+          charts: [
+            {
+              id: "orders",
+              query: { metrics: ["orders.order_count"], usePreaggregations: true },
+            },
+          ],
+        },
+      ],
+    };
+
+    expect(dashboardTabConfig(catalog, configured)?.usePreaggregations).toBe(true);
+  });
+
   test("selects the owner model for a graph-only metric", () => {
     const multiModelCatalog: Catalog = {
       models: [

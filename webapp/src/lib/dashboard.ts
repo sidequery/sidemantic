@@ -35,6 +35,14 @@ function grainForRef(ref: string, fallback: Grain): Grain {
   return candidate && GRAINS.has(candidate) ? candidate : fallback;
 }
 
+function defaultPreaggregations(dashboard: DashboardSpec): boolean | undefined {
+  const query = dashboard.defaults?.query;
+  if (!query || typeof query !== "object") return undefined;
+  const defaults = query as Record<string, unknown>;
+  const value = defaults.use_preaggregations ?? defaults.usePreaggregations;
+  return typeof value === "boolean" ? value : undefined;
+}
+
 export function dashboardTabConfig(
   catalog: Catalog,
   dashboard: DashboardSpec | null | undefined,
@@ -93,6 +101,7 @@ export function dashboardTabConfig(
     grain: timeRef ? grainForRef(timeRef, fallbackGrain) : fallbackGrain,
     filters: chart.query.filters ?? [],
     segments: chart.query.segments ?? [],
-    usePreaggregations: chart.query.use_preaggregations ?? chart.query.usePreaggregations,
+    usePreaggregations:
+      chart.query.use_preaggregations ?? chart.query.usePreaggregations ?? defaultPreaggregations(dashboard),
   };
 }

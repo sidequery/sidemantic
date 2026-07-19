@@ -72,11 +72,14 @@ printf 'SELECT * FROM orders;\n' | sidemantic migrate check - --json
 sidemantic generate client --output -
 sidemantic convert models.yml --to sidemantic --output -
 cat model.yml | sidemantic convert - --from sidemantic --to sidemantic --output -
+cat model.sql | sidemantic convert - --from sidemantic --source-extension .sql --to sidemantic --output -
 ```
 
 `rewrite`, `query`, and `explain` read SQL from stdin when their SQL argument is
 `-`. Migration and pre-aggregation query sources do the same. Query and
 single-file code generation write to stdout when output is `-`.
+For formats with multiple file syntaxes, stdin conversion infers JSON and native
+Sidemantic SQL when possible; use `--source-extension` to select explicitly.
 
 Some exporters produce directories or multiple files, so they cannot stream to
 stdout. `migrate generate --output -`, directory-only conversion inputs, and

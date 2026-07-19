@@ -249,6 +249,31 @@ def test_convert_can_stream_single_file_input_and_output():
     assert not result.stderr
 
 
+@pytest.mark.parametrize("extension_arguments", [[], ["--source-extension", ".sql"]])
+def test_convert_preserves_or_infers_sql_extension_for_stdin(extension_arguments: list[str]):
+    source = "MODEL (name orders, table orders, primary_key id);\n"
+
+    result = runner.invoke(
+        app,
+        [
+            "convert",
+            "-",
+            "--from",
+            "sidemantic",
+            "--to",
+            "sidemantic",
+            "--output",
+            "-",
+            *extension_arguments,
+        ],
+        input=source,
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "name: orders" in result.stdout
+    assert not result.stderr
+
+
 def test_generated_output_dash_writes_stdout(tmp_path: Path):
     models = tmp_path / "models"
     _write_model(models)

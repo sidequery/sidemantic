@@ -854,6 +854,11 @@ def convert(
     source: Path = typer.Argument(None, help="Semantic project, directory, or exact file to convert"),
     output: Path = typer.Option(None, "--output", "-o", help="Destination file or directory"),
     source_format: str = typer.Option("auto", "--from", help="Source format (default: auto-detect)"),
+    source_extension: str = typer.Option(
+        None,
+        "--source-extension",
+        help="File extension for stdin input when a format supports multiple syntaxes (for example, .sql)",
+    ),
     target_format: str = typer.Option("sidemantic", "--to", help="Destination format"),
     force: bool = typer.Option(False, "--force", help="Allow writing to an existing destination"),
 ):
@@ -868,6 +873,8 @@ def convert(
         output_to_stdout = str(output) == "-"
         if source_from_stdin and source_format == "auto":
             raise InvocationError("--from is required when the conversion source is standard input")
+        if source_extension and not source_from_stdin:
+            raise InvocationError("--source-extension only applies when the conversion source is standard input")
 
         source = source if source_from_stdin else _models_path(source)
         output = output or (_project().root / f"converted.{target_format}.yml")
@@ -886,9 +893,10 @@ def convert(
                 source_spec = get_semantic_format(source_format, operation="import")
                 if source_spec.source_kind.value == "directory":
                     raise InvocationError(f"Format '{source_spec.name}' requires a directory source")
-                suffix = source_spec.extensions[0] if source_spec.extensions else ".txt"
+                content = read_text_input("-", label="semantic source")
+                suffix = _stdin_source_extension(source_spec, content, requested=source_extension)
                 source = temp_root / f"stdin{suffix}"
-                source.write_text(read_text_input("-", label="semantic source"))
+                source.write_text(content)
             converted_output = output
             if output_to_stdout:
                 target_spec = get_semantic_format(target_format, operation="export")
@@ -908,6 +916,38 @@ def convert(
         raise
     except Exception as e:
         fail(e)
+
+
+def _stdin_source_extension(source_spec, content: str, *, requested: str | None) -> str:
+    """Select a meaningful temporary suffix for streamed semantic definitions."""
+
+    extensions = tuple(extension.lower() for extension in source_spec.extensions)
+    if requested:
+        selected = requested.lower()
+        if not selected.startswith("."):
+            selected = f".{selected}"
+        if extensions and selected not in extensions:
+            supported = ", ".join(extensions)
+            raise InvocationError(
+                f"Format '{source_spec.name}' does not support stdin extension '{selected}'; choose from {supported}"
+            )
+        return selected
+    if len(extensions) == 1:
+        return extensions[0]
+
+    stripped = content.lstrip()
+    if ".json" in extensions and stripped.startswith(("{", "[")):
+        return ".json"
+    if ".sql" in extensions:
+        import re
+
+        sql_definition = re.compile(
+            r"(?is)^(?:(?:--[^\n]*\n)|(?:/\*.*?\*/)|\s)*"
+            r"(?:model|metric|dimension|segment|parameter|pre_aggregation|relationship)\b"
+        )
+        if sql_definition.match(content):
+            return ".sql"
+    return extensions[0] if extensions else ".txt"
 
 
 @app.command("export-native", hidden=True)

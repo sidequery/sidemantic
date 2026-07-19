@@ -397,9 +397,19 @@ def migrator(
 
 
 def _migration_queries(queries: Path | None) -> Path:
-    resolved = queries or (_project().root / "queries")
+    project = _project()
+    if queries is None:
+        resolved = project.root / "queries"
+    else:
+        resolved = queries.expanduser()
+        if not resolved.is_absolute():
+            resolved = project.start_dir / resolved
+    resolved = resolved.resolve()
     if not resolved.exists():
-        raise ProjectResolutionError(f"Query source not found: {resolved}; pass --queries")
+        raise typer.BadParameter(
+            f"Query source not found: {resolved}",
+            param_hint="QUERIES",
+        )
     return resolved
 
 

@@ -105,7 +105,9 @@ jobs:
         run: uv sync --extra dev
 
       - name: Check public API types
-        run: uv run mypy
+        run: |
+          uv run mypy
+          uv run mypy --config-file tests/typing/mypy.ini tests/typing/package_consumer.py
 
       - name: Check typed package marker
         run: |

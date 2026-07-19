@@ -69,6 +69,10 @@ jobs:
         run: uv run ruff format --check . --exclude docs/_extensions --exclude sidemantic-duckdb/extension-ci-tools --exclude sidemantic-duckdb/scripts --exclude sidemantic-duckdb/duckdb --exclude sidemantic/adapters/malloy_grammar --exclude sidemantic/adapters/holistics_grammar
 
       - name: Run tests
+        # Rich otherwise treats the GitHub log stream as an interactive terminal,
+        # which makes Click's captured-output tests emit ANSI styling.
+        env:
+          GITHUB_ACTIONS: ""
         run: uv run pytest -v --cov-fail-under=76
 
       - name: Run installed-wheel DAX smoke

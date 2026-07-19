@@ -143,6 +143,9 @@ jobs:
           uv lock
 
       - name: Validate release tree
+        # Keep CLI capture deterministic; Rich special-cases GitHub Actions as a TTY.
+        env:
+          GITHUB_ACTIONS: ""
         run: |
           uv run ruff check . --exclude docs/_extensions --exclude sidemantic-duckdb/extension-ci-tools --exclude sidemantic-duckdb/scripts --exclude sidemantic-duckdb/duckdb --exclude sidemantic/adapters/malloy_grammar --exclude sidemantic/adapters/holistics_grammar
           uv run ruff format --check . --exclude docs/_extensions --exclude sidemantic-duckdb/extension-ci-tools --exclude sidemantic-duckdb/scripts --exclude sidemantic-duckdb/duckdb --exclude sidemantic/adapters/malloy_grammar --exclude sidemantic/adapters/holistics_grammar

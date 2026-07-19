@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import threading
+import time
+import uuid
 from pathlib import Path
 from typing import Any, Literal
 
@@ -21,11 +24,18 @@ from sidemantic import SemanticLayer, __version__
 from sidemantic.loaders import load_from_directory
 from sidemantic.server.common import (
     ARROW_STREAM_MEDIA_TYPE,
-    record_batch_reader_to_table,
-    result_to_record_batch_reader,
     table_to_arrow_bytes,
     table_to_json_rows,
     validate_filter_expression,
+)
+from sidemantic.server.query_execution import (
+    QueryAdmission,
+    QueryExecutionControl,
+    QueryLimits,
+    QueryResponseTooLargeError,
+    QueryRowLimitExceededError,
+    execute_bounded,
+    limit_query_sql,
 )
 from sidemantic.sql.query_rewriter import QueryRewriter
 
@@ -116,6 +126,13 @@ def start_api_server(
     serve_ui: bool = True,
     result_cache_mb: int = 0,
     result_cache_ttl: float = 60.0,
+    max_rows: int = 10_000,
+    max_response_bytes: int = 16 * 1024 * 1024,
+    execution_timeout_seconds: float = 30.0,
+    max_concurrent_queries: int = 4,
+    max_queued_queries: int = 16,
+    queue_timeout_seconds: float = 5.0,
+    query_history_size: int = 1000,
     require_user_attrs: bool = False,
     enforce_visibility: bool = False,
     user_header: str = "X-Sidemantic-User",
@@ -135,6 +152,13 @@ def start_api_server(
         serve_ui=serve_ui,
         result_cache_mb=result_cache_mb,
         result_cache_ttl=result_cache_ttl,
+        max_rows=max_rows,
+        max_response_bytes=max_response_bytes,
+        execution_timeout_seconds=execution_timeout_seconds,
+        max_concurrent_queries=max_concurrent_queries,
+        max_queued_queries=max_queued_queries,
+        queue_timeout_seconds=queue_timeout_seconds,
+        query_history_size=query_history_size,
         require_user_attrs=require_user_attrs,
         enforce_visibility=enforce_visibility,
         user_header=user_header,
@@ -156,6 +180,13 @@ def create_app(
     serve_ui: bool = False,
     result_cache_mb: int = 0,
     result_cache_ttl: float = 60.0,
+    max_rows: int = 10_000,
+    max_response_bytes: int = 16 * 1024 * 1024,
+    execution_timeout_seconds: float = 30.0,
+    max_concurrent_queries: int = 4,
+    max_queued_queries: int = 16,
+    queue_timeout_seconds: float = 5.0,
+    query_history_size: int = 1000,
     require_user_attrs: bool = False,
     enforce_visibility: bool = False,
     user_header: str = "X-Sidemantic-User",
@@ -194,6 +225,16 @@ def create_app(
     app.state.lock = threading.RLock()
     app.state.auth_token = auth_token
     app.state.dashboard = dashboard.to_dict() if hasattr(dashboard, "to_dict") else dashboard
+    app.state.query_limits = QueryLimits(
+        max_rows=max_rows,
+        max_response_bytes=max_response_bytes,
+        execution_timeout_seconds=execution_timeout_seconds,
+        max_concurrent_queries=max_concurrent_queries,
+        max_queued_queries=max_queued_queries,
+        queue_timeout_seconds=queue_timeout_seconds,
+    )
+    app.state.query_admission = QueryAdmission(max_concurrent_queries, max_queued_queries)
+    layer.query_telemetry.resize(query_history_size)
 
     if result_cache_mb and result_cache_mb > 0:
         from sidemantic.core.result_cache import ResultCache
@@ -426,7 +467,7 @@ def create_app(
         return {"sql": sql}
 
     @app.post("/query", dependencies=[Depends(require_auth)])
-    def run_query(
+    async def run_query(
         payload: StructuredQueryRequest,
         request: Request,
         format: Literal["json", "arrow"] | None = Query(default=None),
@@ -435,6 +476,9 @@ def create_app(
         # cursor so concurrent reads do not serialize on one connection. Execution
         # flows through _query_table so the opt-in result cache can serve repeats.
         current_layer = app.state.layer
+        limits = app.state.query_limits
+        if payload.limit is not None and payload.limit > limits.max_rows:
+            raise ValueError(f"limit must be <= the server maximum of {limits.max_rows}")
         user_attributes = resolve_user_attributes(request)
         filters = payload.resolved_filters()
         for filter_str in filters:
@@ -453,8 +497,17 @@ def create_app(
             user_attributes=user_attributes,
             timezone=payload.timezone,
         )
-        table = _query_table(app, current_layer, sql, user_attributes=user_attributes)
-        return _build_query_response(request, current_layer, table, sql=sql, format_override=format)
+        # Preserve the layer's default/max-limit policy for omitted limits, then
+        # apply the server ceiling outside the compiled semantic query.
+        sql = limit_query_sql(sql, limits.max_rows, current_layer.dialect)
+        return await _execute_http_query(
+            app,
+            request,
+            current_layer,
+            sql,
+            format_override=format,
+            user_attributes=user_attributes,
+        )
 
     @app.post("/sql/compile", dependencies=[Depends(require_auth)])
     def compile_sql(payload: SQLRequest) -> dict[str, str]:
@@ -465,7 +518,7 @@ def create_app(
         return {"sql": rewritten_sql}
 
     @app.post("/sql", dependencies=[Depends(require_auth)])
-    def run_sql(
+    async def run_sql(
         payload: SQLRequest,
         request: Request,
         format: Literal["json", "arrow"] | None = Query(default=None),
@@ -477,18 +530,20 @@ def create_app(
         deny_free_sql_if_secured()
         query = _normalize_sql_query(payload.query)
         rewritten_sql = QueryRewriter(current_layer.graph, dialect=current_layer.dialect).rewrite(query)
-        table = _query_table(app, current_layer, rewritten_sql, user_attributes=user_attributes)
-        return _build_query_response(
+        limited_sql = limit_query_sql(rewritten_sql, app.state.query_limits.max_rows, current_layer.dialect)
+        return await _execute_http_query(
+            app,
             request,
             current_layer,
-            table,
-            sql=rewritten_sql,
+            limited_sql,
             original_sql=query,
             format_override=format,
+            response_sql=rewritten_sql,
+            user_attributes=user_attributes,
         )
 
     @app.post("/raw", dependencies=[Depends(require_auth)])
-    def run_raw_sql(
+    async def run_raw_sql(
         payload: SQLRequest,
         request: Request,
         format: Literal["json", "arrow"] | None = Query(default=None),
@@ -501,13 +556,15 @@ def create_app(
         deny_free_sql_if_secured()
         query = _normalize_sql_query(payload.query)
         _require_select_statement(query)
-        table = _query_table(app, current_layer, query, user_attributes=user_attributes)
-        return _build_query_response(
+        limited_sql = limit_query_sql(query, app.state.query_limits.max_rows, current_layer.dialect)
+        return await _execute_http_query(
+            app,
             request,
             current_layer,
-            table,
-            sql=query,
+            limited_sql,
             format_override=format,
+            response_sql=query,
+            user_attributes=user_attributes,
         )
 
     if serve_ui:
@@ -538,36 +595,34 @@ def create_app(
     return app
 
 
-def _execute_to_table(layer: SemanticLayer, sql: str) -> Any:
-    """Execute SQL on the layer's adapter and materialize a PyArrow table.
-
-    Caching operates on fully-materialized tables (rather than single-use
-    RecordBatchReaders) so a cached result can be served to many requests.
-
-    Executes on a fresh per-request cursor rather than the shared connection so
-    concurrent reads run in parallel; the result cache's singleflight then dedups
-    identical concurrent queries into a single underlying execute.
-    """
-    result = layer.adapter.cursor().execute(sql)
-    reader = result_to_record_batch_reader(result, layer.adapter)
-    return record_batch_reader_to_table(reader)
+def _execute_to_table(
+    layer: SemanticLayer,
+    sql: str,
+    limits: QueryLimits,
+    control: QueryExecutionControl,
+) -> Any:
+    """Execute SQL and consume at most the configured bounded Arrow result."""
+    return execute_bounded(layer, sql, limits=limits, control=control).table
 
 
-def _query_table(app: FastAPI, layer: SemanticLayer, sql: str, user_attributes: dict | None = None) -> Any:
-    """Return the Arrow table for ``sql``, served from the result cache if enabled.
-
-    The cache is opt-in (``result_cache_mb`` > 0). The key covers the compiled
-    SQL, dialect + connection fingerprint, layer generation, and the caller's
-    security-scoped ``user_attributes`` so cached results never leak across
-    users. Singleflight in ResultCache ensures a duplicate in-flight query runs
-    the underlying execute exactly once.
-    """
+def _query_table(
+    app: FastAPI,
+    layer: SemanticLayer,
+    sql: str,
+    control: QueryExecutionControl,
+    user_attributes: dict | None = None,
+) -> tuple[Any, bool]:
+    """Return a bounded Arrow table and whether it was already cached."""
     cache = getattr(app.state, "result_cache", None)
     if cache is None:
-        return _execute_to_table(layer, sql)
+        return _execute_to_table(layer, sql, app.state.query_limits, control), False
 
     key = layer.build_result_key(sql, user_attributes=user_attributes)
-    return cache.get_or_compute(key, lambda: _execute_to_table(layer, sql))
+    return cache.get_or_compute_with_status(
+        key,
+        lambda: _execute_to_table(layer, sql, app.state.query_limits, control),
+        cancelled=lambda: control.cancel_requested,
+    )
 
 
 def _build_query_response(
@@ -576,20 +631,28 @@ def _build_query_response(
     table: Any,
     sql: str,
     format_override: Literal["json", "arrow"] | None,
+    max_response_bytes: int,
+    query_id: str,
+    request_id: str,
     original_sql: str | None = None,
-):
+) -> tuple[Response, int]:
+    """Serialize a bounded table and enforce the exact transport byte ceiling."""
     response_format = _resolve_response_format(request, format_override)
+    headers = {
+        "X-Sidemantic-Query-ID": query_id,
+        "X-Sidemantic-Request-ID": request_id,
+        "X-Sidemantic-Row-Count": str(table.num_rows),
+        "X-Sidemantic-Dialect": layer.dialect,
+    }
 
     if response_format == ARROW_FORMAT:
         body = table_to_arrow_bytes(table)
-        return Response(
-            content=body,
-            media_type=ARROW_STREAM_MEDIA_TYPE,
-            headers={
-                "X-Sidemantic-Row-Count": str(table.num_rows),
-                "X-Sidemantic-Dialect": layer.dialect,
-            },
-        )
+        if len(body) > max_response_bytes:
+            raise QueryResponseTooLargeError(
+                f"Arrow response exceeds the configured maximum of {max_response_bytes} bytes"
+            )
+        headers["X-Sidemantic-Response-Bytes"] = str(len(body))
+        return Response(content=body, media_type=ARROW_STREAM_MEDIA_TYPE, headers=headers), len(body)
 
     payload: dict[str, Any] = {
         "sql": sql,
@@ -598,7 +661,208 @@ def _build_query_response(
     }
     if original_sql is not None:
         payload["original_sql"] = original_sql
-    return JSONResponse(payload)
+    body = json.dumps(payload, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode("utf-8")
+    if len(body) > max_response_bytes:
+        raise QueryResponseTooLargeError(f"JSON response exceeds the configured maximum of {max_response_bytes} bytes")
+    headers["X-Sidemantic-Response-Bytes"] = str(len(body))
+    return Response(content=body, media_type="application/json", headers=headers), len(body)
+
+
+async def _execute_http_query(
+    app: FastAPI,
+    request: Request,
+    layer: SemanticLayer,
+    sql: str,
+    *,
+    format_override: Literal["json", "arrow"] | None,
+    user_attributes: dict | None,
+    response_sql: str | None = None,
+    original_sql: str | None = None,
+) -> Response:
+    """Run one HTTP query under admission, deadline, cancellation, and telemetry."""
+    from sidemantic.core.query_telemetry import QueryEvent, sanitize_sql
+
+    limits: QueryLimits = app.state.query_limits
+    query_id = uuid.uuid4().hex
+    request_id = (request.headers.get("X-Request-ID") or uuid.uuid4().hex)[:128]
+    started = time.monotonic()
+    sanitized_sql, fingerprint = sanitize_sql(sql, layer.dialect)
+    used_preaggregation = "used_preagg=true" in sql
+
+    def record(
+        *,
+        row_count: int | None = None,
+        response_bytes: int | None = None,
+        cache_hit: bool = False,
+        cancelled: bool = False,
+        timed_out: bool = False,
+        error: str | None = None,
+        cancellation_diagnostic: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        layer.query_telemetry.record(
+            QueryEvent(
+                query_id=query_id,
+                request_id=request_id,
+                duration_ms=(time.monotonic() - started) * 1000,
+                dialect=layer.dialect,
+                row_count=row_count,
+                response_bytes=response_bytes,
+                cache_hit=cache_hit,
+                used_preaggregation=used_preaggregation,
+                cancelled=cancelled,
+                timed_out=timed_out,
+                error=error,
+                sql=sanitized_sql,
+                sql_fingerprint=fingerprint,
+                plan_metadata={"source": "http", **(metadata or {})},
+                cancellation_diagnostic=cancellation_diagnostic,
+            )
+        )
+
+    admission = app.state.query_admission
+    queue_started = time.monotonic()
+    admission_status = await asyncio.to_thread(admission.acquire, limits.queue_timeout_seconds)
+    queue_ms = (time.monotonic() - queue_started) * 1000
+    if admission_status == "full":
+        record(error="QueryQueueFull", metadata={"queue_duration_ms": queue_ms})
+        raise HTTPException(
+            status_code=429,
+            detail=f"Query queue is full (maximum {limits.max_queued_queries} waiting)",
+            headers={"X-Sidemantic-Query-ID": query_id, "X-Sidemantic-Request-ID": request_id},
+        )
+    if admission_status == "timeout":
+        record(error="QueryQueueTimeout", metadata={"queue_duration_ms": queue_ms})
+        raise HTTPException(
+            status_code=503,
+            detail=f"Query waited more than {limits.queue_timeout_seconds:g}s for an execution slot",
+            headers={"X-Sidemantic-Query-ID": query_id, "X-Sidemantic-Request-ID": request_id},
+        )
+
+    try:
+        disconnected = await request.is_disconnected()
+    except BaseException:  # noqa: BLE001 - release the slot on task cancellation too
+        admission.release()
+        raise
+    if disconnected:
+        admission.release()
+        record(error="ClientDisconnected", metadata={"queue_duration_ms": queue_ms})
+        raise HTTPException(
+            status_code=499,
+            detail="Client disconnected while waiting for an execution slot; no warehouse query was started",
+            headers={"X-Sidemantic-Query-ID": query_id, "X-Sidemantic-Request-ID": request_id},
+        )
+
+    control = QueryExecutionControl()
+
+    def worker() -> tuple[Any, bool]:
+        try:
+            return _query_table(app, layer, sql, control, user_attributes=user_attributes)
+        finally:
+            # A timed-out uncancellable driver keeps its slot until the worker
+            # actually stops, preventing hidden concurrency-limit overruns.
+            admission.release()
+
+    task = asyncio.create_task(asyncio.to_thread(worker))
+    deadline = time.monotonic() + limits.execution_timeout_seconds
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                outcome = await asyncio.to_thread(control.cancel)
+                task.add_done_callback(_consume_background_task)
+                record(
+                    cancelled=outcome.cancelled,
+                    timed_out=True,
+                    error="QueryExecutionTimeout",
+                    cancellation_diagnostic=outcome.diagnostic,
+                    metadata={"queue_duration_ms": queue_ms, "timeout": control.timeout_diagnostic},
+                )
+                raise HTTPException(
+                    status_code=504,
+                    detail=(
+                        f"Query exceeded the {limits.execution_timeout_seconds:g}s execution deadline. "
+                        f"{outcome.diagnostic}"
+                    ),
+                    headers={"X-Sidemantic-Query-ID": query_id, "X-Sidemantic-Request-ID": request_id},
+                )
+            try:
+                table, cache_hit = await asyncio.wait_for(asyncio.shield(task), timeout=min(0.1, remaining))
+                break
+            except TimeoutError:
+                # ``wait_for`` and the worker can both raise the built-in
+                # TimeoutError. A completed worker must propagate its own
+                # exception instead of being mistaken for a polling tick.
+                if task.done():
+                    table, cache_hit = task.result()
+                    break
+                if await request.is_disconnected():
+                    outcome = await asyncio.to_thread(control.cancel)
+                    task.add_done_callback(_consume_background_task)
+                    record(
+                        cancelled=outcome.cancelled,
+                        error="ClientDisconnected",
+                        cancellation_diagnostic=outcome.diagnostic,
+                        metadata={"queue_duration_ms": queue_ms, "timeout": control.timeout_diagnostic},
+                    )
+                    raise HTTPException(
+                        status_code=499,
+                        detail=f"Client disconnected. {outcome.diagnostic}",
+                        headers={"X-Sidemantic-Query-ID": query_id, "X-Sidemantic-Request-ID": request_id},
+                    )
+
+        response, response_bytes = _build_query_response(
+            request,
+            layer,
+            table,
+            sql=response_sql or sql,
+            format_override=format_override,
+            max_response_bytes=limits.max_response_bytes,
+            query_id=query_id,
+            request_id=request_id,
+            original_sql=original_sql,
+        )
+        record(
+            row_count=table.num_rows,
+            response_bytes=response_bytes,
+            cache_hit=cache_hit,
+            metadata={
+                "queue_duration_ms": queue_ms,
+                "timeout": control.timeout_diagnostic,
+                "response_format": _resolve_response_format(request, format_override),
+            },
+        )
+        return response
+    except (QueryRowLimitExceededError, QueryResponseTooLargeError) as exc:
+        outcome = control.cancellation_outcome
+        record(
+            cancelled=bool(outcome and outcome.cancelled),
+            error=type(exc).__name__,
+            cancellation_diagnostic=outcome.diagnostic if outcome else None,
+            metadata={"queue_duration_ms": queue_ms, "timeout": control.timeout_diagnostic},
+        )
+        status_code = 413 if isinstance(exc, QueryResponseTooLargeError) else 422
+        raise HTTPException(
+            status_code=status_code,
+            detail=str(exc),
+            headers={"X-Sidemantic-Query-ID": query_id, "X-Sidemantic-Request-ID": request_id},
+        ) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        record(
+            error=type(exc).__name__,
+            metadata={"queue_duration_ms": queue_ms, "timeout": control.timeout_diagnostic},
+        )
+        raise
+
+
+def _consume_background_task(task: asyncio.Task) -> None:
+    """Retrieve a detached timed-out worker's eventual exception."""
+    try:
+        task.exception()
+    except (asyncio.CancelledError, Exception):
+        pass
 
 
 def _normalize_sql_query(query: str) -> str:

@@ -329,6 +329,11 @@ curl -s http://localhost:4400/sql \
   -d '{"query":"SELECT status, total_amount FROM orders ORDER BY status"}'
 ```
 
+File-backed DuckDB serving is read-only by default. The API also applies
+conservative row, response-size, execution-time, concurrency, and queue limits.
+See [query serving operations](docs/query-serving.md) for configuration,
+cancellation behavior, response IDs, and process-local telemetry hooks.
+
 ## Agent Plugin
 
 Sidemantic ships a [plugin bundle](plugins/sidemantic/) with Claude Code and Codex metadata for two skills:

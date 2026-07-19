@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import time
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 
@@ -76,6 +78,7 @@ class SemanticLayer:
         max_limit: int | None = None,
         allow_non_additive_unsafe: bool = False,
         enforce_visibility: bool = False,
+        query_history_size: int = 1000,
     ):
         """Initialize semantic layer.
 
@@ -122,6 +125,8 @@ class SemanticLayer:
             enforce_visibility: When True, requesting a dimension/metric whose ``public=False``
                 raises during compile, and catalog/introspection listings omit non-public
                 fields. Defaults to False so library users are unaffected.
+            query_history_size: Number of sanitized process-local query events to retain.
+                Set to 0 to disable retention while keeping listener hooks available.
         """
         from sidemantic.db.base import BaseDatabaseAdapter
 
@@ -146,6 +151,9 @@ class SemanticLayer:
         self.max_limit = max_limit
         self.allow_non_additive_unsafe = allow_non_additive_unsafe
         self.enforce_visibility = enforce_visibility
+        from sidemantic.core.query_telemetry import QueryTelemetry
+
+        self.query_telemetry = QueryTelemetry(history_size=query_history_size)
         self._strict_rust_sql_generator_entrypoint = is_strict_for("sql_generator_entrypoint")
         self._strict_rust_query_validation = is_strict_for("semantic_core_query_validation")
         if engine == "python":
@@ -738,6 +746,42 @@ class SemanticLayer:
         - if the routed rollup table does not exist, fall back to recompile_raw() (or
           raise in strict mode). Any other error surfaces unchanged.
         """
+        started = time.monotonic()
+        query_id = uuid.uuid4().hex
+        error: Exception | None = None
+        try:
+            return self._execute_with_preagg_fallback_uninstrumented(
+                primary_sql,
+                recompile_raw,
+                use_preaggs=use_preaggs,
+                strict=strict,
+                used_preagg=used_preagg,
+            )
+        except Exception as exc:
+            error = exc
+            raise
+        finally:
+            from sidemantic.core.query_telemetry import QueryEvent, sanitize_sql
+
+            sanitized_sql, fingerprint = sanitize_sql(primary_sql, self.dialect)
+            self.query_telemetry.record(
+                QueryEvent(
+                    query_id=query_id,
+                    request_id=None,
+                    duration_ms=(time.monotonic() - started) * 1000,
+                    dialect=self.dialect,
+                    used_preaggregation=used_preagg,
+                    error=type(error).__name__ if error is not None else None,
+                    sql=sanitized_sql,
+                    sql_fingerprint=fingerprint,
+                    plan_metadata={"source": "library"},
+                )
+            )
+
+    def _execute_with_preagg_fallback_uninstrumented(
+        self, primary_sql, recompile_raw, *, use_preaggs: bool, strict: bool, used_preagg: bool
+    ):
+        """Execute with pre-aggregation fallback without emitting telemetry."""
         if not use_preaggs:
             return self.adapter.execute(primary_sql)
 

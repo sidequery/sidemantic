@@ -149,6 +149,9 @@ Allow Rust engine fallback to Python
 .TP
 \fB\-\-use\-preaggregations\fR
 Enable automatic pre\-aggregation routing
+.TP
+\fB\-\-read\-only, \-\-read\-write\fR
+DuckDB access mode (file databases default to read\-only for queries)
 .SH "SIDEMANTIC EXPLAIN"
 .SS SYNOPSIS
 .B
@@ -298,6 +301,9 @@ Port for dashboard server
 .TP
 \fB\-\-use\-preaggregations\fR
 Enable automatic pre\-aggregation routing
+.TP
+\fB\-\-read\-only, \-\-read\-write\fR
+DuckDB access mode (file databases default to read\-only while serving)
 .SH "SIDEMANTIC DASHBOARD TYPES"
 .SS SYNOPSIS
 .B
@@ -498,6 +504,9 @@ Read the authentication password from a file, or \- for stdin
 .TP
 \fB\-\-user\-attrs\-file PATH\fR
 Path to a JSON file mapping usernames \-> user\-attribute dicts for row/access security
+.TP
+\fB\-\-read\-only, \-\-read\-write\fR
+DuckDB access mode (file databases default to read\-only while serving)
 .SH "SIDEMANTIC SERVER API"
 .SS SYNOPSIS
 .B
@@ -540,6 +549,30 @@ Result cache size in MB (0 disables; default 0)
 .TP
 \fB\-\-result\-cache\-ttl FLOAT\fR
 Result cache entry TTL in seconds (default 60)
+.TP
+\fB\-\-max\-rows INTEGER\fR
+Maximum rows returned per query (default 10000)
+.TP
+\fB\-\-max\-response\-bytes INTEGER\fR
+Maximum JSON or Arrow response bytes (default 16777216)
+.TP
+\fB\-\-execution\-timeout\-seconds FLOAT\fR
+Query execution deadline (default 30)
+.TP
+\fB\-\-max\-concurrent\-queries INTEGER\fR
+Maximum simultaneously executing queries (default 4)
+.TP
+\fB\-\-max\-queued\-queries INTEGER\fR
+Maximum queries waiting for execution (default 16)
+.TP
+\fB\-\-queue\-timeout\-seconds FLOAT\fR
+Maximum queue wait in seconds (default 5)
+.TP
+\fB\-\-query\-history\-size INTEGER\fR
+Sanitized process\-local query events retained (default 1000)
+.TP
+\fB\-\-read\-only, \-\-read\-write\fR
+DuckDB access mode (file databases default to read\-only while serving)
 .TP
 \fB\-\-require\-user\-attrs\fR
 Require the user\-attributes header on data endpoints (reject with 400 if missing)

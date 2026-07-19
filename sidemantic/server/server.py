@@ -5,6 +5,7 @@ import typer
 
 from sidemantic.core.semantic_layer import SemanticLayer
 from sidemantic.server.connection import SemanticLayerConnection
+from sidemantic.server.query_execution import QueryAdmission, QueryLimits
 
 
 def _sql_string_literal(value: str) -> str:
@@ -42,6 +43,12 @@ def start_server(
     username: str | None = None,
     password: str | None = None,
     user_attrs_map: dict[str, dict] | None = None,
+    max_rows: int = 10_000,
+    max_response_bytes: int = 16 * 1024 * 1024,
+    execution_timeout_seconds: float = 30.0,
+    max_concurrent_queries: int = 4,
+    max_queued_queries: int = 16,
+    queue_timeout_seconds: float = 5.0,
 ):
     """Start PostgreSQL-compatible server for the semantic layer.
 
@@ -67,10 +74,22 @@ def start_server(
             "connecting username cannot be spoofed to select another user's security attributes."
         )
 
+    query_limits = QueryLimits(
+        max_rows=max_rows,
+        max_response_bytes=max_response_bytes,
+        execution_timeout_seconds=execution_timeout_seconds,
+        max_concurrent_queries=max_concurrent_queries,
+        max_queued_queries=max_queued_queries,
+        queue_timeout_seconds=queue_timeout_seconds,
+    )
+    query_admission = QueryAdmission(max_concurrent_queries, max_queued_queries)
+
     # Create connection class with layer injected
     class BoundConnection(SemanticLayerConnection):
         def __init__(self, connection_id, executor):
             super().__init__(connection_id, executor, layer, username, password, user_attrs_map=user_attrs_map)
+            self.query_limits = query_limits
+            self.query_admission = query_admission
 
     # Start server
     server = riffq.RiffqServer(f"{host}:{port}", connection_cls=BoundConnection)

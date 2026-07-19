@@ -196,6 +196,25 @@ def test_query_dry_run_emits_sql(tmp_path):
     assert "count" in result.stdout.lower()
 
 
+@pytest.mark.parametrize("command", ["query", "rewrite"])
+def test_compile_only_commands_do_not_open_missing_duckdb(command, tmp_path):
+    _write_min_model(tmp_path)
+    missing_db = tmp_path / "not-created.duckdb"
+    args = [command, "SELECT order_count FROM orders", "--models", str(tmp_path), "--db", str(missing_db)]
+    if command == "query":
+        args.append("--dry-run")
+
+    result = runner.invoke(app, args)
+
+    assert result.exit_code == 0, result.output
+    assert "select" in result.stdout.lower()
+    assert not missing_db.exists()
+
+
+def test_compile_only_dialect_maps_mssql_adbc_to_tsql():
+    assert cli_module._compile_only_dialect(None, "adbc://mssql?uri=ignored", None) == "tsql"
+
+
 def test_explain_sql_outputs_planner_json(tmp_path):
     _write_min_model(tmp_path)
 
@@ -579,13 +598,14 @@ def test_serve_calls_start_server(monkeypatch, tmp_path):
     called = {}
     events = []
 
-    def fake_start_server(layer, host, port, username, password, user_attrs_map=None):
+    def fake_start_server(layer, host, port, username, password, user_attrs_map=None, **kwargs):
         events.append("start")
         called["layer"] = layer
         called["host"] = host
         called["port"] = port
         called["username"] = username
         called["password"] = password
+        called.update(kwargs)
 
     monkeypatch.setattr("sidemantic.server.server.start_server", fake_start_server)
     monkeypatch.setattr("sidemantic.cli_contract.emit_warning", lambda _message: events.append("warning"))
@@ -658,12 +678,13 @@ pg_server:
 """
     )
 
-    def fake_start_server(layer, host, port, username, password, user_attrs_map=None):
+    def fake_start_server(layer, host, port, username, password, user_attrs_map=None, **kwargs):
         called["layer"] = layer
         called["host"] = host
         called["port"] = port
         called["username"] = username
         called["password"] = password
+        called.update(kwargs)
 
     monkeypatch.setattr("sidemantic.server.server.start_server", fake_start_server)
 
@@ -686,6 +707,52 @@ def test_cross_library_chart_renderer_is_not_a_cli_product_surface():
     assert "No such command 'chart'" in result.output
 
 
+def test_duckdb_serving_access_mode_defaults_read_only_and_allows_write_opt_in():
+    connection = "duckdb:////tmp/warehouse.duckdb?threads=2"
+
+    safe = cli_module._with_duckdb_access_mode(connection)
+    writable = cli_module._with_duckdb_access_mode(connection, read_only=False)
+
+    assert safe is not None and "read_only=true" in safe
+    assert writable is not None and "read_only=false" in writable
+    assert "threads=2" in safe
+
+
+def test_duckdb_access_mode_preserves_repeated_query_parameters():
+    from urllib.parse import parse_qsl, urlsplit
+
+    connection = "duckdb:////tmp/warehouse.duckdb?init_sql=LOAD+httpfs&init_sql=ATTACH+%27other.db%27"
+
+    safe = cli_module._with_duckdb_access_mode(connection)
+
+    assert safe is not None
+    assert parse_qsl(urlsplit(safe).query) == [
+        ("init_sql", "LOAD httpfs"),
+        ("init_sql", "ATTACH 'other.db'"),
+        ("read_only", "true"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "connection",
+    [
+        "duckdb:///path/to/warehouse.duckdb",
+        "duckdb:///relative.duckdb",
+        "duckdb:////tmp/warehouse.duckdb",
+    ],
+)
+def test_duckdb_access_mode_preserves_url_slashes(connection):
+    safe = cli_module._with_duckdb_access_mode(connection)
+
+    assert safe is not None
+    assert safe.startswith(f"{connection}?")
+    assert safe.endswith("read_only=true")
+
+
+def test_duckdb_memory_access_mode_stays_writable():
+    assert cli_module._with_duckdb_access_mode("duckdb:///:memory:") == "duckdb:///:memory:"
+
+
 def test_api_serve_calls_start_server(monkeypatch, tmp_path):
     pytest.importorskip("fastapi")
     called = {}
@@ -700,6 +767,13 @@ def test_api_serve_calls_start_server(monkeypatch, tmp_path):
         serve_ui=True,
         result_cache_mb=0,
         result_cache_ttl=60.0,
+        max_rows=10_000,
+        max_response_bytes=16 * 1024 * 1024,
+        execution_timeout_seconds=30.0,
+        max_concurrent_queries=4,
+        max_queued_queries=16,
+        queue_timeout_seconds=5.0,
+        query_history_size=1000,
         require_user_attrs=False,
         enforce_visibility=False,
         user_header="X-Sidemantic-User",
@@ -714,6 +788,13 @@ def test_api_serve_calls_start_server(monkeypatch, tmp_path):
         called["serve_ui"] = serve_ui
         called["result_cache_mb"] = result_cache_mb
         called["result_cache_ttl"] = result_cache_ttl
+        called["max_rows"] = max_rows
+        called["max_response_bytes"] = max_response_bytes
+        called["execution_timeout_seconds"] = execution_timeout_seconds
+        called["max_concurrent_queries"] = max_concurrent_queries
+        called["max_queued_queries"] = max_queued_queries
+        called["queue_timeout_seconds"] = queue_timeout_seconds
+        called["query_history_size"] = query_history_size
         called["require_user_attrs"] = require_user_attrs
         called["enforce_visibility"] = enforce_visibility
         called["user_header"] = user_header
@@ -745,6 +826,8 @@ def test_api_serve_calls_start_server(monkeypatch, tmp_path):
     assert called["auth_token"] == "secret"
     assert called["cors_origins"] == ["https://app.example.com"]
     assert called["max_request_body_bytes"] == 2048
+    assert called["max_rows"] == 10_000
+    assert called["max_concurrent_queries"] == 4
     assert called["dashboard"] is None
 
 

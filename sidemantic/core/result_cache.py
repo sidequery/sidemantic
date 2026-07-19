@@ -87,6 +87,10 @@ class _InFlight:
         self.error: BaseException | None = None
 
 
+class ResultCacheWaitCancelledError(RuntimeError):
+    """Raised when a singleflight caller is cancelled before receiving a result."""
+
+
 class ResultCache:
     """LRU-by-bytes Arrow result cache with TTL and singleflight dedup.
 
@@ -123,11 +127,22 @@ class ResultCache:
 
     def get_or_compute(self, key: str, compute: Callable[[], pa.Table]) -> pa.Table:
         """Return the cached table for ``key`` or compute (once) and cache it."""
+        table, _cache_hit = self.get_or_compute_with_status(key, compute)
+        return table
+
+    def get_or_compute_with_status(
+        self,
+        key: str,
+        compute: Callable[[], pa.Table],
+        *,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> tuple[pa.Table, bool]:
+        """Return ``(table, cache_hit)`` while preserving singleflight behavior."""
         with self._lock:
             entry = self._get_live_entry_locked(key)
             if entry is not None:
                 self._hits += 1
-                return entry.table
+                return entry.table, True
 
             # Miss. Either join an in-flight compute or become the leader.
             inflight = self._inflight.get(key)
@@ -142,14 +157,20 @@ class ResultCache:
 
         if not leader:
             # Wait for the leader of this generation, then share its outcome.
-            inflight.event.wait()
+            while True:
+                if cancelled is not None and cancelled():
+                    raise ResultCacheWaitCancelledError("result cache wait was cancelled")
+                if inflight.event.wait(timeout=0.05):
+                    break
             if inflight.error is not None:
                 raise inflight.error
-            return inflight.result
+            return inflight.result, False
 
         # Leader path: run compute outside the lock so other keys are unblocked.
         try:
             table = compute()
+            if cancelled is not None and cancelled():
+                raise ResultCacheWaitCancelledError("result cache computation was cancelled")
         except BaseException as exc:  # noqa: BLE001 - propagate to all waiters
             inflight.error = exc
             with self._lock:
@@ -165,7 +186,7 @@ class ResultCache:
             if self._inflight.get(key) is inflight:
                 del self._inflight[key]
         inflight.event.set()
-        return table
+        return table, False
 
     def invalidate_all(self) -> None:
         """Drop every cached entry (does not disturb in-flight computations)."""

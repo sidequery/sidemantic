@@ -1,5 +1,8 @@
 """Tests for PostgreSQL wire protocol connection handling."""
 
+import threading
+import time
+
 import pytest
 
 from sidemantic import Dimension, Metric, Model, SemanticLayer
@@ -120,6 +123,250 @@ def test_dml_passthrough():
     assert "reader" in captured
 
 
+@pytest.mark.parametrize("statement", ["SHOW TABLES", "SHOW TABLES;"])
+def test_show_passthrough_is_not_wrapped_as_select(statement):
+    from tests.optional_dep_stubs import ensure_fake_riffq
+
+    ensure_fake_riffq()
+    pytest.importorskip("pyarrow")
+    from unittest.mock import MagicMock
+
+    from sidemantic.server.connection import SemanticLayerConnection
+
+    reader = MagicMock()
+    cursor = MagicMock()
+    cursor.execute.return_value.fetch_record_batch.return_value = reader
+    layer = MagicMock()
+    layer.adapter.cursor.return_value = cursor
+
+    conn = SemanticLayerConnection.__new__(SemanticLayerConnection)
+    conn.layer = layer
+    conn.user_attrs_map = {}
+    conn.session_user = None
+    conn.send_reader = MagicMock()
+    callback = MagicMock()
+
+    conn._handle_query(statement, callback)
+
+    cursor.execute.assert_called_once_with("SHOW TABLES")
+    conn.send_reader.assert_called_once_with(reader, callback)
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "BEGIN",
+        "BEGIN TRANSACTION;",
+        "BEGIN READ ONLY",
+        "START TRANSACTION ISOLATION LEVEL READ COMMITTED",
+        "COMMIT",
+        "COMMIT AND CHAIN",
+        "END TRANSACTION",
+        "ROLLBACK WORK",
+    ],
+)
+def test_transaction_control_is_not_wrapped_as_select(statement):
+    from tests.optional_dep_stubs import ensure_fake_riffq
+
+    ensure_fake_riffq()
+    pytest.importorskip("pyarrow")
+    from unittest.mock import MagicMock
+
+    from sidemantic.server.connection import SemanticLayerConnection
+
+    layer = MagicMock()
+
+    conn = SemanticLayerConnection.__new__(SemanticLayerConnection)
+    conn.layer = layer
+    conn.user_attrs_map = {}
+    conn.session_user = None
+    conn.send_reader = MagicMock()
+    callback = MagicMock()
+
+    conn._handle_query(statement, callback)
+
+    layer.adapter.cursor.assert_not_called()
+    reader, sent_callback = conn.send_reader.call_args.args
+    assert reader.read_all().num_rows == 0
+    assert sent_callback is callback
+
+
+def test_pg_wire_timeout_returns_before_uncancellable_worker_finishes(monkeypatch):
+    from tests.optional_dep_stubs import ensure_fake_riffq
+
+    ensure_fake_riffq()
+    pytest.importorskip("pyarrow")
+    from unittest.mock import MagicMock
+
+    from sidemantic.core.query_telemetry import QueryTelemetry
+    from sidemantic.db.base import CancellationOutcome
+    from sidemantic.server.connection import SemanticLayerConnection
+    from sidemantic.server.query_execution import QueryAdmission, QueryLimits
+
+    worker_started = threading.Event()
+    release_worker = threading.Event()
+
+    def blocking_execute(*args, **kwargs):
+        kwargs["control"].register(args[0].adapter, kwargs["cursor"])
+        worker_started.set()
+        try:
+            assert release_worker.wait(timeout=2)
+            raise RuntimeError("worker released")
+        finally:
+            kwargs["cursor"].close()
+
+    monkeypatch.setattr("sidemantic.server.connection.execute_bounded", blocking_execute)
+    monkeypatch.setattr("sidemantic.server.connection.QueryRewriter.rewrite", lambda *args, **kwargs: "SELECT 1")
+
+    cursor = MagicMock()
+    layer = MagicMock()
+    layer.adapter.cursor.return_value = cursor
+    layer.adapter.cancel.return_value = CancellationOutcome(
+        supported=False,
+        cancelled=False,
+        diagnostic="test adapter cannot cancel an in-flight query; warehouse work may continue",
+    )
+    layer.graph.models = {}
+    layer.dialect = "duckdb"
+    layer.query_telemetry = QueryTelemetry()
+
+    conn = SemanticLayerConnection.__new__(SemanticLayerConnection)
+    conn.layer = layer
+    conn.user_attrs_map = {}
+    conn.session_user = None
+    conn.connection_id = 1
+    conn.query_limits = QueryLimits(execution_timeout_seconds=0.05)
+    conn.query_admission = QueryAdmission(1, 0)
+    conn._active_controls = set()
+    conn._active_controls_lock = threading.Lock()
+
+    started = time.monotonic()
+    try:
+        with pytest.raises(TimeoutError, match="warehouse work may continue"):
+            conn._handle_query("SELECT 1", MagicMock())
+        assert worker_started.is_set()
+        assert time.monotonic() - started < 0.5
+    finally:
+        release_worker.set()
+
+    deadline = time.monotonic() + 1
+    while conn.query_admission.stats()["active"] and time.monotonic() < deadline:
+        time.sleep(0.001)
+    assert conn.query_admission.stats()["active"] == 0
+    cursor.close.assert_called_once()
+
+
+def test_pg_wire_bounded_query_closes_cursor_once(monkeypatch):
+    from tests.optional_dep_stubs import ensure_fake_riffq
+
+    ensure_fake_riffq()
+    pa = pytest.importorskip("pyarrow")
+    from unittest.mock import MagicMock
+
+    from sidemantic.core.query_telemetry import QueryTelemetry
+    from sidemantic.server.connection import SemanticLayerConnection
+    from sidemantic.server.query_execution import QueryAdmission, QueryLimits
+
+    class NonIdempotentCursor:
+        def __init__(self):
+            self.close_count = 0
+
+        def execute(self, _sql):
+            reader = pa.table({"value": [1]}).to_reader()
+
+            class Result:
+                def fetch_record_batch(self):
+                    return reader
+
+            return Result()
+
+        def close(self):
+            self.close_count += 1
+            if self.close_count > 1:
+                raise RuntimeError("cursor closed twice")
+
+    cursor = NonIdempotentCursor()
+    layer = MagicMock()
+    layer.adapter.cursor.return_value = cursor
+    layer.adapter.configure_statement_timeout.return_value = "test timeout configured"
+    layer.graph.models = {}
+    layer.dialect = "duckdb"
+    layer.query_telemetry = QueryTelemetry()
+
+    monkeypatch.setattr("sidemantic.server.connection.QueryRewriter.rewrite", lambda *args, **kwargs: "SELECT 1")
+
+    conn = SemanticLayerConnection.__new__(SemanticLayerConnection)
+    conn.layer = layer
+    conn.user_attrs_map = {}
+    conn.session_user = None
+    conn.connection_id = 1
+    conn.query_limits = QueryLimits()
+    conn.query_admission = QueryAdmission(1, 0)
+    conn._active_controls = set()
+    conn._active_controls_lock = threading.Lock()
+    conn.send_reader = MagicMock()
+
+    conn._handle_query("SELECT 1", MagicMock())
+
+    assert cursor.close_count == 1
+    assert conn.query_admission.stats()["active"] == 0
+    conn.send_reader.assert_called_once()
+
+
+def test_pg_wire_disconnect_cancels_query_waiting_for_admission(monkeypatch):
+    from tests.optional_dep_stubs import ensure_fake_riffq
+
+    ensure_fake_riffq()
+    pytest.importorskip("pyarrow")
+    from unittest.mock import MagicMock
+
+    from sidemantic.server.connection import SemanticLayerConnection
+    from sidemantic.server.query_execution import QueryAdmission, QueryLimits
+
+    monkeypatch.setattr("sidemantic.server.connection.QueryRewriter.rewrite", lambda *args, **kwargs: "SELECT 1")
+
+    cursor = MagicMock()
+    layer = MagicMock()
+    layer.adapter.cursor.return_value = cursor
+    layer.graph.models = {}
+    layer.dialect = "duckdb"
+
+    admission = QueryAdmission(1, 1)
+    assert admission.acquire(0.1) == "acquired"
+
+    conn = SemanticLayerConnection.__new__(SemanticLayerConnection)
+    conn.layer = layer
+    conn.user_attrs_map = {}
+    conn.session_user = None
+    conn.query_limits = QueryLimits(queue_timeout_seconds=1)
+    conn.query_admission = admission
+    conn._active_controls = set()
+    conn._active_controls_lock = threading.Lock()
+
+    errors = []
+
+    def run_query():
+        try:
+            conn._handle_query("SELECT 1", MagicMock())
+        except BaseException as exc:  # noqa: BLE001 - capture for assertion
+            errors.append(exc)
+
+    query = threading.Thread(target=run_query)
+    query.start()
+    deadline = time.monotonic() + 1
+    while admission.stats()["queued"] != 1 and time.monotonic() < deadline:
+        time.sleep(0.001)
+
+    conn.handle_disconnect("127.0.0.1", 5432, callback=lambda _ok: None)
+    admission.release()
+    query.join(timeout=1)
+
+    assert isinstance(errors[0], ConnectionAbortedError)
+    cursor.execute.assert_not_called()
+    assert admission.stats() == {"active": 0, "queued": 0}
+    assert not conn._active_controls
+
+
 def test_query_error_raises_exception():
     """_handle_query should raise on errors, not return error as data rows."""
     pytest.importorskip("riffq")
@@ -131,6 +378,7 @@ def test_query_error_raises_exception():
 
     mock_layer = MagicMock()
     # Query work now runs on a per-request cursor obtained from the adapter.
+    mock_layer.adapter.cursor.return_value.execute_stream = None
     mock_layer.adapter.cursor.return_value.execute.side_effect = Exception("test error")
     mock_layer.graph = SemanticGraph()
     mock_layer.dialect = "duckdb"

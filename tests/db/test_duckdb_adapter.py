@@ -65,6 +65,29 @@ def test_duckdb_adapter_from_url_read_only():
             adapter.execute("CREATE TABLE blocked (id INT)")
 
 
+def test_duckdb_read_only_rejects_memory_database():
+    with pytest.raises(ValueError, match="cannot be opened read-only"):
+        DuckDBAdapter(":memory:", read_only=True)
+
+
+def test_duckdb_read_only_url_rejects_invalid_boolean(tmp_path):
+    with pytest.raises(ValueError, match="read_only must be"):
+        DuckDBAdapter.from_url(f"duckdb:///{tmp_path / 'test.db'}?read_only=maybe")
+
+
+def test_file_backed_cursor_uses_independent_connection(tmp_path):
+    db_path = tmp_path / "test.duckdb"
+    adapter = DuckDBAdapter(str(db_path))
+    adapter.execute("CREATE TABLE values_table AS SELECT 42 AS value")
+
+    cursor = adapter.cursor()
+    try:
+        assert cursor is not adapter.raw_connection
+        assert cursor.execute("SELECT value FROM values_table").fetchone() == (42,)
+    finally:
+        cursor.close()
+
+
 def test_duckdb_adapter_get_tables():
     """Test getting table list."""
     adapter = DuckDBAdapter()

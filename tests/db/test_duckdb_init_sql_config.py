@@ -94,3 +94,19 @@ def test_resolve_paths_preserves_init_sql(tmp_path):
     resolved = config.resolve_paths(tmp_path)
     assert isinstance(resolved.connection, DuckDBConnection)
     assert resolved.connection.init_sql == ["LOAD httpfs"]
+
+
+def test_duckdb_read_only_config_round_trip(tmp_path):
+    config = SidemanticConfig(connection=DuckDBConnection(path="data/warehouse.db", read_only=True))
+
+    resolved = config.resolve_paths(tmp_path)
+
+    assert isinstance(resolved.connection, DuckDBConnection)
+    assert resolved.connection.read_only is True
+    assert build_connection_string(resolved).endswith("?read_only=true")
+
+
+def test_duckdb_explicit_write_config_is_preserved():
+    config = SidemanticConfig(connection=DuckDBConnection(path="warehouse.db", read_only=False))
+
+    assert build_connection_string(config).endswith("?read_only=false")

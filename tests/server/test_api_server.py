@@ -4,8 +4,12 @@
 
 from __future__ import annotations
 
+import asyncio
+import threading
+import time
 from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -19,7 +23,7 @@ from fastapi.testclient import TestClient
 
 from sidemantic import DashboardDocument, Dimension, Metric, Model, SemanticLayer, load_from_directory
 from sidemantic.api_server import create_app
-from sidemantic.db.base import BaseDatabaseAdapter
+from sidemantic.db.base import BaseDatabaseAdapter, CancellationOutcome
 from sidemantic.server.common import ARROW_STREAM_MEDIA_TYPE
 
 
@@ -50,7 +54,11 @@ models:
 
 
 def _build_test_client(
-    tmp_path: Path, auth_token: str | None = "secret", max_body_bytes: int = 1024 * 1024, serve_ui: bool = False
+    tmp_path: Path,
+    auth_token: str | None = "secret",
+    max_body_bytes: int = 1024 * 1024,
+    serve_ui: bool = False,
+    **app_kwargs,
 ):
     models_dir = tmp_path / "models"
     _write_models(models_dir)
@@ -79,7 +87,13 @@ def _build_test_client(
 
     layer = SemanticLayer(connection=f"duckdb:///{db_path}", auto_register=False)
     load_from_directory(layer, str(models_dir))
-    app = create_app(layer, auth_token=auth_token, max_request_body_bytes=max_body_bytes, serve_ui=serve_ui)
+    app = create_app(
+        layer,
+        auth_token=auth_token,
+        max_request_body_bytes=max_body_bytes,
+        serve_ui=serve_ui,
+        **app_kwargs,
+    )
     return TestClient(app)
 
 
@@ -235,6 +249,9 @@ def test_result_cache_serves_repeated_query(tmp_path):
     assert stats["hits"] == 1
     assert stats["misses"] == 1
     assert stats["entries"] == 1
+    history = app.state.layer.query_telemetry.history(limit=2)
+    assert history[0].cache_hit is True
+    assert history[1].cache_hit is False
 
     # A different query is a distinct cache entry (another miss).
     other = client.post(
@@ -309,6 +326,24 @@ def test_compile_and_query_json_endpoints(tmp_path):
     ]
 
 
+def test_structured_query_preserves_layer_default_limit(tmp_path):
+    client = _build_test_client(tmp_path)
+    client.app.state.layer.default_limit = 1
+
+    response = client.post(
+        "/query",
+        headers=_auth_headers(),
+        json={
+            "dimensions": ["orders.status"],
+            "metrics": ["orders.order_count"],
+            "order_by": ["orders.status"],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["row_count"] == 1
+
+
 def test_compile_accepts_timezone(tmp_path):
     # The optional timezone field on the structured-query request threads into
     # layer.compile so time-dimension truncation happens in the requested zone.
@@ -371,6 +406,58 @@ def test_query_arrow_respects_accept_header(tmp_path):
     assert response.status_code == 200
     table = pa.ipc.open_stream(BytesIO(response.content)).read_all()
     assert table.to_pylist() == [{"order_count": 3}]
+
+
+@pytest.mark.parametrize("response_format", ["json", "arrow"])
+def test_query_row_limit_applies_to_json_and_arrow(tmp_path, response_format):
+    client = _build_test_client(tmp_path, max_rows=2)
+
+    response = client.post(
+        f"/raw?format={response_format}",
+        headers=_auth_headers(),
+        json={"query": "SELECT * FROM range(3)"},
+    )
+
+    assert response.status_code == 422
+    assert "maximum of 2 rows" in response.json()["detail"]
+    assert response.headers["X-Sidemantic-Query-ID"]
+
+
+@pytest.mark.parametrize("response_format", ["json", "arrow"])
+def test_query_response_byte_limit_applies_to_json_and_arrow(tmp_path, response_format):
+    client = _build_test_client(tmp_path, max_response_bytes=128)
+
+    response = client.post(
+        f"/raw?format={response_format}",
+        headers=_auth_headers(),
+        json={"query": "SELECT repeat('x', 1024) AS payload"},
+    )
+
+    assert response.status_code == 413
+    assert "maximum" in response.json()["detail"]
+
+
+def test_query_response_ids_and_sanitized_telemetry(tmp_path):
+    client = _build_test_client(tmp_path)
+
+    response = client.post(
+        "/raw",
+        headers={**_auth_headers(), "X-Request-ID": "caller-request"},
+        json={"query": "SELECT 'top-secret' AS value"},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["X-Sidemantic-Request-ID"] == "caller-request"
+    query_id = response.headers["X-Sidemantic-Query-ID"]
+    assert len(query_id) == 32
+    event = client.app.state.layer.query_telemetry.history()[0]
+    assert event.query_id == query_id
+    assert event.request_id == "caller-request"
+    assert event.row_count == 1
+    assert event.response_bytes == int(response.headers["X-Sidemantic-Response-Bytes"])
+    assert event.error is None
+    assert event.sql is not None
+    assert "top-secret" not in event.sql
 
 
 def test_sql_compile_and_sql_query_endpoints(tmp_path):
@@ -478,6 +565,181 @@ class _ArrowOnlyAdapter(BaseDatabaseAdapter):
     @property
     def raw_connection(self) -> Any:
         return None
+
+
+class _CancellableCursor:
+    def __init__(self, entered: threading.Event, cancelled: threading.Event):
+        self.entered = entered
+        self.cancelled = cancelled
+
+    def execute(self, _sql: str):
+        self.entered.set()
+        self.cancelled.wait(timeout=5)
+        if self.cancelled.is_set():
+            raise RuntimeError("cancelled")
+        return _ArrowOnlyResult()
+
+    def close(self):
+        return None
+
+
+class _CancellableAdapter(_ArrowOnlyAdapter):
+    def __init__(self):
+        self.entered = threading.Event()
+        self.cancelled = threading.Event()
+
+    def cursor(self):
+        return _CancellableCursor(self.entered, self.cancelled)
+
+    def cancel(self, _handle):
+        self.cancelled.set()
+        return CancellationOutcome(True, True, "duckdb cancellation requested via test handle")
+
+
+class _WorkerTimeoutCursor:
+    def execute(self, _sql: str):
+        raise TimeoutError("warehouse statement timed out")
+
+    def close(self):
+        return None
+
+
+class _WorkerTimeoutAdapter(_ArrowOnlyAdapter):
+    def cursor(self):
+        return _WorkerTimeoutCursor()
+
+
+class _UncancellableSlowCursor:
+    def __init__(self, entered: threading.Event, release: threading.Event):
+        self.entered = entered
+        self.release = release
+
+    def execute(self, _sql: str):
+        self.entered.set()
+        assert self.release.wait(timeout=5)
+        return _ArrowOnlyResult()
+
+    def close(self):
+        return None
+
+
+class _UncancellableSlowAdapter(_ArrowOnlyAdapter):
+    def __init__(self):
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def cursor(self):
+        return _UncancellableSlowCursor(self.entered, self.release)
+
+    def cancel(self, _handle):
+        return CancellationOutcome(False, False, "test adapter cannot cancel; warehouse work may continue")
+
+
+def test_execution_timeout_cancels_and_records_diagnostic():
+    adapter = _CancellableAdapter()
+    layer = SemanticLayer(connection=adapter, auto_register=False)
+    client = TestClient(
+        create_app(
+            layer,
+            execution_timeout_seconds=0.05,
+            max_concurrent_queries=1,
+            max_queued_queries=0,
+        )
+    )
+
+    response = client.post("/raw", json={"query": "SELECT 1"})
+
+    assert response.status_code == 504
+    assert adapter.entered.is_set()
+    assert adapter.cancelled.is_set()
+    assert "cancellation requested" in response.json()["detail"]
+    event = layer.query_telemetry.history()[0]
+    assert event.timed_out is True
+    assert event.cancelled is True
+    assert event.error == "QueryExecutionTimeout"
+
+
+def test_timed_out_cache_leader_result_is_not_inserted():
+    adapter = _UncancellableSlowAdapter()
+    layer = SemanticLayer(connection=adapter, auto_register=False)
+    app = create_app(
+        layer,
+        execution_timeout_seconds=0.05,
+        max_concurrent_queries=1,
+        max_queued_queries=0,
+        result_cache_mb=1,
+    )
+    client = TestClient(app)
+
+    response = client.post("/raw", json={"query": "SELECT 1"})
+
+    assert response.status_code == 504
+    assert adapter.entered.is_set()
+    adapter.release.set()
+    deadline = time.monotonic() + 1
+    while app.state.query_admission.stats()["active"] and time.monotonic() < deadline:
+        time.sleep(0.001)
+
+    assert app.state.query_admission.stats()["active"] == 0
+    assert app.state.result_cache.stats()["entries"] == 0
+
+
+def test_disconnected_http_request_does_not_start_work_after_queue(monkeypatch):
+    from unittest.mock import AsyncMock, MagicMock
+
+    from fastapi import HTTPException
+
+    from sidemantic.api_server import _execute_http_query
+    from sidemantic.core.query_telemetry import QueryTelemetry
+    from sidemantic.server.query_execution import QueryAdmission, QueryLimits
+
+    admission = QueryAdmission(1, 0)
+    layer = MagicMock()
+    layer.dialect = "duckdb"
+    layer.query_telemetry = QueryTelemetry()
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            query_limits=QueryLimits(),
+            query_admission=admission,
+        )
+    )
+    request = MagicMock()
+    request.headers = {}
+    request.is_disconnected = AsyncMock(return_value=True)
+    query_table = MagicMock()
+    monkeypatch.setattr("sidemantic.api_server._query_table", query_table)
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            _execute_http_query(
+                app,
+                request,
+                layer,
+                "SELECT 1",
+                format_override=None,
+                user_attributes=None,
+            )
+        )
+
+    assert exc_info.value.status_code == 499
+    assert "no warehouse query was started" in exc_info.value.detail
+    assert admission.stats() == {"active": 0, "queued": 0}
+    query_table.assert_not_called()
+    event = layer.query_telemetry.history()[0]
+    assert event.error == "ClientDisconnected"
+
+
+def test_worker_timeout_error_is_not_swallowed_as_poll_timeout():
+    adapter = _WorkerTimeoutAdapter()
+    layer = SemanticLayer(connection=adapter, auto_register=False)
+    client = TestClient(create_app(layer, execution_timeout_seconds=1.0))
+
+    with pytest.raises(TimeoutError, match="warehouse statement timed out"):
+        client.post("/raw", json={"query": "SELECT 1"})
+
+    event = layer.query_telemetry.history()[0]
+    assert event.error == "TimeoutError"
+    assert event.timed_out is False
 
 
 def test_sql_with_semicolon_in_string_literal(tmp_path):

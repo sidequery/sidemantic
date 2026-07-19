@@ -115,6 +115,11 @@ uvx sidemantic preagg refresh
 uvx sidemantic preagg refresh --db data/warehouse.db
 ```
 
+Refresh is an explicit write workflow. Normal file-backed DuckDB query and
+serving commands open read-only by default; stop those readers before an
+in-place refresh, or publish a refreshed file using an operational swap. See
+the [query serving operations guide](../../docs/query-serving.md#duckdb-read-only-serving).
+
 This creates tables like:
 - `preagg.orders_preagg_daily_status` - Daily metrics by status
 - `preagg.orders_preagg_daily_region` - Daily metrics by region

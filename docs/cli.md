@@ -191,6 +191,15 @@ supported for deployment systems that inject configuration securely. Prefer
 credential files when the project configuration is shared or checked into
 source control.
 
+File-backed DuckDB query and serving commands default to read-only. Use
+`--read-write` only when a query/serving process intentionally needs writes;
+`preagg refresh` is the explicit writable materialization workflow. HTTP query
+limits can be set with `--max-rows`, `--max-response-bytes`,
+`--execution-timeout-seconds`, `--max-concurrent-queries`,
+`--max-queued-queries`, and `--queue-timeout-seconds`, or under `api_server` in
+project configuration. See [query serving operations](query-serving.md) for the
+full defaults, PostgreSQL wire settings, cancellation semantics, and telemetry.
+
 The old `--password` and `--auth-token` command-line options remain accepted for
 compatibility but are hidden and deprecated because command arguments may be
 visible to other processes. Their values are registered for output redaction,

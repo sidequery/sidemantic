@@ -276,6 +276,29 @@ def test_normalized_passthrough_fails_closed_across_sql_transports(tmp_path):
         _pg_rewrite(_layer(enforce_visibility=True), query, attrs)
 
 
+def test_sql_rewrite_cache_isolated_by_visibility_state():
+    layer = SemanticLayer()
+    layer.adapter.execute("create table records (id integer, secret_note varchar)")
+    layer.adapter.execute("insert into records values (1, 'private')")
+    layer.add_model(
+        Model(
+            name="records",
+            table="records",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", sql="id", type="numeric"),
+                Dimension(name="secret_note", sql="secret_note", type="categorical", public=False),
+            ],
+        )
+    )
+
+    assert layer.sql("SELECT secret_note FROM records").fetchall() == [("private",)]
+
+    layer.enforce_visibility = True
+    with pytest.raises(SecurityError, match="not public"):
+        layer.sql("SELECT secret_note FROM records")
+
+
 def test_yardstick_sql_fails_closed_across_sql_transports(tmp_path):
     attrs = {"role": "analyst", "tenant_id": 1}
     queries = [

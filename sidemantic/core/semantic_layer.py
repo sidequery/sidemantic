@@ -1756,6 +1756,7 @@ class SemanticLayer:
             getattr(self.graph, "_version", 0),
             self.dialect,
             self.use_preaggregations,
+            self.enforce_visibility,
             os.getenv("SIDEMANTIC_RS_REWRITER", "0"),
             os.getenv("SIDEMANTIC_RS_NO_FALLBACK", "0"),
             query,

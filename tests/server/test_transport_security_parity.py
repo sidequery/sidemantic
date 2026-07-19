@@ -259,6 +259,36 @@ def test_raw_and_unproven_sql_fail_closed_across_sql_transports(tmp_path):
         _pg_rewrite(pg_layer, mixed, attrs)
 
 
+def test_out_of_scope_nested_cte_alias_fails_closed_across_sql_transports(tmp_path):
+    attrs = {"role": "analyst", "tenant_id": 1}
+    query = """
+        WITH scoped AS (
+            WITH audit_log AS (SELECT 'masked' AS secret_note)
+            SELECT secret_note FROM audit_log
+        ),
+        leaked AS (SELECT secret_note FROM audit_log),
+        sem AS (SELECT total_amount FROM orders)
+        SELECT sem.total_amount FROM sem CROSS JOIN leaked
+    """
+
+    http_layer = _layer(enforce_visibility=True)
+    http_layer.adapter.execute("CREATE TABLE audit_log (secret_note VARCHAR)")
+    client = TestClient(create_app(http_layer, auth_token="secret"))
+    response = client.post("/sql", json={"query": query}, headers=_headers(attrs))
+    assert response.status_code == 403
+    assert "audit_log" in response.json()["error"]
+
+    mcp_layer = _mcp_layer(tmp_path / "mcp-nested-cte-scope", attrs, enforce_visibility=True)
+    mcp_layer.adapter.execute("CREATE TABLE audit_log (secret_note VARCHAR)")
+    with pytest.raises(SecurityError, match="audit_log"):
+        mcp_run_sql(query)
+
+    pg_layer = _layer(enforce_visibility=True)
+    pg_layer.adapter.execute("CREATE TABLE audit_log (secret_note VARCHAR)")
+    with pytest.raises(SecurityError, match="audit_log"):
+        _pg_rewrite(pg_layer, query, attrs)
+
+
 def test_normalized_passthrough_fails_closed_across_sql_transports(tmp_path):
     attrs = {"role": "analyst", "tenant_id": 1}
     query = "(select secret_note from orders order by secret_note) union (select secret_note from orders)"

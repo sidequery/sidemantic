@@ -44,31 +44,26 @@ def _unrecognized_sources(sql: str, layer: Any) -> list[str]:
     """Return source tables that are neither semantic models nor local CTEs."""
     import sqlglot
     from sqlglot import exp
+    from sqlglot.optimizer.scope import traverse_scope
 
     try:
         parsed = sqlglot.parse_one(sql, dialect=layer.dialect)
+        scopes = traverse_scope(parsed)
     except Exception:
         return ["<unparseable SQL>"]
 
-    ctes = list(parsed.find_all(exp.CTE))
-    cte_names = {cte.alias_or_name.lower() for cte in ctes}
     semantic_sources = {name.lower() for name in layer.graph.models}
     semantic_sources.add("metrics")
-    unrecognized = {
-        table.sql(dialect=layer.dialect)
-        for table in parsed.find_all(exp.Table)
-        if table.name.lower() not in semantic_sources and table.name.lower() not in cte_names
-    }
-    # A CTE name is not safely local inside its own body on every backend; it
-    # can resolve to a physical table unless explicitly recursive. Reject that
-    # ambiguous shadowing rather than treating it as a proven CTE reference.
-    for cte in ctes:
-        alias = cte.alias_or_name.lower()
-        unrecognized.update(
-            table.sql(dialect=layer.dialect)
-            for table in cte.this.find_all(exp.Table)
-            if table.name.lower() == alias and alias not in semantic_sources
-        )
+    unrecognized: set[str] = set()
+    try:
+        for scope in scopes:
+            for _name, (_node, source) in scope.selected_sources.items():
+                # In-scope CTEs and derived tables resolve to another Scope.
+                # A Table source is a real database read in this exact scope.
+                if isinstance(source, exp.Table) and source.name.lower() not in semantic_sources:
+                    unrecognized.add(source.sql(dialect=layer.dialect))
+    except Exception:
+        return ["<unparseable SQL>"]
     return sorted(unrecognized)
 
 

@@ -95,6 +95,8 @@ available. True raw database execution is never considered policy-aware.
 Predicate subqueries are rejected while controls are active because nested reads
 cannot yet be proven to receive the same policy rewrite; use structured filters or a
 modeled semantic join instead.
+CTE sources are resolved according to their lexical SQL scope, so a nested alias cannot
+mask an out-of-scope physical table read.
 The optional Rust semantic rewriter is also disabled for secured SQL transports until
 it can accept caller attributes and prove the same policy and visibility checks as the
 Python planner.

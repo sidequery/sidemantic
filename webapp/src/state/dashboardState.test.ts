@@ -4,8 +4,10 @@ import { NULL_TOKEN } from "../data/types";
 import {
   brushableDashboardDimension,
   dashboardCategorySeries,
+  dashboardDrillDimension,
   dashboardFilterValue,
   dashboardMetricRefs,
+  dashboardRangeFilter,
   dashboardResultColumn,
   dashboardStructuredQuery,
   dashboardTimeSeries,
@@ -86,6 +88,7 @@ describe("dashboard selections", () => {
     expect(selectableDashboardDimension(chart(true), "orders.status")).toBe(true);
     expect(selectableDashboardDimension(chart({ fields: ["orders.country"] }), "orders.status")).toBe(false);
     expect(selectableDashboardDimension(chart({ fields: ["orders.status"] }), "orders.status")).toBe(true);
+    expect(dashboardDrillDimension(chart({ fields: ["orders.country"] }))).toBe("orders.country");
   });
 
   test("honors horizontal brush interactions", () => {
@@ -147,8 +150,11 @@ describe("dashboard selections", () => {
       { "orders.created_at__month": { from: "2026-01-01", to: "2026-03-01" } },
     );
     expect(query.filters).toContain(
-      "orders.created_at__month >= '2026-01-01' AND orders.created_at__month <= '2026-03-01'",
+      "orders.created_at >= '2026-01-01' AND orders.created_at < '2026-04-01'",
     );
+    expect(
+      dashboardRangeFilter("orders.created_at__day", { from: "2026-03-01", to: "2026-03-02" }),
+    ).toBe("orders.created_at >= '2026-03-01' AND orders.created_at < '2026-03-03'");
   });
 
   test("separates categorical series before plotting bars", () => {

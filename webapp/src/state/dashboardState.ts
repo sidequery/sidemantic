@@ -33,6 +33,10 @@ export function selectableDashboardDimension(chart: DashboardChart, dimension: s
   return !select.fields?.length || select.fields.includes(dimension);
 }
 
+export function dashboardDrillDimension(chart: DashboardChart): string | undefined {
+  return (chart.query.dimensions ?? []).find((dimension) => selectableDashboardDimension(chart, dimension));
+}
+
 export function brushableDashboardDimension(chart: DashboardChart, dimension: string): boolean {
   if (!dimension || !(chart.query.dimensions ?? []).includes(dimension)) return false;
   const brush = chart.interactions?.brush;
@@ -66,6 +70,36 @@ export function dashboardMetricRefs(chart: DashboardChart): string[] {
   return chart.query.metrics.slice(0, 1);
 }
 
+const TIME_GRAINS = new Set(["second", "minute", "hour", "day", "week", "month", "quarter", "year"]);
+
+function nextBucketStart(value: string, grain: string): string | null {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return null;
+  if (grain === "second") date.setUTCSeconds(date.getUTCSeconds() + 1);
+  else if (grain === "minute") date.setUTCMinutes(date.getUTCMinutes() + 1);
+  else if (grain === "hour") date.setUTCHours(date.getUTCHours() + 1);
+  else if (grain === "day") date.setUTCDate(date.getUTCDate() + 1);
+  else if (grain === "week") date.setUTCDate(date.getUTCDate() + 7);
+  else if (grain === "month") date.setUTCMonth(date.getUTCMonth() + 1);
+  else if (grain === "quarter") date.setUTCMonth(date.getUTCMonth() + 3);
+  else if (grain === "year") date.setUTCFullYear(date.getUTCFullYear() + 1);
+  return /^\d{4}-\d{2}-\d{2}$/.test(value) ? date.toISOString().slice(0, 10) : date.toISOString();
+}
+
+export function dashboardRangeFilter(dimension: string, range: DashboardRange): string {
+  const separator = dimension.lastIndexOf("__");
+  const grain = separator >= 0 ? dimension.slice(separator + 2) : "";
+  if (TIME_GRAINS.has(grain)) {
+    const baseDimension = dimension.slice(0, separator);
+    const exclusiveEnd = nextBucketStart(range.to, grain);
+    if (exclusiveEnd) {
+      return `${baseDimension} >= ${sqlLiteral(range.from)} AND ${baseDimension} < ${sqlLiteral(exclusiveEnd)}`;
+    }
+    return `${baseDimension} >= ${sqlLiteral(range.from)} AND ${baseDimension} <= ${sqlLiteral(range.to)}`;
+  }
+  return `${dimension} >= ${sqlLiteral(range.from)} AND ${dimension} <= ${sqlLiteral(range.to)}`;
+}
+
 export function dashboardStructuredQuery(
   document: DashboardDocument,
   chart: DashboardChart,
@@ -82,9 +116,7 @@ export function dashboardStructuredQuery(
     filters: [
       ...(chart.query.filters ?? []),
       ...filterExprs(filterState, { types }),
-      ...Object.entries(ranges).map(
-        ([dimension, range]) => `${dimension} >= ${sqlLiteral(range.from)} AND ${dimension} <= ${sqlLiteral(range.to)}`,
-      ),
+      ...Object.entries(ranges).map(([dimension, range]) => dashboardRangeFilter(dimension, range)),
     ],
     segments: chart.query.segments,
     orderBy: chart.query.order_by ?? chart.query.orderBy,

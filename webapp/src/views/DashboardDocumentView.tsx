@@ -16,6 +16,7 @@ import {
   brushableDashboardDimension,
   decodeDashboardState,
   dashboardCategorySeries,
+  dashboardDrillDimension,
   dashboardFilterValue,
   dashboardMetricRefs,
   dashboardResultColumn,
@@ -91,15 +92,14 @@ function ChartDetails({
   loading: boolean;
   onDrill: (dimension: string, value: string) => void;
 }) {
-  const dimensions = chart.query.dimensions ?? [];
   const tableColumns: Column[] = columns.map((column) => ({
     key: column,
     label: labelize(column),
     numeric: chart.query.metrics.some((metric) => dashboardResultColumn(metric, columns) === column),
   }));
-  const firstDrillDimension = dimensions[0];
+  const firstDrillDimension = dashboardDrillDimension(chart);
   const firstDrillColumn = firstDrillDimension ? dashboardResultColumn(firstDrillDimension, columns) : undefined;
-  const canDrill = firstDrillDimension ? selectableDashboardDimension(chart, firstDrillDimension) : false;
+  const canDrill = Boolean(firstDrillDimension);
 
   return (
     <div className="border-t border-line bg-surface-soft p-3" data-testid={`chart-details-${chart.id}`}>
@@ -158,7 +158,7 @@ function DashboardChartPanel({
   const types = useMemo(() => dimensionTypes(catalog), [catalog]);
   const request = useMemo(
     () => dashboardStructuredQuery(document, chart, state.filters, types, state.ranges),
-    [chart, document, state.filters, types],
+    [chart, document, state.filters, state.ranges, types],
   );
   const query = useQueryResult(backend, request);
   const rows = query.result?.rows ?? [];

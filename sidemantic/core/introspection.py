@@ -97,7 +97,7 @@ def _describe_model(
             for relationship in model.relationships
             if not enforce_visibility or visible_model_names is None or relationship.name in visible_model_names
         ],
-        "segments": [segment.name for segment in model.segments],
+        "segments": [segment.name for segment in model.segments if not enforce_visibility or segment.public],
     }
     if model_kind == "calculated_table":
         info["calculated_table"] = True

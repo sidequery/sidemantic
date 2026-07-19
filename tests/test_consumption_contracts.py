@@ -624,6 +624,8 @@ def test_visibility_enforcement_rejects_segments_on_private_models():
         model for model in TestClient(create_app(layer)).get("/graph").json()["models"] if model["name"] == "orders"
     )
     assert orders_graph["segments"] == ["public_orders"]
+    described_orders = next(model for model in layer.describe_models()["models"] if model["name"] == "orders")
+    assert described_orders["segments"] == ["public_orders"]
 
 
 def test_meta_api_exposes_consumption_contracts():
@@ -895,6 +897,25 @@ explore: sales {
     assert "WHERE region = 'West'" in sql
     assert "WHERE id > 0" in sql
     assert "orders_cte.customer_id = customers_cte.id" in sql
+
+
+def test_lookml_empty_fields_preserves_empty_contract_allowlists(tmp_path: Path):
+    source = tmp_path / "empty_fields.lkml"
+    source.write_text(
+        """
+view: orders {
+  sql_table_name: orders ;;
+  dimension: id { sql: ${TABLE}.id ;; }
+  measure: count { type: count }
+}
+explore: orders { fields: [] }
+""".strip()
+    )
+
+    explore = LookMLAdapter().parse(source).explores["orders"]
+
+    assert explore.allowed_dimensions == []
+    assert explore.allowed_metrics == []
 
 
 def test_metricflow_metric_ordering_is_preserved_but_not_executable(tmp_path: Path):

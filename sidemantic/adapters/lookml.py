@@ -4584,7 +4584,7 @@ class LookMLAdapter(BaseAdapter):
         allowed_dimensions: list[str] | None = None
         allowed_metrics: list[str] | None = None
         raw_fields = explore_def.get("fields")
-        if isinstance(raw_fields, list) and raw_fields:
+        if isinstance(raw_fields, list):
             candidate_dimensions: list[str] = []
             candidate_metrics: list[str] = []
             lossless = True

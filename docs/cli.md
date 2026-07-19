@@ -114,6 +114,7 @@ Public Sidemantic environment variables use the `SIDEMANTIC_` prefix:
 | `SIDEMANTIC_VERBOSE` | Enable verbose diagnostics when truthy |
 | `SIDEMANTIC_DEBUG` | Enable debug tracebacks when truthy |
 | `SIDEMANTIC_NO_COLOR` | Disable Sidemantic color when truthy |
+| `SIDEMANTIC_PAGER` | Pager command for long interactive reports |
 | `SIDEMANTIC_PG_PASSWORD_FILE` | PostgreSQL password credential file |
 | `SIDEMANTIC_API_AUTH_TOKEN_FILE` | HTTP API bearer-token credential file |
 
@@ -196,3 +197,15 @@ visible to other processes. Their values are registered for output redaction,
 and deprecation messages never contain the value. The flags will remain through
 the 0.x line and are eligible for removal in 1.0 after at least one documented
 release cycle. New command invocations should use credential files or stdin.
+
+## Terminal documentation and completion
+
+Use `sidemantic help [COMMAND]...` for nested offline help, or install the
+generated `sidemantic(1)` manual page from the wheel. Long human-readable
+reports support TTY-aware paging with `--pager`, `--no-pager`, and
+`SIDEMANTIC_PAGER`. Shell completion includes commands, semantic formats,
+project model names, dashboard specs, and relevant paths.
+
+See [terminal help, paging, and completion](terminal.md) for the complete
+contract. The [CLI deprecation policy](cli-deprecations.md) documents warning
+behavior, compatibility guarantees, replacements, and target removal releases.

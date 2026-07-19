@@ -2,10 +2,10 @@
 
 Two generators emit one shared output contract (see ``sidemantic-wasm/client.d.ts``):
 
-- :func:`generate_client_schema_ts` — the structured typed client (``sidemantic gen types``):
+- :func:`generate_client_schema_ts` — the structured typed client (``sidemantic generate types``):
   an ``as const`` schema of every model's dimensions/metrics with their TS scalar types,
   consumed by ``createClient`` for autocomplete + typed result rows.
-- :func:`generate_sql_types_ts` — sqlx-style typed semantic SQL (``sidemantic gen sql``):
+- :func:`generate_sql_types_ts` — sqlx-style typed semantic SQL (``sidemantic generate sql``):
   scans TypeScript sources for semantic-SQL literals, validates + types each via the query
   rewriter, and emits a ``GeneratedQueries`` interface keyed by the exact SQL string.
 
@@ -51,7 +51,7 @@ def _pg_to_ts(pg_type: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Structured typed client: `sidemantic gen types`
+# Structured typed client: `sidemantic generate types`
 # ---------------------------------------------------------------------------
 
 
@@ -103,7 +103,7 @@ def generate_client_schema_ts(layer, *, include_yaml: bool = True) -> str:
 
 
 # ---------------------------------------------------------------------------
-# sqlx-style typed semantic SQL: `sidemantic gen sql`
+# sqlx-style typed semantic SQL: `sidemantic generate sql`
 # ---------------------------------------------------------------------------
 
 

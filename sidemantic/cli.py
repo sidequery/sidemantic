@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 import click
@@ -16,14 +17,18 @@ from sidemantic.cli_contract import (
     InvocationError,
     cli_state,
     color_enabled,
+    configure_click_color,
     credential_file_from_env,
     emit_diagnostic,
     emit_error,
+    emit_guidance,
     emit_json,
+    emit_pending_deprecation,
     emit_records,
     emit_result,
     emit_warning,
     fail,
+    page_json_output,
     progress,
     read_sql_input,
     read_text_input,
@@ -31,6 +36,17 @@ from sidemantic.cli_contract import (
     resolve_output_format,
     resolve_secret,
     write_text_output,
+)
+from sidemantic.cli_polish import (
+    closest_command,
+    complete_dashboard_spec,
+    complete_model,
+    complete_path,
+    complete_source_format,
+    complete_target_format,
+    emit_deprecation,
+    emit_long_output,
+    emit_next_step,
 )
 from sidemantic.config import SidemanticConfig
 from sidemantic.project import ProjectContext, ProjectResolutionError
@@ -304,6 +320,9 @@ def main(
     no_color: bool | None = typer.Option(
         None, "--no-color", envvar="SIDEMANTIC_NO_COLOR", help="Disable terminal color"
     ),
+    pager: bool | None = typer.Option(
+        None, "--pager/--no-pager", help="Page long human-readable output when writing to a terminal"
+    ),
 ):
     """Sidemantic CLI.
 
@@ -329,6 +348,7 @@ def main(
         plain=bool(plain),
         plain_explicit=plain_explicit,
         color=color_enabled(no_color=bool(no_color)),
+        pager=pager,
     )
 
     # Help must remain available even when project configuration is malformed,
@@ -378,8 +398,9 @@ def main(
         plain=selected_plain,
         plain_explicit=plain_explicit,
         color=selected_color,
+        pager=pager,
     )
-    ctx.color = selected_color
+    configure_click_color(ctx, enabled=selected_color)
 
 
 @dashboard_app.callback()
@@ -392,6 +413,19 @@ def dashboard_main(ctx: typer.Context) -> None:
         raise InvocationError(f"dashboard {ctx.invoked_subcommand} does not support --format")
 
 
+def _emit_long_report(text: str) -> None:
+    """Emit a potentially long report under the shared terminal contract."""
+
+    state = cli_state()
+    emit_long_output(
+        text,
+        stream=sys.stdout,
+        human_output=state.human_extras,
+        pager_enabled=state.pager,
+        color=bool(state.color),
+    )
+
+
 @app.command("help", context_settings=CLI_CONTEXT_SETTINGS)
 def help_command(
     command: list[str] = typer.Argument(None, metavar="[COMMAND]...", help="Command or nested subcommand path"),
@@ -402,12 +436,22 @@ def help_command(
 
     current = get_command(app)
     context = click.Context(current, info_name="sidemantic")
-    for part in command or []:
+    for index, part in enumerate(command or []):
         if not isinstance(current, click.Group):
             raise InvocationError(f"{' '.join(command)} does not name a command")
         child = current.get_command(context, part)
         if child is None:
-            raise InvocationError(f"No such command path: {' '.join(command)}")
+            requested_path = " ".join(command)
+            suggestion = closest_command(part, current.list_commands(context))
+            if suggestion is None:
+                raise InvocationError(f"No such command path: {requested_path}")
+            corrected = [*(command or [])]
+            corrected[index] = suggestion
+            corrected_path = " ".join(corrected)
+            raise InvocationError(
+                f"No such command path: {requested_path}. Did you mean '{corrected_path}'? "
+                f"Run 'sidemantic help {corrected_path}' to review it."
+            )
         current = child
         context = click.Context(current, info_name=part, parent=context)
     emit_result(current.get_help(context))
@@ -436,7 +480,6 @@ def migrator(
         help="Generate model definitions from queries and write to this directory",
     ),
     json_output: bool = typer.Option(False, "--json", help="Emit the migration report as JSON"),
-    _warn_deprecated: bool = typer.Option(True, hidden=True),
 ):
     """
     Migrate SQL queries to semantic layer by generating model definitions.
@@ -454,9 +497,6 @@ def migrator(
     output_format = resolve_output_format(json_output=json_output)
     structured = json_output or cli_state().requested_format is not None or cli_state().plain
     verbose = verbose or cli_state().verbose
-
-    if _warn_deprecated:
-        emit_warning("`migrator` is deprecated; use `migrate generate` or `migrate check`")
 
     source_dialect = "duckdb"
 
@@ -695,7 +735,11 @@ def migrate_generate(
         verbose=False,
         generate_models=output or _project().root,
         json_output=json_output,
-        _warn_deprecated=False,
+    )
+    emit_next_step(
+        "migrate-generate",
+        human_output=cli_state().human_extras,
+        emit_diagnostic=emit_guidance,
     )
 
 
@@ -730,7 +774,11 @@ def migrate_check(
         verbose=verbose,
         generate_models=None,
         json_output=json_output,
-        _warn_deprecated=False,
+    )
+    emit_next_step(
+        "migrate-check",
+        human_output=cli_state().human_extras,
+        emit_diagnostic=emit_guidance,
     )
 
 
@@ -780,17 +828,21 @@ def info(
             emit_result("No models found")
             return
 
-        typer.echo(f"\nSemantic Layer: {directory}\n")
-
+        lines = [f"Semantic Layer: {directory}", ""]
         for model in models_payload:
-            typer.echo(f"● {model['name']}")
-            typer.echo(f"  Table: {model['table'] or 'N/A'}")
-            typer.echo(f"  Dimensions: {model['dimensions']}")
-            typer.echo(f"  Metrics: {model['metrics']}")
-            typer.echo(f"  Relationships: {model['relationships']}")
+            lines.extend(
+                [
+                    f"● {model['name']}",
+                    f"  Table: {model['table'] or 'N/A'}",
+                    f"  Dimensions: {model['dimensions']}",
+                    f"  Metrics: {model['metrics']}",
+                    f"  Relationships: {model['relationships']}",
+                ]
+            )
             if model["connected_to"]:
-                typer.echo(f"  Connected to: {', '.join(model['connected_to'])}")
-            typer.echo()
+                lines.append(f"  Connected to: {', '.join(model['connected_to'])}")
+            lines.append("")
+        _emit_long_report("\n".join(lines).rstrip())
 
     except typer.Exit:
         raise
@@ -820,11 +872,12 @@ def mcp_serve(
     through the Model Context Protocol.
 
     Examples:
-      sidemantic mcp-serve
-      sidemantic mcp-serve ./models --db data/warehouse.db
-      sidemantic mcp-serve --demo
-      sidemantic mcp-serve --apps --http --port 4100
+      sidemantic server mcp
+      sidemantic server mcp ./models --db data/warehouse.db
+      sidemantic server mcp --demo
+      sidemantic server mcp --apps --http --port 4100
     """
+    emit_pending_deprecation("mcp-serve")
     from sidemantic.mcp_server import initialize_layer, mcp
 
     if demo:
@@ -990,15 +1043,26 @@ def rewrite(
 
 @app.command(epilog=GROUP_EPILOG)
 def convert(
-    source: Path = typer.Argument(None, help="Semantic project, directory, or exact file to convert"),
+    source: Path = typer.Argument(
+        None,
+        help="Semantic project, directory, or exact file to convert",
+        autocompletion=complete_path,
+    ),
     output: Path = typer.Option(None, "--output", "-o", help="Destination file or directory"),
-    source_format: str = typer.Option("auto", "--from", help="Source format (default: auto-detect)"),
+    source_format: str = typer.Option(
+        "auto",
+        "--from",
+        help="Source format (default: auto-detect)",
+        autocompletion=complete_source_format,
+    ),
     source_extension: str = typer.Option(
         None,
         "--source-extension",
         help="File extension for stdin input when a format supports multiple syntaxes (for example, .sql)",
     ),
-    target_format: str = typer.Option("sidemantic", "--to", help="Destination format"),
+    target_format: str = typer.Option(
+        "sidemantic", "--to", help="Destination format", autocompletion=complete_target_format
+    ),
     force: bool = typer.Option(False, "--force", help="Allow writing to an existing destination"),
 ):
     """Convert semantic definitions through the shared format registry."""
@@ -1052,6 +1116,11 @@ def convert(
                 write_text_output("-", converted_output.read_text())
             else:
                 emit_diagnostic(f"Converted {len(graph.models)} model(s) to {target_format}: {output}")
+        emit_next_step(
+            "convert",
+            human_output=cli_state().human_extras and not output_to_stdout,
+            emit_diagnostic=emit_guidance,
+        )
     except typer.Exit:
         raise
     except Exception as e:
@@ -1108,7 +1177,6 @@ def export_native(
       sidemantic export-native ./models --output native.yml --validate-rust
     """
     try:
-        emit_warning("`export-native` is deprecated; use `convert --to sidemantic`")
         source = _models_path(source)
         from sidemantic.formats import convert_semantic_source
 
@@ -1210,7 +1278,11 @@ def query(
 
 @dashboard_app.command("validate", epilog=GROUP_EPILOG)
 def dashboard_validate(
-    spec: Path = typer.Argument(None, help="Dashboard YAML or JSON spec (defaults to the project dashboard)"),
+    spec: Path = typer.Argument(
+        None,
+        help="Dashboard YAML or JSON spec (defaults to the project dashboard)",
+        autocompletion=complete_dashboard_spec,
+    ),
     models: Path = typer.Option(None, "--models", "-m", help="Directory containing semantic layer files"),
     connection: str = typer.Option(
         None, "--connection", help="Database connection string (e.g., postgres://host/db, bigquery://project/dataset)"
@@ -1276,7 +1348,11 @@ def dashboard_validate(
 
 @dashboard_app.command("serve")
 def dashboard_serve(
-    spec: Path = typer.Argument(None, help="Dashboard YAML or JSON spec (defaults to the project dashboard)"),
+    spec: Path = typer.Argument(
+        None,
+        help="Dashboard YAML or JSON spec (defaults to the project dashboard)",
+        autocompletion=complete_dashboard_spec,
+    ),
     models: Path = typer.Option(None, "--models", "-m", help="Directory containing semantic layer files"),
     connection: str = typer.Option(
         None, "--connection", help="Database connection string (e.g., postgres://host/db, bigquery://project/dataset)"
@@ -1296,8 +1372,18 @@ def dashboard_serve(
         from sidemantic.dashboard import DashboardDocument
 
         spec = _dashboard_path(spec)
-        if output_dir is not None or warm_interaction_preaggregations:
-            emit_warning("the legacy crossfilter serve options are deprecated and ignored by the official UI")
+        if output_dir is not None:
+            emit_deprecation(
+                "dashboard serve --output-dir",
+                human_output=cli_state().human_extras,
+                emit_diagnostic=emit_warning,
+            )
+        if warm_interaction_preaggregations:
+            emit_deprecation(
+                "dashboard serve --warm-interaction-preaggregations",
+                human_output=cli_state().human_extras,
+                emit_diagnostic=emit_warning,
+            )
         with progress("Preparing dashboard server"):
             layer = _load_query_layer(
                 models,
@@ -1446,12 +1532,13 @@ def explain_sql_command(
     strict: bool = typer.Option(True, "--strict/--no-strict", help="Fail on unsupported semantic SQL"),
 ):
     """
-    Explain semantic SQL rewrite planning as JSON without executing the query.
+    Explain semantic SQL rewrite planning without executing the query.
 
     Examples:
-      sidemantic explain-sql "SELECT revenue FROM orders"
-      sidemantic explain-sql "SELECT * FROM (SELECT revenue, status FROM orders) sq WHERE status = 'completed'"
-      sidemantic explain-sql "SELECT revenue, status FROM orders" --use-preaggregations
+      sidemantic explain "SELECT revenue FROM orders"
+      sidemantic explain "SELECT * FROM (SELECT revenue, status FROM orders) sq WHERE status = 'completed'"
+      sidemantic explain "SELECT revenue, status FROM orders" --use-preaggregations
+      sidemantic explain "SELECT revenue FROM orders" --format json
     """
     try:
         state = cli_state()
@@ -1475,7 +1562,12 @@ def explain_sql_command(
             fallback=fallback,
         )
         explanation = layer.explain_sql(sql, strict=strict)
-        emit_json(explanation.to_dict())
+        payload = explanation.to_dict()
+        if cli_state().machine_output:
+            emit_json(payload)
+        else:
+            with page_json_output():
+                emit_json(payload)
 
     except typer.Exit:
         raise
@@ -1523,6 +1615,7 @@ def serve(
       sidemantic server postgres --demo
       sidemantic server postgres --username user --password-file .secrets/pg-password
     """
+    emit_pending_deprecation("serve")
     import logging
 
     try:
@@ -1710,6 +1803,7 @@ def api_serve(
       sidemantic server api --auth-token-file .secrets/api-token --cors-origin https://app.example.com
       sidemantic server api --demo
     """
+    emit_pending_deprecation("api-serve")
     try:
         from sidemantic.api_server import start_api_server, ui_static_dir
     except ImportError as e:
@@ -1856,6 +1950,7 @@ def tree(
     """
     Alias for 'workbench' command (deprecated).
     """
+    emit_pending_deprecation("tree")
     from sidemantic.workbench import WorkbenchDependencyError, run_workbench
 
     if not directory.exists():
@@ -1978,28 +2073,35 @@ def validate(
             raise typer.Exit(1)
         return
 
-    typer.echo(f"Validation Results: {directory}")
+    lines = [f"Validation Results: {directory}"]
 
     if report.errors:
-        typer.echo("Errors:")
+        lines.append("Errors:")
         for error in report.errors:
-            typer.echo(f"  - {error}")
+            lines.append(f"  - {error}")
 
     if report.warnings:
-        typer.echo("Warnings:")
+        lines.append("Warnings:")
         for warning in report.warnings:
-            typer.echo(f"  - {warning}")
+            lines.append(f"  - {warning}")
 
     if verbose or not (report.errors or report.warnings):
-        typer.echo("Info:")
+        lines.append("Info:")
         for item in report.info:
-            typer.echo(f"  - {item}")
+            lines.append(f"  - {item}")
+
+    _emit_long_report("\n".join(lines))
 
     if report.errors:
         typer.echo("Validation Failed", err=True)
         raise typer.Exit(1)
 
     typer.echo("Validation Passed")
+    emit_next_step(
+        "validate",
+        human_output=cli_state().human_extras,
+        emit_diagnostic=emit_guidance,
+    )
 
 
 @app.command()
@@ -2174,25 +2276,32 @@ def preagg_recommend(
             )
             raise typer.Exit(0)
 
-        # Print recommendations
-        typer.echo(f"\n{'=' * 80}")
-        typer.echo(f"Pre-Aggregation Recommendations (found {len(recommendations)})")
-        typer.echo(f"{'=' * 80}\n")
-
+        # Print recommendations as one report so terminal paging remains atomic.
+        lines = ["=" * 80, f"Pre-Aggregation Recommendations (found {len(recommendations)})", "=" * 80, ""]
         for i, rec in enumerate(recommendations, 1):
-            typer.echo(f"{i}. {rec.suggested_name}")
-            typer.echo(f"   Model: {rec.pattern.model}")
-            typer.echo(f"   Query Count: {rec.query_count}")
-            typer.echo(f"   Benefit Score: {rec.estimated_benefit_score:.2f}")
-            typer.echo(f"   Metrics: {', '.join(sorted(rec.pattern.metrics))}")
-            typer.echo(
-                f"   Dimensions: {', '.join(sorted(rec.pattern.dimensions)) if rec.pattern.dimensions else '(none)'}"
+            lines.extend(
+                [
+                    f"{i}. {rec.suggested_name}",
+                    f"   Model: {rec.pattern.model}",
+                    f"   Query Count: {rec.query_count}",
+                    f"   Benefit Score: {rec.estimated_benefit_score:.2f}",
+                    f"   Metrics: {', '.join(sorted(rec.pattern.metrics))}",
+                    "   Dimensions: "
+                    f"{', '.join(sorted(rec.pattern.dimensions)) if rec.pattern.dimensions else '(none)'}",
+                ]
             )
             if rec.pattern.granularities:
-                typer.echo(f"   Granularities: {', '.join(sorted(rec.pattern.granularities))}")
-            typer.echo()
+                lines.append(f"   Granularities: {', '.join(sorted(rec.pattern.granularities))}")
+            lines.append("")
+
+        _emit_long_report("\n".join(lines).rstrip())
 
         typer.echo("Run 'sidemantic preagg apply' to add these to your models", err=True)
+        emit_next_step(
+            "preagg-recommend",
+            human_output=cli_state().human_extras,
+            emit_diagnostic=emit_guidance,
+        )
 
     except typer.Exit:
         raise
@@ -2296,6 +2405,11 @@ def preagg_apply(
             emit_diagnostic("Remove --dry-run to apply changes")
         else:
             emit_diagnostic(f"✓ Added {result.added} pre-aggregations to model files")
+        emit_next_step(
+            "preagg-apply-dry-run" if dry_run else "preagg-apply",
+            human_output=cli_state().human_extras,
+            emit_diagnostic=emit_guidance,
+        )
         if result.skipped:
             emit_diagnostic(f"Skipped {result.skipped} already-present definitions")
 
@@ -2310,7 +2424,9 @@ def refresh(
     directory: Path = typer.Argument(
         None, help="Directory containing semantic layer files (defaults to project models)"
     ),
-    model: str = typer.Option(None, "--model", help="Only refresh pre-aggregations for this model"),
+    model: str = typer.Option(
+        None, "--model", help="Only refresh pre-aggregations for this model", autocompletion=complete_model
+    ),
     preagg: str = typer.Option(None, "--preagg", "-p", help="Only refresh this specific pre-aggregation"),
     mode: str = typer.Option("auto", "--mode", help="Refresh mode: auto, full, incremental, merge, or engine"),
     connection: str = typer.Option(

@@ -1,6 +1,12 @@
 """Pytest configuration and fixtures."""
 
+import os
+
 import pytest
+
+# Test captured output against Sidemantic's default policy even when the host
+# runner requests colored logs. Individual color tests opt back in explicitly.
+os.environ.pop("FORCE_COLOR", None)
 
 from sidemantic import SemanticLayer
 

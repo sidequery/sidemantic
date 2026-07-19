@@ -49,7 +49,7 @@ def get_layer() -> SemanticLayer:
     if _layer is None:
         raise RuntimeError(
             "Semantic layer not initialized. The MCP server must be started via "
-            "'sidemantic mcp-serve <directory>' which loads models before serving."
+            "'sidemantic server mcp <directory>' which loads models before serving."
         )
     return _layer
 

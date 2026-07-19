@@ -1,0 +1,674 @@
+.TH "SIDEMANTIC" "1" "" "Sidemantic 0.10.2" "User Commands"
+.SH NAME
+sidemantic \- SQL\-first semantic layer
+.SH SYNOPSIS
+.B
+sidemantic [OPTIONS] COMMAND [ARGS]...
+.SH DESCRIPTION
+.PP
+Sidemantic: SQL\-first semantic layer
+.SH OPTIONS
+.TP
+\fB\-\-version\fR
+Show version
+.TP
+\fB\-\-project, \-p PATH\fR
+Project root (defaults to discovery from cwd)
+.TP
+\fB\-\-config, \-c PATH\fR
+Path to config file (sidemantic.yaml)
+.TP
+\fB\-\-format table|csv|json|jsonl\fR
+Output format for structured results
+.TP
+\fB\-\-plain\fR
+Stable undecorated tabular output
+.TP
+\fB\-\-quiet, \-q\fR
+Suppress non\-essential status
+.TP
+\fB\-\-verbose, \-v\fR
+Show detailed diagnostics
+.TP
+\fB\-\-debug, \-d\fR
+Show tracebacks for unexpected errors
+.TP
+\fB\-\-no\-color\fR
+Disable terminal color
+.TP
+\fB\-\-pager, \-\-no\-pager\fR
+Page long human\-readable output when writing to a terminal
+.TP
+\fB\-\-install\-completion\fR
+Install completion for the current shell.
+.TP
+\fB\-\-show\-completion\fR
+Show completion for the current shell, to copy it or customize the installation.
+.SH "SIDEMANTIC HELP"
+.SS SYNOPSIS
+.B
+sidemantic help [[COMMAND]...]
+.SS DESCRIPTION
+.PP
+Show top\-level help or help for a command path.
+.SH "SIDEMANTIC INFO"
+.SS SYNOPSIS
+.B
+sidemantic info [OPTIONS] [[DIRECTORY]]
+.SS DESCRIPTION
+.PP
+Show quick info about the semantic layer.
+.PP
+Examples: sidemantic info sidemantic info ./models
+.SS OPTIONS
+.TP
+\fB\-\-json\fR
+Emit semantic\-layer metadata as JSON
+.SH "SIDEMANTIC REWRITE"
+.SS SYNOPSIS
+.B
+sidemantic rewrite [OPTIONS] SQL
+.SS DESCRIPTION
+.PP
+Rewrite semantic SQL to ordinary SQL without executing it.
+.PP
+Examples: sidemantic rewrite "SELECT orders.revenue FROM orders" \-\-models ./models sidemantic rewrite "SELECT orders.revenue FROM orders" \-\-models ./models \-\-engine rust
+.SS OPTIONS
+.TP
+\fB\-\-models, \-m PATH\fR
+Directory containing semantic layer files
+.TP
+\fB\-\-connection TEXT\fR
+Database connection string (sets SQL dialect)
+.TP
+\fB\-\-db PATH\fR
+Path to DuckDB database file
+.TP
+\fB\-\-engine TEXT\fR
+Runtime engine: python, rust, or auto
+.TP
+\fB\-\-fallback, \-\-no\-fallback\fR
+Allow Rust engine fallback to Python
+.TP
+\fB\-\-use\-preaggregations\fR
+Enable automatic pre\-aggregation routing
+.SH "SIDEMANTIC CONVERT"
+.SS SYNOPSIS
+.B
+sidemantic convert [OPTIONS] [[SOURCE]]
+.SS DESCRIPTION
+.PP
+Convert semantic definitions through the shared format registry.
+.SS OPTIONS
+.TP
+\fB\-\-output, \-o PATH\fR
+Destination file or directory
+.TP
+\fB\-\-from TEXT\fR
+Source format (default: auto\-detect)
+.TP
+\fB\-\-source\-extension TEXT\fR
+File extension for stdin input when a format supports multiple syntaxes (for example, .sql)
+.TP
+\fB\-\-to TEXT\fR
+Destination format
+.TP
+\fB\-\-force\fR
+Allow writing to an existing destination
+.SH "SIDEMANTIC QUERY"
+.SS SYNOPSIS
+.B
+sidemantic query [OPTIONS] SQL
+.SS DESCRIPTION
+.PP
+Execute a SQL query and output results as CSV.
+.PP
+Examples: sidemantic query "SELECT revenue FROM orders" sidemantic query "SELECT * FROM orders" \-\-output results.csv sidemantic query "SELECT * FROM orders" \-\-models ./models sidemantic query "SELECT revenue FROM orders" \-\-connection "postgres://localhost:5432/db" sidemantic query "SELECT revenue FROM orders" \-\-db data.duckdb sidemantic query "SELECT revenue FROM orders" \-\-dry\-run sidemantic query "SELECT revenue FROM orders" \-\-use\-preaggregations \-\-dry\-run
+.SS OPTIONS
+.TP
+\fB\-\-models, \-m PATH\fR
+Directory containing semantic layer files
+.TP
+\fB\-\-output, \-o PATH\fR
+Output file (default: stdout)
+.TP
+\fB\-\-connection TEXT\fR
+Database connection string (e.g., postgres://host/db, bigquery://project/dataset)
+.TP
+\fB\-\-db PATH\fR
+Path to DuckDB database file (shorthand for duckdb:/// connection)
+.TP
+\fB\-\-dry\-run\fR
+Show generated SQL without executing
+.TP
+\fB\-\-engine TEXT\fR
+Runtime engine: python, rust, or auto
+.TP
+\fB\-\-fallback, \-\-no\-fallback\fR
+Allow Rust engine fallback to Python
+.TP
+\fB\-\-use\-preaggregations\fR
+Enable automatic pre\-aggregation routing
+.SH "SIDEMANTIC EXPLAIN"
+.SS SYNOPSIS
+.B
+sidemantic explain [OPTIONS] SQL
+.SS DESCRIPTION
+.PP
+Explain semantic SQL rewrite planning without executing the query.
+.PP
+Examples: sidemantic explain "SELECT revenue FROM orders" sidemantic explain "SELECT * FROM (SELECT revenue, status FROM orders) sq WHERE status = 'completed'" sidemantic explain "SELECT revenue, status FROM orders" \-\-use\-preaggregations sidemantic explain "SELECT revenue FROM orders" \-\-format json
+.SS OPTIONS
+.TP
+\fB\-\-models, \-m PATH\fR
+Directory containing semantic layer files
+.TP
+\fB\-\-connection TEXT\fR
+Database connection string (e.g., postgres://host/db, bigquery://project/dataset)
+.TP
+\fB\-\-db PATH\fR
+Path to DuckDB database file (shorthand for duckdb:/// connection)
+.TP
+\fB\-\-use\-preaggregations\fR
+Enable automatic pre\-aggregation routing
+.TP
+\fB\-\-engine TEXT\fR
+Runtime engine: python, rust, or auto
+.TP
+\fB\-\-fallback, \-\-no\-fallback\fR
+Allow Rust engine fallback to Python
+.TP
+\fB\-\-strict, \-\-no\-strict\fR
+Fail on unsupported semantic SQL
+.SH "SIDEMANTIC VALIDATE"
+.SS SYNOPSIS
+.B
+sidemantic validate [OPTIONS] [[DIRECTORY]]
+.SS DESCRIPTION
+.PP
+Validate semantic layer definitions.
+.PP
+Shows errors, warnings, and optionally detailed info.
+.PP
+Examples: sidemantic validate sidemantic validate ./models \-\-verbose
+.SS OPTIONS
+.TP
+\fB\-\-verbose, \-v\fR
+Show detailed validation results
+.TP
+\fB\-\-engine TEXT\fR
+Runtime engine: python, rust, or auto
+.TP
+\fB\-\-fallback, \-\-no\-fallback\fR
+Allow Rust engine fallback to Python
+.TP
+\fB\-\-json\fR
+Emit the validation report as JSON
+.SH "SIDEMANTIC WORKBENCH"
+.SS SYNOPSIS
+.B
+sidemantic workbench [OPTIONS] [[DIRECTORY]]
+.SS DESCRIPTION
+.PP
+Interactive semantic layer workbench with SQL editor and charting.
+.PP
+Explore models, write SQL queries, and visualize results with interactive charts.
+.PP
+Examples: sidemantic workbench sidemantic workbench \-\-demo sidemantic workbench ./models \-\-db data/warehouse.db sidemantic workbench ./models \-\-connection "postgres://localhost:5432/db" uvx \-\-from 'sidemantic[workbench]' sidemantic workbench \-\-demo
+.SS OPTIONS
+.TP
+\fB\-\-demo\fR
+Launch with demo data (multi\-format example)
+.TP
+\fB\-\-connection TEXT\fR
+Database connection string (e.g., postgres://host/db, bigquery://project/dataset)
+.TP
+\fB\-\-db PATH\fR
+Path to DuckDB database file (shorthand for duckdb:/// connection)
+.SH "SIDEMANTIC LSP"
+.SS SYNOPSIS
+.B
+sidemantic lsp
+.SS DESCRIPTION
+.PP
+Start the LSP server for Sidemantic SQL dialect (.sql definition files).
+.PP
+This provides editor support for the Sidemantic SQL syntax (MODEL, DIMENSION, METRIC, RELATIONSHIP, SEGMENT statements). It does NOT provide general SQL language support.
+.PP
+Features: \- Autocompletion for MODEL, DIMENSION, METRIC, RELATIONSHIP, SEGMENT \- Context\-aware property suggestions (name, type, sql, agg, etc.) \- Validation errors from pydantic models \- Hover documentation for keywords and properties
+.PP
+Editor setup:
+.PP
+VS Code: Use a generic LSP client extension pointing to 'sidemantic lsp' Neovim: Add custom server config to nvim\-lspconfig
+.PP
+Examples: sidemantic lsp # Starts server on stdio
+.SH "SIDEMANTIC DASHBOARD"
+.SS SYNOPSIS
+.B
+sidemantic dashboard COMMAND [ARGS]...
+.SS DESCRIPTION
+.PP
+Serve, validate, and type semantic dashboard specs
+.SH "SIDEMANTIC DASHBOARD VALIDATE"
+.SS SYNOPSIS
+.B
+sidemantic dashboard validate [OPTIONS] [[SPEC]]
+.SS DESCRIPTION
+.PP
+Validate a semantic dashboard spec against loaded models.
+.SS OPTIONS
+.TP
+\fB\-\-models, \-m PATH\fR
+Directory containing semantic layer files
+.TP
+\fB\-\-connection TEXT\fR
+Database connection string (e.g., postgres://host/db, bigquery://project/dataset)
+.TP
+\fB\-\-db PATH\fR
+Path to DuckDB database file (shorthand for duckdb:/// connection)
+.TP
+\fB\-\-use\-preaggregations\fR
+Enable automatic pre\-aggregation routing while validating SQL
+.TP
+\fB\-\-json\fR
+Emit the validation report as JSON
+.SH "SIDEMANTIC DASHBOARD SERVE"
+.SS SYNOPSIS
+.B
+sidemantic dashboard serve [OPTIONS] [[SPEC]]
+.SS DESCRIPTION
+.PP
+Serve a dashboard spec in the official Sidemantic React UI.
+.SS OPTIONS
+.TP
+\fB\-\-models, \-m PATH\fR
+Directory containing semantic layer files
+.TP
+\fB\-\-connection TEXT\fR
+Database connection string (e.g., postgres://host/db, bigquery://project/dataset)
+.TP
+\fB\-\-db PATH\fR
+Path to DuckDB database file (shorthand for duckdb:/// connection)
+.TP
+\fB\-\-host, \-H TEXT\fR
+Host for dashboard server
+.TP
+\fB\-\-port, \-p INTEGER\fR
+Port for dashboard server
+.TP
+\fB\-\-use\-preaggregations\fR
+Enable automatic pre\-aggregation routing
+.SH "SIDEMANTIC DASHBOARD TYPES"
+.SS SYNOPSIS
+.B
+sidemantic dashboard types [OPTIONS]
+.SS DESCRIPTION
+.PP
+Generate TypeScript dashboard config types from the semantic layer.
+.SS OPTIONS
+.TP
+\fB\-\-models, \-m PATH\fR
+Directory containing semantic layer files
+.TP
+\fB\-\-out, \-\-output, \-o PATH\fR
+TypeScript output file; defaults to stdout
+.TP
+\fB\-\-schema\-name TEXT\fR
+Generated TypeScript schema export name
+.SH "SIDEMANTIC GENERATE"
+.SS SYNOPSIS
+.B
+sidemantic generate COMMAND [ARGS]...
+.SS DESCRIPTION
+.PP
+Generate typed TypeScript clients from the semantic layer
+.SH "SIDEMANTIC GENERATE CLIENT"
+.SS SYNOPSIS
+.B
+sidemantic generate client [OPTIONS]
+.SS DESCRIPTION
+.PP
+Generate a typed query\-client schema from the semantic layer.
+.PP
+Emits an `as const` schema (field types per model) for use with `createClient` from `sidemantic\-wasm/client`.
+.SS OPTIONS
+.TP
+\fB\-\-models, \-m PATH\fR
+Directory or file with semantic layer definitions
+.TP
+\fB\-\-out, \-\-output, \-o PATH\fR
+TypeScript output file; defaults to stdout
+.TP
+\fB\-\-no\-yaml\fR
+Omit the embedded SCHEMA_YAML constant
+.SH "SIDEMANTIC GENERATE SQL"
+.SS SYNOPSIS
+.B
+sidemantic generate sql [OPTIONS] [[SOURCES]...]
+.SS DESCRIPTION
+.PP
+Generate typed bindings for semantic SQL literals in TypeScript sources (sqlx\-style).
+.PP
+Emits a `GeneratedQueries` interface for use with `createSqlClient`. Each query is validated against the semantic layer (a bad reference fails the build). v1 limits: static string/template literals only (no `${}` interpolation); arbitrary SELECT expressions and min/max/derived metric value types are approximate.
+.SS OPTIONS
+.TP
+\fB\-\-models, \-m PATH\fR
+Directory or file with semantic layer definitions
+.TP
+\fB\-\-out, \-\-output, \-o PATH\fR
+TypeScript output file; defaults to stdout
+.TP
+\fB\-\-call TEXT\fR
+Call name whose first string\-literal argument is semantic SQL
+.SH "SIDEMANTIC MIGRATE"
+.SS SYNOPSIS
+.B
+sidemantic migrate COMMAND [ARGS]...
+.SS DESCRIPTION
+.PP
+Generate semantic models from SQL or check migration coverage
+.SH "SIDEMANTIC MIGRATE GENERATE"
+.SS SYNOPSIS
+.B
+sidemantic migrate generate [OPTIONS] [[QUERIES]]
+.SS DESCRIPTION
+.PP
+Generate models and rewritten queries from SQL or warehouse history.
+.SS OPTIONS
+.TP
+\fB\-\-output, \-o PATH\fR
+Output project root (defaults to current project)
+.TP
+\fB\-\-history\fR
+Generate from configured warehouse query history
+.TP
+\fB\-\-connection TEXT\fR
+Connection override for \-\-history
+.TP
+\fB\-\-days, \-d INTEGER\fR
+
+.TP
+\fB\-\-limit, \-l INTEGER\fR
+
+.TP
+\fB\-\-json\fR
+Emit the generation report as JSON
+.SH "SIDEMANTIC MIGRATE CHECK"
+.SS SYNOPSIS
+.B
+sidemantic migrate check [OPTIONS] [[QUERIES]]
+.SS DESCRIPTION
+.PP
+Check how well the project models cover existing SQL.
+.SS OPTIONS
+.TP
+\fB\-\-models, \-m PATH\fR
+Models override
+.TP
+\fB\-\-history\fR
+Check configured warehouse query history
+.TP
+\fB\-\-connection TEXT\fR
+Connection override for \-\-history
+.TP
+\fB\-\-days, \-d INTEGER\fR
+
+.TP
+\fB\-\-limit, \-l INTEGER\fR
+
+.TP
+\fB\-\-verbose, \-v\fR
+
+.TP
+\fB\-\-json\fR
+Emit the coverage report as JSON
+.SH "SIDEMANTIC SERVER"
+.SS SYNOPSIS
+.B
+sidemantic server COMMAND [ARGS]...
+.SS DESCRIPTION
+.PP
+Run Sidemantic API, PostgreSQL, or MCP servers
+.SH "SIDEMANTIC SERVER MCP"
+.SS SYNOPSIS
+.B
+sidemantic server mcp [OPTIONS] [[DIRECTORY]]
+.SS DESCRIPTION
+.PP
+Start an MCP server for the semantic layer.
+.PP
+Provides tools for listing models, getting model details, and running queries through the Model Context Protocol.
+.PP
+Examples: sidemantic server mcp sidemantic server mcp ./models \-\-db data/warehouse.db sidemantic server mcp \-\-demo sidemantic server mcp \-\-apps \-\-http \-\-port 4100
+.SS OPTIONS
+.TP
+\fB\-\-connection TEXT\fR
+Database connection string
+.TP
+\fB\-\-db PATH\fR
+Path to DuckDB database file (optional)
+.TP
+\fB\-\-init\-sql TEXT\fR
+SQL statements to run after connecting (e.g., LOAD httpfs)
+.TP
+\fB\-\-demo\fR
+Use demo data instead of a directory
+.TP
+\fB\-\-apps\fR
+Enable interactive UI widgets (requires mcp\-ui\-server)
+.TP
+\fB\-\-http\fR
+Use HTTP transport instead of stdio
+.TP
+\fB\-\-port, \-p INTEGER\fR
+Port for HTTP server
+.SH "SIDEMANTIC SERVER POSTGRES"
+.SS SYNOPSIS
+.B
+sidemantic server postgres [OPTIONS] [[DIRECTORY]]
+.SS DESCRIPTION
+.PP
+Start a PostgreSQL\-compatible server for the semantic layer.
+.PP
+Exposes your semantic layer over the PostgreSQL wire protocol, allowing you to connect with any PostgreSQL client (psql, DBeaver, Tableau, etc.).
+.PP
+Examples: sidemantic server postgres \-\-port 5433 sidemantic server postgres ./models \-\-db data/warehouse.db sidemantic server postgres \-\-connection "postgres://localhost:5432/analytics" sidemantic server postgres \-\-connection "bigquery://project/dataset" \-\-port 5433 sidemantic server postgres \-\-demo sidemantic server postgres \-\-username user \-\-password\-file .secrets/pg\-password
+.SS OPTIONS
+.TP
+\fB\-\-demo\fR
+Use demo data
+.TP
+\fB\-\-connection TEXT\fR
+Database connection string (e.g., postgres://host/db, bigquery://project/dataset)
+.TP
+\fB\-\-db PATH\fR
+Path to DuckDB database file (shorthand for duckdb:/// connection)
+.TP
+\fB\-\-host, \-H TEXT\fR
+Host/IP to bind to (overrides config, default 127.0.0.1)
+.TP
+\fB\-\-port, \-p INTEGER\fR
+Port to listen on (overrides config)
+.TP
+\fB\-\-username, \-u TEXT\fR
+Username for authentication (overrides config)
+.TP
+\fB\-\-password\-file PATH\fR
+Read the authentication password from a file, or \- for stdin
+.TP
+\fB\-\-user\-attrs\-file PATH\fR
+Path to a JSON file mapping usernames \-> user\-attribute dicts for row/access security
+.SH "SIDEMANTIC SERVER API"
+.SS SYNOPSIS
+.B
+sidemantic server api [OPTIONS] [[DIRECTORY]]
+.SS DESCRIPTION
+.PP
+Start an HTTP API server for the semantic layer.
+.PP
+Exposes semantic queries over JSON or Arrow IPC for remote clients.
+.PP
+Examples: sidemantic server api sidemantic server api ./models \-\-db data/warehouse.db sidemantic server api \-\-connection "postgres://localhost:5432/analytics" sidemantic server api \-\-auth\-token\-file .secrets/api\-token \-\-cors\-origin https://app.example.com sidemantic server api \-\-demo
+.SS OPTIONS
+.TP
+\fB\-\-demo\fR
+Use demo data
+.TP
+\fB\-\-connection TEXT\fR
+Database connection string (e.g., postgres://host/db, bigquery://project/dataset)
+.TP
+\fB\-\-db PATH\fR
+Path to DuckDB database file (shorthand for duckdb:/// connection)
+.TP
+\fB\-\-host, \-H TEXT\fR
+Host/IP to bind to (overrides config, default 127.0.0.1)
+.TP
+\fB\-\-port, \-p INTEGER\fR
+Port to listen on (overrides config)
+.TP
+\fB\-\-auth\-token\-file PATH\fR
+Read the API bearer token from a file, or \- for stdin
+.TP
+\fB\-\-cors\-origin TEXT\fR
+Allowed CORS origin (repeatable)
+.TP
+\fB\-\-max\-request\-body\-bytes INTEGER\fR
+Maximum request body size in bytes
+.TP
+\fB\-\-result\-cache\-mb INTEGER\fR
+Result cache size in MB (0 disables; default 0)
+.TP
+\fB\-\-result\-cache\-ttl FLOAT\fR
+Result cache entry TTL in seconds (default 60)
+.TP
+\fB\-\-require\-user\-attrs\fR
+Require the user\-attributes header on data endpoints (reject with 400 if missing)
+.TP
+\fB\-\-enforce\-visibility\fR
+Reject requests for non\-public dimensions/metrics
+.TP
+\fB\-\-user\-header TEXT\fR
+Trusted request header carrying JSON user attributes
+.TP
+\fB\-\-ui, \-\-no\-ui\fR
+Serve the embedded web UI at the root path
+.SH "SIDEMANTIC PREAGG"
+.SS SYNOPSIS
+.B
+sidemantic preagg COMMAND [ARGS]...
+.SS DESCRIPTION
+.PP
+Pre\-aggregation recommendation and management
+.SH "SIDEMANTIC PREAGG RECOMMEND"
+.SS SYNOPSIS
+.B
+sidemantic preagg recommend [OPTIONS]
+.SS DESCRIPTION
+.PP
+Show pre\-aggregation recommendations based on query patterns.
+.PP
+Examples: sidemantic preagg recommend \-\-connection "bigquery://project/dataset" sidemantic preagg recommend \-\-db data.db \-\-min\-count 50 \-\-top 10 sidemantic preagg recommend \-\-queries queries.sql \-\-min\-score 0.5
+.SS OPTIONS
+.TP
+\fB\-\-queries, \-q PATH\fR
+Path to file/folder with SQL queries
+.TP
+\fB\-\-connection TEXT\fR
+Database connection string to fetch query history
+.TP
+\fB\-\-db PATH\fR
+Path to DuckDB database file (shorthand for duckdb:/// connection)
+.TP
+\fB\-\-days, \-d INTEGER\fR
+Days of query history to fetch (default: 7)
+.TP
+\fB\-\-limit, \-l INTEGER\fR
+Max queries to analyze (default: 1000)
+.TP
+\fB\-\-min\-count INTEGER\fR
+Minimum query count for recommendation (default: 10)
+.TP
+\fB\-\-min\-score FLOAT\fR
+Minimum benefit score (0\-1, default: 0.3)
+.TP
+\fB\-\-top, \-n INTEGER\fR
+Show only top N recommendations
+.TP
+\fB\-\-json\fR
+Emit recommendations as JSON
+.SH "SIDEMANTIC PREAGG APPLY"
+.SS SYNOPSIS
+.B
+sidemantic preagg apply [OPTIONS] [[DIRECTORY]]
+.SS DESCRIPTION
+.PP
+Apply pre\-aggregation recommendations to model YAML files.
+.PP
+Analyzes query patterns and automatically adds pre\-aggregation definitions to model YAML files.
+.PP
+Examples: sidemantic preagg apply models/ \-\-connection "bigquery://project/dataset" sidemantic preagg apply models/ \-\-db data.db \-\-top 5 sidemantic preagg apply models/ \-\-queries queries.sql \-\-dry\-run
+.SS OPTIONS
+.TP
+\fB\-\-queries, \-q PATH\fR
+Path to file/folder with SQL queries
+.TP
+\fB\-\-connection TEXT\fR
+Database connection string to fetch query history
+.TP
+\fB\-\-db PATH\fR
+Path to DuckDB database file (shorthand for duckdb:/// connection)
+.TP
+\fB\-\-days, \-d INTEGER\fR
+Days of query history to fetch (default: 7)
+.TP
+\fB\-\-limit, \-l INTEGER\fR
+Max queries to analyze (default: 1000)
+.TP
+\fB\-\-min\-count INTEGER\fR
+Minimum query count for recommendation (default: 10)
+.TP
+\fB\-\-min\-score FLOAT\fR
+Minimum benefit score (0\-1, default: 0.3)
+.TP
+\fB\-\-top, \-n INTEGER\fR
+Apply only top N recommendations
+.TP
+\fB\-\-dry\-run\fR
+Show what would be added without writing files
+.TP
+\fB\-\-json\fR
+Emit the apply report as JSON
+.SH "SIDEMANTIC PREAGG REFRESH"
+.SS SYNOPSIS
+.B
+sidemantic preagg refresh [OPTIONS] [[DIRECTORY]]
+.SS DESCRIPTION
+.PP
+Refresh pre\-aggregation tables.
+.PP
+Generates materialization SQL for pre\-aggregations and executes refresh. Stateless: watermarks derived from existing tables. Use cron/Airflow for scheduling.
+.PP
+Examples: sidemantic preagg refresh models/ \-\-db data.db sidemantic preagg refresh models/ \-\-model orders \-\-mode full sidemantic preagg refresh models/ \-\-connection "postgres://localhost:5432/db"
+.SS OPTIONS
+.TP
+\fB\-\-model TEXT\fR
+Only refresh pre\-aggregations for this model
+.TP
+\fB\-\-preagg, \-p TEXT\fR
+Only refresh this specific pre\-aggregation
+.TP
+\fB\-\-mode TEXT\fR
+Refresh mode: auto, full, incremental, merge, or engine
+.TP
+\fB\-\-connection TEXT\fR
+Database connection string (e.g., postgres://host/db, bigquery://project/dataset)
+.TP
+\fB\-\-db PATH\fR
+Path to DuckDB database file (shorthand for duckdb:/// connection)
+.TP
+\fB\-\-json\fR
+Emit the refresh report as JSON
+.SH DOCUMENTATION
+https://sidemantic.com
+.SH REPORTING BUGS
+https://github.com/sidequery/sidemantic/issues

@@ -577,8 +577,10 @@ def test_lsp_command_calls_main(monkeypatch):
 def test_serve_calls_start_server(monkeypatch, tmp_path):
     ensure_fake_riffq()
     called = {}
+    events = []
 
     def fake_start_server(layer, host, port, username, password, user_attrs_map=None):
+        events.append("start")
         called["layer"] = layer
         called["host"] = host
         called["port"] = port
@@ -586,6 +588,7 @@ def test_serve_calls_start_server(monkeypatch, tmp_path):
         called["password"] = password
 
     monkeypatch.setattr("sidemantic.server.server.start_server", fake_start_server)
+    monkeypatch.setattr("sidemantic.cli_contract.emit_warning", lambda _message: events.append("warning"))
 
     _write_min_model(tmp_path)
     result = runner.invoke(app, ["serve", str(tmp_path), "--port", "5544", "--username", "u", "--password", "p"])
@@ -594,6 +597,8 @@ def test_serve_calls_start_server(monkeypatch, tmp_path):
     assert called["port"] == 5544
     assert called["username"] == "u"
     assert called["password"] == "p"
+    assert events[0] == "warning"
+    assert events[-1] == "start"
 
 
 def test_serve_missing_extra_prints_install_hint(monkeypatch, tmp_path):
@@ -743,6 +748,23 @@ def test_api_serve_calls_start_server(monkeypatch, tmp_path):
     assert called["dashboard"] is None
 
 
+def test_api_serve_legacy_warning_precedes_start_server(monkeypatch, tmp_path):
+    pytest.importorskip("fastapi")
+    events = []
+
+    def fake_start_api_server(_layer, **_kwargs):
+        events.append("start")
+
+    monkeypatch.setattr("sidemantic.api_server.start_api_server", fake_start_api_server)
+    monkeypatch.setattr("sidemantic.cli_contract.emit_warning", lambda _message: events.append("warning"))
+
+    _write_min_model(tmp_path)
+    result = runner.invoke(app, ["api-serve", str(tmp_path), "--no-ui"])
+
+    assert result.exit_code == 0, result.output
+    assert events == ["warning", "start"]
+
+
 def test_normalized_command_families_are_visible_and_legacy_aliases_are_hidden():
     root_help = runner.invoke(app, ["--help"])
 
@@ -768,19 +790,22 @@ def test_normalized_command_families_are_visible_and_legacy_aliases_are_hidden()
 
 
 def test_tree_alias_calls_workbench(monkeypatch, tmp_path):
-    pytest.importorskip("textual")
     called = {}
+    events = []
 
     def fake_run_workbench(directory):
+        events.append("start")
         called["directory"] = directory
 
     monkeypatch.setattr("sidemantic.workbench.run_workbench", fake_run_workbench)
+    monkeypatch.setattr("sidemantic.cli_contract.emit_warning", lambda _message: events.append("warning"))
 
     _write_min_model(tmp_path)
     result = runner.invoke(app, ["tree", str(tmp_path)])
 
     assert result.exit_code == 0
     assert called["directory"] == tmp_path
+    assert events == ["warning", "start"]
 
 
 def test_cli_source_uses_public_adapter():
@@ -797,6 +822,7 @@ def test_cli_source_uses_public_adapter():
 def test_mcp_serve_calls_initialize(monkeypatch, tmp_path):
     ensure_fake_mcp()
     called = {}
+    events = []
 
     def fake_initialize_layer(directory, db_path=None, connection=None, init_sql=None):
         called["directory"] = directory
@@ -805,10 +831,12 @@ def test_mcp_serve_calls_initialize(monkeypatch, tmp_path):
         called["init_sql"] = init_sql
 
     def fake_run(*args, **kwargs):
+        events.append("start")
         called["run"] = True
 
     monkeypatch.setattr("sidemantic.mcp_server.initialize_layer", fake_initialize_layer)
     monkeypatch.setattr("sidemantic.mcp_server.mcp.run", fake_run)
+    monkeypatch.setattr("sidemantic.cli_contract.emit_warning", lambda _message: events.append("warning"))
 
     tmp_path.mkdir(parents=True, exist_ok=True)
     result = runner.invoke(app, ["mcp-serve", str(tmp_path)])
@@ -817,6 +845,7 @@ def test_mcp_serve_calls_initialize(monkeypatch, tmp_path):
     assert called["directory"] == str(tmp_path)
     assert called["db_path"] is None
     assert called.get("run") is True
+    assert events == ["warning", "start"]
 
 
 def test_docker_entrypoint_does_not_use_eval():

@@ -7,7 +7,9 @@ Use Python to import external semantic formats, then export or normalize them in
 Export adapter output to the native contract with:
 
 ```bash
-sidemantic export-native ./adapter-project --output sidemantic.yml --validate-rust
+mkdir -p ./native-models
+sidemantic convert ./adapter-project --to sidemantic --output ./native-models/sidemantic.yml
+sidemantic validate ./native-models --engine rust
 ```
 
 ## Supported Inputs
@@ -33,8 +35,6 @@ Rust does not parse these source formats directly:
 - Rill
 - Malloy
 - Omni
-
-When `sidemantic export-native` receives a file path, it loads that file's parent directory before writing native YAML. This preserves adjacent directory context used by inherited models, sibling SQL definitions, and source metadata. Use a dedicated directory for single-file exports when you need a narrow output.
 - Superset
 - GoodData
 - Snowflake Cortex

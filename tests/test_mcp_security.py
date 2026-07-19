@@ -18,7 +18,7 @@ from tests.optional_dep_stubs import ensure_fake_mcp
 ensure_fake_mcp()
 
 from sidemantic.core.semantic_layer import SecurityError
-from sidemantic.mcp_server import get_user_attributes, initialize_layer, run_query
+from sidemantic.mcp_server import get_user_attributes, initialize_layer, run_query, run_sql
 
 
 def _write_secured_models(directory: Path) -> None:
@@ -71,3 +71,24 @@ def test_static_user_attributes_scope_rows():
     result = run_query(dimensions=["orders.tenant_id"], metrics=["orders.order_count"])
     tenants = {row["tenant_id"] for row in result["rows"]}
     assert tenants == {2}
+
+
+def test_run_sql_uses_static_user_attributes_and_scopes_rows():
+    tmpdir = Path(tempfile.mkdtemp())
+    _write_secured_models(tmpdir)
+    layer = initialize_layer(str(tmpdir), db_path=":memory:", user_attributes={"tenant_id": 1})
+    _seed(layer)
+
+    result = run_sql("SELECT tenant_id, order_count FROM orders")
+    assert result["rows"] == [{"tenant_id": 1, "order_count": 2}]
+
+
+def test_run_sql_denies_unproven_passthrough_when_security_active():
+    tmpdir = Path(tempfile.mkdtemp())
+    _write_secured_models(tmpdir)
+    layer = initialize_layer(str(tmpdir), db_path=":memory:", user_attributes={"tenant_id": 1})
+    _seed(layer)
+    layer.adapter.execute("create table audit_log (message varchar)")
+
+    with pytest.raises(SecurityError, match="non-semantic"):
+        run_sql("SELECT message FROM audit_log")

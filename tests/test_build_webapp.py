@@ -34,3 +34,15 @@ def test_directories_match_compares_paths_and_bytes(tmp_path: Path) -> None:
     (target / "assets" / "app.js").write_text("one", encoding="utf-8")
     (target / "extra.css").write_text("extra", encoding="utf-8")
     assert module.directories_match(source, target) is False
+
+
+def test_webapp_never_reads_or_persists_bearer_from_url() -> None:
+    root = Path(__file__).resolve().parents[1]
+    app_source = root.joinpath("webapp/src/App.tsx").read_text()
+    adapter_source = root.joinpath("webapp/src/data/httpAdapter.ts").read_text()
+
+    assert 'get("token")' not in app_source
+    assert "sidemantic-token" not in app_source
+    assert "localStorage" not in app_source
+    assert "createBrowserSession" in app_source
+    assert 'fetch(this.url("/auth/session")' in adapter_source

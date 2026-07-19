@@ -81,24 +81,29 @@ def start_server(
     # Register database
     server._server.register_database("sidemantic")
 
-    # First, register all actual database tables
-    tbls = layer.adapter.execute(
-        "SELECT table_schema, table_name FROM information_schema.tables "
-        "WHERE table_schema NOT IN ('pg_catalog', 'information_schema')"
-    ).fetchall()
+    from sidemantic.core.transport_security import controls_are_active
 
-    for schema_name, table_name in tbls:
-        server._server.register_schema("sidemantic", schema_name)
-        cols_info = layer.adapter.execute(
-            "SELECT column_name, data_type, is_nullable FROM information_schema.columns "
-            f"WHERE table_schema = {_sql_string_literal(schema_name)} "
-            f"AND table_name = {_sql_string_literal(table_name)}"
+    # Physical source catalogs can enumerate columns that semantic visibility
+    # intentionally hides. Register them only when no security control is active;
+    # policy-aware deployments expose the semantic catalog exclusively.
+    if not controls_are_active(layer):
+        tbls = layer.adapter.execute(
+            "SELECT table_schema, table_name FROM information_schema.tables "
+            "WHERE table_schema NOT IN ('pg_catalog', 'information_schema')"
         ).fetchall()
-        columns = []
-        for col_name, data_type, is_nullable in cols_info:
-            columns.append({col_name: {"type": map_type(data_type), "nullable": is_nullable.upper() == "YES"}})
-        server._server.register_table("sidemantic", schema_name, table_name, columns)
-        typer.echo(f"  Registered source table: {schema_name}.{table_name}", err=True)
+
+        for schema_name, table_name in tbls:
+            server._server.register_schema("sidemantic", schema_name)
+            cols_info = layer.adapter.execute(
+                "SELECT column_name, data_type, is_nullable FROM information_schema.columns "
+                f"WHERE table_schema = {_sql_string_literal(schema_name)} "
+                f"AND table_name = {_sql_string_literal(table_name)}"
+            ).fetchall()
+            columns = []
+            for col_name, data_type, is_nullable in cols_info:
+                columns.append({col_name: {"type": map_type(data_type), "nullable": is_nullable.upper() == "YES"}})
+            server._server.register_table("sidemantic", schema_name, table_name, columns)
+            typer.echo(f"  Registered source table: {schema_name}.{table_name}", err=True)
 
     # Register models as tables in the 'semantic_layer' schema
     server._server.register_schema("sidemantic", "semantic_layer")
@@ -108,6 +113,8 @@ def start_server(
 
         # Add dimensions
         for dim in model.dimensions:
+            if layer.enforce_visibility and not getattr(dim, "public", True):
+                continue
             # Map dimension type to SQL type
             if dim.type == "time":
                 sql_type = "timestamp"
@@ -122,6 +129,8 @@ def start_server(
 
         # Add metrics
         for metric in model.metrics:
+            if layer.enforce_visibility and not getattr(metric, "public", True):
+                continue
             # Metrics are typically numeric
             columns.append({metric.name: {"type": "numeric", "nullable": True}})
 

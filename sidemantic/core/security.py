@@ -58,6 +58,71 @@ class SecurityPolicy(BaseModel):
         return hash((self.access, tuple(self.row_filters)))
 
 
+def enforce_field_visibility(
+    graph,
+    metrics: list[str] | None,
+    dimensions: list[str] | None,
+    filters: list[str] | None = None,
+    order_by: list[str] | None = None,
+    segments: list[str] | None = None,
+) -> None:
+    """Reject every reference to a non-public semantic field.
+
+    This is shared by structured compilation and SQL-rewrite transports so
+    ``public: false`` cannot be bypassed by switching protocols or by using a
+    hidden field only as a filter/order oracle.
+    """
+    from sidemantic.core.semantic_layer import SecurityError
+
+    def field_is_public(model_name: str, field_name: str) -> bool:
+        model = graph.models.get(model_name)
+        if model is None:
+            return True
+        dimension = model.get_dimension(field_name)
+        if dimension is not None:
+            return dimension.public
+        metric = model.get_metric(field_name)
+        if metric is not None:
+            return metric.public
+        return True
+
+    for dimension_ref in dimensions or []:
+        ref = dimension_ref.rsplit("__", 1)[0] if "__" in dimension_ref else dimension_ref
+        if "." not in ref:
+            continue
+        model_name, field_name = ref.split(".", 1)
+        if not field_is_public(model_name, field_name):
+            raise SecurityError(f"Field '{model_name}.{field_name}' is not public")
+
+    for metric_ref in metrics or []:
+        if "." not in metric_ref:
+            metric = graph.metrics.get(metric_ref)
+            if metric is not None and not getattr(metric, "public", True):
+                raise SecurityError(f"Field '{metric_ref}' is not public")
+            continue
+        model_name, field_name = metric_ref.split(".", 1)
+        if not field_is_public(model_name, field_name):
+            raise SecurityError(f"Field '{model_name}.{field_name}' is not public")
+
+    for segment_ref in segments or []:
+        if "." not in segment_ref:
+            continue
+        model_name, segment_name = segment_ref.split(".", 1)
+        model = graph.models.get(model_name)
+        if model is None:
+            continue
+        segment = model.get_segment(segment_name) if hasattr(model, "get_segment") else None
+        if segment is not None and not getattr(segment, "public", True):
+            raise SecurityError(f"Segment '{model_name}.{segment_name}' is not public")
+
+    ref_pattern = re.compile(r"\b([A-Za-z_]\w*)\.([A-Za-z_]\w*)\b")
+    for raw in [*(filters or []), *(order_by or [])]:
+        for model_name, field_name in ref_pattern.findall(raw):
+            field_name = field_name.rsplit("__", 1)[0] if "__" in field_name else field_name
+            if not field_is_public(model_name, field_name):
+                raise SecurityError(f"Field '{model_name}.{field_name}' is not public")
+
+
 def _sql_literal(value) -> str:
     """Convert a value produced by a ``{{ }}`` output to a safe SQL literal string.
 

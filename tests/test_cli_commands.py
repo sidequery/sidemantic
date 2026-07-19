@@ -638,6 +638,23 @@ def test_serve_rejects_partial_auth(monkeypatch, tmp_path):
     assert "both --username and --password" in result.output
 
 
+def test_serve_rejects_user_attributes_without_authentication(monkeypatch, tmp_path):
+    ensure_fake_riffq()
+
+    def fake_start_server(*args, **kwargs):
+        raise AssertionError("start_server should not be called with an unauthenticated attribute map")
+
+    monkeypatch.setattr("sidemantic.server.server.start_server", fake_start_server)
+    _write_min_model(tmp_path)
+    attrs_file = tmp_path / "users.json"
+    attrs_file.write_text('{"analyst": {"tenant_id": 1}}')
+
+    result = runner.invoke(app, ["serve", str(tmp_path), "--user-attrs-file", str(attrs_file)])
+
+    assert result.exit_code == 2
+    assert "requires PostgreSQL username/password authentication" in result.output
+
+
 def test_serve_uses_loaded_config_defaults(monkeypatch, tmp_path):
     ensure_fake_riffq()
     called = {}
@@ -824,11 +841,20 @@ def test_mcp_serve_calls_initialize(monkeypatch, tmp_path):
     called = {}
     events = []
 
-    def fake_initialize_layer(directory, db_path=None, connection=None, init_sql=None):
+    def fake_initialize_layer(
+        directory,
+        db_path=None,
+        connection=None,
+        init_sql=None,
+        user_attributes=None,
+        enforce_visibility=False,
+    ):
         called["directory"] = directory
         called["db_path"] = db_path
         called["connection"] = connection
         called["init_sql"] = init_sql
+        called["user_attributes"] = user_attributes
+        called["enforce_visibility"] = enforce_visibility
 
     def fake_run(*args, **kwargs):
         events.append("start")
@@ -872,11 +898,20 @@ connection:
 """
     )
 
-    def fake_initialize_layer(directory, db_path=None, connection=None, init_sql=None):
+    def fake_initialize_layer(
+        directory,
+        db_path=None,
+        connection=None,
+        init_sql=None,
+        user_attributes=None,
+        enforce_visibility=False,
+    ):
         called["directory"] = directory
         called["db_path"] = db_path
         called["connection"] = connection
         called["init_sql"] = init_sql
+        called["user_attributes"] = user_attributes
+        called["enforce_visibility"] = enforce_visibility
 
     def fake_run(*args, **kwargs):
         called["transport"] = kwargs["transport"]

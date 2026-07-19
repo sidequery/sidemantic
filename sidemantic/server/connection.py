@@ -1,12 +1,10 @@
 """PostgreSQL wire protocol connection handler for semantic layer."""
 
 import logging
-import re
 
 import riffq
 
 from sidemantic.core.semantic_layer import SemanticLayer
-from sidemantic.sql.query_rewriter import QueryRewriter
 
 
 class SemanticLayerConnection(riffq.BaseConnection):
@@ -71,15 +69,22 @@ class SemanticLayerConnection(riffq.BaseConnection):
     def _handle_query(self, sql, callback, **kwargs):
         """Handle a SQL query."""
         try:
+            import sqlglot
+            from sqlglot import exp
+
             sql_lower = sql.lower().strip()
 
+            try:
+                statements = sqlglot.parse(sql, dialect=self.layer.dialect)
+            except Exception as exc:
+                raise ValueError(f"PostgreSQL wire refused invalid SQL: {exc}") from exc
+            if len(statements) != 1:
+                raise ValueError("PostgreSQL wire accepts exactly one read-only statement")
+            statement = statements[0]
+
             # Resolve per-session security attributes from the connecting user.
-            # NOTE: the PG path rewrites arbitrary SQL through QueryRewriter, which
-            # does not currently bake in row-level filters. When user attributes
-            # are configured we route the semantic-query path through
-            # ``layer.compile(user_attributes=...)`` so access gates and row
-            # filters are enforced; system/passthrough queries (SET, SHOW,
-            # information_schema, pg_catalog) are unaffected.
+            # The policy-aware semantic rewriter receives these attributes, so
+            # access gates and row filters match structured query transports.
             user_attributes = self._user_attributes()
 
             # Each executor thread gets its own cursor so concurrent reads do not
@@ -88,13 +93,23 @@ class SemanticLayerConnection(riffq.BaseConnection):
             # to a lock-guarded wrapper preserving today's behavior.
             cursor = self.layer.adapter.cursor()
 
-            # Check for DML commands first (before multi-statement check)
-            # These are often PostgreSQL session config and should just succeed
-            if sql_lower.startswith(("set ", "update ", "insert ", "delete ")):
+            # PostgreSQL clients commonly send session and transaction setup.
+            # Acknowledge those statements without forwarding them. SHOW is
+            # treated the same way because DuckDB cannot answer every PG setting.
+            safe_session_statement = isinstance(
+                statement,
+                (exp.Set, exp.Transaction, exp.Commit, exp.Rollback),
+            ) or sql_lower.startswith("show ")
+            if safe_session_statement:
                 result = cursor.execute("SELECT 1 as ok WHERE FALSE")
                 reader = result.fetch_record_batch()
                 self.send_reader(reader, callback)
                 return
+
+            if not isinstance(statement, exp.Query):
+                raise ValueError(
+                    "PostgreSQL wire queries are read-only; mutating, DDL, and command statements are not supported."
+                )
 
             # Try to handle PostgreSQL-specific system queries
             # Skip multi-statement queries to avoid response count mismatch
@@ -103,18 +118,10 @@ class SemanticLayerConnection(riffq.BaseConnection):
                 if handled:
                     return
 
-            # Enforce the coarse-grained access gate BEFORE rewriting. The raw SQL already
-            # names the semantic models, so we can deny deny-by-default (no attributes), a
-            # failing access gate, and any secured model with row_filters (which this SQL-first
-            # path cannot inject) here, before the rewriter's generator runs. Doing it first also
-            # lets an authorized user through: we then thread the attributes into the rewrite so
-            # the generator's deny-by-default does not re-reject an access-only secured model.
-            self._enforce_pg_access(sql, user_attributes)
-
-            # Execute through semantic layer
-            rewriter = QueryRewriter(self.layer.graph, dialect=self.layer.dialect)
-            # Use non-strict mode to pass through system queries (SHOW, SET, etc.)
-            rendered_sql = rewriter.rewrite(sql, strict=False, user_attributes=user_attributes)
+            # Rewrite through the same policy-aware generator used by structured
+            # transports. Under active controls, an unrecognized source read is
+            # rejected instead of being passed through to the underlying database.
+            rendered_sql = self._rewrite_query(sql, user_attributes)
 
             # Execute the query
             result = cursor.execute(rendered_sql)
@@ -129,54 +136,17 @@ class SemanticLayerConnection(riffq.BaseConnection):
             # Returning errors as data rows confuses BI tools that expect PG protocol errors.
             raise
 
-    def _enforce_pg_access(self, rendered_sql: str, user_attributes: dict | None) -> None:
-        """Enforce model access gates for the PG wire path.
+    def _rewrite_query(self, sql: str, user_attributes: dict | None) -> str:
+        """Apply the shared transport policy and return executable SQL."""
+        from sidemantic.core.transport_security import rewrite_transport_sql
 
-        Parses ``rendered_sql`` for referenced model names and, for any model with
-        a declared security policy, evaluates its access gate. A secured model
-        queried with no user attributes is denied (deny-by-default); a falsy access
-        gate is denied. Row-level filters are NOT applied here (see the caller's
-        LIMITATION note).
-
-        Raises:
-            SecurityError: If access to a touched secured model is denied.
-        """
-        from sidemantic.core.security import evaluate_access
-        from sidemantic.core.semantic_layer import SecurityError
-
-        secured = {
-            name: model
-            for name, model in self.layer.graph.models.items()
-            if getattr(model, "security", None) is not None
-        }
-        if not secured:
-            return
-
-        lowered = rendered_sql.lower()
-        for name, model in secured.items():
-            # Match the model name (and its underlying table) as a whole word so a
-            # substring of another identifier does not trigger a false positive.
-            candidates = {name.lower()}
-            if getattr(model, "table", None):
-                candidates.add(str(model.table).lower())
-            if not any(re.search(rf"\b{re.escape(c)}\b", lowered) for c in candidates):
-                continue
-            if user_attributes is None:
-                raise SecurityError(
-                    f"Model '{name}' has a security policy but no user attributes were provided "
-                    f"for this session. Configure the connecting user in --user-attrs-file."
-                )
-            if not evaluate_access(model.security.access, user_attributes):
-                raise SecurityError(f"Access to model '{name}' denied for the current user.")
-            # The SQL-first PG path cannot inject per-user row filters into the rewritten SQL,
-            # so a model with row_filters would otherwise return unfiltered rows to any user who
-            # passes the access gate. Deny it here (matching /sql, MCP run_sql, and .sql()).
-            if model.security.row_filters:
-                raise SecurityError(
-                    f"Model '{name}' has row-level filters that the SQL-first PostgreSQL path "
-                    "cannot apply. Query it through the structured HTTP /query API, which enforces "
-                    "row filters per user."
-                )
+        return rewrite_transport_sql(
+            self.layer,
+            sql,
+            user_attributes=user_attributes,
+            transport="PostgreSQL wire",
+            strict=False,
+        )
 
     def _try_handle_system_query(self, sql: str, sql_lower: str, callback, cursor) -> bool:
         """Try to handle PostgreSQL system queries. Returns True if handled."""
@@ -197,6 +167,8 @@ class SemanticLayerConnection(riffq.BaseConnection):
 
         # information_schema queries - include semantic layer tables
         if "information_schema.tables" in sql_lower:
+            from sidemantic.core.transport_security import controls_are_active
+
             schemas_tables = []
             for model_name in self.layer.graph.models.keys():
                 safe_name = model_name.replace("'", "''")
@@ -204,14 +176,20 @@ class SemanticLayerConnection(riffq.BaseConnection):
             if self.layer.graph.metrics:
                 schemas_tables.append("('semantic_layer', 'metrics')")
 
-            union_sql = f"""
-            SELECT table_schema, table_name, 'BASE TABLE' as table_type
-            FROM information_schema.tables
-            WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
-            UNION ALL
-            SELECT schema, table_name, 'BASE TABLE' as table_type
-            FROM (VALUES {", ".join(schemas_tables)}) AS t(schema, table_name)
-            """
+            semantic_catalog_sql = (
+                "SELECT schema, table_name, 'BASE TABLE' as table_type "
+                f"FROM (VALUES {', '.join(schemas_tables)}) AS t(schema, table_name)"
+            )
+            if controls_are_active(self.layer):
+                union_sql = semantic_catalog_sql
+            else:
+                union_sql = f"""
+                SELECT table_schema, table_name, 'BASE TABLE' as table_type
+                FROM information_schema.tables
+                WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
+                UNION ALL
+                {semantic_catalog_sql}
+                """
             result = cursor.execute(union_sql)
             reader = result.fetch_record_batch()
             self.send_reader(reader, callback)

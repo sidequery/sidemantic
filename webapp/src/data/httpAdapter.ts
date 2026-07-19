@@ -18,6 +18,8 @@ export type HttpAdapterOptions = {
   /** Max concurrent /query requests. The dashboard fan-out runs at most this many in parallel;
    *  the rest queue. Default 6. */
   maxConcurrency?: number;
+  /** Called whenever an authenticated request receives HTTP 401. */
+  onUnauthorized?: () => void;
 };
 
 /** Minimal bounded-concurrency gate: runs at most `max` tasks at once, queues the rest. */
@@ -60,10 +62,11 @@ function toRequestBody(query: StructuredQuery): Record<string, unknown> {
 
 export class HttpBackend implements SidemanticBackend {
   private readonly baseUrl: string;
-  private readonly token?: string;
+  private token?: string;
   private readonly transport: "json" | "arrow";
   private readonly usePreaggregations: boolean;
   private readonly gate: Semaphore;
+  private readonly onUnauthorized?: () => void;
 
   constructor(options: HttpAdapterOptions = {}) {
     this.baseUrl = (options.baseUrl ?? "").replace(/\/$/, "");
@@ -71,6 +74,7 @@ export class HttpBackend implements SidemanticBackend {
     this.transport = options.transport ?? "json";
     this.usePreaggregations = options.usePreaggregations ?? true;
     this.gate = new Semaphore(options.maxConcurrency ?? 6);
+    this.onUnauthorized = options.onUnauthorized;
   }
 
   /** Apply the adapter-wide pre-agg default unless the query overrides it. */
@@ -89,12 +93,13 @@ export class HttpBackend implements SidemanticBackend {
   }
 
   private async getJson<T>(path: string): Promise<T> {
-    const res = await fetch(this.url(path), { headers: this.headers() });
+    const res = await fetch(this.url(path), { headers: this.headers(), credentials: "same-origin" });
     if (!res.ok) throw new Error(await this.errorText(res, path));
     return (await res.json()) as T;
   }
 
   private async errorText(res: Response, path: string): Promise<string> {
+    if (res.status === 401) this.onUnauthorized?.();
     let detail = "";
     try {
       const body = await res.json();
@@ -107,7 +112,7 @@ export class HttpBackend implements SidemanticBackend {
 
   async health(): Promise<boolean> {
     try {
-      const res = await fetch(this.url("/health"), { headers: this.headers() });
+      const res = await fetch(this.url("/health"), { headers: this.headers(), credentials: "same-origin" });
       return res.ok;
     } catch {
       return false;
@@ -118,7 +123,10 @@ export class HttpBackend implements SidemanticBackend {
     // Prefer the rich /describe payload; gracefully fall back to /graph (names only) so the UI
     // still works against a backend that hasn't exposed /describe yet.
     try {
-      const res = await fetch(this.url("/describe"), { headers: this.headers() });
+      const res = await fetch(this.url("/describe"), {
+        headers: this.headers(),
+        credentials: "same-origin",
+      });
       if (res.ok) {
         const catalog = buildCatalogFromDescribe(await res.json());
         try {
@@ -138,6 +146,7 @@ export class HttpBackend implements SidemanticBackend {
     const res = await fetch(this.url("/compile"), {
       method: "POST",
       headers: this.headers({ "Content-Type": "application/json" }),
+      credentials: "same-origin",
       body: JSON.stringify(this.body(query)),
     });
     if (!res.ok) throw new Error(await this.errorText(res, "/compile"));
@@ -153,6 +162,7 @@ export class HttpBackend implements SidemanticBackend {
     const res = await fetch(this.url("/query"), {
       method: "POST",
       headers: this.headers({ "Content-Type": "application/json" }),
+      credentials: "same-origin",
       body: JSON.stringify(this.body(query)),
     });
     if (!res.ok) throw new Error(await this.errorText(res, "/query"));
@@ -166,6 +176,7 @@ export class HttpBackend implements SidemanticBackend {
     const res = await fetch(this.url("/query?format=arrow"), {
       method: "POST",
       headers: this.headers({ "Content-Type": "application/json", Accept: ARROW_MEDIA_TYPE }),
+      credentials: "same-origin",
       body: JSON.stringify(this.body(query)),
     });
     if (!res.ok) throw new Error(await this.errorText(res, "/query"));
@@ -173,5 +184,21 @@ export class HttpBackend implements SidemanticBackend {
     const { columns, rows } = decodeArrow(bytes);
     const sql = res.headers.get("X-Sidemantic-Sql") ?? "";
     return { columns, rows, rowCount: rows.length, sql };
+  }
+
+  /** Exchange a long-lived API bearer for a short-lived, HttpOnly same-origin session. */
+  async createBrowserSession(token: string): Promise<void> {
+    const res = await fetch(this.url("/auth/session"), {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      credentials: "same-origin",
+    });
+    if (res.status === 404 || (res.ok && !res.headers.get("content-type")?.includes("application/json"))) {
+      // Backends without the exchange endpoint (currently the Rust server) keep
+      // the bearer only in this adapter instance until the page is reloaded.
+      this.token = token;
+      return;
+    }
+    if (!res.ok) throw new Error(await this.errorText(res, "/auth/session"));
   }
 }

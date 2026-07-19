@@ -27,6 +27,7 @@ def initialize_layer(
     connection: str | None = None,
     init_sql: list[str] | None = None,
     user_attributes: dict | None = None,
+    enforce_visibility: bool = False,
 ) -> SemanticLayer:
     """Initialize the semantic layer with models from directory."""
     global _layer, _user_attributes
@@ -38,7 +39,11 @@ def initialize_layer(
         else:
             connection = f"duckdb:///{Path(db_path).absolute()}"
 
-    _layer = SemanticLayer(connection=connection, init_sql=init_sql)
+    _layer = SemanticLayer(
+        connection=connection,
+        init_sql=init_sql,
+        enforce_visibility=enforce_visibility,
+    )
     load_from_directory(_layer, directory)
     _user_attributes = user_attributes
     return _layer
@@ -225,6 +230,8 @@ def get_models(model_names: list[str]) -> dict[str, Any]:
         # Get dimension details (enriched)
         dims = []
         for dim in model.dimensions:
+            if layer.enforce_visibility and not getattr(dim, "public", True):
+                continue
             dim_info: dict[str, Any] = {
                 "name": dim.name,
                 "type": dim.type,
@@ -252,6 +259,8 @@ def get_models(model_names: list[str]) -> dict[str, Any]:
         # Get metric details (enriched)
         metrics = []
         for metric in model.metrics:
+            if layer.enforce_visibility and not getattr(metric, "public", True):
+                continue
             metric_info: dict[str, Any] = {
                 "name": metric.name,
                 "sql": metric.sql,
@@ -303,6 +312,8 @@ def get_models(model_names: list[str]) -> dict[str, Any]:
         # Get segment details
         segments = []
         for seg in model.segments:
+            if layer.enforce_visibility and not getattr(seg, "public", True):
+                continue
             seg_info: dict[str, Any] = {
                 "name": seg.name,
                 "sql": seg.sql,
@@ -607,20 +618,15 @@ def run_sql(query: str) -> dict[str, Any]:
         rows: Result rows as list of dicts
         row_count: Number of rows returned
     """
-    from sidemantic.sql.query_rewriter import QueryRewriter
+    from sidemantic.core.transport_security import rewrite_transport_sql
 
     layer = get_layer()
-    # This SQL-first path cannot apply per-user row filters (QueryRewriter does not
-    # accept user_attributes). Rather than return unscoped rows for a secured model,
-    # refuse this tool when any model declares a security policy -- mirroring the HTTP
-    # /sql endpoint. Use the structured run_query tool, which enforces access + filters.
-    if any(getattr(model, "security", None) is not None for model in layer.graph.models.values()):
-        raise ValueError(
-            "run_sql is disabled because a model declares a security policy; it cannot apply "
-            "row-level security. Use run_query (structured), which enforces access gates and row filters."
-        )
-    rewriter = QueryRewriter(layer.graph, dialect=layer.dialect)
-    rewritten_sql = rewriter.rewrite(query)
+    rewritten_sql = rewrite_transport_sql(
+        layer,
+        query,
+        user_attributes=get_user_attributes(),
+        transport="MCP run_sql",
+    )
 
     result = layer.adapter.execute(rewritten_sql)
     rows = result.fetchall()
@@ -659,6 +665,11 @@ def validate_query(
 
     layer = get_layer()
 
+    if layer.enforce_visibility:
+        from sidemantic.core.security import enforce_field_visibility
+
+        enforce_field_visibility(layer.graph, metrics, dimensions)
+
     errors = _validate_query(
         metrics=metrics or [],
         dimensions=dimensions or [],
@@ -693,14 +704,15 @@ def get_semantic_graph() -> dict[str, Any]:
         model_info: dict[str, Any] = {
             "name": model_name,
             "table": model.table,
-            "dimensions": [d.name for d in model.dimensions],
-            "metrics": [m.name for m in model.metrics],
+            "dimensions": [d.name for d in model.dimensions if not layer.enforce_visibility or d.public],
+            "metrics": [m.name for m in model.metrics if not layer.enforce_visibility or m.public],
             "relationships": [{"name": r.name, "type": r.type} for r in model.relationships],
         }
         if model.description:
             model_info["description"] = model.description
-        if model.segments:
-            model_info["segments"] = [s.name for s in model.segments]
+        visible_segments = [s.name for s in model.segments if not layer.enforce_visibility or s.public]
+        if visible_segments:
+            model_info["segments"] = visible_segments
         if model.primary_key:
             model_info["primary_key"] = model.primary_key
         if model.default_time_dimension:
@@ -710,6 +722,8 @@ def get_semantic_graph() -> dict[str, Any]:
     # Graph-level metrics
     graph_metrics = []
     for metric_name, metric in graph.metrics.items():
+        if layer.enforce_visibility and not getattr(metric, "public", True):
+            continue
         metric_info: dict[str, Any] = {
             "name": metric_name,
         }

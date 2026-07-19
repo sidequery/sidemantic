@@ -99,7 +99,7 @@ def test_handle_system_queries():
     assert isinstance(captured["reader"], pa.RecordBatchReader)
 
 
-def test_dml_passthrough():
+def test_session_set_is_acknowledged_but_dml_is_denied():
     pytest.importorskip("riffq")
     pytest.importorskip("pyarrow")
     from sidemantic.server.connection import SemanticLayerConnection
@@ -118,6 +118,12 @@ def test_dml_passthrough():
     conn._handle_query("SET search_path TO public", lambda *_: None)
 
     assert "reader" in captured
+    with pytest.raises(ValueError, match="read-only"):
+        conn._handle_query("DELETE FROM orders", lambda *_: None)
+    with pytest.raises(ValueError, match="read-only"):
+        conn._handle_query("CREATE TABLE bypass (secret varchar)", lambda *_: None)
+    with pytest.raises(ValueError, match="exactly one"):
+        conn._handle_query("SELECT 1; DELETE FROM orders", lambda *_: None)
 
 
 def test_query_error_raises_exception():
@@ -170,8 +176,8 @@ def test_user_attributes_lookup_by_session_user():
     assert conn._user_attributes() is None
 
 
-def test_enforce_pg_access_denies_secured_model_without_attrs():
-    """A secured model touched with no user attributes is denied."""
+def test_pg_rewrite_enforces_access_and_preserves_safe_queries():
+    """The PostgreSQL rewrite applies access gates and deny-by-default."""
     pytest.importorskip("riffq")
     pytest.importorskip("pyarrow")
 
@@ -196,14 +202,15 @@ def test_enforce_pg_access_denies_secured_model_without_attrs():
 
     # No attributes for a secured model -> denied.
     with pytest.raises(SecurityError):
-        conn._enforce_pg_access("SELECT * FROM orders", None)
+        conn._rewrite_query("SELECT * FROM orders", None)
 
     # Non-admin -> access gate falsy -> denied.
     with pytest.raises(SecurityError):
-        conn._enforce_pg_access("SELECT * FROM orders", {"role": "viewer"})
+        conn._rewrite_query("SELECT * FROM orders", {"role": "viewer"})
 
-    # Admin -> allowed (no raise).
-    conn._enforce_pg_access("SELECT * FROM orders", {"role": "admin"})
+    # Admin -> semantically rewritten.
+    rewritten = conn._rewrite_query("SELECT * FROM orders", {"role": "admin"})
+    assert "-- sidemantic:" in rewritten
 
     # A query not touching the secured model is unaffected.
-    conn._enforce_pg_access("SELECT 1", None)
+    assert conn._rewrite_query("SELECT 1", None) == "SELECT 1"

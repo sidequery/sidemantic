@@ -112,18 +112,26 @@ class _SemanticIslandRewrite:
 class QueryRewriter:
     """Rewrites user SQL queries to use the semantic layer."""
 
-    def __init__(self, graph: SemanticGraph, dialect: str = "duckdb", use_preaggregations: bool = False):
+    def __init__(
+        self,
+        graph: SemanticGraph,
+        dialect: str = "duckdb",
+        use_preaggregations: bool = False,
+        enforce_visibility: bool = False,
+    ):
         """Initialize query rewriter.
 
         Args:
             graph: Semantic graph with models and metrics
             dialect: SQL dialect for parsing/generation
             use_preaggregations: Enable single-model pre-aggregation routing
+            enforce_visibility: Reject semantic references to fields declared ``public: false``
         """
         self.graph = graph
         self.dialect = dialect
         self.use_preaggregations = use_preaggregations
-        self.generator = SQLGenerator(graph, dialect=dialect)
+        self.generator = SQLGenerator(graph, dialect=dialect, enforce_visibility=enforce_visibility)
+        self.enforce_visibility = enforce_visibility
         self._dialect_instance = self.generator._dialect_instance
         self._rewrite_cache: dict[tuple[object, ...], str] = {}
         self._rewrite_cache_limit = 256
@@ -153,9 +161,8 @@ class QueryRewriter:
             strict: If True, raise errors for invalid SQL or non-SELECT queries.
                    If False, pass through queries that can't be rewritten.
             user_attributes: Optional per-user security attributes threaded into the underlying
-                SQL generation so access gates / deny-by-default are evaluated against the caller.
-                The SQL-first path cannot inject row filters, so callers that require row-level
-                security must deny secured models with row filters before invoking the rewriter.
+                SQL generation so access gates, deny-by-default, and row filters are evaluated
+                against the caller.
 
         Returns:
             Rewritten SQL using semantic layer

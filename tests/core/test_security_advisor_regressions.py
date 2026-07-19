@@ -165,8 +165,7 @@ def test_visibility_allows_public_fields():
 
 
 def test_sql_first_path_denied_for_secured_model():
-    """P1: SemanticLayer.sql() (SQL-first, used by the CLI) cannot scope rows, so it must
-    refuse when any model declares a security policy rather than returning unfiltered rows."""
+    """SemanticLayer.sql() denies missing context and scopes rows when context is supplied."""
     layer = SemanticLayer()
     con = layer.adapter.conn
     con.execute("CREATE TABLE t (tenant INTEGER, v INTEGER)")
@@ -181,8 +180,11 @@ def test_sql_first_path_denied_for_secured_model():
             security=SecurityPolicy(row_filters=["tenant = {{ user.tenant }}"]),
         )
     )
-    with pytest.raises(SecurityError, match="sql"):
+    with pytest.raises(SecurityError, match="user_attributes"):
         layer.sql("SELECT total FROM t")
+
+    result = layer.sql("SELECT total FROM t", user_attributes={"tenant": 1})
+    assert result.fetchone() == (10,)
 
 
 def test_row_filter_boolean_control_flow_preserves_truthiness():

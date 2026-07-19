@@ -108,6 +108,7 @@ class SQLGenerator:
         preagg_schema: str | None = None,
         timezone: str | None = None,
         allow_non_additive_unsafe: bool = False,
+        enforce_visibility: bool = False,
     ):
         """Initialize SQL generator.
 
@@ -123,12 +124,14 @@ class SQLGenerator:
                 over ALL snapshots (over-aggregated, wrong results). By default the generator
                 implements semi-additive handling (QUALIFY last/first snapshot per group);
                 this flag opts back into the old, naive behavior explicitly (default: False)
+            enforce_visibility: Reject references to fields declared ``public: false``
         """
         self.graph = graph
         self.dialect = dialect
         self.preagg_database = preagg_database
         self.preagg_schema = preagg_schema
         self.allow_non_additive_unsafe = allow_non_additive_unsafe
+        self.enforce_visibility = enforce_visibility
         # The timezone is interpolated into SQL string literals (AT TIME ZONE '...', etc.),
         # so it must not contain quote/escape characters. Restrict to IANA-name characters
         # to prevent SQL injection from a request- or preference-supplied value; the database
@@ -992,6 +995,18 @@ class SQLGenerator:
         segments = segments or []
         parameters = parameters or {}
         aliases = aliases or {}
+
+        if self.enforce_visibility:
+            from sidemantic.core.security import enforce_field_visibility
+
+            enforce_field_visibility(
+                self.graph,
+                metrics,
+                dimensions,
+                filters,
+                order_by,
+                segments,
+            )
 
         # Semi-additive (non_additive_dimension) metrics are handled below by injecting
         # a QUALIFY into the owning model's CTE (see _plan_semi_additive / _build_model_cte).

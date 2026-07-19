@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -864,6 +865,16 @@ def mcp_serve(
     apps: bool = typer.Option(False, "--apps", help="Enable interactive UI widgets (requires mcp-ui-server)"),
     http: bool = typer.Option(False, "--http", help="Use HTTP transport instead of stdio"),
     port: int = typer.Option(4100, "--port", "-p", help="Port for HTTP server"),
+    user_attrs_file: Path = typer.Option(
+        None,
+        "--user-attrs-file",
+        help="Path to a JSON user-attributes object applied to every MCP query",
+    ),
+    enforce_visibility: bool = typer.Option(
+        False,
+        "--enforce-visibility",
+        help="Hide and reject fields declared public: false",
+    ),
 ):
     """
     Start an MCP server for the semantic layer.
@@ -915,9 +926,26 @@ def mcp_serve(
             effective_init_sql = resolved_connection.init_sql
 
     try:
+        user_attributes = None
+        if user_attrs_file is not None:
+            if not user_attrs_file.exists():
+                raise InvocationError(f"user-attrs file {user_attrs_file} does not exist")
+            try:
+                user_attributes = json.loads(user_attrs_file.read_text())
+            except json.JSONDecodeError as exc:
+                raise InvocationError(f"failed to parse user-attrs file {user_attrs_file}: {exc}") from exc
+            if not isinstance(user_attributes, dict):
+                raise InvocationError(f"user-attrs file {user_attrs_file} must contain a JSON object")
+
         # Initialize the semantic layer
         with progress("Initializing MCP server"):
-            initialize_layer(str(directory), connection=connection_str, init_sql=effective_init_sql)
+            initialize_layer(
+                str(directory),
+                connection=connection_str,
+                init_sql=effective_init_sql,
+                user_attributes=user_attributes,
+                enforce_visibility=enforce_visibility,
+            )
 
         # If demo mode, populate with demo data
         if demo:
@@ -1600,6 +1628,11 @@ def serve(
         "--user-attrs-file",
         help="Path to a JSON file mapping usernames -> user-attribute dicts for row/access security",
     ),
+    enforce_visibility: bool = typer.Option(
+        False,
+        "--enforce-visibility",
+        help="Hide and reject fields declared public: false",
+    ),
 ):
     """
     Start a PostgreSQL-compatible server for the semantic layer.
@@ -1675,9 +1708,18 @@ def serve(
     preagg_db = _loaded_config.preagg_database if _loaded_config else None
     preagg_sch = _loaded_config.preagg_schema if _loaded_config else None
     if connection_str:
-        layer = SemanticLayer(connection=connection_str, preagg_database=preagg_db, preagg_schema=preagg_sch)
+        layer = SemanticLayer(
+            connection=connection_str,
+            preagg_database=preagg_db,
+            preagg_schema=preagg_sch,
+            enforce_visibility=enforce_visibility,
+        )
     else:
-        layer = SemanticLayer(preagg_database=preagg_db, preagg_schema=preagg_sch)
+        layer = SemanticLayer(
+            preagg_database=preagg_db,
+            preagg_schema=preagg_sch,
+            enforce_visibility=enforce_visibility,
+        )
 
     # Load models
     with progress("Preparing PostgreSQL server"):
@@ -1723,6 +1765,11 @@ def serve(
     if user_attrs_file is not None:
         import json
 
+        if username_resolved is None or password_resolved is None:
+            raise InvocationError(
+                "--user-attrs-file requires PostgreSQL username/password authentication; "
+                "otherwise clients could select another user's security attributes"
+            )
         if not user_attrs_file.exists():
             raise InvocationError(f"user-attrs file {user_attrs_file} does not exist")
         try:

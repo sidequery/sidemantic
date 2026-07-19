@@ -164,6 +164,19 @@ def limit_query_sql(sql: str, max_rows: int, dialect: str) -> str:
     from sqlglot import exp
 
     statement = sqlglot.parse_one(sql, read=dialect)
+    if dialect == "tsql" and isinstance(statement, exp.Select):
+        # SQL Server rejects ORDER BY inside a derived table unless the inner
+        # query also has TOP/OFFSET. Apply or tighten TOP/FETCH on the original
+        # SELECT so ordered queries remain legal and smaller user limits survive.
+        cap = max_rows + 1
+        existing_limit = statement.args.get("limit")
+        existing_count = None
+        if existing_limit is not None:
+            existing_count = existing_limit.args.get("expression") or existing_limit.args.get("count")
+        if isinstance(existing_count, exp.Literal) and existing_count.is_int:
+            if int(existing_count.this) <= cap:
+                return statement.sql(dialect=dialect)
+        return statement.limit(cap).sql(dialect=dialect)
     bounded = exp.select("*").from_(statement.subquery("_sidemantic_bounded")).limit(max_rows + 1)
     return bounded.sql(dialect=dialect)
 

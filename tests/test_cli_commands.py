@@ -699,6 +699,21 @@ def test_duckdb_serving_access_mode_defaults_read_only_and_allows_write_opt_in()
     assert "threads=2" in safe
 
 
+def test_duckdb_access_mode_preserves_repeated_query_parameters():
+    from urllib.parse import parse_qsl, urlsplit
+
+    connection = "duckdb:////tmp/warehouse.duckdb?init_sql=LOAD+httpfs&init_sql=ATTACH+%27other.db%27"
+
+    safe = cli_module._with_duckdb_access_mode(connection)
+
+    assert safe is not None
+    assert parse_qsl(urlsplit(safe).query) == [
+        ("init_sql", "LOAD httpfs"),
+        ("init_sql", "ATTACH 'other.db'"),
+        ("read_only", "true"),
+    ]
+
+
 def test_duckdb_memory_access_mode_stays_writable():
     assert cli_module._with_duckdb_access_mode("duckdb:///:memory:") == "duckdb:///:memory:"
 

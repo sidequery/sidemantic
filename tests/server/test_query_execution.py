@@ -137,8 +137,20 @@ def test_query_limits_validate_conservative_values():
 def test_limit_query_sql_uses_target_dialect_syntax():
     bounded = limit_query_sql("SELECT value FROM facts", 10, "tsql")
 
-    assert bounded == "SELECT TOP 11 * FROM (SELECT value AS value FROM facts) AS _sidemantic_bounded"
+    assert bounded == "SELECT TOP 11 value FROM facts"
     assert " LIMIT " not in bounded
+
+
+def test_limit_query_sql_keeps_tsql_order_by_at_top_level():
+    bounded = limit_query_sql("SELECT value FROM facts ORDER BY value", 10, "tsql")
+
+    assert bounded == "SELECT TOP 11 value FROM facts ORDER BY value"
+
+
+def test_limit_query_sql_preserves_smaller_tsql_limit():
+    bounded = limit_query_sql("SELECT TOP 5 value FROM facts ORDER BY value", 10, "tsql")
+
+    assert bounded == "SELECT TOP 5 value FROM facts ORDER BY value"
 
 
 def test_admission_rejects_when_bounded_queue_is_full():

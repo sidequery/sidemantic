@@ -175,10 +175,11 @@ def _with_duckdb_access_mode(connection: str | None, read_only: bool | None = No
     parsed = urlsplit(connection)
     if parsed.path in {"", "/", "/:memory:", ":memory:"}:
         return connection
-    params = dict(parse_qsl(parsed.query, keep_blank_values=True))
-    if read_only is None and "read_only" in params:
+    params = parse_qsl(parsed.query, keep_blank_values=True)
+    if read_only is None and any(key == "read_only" for key, _ in params):
         return connection
-    params["read_only"] = "true" if read_only is not False else "false"
+    params = [(key, value) for key, value in params if key != "read_only"]
+    params.append(("read_only", "true" if read_only is not False else "false"))
     return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode(params), parsed.fragment))
 
 

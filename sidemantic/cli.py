@@ -1304,7 +1304,16 @@ def query(
                 "use_preaggregations": use_preaggregations,
             }
             if dry_run:
-                emit_result(layer.compile(**query_kwargs))
+                compiled_sql = layer.compile(**query_kwargs)
+                if cli_state().format_explicit and output_format in {"csv", "json", "jsonl"}:
+                    emit_records(
+                        [{"sql": compiled_sql}],
+                        columns=("sql",),
+                        output_format=output_format,
+                        json_value={"sql": compiled_sql},
+                    )
+                else:
+                    emit_result(compiled_sql)
                 return
             result = layer.query(**query_kwargs)
             columns = [desc[0] for desc in result.description]

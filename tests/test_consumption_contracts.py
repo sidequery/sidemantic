@@ -1,5 +1,6 @@
 """Tests for curated consumption and semantic-governance contracts."""
 
+import json
 from pathlib import Path
 
 import pytest
@@ -502,6 +503,19 @@ def test_validation_checks_saved_query_with_mandatory_explore_filters():
         "to selected model 'customers'" in errors
     )
 
+    layer.graph.models["customers"].segments.append(Segment(name="vip", sql="region = 'VIP'"))
+    disconnected_segment = SavedQuery(
+        name="disconnected_segment",
+        explore="unfiltered_orders",
+        metrics=["revenue"],
+        segments=["customers.vip"],
+    )
+    errors, _warnings = validate_saved_query(disconnected_segment, layer.graph)
+    assert (
+        "Saved query 'disconnected_segment' has no join path from base model 'orders' to selected model 'customers'"
+        in errors
+    )
+
 
 def test_validation_interpolates_saved_query_parameters():
     layer = _layer()
@@ -742,6 +756,22 @@ saved_queries:
     )
     assert dry_run.exit_code == 0, dry_run.output
     assert "SUM" in dry_run.output
+
+    json_dry_run = runner.invoke(
+        app,
+        [
+            "--format",
+            "json",
+            "query",
+            "--models",
+            str(tmp_path),
+            "--saved-query",
+            "revenue_by_status",
+            "--dry-run",
+        ],
+    )
+    assert json_dry_run.exit_code == 0, json_dry_run.output
+    assert "SUM" in json.loads(json_dry_run.output)["sql"]
 
 
 def test_directory_loader_recognizes_contract_only_native_yaml(tmp_path: Path):

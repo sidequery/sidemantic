@@ -136,10 +136,11 @@ def _validate_consumption_base_model(
     metrics: list[str],
     dimensions: list[str],
     graph: "SemanticGraph",
+    filters: list[str] | None = None,
 ) -> list[str]:
     from sidemantic.sql.generator import SQLGenerator
 
-    selected_models = SQLGenerator(graph)._find_required_models(metrics, dimensions, [])
+    selected_models = SQLGenerator(graph)._find_required_models(metrics, dimensions, filters or [])
     errors: list[str] = []
     for model_name in selected_models:
         if model_name == base_model:
@@ -295,6 +296,7 @@ def validate_saved_query(saved_query: "SavedQuery", graph: "SemanticGraph") -> t
                 graph,
             )
         )
+        valid_segments: list[str] = []
         for raw_segment in saved_query.segments:
             segment_ref = raw_segment
             if "." not in segment_ref and base_model:
@@ -317,7 +319,12 @@ def validate_saved_query(saved_query: "SavedQuery", graph: "SemanticGraph") -> t
                     f"Saved query '{saved_query.name}' references segment '{segment_name}' which doesn't exist "
                     f"on model '{model_name}'"
                 )
+            else:
+                valid_segments.append(segment_ref)
         if explore is not None:
+            from sidemantic.sql.generator import SQLGenerator
+
+            segment_filters = SQLGenerator(graph)._resolve_segments(valid_segments)
             errors.extend(
                 _validate_consumption_base_model(
                     f"Saved query '{saved_query.name}'",
@@ -325,6 +332,7 @@ def validate_saved_query(saved_query: "SavedQuery", graph: "SemanticGraph") -> t
                     metrics,
                     dimensions,
                     graph,
+                    filters=segment_filters,
                 )
             )
             errors.extend(

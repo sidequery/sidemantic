@@ -13,6 +13,7 @@ from sidemantic import (
     Explore,
     Metric,
     Model,
+    Parameter,
     Relationship,
     SavedQuery,
     SecurityError,
@@ -447,6 +448,17 @@ def test_validation_rejects_expression_models_without_a_join_path():
     errors, _warnings = validate_saved_query(saved_query, layer.graph)
     assert any("filter expression is incompatible" in error and "No join path found" in error for error in errors)
 
+    disconnected_selection = Explore(
+        name="disconnected_selection",
+        model="orders",
+        default_dimensions=["customers.region"],
+    )
+    errors, _warnings = validate_explore(disconnected_selection, layer.graph)
+    assert (
+        "Explore 'disconnected_selection' has no join path from base model 'orders' to selected model 'customers'"
+        in errors
+    )
+
 
 def test_validation_checks_saved_query_with_mandatory_explore_filters():
     layer = _layer()
@@ -477,6 +489,37 @@ def test_validation_checks_saved_query_with_mandatory_explore_filters():
         and "No join path found" in error
         for error in errors
     )
+
+    layer.graph.add_explore(Explore(name="unfiltered_orders", model="orders"))
+    disconnected_without_filter = SavedQuery(
+        name="disconnected_without_filter",
+        explore="unfiltered_orders",
+        metrics=["customers.customer_count"],
+    )
+    errors, _warnings = validate_saved_query(disconnected_without_filter, layer.graph)
+    assert (
+        "Saved query 'disconnected_without_filter' has no join path from base model 'orders' "
+        "to selected model 'customers'" in errors
+    )
+
+
+def test_validation_interpolates_saved_query_parameters():
+    layer = _layer()
+    with pytest.warns(DeprecationWarning):
+        layer.graph.add_parameter(Parameter(name="status", type="string"))
+    saved_query = SavedQuery(
+        name="parameterized_status",
+        explore="revenue_overview",
+        metrics=["revenue"],
+        filters=["orders.status = {{ status }}"],
+        parameters={"status": "paid"},
+    )
+
+    errors, _warnings = validate_saved_query(saved_query, layer.graph)
+
+    assert errors == []
+    layer.graph.add_saved_query(saved_query)
+    assert "status = 'paid'" in layer.compile(saved_query="parameterized_status")
 
 
 def test_validation_requires_order_fields_in_default_or_saved_selection():
@@ -556,6 +599,17 @@ def test_visibility_enforcement_rejects_segments_on_private_models():
 
     with pytest.raises(SecurityError, match="secret_orders.visible_segment.*not public"):
         layer.compile(metrics=["orders.revenue"], segments=["secret_orders.visible_segment"])
+
+    layer.graph.models["orders"].segments.extend(
+        [
+            Segment(name="public_orders", sql="{model}.status = 'paid'"),
+            Segment(name="private_orders", sql="{model}.status = 'internal'", public=False),
+        ]
+    )
+    orders_graph = next(
+        model for model in TestClient(create_app(layer)).get("/graph").json()["models"] if model["name"] == "orders"
+    )
+    assert orders_graph["segments"] == ["public_orders"]
 
 
 def test_meta_api_exposes_consumption_contracts():

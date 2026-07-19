@@ -969,6 +969,11 @@ class SemanticLayer:
                 raise ValueError(f"Explore '{explore_name}' does not allow dimension(s): {', '.join(denied)}")
 
         selected_filters = list(contract.default_filters) if filters is None else list(filters)
+        from sidemantic.core.parameter import ParameterSet
+
+        parameter_set = ParameterSet(self.graph.parameters, parameters)
+        mandatory_filters = [parameter_set.interpolate(expression) for expression in contract.filters]
+        selected_filters = [parameter_set.interpolate(expression) for expression in selected_filters]
         graph_metrics = self.graph.metrics.keys()
         if contract.allowed_filter_fields is not None:
             allowed = {
@@ -980,7 +985,7 @@ class SemanticLayer:
             if denied:
                 raise ValueError(f"Explore '{explore_name}' does not allow filter field(s): {', '.join(denied)}")
         filters = qualify_expression_fields(
-            [*contract.filters, *selected_filters],
+            [*mandatory_filters, *selected_filters],
             contract.model,
             graph_metrics=graph_metrics,
         )

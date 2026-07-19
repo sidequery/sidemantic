@@ -130,6 +130,27 @@ def _validate_order_fields_selected(
     return [f"{label} ordering field(s) must be selected by the query: {', '.join(outside)}"]
 
 
+def _validate_consumption_base_model(
+    label: str,
+    base_model: str,
+    metrics: list[str],
+    dimensions: list[str],
+    graph: "SemanticGraph",
+) -> list[str]:
+    from sidemantic.sql.generator import SQLGenerator
+
+    selected_models = SQLGenerator(graph)._find_required_models(metrics, dimensions, [])
+    errors: list[str] = []
+    for model_name in selected_models:
+        if model_name == base_model:
+            continue
+        try:
+            graph.find_relationship_path(base_model, model_name)
+        except (KeyError, ValueError):
+            errors.append(f"{label} has no join path from base model '{base_model}' to selected model '{model_name}'")
+    return errors
+
+
 def validate_explore(explore: "Explore", graph: "SemanticGraph") -> tuple[list[str], list[str]]:
     """Validate a curated Explore/View contract against the physical graph."""
     errors, warnings = validate_governance(explore, f"Explore '{explore.name}'")
@@ -142,6 +163,15 @@ def validate_explore(explore: "Explore", graph: "SemanticGraph") -> tuple[list[s
     qualified_dimensions = _qualified_consumption_refs(dimensions, explore.model)
     errors.extend(
         validate_query(
+            qualified_metrics,
+            qualified_dimensions,
+            graph,
+        )
+    )
+    errors.extend(
+        _validate_consumption_base_model(
+            f"Explore '{explore.name}'",
+            explore.model,
             qualified_metrics,
             qualified_dimensions,
             graph,
@@ -219,13 +249,25 @@ def validate_saved_query(saved_query: "SavedQuery", graph: "SemanticGraph") -> t
     dimensions = (
         _qualified_consumption_refs(saved_query.dimensions, base_model) if base_model else saved_query.dimensions
     )
+    validated_filters = list(saved_query.filters)
+    inherited_explore_filters = list(explore.filters) if explore is not None else []
+    from sidemantic.core.parameter import ParameterSet
+
+    parameter_set = ParameterSet(graph.parameters, saved_query.parameters)
+    try:
+        validated_filters = [parameter_set.interpolate(expression) for expression in validated_filters]
+        inherited_explore_filters = [parameter_set.interpolate(expression) for expression in inherited_explore_filters]
+    except (KeyError, TypeError, ValueError) as error:
+        errors.append(f"Saved query '{saved_query.name}' has invalid parameter values: {error}")
+        validated_filters = []
+        inherited_explore_filters = []
     if not preserved_external_syntax:
         errors.extend(validate_query(metrics, dimensions, graph))
         errors.extend(
             _validate_consumption_expressions(
                 f"Saved query '{saved_query.name}'",
                 "filter",
-                saved_query.filters,
+                validated_filters,
                 base_model,
                 graph,
                 query_metrics=metrics,
@@ -277,10 +319,19 @@ def validate_saved_query(saved_query: "SavedQuery", graph: "SemanticGraph") -> t
                 )
         if explore is not None:
             errors.extend(
+                _validate_consumption_base_model(
+                    f"Saved query '{saved_query.name}'",
+                    explore.model,
+                    metrics,
+                    dimensions,
+                    graph,
+                )
+            )
+            errors.extend(
                 _validate_consumption_expressions(
                     f"Saved query '{saved_query.name}' inherited Explore '{explore.name}'",
                     "filter",
-                    explore.filters,
+                    inherited_explore_filters,
                     base_model,
                     graph,
                     query_metrics=metrics,
@@ -310,7 +361,7 @@ def validate_saved_query(saved_query: "SavedQuery", graph: "SemanticGraph") -> t
             if explore.allowed_filter_fields is not None:
                 allowed_filters = set(_qualified_consumption_metrics(explore.allowed_filter_fields, base_model, graph))
                 denied_filters = sorted(
-                    expression_field_references(saved_query.filters, base_model, graph_metrics=graph_metrics)
+                    expression_field_references(validated_filters, base_model, graph_metrics=graph_metrics)
                     - allowed_filters
                 )
                 if denied_filters:

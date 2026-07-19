@@ -405,7 +405,9 @@ def create_app(
                 ],
             }
             if model.segments:
-                model_info["segments"] = [segment.name for segment in model.segments]
+                model_info["segments"] = [
+                    segment.name for segment in model.segments if not current_layer.enforce_visibility or segment.public
+                ]
             models.append(model_info)
 
         graph_metrics = []

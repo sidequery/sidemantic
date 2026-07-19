@@ -11,6 +11,8 @@ import sys
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from datetime import date, datetime, time
+from decimal import Decimal
 from enum import IntEnum
 from pathlib import Path
 from typing import Any, NoReturn, TextIO
@@ -245,6 +247,10 @@ def emit_error(value: object) -> None:
 
 
 def _json_default(value: object) -> Any:
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, (date, datetime, time)):
+        return value.isoformat()
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
         return dataclasses.asdict(value)
     if isinstance(value, (set, frozenset)):
@@ -286,6 +292,8 @@ def _record_value(value: object) -> object:
         return ""
     if isinstance(value, (str, int, float, bool)):
         return value
+    if isinstance(value, (Decimal, date, datetime, time, Path)):
+        return str(value)
     return json.dumps(value, sort_keys=True, default=_json_default)
 
 

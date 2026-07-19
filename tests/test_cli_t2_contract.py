@@ -127,6 +127,59 @@ def test_plain_query_is_stable_tsv(project: Path):
     assert "\x1b[" not in result.stdout
 
 
+@pytest.mark.parametrize("output_format", ["table", "csv", "json", "jsonl"])
+def test_query_formats_preserve_database_scalar_values(project: Path, output_format: str):
+    result = runner.invoke(
+        app,
+        [
+            "query",
+            "SELECT DATE '2024-01-02' AS day, "
+            "TIMESTAMP '2024-01-02 03:04:05' AS occurred_at, "
+            "12.50::DECIMAL(10, 2) AS amount",
+            "--project",
+            str(project),
+            "--format",
+            output_format,
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    if output_format == "csv":
+        assert list(csv.reader(io.StringIO(result.stdout))) == [
+            ["day", "occurred_at", "amount"],
+            ["2024-01-02", "2024-01-02 03:04:05", "12.50"],
+        ]
+    elif output_format in {"json", "jsonl"}:
+        payload = json.loads(result.stdout)
+        row = payload[0] if output_format == "json" else payload
+        assert row == {"amount": 12.5, "day": "2024-01-02", "occurred_at": "2024-01-02T03:04:05"}
+    else:
+        assert "2024-01-02" in result.stdout
+        assert "2024-01-02 03:04:05" in result.stdout
+        assert "12.50" in result.stdout
+
+
+def test_plain_query_preserves_database_scalar_values(project: Path):
+    result = runner.invoke(
+        app,
+        [
+            "query",
+            "SELECT DATE '2024-01-02' AS day, "
+            "TIMESTAMP '2024-01-02 03:04:05' AS occurred_at, "
+            "12.50::DECIMAL(10, 2) AS amount",
+            "--project",
+            str(project),
+            "--plain",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout.splitlines() == [
+        "day\toccurred_at\tamount",
+        "2024-01-02\t2024-01-02 03:04:05\t12.50",
+    ]
+
+
 @pytest.mark.parametrize("command", ["info", "validate"])
 @pytest.mark.parametrize("output_format", ["table", "csv", "json", "jsonl"])
 def test_structured_inspection_commands_support_formats(

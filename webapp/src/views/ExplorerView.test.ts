@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { resolveExpandedLeaderboard } from "./ExplorerView";
+import { chronologicalSeriesRows, resolveExpandedLeaderboard } from "./ExplorerView";
 
 describe("resolveExpandedLeaderboard", () => {
   test("clears an expansion that is not available on the active dashboard tab", () => {
@@ -11,4 +11,12 @@ describe("resolveExpandedLeaderboard", () => {
       "customers.country",
     );
   });
+});
+
+test("chronologicalSeriesRows restores display order after a latest-first capped query", () => {
+  const rows = [
+    { bucket: "2024-01-01T00:02:00", revenue: 2 },
+    { bucket: "2024-01-01T00:01:00", revenue: 1 },
+  ];
+  expect(chronologicalSeriesRows(rows, "bucket").map((row) => row.revenue)).toEqual([1, 2]);
 });

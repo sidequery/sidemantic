@@ -169,7 +169,11 @@ const GRAIN_BUCKET_CAP: Record<Grain, number> = {
   year: 60,
 };
 
-/** A metric time series bucketed by `grain` on `timeRef`, ordered ascending. */
+/** A metric time series bucketed by `grain` on `timeRef`.
+ *
+ * Fine-grain queries fetch the latest capped window; callers sort those rows chronologically for
+ * display. Coarser queries retain ascending backend order.
+ */
 export function metricSeries(
   metrics: FieldRef[],
   timeRef: FieldRef,
@@ -179,13 +183,14 @@ export function metricSeries(
   usePreaggregations?: boolean,
 ): StructuredQuery {
   const timeDim = `${timeRef}__${grain}`;
+  const cappedFineGrain = grain === "second" || grain === "minute";
   return {
     metrics,
     dimensions: [timeDim],
     filters,
     ...(segments?.length ? { segments } : {}),
     ...(usePreaggregations != null ? { usePreaggregations } : {}),
-    orderBy: [`${timeDim} ASC`],
+    orderBy: [`${timeDim} ${cappedFineGrain ? "DESC" : "ASC"}`],
     limit: GRAIN_BUCKET_CAP[grain] ?? 2000,
   };
 }

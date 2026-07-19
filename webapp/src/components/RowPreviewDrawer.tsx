@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { aliasOf } from "../data/types";
+import { aliasOf, type CatalogDimension } from "../data/types";
 import { labelize } from "../lib/format";
 import { dashboardTabConfig } from "../lib/dashboard";
 import { catalogDimTypes, composeFilters, previewRows } from "../lib/queries";
@@ -8,6 +8,11 @@ import { useQueryResult } from "../state/useQueryResult";
 import { DataTable, type Column } from "./DataTable";
 
 /** Shared Explore/Pivot raw-row preview. It overlays the stage and never creates a third view state. */
+export function resolvePreviewDimensions(dimensions: CatalogDimension[], pivotDims: string[]): string[] {
+  const validDimensions = pivotDims.filter((ref) => dimensions.some((dimension) => dimension.ref === ref));
+  return validDimensions.length ? validDimensions : dimensions.slice(0, 6).map((dimension) => dimension.ref);
+}
+
 export function RowPreviewDrawer() {
   const [open, setOpen] = useState(false);
   const { state, catalog, backend, dashboard } = useExplorer();
@@ -16,9 +21,8 @@ export function RowPreviewDrawer() {
     () => dashboardTabConfig(catalog, dashboard, state.dashboardTab),
     [catalog, dashboard, state.dashboardTab],
   );
-  const dimensions = model?.dimensions ?? [];
-  const validDimensions = state.pivotDims.filter((ref) => dimensions.some((dimension) => dimension.ref === ref));
-  const selectedDimensions = validDimensions.length ? validDimensions : dimensions.slice(0, 6).map((dimension) => dimension.ref);
+  const dimensions = configured?.dimensions ?? model?.dimensions ?? [];
+  const selectedDimensions = resolvePreviewDimensions(dimensions, state.pivotDims);
   const timeRef = configured?.timeDimension?.ref ?? model?.timeDimension?.ref;
   const types = useMemo(() => catalogDimTypes(catalog), [catalog]);
   const filters = useMemo(

@@ -177,8 +177,14 @@ describe("isEmptyFilter", () => {
 
 describe("dashboard query configuration", () => {
   test("caps fine-grain series at a render-safe point count", () => {
-    expect(metricSeries(["orders.revenue"], "orders.created_at", "second", []).limit).toBe(2000);
-    expect(metricSeries(["orders.revenue"], "orders.created_at", "minute", []).limit).toBe(2000);
+    for (const grain of ["second", "minute"] as const) {
+      const query = metricSeries(["orders.revenue"], "orders.created_at", grain, []);
+      expect(query.limit).toBe(2000);
+      expect(query.orderBy).toEqual([`orders.created_at__${grain} DESC`]);
+    }
+    expect(metricSeries(["orders.revenue"], "orders.created_at", "day", []).orderBy).toEqual([
+      "orders.created_at__day ASC",
+    ]);
   });
 
   test("threads segments and pre-aggregation opt-outs through every Explore query", () => {

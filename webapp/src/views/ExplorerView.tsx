@@ -34,6 +34,10 @@ export function resolveExpandedLeaderboard(
   return expandedRef && dimensions.some((dimension) => dimension.ref === expandedRef) ? expandedRef : null;
 }
 
+export function chronologicalSeriesRows<T extends Record<string, unknown>>(rows: T[], timeAlias: string): T[] {
+  return [...rows].sort((left, right) => String(left[timeAlias] ?? "").localeCompare(String(right[timeAlias] ?? "")));
+}
+
 export function ExplorerView() {
   const { state, dispatch, catalog, backend, dashboard } = useExplorer();
   const [expandedLeaderboard, setExpandedLeaderboard] = useState<string | null>(null);
@@ -158,17 +162,18 @@ export function ExplorerView() {
   const fresh = (r?: { columns: string[] }) => !r || !shapeAlias || r.columns.includes(shapeAlias);
   const totalsRow = fresh(totals.result) ? totals.result?.rows[0] : undefined;
   const prevRow = fresh(comparison.result) ? comparison.result?.rows[0] : undefined;
-  const seriesRows = fresh(series.result) ? (series.result?.rows ?? []) : [];
+  const rawSeriesRows = fresh(series.result) ? (series.result?.rows ?? []) : [];
 
   // Chart data derived from the strip aggregates (no duplicate total/series queries).
   const mAlias = rankMetric ? aliasOf(rankMetric.ref) : "";
   const tAlias = timeRef ? aliasOf(`${timeRef}__${state.grain}`) : "";
+  const seriesRows = tAlias ? chronologicalSeriesRows(rawSeriesRows, tAlias) : rawSeriesRows;
   const chartTotal = totalsRow && mAlias ? Number(totalsRow[mAlias]) : NaN;
   const chartPrevTotal = prevRow && mAlias ? Number(prevRow[mAlias]) : undefined;
   const chartPoints = mAlias ? seriesRows.map((row) => ({ x: String(row[tAlias] ?? ""), y: Number(row[mAlias]) })) : [];
   // Align the previous-period series to the current buckets by position (bucketOffset), so a missing
   // bucket in either period doesn't shift the dashed overlay or hover delta onto the wrong bucket.
-  const prevRows = prevSeries.result?.rows ?? [];
+  const prevRows = tAlias ? chronologicalSeriesRows(prevSeries.result?.rows ?? [], tAlias) : [];
   const chartComparison =
     mAlias && chartPoints.length > 0 && prevRows.length > 0
       ? (() => {

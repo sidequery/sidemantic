@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { HttpBackend } from "./data/httpAdapter";
 import type { Catalog, DashboardSpec } from "./data/types";
 import { AppShell } from "./components/AppShell";
+import { AppBrand } from "./components/AppBrand";
 import { AddFilter } from "./components/AddFilter";
 import { Catalog as CatalogRail } from "./components/Catalog";
 import { ErrorBoundary } from "./components/ErrorBoundary";
@@ -110,15 +111,11 @@ function Shell() {
   });
 
   const brand = (
-    <button
-      type="button"
-      onClick={() => dispatch({ type: "setView", view: "home" })}
-      aria-label="Home"
-      className="flex min-w-0 items-baseline gap-2"
-    >
-      <span className="text-sm font-semibold text-ink">{dashboard?.title ?? "Sidemantic"}</span>
-      {!isHome && !isDashboard && model?.label ? <span className="truncate text-2xs text-faint">{model.label}</span> : null}
-    </button>
+    <AppBrand
+      dashboardTitle={dashboard?.title}
+      modelLabel={!isHome && !isDashboard ? model?.label : undefined}
+      onHome={() => dispatch({ type: "setView", view: "home" })}
+    />
   );
 
   // On the home/index view the model-scoped controls (view switcher, date/grain, filters) don't apply.

@@ -139,6 +139,11 @@ export class HttpBackend implements SidemanticBackend {
     const res = await fetch(this.url("/dashboard"), { headers: this.headers() });
     if (res.status === 404) return null;
     if (!res.ok) throw new Error(await this.errorText(res, "/dashboard"));
+    // Some embedded SPA hosts (notably the Rust server) serve index.html for unknown routes.
+    // Treat that fallback like an absent dashboard instead of trying to parse HTML as JSON and
+    // breaking the generic explorer.
+    const contentType = res.headers.get("Content-Type")?.toLowerCase() ?? "";
+    if (!contentType.includes("json")) return null;
     return (await res.json()) as DashboardDocument;
   }
 

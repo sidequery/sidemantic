@@ -72,6 +72,28 @@ def _unrecognized_sources(sql: str, layer: Any) -> list[str]:
     return sorted(unrecognized)
 
 
+def _has_predicate_subquery(sql: str, dialect: str) -> bool:
+    """Return whether a predicate embeds a SELECT the rewriter cannot secure."""
+    import sqlglot
+    from sqlglot import exp
+
+    try:
+        parsed = sqlglot.parse_one(sql, dialect=dialect)
+    except Exception:
+        return True
+
+    for select in parsed.find_all(exp.Select):
+        for clause_name in ("where", "having", "qualify"):
+            clause = select.args.get(clause_name)
+            if clause is not None and any(True for _ in clause.find_all(exp.Select)):
+                return True
+        for join in select.args.get("joins") or []:
+            predicate = join.args.get("on")
+            if predicate is not None and any(True for _ in predicate.find_all(exp.Select)):
+                return True
+    return False
+
+
 def rewrite_transport_sql(
     layer: Any,
     query: str,
@@ -99,6 +121,13 @@ def rewrite_transport_sql(
                 f"{transport} refused non-semantic source(s) {sources} while security controls "
                 "are active. Query semantic model fields, or use a structured query transport "
                 "so access gates, row filters, and column restrictions are enforced."
+            )
+        if _has_predicate_subquery(query, layer.dialect):
+            raise SecurityError(
+                f"{transport} refused a predicate subquery while security controls are active "
+                "because nested predicate reads cannot currently prove that access gates, row "
+                "filters, and column restrictions were enforced. Rewrite it as structured "
+                "semantic filters or a supported semantic join."
             )
 
     requested_preaggregations = (

@@ -276,6 +276,23 @@ def test_normalized_passthrough_fails_closed_across_sql_transports(tmp_path):
         _pg_rewrite(_layer(enforce_visibility=True), query, attrs)
 
 
+def test_predicate_subqueries_fail_closed_across_sql_transports(tmp_path):
+    attrs = {"role": "analyst", "tenant_id": 1}
+    query = "SELECT total_amount FROM orders WHERE EXISTS (SELECT 1 FROM orders WHERE secret_note = 'secret')"
+    client = TestClient(create_app(_layer(enforce_visibility=True), auth_token="secret"))
+
+    response = client.post("/sql", json={"query": query}, headers=_headers(attrs))
+    assert response.status_code == 403
+    assert "predicate subquery" in response.json()["error"]
+
+    _mcp_layer(tmp_path / "mcp-predicate-subquery", attrs, enforce_visibility=True)
+    with pytest.raises(SecurityError, match="predicate subquery"):
+        mcp_run_sql(query)
+
+    with pytest.raises(SecurityError, match="predicate subquery"):
+        _pg_rewrite(_layer(enforce_visibility=True), query, attrs)
+
+
 def test_sql_rewrite_cache_isolated_by_visibility_state():
     layer = SemanticLayer()
     layer.adapter.execute("create table records (id integer, secret_note varchar)")

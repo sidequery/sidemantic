@@ -92,6 +92,9 @@ through the semantic layer whenever a security or enforced visibility control is
 active. A statement that would pass through to an underlying table is rejected
 with an actionable `SecurityError`; `SELECT 1`-style source-free statements remain
 available. True raw database execution is never considered policy-aware.
+Predicate subqueries are rejected while controls are active because nested reads
+cannot yet be proven to receive the same policy rewrite; use structured filters or a
+modeled semantic join instead.
 
 ### HTTP (`sidemantic server api`)
 
@@ -155,7 +158,8 @@ enumerating physical source tables. `information_schema.columns` is synthesized 
 that same semantic catalog, preserves ordinary projection/filter/order probes, and
 omits non-public fields when visibility enforcement is enabled. Catalog queries mixed
 with other table sources are not treated as compatibility probes and pass through the
-normal fail-closed transport gate.
+normal fail-closed transport gate. `pg_catalog.pg_class` likewise lists semantic
+tables only while controls are active.
 
 ### MCP server
 

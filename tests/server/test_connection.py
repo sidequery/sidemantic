@@ -141,6 +141,30 @@ def test_secure_information_schema_columns_uses_visible_semantic_catalog():
     assert conn._try_handle_system_query(mixed, mixed.lower(), lambda *_: None, cursor) is False
 
 
+def test_secure_pg_class_uses_semantic_table_catalog():
+    pytest.importorskip("riffq")
+    pytest.importorskip("pyarrow")
+    from sidemantic.server.connection import SemanticLayerConnection
+
+    layer = SemanticLayer(connection="duckdb:///:memory:", enforce_visibility=True)
+    layer.adapter.execute("CREATE TABLE source_table (id INTEGER)")
+    layer.adapter.execute("CREATE TABLE audit_log (message VARCHAR)")
+    layer.add_model(Model(name="orders", table="source_table", dimensions=[Dimension(name="id", type="numeric")]))
+    captured = {}
+
+    def send_reader(reader, callback):
+        captured["reader"] = reader
+        callback(True)
+
+    conn = SemanticLayerConnection(connection_id=1, executor=None, layer=layer)
+    conn.send_reader = send_reader
+    cursor = layer.adapter.cursor()
+    sql = "SELECT relname, relnamespace FROM pg_catalog.pg_class"
+
+    assert conn._try_handle_system_query(sql, sql.lower(), lambda *_: None, cursor) is True
+    assert captured["reader"].read_all().to_pylist() == [{"relname": "orders", "relnamespace": "semantic_layer"}]
+
+
 def test_session_set_is_acknowledged_but_dml_is_denied():
     pytest.importorskip("riffq")
     pytest.importorskip("pyarrow")

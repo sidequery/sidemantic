@@ -244,11 +244,27 @@ class SemanticLayerConnection(riffq.BaseConnection):
 
             # pg_class - tables and views
             elif "pg_class" in sql_lower:
-                result = cursor.execute(
-                    "SELECT table_name as relname, schema_name as relnamespace "
-                    "FROM duckdb_tables() "
-                    "WHERE schema_name NOT IN ('pg_catalog', 'information_schema')"
-                )
+                from sidemantic.core.transport_security import controls_are_active
+
+                if controls_are_active(self.layer):
+                    semantic_tables = list(self.layer.graph.models)
+                    if self.layer.graph.metrics:
+                        semantic_tables.append("metrics")
+                    if semantic_tables:
+                        values = ", ".join(f"({self._sql_literal(name)})" for name in semantic_tables)
+                        catalog_sql = (
+                            "SELECT relname, 'semantic_layer' AS relnamespace "
+                            f"FROM (VALUES {values}) AS semantic_tables(relname)"
+                        )
+                    else:
+                        catalog_sql = "SELECT NULL::VARCHAR AS relname, NULL::VARCHAR AS relnamespace WHERE FALSE"
+                    result = cursor.execute(catalog_sql)
+                else:
+                    result = cursor.execute(
+                        "SELECT table_name as relname, schema_name as relnamespace "
+                        "FROM duckdb_tables() "
+                        "WHERE schema_name NOT IN ('pg_catalog', 'information_schema')"
+                    )
                 reader = result.fetch_record_batch()
                 self.send_reader(reader, callback)
                 return True
@@ -270,13 +286,14 @@ class SemanticLayerConnection(riffq.BaseConnection):
 
         return False
 
+    @staticmethod
+    def _sql_literal(value: str) -> str:
+        return "'" + value.replace("'", "''") + "'"
+
     def _information_schema_columns_source(self) -> str:
         """Return a visibility-aware relation for PostgreSQL column discovery."""
         from sidemantic.core.catalog import get_postgres_type_for_dimension, get_postgres_type_for_metric
         from sidemantic.core.transport_security import controls_are_active
-
-        def literal(value: str) -> str:
-            return "'" + value.replace("'", "''") + "'"
 
         rows: list[str] = []
 
@@ -290,12 +307,12 @@ class SemanticLayerConnection(riffq.BaseConnection):
                     [
                         "'sidemantic'",
                         "'semantic_layer'",
-                        literal(table_name),
-                        literal(column_name),
+                        self._sql_literal(table_name),
+                        self._sql_literal(column_name),
                         str(ordinal),
                         "NULL::VARCHAR",
                         "'YES'",
-                        literal(data_type),
+                        self._sql_literal(data_type),
                         char_length,
                         numeric_precision,
                         numeric_scale,

@@ -179,6 +179,35 @@ def test_models_to_rust_yaml_orients_composite_reverse_relationship_sql():
     assert relationship["sql"] == ("{from}.account_id = {to}.owner_account_id AND {from}.tenant_id = {to}.tenant_id")
 
 
+def test_models_to_rust_yaml_orients_single_column_one_to_one_sql():
+    users = Model(
+        name="users",
+        table="users",
+        primary_key="id",
+        relationships=[Relationship(name="profiles", type="one_to_one", foreign_key="user_id")],
+    )
+    profiles = Model(name="profiles", table="profiles", primary_key="profile_id")
+
+    payload = yaml.safe_load(models_to_rust_yaml([users, profiles]))
+    relationship = payload["models"][0]["relationships"][0]
+
+    assert relationship["sql"] == "{from}.id = {to}.user_id"
+
+
+def test_graph_to_rust_yaml_preserves_explicit_keyless_metric_owner():
+    graph = SemanticGraph()
+    graph.add_model(Model(name="events", table="events"))
+    graph.add_model(Model(name="orders", table="orders", primary_key="order_id"))
+    metric = Metric(name="event_count", agg="count")
+    graph.add_metric(metric, model_name="events")
+
+    payload = yaml.safe_load(graph_to_rust_yaml(graph))
+    models = {model["name"]: model for model in payload["models"]}
+
+    assert [item["name"] for item in models["events"]["metrics"]] == ["event_count"]
+    assert payload.get("metrics") in (None, [])
+
+
 def test_graph_to_rust_yaml_assigns_complex_metrics_by_entity_dimension():
     graph = SemanticGraph()
     graph.add_model(

@@ -140,6 +140,9 @@ def _assign_top_level_metrics_for_rust(graph: SemanticGraph) -> tuple[dict[str, 
 
         cache[metric.name] = None
         owners = model_metric_owners(metric.name)
+        explicit_owner = graph.metric_owners.get(metric.name)
+        if explicit_owner:
+            owners.add(explicit_owner)
 
         try:
             dependencies = metric.get_dependencies(graph)
@@ -1615,7 +1618,11 @@ def _serialize_relationship(relationship, source_model, target_model) -> dict | 
         primary_keys = []
 
     sql = None
-    if len(foreign_keys) > 1 and len(foreign_keys) == len(primary_keys):
+    if (
+        foreign_keys
+        and len(foreign_keys) == len(primary_keys)
+        and (len(foreign_keys) > 1 or relationship.type == "one_to_one")
+    ):
         if relationship.type in {"one_to_many", "one_to_one"}:
             sql = " AND ".join(
                 f"{{from}}.{pk} = {{to}}.{fk}" for fk, pk in zip(foreign_keys, primary_keys, strict=False)

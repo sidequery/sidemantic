@@ -581,6 +581,36 @@ models:
     assert "Model 'orders' references missing column 'status'" in "\n".join(report.warehouse_errors)
 
 
+def test_warehouse_validation_ignores_inactive_relationship_columns(tmp_path):
+    import duckdb
+
+    (tmp_path / "models.yml").write_text(
+        """
+models:
+  - name: orders
+    table: orders
+    primary_key: order_id
+    relationships:
+      - name: removed_customers
+        type: many_to_one
+        foreign_key: old_customer_id
+        active: false
+"""
+    )
+    database = tmp_path / "warehouse.duckdb"
+    connection = duckdb.connect(str(database))
+    connection.execute("CREATE TABLE orders (order_id INTEGER PRIMARY KEY)")
+    connection.close()
+
+    report = validate_directory(
+        tmp_path,
+        connection=f"duckdb:///{database}",
+        check_queries=False,
+    )
+
+    assert report.passed, report.all_errors
+
+
 def test_warehouse_validation_reports_incompatible_join_key_types(tmp_path):
     import duckdb
 

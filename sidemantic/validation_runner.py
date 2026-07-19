@@ -222,6 +222,8 @@ def _required_columns(model: "Model", graph: "SemanticGraph") -> dict[str, str |
         for column in key:
             columns[column] = None
     for relationship in model.relationships:
+        if not relationship.active:
+            continue
         for column in relationship.foreign_key_columns:
             columns[column] = None
         if relationship.type in {"one_to_many", "one_to_one"}:
@@ -231,6 +233,8 @@ def _required_columns(model: "Model", graph: "SemanticGraph") -> dict[str, str |
     # Include keys declared by relationships on other models but physically owned by this model.
     for source in graph.models.values():
         for relationship in source.relationships:
+            if not relationship.active:
+                continue
             if relationship.name == model.name:
                 if relationship.type == "many_to_one" and relationship.primary_key is not None:
                     for column in relationship.primary_key_columns:

@@ -1512,6 +1512,9 @@ class SQLGenerator:
                 return
 
             # It's a graph-level metric, need to resolve its dependencies.
+            owning_model = self.graph.metric_owners.get(metric_ref)
+            if owning_model:
+                add_model(owning_model)
             if metric.type == "ratio":
                 if metric.numerator:
                     collect_models_from_metric(metric.numerator)

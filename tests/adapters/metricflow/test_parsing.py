@@ -1034,6 +1034,52 @@ def test_metricflow_inline_constant_count_anchored_to_model():
         path.unlink(missing_ok=True)
 
 
+def test_metricflow_inline_counts_support_keyless_models():
+    """Keyless inline row counts retain model context without a fabricated key."""
+    import tempfile
+    import textwrap
+
+    yml = textwrap.dedent("""
+        models:
+          - name: events
+            semantic_model:
+              enabled: true
+              name: events
+            metrics:
+              - name: row_count
+                type: simple
+                agg: count
+                expr: 1
+              - name: star_count
+                type: simple
+                agg: count
+                expr: '*'
+              - name: bare_count
+                type: simple
+                agg: count
+    """)
+    with tempfile.NamedTemporaryFile("w", suffix=".yml", delete=False) as f:
+        f.write(yml)
+        path = Path(f.name)
+
+    try:
+        graph = MetricFlowAdapter().parse(path)
+        assert graph.get_model("events").primary_key is None
+
+        generator = SQLGenerator(graph)
+        for metric_name in ("row_count", "star_count", "bare_count"):
+            metric = graph.get_metric(metric_name)
+            assert metric.sql is None
+            assert graph.metric_owners[metric_name] == "events"
+
+            sql = generator.generate(metrics=[metric_name])
+            assert "events" in sql.lower()
+            assert "count(*)" in sql.lower()
+            assert ".none" not in sql.lower()
+    finally:
+        path.unlink(missing_ok=True)
+
+
 def test_metricflow_inline_exprless_non_count_uses_metric_column():
     """An expr-less non-count inline measure aggregates its own column, not the PK.
 

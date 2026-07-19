@@ -131,8 +131,9 @@ class MetricFlowAdapter(BaseAdapter):
                 metric = self._parse_metric(metric_def)
                 if not metric:
                     continue
+                owning_model = None
                 if metric_def.get("type", "simple") == "simple" and metric.agg is not None:
-                    primary_key_ref = f"{model.name}.{model.primary_key}"
+                    primary_key_ref = f"{model.name}.{model.primary_key}" if model.primary_key else None
                     if metric.sql is not None:
                         qualified = self._qualify_measure_sql(metric.sql, model.name)
                         # A constant count measure (``agg: count`` with ``expr: 1``
@@ -142,14 +143,21 @@ class MetricFlowAdapter(BaseAdapter):
                         # model via its primary key, the same as a bare ``count``.
                         # COUNT over a non-null primary key is equivalent to COUNT(*).
                         if metric.agg == "count" and not self._has_qualified_column(qualified, model.name):
-                            metric.sql = primary_key_ref
+                            if primary_key_ref:
+                                metric.sql = primary_key_ref
+                            else:
+                                metric.sql = None
+                                owning_model = model.name
                         else:
                             metric.sql = qualified
                     elif metric.agg == "count":
                         # Bare ``count`` with no ``expr``: anchor it to the model
                         # via its primary key so the planner can resolve the model.
                         # COUNT over a non-null primary key is equivalent to COUNT(*).
-                        metric.sql = primary_key_ref
+                        if primary_key_ref:
+                            metric.sql = primary_key_ref
+                        else:
+                            owning_model = model.name
                     else:
                         # Any other expr-less aggregation (sum/avg/min/max/...): in
                         # MetricFlow an expr-less measure aggregates the column named
@@ -158,7 +166,7 @@ class MetricFlowAdapter(BaseAdapter):
                         # key here would silently aggregate the wrong column (e.g.
                         # ``SUM(orders.order_id)`` instead of ``SUM(orders.amount)``).
                         metric.sql = f"{model.name}.{metric.name}"
-                self._add_metric(graph, metric)
+                self._add_metric(graph, metric, model_name=owning_model)
 
         # Legacy spec: top-level ``semantic_models:``.
         for model_def in data.get("semantic_models") or []:
@@ -222,11 +230,11 @@ class MetricFlowAdapter(BaseAdapter):
         return False
 
     @staticmethod
-    def _add_metric(graph: SemanticGraph, metric: Metric) -> None:
+    def _add_metric(graph: SemanticGraph, metric: Metric, model_name: str | None = None) -> None:
         """Add a metric to the graph, ignoring duplicate names across files."""
         if metric.name in graph.metrics:
             return
-        graph.add_metric(metric)
+        graph.add_metric(metric, model_name=model_name)
 
     def _parse_saved_queries(self, saved_queries) -> None:
         """Parse top-level ``saved_queries`` into ``self.saved_queries``.

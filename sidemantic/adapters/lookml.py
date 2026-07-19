@@ -720,14 +720,20 @@ class LookMLAdapter(BaseAdapter):
                 # queryable model.
                 model.meta = {**(model.meta or {}), "extension_required": True, "lookml_template": True}
                 is_template = True
-            elif (
+            elif (model.meta or {}).get("unsupported_derived_table") or (
                 model.table is None
                 and model.sql is None
-                and (
-                    _extends_chain_has(model_name, unsupported_dt_views)
-                    or (model.meta or {}).get("unsupported_derived_table")
-                )
+                and _extends_chain_has(model_name, unsupported_dt_views)
             ):
+                # A view that declares its OWN unsupported derived_table is non-representable even
+                # when it INHERITED a sql_table_name from a table-backed extends parent -- Looker
+                # would use the derived_table source, not the inherited table -- so stamp the marker
+                # BEFORE the source check, like the extension_required case above. (Without this,
+                # resolve_model_inheritance copies the parent's table onto the child and the guard
+                # below leaves the unsupported view registerable against that physical table.) A view
+                # that merely INHERITS an unsupported derived table through the extends CHAIN is a
+                # template only when it has no source of its own; if it overrode with its own
+                # table/sql it is a concrete, queryable view and must not be skipped.
                 model.meta = {**(model.meta or {}), "unsupported_derived_table": True, "lookml_template": True}
                 is_template = True
             if is_template:

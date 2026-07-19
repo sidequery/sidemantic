@@ -6233,6 +6233,50 @@ view: child {
     assert "id" in dims  # the child keeps its own field
 
 
+def test_lookml_own_unsupported_derived_table_not_registered_despite_inherited_table():
+    """A view that declares its OWN unsupported derived_table must be skipped even if it inherits a
+    table from a table-backed extends parent.
+
+    resolve_model_inheritance() copies the parent's sql_table_name onto the child before the marker
+    pass runs. The unsupported-derived-table marker was gated on `table`/`sql` both being None, so
+    the child kept the inherited table, missed the `lookml_template` marker, and load_from_directory
+    exposed it as a query against the parent's PHYSICAL table -- even though Looker would use the
+    derived-table source, which this adapter cannot represent. A view whose OWN source is an
+    unsupported derived table must be marked regardless of the inherited table.
+    """
+    import tempfile
+
+    from sidemantic import SemanticLayer
+    from sidemantic.loaders import load_from_directory
+
+    directory = Path(tempfile.mkdtemp())
+    (directory / "views.view.lkml").write_text(
+        "view: base_tbl { sql_table_name: real_base ;; "
+        "dimension: id { primary_key: yes  sql: ${TABLE}.id ;; } } "
+        'view: ndt { extends: [base_tbl]  derived_table: { persist_for: "1 hour" } '
+        "dimension: name { type: string  sql: ${TABLE}.name ;; } }"
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, directory)
+    # The unsupported derived-table view is skipped, not registered against the inherited real_base.
+    assert "ndt" not in layer.graph.models
+    assert "base_tbl" in layer.graph.models  # the ordinary table-backed base still registers
+
+    # A view that INHERITS an unsupported derived table but OVERRIDES it with its own table stays
+    # queryable -- the marker must not over-reach to concrete children.
+    directory2 = Path(tempfile.mkdtemp())
+    (directory2 / "views.view.lkml").write_text(
+        'view: pdt_base { derived_table: { persist_for: "24 hours" } '
+        "dimension: pdt_only { type: string  sql: ${TABLE}.secret ;; } } "
+        "view: child { extends: [pdt_base]  sql_table_name: child_t ;; "
+        "dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; } }"
+    )
+    layer2 = SemanticLayer()
+    load_from_directory(layer2, directory2)
+    assert layer2.graph.get_model("child").table == "child_t"
+
+
 def test_lookml_rejected_extends_link_cleared_so_reresolution_does_not_remerge():
     """A rejected extends link (out-of-scope / unsupported parent) is cleared so a downstream
     unscoped re-resolution cannot merge the parent's fields back in. A MISSING parent is kept."""

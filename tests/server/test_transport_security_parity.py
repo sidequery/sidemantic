@@ -259,6 +259,23 @@ def test_raw_and_unproven_sql_fail_closed_across_sql_transports(tmp_path):
         _pg_rewrite(pg_layer, mixed, attrs)
 
 
+def test_normalized_passthrough_fails_closed_across_sql_transports(tmp_path):
+    attrs = {"role": "analyst", "tenant_id": 1}
+    query = "(select secret_note from orders order by secret_note) union (select secret_note from orders)"
+    client = TestClient(create_app(_layer(enforce_visibility=True), auth_token="secret"))
+
+    response = client.post("/sql", json={"query": query}, headers=_headers(attrs))
+    assert response.status_code == 403
+    assert "could not be proven" in response.json()["error"]
+
+    _mcp_layer(tmp_path / "mcp-normalized-passthrough", attrs, enforce_visibility=True)
+    with pytest.raises(SecurityError, match="could not be proven"):
+        mcp_run_sql(query)
+
+    with pytest.raises(SecurityError, match="could not be proven"):
+        _pg_rewrite(_layer(enforce_visibility=True), query, attrs)
+
+
 def test_yardstick_sql_fails_closed_across_sql_transports(tmp_path):
     attrs = {"role": "analyst", "tenant_id": 1}
     queries = [

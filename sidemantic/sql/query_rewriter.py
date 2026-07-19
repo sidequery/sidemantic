@@ -309,13 +309,19 @@ class QueryRewriter:
                 column.set("table", exp.to_identifier(aliases[column.table]))
         return rewritten
 
-    def explain(self, sql: str, strict: bool = True) -> RewriteExplanation:
+    def explain(
+        self,
+        sql: str,
+        strict: bool = True,
+        user_attributes: dict | None = None,
+    ) -> RewriteExplanation:
         """Explain how a SQL query would be rewritten by the semantic layer.
 
         The explanation follows the same routing as rewrite() but returns
         structured planner state and candidate decisions instead of only SQL.
         """
         sql = sql.strip()
+        self._rewrite_user_attributes = user_attributes
 
         if self._looks_like_yardstick_query(sql):
             try:
@@ -451,6 +457,35 @@ class QueryRewriter:
 
         if has_ctes or has_subquery_in_from or has_subquery_in_joins:
             return self._explain_ctes_or_subqueries(sql, parsed)
+
+        explicit_join_filters = []
+        if parsed.args.get("joins"):
+            explicit_join_filters = self._validate_explicit_semantic_joins(parsed)
+
+        self.inferred_table = self._extract_from_table(parsed)
+        self.table_aliases = self._source_aliases(parsed)
+        if self._needs_expression_postprocess(parsed):
+            rewritten_sql = self._rewrite_expression_query(parsed, extra_filters=explicit_join_filters)
+            return RewriteExplanation(
+                input_sql=sql,
+                rewritten_sql=rewritten_sql,
+                chosen_plan="semantic_plus_postprocess",
+                source_kind=self._source_kind_for_table(self.inferred_table),
+                candidate_plans=[
+                    CandidatePlan(
+                        name="semantic_plus_postprocess",
+                        valid=True,
+                        reason="SQL expression is evaluated over semantically generated fields",
+                    ),
+                    CandidatePlan(
+                        name="passthrough_plain_sql",
+                        valid=False,
+                        reason="query references a semantic model",
+                    ),
+                ],
+                post_process=parsed.sql(dialect=self.dialect),
+                applied_rules=["semantic_expression_postprocess"],
+            )
 
         plan = self._plan_simple_query(parsed)
         rewritten_sql = self._generate_from_plan(plan)

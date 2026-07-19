@@ -127,21 +127,17 @@ def rewrite_transport_sql(
             "because that rewrite path cannot prove access gates, row filters, and column "
             "restrictions were enforced. Use a structured query or standard semantic SQL."
         )
-    rewritten = rewriter.rewrite(query, strict=strict, user_attributes=user_attributes)
-
-    def canonical(value: str) -> str:
-        return value.strip().removesuffix(";").strip()
-
-    if (
-        controls_are_active(layer)
-        and canonical(rewritten) == canonical(query)
-        and _reads_from_source(query, layer.dialect)
-    ):
-        raise SecurityError(
-            f"{transport} refused SQL that could not be proven to use the semantic layer while "
-            "security controls are active. Query semantic model fields, or use a structured "
-            "query transport so access gates, row filters, and column restrictions are enforced."
-        )
+    if controls_are_active(layer):
+        explanation = rewriter.explain(query, strict=strict, user_attributes=user_attributes)
+        if explanation.chosen_plan == "passthrough_plain_sql" and _reads_from_source(query, layer.dialect):
+            raise SecurityError(
+                f"{transport} refused SQL that could not be proven to use the semantic layer while "
+                "security controls are active. Query semantic model fields, or use a structured "
+                "query transport so access gates, row filters, and column restrictions are enforced."
+            )
+        rewritten = explanation.rewritten_sql
+    else:
+        rewritten = rewriter.rewrite(query, strict=strict, user_attributes=user_attributes)
     return rewritten
 
 

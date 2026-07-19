@@ -6200,6 +6200,36 @@ view: +child {
     assert a_field is not None and a_field.label == "Renamed A"  # supported-parent refinement seeds
 
 
+def test_lookml_refinement_made_unsupported_parent_not_seeded():
+    """A parent turned unsupported by an EARLIER refinement is skipped when seeding a later one.
+
+    `view: +pdt_base` turns pdt_base into an unsupported derived table; a later `view: +child`
+    refinement of a pdt_base-only field must not seed it (the loader drops pdt_base, so the field
+    would query the child's real table). Only the pre-refinement snapshot was consulted before."""
+    graph = _parse_lkml(
+        """
+view: pdt_base {
+  sql_table_name: pdt_t ;;
+  dimension: pdt_only { type: string  sql: ${TABLE}.pdt_only ;; }
+}
+view: +pdt_base {
+  derived_table: { persist_for: "24 hours" }
+}
+view: child {
+  extends: [pdt_base]
+  sql_table_name: child_t ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+}
+view: +child {
+  dimension: pdt_only { label: "The PDT field" }
+}
+"""
+    )
+    dims = {d.name for d in graph.get_model("child").dimensions}
+    assert "pdt_only" not in dims  # not seeded from the refinement-made-unsupported parent
+    assert "id" in dims
+
+
 def test_lookml_extends_parent_required_in_all_model_scopes(caplog):
     """A parent only SOME models reaching the child include must not be inherited, and it warns.
 

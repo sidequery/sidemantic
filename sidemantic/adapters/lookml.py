@@ -483,8 +483,15 @@ class LookMLAdapter(BaseAdapter):
                     # seed from parents IN the base's include scope, mirroring the extends resolution
                     # below -- otherwise a table-backed view would expose an archived parent's field
                     # Looker (and the resolved extends) would not include.
+                    # Include refinement-added unsupported parents, not just the pre-refinement
+                    # snapshot: an earlier `view: +pdt_base` refinement can turn a parent into an
+                    # unsupported derived table, and seeding a later `view: +child` from it would
+                    # resurrect a parent-only field on the child's real table.
                     inherited_fields = self._inherited_raw_fields(
-                        base_name, raw_view_defs, _parent_in_scope, unsupported_parents=unsupported_pre
+                        base_name,
+                        raw_view_defs,
+                        _parent_in_scope,
+                        unsupported_parents=unsupported_pre | refinement_unsupported_dt,
                     )
                     # A refinement can touch a field that exists ONLY on an unsupported derived-table
                     # parent (dropped by the loader). Seeding skips it above, but the refinement's

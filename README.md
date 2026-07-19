@@ -124,8 +124,8 @@ TMDLAdapter().export(layer.graph, "exported_tmdl/")
 ## CLI
 
 ```bash
-# Query
-sidemantic query "SELECT revenue FROM orders" --db data.duckdb
+# Query as a human-readable table (also supports csv, json, and jsonl)
+sidemantic query "SELECT revenue FROM orders" --db data.duckdb --format table
 
 # Interactive workbench (TUI with SQL editor + charts)
 uvx --from "sidemantic[workbench]" sidemantic workbench models/ --db data.duckdb
@@ -149,8 +149,9 @@ sidemantic preagg recommend --db data.duckdb
 sidemantic migrate generate legacy/ --output output/
 ```
 
-See [the CLI contract](docs/cli.md) for help aliases, JSON output, stdin/stdout,
-exit codes, debugging, and secure credential input.
+See [the CLI contract](docs/cli.md) for output formats, `--plain`, quiet/verbose
+diagnostics, option placement, terminal behavior, environment precedence,
+stdin/stdout, exit codes, debugging, and secure credential input.
 
 ## Demos
 

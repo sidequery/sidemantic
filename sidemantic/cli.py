@@ -11,17 +11,24 @@ import typer
 from sidemantic import __version__
 from sidemantic.cli_contract import (
     HELP_REQUESTED_META_KEY,
+    OUTPUT_FORMATS,
     ContractGroup,
     InvocationError,
     cli_state,
+    color_enabled,
+    credential_file_from_env,
     emit_diagnostic,
     emit_error,
     emit_json,
+    emit_records,
     emit_result,
     emit_warning,
     fail,
+    progress,
     read_sql_input,
     read_text_input,
+    render_rows,
+    resolve_output_format,
     resolve_secret,
     write_text_output,
 )
@@ -51,18 +58,33 @@ def version_callback(value: bool):
 
 
 CLI_CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
+DOCS_URL = "https://sidemantic.com/sidemantic/cli"
+SUPPORT_URL = "https://github.com/sidequery/sidemantic/issues"
+ROOT_EPILOG = f"""Examples:
+  sidemantic info --format table
+  sidemantic query "SELECT orders.revenue FROM orders" --format json
+  sidemantic --project ./analytics validate
+
+Documentation: {DOCS_URL}
+Support: {SUPPORT_URL}"""
+GROUP_EPILOG = f"Documentation: {DOCS_URL}\nSupport: {SUPPORT_URL}"
+FORMATTED_COMMANDS = frozenset(
+    {"dashboard", "explain", "explain-sql", "info", "migrate", "migrator", "preagg", "query", "validate"}
+)
 
 
 app = typer.Typer(
     cls=ContractGroup,
     context_settings=CLI_CONTEXT_SETTINGS,
     help="Sidemantic: SQL-first semantic layer",
+    epilog=ROOT_EPILOG,
     no_args_is_help=True,
 )
 dashboard_app = typer.Typer(
     cls=ContractGroup,
     context_settings=CLI_CONTEXT_SETTINGS,
     help="Serve, validate, and type semantic dashboard specs",
+    epilog=f"Examples: sidemantic dashboard validate dashboard.yml\n\n{GROUP_EPILOG}",
     no_args_is_help=True,
 )
 app.add_typer(dashboard_app, name="dashboard")
@@ -70,6 +92,7 @@ gen_app = typer.Typer(
     cls=ContractGroup,
     context_settings=CLI_CONTEXT_SETTINGS,
     help="Generate typed TypeScript clients from the semantic layer",
+    epilog=f"Examples: sidemantic generate client --output client.ts\n\n{GROUP_EPILOG}",
     no_args_is_help=True,
 )
 app.add_typer(gen_app, name="gen", hidden=True)
@@ -78,6 +101,7 @@ migrate_app = typer.Typer(
     cls=ContractGroup,
     context_settings=CLI_CONTEXT_SETTINGS,
     help="Generate semantic models from SQL or check migration coverage",
+    epilog=f"Examples: sidemantic migrate check queries/ --format json\n\n{GROUP_EPILOG}",
     no_args_is_help=True,
 )
 app.add_typer(migrate_app, name="migrate")
@@ -85,6 +109,7 @@ server_app = typer.Typer(
     cls=ContractGroup,
     context_settings=CLI_CONTEXT_SETTINGS,
     help="Run Sidemantic API, PostgreSQL, or MCP servers",
+    epilog=f"Examples: sidemantic server api --port 4400\n\n{GROUP_EPILOG}",
     no_args_is_help=True,
 )
 app.add_typer(server_app, name="server")
@@ -242,12 +267,43 @@ def _load_graph_layer(
 @app.callback()
 def main(
     ctx: typer.Context,
-    version: bool = typer.Option(
-        None, "--version", "-v", callback=version_callback, is_eager=True, help="Show version"
+    version: bool = typer.Option(None, "--version", callback=version_callback, is_eager=True, help="Show version"),
+    project: Path = typer.Option(
+        None,
+        "--project",
+        "-p",
+        envvar="SIDEMANTIC_PROJECT",
+        help="Project root (defaults to discovery from cwd)",
     ),
-    project: Path = typer.Option(None, "--project", "-p", help="Project root (defaults to discovery from cwd)"),
-    config: Path = typer.Option(None, "--config", "-c", help="Path to config file (sidemantic.yaml)"),
-    debug: bool = typer.Option(False, "--debug", "-d", help="Show tracebacks for unexpected errors"),
+    config: Path = typer.Option(
+        None,
+        "--config",
+        "-c",
+        envvar="SIDEMANTIC_CONFIG",
+        help="Path to config file (sidemantic.yaml)",
+    ),
+    output_format: str = typer.Option(
+        None,
+        "--format",
+        envvar="SIDEMANTIC_FORMAT",
+        metavar="table|csv|json|jsonl",
+        help="Output format for structured results",
+    ),
+    plain: bool | None = typer.Option(
+        None, "--plain", envvar="SIDEMANTIC_PLAIN", help="Stable undecorated tabular output"
+    ),
+    quiet: bool | None = typer.Option(
+        None, "--quiet", "-q", envvar="SIDEMANTIC_QUIET", help="Suppress non-essential status"
+    ),
+    verbose: bool | None = typer.Option(
+        None, "--verbose", "-v", envvar="SIDEMANTIC_VERBOSE", help="Show detailed diagnostics"
+    ),
+    debug: bool | None = typer.Option(
+        None, "--debug", "-d", envvar="SIDEMANTIC_DEBUG", help="Show tracebacks for unexpected errors"
+    ),
+    no_color: bool | None = typer.Option(
+        None, "--no-color", envvar="SIDEMANTIC_NO_COLOR", help="Disable terminal color"
+    ),
 ):
     """Sidemantic CLI.
 
@@ -256,19 +312,84 @@ def main(
     """
     global _loaded_config, _project_context
 
-    cli_state().reset(debug=debug)
+    if output_format is not None:
+        output_format = output_format.lower()
+        if output_format not in OUTPUT_FORMATS:
+            raise InvocationError(f"--format must be one of: {', '.join(OUTPUT_FORMATS)}")
+
+    format_explicit = ctx.get_parameter_source("output_format") is click.core.ParameterSource.COMMANDLINE
+    plain_explicit = ctx.get_parameter_source("plain") is click.core.ParameterSource.COMMANDLINE
+
+    cli_state().reset(
+        debug=bool(debug),
+        quiet=bool(quiet),
+        verbose=bool(verbose),
+        requested_format=output_format,
+        format_explicit=format_explicit,
+        plain=bool(plain),
+        plain_explicit=plain_explicit,
+        color=color_enabled(no_color=bool(no_color)),
+    )
 
     # Help must remain available even when project configuration is malformed,
     # since it is a recovery path. Click has already resolved the subcommand by
     # the time the root callback runs, so skip project discovery for this path.
     if ctx.meta.get(HELP_REQUESTED_META_KEY) or ctx.invoked_subcommand == "help":
         return
+    if format_explicit and ctx.invoked_subcommand not in FORMATTED_COMMANDS:
+        raise InvocationError(f"{ctx.invoked_subcommand} does not support --format")
 
     try:
         _project_context = ProjectContext.discover(start_dir=project, config_path=config)
         _loaded_config = _project_context.config
     except ProjectResolutionError as exc:
         raise typer.BadParameter(str(exc), param_hint="--config") from exc
+
+    configured = _loaded_config.cli if _loaded_config else None
+    configured_format = configured.format if configured else None
+    configured_plain = bool(configured and configured.plain)
+    selected_format = output_format if output_format is not None else configured_format
+    selected_plain = bool(plain) if plain is not None else configured_plain
+
+    def source_priority(name: str, configured_value: object) -> int:
+        source = ctx.get_parameter_source(name)
+        if source is click.core.ParameterSource.COMMANDLINE:
+            return 3
+        if source is click.core.ParameterSource.ENVIRONMENT:
+            return 2
+        return 1 if configured_value else 0
+
+    format_priority = source_priority("output_format", configured_format)
+    plain_priority = source_priority("plain", configured_plain)
+    if selected_plain and selected_format is not None:
+        if format_priority > plain_priority:
+            selected_plain = False
+        elif selected_format != "table" and plain_priority > format_priority:
+            selected_format = None
+
+    selected_no_color = bool(no_color) if no_color is not None else bool(configured and configured.no_color)
+    selected_color = color_enabled(no_color=selected_no_color)
+    cli_state().reset(
+        debug=bool(debug),
+        quiet=bool(quiet) if quiet is not None else bool(configured and configured.quiet),
+        verbose=bool(verbose) if verbose is not None else bool(configured and configured.verbose),
+        requested_format=selected_format,
+        format_explicit=format_explicit,
+        plain=selected_plain,
+        plain_explicit=plain_explicit,
+        color=selected_color,
+    )
+    ctx.color = selected_color
+
+
+@dashboard_app.callback()
+def dashboard_main(ctx: typer.Context) -> None:
+    """Apply dashboard-group presentation contracts."""
+
+    if ctx.find_root().meta.get(HELP_REQUESTED_META_KEY):
+        return
+    if cli_state().format_explicit and ctx.invoked_subcommand != "validate":
+        raise InvocationError(f"dashboard {ctx.invoked_subcommand} does not support --format")
 
 
 @app.command("help", context_settings=CLI_CONTEXT_SETTINGS)
@@ -330,7 +451,9 @@ def migrator(
     """
     from sidemantic.core.migrator import Migrator
 
-    cli_state().machine_output = json_output
+    output_format = resolve_output_format(json_output=json_output)
+    structured = json_output or cli_state().requested_format is not None or cli_state().plain
+    verbose = verbose or cli_state().verbose
 
     if _warn_deprecated:
         emit_warning("`migrator` is deprecated; use `migrate generate` or `migrate check`")
@@ -355,9 +478,8 @@ def migrator(
             get_query_history = getattr(adapter, "get_query_history", None)
             if get_query_history is None:
                 raise ValueError(f"{adapter.dialect} does not support query-history import")
-            typer.echo(
+            emit_diagnostic(
                 f"Importing up to {limit} queries from the last {days_back} day(s) of {adapter.dialect} history...",
-                err=True,
             )
             try:
                 try:
@@ -373,7 +495,7 @@ def migrator(
                 if close_adapter:
                     close_adapter()
             queries_from_history = [query.strip() for query in imported if query and query.strip()]
-            typer.echo(f"Imported {len(queries_from_history)} queries from warehouse history", err=True)
+            emit_diagnostic(f"Imported {len(queries_from_history)} queries from warehouse history")
             if not queries_from_history:
                 raise ValueError("No queries found in warehouse history for the requested time range")
             return queries_from_history
@@ -400,10 +522,10 @@ def migrator(
                 assert queries is not None
                 report = analyzer.analyze_folder(str(queries))
 
-            capture = contextlib.redirect_stdout(io.StringIO()) if json_output else contextlib.nullcontext()
-            with capture:
+            capture = contextlib.redirect_stdout(io.StringIO()) if structured else contextlib.nullcontext()
+            with capture, progress("Generating semantic models and rewritten queries"):
                 # Generate model definitions
-                typer.echo("\nGenerating model definitions...", err=True)
+                emit_diagnostic("Generating model definitions...")
                 models = analyzer.generate_models(report)
 
                 models_dir = generate_models / "models"
@@ -412,29 +534,32 @@ def migrator(
                 analyzer.write_graph_metrics_file(graph_metrics, str(models_dir))
 
                 # Generate rewritten queries
-                typer.echo("\nGenerating rewritten queries...", err=True)
+                emit_diagnostic("Generating rewritten queries...")
                 rewritten = analyzer.generate_rewritten_queries(report)
 
                 queries_dir = generate_models / "rewritten_queries"
                 analyzer.write_rewritten_queries(rewritten, str(queries_dir))
 
-            typer.echo(
-                f"\n✓ Generated {len(models)} models, {len(graph_metrics)} graph metrics, "
-                f"and {len(rewritten)} rewritten queries in {generate_models}",
-                err=True,
+            emit_diagnostic(
+                f"Generated {len(models)} models, {len(graph_metrics)} graph metrics, "
+                f"and {len(rewritten)} rewritten queries in {generate_models}"
             )
-            if json_output:
-                emit_json(
-                    {
-                        "mode": "generate",
-                        "report": _migration_report_json(report),
-                        "generated": {
-                            "models": len(models),
-                            "graph_metrics": len(graph_metrics),
-                            "rewritten_queries": len(rewritten),
-                            "output": str(generate_models),
-                        },
-                    }
+            if structured:
+                generated = {
+                    "models": len(models),
+                    "graph_metrics": len(graph_metrics),
+                    "rewritten_queries": len(rewritten),
+                    "output": str(generate_models),
+                }
+                payload = {
+                    "mode": "generate",
+                    "report": _migration_report_json(report),
+                    "generated": generated,
+                }
+                emit_records(
+                    [{"mode": "generate", **generated}],
+                    output_format=output_format,
+                    json_value=payload,
                 )
 
         except typer.Exit:
@@ -464,8 +589,13 @@ def migrator(
                 report = analyzer.analyze_folder(str(queries))
 
             # Print report
-            if json_output:
-                emit_json({"mode": "check", "report": _migration_report_json(report, verbose=verbose)})
+            if structured:
+                report_payload = _migration_report_json(report, verbose=verbose)
+                emit_records(
+                    [{"mode": "check", **{key: value for key, value in report_payload.items() if key != "queries"}}],
+                    output_format=output_format,
+                    json_value={"mode": "check", "report": report_payload},
+                )
             else:
                 analyzer.print_report(report, verbose=verbose)
 
@@ -533,7 +663,7 @@ def _migration_queries(queries: Path | None) -> Path:
     return resolved
 
 
-@migrate_app.command("generate")
+@migrate_app.command("generate", epilog=GROUP_EPILOG)
 def migrate_generate(
     queries: Path = typer.Argument(None, help="SQL file or directory (defaults to project queries/)"),
     output: Path = typer.Option(None, "--output", "-o", help="Output project root (defaults to current project)"),
@@ -569,7 +699,7 @@ def migrate_generate(
     )
 
 
-@migrate_app.command("check")
+@migrate_app.command("check", epilog=GROUP_EPILOG)
 def migrate_check(
     queries: Path = typer.Argument(None, help="SQL file or directory (defaults to project queries/)"),
     models: Path = typer.Option(None, "--models", "-m", help="Models override"),
@@ -604,7 +734,7 @@ def migrate_check(
     )
 
 
-@app.command()
+@app.command(epilog=GROUP_EPILOG)
 def info(
     directory: Path = typer.Argument(
         None, help="Directory containing semantic layer files (defaults to project models)"
@@ -619,6 +749,8 @@ def info(
       sidemantic info ./models
     """
     try:
+        output_format = resolve_output_format(json_output=json_output)
+        structured = json_output or cli_state().requested_format is not None or cli_state().plain
         directory = _models_path(directory)
         layer = SemanticLayer()
         load_from_directory(layer, str(directory))
@@ -635,8 +767,13 @@ def info(
             for model_name, model in sorted(layer.graph.models.items())
         ]
 
-        if json_output:
-            emit_json({"path": str(directory), "models": models_payload})
+        if structured:
+            emit_records(
+                models_payload,
+                columns=("name", "table", "dimensions", "metrics", "relationships", "connected_to"),
+                output_format=output_format,
+                json_value={"path": str(directory), "models": models_payload},
+            )
             return
 
         if not models_payload:
@@ -726,7 +863,8 @@ def mcp_serve(
 
     try:
         # Initialize the semantic layer
-        initialize_layer(str(directory), connection=connection_str, init_sql=effective_init_sql)
+        with progress("Initializing MCP server"):
+            initialize_layer(str(directory), connection=connection_str, init_sql=effective_init_sql)
 
         # If demo mode, populate with demo data
         if demo:
@@ -774,24 +912,24 @@ def mcp_serve(
             import sidemantic.mcp_server as _mcp_mod
 
             _mcp_mod._apps_enabled = True
-            typer.echo("Interactive UI widgets enabled", err=True)
+            emit_diagnostic("Interactive UI widgets enabled")
 
         # Determine transport
         if http or apps:
             if apps and not http:
-                typer.echo("Note: --apps implies HTTP transport, enabling automatically", err=True)
+                emit_diagnostic("Note: --apps implies HTTP transport, enabling automatically")
             mcp.settings.port = port
             transport = "streamable-http"
         else:
             transport = "stdio"
 
-        typer.echo(f"Starting MCP server for: {directory}", err=True)
+        emit_diagnostic(f"Starting MCP server for: {directory}")
         if db_path and db_path != ":memory:":
-            typer.echo(f"Using database: {db_path}", err=True)
+            emit_diagnostic(f"Using database: {db_path}")
         if transport == "streamable-http":
-            typer.echo(f"Server running on HTTP at port {port}...", err=True)
+            emit_diagnostic(f"Server running on HTTP at port {port}...")
         else:
-            typer.echo("Server running on stdio...", err=True)
+            emit_diagnostic("Server running on stdio...")
 
         # Run the MCP server
         mcp.run(transport=transport)
@@ -850,7 +988,7 @@ def rewrite(
         fail(e)
 
 
-@app.command()
+@app.command(epilog=GROUP_EPILOG)
 def convert(
     source: Path = typer.Argument(None, help="Semantic project, directory, or exact file to convert"),
     output: Path = typer.Option(None, "--output", "-o", help="Destination file or directory"),
@@ -903,12 +1041,13 @@ def convert(
                 target_spec = get_semantic_format(target_format, operation="export")
                 suffix = target_spec.extensions[0] if target_spec.extensions else ".txt"
                 converted_output = temp_root / f"stdout{suffix}"
-            graph = convert_semantic_source(
-                source,
-                converted_output,
-                source_format=source_format,
-                target_format=target_format,
-            )
+            with progress(f"Converting semantic definitions to {target_format}"):
+                graph = convert_semantic_source(
+                    source,
+                    converted_output,
+                    source_format=source_format,
+                    target_format=target_format,
+                )
             if output_to_stdout:
                 write_text_output("-", converted_output.read_text())
             else:
@@ -990,7 +1129,7 @@ def export_native(
         fail(e)
 
 
-@app.command()
+@app.command(epilog=GROUP_EPILOG)
 def query(
     sql: str = typer.Argument(..., help="SQL query to execute, or - to read from stdin"),
     models: Path = typer.Option(None, "--models", "-m", help="Directory containing semantic layer files"),
@@ -1019,6 +1158,7 @@ def query(
       sidemantic query "SELECT revenue FROM orders" --use-preaggregations --dry-run
     """
     try:
+        output_format = resolve_output_format(default="csv")
         sql = read_sql_input(sql)
         layer = _load_query_layer(
             models,
@@ -1039,7 +1179,15 @@ def query(
                 use_preaggregations=layer.use_preaggregations,
             )
             rewritten_sql = rewriter.rewrite(sql)
-            typer.echo(rewritten_sql)
+            if cli_state().format_explicit and output_format in {"csv", "json", "jsonl"}:
+                emit_records(
+                    [{"sql": rewritten_sql}],
+                    columns=("sql",),
+                    output_format=output_format,
+                    json_value={"sql": rewritten_sql},
+                )
+            else:
+                emit_result(rewritten_sql)
             return
 
         # Execute query
@@ -1049,20 +1197,10 @@ def query(
         columns = [desc[0] for desc in result.description]
         rows = result.fetchall()
 
-        # Output as CSV
-        import csv
-        import sys
-
+        rendered = render_rows(rows, columns=columns, output_format=output_format)
+        write_text_output(output, rendered)
         if output and str(output) != "-":
-            with open(output, "w", newline="") as f:
-                writer = csv.writer(f)
-                writer.writerow(columns)
-                writer.writerows(rows)
-            typer.echo(f"Results written to {output}", err=True)
-        else:
-            writer = csv.writer(sys.stdout)
-            writer.writerow(columns)
-            writer.writerows(rows)
+            emit_diagnostic(f"Results written to {output}")
 
     except typer.Exit:
         raise
@@ -1070,7 +1208,7 @@ def query(
         fail(e)
 
 
-@dashboard_app.command("validate")
+@dashboard_app.command("validate", epilog=GROUP_EPILOG)
 def dashboard_validate(
     spec: Path = typer.Argument(None, help="Dashboard YAML or JSON spec (defaults to the project dashboard)"),
     models: Path = typer.Option(None, "--models", "-m", help="Directory containing semantic layer files"),
@@ -1085,6 +1223,8 @@ def dashboard_validate(
 ):
     """Validate a semantic dashboard spec against loaded models."""
     try:
+        output_format = resolve_output_format(json_output=json_output)
+        structured = json_output or cli_state().requested_format is not None or cli_state().plain
         from sidemantic.dashboard import DashboardDocument
 
         spec = _dashboard_path(spec)
@@ -1100,15 +1240,27 @@ def dashboard_validate(
             execute_sql=_resolve_connection(connection=connection, database=db, models=models) is not None,
         )
         chart_count = sum(len(tab.get("charts") or []) for tab in document.tabs)
-        if json_output:
-            emit_json(
-                {
-                    "valid": not errors,
-                    "spec": str(spec),
-                    "tabs": len(document.tabs),
-                    "charts": chart_count,
-                    "errors": list(errors),
-                }
+        if structured:
+            payload = {
+                "valid": not errors,
+                "spec": str(spec),
+                "tabs": len(document.tabs),
+                "charts": chart_count,
+                "errors": list(errors),
+            }
+            emit_records(
+                [
+                    {
+                        "valid": not errors,
+                        "spec": str(spec),
+                        "tabs": len(document.tabs),
+                        "charts": chart_count,
+                        "errors": list(errors),
+                    }
+                ],
+                columns=("valid", "spec", "tabs", "charts", "errors"),
+                output_format=output_format,
+                json_value=payload,
             )
             if errors:
                 raise typer.Exit(1)
@@ -1146,14 +1298,15 @@ def dashboard_serve(
         spec = _dashboard_path(spec)
         if output_dir is not None or warm_interaction_preaggregations:
             emit_warning("the legacy crossfilter serve options are deprecated and ignored by the official UI")
-        layer = _load_query_layer(
-            models,
-            connection=connection,
-            db=db,
-            use_preaggregations=use_preaggregations,
-        )
-        document = DashboardDocument.from_file(spec)
-        errors = document.validate(layer, execute_sql=True)
+        with progress("Preparing dashboard server"):
+            layer = _load_query_layer(
+                models,
+                connection=connection,
+                db=db,
+                use_preaggregations=use_preaggregations,
+            )
+            document = DashboardDocument.from_file(spec)
+            errors = document.validate(layer, execute_sql=True)
         if errors:
             fail("; ".join(str(error) for error in errors))
 
@@ -1166,15 +1319,15 @@ def dashboard_serve(
         resolved_port = port or (api_config.port if api_config else 4400)
         auth_token = resolve_secret(
             direct=None,
-            secret_file=None,
+            secret_file=credential_file_from_env("SIDEMANTIC_API_AUTH_TOKEN_FILE"),
             configured_direct=api_config.auth_token if api_config else None,
             configured_file=api_config.auth_token_file if api_config else None,
             direct_option="--auth-token",
             file_option="--auth-token-file",
             label="API auth token",
         )
-        typer.echo(f"Dashboard: {document.title}", err=True)
-        typer.echo(f"Web UI: http://{resolved_host}:{resolved_port}/", err=True)
+        emit_diagnostic(f"Dashboard: {document.title}")
+        emit_diagnostic(f"Web UI: http://{resolved_host}:{resolved_port}/")
         start_api_server(
             layer,
             host=resolved_host,
@@ -1301,6 +1454,17 @@ def explain_sql_command(
       sidemantic explain-sql "SELECT revenue, status FROM orders" --use-preaggregations
     """
     try:
+        state = cli_state()
+        if state.plain and state.plain_explicit:
+            raise InvocationError("explain does not support --plain; use --format json")
+        if state.format_explicit and state.requested_format != "json":
+            raise InvocationError("explain supports only --format json")
+        if state.format_explicit:
+            resolve_output_format(default="json")
+        else:
+            state.requested_format = None
+            state.plain = False
+
         sql = read_sql_input(sql)
         layer = _load_query_layer(
             models,
@@ -1398,9 +1562,12 @@ def serve(
     host_resolved = host or (_loaded_config.pg_server.host if _loaded_config else "127.0.0.1")
     port_resolved = port if port is not None else (_loaded_config.pg_server.port if _loaded_config else 5433)
     username_resolved = username or (_loaded_config.pg_server.username if _loaded_config else None)
+    resolved_password_file = password_file
+    if password is None and password_file is None:
+        resolved_password_file = credential_file_from_env("SIDEMANTIC_PG_PASSWORD_FILE")
     password_resolved = resolve_secret(
         direct=password,
-        secret_file=password_file,
+        secret_file=resolved_password_file,
         configured_direct=_loaded_config.pg_server.password if _loaded_config else None,
         configured_file=_loaded_config.pg_server.password_file if _loaded_config else None,
         direct_option="--password",
@@ -1420,7 +1587,8 @@ def serve(
         layer = SemanticLayer(preagg_database=preagg_db, preagg_schema=preagg_sch)
 
     # Load models
-    load_from_directory(layer, str(directory))
+    with progress("Preparing PostgreSQL server"):
+        load_from_directory(layer, str(directory))
 
     if not layer.graph.models:
         fail("No models found")
@@ -1473,6 +1641,7 @@ def serve(
         user_attrs_map = loaded
 
     # Start the server
+    emit_diagnostic(f"PostgreSQL server listening on {host_resolved}:{port_resolved}")
     start_server(
         layer,
         host=host_resolved,
@@ -1569,9 +1738,12 @@ def api_serve(
 
     host_resolved = host or (_loaded_config.api_server.host if _loaded_config else "127.0.0.1")
     port_resolved = port if port is not None else (_loaded_config.api_server.port if _loaded_config else 4400)
+    resolved_auth_token_file = auth_token_file
+    if auth_token is None and auth_token_file is None:
+        resolved_auth_token_file = credential_file_from_env("SIDEMANTIC_API_AUTH_TOKEN_FILE")
     auth_token_resolved = resolve_secret(
         direct=auth_token,
-        secret_file=auth_token_file,
+        secret_file=resolved_auth_token_file,
         configured_direct=_loaded_config.api_server.auth_token if _loaded_config else None,
         configured_file=_loaded_config.api_server.auth_token_file if _loaded_config else None,
         direct_option="--auth-token",
@@ -1608,7 +1780,8 @@ def api_serve(
     else:
         layer = SemanticLayer(preagg_database=preagg_db, preagg_schema=preagg_sch)
 
-    load_from_directory(layer, str(directory))
+    with progress("Preparing HTTP API server"):
+        load_from_directory(layer, str(directory))
 
     if not layer.graph.models:
         fail("No models found")
@@ -1646,16 +1819,16 @@ def api_serve(
 
     serve_ui = ui and ui_static_dir().joinpath("index.html").exists()
 
-    typer.echo(f"Starting HTTP API server for: {directory}", err=True)
-    typer.echo(f"Listening on http://{host_resolved}:{port_resolved}", err=True)
+    emit_diagnostic(f"Starting HTTP API server for: {directory}")
+    emit_diagnostic(f"Listening on http://{host_resolved}:{port_resolved}")
     if serve_ui:
-        typer.echo(f"Web UI: http://{host_resolved}:{port_resolved}/", err=True)
+        emit_diagnostic(f"Web UI: http://{host_resolved}:{port_resolved}/")
     elif ui:
-        typer.echo("Web UI: not built (run scripts/build_webapp.py)", err=True)
+        emit_diagnostic("Web UI: not built (run scripts/build_webapp.py)")
     if auth_token_resolved:
-        typer.echo("Authentication: bearer token required", err=True)
+        emit_diagnostic("Authentication: bearer token required")
     else:
-        typer.echo("Authentication: disabled", err=True)
+        emit_diagnostic("Authentication: disabled")
 
     start_api_server(
         layer,
@@ -1694,7 +1867,7 @@ def tree(
         fail(e)
 
 
-@app.command()
+@app.command(epilog=GROUP_EPILOG)
 def validate(
     directory: Path = typer.Argument(
         None, help="Directory containing semantic layer files (defaults to project models)"
@@ -1713,6 +1886,9 @@ def validate(
       sidemantic validate
       sidemantic validate ./models --verbose
     """
+    output_format = resolve_output_format(json_output=json_output)
+    structured = json_output or cli_state().requested_format is not None or cli_state().plain
+    verbose = verbose or cli_state().verbose
     directory = _models_path(directory)
 
     engine, fallback = _resolve_engine_options(engine, fallback)
@@ -1725,28 +1901,32 @@ def validate(
 
             graph = load_graph_from_directory_with_rust(directory)
             rust_models = sorted(graph.models)
-            if not json_output:
+            if not structured:
                 typer.echo(f"Validated {len(graph.models)} models with Rust")
-            if verbose and not json_output:
+            if verbose and not structured:
                 for model_name in sorted(graph.models):
                     typer.echo(f"  - {model_name}")
         except Exception as e:
             if engine == "rust" or not fallback:
                 if cli_state().debug:
                     raise
-                if json_output:
-                    emit_json(
-                        {
+                message = f"Rust validation failed: {e}"
+                if structured:
+                    emit_records(
+                        [{"level": "error", "message": message}],
+                        columns=("level", "message"),
+                        output_format=output_format,
+                        json_value={
                             "valid": False,
                             "path": str(directory),
                             "engine": engine,
-                            "errors": [f"Rust validation failed: {e}"],
+                            "errors": [message],
                             "warnings": [],
                             "info": [],
-                        }
+                        },
                     )
                 else:
-                    emit_error(f"Rust validation failed: {e}")
+                    emit_error(message)
                 raise typer.Exit(1)
 
     # Canonical semantic checks are always Python-backed; Rust validation above
@@ -1759,33 +1939,41 @@ def validate(
     except Exception as e:
         if cli_state().debug:
             raise
-        if json_output:
-            emit_json(
-                {
-                    "valid": False,
-                    "path": str(directory),
-                    "engine": engine or "python",
-                    "errors": [str(e)],
-                    "warnings": [],
-                    "info": [],
-                }
+        payload = {
+            "valid": False,
+            "path": str(directory),
+            "engine": engine or "python",
+            "errors": [str(e)],
+            "warnings": [],
+            "info": [],
+        }
+        if structured:
+            emit_records(
+                [{"level": "error", "message": str(e)}],
+                columns=("level", "message"),
+                output_format=output_format,
+                json_value=payload,
             )
         else:
             emit_error(e)
         raise typer.Exit(1)
 
-    if json_output:
-        emit_json(
-            {
-                "valid": not report.errors,
-                "path": str(directory),
-                "engine": engine or "python",
-                "rust_models": rust_models,
-                "errors": list(report.errors),
-                "warnings": list(report.warnings),
-                "info": list(report.info),
-            }
-        )
+    if structured:
+        payload = {
+            "valid": not report.errors,
+            "path": str(directory),
+            "engine": engine or "python",
+            "rust_models": rust_models,
+            "errors": list(report.errors),
+            "warnings": list(report.warnings),
+            "info": list(report.info),
+        }
+        records = [
+            *({"level": "error", "message": str(message)} for message in report.errors),
+            *({"level": "warning", "message": str(message)} for message in report.warnings),
+            *({"level": "info", "message": str(message)} for message in report.info),
+        ]
+        emit_records(records, columns=("level", "message"), output_format=output_format, json_value=payload)
         if report.errors:
             raise typer.Exit(1)
         return
@@ -1879,12 +2067,13 @@ preagg_app = typer.Typer(
     cls=ContractGroup,
     context_settings=CLI_CONTEXT_SETTINGS,
     help="Pre-aggregation recommendation and management",
+    epilog=f"Examples: sidemantic preagg recommend --queries queries.sql\n\n{GROUP_EPILOG}",
     no_args_is_help=True,
 )
 app.add_typer(preagg_app, name="preagg")
 
 
-@preagg_app.command("recommend")
+@preagg_app.command("recommend", epilog=GROUP_EPILOG)
 def preagg_recommend(
     queries: Path = typer.Option(None, "--queries", "-q", help="Path to file/folder with SQL queries"),
     connection: str = typer.Option(None, "--connection", help="Database connection string to fetch query history"),
@@ -1907,7 +2096,8 @@ def preagg_recommend(
     from sidemantic.core.preagg_recommender import PreAggregationRecommender
 
     try:
-        cli_state().machine_output = json_output
+        output_format = resolve_output_format(json_output=json_output)
+        structured = json_output or cli_state().requested_format is not None or cli_state().plain
         recommender = PreAggregationRecommender(min_query_count=min_count, min_benefit_score=min_score)
         resolved_connection = None
         if not queries:
@@ -1926,8 +2116,9 @@ def preagg_recommend(
             preagg_sch = _loaded_config.preagg_schema if _loaded_config else None
             layer = SemanticLayer(connection=connection_str, preagg_database=preagg_db, preagg_schema=preagg_sch)
             adapter = layer.adapter
-            typer.echo(f"Fetching query history from {adapter.dialect}...", err=True)
-            recommender.fetch_and_parse_query_history(adapter, days_back=days_back, limit=limit)
+            emit_diagnostic(f"Fetching query history from {adapter.dialect}...")
+            with progress("Fetching and analyzing query history"):
+                recommender.fetch_and_parse_query_history(adapter, days_back=days_back, limit=limit)
         elif queries:
             if str(queries) == "-":
                 sql = read_text_input(queries, label="query log")
@@ -1942,14 +2133,14 @@ def preagg_recommend(
 
         # Print summary
         summary = recommender.get_summary()
-        typer.echo(f"\n✓ Analyzed {summary['total_queries']} queries", err=True)
-        typer.echo(f"  Found {summary['unique_patterns']} unique patterns", err=True)
-        typer.echo(f"  {summary['patterns_above_threshold']} patterns above threshold", err=True)
+        emit_diagnostic(f"✓ Analyzed {summary['total_queries']} queries")
+        emit_diagnostic(f"Found {summary['unique_patterns']} unique patterns")
+        emit_diagnostic(f"{summary['patterns_above_threshold']} patterns above threshold")
 
         if summary["models"]:
-            typer.echo("\n  Models:", err=True)
+            emit_diagnostic("Models:")
             for model_name, count in summary["models"].items():
-                typer.echo(f"    {model_name}: {count} queries", err=True)
+                emit_diagnostic(f"  {model_name}: {count} queries")
 
         # Get recommendations
         recommendations = recommender.get_recommendations(top_n=top_n)
@@ -1967,8 +2158,13 @@ def preagg_recommend(
             for rec in recommendations
         ]
 
-        if json_output:
-            emit_json({"summary": summary, "recommendations": recommendation_payload})
+        if structured:
+            emit_records(
+                recommendation_payload,
+                columns=("name", "model", "query_count", "benefit_score", "metrics", "dimensions", "granularities"),
+                output_format=output_format,
+                json_value={"summary": summary, "recommendations": recommendation_payload},
+            )
             return
 
         if not recommendations:
@@ -2004,7 +2200,7 @@ def preagg_recommend(
         fail(e)
 
 
-@preagg_app.command("apply")
+@preagg_app.command("apply", epilog=GROUP_EPILOG)
 def preagg_apply(
     directory: Path = typer.Argument(None, help="Directory containing semantic layer YAML files"),
     queries: Path = typer.Option(None, "--queries", "-q", help="Path to file/folder with SQL queries"),
@@ -2032,7 +2228,8 @@ def preagg_apply(
     from sidemantic.core.preagg_recommender import PreAggregationRecommender
 
     try:
-        cli_state().machine_output = json_output
+        output_format = resolve_output_format(json_output=json_output)
+        structured = json_output or cli_state().requested_format is not None or cli_state().plain
         directory = _models_path(directory)
         recommender = PreAggregationRecommender(min_query_count=min_count, min_benefit_score=min_score)
         resolved_connection = None
@@ -2053,8 +2250,9 @@ def preagg_apply(
             preagg_sch = _loaded_config.preagg_schema if _loaded_config else None
             layer = SemanticLayer(connection=connection_str, preagg_database=preagg_db, preagg_schema=preagg_sch)
             adapter = layer.adapter
-            typer.echo(f"Fetching query history from {adapter.dialect}...", err=True)
-            recommender.fetch_and_parse_query_history(adapter, days_back=days_back, limit=limit)
+            emit_diagnostic(f"Fetching query history from {adapter.dialect}...")
+            with progress("Fetching and analyzing query history"):
+                recommender.fetch_and_parse_query_history(adapter, days_back=days_back, limit=limit)
         elif queries:
             if str(queries) == "-":
                 sql = read_text_input(queries, label="query log")
@@ -2071,34 +2269,35 @@ def preagg_apply(
         recommendations = recommender.get_recommendations(top_n=top_n)
 
         if not recommendations:
-            if json_output:
-                emit_json({"dry_run": dry_run, "recommendations": 0, "added": 0, "skipped": 0})
+            if structured:
+                payload = {"dry_run": dry_run, "recommendations": 0, "added": 0, "skipped": 0}
+                emit_records([payload], output_format=output_format, json_value=payload)
                 return
-            typer.echo("No recommendations found above thresholds", err=True)
+            emit_diagnostic("No recommendations found above thresholds")
             raise typer.Exit(0)
 
-        typer.echo(f"\nFound {len(recommendations)} recommendations to apply\n", err=True)
+        emit_diagnostic(f"Found {len(recommendations)} recommendations to apply")
 
-        result = apply_recommendations_to_yaml(directory, recommendations, recommender, dry_run=dry_run)
+        with progress("Applying pre-aggregation recommendations"):
+            result = apply_recommendations_to_yaml(directory, recommendations, recommender, dry_run=dry_run)
 
-        if json_output:
-            emit_json(
-                {
-                    "dry_run": dry_run,
-                    "recommendations": len(recommendations),
-                    "added": result.added,
-                    "skipped": result.skipped,
-                }
-            )
+        if structured:
+            payload = {
+                "dry_run": dry_run,
+                "recommendations": len(recommendations),
+                "added": result.added,
+                "skipped": result.skipped,
+            }
+            emit_records([payload], output_format=output_format, json_value=payload)
             return
 
         if dry_run:
-            typer.echo(f"\nDry run: Would add {result.added} pre-aggregations", err=True)
-            typer.echo("Remove --dry-run to apply changes", err=True)
+            emit_diagnostic(f"Dry run: Would add {result.added} pre-aggregations")
+            emit_diagnostic("Remove --dry-run to apply changes")
         else:
-            typer.echo(f"\n✓ Added {result.added} pre-aggregations to model files", err=True)
+            emit_diagnostic(f"✓ Added {result.added} pre-aggregations to model files")
         if result.skipped:
-            typer.echo(f"Skipped {result.skipped} already-present definitions", err=True)
+            emit_diagnostic(f"Skipped {result.skipped} already-present definitions")
 
     except typer.Exit:
         raise
@@ -2106,7 +2305,7 @@ def preagg_apply(
         fail(e)
 
 
-@preagg_app.command("refresh")
+@preagg_app.command("refresh", epilog=GROUP_EPILOG)
 def refresh(
     directory: Path = typer.Argument(
         None, help="Directory containing semantic layer files (defaults to project models)"
@@ -2132,7 +2331,8 @@ def refresh(
       sidemantic preagg refresh models/ --connection "postgres://localhost:5432/db"
     """
     try:
-        cli_state().machine_output = json_output
+        output_format = resolve_output_format(json_output=json_output)
+        structured = json_output or cli_state().requested_format is not None or cli_state().plain
         from sidemantic.core.preagg_management import resolve_preaggregation_targets, resolve_refresh_mode
 
         directory = _models_path(directory)
@@ -2183,7 +2383,7 @@ def refresh(
         if not preaggs_to_refresh:
             fail("No pre-aggregations found to refresh")
 
-        typer.echo(f"\nRefreshing {len(preaggs_to_refresh)} pre-aggregation(s)...\n", err=True)
+        emit_diagnostic(f"Refreshing {len(preaggs_to_refresh)} pre-aggregation(s)...")
 
         # Determine the dialect: drives index DDL (DuckDB/Postgres) and engine MVs.
         dialect = None
@@ -2220,18 +2420,19 @@ def refresh(
                 watermark_column = f"{preagg_obj.time_dimension}_{preagg_obj.granularity}"
 
             # Refresh
-            typer.echo(f"Refreshing {model_name}.{preagg_obj.name} ({resolved_mode})...", err=True)
-            result = preagg_obj.refresh(
-                connection=conn,
-                source_sql=source_sql,
-                table_name=table_name,
-                mode=resolved_mode,
-                watermark_column=watermark_column,
-                dialect=dialect,
-                model=model_obj,
-                database=database,
-                schema=schema,
-            )
+            emit_diagnostic(f"Refreshing {model_name}.{preagg_obj.name} ({resolved_mode})...")
+            with progress(f"Refreshing {model_name}.{preagg_obj.name}"):
+                result = preagg_obj.refresh(
+                    connection=conn,
+                    source_sql=source_sql,
+                    table_name=table_name,
+                    mode=resolved_mode,
+                    watermark_column=watermark_column,
+                    dialect=dialect,
+                    model=model_obj,
+                    database=database,
+                    schema=schema,
+                )
             refreshed.append(
                 {
                     "model": model_name,
@@ -2244,15 +2445,16 @@ def refresh(
             )
 
             # Print result
-            if result.rows_inserted >= 0:
-                typer.echo(f"  ✓ {table_name}: {result.rows_inserted} rows in {result.duration_seconds:.2f}s", err=True)
-            else:
-                typer.echo(f"  ✓ {table_name}: completed in {result.duration_seconds:.2f}s", err=True)
+            if not structured:
+                if result.rows_inserted >= 0:
+                    emit_diagnostic(f"  ✓ {table_name}: {result.rows_inserted} rows in {result.duration_seconds:.2f}s")
+                else:
+                    emit_diagnostic(f"  ✓ {table_name}: completed in {result.duration_seconds:.2f}s")
 
-        if json_output:
-            emit_json({"refreshed": refreshed})
+        if structured:
+            emit_records(refreshed, output_format=output_format, json_value={"refreshed": refreshed})
         else:
-            typer.echo("\nDone!", err=True)
+            emit_diagnostic("Done!")
 
     except typer.Exit:
         raise

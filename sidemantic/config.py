@@ -137,6 +137,18 @@ class RuntimeConfig(BaseModel):
     fallback: bool = Field(default=False, description="Allow Rust runtime fallback to Python")
 
 
+class CLIConfig(BaseModel):
+    """Project-level defaults for command-line presentation."""
+
+    format: Literal["table", "csv", "json", "jsonl"] | None = Field(
+        default=None, description="Default structured output format"
+    )
+    plain: bool = Field(default=False, description="Use stable undecorated tabular output")
+    quiet: bool = Field(default=False, description="Suppress non-essential command status")
+    verbose: bool = Field(default=False, description="Enable detailed command diagnostics")
+    no_color: bool = Field(default=False, description="Disable terminal color")
+
+
 Connection = (
     DuckDBConnection
     | PostgreSQLConnection
@@ -196,6 +208,7 @@ class SidemanticConfig(BaseModel):
     preagg_database: str | None = Field(default=None, description="Database for pre-aggregation tables (optional)")
     preagg_schema: str | None = Field(default=None, description="Schema for pre-aggregation tables (optional)")
     runtime: RuntimeConfig | None = Field(default=None, description="Runtime engine settings")
+    cli: CLIConfig = Field(default_factory=CLIConfig, description="Command-line presentation defaults")
     pg_server: PostgresServerConfig = Field(
         default_factory=PostgresServerConfig, description="PostgreSQL server settings (ALPHA)"
     )
@@ -244,6 +257,7 @@ class SidemanticConfig(BaseModel):
             preagg_database=self.preagg_database,
             preagg_schema=self.preagg_schema,
             runtime=self.runtime,
+            cli=self.cli,
             pg_server=pg_server,
             api_server=api_server,
         )

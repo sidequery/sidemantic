@@ -190,9 +190,11 @@ def test_explicit_malformed_config_is_fatal(monkeypatch: pytest.MonkeyPatch, pro
     assert "orders" not in result.output
 
 
+@pytest.mark.parametrize("debug", [False, True])
 def test_connection_and_db_overrides_are_mutually_exclusive(
     monkeypatch: pytest.MonkeyPatch,
     project: Path,
+    debug: bool,
 ):
     monkeypatch.chdir(project)
 
@@ -205,13 +207,15 @@ def test_connection_and_db_overrides_are_mutually_exclusive(
             "duckdb:///:memory:",
             "--db",
             str(project / "data" / "warehouse.duckdb"),
+            *(["--debug"] if debug else []),
         ],
     )
 
-    assert result.exit_code != 0
+    assert result.exit_code == 2
     assert "--connection" in result.output
     assert "--db" in result.output
     assert "together" in result.output.lower() or "exclusive" in result.output.lower()
+    assert "Traceback" not in result.output
 
 
 def test_database_discovery_rejects_ambiguous_candidates(

@@ -2,6 +2,8 @@
 
 Sidemantic is CLI-first. The command line follows one contract across command
 families so it can be used interactively and safely composed in scripts.
+Online documentation: <https://sidemantic.com/sidemantic/cli>. Support and bug
+reports: <https://github.com/sidequery/sidemantic/issues>.
 
 ## Help
 
@@ -39,8 +41,16 @@ to let unexpected exceptions propagate with a traceback:
 sidemantic --debug info ./models
 ```
 
-Click dispatches root options before it selects a subcommand, so this release
-does not reliably accept `--debug` after a subcommand.
+Long project, config, output, and diagnostic options can be placed before or
+after a subcommand. For example, these are equivalent:
+
+```bash
+sidemantic --project ./analytics info --format json
+sidemantic info --project ./analytics --format json
+```
+
+Use the long `--quiet` spelling after `preagg recommend` and `preagg apply`,
+because those commands retain the existing `-q` shorthand for `--queries`.
 
 ## JSON
 
@@ -60,6 +70,62 @@ sidemantic explain "SELECT orders.revenue FROM orders"
 
 JSON is the only content written to stdout in these modes. Diagnostics remain
 on stderr.
+
+## Standard output formats
+
+Structured inspection, reporting, and query commands share one format option:
+
+```bash
+sidemantic query "SELECT status, order_count FROM orders" --format table
+sidemantic query "SELECT status, order_count FROM orders" --format csv
+sidemantic info --format json
+sidemantic preagg recommend --queries queries.sql --format jsonl
+```
+
+`--format` accepts `table`, `csv`, `json`, or `jsonl`. CSV emits a header,
+JSON emits one complete value, and JSON Lines emits one object per record. The
+existing `--json` spelling remains an alias for `--format json` on commands
+that already offered it. Use `--plain` for stable, undecorated, tab-separated,
+one-record-per-line output. Scripts should select `--plain` or an explicit
+machine format instead of parsing the default human presentation.
+
+`--quiet`/`-q` suppresses non-essential status and progress without suppressing
+the requested result or errors. `--verbose`/`-v` enables detailed diagnostics;
+`--debug` implies verbose diagnostics and includes unexpected tracebacks.
+`--version` remains the unambiguous version option.
+
+Color is enabled only for an interactive stream. `--no-color`, a non-empty
+`NO_COLOR`, `SIDEMANTIC_NO_COLOR`, or `TERM=dumb` disables it. A non-empty
+`FORCE_COLOR` overrides automatic terminal detection, but not explicit disable
+controls. Progress is animated only on an interactive stderr stream and is
+disabled for redirects, machine formats, plain/quiet mode, and CI.
+
+## Environment and precedence
+
+Public Sidemantic environment variables use the `SIDEMANTIC_` prefix:
+
+| Variable | Meaning |
+| --- | --- |
+| `SIDEMANTIC_PROJECT` | Project root used for discovery |
+| `SIDEMANTIC_CONFIG` | Explicit YAML or JSON config path |
+| `SIDEMANTIC_FORMAT` | Default `table`, `csv`, `json`, or `jsonl` output |
+| `SIDEMANTIC_PLAIN` | Enable plain output when truthy |
+| `SIDEMANTIC_QUIET` | Suppress non-essential diagnostics when truthy |
+| `SIDEMANTIC_VERBOSE` | Enable verbose diagnostics when truthy |
+| `SIDEMANTIC_DEBUG` | Enable debug tracebacks when truthy |
+| `SIDEMANTIC_NO_COLOR` | Disable Sidemantic color when truthy |
+| `SIDEMANTIC_PG_PASSWORD_FILE` | PostgreSQL password credential file |
+| `SIDEMANTIC_API_AUTH_TOKEN_FILE` | HTTP API bearer-token credential file |
+
+Ordinary settings use flag, environment variable, project config, then
+built-in default precedence. Project config may define the same presentation
+defaults under `cli`. Relative environment paths resolve from the working
+directory; relative config paths resolve from the config file's directory.
+
+Secrets use credential-file options, credential-file environment variables, or
+`-` for stdin. Explicit credential-file options take precedence over
+credential-file environment variables, then config credential paths. Do not
+put secret values directly in environment variables.
 
 ## Standard input and output
 

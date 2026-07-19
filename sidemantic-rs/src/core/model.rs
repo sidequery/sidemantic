@@ -742,12 +742,30 @@ impl Relationship {
             })
     }
 
+    /// Returns only explicitly declared foreign-key columns, without compatibility defaults.
+    pub fn declared_foreign_key_columns(&self) -> Vec<String> {
+        self.foreign_key_columns
+            .clone()
+            .filter(|columns| !columns.is_empty())
+            .or_else(|| self.foreign_key.clone().map(|key| vec![key]))
+            .unwrap_or_default()
+    }
+
     pub fn primary_key_columns(&self) -> Vec<String> {
         self.primary_key_columns
             .clone()
             .filter(|columns| !columns.is_empty())
             .or_else(|| self.primary_key.clone().map(|key| vec![key]))
             .unwrap_or_else(|| vec!["id".to_string()])
+    }
+
+    /// Returns only explicitly declared relationship-side primary-key columns.
+    pub fn declared_primary_key_columns(&self) -> Vec<String> {
+        self.primary_key_columns
+            .clone()
+            .filter(|columns| !columns.is_empty())
+            .or_else(|| self.primary_key.clone().map(|key| vec![key]))
+            .unwrap_or_default()
     }
 
     /// Returns the custom SQL condition if set

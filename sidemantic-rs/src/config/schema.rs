@@ -215,6 +215,8 @@ pub struct RelationshipConfig {
     pub name: String,
     #[serde(default, rename = "type")]
     pub rel_type: Option<String>,
+    #[serde(default = "default_active")]
+    pub active: bool,
     pub foreign_key: Option<KeyConfig>,
     #[serde(default)]
     pub foreign_key_columns: Option<Vec<String>>,
@@ -300,6 +302,10 @@ pub struct IndexConfig {
 }
 
 fn default_public() -> bool {
+    true
+}
+
+fn default_active() -> bool {
     true
 }
 
@@ -571,6 +577,7 @@ impl ModelConfig {
             relationships: self
                 .relationships
                 .into_iter()
+                .filter(|relationship| relationship.active)
                 .map(|r| r.into_relationship())
                 .collect(),
             segments: self
@@ -1247,6 +1254,31 @@ models:
 
         assert_eq!(model.primary_key, "");
         assert!(model.primary_keys().is_empty());
+    }
+
+    #[test]
+    fn test_inactive_relationship_is_accepted_and_omitted_from_graph_model() {
+        let yaml = r#"
+models:
+  - name: orders
+    table: orders
+    primary_key: order_id
+    relationships:
+      - name: customers
+        type: many_to_one
+        foreign_key: customer_id
+        active: false
+  - name: customers
+    table: customers
+    primary_key: customer_id
+"#;
+
+        let models = serde_yaml::from_str::<SidemanticConfig>(yaml)
+            .unwrap()
+            .into_models()
+            .unwrap();
+
+        assert!(models[0].relationships.is_empty());
     }
 
     #[test]

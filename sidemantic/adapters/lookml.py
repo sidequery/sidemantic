@@ -1,5 +1,6 @@
 """LookML adapter for importing Looker semantic models."""
 
+import copy
 import logging
 import re
 from pathlib import Path
@@ -35,7 +36,12 @@ class LookMLAdapter(BaseAdapter):
     """
 
     def parse(self, source: str | Path) -> SemanticGraph:
-        """Parse LookML files into semantic graph.
+        """Parse LookML files into a semantic graph.
+
+        Auto-registration to an active SemanticLayer is suppressed while the graph is
+        built, so a tableless view that only gets its default table after refinements/
+        extends are resolved is not validated mid-parse (which would raise inside a
+        ``with SemanticLayer():`` block). The finalized models are registered once.
 
         Args:
             source: Path to .lkml file or directory
@@ -43,31 +49,499 @@ class LookMLAdapter(BaseAdapter):
         Returns:
             Semantic graph with imported models
         """
+        from sidemantic.core.registry import get_current_layer, set_current_layer
+
+        prev_layer = get_current_layer()
+        set_current_layer(None)
+        try:
+            graph = self._build_graph(source)
+        finally:
+            set_current_layer(prev_layer)
+        # Defer auto-registration until models are complete (tables defaulted). Skip ONLY
+        # intentional non-queryable templates -- abstract extension:required bases and
+        # unsupported derived tables, flagged with the parser-owned `lookml_template` meta
+        # marker -- which add_model's validation would reject; mirrors
+        # loaders._is_registerable_model. The marker (not tablelessness) is decisive: an
+        # `extension: required` base that declares or inherits a sql_table_name is STILL a
+        # template Looker only uses through extends, so it must be skipped even though it has
+        # a source. A merely-broken tableless view (e.g. extends:[missing], left unresolved)
+        # never carries the marker, so it is NOT skipped and add_model still surfaces the real
+        # "no table/sql" error instead of silently dropping it. Strip survivors' relationships
+        # pointing at a skipped template (e.g. an explore join to it) so the active layer is
+        # not left with a dangling relationship validation flags. A name the layer ALREADY
+        # defines is NOT skipped: that is a genuine duplicate-model conflict, and add_model must
+        # surface it (as auto-registration did before this deferral) rather than silently
+        # leaving the pre-existing definition in place.
+        if prev_layer is not None:
+            skipped = {
+                name
+                for name, m in graph.models.items()
+                if (m.meta or {}).get("lookml_template")
+                # ...but a name the layer ALREADY defines is a duplicate-model conflict, not a
+                # skippable template: let add_model raise it rather than silently keeping the
+                # pre-existing model. (Mirrors the non-template case below.)
+                and name not in prev_layer.graph.models
+            }
+            for model in graph.models.values():
+                if model.name in skipped:
+                    continue
+                rels = getattr(model, "relationships", None)
+                if rels:
+                    model.relationships = [r for r in rels if r.name not in skipped]
+                prev_layer.add_model(model)
+        return graph
+
+    def _build_graph(self, source: str | Path) -> SemanticGraph:
+        """Build the semantic graph from LookML files (see :meth:`parse`)."""
         graph = SemanticGraph()
         source_path = Path(source)
 
-        # Collect all .lkml files
+        # Collect all .lkml files. SORT them: rglob order is filesystem-dependent, and refinements
+        # (`view: +name`) are merged in file order -- so with two refinements setting the same
+        # property (label, sql_table_name, ...) an unsorted walk would make the resulting model
+        # depend on directory traversal. Sorting makes a project load deterministic.
         lkml_files = []
         if source_path.is_dir():
-            lkml_files = list(source_path.rglob("*.lkml"))
+            lkml_files = sorted(source_path.rglob("*.lkml"))
         else:
             lkml_files = [source_path]
 
-        # First pass: parse all views, collecting refinements separately
+        # First pass: parse all views, collecting refinements separately. Remember which file
+        # defined each view so a whole-project (directory) load still reports per-file
+        # provenance instead of just the project root.
         refinements: list[Model] = []
+        refinement_raw_defs: list[dict] = []
+        refinement_source_files: list[Path] = []
+        include_specs: list[tuple[Path, str]] = []
+        raw_view_defs: dict[str, dict] = {}
+        view_source_files: dict[str, str] = {}
+        view_candidates: list[tuple[Path, dict, Model]] = []
         for lkml_file in lkml_files:
-            self._parse_views_from_file(lkml_file, graph, refinements)
+            self._parse_views_from_file(
+                lkml_file,
+                graph,
+                refinements,
+                raw_view_defs,
+                refinement_raw_defs,
+                refinement_source_files,
+                include_specs,
+                view_candidates,
+            )
+
+        # When the project DECLARES includes (a model file listing the view files it uses), a
+        # refinement in an un-included file must not silently override a loaded view -- e.g. a
+        # stale `view: +orders { sql_table_name: ... }` left in an archive/ directory. Only the
+        # REFINEMENT merge is scoped: views themselves still all parse, so a project whose
+        # includes do not enumerate every view keeps loading them. With no includes declared
+        # (the common single-directory case) nothing is filtered.
+        # Resolve the project's include graph as a TRANSITIVE CLOSURE seeded from MODEL files.
+        # Seeding only from models means a stray view file's helper include cannot switch scoping
+        # on for a directory no model selects; following the closure means a refinement reachable
+        # THROUGH a selected view (model -> orders.view -> refine.view) is still included.
+        _include_root = source_path if source_path.is_dir() else source_path.parent
+        includes_by_file: dict[Path, list[str]] = {}
+        for _including_file, _pattern in include_specs:
+            includes_by_file.setdefault(_including_file.resolve(), []).append(_pattern)
+
+        def _include_closure(start: Path) -> set[Path]:
+            """Files reachable from `start` through include:, including `start` itself."""
+            reached = {start}
+            queue = [start]
+            while queue:
+                current = queue.pop()
+                for pattern in includes_by_file.get(current, []):
+                    for hit in self._resolve_include(_include_root, current, pattern):
+                        if hit not in reached:
+                            reached.add(hit)
+                            queue.append(hit)
+            return reached
+
+        def _ordered_include_closure(start: Path) -> list[Path]:
+            """Files reachable from `start`, in Looker's include order.
+
+            Refinements are order-sensitive -- the LAST include of a `view: +name` wins -- so a
+            model listing `z_ref` then `a_ref` must let `a_ref` win, whatever the filenames sort
+            like. Walks includes depth-first in declaration order, sorting only WITHIN a glob
+            pattern (whose on-disk match order is otherwise arbitrary) so loads stay deterministic.
+
+            A file is ordered AFTER the files it includes: `include:` brings that content in where
+            it is written, and includes sit at the top of a file, so an included refinement lands
+            before the includer's own. Looker documents that refinements follow include order but
+            not how a nested include orders against its includer, so this mirrors the plain
+            file-inclusion reading.
+            """
+            order: list[Path] = []
+            seen: set[Path] = set()
+
+            def visit(current: Path) -> None:
+                if current in seen:
+                    return
+                seen.add(current)  # before recursing: a circular include must not loop
+                for pattern in includes_by_file.get(current, []):
+                    for hit in sorted(self._resolve_include(_include_root, current, pattern)):
+                        visit(hit)
+                order.append(current)
+
+            visit(start)
+            return order
+
+        # EVERY model file seeds the closure, not just the ones that declare includes: a
+        # self-contained model (its own views and explores, no include:) belongs to the project
+        # just as much as an include-based sibling and must not be scoped out by one.
+        _model_files = [f.resolve() for f in lkml_files if f.name.endswith(".model.lkml")]
+        # Scoping only ACTIVATES once some model declares an include. Seeding unconditionally
+        # would scope an include-free project down to its model files alone.
+        _scoping_active = any(f in includes_by_file for f in _model_files)
+        included_paths: set[Path] = set()
+        # Per-model include closure, so a duplicate view name can be told apart: two copies each
+        # reached by a DIFFERENT model (prod model -> prod/orders, stage model -> stage/orders) is a
+        # valid multi-model layout, whereas ONE model reaching two copies is a real within-model
+        # duplicate. Union of all closures still drives the archived-vs-live single-copy decision.
+        closures_by_model_file: dict[Path, set[Path]] = {}
+        if _scoping_active:
+            for _model_file in _model_files:
+                _closure = _include_closure(_model_file)
+                closures_by_model_file[_model_file] = _closure
+                included_paths |= _closure
+
+        # Install base views, resolving a SAME-NAME collision between files by include: an
+        # archived copy of a view alongside the live one would otherwise make add_model raise
+        # "Model X already exists" and fail the whole project load. Only a collision consults the
+        # includes -- a view with no rival is kept regardless, so an imperfectly-resolved include
+        # can never silently drop a view.
+        by_name: dict[str, list[tuple[Path, dict, Model]]] = {}
+        for _candidate in view_candidates:
+            by_name.setdefault(_candidate[2].name, []).append(_candidate)
+
+        for _name, _candidates in by_name.items():
+            winner = _candidates[0]
+            if len(_candidates) > 1:
+                # Decide over ALL candidates for the name at once: deciding pairwise as files
+                # stream in mis-handles two archived copies followed by the included one (the
+                # first pair looks unresolvable before the winner is even seen).
+                _included = [c for c in _candidates if c[0].resolve() in included_paths]
+                if len(_included) == 1:
+                    winner = _included[0]  # exactly one live copy: the rest are archived
+                    for _file, _, _ in _candidates:
+                        if _file is not winner[0]:
+                            logger.debug(
+                                "Ignoring duplicate LookML view %r from %s: %s is the included copy.",
+                                _name,
+                                _file,
+                                winner[0],
+                            )
+                elif len(_included) >= 2 or not _scoping_active:
+                    # Several copies the includes reach, or (scoping off) no include information.
+                    # A genuine WITHIN-model duplicate -- ONE model's closure reaches 2+ copies -- is
+                    # a real conflict: install every copy and let add_model surface it. But when each
+                    # copy is reached by a DIFFERENT model (a valid multi-model layout where every
+                    # model namespace has its own `orders`), sidemantic's single graph can hold only
+                    # one, so keep the first included copy and warn rather than aborting the whole
+                    # directory load over a layout LookML considers valid.
+                    within_model_dup = _scoping_active and any(
+                        sum(1 for c in _included if c[0].resolve() in _closure) >= 2
+                        for _closure in closures_by_model_file.values()
+                    )
+                    if within_model_dup or not _scoping_active:
+                        for _file, _view_def, _model in _candidates:
+                            raw_view_defs[_name] = _view_def
+                            view_source_files[_name] = str(_file)
+                            graph.add_model(_model)
+                        continue
+                    winner = _included[0]
+                    for _file, _, _ in _included[1:]:
+                        logger.warning(
+                            "LookML view %r is defined by multiple models (%s and %s); sidemantic has "
+                            "a single model namespace, so keeping %s and ignoring the other copy.",
+                            _name,
+                            winner[0],
+                            _file,
+                            winner[0],
+                        )
+                else:
+                    # Scoping is ON and NO copy is included: every copy is archived / unreachable
+                    # from any model. Skip them all -- raising here would fail a valid project over
+                    # views it never selects, and a lone unincluded view (no rival) still loads via
+                    # the single-candidate path, so this only drops genuinely-ambiguous dead copies.
+                    logger.debug(
+                        "Ignoring %d unincluded duplicate copies of LookML view %r: no model include reaches them.",
+                        len(_candidates),
+                        _name,
+                    )
+                    continue
+            _file, _view_def, _model = winner
+            raw_view_defs[_name] = _view_def
+            view_source_files[_name] = str(_file)
+            if _scoping_active and _file.resolve() not in included_paths:
+                # Scoping is on but this view is in NO model's include closure -- Looker cannot see
+                # it. It is kept only so an imperfectly-resolved include never silently drops a view,
+                # but downstream FK inference must NOT join to it. Mark it so the loader skips it.
+                _model.meta = {**(_model.meta or {}), "_lookml_unincluded": True}
+            graph.add_model(_model)
+
+        # The view scope of every file a model reaches: the views that model defines inline plus
+        # the views its include closure reaches. Keyed on REACHABILITY, not file name -- a model's
+        # explores routinely live in an included sidecar (orders.explore.lkml), which inherits the
+        # includer's scope.
+        #
+        # Kept BOTH per model (_scopes_by_file) and unioned (_scope_by_file), because the two
+        # consumers need different things from a file several models reach:
+        #  - An explore must be checked against ONE model's scope: the union would let it join a
+        #    base view from model A to a target only model B includes, a pair no single LookML
+        #    model can see.
+        #  - An extends is checked from the CHILD's file, and the child is in the scope of every
+        #    model reaching that file, so "parent in the union" already means "some one model sees
+        #    child and parent both" -- exactly the per-model rule.
+        _view_files = {name: Path(src).resolve() for name, src in view_source_files.items()}
+        _scopes_by_file: dict[Path, list[set[str]]] = {}
+        _scope_by_file: dict[Path, set[str]] = {}
+        # Which model files reach each file. Used to tell a refinement that every model sharing a
+        # view agrees on from one only SOME of them select.
+        _models_by_file: dict[Path, set[Path]] = {}
+        # How many models have each view in scope. An explore's mandatory filters (sql_always_where
+        # / always_filter) attach to the single shared base model, so if fewer models reach the
+        # explore than use the base view, the rest get a filter Looker would not give them.
+        _view_model_count: dict[str, int] = {}
+        if _scoping_active:
+            for _model_file in _model_files:
+                _closure = _include_closure(_model_file)
+                _allowed = {v for v, src in _view_files.items() if src in _closure}
+                for _reached in _closure:
+                    _scopes_by_file.setdefault(_reached, []).append(_allowed)
+                    _scope_by_file.setdefault(_reached, set()).update(_allowed)
+                    _models_by_file.setdefault(_reached, set()).add(_model_file)
+                for _v in _allowed:
+                    _view_model_count[_v] = _view_model_count.get(_v, 0) + 1
+
+        _warned_ambiguous_extends: set[tuple[str, str]] = set()
+
+        def _parent_in_scope(child: str, parent: str) -> bool:
+            """Whether `child` may INHERIT from `parent` under the project's include scoping.
+
+            A unique view is installed even when no include reaches it (an imperfectly-resolved
+            include must never silently drop a view), but being loaded is not being in a model's
+            scope: letting an included child extend an archived parent merges fields Looker would
+            not expose. Such a parent is treated as absent instead, which leaves the child's
+            extends unresolved -- the child still loads, just without the inherited fields.
+
+            EVERY model whose scope reaches the child must include the parent, not merely one: the
+            child is a single graph model shared by all of them, so inheriting a parent that only
+            SOME models select would expose its fields to the models that do not -- fields Looker
+            would not give them. When the models disagree the parent is treated as out of scope (the
+            conservative, no-leak choice) and the ambiguity is reported. A view whose source file is
+            unknown is left alone.
+            """
+            if not _scoping_active:
+                return True
+            child_source = view_source_files.get(child)
+            if child_source is None or parent not in view_source_files:
+                return True
+            scopes = _scopes_by_file.get(Path(child_source).resolve(), [])
+            if not scopes:
+                return True  # child not reached by any model -> unscoped, leave it alone
+            including = [parent in scope for scope in scopes]
+            if all(including):
+                return True
+            if any(including) and (child, parent) not in _warned_ambiguous_extends:
+                _warned_ambiguous_extends.add((child, parent))
+                logger.warning(
+                    "LookML view %r extends %r, but only some of the models using %r include %r. "
+                    "One graph model per view name cannot inherit for some and not others, so %r is "
+                    "NOT inherited (its fields would otherwise leak to the models missing it). "
+                    "Include %r from every model that uses %r, or give them separate views.",
+                    child,
+                    parent,
+                    child,
+                    parent,
+                    parent,
+                    parent,
+                    child,
+                )
+            return False
+
+        # Snapshot abstract / unsupported-derived_table flags BEFORE refinement merge:
+        # merge_model REPLACES a base view's meta when the refinement carries metadata,
+        # which would otherwise drop these markers.
+        abstract_pre = {n for n, m in graph.models.items() if (m.meta or {}).get("extension_required")}
+        unsupported_pre = {n for n, m in graph.models.items() if (m.meta or {}).get("unsupported_derived_table")}
+
+        # Merge refinements in the models' INCLUDE order, not the sorted tree-walk order. Looker
+        # gives the last-included `view: +orders` precedence, so a model including z_ref then a_ref
+        # must let a_ref win even though the walk parsed a_ref first. Files no model reaches keep
+        # their sorted-walk position (last); with no include scope at all the sorted order stands,
+        # which is what keeps a plain directory load deterministic.
+        _ordered_closures: dict[Path, list[Path]] = {}
+        _include_order: dict[Path, int] = {}
+        if _scoping_active:
+            for _model_file in _model_files:
+                _ordered_closures[_model_file] = _ordered_include_closure(_model_file)
+                for _reached in _ordered_closures[_model_file]:
+                    _include_order.setdefault(_reached, len(_include_order))
+
+        # Models can disagree: one includes z_ref then a_ref, another the reverse. Looker resolves
+        # each model separately; one model per view name can only be merged in ONE order, and the
+        # first model file's order wins. Report the disagreement rather than silently serving the
+        # other model the wrong overrides. Compares each PAIR of a view's refinement files, so a
+        # model that merely includes MORE of them is not mistaken for a conflict.
+        if _ordered_closures:
+            _ref_files_by_base: dict[str, set[Path]] = {}
+            for _i, _refinement in enumerate(refinements):
+                if _i < len(refinement_source_files):
+                    _ref_files_by_base.setdefault(_refinement.name.lstrip("+"), set()).add(
+                        refinement_source_files[_i].resolve()
+                    )
+            for _base, _ref_files in _ref_files_by_base.items():
+                if len(_ref_files) < 2:
+                    continue
+                _pair_orders: dict[tuple[Path, Path], set[bool]] = {}
+                for _closure in _ordered_closures.values():
+                    _seq = [f for f in _closure if f in _ref_files]
+                    for _first in range(len(_seq)):
+                        for _second in range(_first + 1, len(_seq)):
+                            _a, _b = _seq[_first], _seq[_second]
+                            _key = (_a, _b) if _a < _b else (_b, _a)
+                            _pair_orders.setdefault(_key, set()).add(_a == _key[0])
+                _conflicts = [pair for pair, seen in _pair_orders.items() if len(seen) > 1]
+                if _conflicts:
+                    logger.warning(
+                        "LookML models disagree on the include order of refinements for view %r: %s. Looker "
+                        "applies refinements in each model's own include order, but one model per view name "
+                        "can hold only one result, so the first model file's order is used and the others see "
+                        "overrides Looker would not give them. Align the include order across models, or give "
+                        "the models separate views.",
+                        _base,
+                        "; ".join(sorted(f"{a.name} vs {b.name}" for a, b in _conflicts)),
+                    )
+
+        if _include_order and refinement_source_files:
+            _unordered = len(_include_order)
+            # Stable: refinements from the SAME file keep their in-file order.
+            _positions = sorted(
+                range(len(refinements)),
+                key=lambda i: _include_order.get(refinement_source_files[i].resolve(), _unordered),
+            )
+            refinements = [refinements[i] for i in _positions]
+            refinement_raw_defs = [refinement_raw_defs[i] for i in _positions]
+            refinement_source_files = [refinement_source_files[i] for i in _positions]
 
         # Apply refinements: merge each refinement into its base view
         from sidemantic.core.inheritance import merge_model, resolve_model_inheritance
 
-        for refinement in refinements:
+        refinement_abstract: set[str] = set()
+        refinement_unsupported_dt: set[str] = set()
+        for _ridx, refinement in enumerate(refinements):
             base_name = refinement.name.lstrip("+")
+            if included_paths and _ridx < len(refinement_source_files):
+                _src = refinement_source_files[_ridx].resolve()
+                if _src not in included_paths:
+                    logger.debug(
+                        "Ignoring LookML refinement of %r from %s: not reached by any include.",
+                        base_name,
+                        _src,
+                    )
+                    continue
+                # A refinement only SOME of the base view's models select is genuinely ambiguous:
+                # Looker resolves each model separately (prod sees the plain view, staging sees the
+                # refined one), while a graph holds ONE model per view name and cannot hold both.
+                # The refinement is still applied -- refusing to load a valid project, or dropping
+                # the refinement and silently mis-serving the model that DID select it, are both
+                # worse -- but the ambiguity is surfaced rather than resolved by a coin flip.
+                _base_source = view_source_files.get(base_name)
+                if _base_source is not None:
+                    _unselecting = _models_by_file.get(Path(_base_source).resolve(), set()) - _models_by_file.get(
+                        _src, set()
+                    )
+                    if _unselecting:
+                        logger.warning(
+                            "LookML refinement of view %r from %s is not included by these models, which use "
+                            "%r without it: %s. It is applied anyway, because one model per view name cannot "
+                            "hold both the refined and unrefined view -- so those models see the refined view, "
+                            "which Looker would not do. Include the refinement from every model that uses %r, "
+                            "or give the models separate views.",
+                            base_name,
+                            _src,
+                            base_name,
+                            ", ".join(sorted(f.name for f in _unselecting)),
+                            base_name,
+                        )
+            # Record flags from EACH refinement's own meta: a later refinement's merge
+            # can replace the base meta and drop a flag an earlier refinement added.
+            rmeta = refinement.meta or {}
+            if rmeta.get("extension_required"):
+                refinement_abstract.add(base_name)
+            if rmeta.get("unsupported_derived_table"):
+                refinement_unsupported_dt.add(base_name)
             if base_name in graph.models:
-                # Create a copy with the base name for merging
-                refinement_for_merge = refinement.model_copy(update={"name": base_name})
-                merged = merge_model(refinement_for_merge, graph.models[base_name])
-                graph.models[base_name] = merged
+                # Prefer merging the RAW LookML dicts and re-parsing: that is the only way a
+                # PARTIAL field refinement (`dimension: id { label: "ID" }`) keeps the base
+                # field's sql/type/primary_key -- merging parsed models would clobber them with
+                # the parser's defaults. Fall back to the model-level merge when the base's raw
+                # dict is unavailable (e.g. a base built by some other path).
+                base_raw = raw_view_defs.get(base_name)
+                ref_raw = refinement_raw_defs[_ridx] if _ridx < len(refinement_raw_defs) else None
+                remerged = None
+                if base_raw is not None and ref_raw is not None:
+                    # A refinement can touch a field the base only has via `extends`; seed those from
+                    # the inherited definition so the partial refinement does not clobber it. Only
+                    # seed from parents IN the base's include scope, mirroring the extends resolution
+                    # below -- otherwise a table-backed view would expose an archived parent's field
+                    # Looker (and the resolved extends) would not include.
+                    # Include refinement-added unsupported parents, not just the pre-refinement
+                    # snapshot: an earlier `view: +pdt_base` refinement can turn a parent into an
+                    # unsupported derived table, and seeding a later `view: +child` from it would
+                    # resurrect a parent-only field on the child's real table.
+                    inherited_fields = self._inherited_raw_fields(
+                        base_name,
+                        raw_view_defs,
+                        _parent_in_scope,
+                        unsupported_parents=unsupported_pre | refinement_unsupported_dt,
+                    )
+                    # A refinement can touch a field that exists ONLY on an unsupported derived-table
+                    # parent (dropped by the loader). Seeding skips it above, but the refinement's
+                    # bare field would still be added as an own field querying a table that never
+                    # gets registered. Collect those keys (present via unsupported parents but not via
+                    # supported ones or the base) so the merge drops the refinement's copy entirely.
+                    all_inherited = self._inherited_raw_fields(base_name, raw_view_defs, _parent_in_scope)
+                    _base_keys = {
+                        (k, i["name"])
+                        for k in self._VIEW_FIELD_LIST_KEYS
+                        for i in (base_raw.get(k) or [])
+                        if isinstance(i, dict) and i.get("name")
+                    }
+                    unsupported_only_keys = set(all_inherited) - set(inherited_fields) - _base_keys
+                    merged_raw = self._merge_view_defs(
+                        base_raw, ref_raw, inherited_fields, drop_field_keys=unsupported_only_keys
+                    )
+                    remerged = self._parse_view(merged_raw)
+                    if remerged is not None:
+                        # Keep the merged raw so a SECOND refinement of the same view stacks
+                        # onto this result rather than the original base.
+                        raw_view_defs[base_name] = merged_raw
+                if remerged is not None:
+                    self._replace_model_refreshing_graph_metrics(graph, base_name, remerged)
+                else:
+                    # Create a copy with the base name for merging
+                    refinement_for_merge = refinement.model_copy(update={"name": base_name})
+                    merged = merge_model(refinement_for_merge, graph.models[base_name])
+                    self._replace_model_refreshing_graph_metrics(graph, base_name, merged)
+
+        # Union the pre-merge snapshot, every refinement's own flags, and the post-merge
+        # state (so a flag added by ANY refinement is caught even if a later refinement
+        # replaced the meta). Resolve this BEFORE extends so a concrete child that only
+        # INHERITS abstractness is not treated as abstract. Record extends parents too,
+        # so descendants of an unsupported derived table are detectable after resolution
+        # clears `extends`.
+        abstract_views = (
+            abstract_pre
+            | refinement_abstract
+            | {n for n, m in graph.models.items() if (m.meta or {}).get("extension_required")}
+        )
+        unsupported_dt_views = (
+            unsupported_pre
+            | refinement_unsupported_dt
+            | {n for n, m in graph.models.items() if (m.meta or {}).get("unsupported_derived_table")}
+        )
+        extends_parent = {n: m.extends for n, m in graph.models.items() if m.extends}
 
         # Resolve extends chains. Pre-filter to models whose full chain
         # is present so one broken/missing parent doesn't block valid ones.
@@ -81,28 +555,314 @@ class LookMLAdapter(BaseAdapter):
                 return False
             if not model.extends:
                 return True
+            if not _parent_in_scope(name, model.extends):
+                return False
+            if model.extends in unsupported_dt_views:
+                # The parent is an unsupported derived table (dropped by the loader). Treating the
+                # chain as resolvable would inherit the PDT's fields onto the child's own real table
+                # (secret AS pdt_only FROM child_t), so leave the chain unresolved instead.
+                return False
             visited.add(name)
             return _chain_resolvable(model.extends, visited)
 
         resolvable = {n: m for n, m in graph.models.items() if _chain_resolvable(n)}
         unresolvable = {n: m for n, m in graph.models.items() if n not in resolvable}
 
+        # Clear the extends link on a model whose parent was INTENTIONALLY rejected -- it exists but
+        # is out of the child's include scope, or is an unsupported derived table. The scoped parse
+        # omitted its inherited fields on purpose, but leaving `extends` set lets a downstream
+        # re-resolution WITHOUT the include scope (e.g. LookMLAdapter.export or a serialization
+        # helper) merge the rejected parent back in, reintroducing the removed fields. A parent that
+        # is genuinely MISSING (or a circular chain) is a real error, so keep its extends so
+        # validation still surfaces it.
+        for _name, _m in unresolvable.items():
+            _parent = _m.extends
+            if (
+                _parent
+                and _parent in graph.models
+                and (not _parent_in_scope(_name, _parent) or _parent in unsupported_dt_views)
+            ):
+                _m.extends = None
+
         if resolvable:
             resolved = resolve_model_inheritance(resolvable)
             resolved.update(unresolvable)
             graph.models = resolved
 
-        # Second pass: parse explores and add relationships
+        # Looker allows a view to extend SEVERAL parents (`extends: [a, b]`, and additive
+        # refinement extends). Model.extends is single, so core resolution above followed only the
+        # FIRST parent; merge the fields of any EXTRA in-scope parents. Looker gives a LATER-listed
+        # parent priority for a conflicting field, so an extra parent OVERRIDES the value already
+        # present from an earlier parent -- but the child's OWN fields always win.
+        def _override_list(existing, incoming, protected_names):
+            by_name: dict = {}
+            order: list = []
+            for item in existing:
+                if item.name not in by_name:
+                    order.append(item.name)
+                by_name[item.name] = item
+            for item in incoming:
+                if item.name in protected_names:
+                    continue  # the child's own definition wins over any parent
+                if item.name not in by_name:
+                    order.append(item.name)
+                by_name[item.name] = item.model_copy(deep=True)  # later parent overrides earlier
+            return [by_name[n] for n in order]
+
+        # The in-scope, registerable extends parents of a raw view, in declaration order. An
+        # unsupported derived-table parent is dropped by the loader, so copying its fields would
+        # leave the child querying a column from a table that never gets registered -- skip it here
+        # exactly as the first-parent chain does.
+        def _mergeable_parents(nm: str) -> list[str]:
+            raw = raw_view_defs.get(nm)
+            if raw is None:
+                return []
+            return [
+                p
+                for p in self._all_extends_parents(raw)
+                if p in graph.models and _parent_in_scope(nm, p) and p not in unsupported_dt_views
+            ]
+
+        # Merge extra parents in DEPENDENCY order (a view after every parent it extends). Model.extends
+        # is single, so resolve_model_inheritance() above flattened only each view's FIRST-parent
+        # chain -- and it did so BEFORE a multi-parent intermediate received its own extra-parent
+        # fields, so a descendant that extends that intermediate would otherwise miss them. Processing
+        # bottom-up and re-pulling the first parent (add-only) propagates those fields down the chain.
+        _extends_order: list[str] = []
+        _extends_state: dict[str, int] = {}  # 1 = visiting, 2 = done
+
+        def _order_extends(nm: str) -> None:
+            if _extends_state.get(nm):
+                return  # done, or a back-edge (real cycles already rejected by resolve_model_inheritance)
+            _extends_state[nm] = 1
+            for p in _mergeable_parents(nm):
+                _order_extends(p)
+            _extends_state[nm] = 2
+            _extends_order.append(nm)
+
+        for _nm in list(graph.models):
+            _order_extends(_nm)
+
+        for name in _extends_order:
+            model = graph.models.get(name)
+            raw = raw_view_defs.get(name)
+            if model is None or raw is None:
+                continue
+            parents = _mergeable_parents(name)
+            if not parents:
+                continue
+            # The child's OWN field names, so an extra parent never overrides them. Dimensions come
+            # from raw `dimensions` and the timeframe fields a raw `dimension_group` generates
+            # (matched by the `<group>_` prefix); metrics from `measures`; segments from `filters`.
+            _own_dims = {d.get("name") for d in (raw.get("dimensions") or []) if isinstance(d, dict) and d.get("name")}
+            _own_group_prefixes = tuple(
+                g["name"] + "_" for g in (raw.get("dimension_groups") or []) if isinstance(g, dict) and g.get("name")
+            )
+            _own_metrics = {m.get("name") for m in (raw.get("measures") or []) if isinstance(m, dict) and m.get("name")}
+            _own_segments = {s.get("name") for s in (raw.get("filters") or []) if isinstance(s, dict) and s.get("name")}
+
+            def _protected_dim(dname, _own_dims=_own_dims, _own_group_prefixes=_own_group_prefixes):
+                return dname in _own_dims or dname.startswith(_own_group_prefixes)
+
+            for idx, parent_name in enumerate(parents):
+                parent = graph.models.get(parent_name)
+                if parent is None:
+                    continue
+                if idx == 0:
+                    # First parent: resolve_model_inheritance() already flattened it into this model,
+                    # but before the parent gained its OWN extra-parent fields. Re-pull ADD-ONLY
+                    # (protect every field already present) so those fields propagate to this
+                    # descendant without clobbering the child's own or extra-parent fields. This is a
+                    # no-op for an ordinary single-parent chain (all first-parent fields already here).
+                    model.dimensions = _override_list(
+                        model.dimensions, parent.dimensions, {d.name for d in model.dimensions}
+                    )
+                    model.metrics = _override_list(model.metrics, parent.metrics, {m.name for m in model.metrics})
+                    model.segments = _override_list(model.segments, parent.segments, {s.name for s in model.segments})
+                else:
+                    # Extra parent: Looker gives a later-listed parent precedence, so it OVERRIDES an
+                    # earlier parent's conflicting field; only the child's OWN fields are protected.
+                    model.dimensions = _override_list(
+                        model.dimensions,
+                        parent.dimensions,
+                        {d.name for d in model.dimensions if _protected_dim(d.name)},
+                    )
+                    model.metrics = _override_list(model.metrics, parent.metrics, _own_metrics)
+                    model.segments = _override_list(model.segments, parent.segments, _own_segments)
+
+            # Looker applies the same later-parent precedence to the SOURCE. resolve_model_inheritance
+            # took the first parent's table/sql; if the child declares no source of its own, let the
+            # LATEST-listed parent that declares one win, so the inherited fields query the right
+            # physical table instead of the first parent's (or the view-name default).
+            if not (raw.get("sql_table_name") or raw.get("derived_table")):
+                _inherited_table = None
+                _inherited_sql = None
+                _have_source = False
+                for parent_name in parents:
+                    parent = graph.models.get(parent_name)
+                    if parent is not None and (parent.table or parent.sql):
+                        _inherited_table, _inherited_sql, _have_source = parent.table, parent.sql, True
+                if _have_source:
+                    model.table = _inherited_table
+                    model.sql = _inherited_sql
+
+        def _extends_chain_has(name: str, flagset: set[str]) -> bool:
+            """True if name or any of its extends-ancestors is in flagset."""
+            seen: set[str] = set()
+            cur: str | None = name
+            while cur is not None and cur not in seen:
+                if cur in flagset:
+                    return True
+                seen.add(cur)
+                cur = extends_parent.get(cur)
+            return False
+
+        # Apply the implicit "table = view name" default AFTER refinements and extends
+        # are resolved, so a view whose fields/name come from a refinement or whose
+        # parent was tableless still gets its OWN name as the table (Looker's behavior).
+        # Skip abstract views, still-unresolved-extends, and views that are (or extend) an
+        # unsupported derived table. Do NOT require parsed fields: Looker defaults the table
+        # for an ordinary fieldless view (`view: orders {}`, or one with only adapter-ignored
+        # fields) too, so leaving it tableless would wrongly fail CLI validation/registration.
+        # Abstractness is NOT inherited through extends (a concrete child of an abstract base
+        # gets its own table), but an unsupported derived table IS inherited by descendants.
+        def _apply_default_tables():
+            for model_name, model in graph.models.items():
+                if (
+                    model.table is None
+                    and model.sql is None
+                    and not model.extends
+                    and model_name not in abstract_views
+                    and not _extends_chain_has(model_name, unsupported_dt_views)
+                    and not (model.meta or {}).get("unsupported_derived_table")
+                ):
+                    model.table = model_name
+
+        _apply_default_tables()
+
+        # Second pass: parse explores and add relationships. Once the project declares includes,
+        # an explore is scoped to the views its MODEL can see -- the views that model file defines
+        # inline plus the views its include closure reaches. Looker resolves a model's fields that
+        # way, and loading the tree as one project otherwise lets an archived or alternate model's
+        # joins/segments silently mutate the LIVE model. A self-contained model (inline views, no
+        # include:) still sees its own views; an archived model that includes nothing and defines
+        # nothing sees none, so its explores cannot attach anywhere.
+        #
+        # Reuses the per-file scope built with the views above (see _scope_by_file), so an explore
+        # and an extends in the same file resolve against exactly the same set of views.
         for lkml_file in lkml_files:
-            self._parse_explores_from_file(lkml_file, graph)
+            _resolved = lkml_file.resolve()
+            if not _scoping_active:
+                self._parse_explores_from_file(lkml_file, graph)
+                continue
+            if _resolved not in _scopes_by_file:
+                logger.debug("Ignoring LookML explores in %s: not reached by any include.", lkml_file)
+                continue
+            self._parse_explores_from_file(
+                lkml_file, graph, model_scopes=_scopes_by_file[_resolved], view_model_count=_view_model_count
+            )
+
+        # Re-apply the default: explores can add segments (sql_always_where /
+        # always_filter) to an otherwise-fieldless view, which only now makes it
+        # eligible for the implicit table default.
+        _apply_default_tables()
+
+        # Re-assert non-queryable markers on models intentionally left tableless. A
+        # refinement can OVERWRITE a view's meta (dropping an `extension_required` flag an
+        # earlier refinement added) even though abstractness is tracked in side-sets, so
+        # without this the loader (which keys off final meta) would try to register and
+        # reject them. Set the flag definitively now, after all merges. Also stamp a
+        # PARSER-OWNED `lookml_template` marker so registration skips (here and in the
+        # loader) key off a sidemantic-internal flag, not the public `extension_required`/
+        # `unsupported_derived_table` keys -- a native/other-format model that happens to
+        # carry those user-facing keys must still surface its missing-source error.
+        for model_name, model in graph.models.items():
+            is_template = False
+            if model_name in abstract_views:
+                # An `extension: required` view is hidden by Looker even when it declares or inherits
+                # a sql_table_name (valid for a reusable base), so stamp the template marker BEFORE
+                # the source check -- otherwise the loader registers the table-backed base as a
+                # queryable model.
+                model.meta = {**(model.meta or {}), "extension_required": True, "lookml_template": True}
+                is_template = True
+            elif (model.meta or {}).get("unsupported_derived_table") or (
+                model.table is None and model.sql is None and _extends_chain_has(model_name, unsupported_dt_views)
+            ):
+                # A view that declares its OWN unsupported derived_table is non-representable even
+                # when it INHERITED a sql_table_name from a table-backed extends parent -- Looker
+                # would use the derived_table source, not the inherited table -- so stamp the marker
+                # BEFORE the source check, like the extension_required case above. (Without this,
+                # resolve_model_inheritance copies the parent's table onto the child and the guard
+                # below leaves the unsupported view registerable against that physical table.) A view
+                # that merely INHERITS an unsupported derived table through the extends CHAIN is a
+                # template only when it has no source of its own; if it overrode with its own
+                # table/sql it is a concrete, queryable view and must not be skipped.
+                model.meta = {**(model.meta or {}), "unsupported_derived_table": True, "lookml_template": True}
+                is_template = True
+            if is_template:
+                # Stamp this template's GRAPH-LEVEL measures (time_comparison/conversion, which
+                # add_model auto-registers into graph.metrics) with a parser-owned provenance
+                # marker. The loader drops orphaned graph metrics by this marker -- proving they
+                # came from a dropped template -- instead of guessing from the base ref, so a
+                # same-named standalone metric from another file (no marker) is never dropped.
+                # Mark BOTH the model's (possibly refinement-reconstructed) metric AND the graph-
+                # registered object (auto-registered pre-refinement, so a different instance).
+                for mt in model.metrics or []:
+                    if mt.type in ("time_comparison", "conversion"):
+                        mt.meta = {**(mt.meta or {}), "_lookml_template_metric": True}
+                        gm = graph.metrics.get(mt.name)
+                        if gm is not None:
+                            gm.meta = {**(gm.meta or {}), "_lookml_template_metric": True}
+
+        # Stamp EVERY graph-level metric (time_comparison / conversion, auto-registered into
+        # graph.metrics by add_model) with its OWNING model. In a directory load the LookML project
+        # is parsed before the per-file scan, so a later Python/YAML file can overwrite a model name
+        # this metric depends on; the loader uses this owner to drop the metric when the surviving
+        # model no longer defines it (its base measure / time dimension would be gone). Covers the
+        # normal-view case that carries no template marker.
+        for model_name, model in graph.models.items():
+            for mt in model.metrics or []:
+                if mt.type in self._GRAPH_LEVEL_METRIC_TYPES:
+                    gm = graph.metrics.get(mt.name)
+                    if gm is not None:
+                        gm.meta = {**(gm.meta or {}), "_lookml_graph_metric_owner": model_name}
 
         # Rebuild adjacency graph now that relationships have been added
         graph.build_adjacency()
 
+        # Stamp per-file provenance LAST: refinement/extends resolution can REPLACE a model
+        # object, which would drop an earlier stamp. Loaders only fills _source_file when it is
+        # unset, so this keeps per-file attribution for a whole-project load.
+        for _name, _model in graph.models.items():
+            _src = view_source_files.get(_name)
+            if _src and not hasattr(_model, "_source_file"):
+                _model._source_file = _src
+
         return graph
 
+    @classmethod
+    def _flatten_include_patterns(cls, entry) -> list[str]:
+        """String include patterns from one ``includes`` entry, flattening bracketed lists.
+
+        A scalar ``include: "a"`` parses to the string ``"a"``; a bracketed ``include: ["a", "b"]``
+        parses to the nested list ``["a", "b"]``. Recurse so any nesting yields plain strings.
+        """
+        if isinstance(entry, str):
+            return [entry]
+        if isinstance(entry, list):
+            return [p for item in entry for p in cls._flatten_include_patterns(item)]
+        return []
+
     def _parse_views_from_file(
-        self, file_path: Path, graph: SemanticGraph, refinements: list[Model] | None = None
+        self,
+        file_path: Path,
+        graph: SemanticGraph,
+        refinements: list[Model] | None = None,
+        raw_view_defs: dict[str, dict] | None = None,
+        refinement_raw_defs: list[dict] | None = None,
+        refinement_source_files: list[Path] | None = None,
+        include_specs: list[tuple[Path, str]] | None = None,
+        view_candidates: list[tuple[Path, dict, Model]] | None = None,
     ) -> None:
         """Parse views from a single LookML file.
 
@@ -110,6 +870,10 @@ class LookMLAdapter(BaseAdapter):
             file_path: Path to .lkml file
             graph: Semantic graph to add models to
             refinements: Optional list to collect refinement models into
+            raw_view_defs: Optional map to collect each base view's RAW LookML dict, keyed by
+                view name -- refinements are merged at the raw level (see _merge_view_defs).
+            refinement_raw_defs: Optional list collecting each refinement's RAW dict, appended in
+                lockstep with ``refinements``.
         """
         lkml = _import_lkml()
 
@@ -120,6 +884,20 @@ class LookMLAdapter(BaseAdapter):
 
         if not parsed:
             return
+
+        # Record this file's `include:` declarations (LookML model files list the view files the
+        # model actually uses) so refinements from un-included files can be ignored.
+        # Record every file's includes. Only a MODEL file's includes SEED the scoping (see the
+        # closure in _build_graph) -- but a selected view file's own includes must be followed
+        # from there, so they have to be recorded here too.
+        if include_specs is not None:
+            # LookML allows a bracketed `include: ["a", "b"]`, which lkml parses as a NESTED list
+            # (`[["a", "b"]]`), while a scalar `include: "a"` parses as a plain string. Flatten so
+            # both forms yield string patterns -- otherwise a bracketed include is dropped, scoping
+            # never activates, and stale un-included refinements/explores leak back in.
+            for entry in parsed.get("includes") or []:
+                for pattern in self._flatten_include_patterns(entry):
+                    include_specs.append((file_path, pattern))
 
         # Parse views
         for view_def in parsed.get("views") or []:
@@ -129,15 +907,37 @@ class LookMLAdapter(BaseAdapter):
                     # Refinement: collect separately for merging after all views parsed
                     if refinements is not None:
                         refinements.append(model)
+                        if refinement_raw_defs is not None:
+                            refinement_raw_defs.append(view_def)
+                        if refinement_source_files is not None:
+                            refinement_source_files.append(file_path)
+                elif view_candidates is not None:
+                    # Defer installation: two files under the tree can define the SAME view (an
+                    # archived copy alongside the live one), and which wins depends on the
+                    # `include:` declarations, which are only known once every file is parsed.
+                    view_candidates.append((file_path, view_def, model))
                 else:
+                    if raw_view_defs is not None:
+                        raw_view_defs[model.name] = view_def
                     graph.add_model(model)
 
-    def _parse_explores_from_file(self, file_path: Path, graph: SemanticGraph) -> None:
+    def _parse_explores_from_file(
+        self,
+        file_path: Path,
+        graph: SemanticGraph,
+        model_scopes: list[set[str]] | None = None,
+        view_model_count: dict[str, int] | None = None,
+    ) -> None:
         """Parse explores from a single LookML file and add relationships.
 
         Args:
             file_path: Path to .lkml file
             graph: Semantic graph to add relationships to
+            model_scopes: One view set per model that includes this file, or None to allow any.
+                Scopes each explore to the views a SINGLE model can see, as Looker resolves them.
+            view_model_count: How many models have each view in scope project-wide. Lets an explore
+                tell that some models use its base view WITHOUT this explore, so its mandatory
+                filters would leak onto the shared base model.
         """
         lkml = _import_lkml()
 
@@ -149,9 +949,10 @@ class LookMLAdapter(BaseAdapter):
         if not parsed:
             return
 
-        # Parse explores
+        # Parse explores. The scope check lives in _parse_explore, which owns the from:/fallback
+        # resolution of the base view -- duplicating that resolution here would drift from it.
         for explore_def in parsed.get("explores") or []:
-            self._parse_explore(explore_def, graph)
+            self._parse_explore(explore_def, graph, model_scopes=model_scopes, view_model_count=view_model_count)
 
     # Matches ${field} and ${view.field}. ${TABLE} is handled specially.
     _REF_RE = re.compile(r"\$\{(?:([a-zA-Z_]\w*)\.)?([a-zA-Z_]\w*)\}")
@@ -468,6 +1269,206 @@ class LookMLAdapter(BaseAdapter):
             return wg if wg is not None else a
 
         return all(any(True for _ in _scope(a).find_all(exp.Column)) for a in aggs)
+
+    # LookML view keys holding a named-field LIST. A refinement's entry for an EXISTING field
+    # updates that field's properties; it does not replace the field.
+    _VIEW_FIELD_LIST_KEYS = ("dimensions", "dimension_groups", "measures", "filters", "parameters", "sets")
+
+    # Metric types SemanticGraph.add_model auto-registers at graph level (accessible unprefixed).
+    _GRAPH_LEVEL_METRIC_TYPES = ("time_comparison", "conversion")
+
+    @staticmethod
+    def _resolve_include(root: Path, including_file: Path, pattern: str) -> set[Path]:
+        """Files matched by one LookML ``include:`` pattern.
+
+        A leading ``/`` is project-root relative; anything else is relative to the file declaring
+        the include. ``//other_project/...`` is a cross-project include, which has no local files.
+        """
+        if pattern.startswith("//"):
+            return set()
+        base, pat = (root, pattern[1:]) if pattern.startswith("/") else (including_file.parent, pattern)
+        # LookML allows the .lkml suffix to be omitted -- `include: "/views/*.view"` and
+        # `include: "/views/orders.view"` match the on-disk *.view.lkml files -- so try the
+        # suffixed form too. Without it such an include resolves to nothing, which silently
+        # skews the included set (an included refinement looks un-included, or nothing is scoped).
+        patterns = [pat] if pat.endswith(".lkml") else [pat, pat + ".lkml"]
+        out: set[Path] = set()
+        for candidate in patterns:
+            try:
+                out |= {p.resolve() for p in base.glob(candidate) if p.is_file()}
+            except (OSError, ValueError):
+                continue
+        return out
+
+    @classmethod
+    def _replace_model_refreshing_graph_metrics(cls, graph: SemanticGraph, name: str, model: Model) -> None:
+        """Install ``model`` over ``graph.models[name]``, refreshing its graph-level metrics.
+
+        ``add_model`` auto-registered the ORIGINAL view's graph-level measures (time_comparison /
+        conversion) into ``graph.metrics``. A refinement can change one into a normal measure or
+        drop it, so replacing the model alone would leave a STALE graph metric that no loaded model
+        defines -- and the CLI registers graph metrics separately, exposing it. Drop the ones this
+        model registered (identity-checked, so a same-named STANDALONE metric is untouched), then
+        register the merged view's set.
+        """
+        old = graph.models.get(name)
+        if old is not None:
+            for metric in old.metrics or []:
+                if metric.type in cls._GRAPH_LEVEL_METRIC_TYPES and graph.metrics.get(metric.name) is metric:
+                    graph.metrics.pop(metric.name, None)
+        graph.models[name] = model
+        for metric in model.metrics or []:
+            if metric.type in cls._GRAPH_LEVEL_METRIC_TYPES and metric.name not in graph.metrics:
+                graph.metrics[metric.name] = metric
+        graph._mark_dirty()
+
+    @staticmethod
+    def _all_extends_parents(raw: dict) -> list[str]:
+        """All ``extends`` parent names of a raw view dict, in order and de-duplicated.
+
+        lkml stores extends as ``extends__all`` -- a list of per-statement lists
+        (``[["base_a"], ["base_b"]]`` for additive statements, ``[["base_a", "base_b"]]`` for a
+        single multi-parent statement); both flatten to ``["base_a", "base_b"]``.
+        """
+        parents: list[str] = []
+        raw_all = raw.get("extends__all")
+        if isinstance(raw_all, list):
+            for stmt in raw_all:
+                if isinstance(stmt, list):
+                    parents.extend(p for p in stmt if isinstance(p, str))
+                elif isinstance(stmt, str):
+                    parents.append(stmt)
+        else:
+            ev = raw.get("extends")
+            if isinstance(ev, str):
+                parents.append(ev)
+            elif isinstance(ev, list):
+                parents.extend(p for p in ev if isinstance(p, str))
+        seen: set = set()
+        return [p for p in parents if not (p in seen or seen.add(p))]
+
+    @staticmethod
+    def _raw_extends_parent(raw: dict) -> str | None:
+        """The FIRST ``extends`` parent name of a raw view dict, or None."""
+        parents = LookMLAdapter._all_extends_parents(raw)
+        return parents[0] if parents else None
+
+    @classmethod
+    def _inherited_raw_fields(
+        cls, base_name: str, raw_view_defs: dict, parent_in_scope=None, unsupported_parents=None
+    ) -> dict:
+        """Fields a view inherits via ``extends``, as ``{(list_key, field_name): field_def}``.
+
+        Walks the extends chain through the raw view dicts (nearest parent wins). Lets a refinement
+        of an INHERITED field seed from the real definition instead of adding a bare partial field
+        that re-parses to a categorical default and then overrides the inherited one.
+
+        ``parent_in_scope(child, parent)`` gates each extends LINK the same way the extends
+        resolution does: an out-of-scope parent leaves the extends unresolved, so its fields must
+        NOT be seeded either (else a table-backed view would expose an archived parent's field). An
+        out-of-scope link is skipped (with its ancestors), but OTHER parents are still walked.
+
+        ``unsupported_parents`` names views backed by an unsupported derived table; they are dropped
+        by the loader, so seeding a refinement from their fields would resurrect a field querying a
+        table that never gets registered -- skip them, matching the extra-parent merge/copy guard.
+
+        A view can extend SEVERAL parents (``extends: [a, b]``), so this walks EVERY parent, not
+        just the first -- otherwise a refinement of a field inherited only from a non-first parent
+        would not seed from its real definition and would re-parse to a bare categorical field.
+        """
+        unsupported_parents = unsupported_parents or set()
+        fields: dict[tuple[str, str], dict] = {}
+        seen: set[str] = {base_name}
+        # Breadth-first over all extends parents: nearer parents before their ancestors, and
+        # earlier-listed before later, so the nearest/earliest definition of a field wins (setdefault).
+        queue = [(base_name, p) for p in cls._all_extends_parents(raw_view_defs.get(base_name) or {})]
+        while queue:
+            child, parent = queue.pop(0)
+            if parent in seen:
+                continue
+            if parent_in_scope is not None and not parent_in_scope(child, parent):
+                continue  # skip this link (and its ancestors); other parents still apply
+            if parent in unsupported_parents:
+                continue  # unsupported derived-table parent: never registered, so do not seed it
+            seen.add(parent)
+            parent_raw = raw_view_defs.get(parent) or {}
+            for key in cls._VIEW_FIELD_LIST_KEYS:
+                for item in parent_raw.get(key) or []:
+                    if isinstance(item, dict) and item.get("name"):
+                        fields.setdefault((key, item["name"]), copy.deepcopy(item))  # nearest wins
+            queue.extend((parent, gp) for gp in cls._all_extends_parents(parent_raw))
+        return fields
+
+    @classmethod
+    def _merge_view_defs(
+        cls, base: dict, refinement: dict, inherited_fields: dict | None = None, drop_field_keys=None
+    ) -> dict:
+        """Merge a `view: +name` refinement's RAW LookML dict onto the base view's RAW dict.
+
+        Merging at the RAW level (then re-parsing) is what makes a PARTIAL field refinement work:
+        ``view: +base { dimension: id { label: "ID" } }`` must only set ``label`` and leave the
+        base field's ``sql``/``type``/``primary_key`` intact. Merging the PARSED models cannot do
+        this -- the parser fills defaults (a bare ``dimension:`` becomes type ``categorical`` with
+        no sql), so the refinement's field looks fully specified and clobbers the base's.
+
+        Named-field lists are merged per field by name; every other key is overridden wholesale
+        (Looker refinement semantics), and the base's name is kept.
+
+        ``drop_field_keys`` names ``(list_key, field_name)`` pairs the refinement must NOT introduce:
+        a field that exists only on an unsupported derived-table parent (never registered), so
+        refining it would resurrect a phantom own field querying a nonexistent column.
+        """
+        drop_field_keys = drop_field_keys or set()
+        merged = copy.deepcopy(base)
+        for key, value in refinement.items():
+            if key == "name":
+                continue
+            if key in cls._VIEW_FIELD_LIST_KEYS and isinstance(value, list):
+                by_name: dict[str, dict] = {}
+                extras: list = []
+                for item in merged.get(key) or []:
+                    if isinstance(item, dict) and item.get("name"):
+                        by_name[item["name"]] = copy.deepcopy(item)
+                    else:
+                        extras.append(copy.deepcopy(item))
+                for item in value:
+                    if not isinstance(item, dict) or not item.get("name"):
+                        extras.append(copy.deepcopy(item))
+                        continue
+                    fname = item["name"]
+                    if (key, fname) in drop_field_keys and fname not in by_name:
+                        # Field exists only on an unsupported derived-table parent: refining it
+                        # would add a phantom own field querying an unregistered table, so drop it.
+                        continue
+                    if fname in by_name:
+                        # Field-level refinement: override ONLY the properties it specifies.
+                        by_name[fname].update({k: copy.deepcopy(v) for k, v in item.items() if k != "name"})
+                    else:
+                        # The base view does not define this field itself. If it INHERITS the field
+                        # via `extends`, seed from the inherited definition so a partial refinement
+                        # (`dimension: amount { label: "Amount" }`) keeps the inherited sql/type
+                        # instead of re-parsing to a bare categorical field that then overrides the
+                        # inherited one. Otherwise it is a genuinely new field.
+                        inherited = (inherited_fields or {}).get((key, fname))
+                        if inherited is not None:
+                            seed = copy.deepcopy(inherited)
+                            seed.update({k: copy.deepcopy(v) for k, v in item.items() if k != "name"})
+                            by_name[fname] = seed
+                        else:
+                            by_name[fname] = copy.deepcopy(item)
+                merged[key] = list(by_name.values()) + extras
+            elif key in ("extends", "extends__all") and isinstance(value, list):
+                # Looker refinements are ADDITIVE for `extends`: a refinement's parents are appended
+                # to the view's existing extends chain, not replaced
+                # (https://cloud.google.com/looker/docs/lookml-refinements#refinement_extends_are_additive).
+                # Wholesale replacement dropped fields inherited only from the base's original
+                # parents. lkml stores this as `extends__all`, a list of per-statement lists
+                # ([["base_a"]]); concatenate the base's statements first, then the refinement's.
+                merged[key] = list(merged.get(key) or []) + list(value)
+            else:
+                merged[key] = copy.deepcopy(value)
+        merged["name"] = base.get("name")
+        return merged
 
     @staticmethod
     def _sql_has_list_aggregate(sql: str) -> bool:
@@ -1599,12 +2600,23 @@ class LookMLAdapter(BaseAdapter):
         for dim_group_def in view_def.get("dimension_groups") or []:
             group_name = dim_group_def.get("name")
             group_sql = dim_group_def.get("sql")
-            if group_name and group_sql:
+            if not group_name:
+                continue
+            if group_sql:
                 group_sql = group_sql.replace("${TABLE}", "{model}")
-                timeframes = dim_group_def.get("timeframes", ["date"])
-                for timeframe in timeframes:
-                    if timeframe != "raw":
-                        dimension_sql_lookup[f"{group_name}_{timeframe}"] = group_sql
+            else:
+                # A group that omits `sql` reads Looker's implicit `<group>` column. Seed it HERE,
+                # not just on the generated dimensions: this lookup is what expands a ${created_date}
+                # reference in another field, and an unseeded timeframe falls back to the generated
+                # field name -- so a measure over it queried a column that does not exist.
+                group_sql = "{model}." + group_name
+            timeframes = dim_group_def.get("timeframes", ["date"])
+            for timeframe in timeframes:
+                # Skip UNSUPPORTED timeframes (minute buckets / sub-second): _build_timeframe_dimension
+                # drops their generated dimensions, so seeding the lookup would let a ${created_minute15}
+                # reference expand to the raw base column and run a measure on unbucketed timestamps.
+                if timeframe != "raw" and not self._is_unsupported_timeframe(timeframe):
+                    dimension_sql_lookup[f"{group_name}_{timeframe}"] = group_sql
 
         # All declared dimension names (including compact dimensions with no explicit
         # sql), so ${ref}s to a compact dimension resolve to its default column rather
@@ -1614,7 +2626,7 @@ class LookMLAdapter(BaseAdapter):
             group_name = dim_group_def.get("name")
             if group_name:
                 for timeframe in dim_group_def.get("timeframes", ["date"]):
-                    if timeframe != "raw":
+                    if timeframe != "raw" and not self._is_unsupported_timeframe(timeframe):
                         declared_dim_names.add(f"{group_name}_{timeframe}")
 
         # Resolve any dimension-to-dimension references in the lookup
@@ -1943,18 +2955,27 @@ class LookMLAdapter(BaseAdapter):
         if view_def.get("tags"):
             model_meta["tags"] = view_def["tags"]
 
-        # Extract extends (lkml parses as list, e.g. ["base_view"])
-        extends_list = view_def.get("extends") or view_def.get("extends__all")
-        extends = None
-        if extends_list:
-            if isinstance(extends_list, list):
-                # Flatten nested lists from extends__all format
-                flat = extends_list
-                while flat and isinstance(flat[0], list):
-                    flat = flat[0]
-                extends = flat[0] if flat else None
-            elif isinstance(extends_list, str):
-                extends = extends_list
+        # Extract extends. Model.extends is a single parent, so keep the FIRST here for the
+        # single-parent chain resolution; any ADDITIONAL parents (extends: [a, b] or additive
+        # refinement extends) are merged into the child after resolution (see the project parse).
+        _all_parents = self._all_extends_parents(view_def)
+        extends = _all_parents[0] if _all_parents else None
+
+        # A LookML view with no sql_table_name/derived_table implicitly uses a table
+        # named after the view (Looker's default). A view with a derived_table the
+        # adapter cannot turn into SQL must NOT get such a default; mark it so the
+        # post-merge pass skips it, and RETAIN the raw derived_table dict so export can
+        # re-emit it -- a derived_table with no `sql` keeps the view unsupported on
+        # re-import instead of being defaulted to a physical table named after the view.
+        unsupported_derived_table = bool(view_def.get("derived_table")) and sql is None
+        if unsupported_derived_table:
+            model_meta["unsupported_derived_table"] = True
+            model_meta["_unsupported_derived_table_raw"] = view_def["derived_table"]
+            # A refinement can add a `derived_table` to a view that already had `sql_table_name`,
+            # leaving both keys. The view is now derived (not a physical table), so drop the stale
+            # sql_table_name -- otherwise the template stamping (which only marks tableless
+            # unsupported PDTs) leaves it registerable and the loader queries the stale table.
+            table = None
 
         # Build kwargs conditionally so that unset scalars don't appear in
         # model_fields_set. This matters for refinements: merge_model treats
@@ -2033,8 +3054,76 @@ class LookMLAdapter(BaseAdapter):
             if sql:
                 sql = sql.replace("${TABLE}", "{model}")
 
+        # Recover the granularity of the collision-export form: a standalone time
+        # dimension we emit as `type: date_time sql: DATE_TRUNC('<grain>', ...)` whose
+        # name carries a LookML timeframe suffix for that grain (e.g. started_date with
+        # DATE_TRUNC('day', ...), started_minute with DATE_TRUNC('minute', ...) -- see
+        # _export_collision_time_dim). Guard tightly so a hand-written DATE_TRUNC dim is
+        # NOT hijacked: the grain must be one sidemantic supports, the name's trailing
+        # `_<suffix>` must be a LookML timeframe mapping to that exact grain, AND the dim
+        # must carry no other properties (the collision form emits only name/type/sql).
+        # This keeps a hand-written `created` (DATE_TRUNC('day', ...)) on the categorical
+        # path (no rename to created_date), preserves a hand-written `created_date` with
+        # `hidden`/`label`/etc. as a plain dimension (props not dropped), and never copies
+        # a dialect grain like 'isoweek' into Dimension.granularity (a validation error).
+        granularity = None
+        recovered_timeframe = None
+        if (
+            dim_type in ("date", "date_time", "datetime", "time")
+            and sql
+            and not (set(dim_def) & self._PRESERVED_DIM_PROPS)
+        ):
+            bucket = self._MINUTE_BUCKET_RE.match(sql)
+            tm = self._DATE_TRUNC_RE.match(sql)
+            if bucket:
+                # A collision-export minute15/minute30 bucket: recover minute grain + the
+                # exact timeframe. KEEP the full bucket expression as the dim's sql (do NOT
+                # reduce to the raw column) so QUERIES bucket every 15/30 minutes; the
+                # generator's DATE_TRUNC('minute', ...) wrap is idempotent on an already
+                # minute-aligned bucket. Re-export detects this bucket to avoid re-wrapping.
+                tf = f"minute{bucket.group(2)}"
+                if name.endswith("_" + tf):
+                    sidemantic_type = "time"
+                    granularity = "minute"
+                    recovered_timeframe = tf
+            elif tm:
+                grain = tm.group(1).lower()
+                if grain in self._SUBSECOND_TF and name.endswith("_" + grain):
+                    # A collision-export sub-second DATE_TRUNC (millisecond/microsecond):
+                    # sidemantic has no such grain, so store the nearest (second) + the
+                    # exact timeframe in meta, KEEPING the sub-second DATE_TRUNC sql so the
+                    # exported precision round-trips (queries run at second, sidemantic's max).
+                    sidemantic_type = "time"
+                    granularity = "second"
+                    recovered_timeframe = grain
+                # Match the LONGEST known timeframe suffix, not just text after the last
+                # underscore -- multi-word timeframes like "time_of_day" must round-trip
+                # (started_time_of_day, not a bogus "day" suffix lookup).
+                elif grain in self._SUPPORTED_GRAINS:
+                    matched_tf = None
+                    for tf, g in self._TIME_GRANULARITY_TIMEFRAMES.items():
+                        if name.endswith("_" + tf) and g == grain and (not matched_tf or len(tf) > len(matched_tf)):
+                            matched_tf = tf
+                    if matched_tf:
+                        sidemantic_type = "time"
+                        granularity = grain
+                        # STORE the timeframe unless it is one whose exact semantics live in a
+                        # special SQL form (minute15/30 bucket, sub-second DATE_TRUNC) that a PLAIN
+                        # DATE_TRUNC has already lost -- recording those would make the next export
+                        # WIDEN a 1-minute dim into a 15-min bucket. `time_of_day` is NOT in that
+                        # set: its canonical export IS this plain hour DATE_TRUNC named
+                        # `*_time_of_day`, so it is recoverable only by name -- record it, else the
+                        # next export loses the timeframe and renames the field to `*_hour`.
+                        if matched_tf not in self._EXACT_FORM_TF:
+                            recovered_timeframe = matched_tf
+
         # Build meta dict from LookML-specific display properties
         meta = {}
+        if recovered_timeframe:
+            # Remember the exact LookML timeframe so the NEXT export strips this suffix
+            # (e.g. _time_of_day) instead of re-deriving a wrong one and renaming the
+            # field -- keeps repeated collision round-trips stable.
+            meta["lookml_timeframe"] = recovered_timeframe
         if dim_def.get("hidden") in ("yes", True):
             meta["hidden"] = True
         if dim_def.get("group_label"):
@@ -2064,6 +3153,7 @@ class LookMLAdapter(BaseAdapter):
             name=name,
             type=sidemantic_type,
             sql=sql,
+            granularity=granularity,
             description=dim_def.get("description"),
             label=dim_def.get("label"),
             value_format_name=dim_def.get("value_format_name"),
@@ -2103,14 +3193,33 @@ class LookMLAdapter(BaseAdapter):
 
         timeframes = dim_group_def.get("timeframes", ["date"])
 
-        # Get SQL from the resolved lookup if available
-        first_timeframe_name = f"{group_name}_{timeframes[0]}" if timeframes else None
+        # A group that omits `sql` reads Looker's implicit `<group>` column -- ONE column shared by
+        # every timeframe. Leaving sql unset made each generated field fall back to its OWN name,
+        # compiling DATE_TRUNC('day', created_date) against a column that does not exist. Marked
+        # from the DEFINITION, not from whichever branch below supplies the SQL: the resolved
+        # lookup seeds implicit groups too, so inferring the mark from an unset sql would silently
+        # stop marking them. Export needs the mark to tell this from an explicit
+        # `sql: ${TABLE}.created ;;` and re-emit the group without inventing a sql.
+        implicit_sql = not dim_group_def.get("sql")
+
+        # Get SQL from the resolved lookup if available. Key off the first SUPPORTED timeframe,
+        # not timeframes[0]: an unsupported leading timeframe (minute15, sub-second) is never
+        # seeded in the resolved lookup, so keying off it would miss and fall back to the RAW
+        # dim_group `sql` below -- leaving a ${ref} to another dimension (sql: ${ts_src}) literally
+        # unresolved, so a surviving timeframe compiled DATE_TRUNC('day', ${ts_src}).
+        lookup_timeframe = next(
+            (tf for tf in timeframes if tf != "raw" and not self._is_unsupported_timeframe(tf)),
+            timeframes[0] if timeframes else None,
+        )
+        first_timeframe_name = f"{group_name}_{lookup_timeframe}" if lookup_timeframe else None
         if dimension_sql_lookup and first_timeframe_name and first_timeframe_name in dimension_sql_lookup:
             base_sql = dimension_sql_lookup[first_timeframe_name]
         else:
             base_sql = dim_group_def.get("sql")
             if base_sql:
                 base_sql = base_sql.replace("${TABLE}", "{model}")
+            else:
+                base_sql = "{model}." + group_name
 
         # A dimension_group whose base SQL references another view inline (${other.ts})
         # would leak that literal into every generated timeframe field, so drop the whole
@@ -2132,6 +3241,8 @@ class LookMLAdapter(BaseAdapter):
 
             dim = self._build_timeframe_dimension(group_name, timeframe, base_sql, dim_group_def)
             if dim is not None:
+                if implicit_sql:
+                    dim.meta = {**(dim.meta or {}), "_lookml_implicit_group": True}
                 dimensions.append(dim)
 
         return dimensions
@@ -2139,7 +3250,9 @@ class LookMLAdapter(BaseAdapter):
     # Timeframes that truncate a timestamp to a coarser time grain. These keep
     # type="time" with a Sidemantic granularity so they behave as time dimensions.
     _TIME_GRANULARITY_TIMEFRAMES = {
-        "time": "hour",
+        # Looker's "time" timeframe keeps full timestamp precision (to the second);
+        # truncating to the hour silently collapses sub-hour rows.
+        "time": "second",
         "time_of_day": "hour",
         "hour": "hour",
         "minute": "minute",
@@ -2199,7 +3312,24 @@ class LookMLAdapter(BaseAdapter):
         label = dim_group_def.get("label")
         description = dim_group_def.get("description")
 
-        # Time-truncation timeframes -> time dimension with granularity.
+        # Timeframes sidemantic cannot represent as a portable time dimension, so leave them
+        # unsupported rather than expose a field that queries at the wrong grain or emits SQL that
+        # only runs on some engines:
+        #   - minute15 / minute30 are N-minute BUCKETS, not a DATE_TRUNC grain. The coarse `minute`
+        #     granularity truncates to the minute (dropping the bucket), and baking the bucket
+        #     expression stores DIALECT-SPECIFIC SQL (DuckDB/Postgres DATE_TRUNC + INTERVAL) into
+        #     Dimension.sql, which the generator does not transpile -- so it fails on BigQuery,
+        #     Snowflake, etc. Generating it dialect-aware needs the query dialect, which the import
+        #     adapter does not have.
+        #   - millisecond / microsecond are FINER than the finest granularity the enum supports
+        #     (`second`), so a time dimension truncates to the second and silently drops precision.
+        if self._is_unsupported_timeframe(timeframe):
+            return None
+
+        # Time-truncation timeframes -> time dimension with granularity. Remember the
+        # original LookML timeframe so export can round-trip it exactly: several
+        # timeframes (e.g. "time" and "second") map to the same sidemantic granularity
+        # and would otherwise collapse to one on export.
         granularity = self._TIME_GRANULARITY_TIMEFRAMES.get(timeframe)
         if granularity is not None:
             return Dimension(
@@ -2209,6 +3339,7 @@ class LookMLAdapter(BaseAdapter):
                 granularity=granularity,
                 label=label,
                 description=description,
+                meta={"lookml_timeframe": timeframe},
             )
 
         # Fiscal quarter/year truncations honoring fiscal_month_offset. The base
@@ -3233,12 +4364,23 @@ class LookMLAdapter(BaseAdapter):
             **common,
         )
 
-    def _parse_explore(self, explore_def: dict, graph: SemanticGraph) -> None:
+    def _parse_explore(
+        self,
+        explore_def: dict,
+        graph: SemanticGraph,
+        model_scopes: list[set[str]] | None = None,
+        view_model_count: dict[str, int] | None = None,
+    ) -> None:
         """Parse LookML explore and add relationships to models.
 
         Args:
             explore_def: Explore definition from parsed LookML
             graph: Semantic graph to add relationships to
+            model_scopes: One view set per model including this explore's file, or None to allow
+                any. An explore resolves within a SINGLE model, so its base view and joins are
+                checked against the same model's scope rather than the models' combined views.
+            view_model_count: How many models have each view in scope project-wide, used to detect
+                that some models use the base view without this explore's mandatory filters.
         """
         explore_name = explore_def.get("name")
         if not explore_name:
@@ -3251,6 +4393,21 @@ class LookMLAdapter(BaseAdapter):
             if explore_name not in graph.models:
                 return
             base_model_name = explore_name
+
+        # Scope-check the RESOLVED base: an explore on a view no model including this file defines
+        # or includes is not part of any model, and applying it would mutate the live view. The
+        # models that CAN see the base are the ones this explore could belong to, so its joins are
+        # checked against those and not against every model sharing the file.
+        base_scopes = model_scopes
+        if model_scopes is not None:
+            base_scopes = [scope for scope in model_scopes if base_model_name in scope]
+            if not base_scopes:
+                logger.debug(
+                    "Ignoring LookML explore %s: view %s is not in the scope of any model including this file.",
+                    explore_name,
+                    base_model_name,
+                )
+                return
 
         base_model = graph.models[base_model_name]
 
@@ -3270,6 +4427,26 @@ class LookMLAdapter(BaseAdapter):
                 base_model.meta.update(explore_meta)
             else:
                 base_model.meta = explore_meta
+
+        # An explore's mandatory filters (sql_always_where / always_filter) become segments on the
+        # single shared base model. If some models use that base view WITHOUT reaching this explore
+        # (base_scopes counts only the models that DO), those models expose a filter Looker would
+        # not give them. One model per view name cannot hold both the filtered and unfiltered
+        # explore, so the segment is kept -- dropping it would un-filter the model that wanted it,
+        # and the segment is opt-in, not auto-applied -- and the divergence is reported.
+        _has_explore_filters = bool(explore_def.get("sql_always_where") or explore_def.get("always_filter"))
+        if _has_explore_filters and view_model_count is not None and base_scopes is not None:
+            if view_model_count.get(base_model_name, len(base_scopes)) > len(base_scopes):
+                logger.warning(
+                    "LookML explore %r sets a mandatory filter (sql_always_where/always_filter), but only "
+                    "some of the models using view %r include this explore. The filter becomes a segment on "
+                    "the single %r model, so the models without this explore expose a filter Looker would not "
+                    "give them. Include this explore from every model that uses %r, or give them separate views.",
+                    explore_name,
+                    base_model_name,
+                    base_model_name,
+                    base_model_name,
+                )
 
         # Convert sql_always_where to a segment (use explore name for uniqueness)
         from sidemantic.core.segment import Segment
@@ -3326,6 +4503,42 @@ class LookMLAdapter(BaseAdapter):
 
         # Parse joins
         for join_def in explore_def.get("joins") or []:
+            # Scope join targets like the base view: unique un-included views are still installed,
+            # so without this a model that includes only orders.view.lkml could wire `join:
+            # customers` to an archived customers.view.lkml Looker would not have in scope. Check
+            # the `from:` target, which is the view a join alias actually reads.
+            #
+            # Only skip a target that EXISTS but is out of scope. A join to a never-defined view
+            # is left intact: that dangling relationship is a real error `validate` must surface
+            # (see _drop_non_registerable_models), and silently dropping it would hide the typo.
+            join_target = join_def.get("from", join_def.get("name"))
+            if base_scopes is not None and join_target in graph.models:
+                joinable = [scope for scope in base_scopes if join_target in scope]
+                if not joinable:
+                    logger.debug(
+                        "Ignoring LookML join %s in explore %s: no model including this file sees both %s and %s.",
+                        join_def.get("name"),
+                        explore_name,
+                        base_model_name,
+                        join_target,
+                    )
+                    continue
+                if len(joinable) != len(base_scopes):
+                    # Some models that explore this base view do not include the join target, so
+                    # Looker would give them an explore without this join (and reject the file for
+                    # them). One model per view name cannot hold both shapes, so the join is kept
+                    # for the models that do include it and the divergence is reported.
+                    logger.warning(
+                        "LookML explore %r joins %r, which only some of the models including this explore "
+                        "have in scope. The join is applied to the single %r model, so the models missing "
+                        "%r see a join Looker would not give them. Include %r from every model with this "
+                        "explore, or give the models separate explores.",
+                        explore_name,
+                        join_target,
+                        base_model_name,
+                        join_target,
+                        join_target,
+                    )
             relationship = self._parse_join(join_def, base_model_name, explore_name)
             if relationship:
                 # Add relationship to the base model
@@ -3741,6 +4954,158 @@ class LookMLAdapter(BaseAdapter):
             return None
         return f"{func}(CASE WHEN {conds} THEN {arg} END)"
 
+    # DATE_TRUNC('<grain>', <expr>) emitted for collision time dimensions, and matched
+    # on import to recover the grain. The grain is the first capture; expr is the rest.
+    _DATE_TRUNC_RE = re.compile(r"(?is)^\s*DATE_TRUNC\(\s*'(\w+)'\s*,\s*(.+)\)\s*$")
+    # minute15 / minute30 bucket every N minutes -- sidemantic has no such grain (it
+    # stores them as `minute` + meta), and DATE_TRUNC('minute', ...) loses the bucket.
+    # The collision export emits the expression below; this regex recovers (src, N).
+    _MINUTE_BUCKET_TF = {"minute15": 15, "minute30": 30}
+    # Sub-second LookML timeframes finer than sidemantic's `second` grain but valid as
+    # DATE_TRUNC units; the collision export truncates at these and import recovers them.
+    _SUBSECOND_TF = frozenset({"millisecond", "microsecond"})
+
+    @classmethod
+    def _is_unsupported_timeframe(cls, timeframe: str) -> bool:
+        """A timeframe sidemantic cannot represent as a portable time dimension on IMPORT.
+
+        Its generated dimension is dropped by ``_build_timeframe_dimension``, so the reference
+        lookup must skip it too -- otherwise ``${created_minute15}`` in another field would expand
+        to the raw base column and run on unbucketed timestamps.
+        """
+        return timeframe in cls._MINUTE_BUCKET_TF or timeframe in cls._SUBSECOND_TF
+
+    # LookML timeframes that map MANY-to-one onto a coarser/finer sidemantic grain (15/30-min
+    # buckets -> minute, sub-second -> second, time-of-day extraction -> hour). A native dim's
+    # NAME suffix must NOT infer these on export: `created_minute15` at MINUTE grain is 1-minute
+    # data, not 15-minute buckets, so emitting `[minute15]` would silently re-bucket. They only
+    # round-trip when preserved in meta['lookml_timeframe'] (the import path).
+    _INEXACT_NAME_TF = frozenset(_MINUTE_BUCKET_TF) | _SUBSECOND_TF | {"time_of_day"}
+    # Inexact timeframes whose exact semantics live in a SPECIAL SQL FORM (15/30-min bucket
+    # expression, sub-second DATE_TRUNC unit). If one reaches import recovery as a PLAIN
+    # DATE_TRUNC, that exact form was lost, so its name suffix must NOT be recorded (recording
+    # `minute15` on a plain minute DATE_TRUNC would re-bucket 1-minute data). `time_of_day` is
+    # deliberately EXCLUDED: it has no finer SQL form -- its canonical collision export IS a plain
+    # hour DATE_TRUNC named `*_time_of_day`, so it is recoverable (and only recoverable) by name.
+    _EXACT_FORM_TF = frozenset(_MINUTE_BUCKET_TF) | _SUBSECOND_TF
+    # Canonical EXACT LookML timeframe for each sidemantic grain (inverse of the common
+    # cases in _TIME_GRANULARITY_TIMEFRAMES). Used to give a suffixless collision time dim
+    # a recoverable name on export (e.g. `started` at hour grain -> `started_hour`).
+    _GRAIN_TO_TIMEFRAME = {
+        "second": "second",
+        "minute": "minute",
+        "hour": "hour",
+        "day": "date",
+        "week": "week",
+        "month": "month",
+        "quarter": "quarter",
+        "year": "year",
+    }
+    _MINUTE_BUCKET_RE = re.compile(
+        r"(?is)^\s*DATE_TRUNC\('hour',\s*(.+?)\)\s*\+\s*INTERVAL '1 minute'\s*\*\s*"
+        r"CAST\(FLOOR\(EXTRACT\(MINUTE FROM .+?\)\s*/\s*(15|30)\)\s*\*\s*(?:15|30)\s*AS INTEGER\)\s*$"
+    )
+
+    @staticmethod
+    def _minute_bucket_sql(src: str, n: int) -> str:
+        """An N-minute bucket truncation of ``src`` (N = 15 or 30).
+
+        Uses portable ``FLOOR(x / n) * n`` (not DuckDB-only ``//``) so the exported SQL
+        runs on Postgres/BigQuery/Snowflake too.
+        """
+        return (
+            f"DATE_TRUNC('hour', {src}) + INTERVAL '1 minute' * "
+            f"CAST(FLOOR(EXTRACT(MINUTE FROM {src}) / {n}) * {n} AS INTEGER)"
+        )
+
+    # Grains sidemantic's Dimension.granularity accepts; used to guard DATE_TRUNC recovery.
+    _SUPPORTED_GRAINS = frozenset({"second", "minute", "hour", "day", "week", "month", "quarter", "year"})
+    # Dimension-level properties the collision-export form never emits (it writes only
+    # name/type/sql). Their presence marks a HAND-WRITTEN DATE_TRUNC dimension that must
+    # not be reclassified into a time dimension (which would drop these on round-trip).
+    _PRESERVED_DIM_PROPS = frozenset(
+        {
+            "hidden",
+            "label",
+            "group_label",
+            "description",
+            "order_by_field",
+            "value_format",
+            "value_format_name",
+            "tags",
+            "can_filter",
+            "primary_key",
+            "drill_fields",
+        }
+    )
+
+    @classmethod
+    def _export_collision_time_dim(cls, dim, group_sql: str | None, used_names: set | None = None) -> dict:
+        """Export a same-prefix time dimension (different source) as a standalone dim.
+
+        Such a dimension cannot share its base name's dimension_group, so it is written
+        as a plain ``type: date_time`` dimension preserving its exact field name, with
+        the granularity baked into ``DATE_TRUNC`` so re-import recovers it (see
+        ``_parse_dimension``). If the source SQL is already a DATE_TRUNC at this grain it
+        is reused verbatim, keeping repeated round-trips stable (no nested truncation).
+        """
+        # Fall back to the dimension's DEFAULT column expression (sql_expr == sql or name) when it
+        # has no explicit sql -- an empty string would emit `sql: DATE_TRUNC('hour', ) ;;`.
+        src = (group_sql if group_sql is not None else dim.sql) or dim.sql_expr
+        src = src.replace("{model}", "${TABLE}")
+        grain = (dim.granularity or "").lower()
+        tf = (dim.meta or {}).get("lookml_timeframe")
+        # Compute the exported SQL for each class of timeframe:
+        n = cls._MINUTE_BUCKET_TF.get(tf)
+        if n is not None:
+            # minute15/minute30 (stored as `minute` grain + meta): emit an explicit N-minute
+            # bucket so Looker buckets correctly, not every minute. Reuse the dim's sql if it
+            # is ALREADY that bucket (recovered on a prior import) to avoid nesting.
+            bm = cls._MINUTE_BUCKET_RE.match(src)
+            sql = src if (bm and int(bm.group(2)) == n) else cls._minute_bucket_sql(src, n)
+        else:
+            # millisecond/microsecond are finer than the stored `second` grain but ARE valid
+            # DATE_TRUNC units, so truncate at the LookML timeframe to keep sub-second precision.
+            if tf in cls._SUBSECOND_TF:
+                grain = tf
+            m = cls._DATE_TRUNC_RE.match(src)
+            sql = src if (m and m.group(1).lower() == grain) else f"DATE_TRUNC('{grain}', {src})"
+
+        # A standalone dim is only recoverable as a TIME dim if its name ends in a LookML
+        # timeframe suffix that re-import maps to this grain (see _parse_dimension). Determine
+        # that trailing `_<tf>` (prefer the STORED lookml_timeframe -- e.g. minute15/millisecond
+        # -- so bucket/sub-second forms round-trip; else a name suffix matching the grain; else
+        # synthesize the grain's canonical timeframe for a suffixless name like `started`, which
+        # would otherwise re-import categorical). `stem` is the name without that suffix.
+        name = dim.name
+        tf_suffix = None
+        if tf and name.endswith("_" + tf):
+            tf_suffix = tf
+        elif grain in cls._SUBSECOND_TF and name.endswith("_" + grain):
+            tf_suffix = grain
+        else:
+            for t, g in cls._TIME_GRANULARITY_TIMEFRAMES.items():
+                if name.endswith("_" + t) and g == grain and (tf_suffix is None or len(t) > len(tf_suffix)):
+                    tf_suffix = t
+        if tf_suffix is not None:
+            stem = name[: -(len(tf_suffix) + 1)]
+        else:
+            tf_suffix = tf or (grain if grain in cls._SUBSECOND_TF else cls._GRAIN_TO_TIMEFRAME.get(grain, "date"))
+            stem = name
+            name = f"{stem}_{tf_suffix}"
+        # Guarantee uniqueness against every other emitted field (a sibling standalone, a
+        # dimension_group's generated `<base>_<tf>` field, a regular dimension/measure). This
+        # trio (`started` + `started_hour` + `started_date`, all different SQL) is otherwise
+        # unrepresentable; insert the disambiguator into the STEM (`started_2_hour`, NOT
+        # `started_hour_2`) so the trailing timeframe -- and thus time-recoverability on
+        # re-import -- is preserved. Valid + lossless.
+        if used_names is not None and name in used_names:
+            i = 2
+            while f"{stem}_{i}_{tf_suffix}" in used_names:
+                i += 1
+            name = f"{stem}_{i}_{tf_suffix}"
+        return {"name": name, "type": "date_time", "sql": sql}
+
     def _export_view(self, model: Model, graph: SemanticGraph) -> dict:
         """Export model to LookML view definition.
 
@@ -3753,10 +5118,26 @@ class LookMLAdapter(BaseAdapter):
         """
         view = {"name": model.name}
 
+        # Re-emit `extension: required` for an abstract base so a round-trip keeps it non-queryable.
+        # Key off the PARSER-OWNED `lookml_template` marker, not `not model.table`: an
+        # extension: required base may declare a sql_table_name (valid for a reusable base), and that
+        # table is re-emitted below -- but it must still round-trip the abstract marker. A concrete
+        # child only INHERITS `extension_required` in meta (no `lookml_template` marker), so it is
+        # not made abstract on round-trip.
+        _meta = model.meta or {}
+        if _meta.get("lookml_template") and _meta.get("extension_required"):
+            view["extension"] = "required"
+
         if model.sql:
             view["derived_table"] = {"sql": model.sql}
         elif model.table:
             view["sql_table_name"] = model.table
+        elif (model.meta or {}).get("unsupported_derived_table"):
+            # Re-emit the unsupported derived_table (no `sql`) so re-import keeps it marked
+            # unsupported instead of defaulting it to a physical table. Prefer the retained
+            # raw dict; fall back to a minimal non-sql marker.
+            raw = (model.meta or {}).get("_unsupported_derived_table_raw")
+            view["derived_table"] = raw if isinstance(raw, dict) and raw else {"sql_trigger_value": "select 1"}
 
         if model.description:
             view["description"] = model.description
@@ -3819,55 +5200,205 @@ class LookMLAdapter(BaseAdapter):
         # Group time dimensions by base name
         time_dims = [d for d in model.dimensions if d.type == "time" and d.granularity]
         if time_dims:
-            # Group by base name and collect all timeframes
-            from collections import defaultdict
+            # Group by (base name, source SQL): same-prefix time dimensions backed by
+            # DIFFERENT columns are not one dimension_group, and merging them would
+            # rewire a field to the wrong source on round-trip.
+            from collections import Counter
 
-            base_name_groups = defaultdict(list)
+            base_name_groups: dict[tuple[str, str | None], list] = {}
 
             for dim in time_dims:
-                # Extract base name (remove _date, _week, etc suffix)
+                # Extract the base name by stripping the timeframe suffix. For imported
+                # dims, use the EXACT stored LookML timeframe (covers every mapped
+                # timeframe, e.g. millisecond/microsecond, not just the common few);
+                # for native dims fall back to the common suffix list.
                 base_name = dim.name
-                for suffix in ["_date", "_week", "_month", "_quarter", "_year", "_time", "_hour"]:
-                    if dim.name.endswith(suffix):
-                        base_name = dim.name[: -len(suffix)]
-                        break
-                base_name_groups[base_name].append(dim)
+                stored_tf = (dim.meta or {}).get("lookml_timeframe")
+                implicit_group = False
+                if stored_tf and dim.name.endswith("_" + stored_tf):
+                    base_name = dim.name[: -(len(stored_tf) + 1)]
+                    # An imported `dimension_group` that omits `sql` reads ONE implicit column
+                    # named after the GROUP (`created`), shared by every timeframe it generates.
+                    # The parser resolves those dims to that column and marks them, so this is the
+                    # marker rather than `sql is None`.
+                    implicit_group = bool((dim.meta or {}).get("_lookml_implicit_group"))
+                else:
+                    # Native dims (no stored timeframe): strip any known LookML truncation
+                    # timeframe suffix, LONGEST first so e.g. `_minute15`/`_time_of_day`/
+                    # `_millisecond` win over `_minute`/`_time`/`_second` (else the field
+                    # re-imports renamed, e.g. created_minute15 -> created_minute15_minute).
+                    for tf in sorted(self._TIME_GRANULARITY_TIMEFRAMES, key=len, reverse=True):
+                        if dim.name.endswith("_" + tf):
+                            base_name = dim.name[: -(len(tf) + 1)]
+                            break
+                # Key on the EFFECTIVE expression, not the explicit `sql`: two native dims that
+                # both rely on their default column (sql is None for both) still read DIFFERENT
+                # columns -- `started` and `started_hour` -- and keying on None would collapse
+                # them into one dimension_group, emitting a single field backed by the wrong
+                # column and losing the other dim entirely. An imported no-sql group is the
+                # opposite case: its timeframes SHARE the implicit `<base>` column, so key them
+                # on the group (None) -- keying on the generated field name would read each
+                # timeframe as its own source and split the group into standalone dims backed by
+                # columns that do not exist (`DATE_TRUNC('week', created_week)`).
+                base_name_groups.setdefault((base_name, None if implicit_group else dim.sql_expr), []).append(dim)
+
+            # When one base name spans multiple source SQLs, only ONE can be the
+            # dimension_group (a second `dimension_group: <base>` is illegal LookML);
+            # the rest are emitted as standalone DATE_TRUNC dimensions below so their
+            # field names round-trip exactly instead of being renamed.
+            base_name_counts = Counter(bn for (bn, _) in base_name_groups)
+            assigned_names: set[str] = set()
+
+            # Map granularity to timeframe. Used as a fallback for dimensions not
+            # imported from LookML (which carry no meta['lookml_timeframe']); a
+            # second-grain dimension maps to the LookML `second` timeframe so native
+            # `*_second` fields round-trip instead of collapsing to `time`.
+            granularity_mapping = {
+                "second": "second",
+                "minute": "minute",
+                "hour": "hour",
+                "day": "date",
+                "week": "week",
+                "month": "month",
+                "quarter": "quarter",
+                "year": "year",
+            }
 
             dimension_groups = []
-            for base_name, dims in base_name_groups.items():
-                # Map granularity to timeframe
-                granularity_mapping = {
-                    "hour": "time",
-                    "day": "date",
-                    "week": "week",
-                    "month": "month",
-                    "quarter": "quarter",
-                    "year": "year",
-                }
+            # Same-prefix time dimensions backed by a DIFFERENT source column can't all
+            # be dimension_groups: a second `dimension_group: <base>` is illegal LookML,
+            # and renaming it (started_2) would rename its fields (started_minute ->
+            # started_2_minute) and break every reference. The first source keeps the
+            # dimension_group; the rest are emitted as standalone dimensions that
+            # preserve the exact field name (granularity baked into DATE_TRUNC so the
+            # importer recovers it losslessly).
+            collision_dims = []
+            # Field names already taken by fields NOT produced by this time-dim pass (regular
+            # dimensions + measures). Time dims get their emitted names added below as each
+            # dimension_group (base + generated `<base>_<tf>` fields) and collision standalone
+            # is built, so a collision standalone never duplicates a group-generated field,
+            # another standalone, or a regular field (see _export_collision_time_dim).
+            _time_names = {d.name for d in time_dims}
+            used_names: set[str] = {d.name for d in model.dimensions if d.name not in _time_names}
+            used_names |= {m.name for m in model.metrics}
+            # Choose the dimension_group winner within a colliding base so field names map to
+            # the RIGHT source: (1) DEPRIORITIZE a suffixless representative -- a suffixless
+            # `started` winning the group generates `started_<grain>` (e.g. started_hour) from
+            # ITS OWN sql, mis-mapping the field that an existing sibling `started_hour` should
+            # own; letting the suffixed sibling win means the group's generated `started_hour`
+            # comes from that dim's source (and the suffixless one goes standalone, renamed into
+            # its stem, e.g. started_2_hour). (2) Prefer a clean (non-DATE_TRUNC) source so
+            # repeated round-trips don't nest truncations. (3) SQL order for stability.
+            ordered_groups = sorted(
+                base_name_groups.items(),
+                key=lambda kv: (
+                    kv[0][0],
+                    1 if any(d.name == kv[0][0] for d in kv[1]) else 0,
+                    1 if self._DATE_TRUNC_RE.match(kv[0][1] or "") else 0,
+                    kv[0][1] or "",
+                ),
+            )
 
-                # Collect all timeframes for this base name
+            def _group_timeframes(dims):
+                # De-duplicated LookML timeframes for a dimension_group's dims. LookML's
+                # "time" and "second" both import to second granularity, so dedup avoids
+                # emitting [time, time] and dropping a field on re-import.
                 timeframes = []
-                sql = None
+                seen_timeframes = set()
                 for dim in dims:
-                    timeframe = granularity_mapping.get(dim.granularity, "date")
-                    timeframes.append(timeframe)
-                    if dim.sql and not sql:
-                        sql = dim.sql
+                    # Prefer the original LookML timeframe captured at import (so
+                    # "time"/"second"/etc. round-trip distinctly).
+                    timeframe = (dim.meta or {}).get("lookml_timeframe")
+                    if timeframe is not None and self._is_unsupported_timeframe(timeframe):
+                        # An unsupported bucket/sub-second timeframe (minute15, millisecond) would be
+                        # emitted in `timeframes: [...]` but dropped on re-import, losing the field.
+                        # It is exported as a standalone collision dim instead, so keep it OUT of the
+                        # group's timeframe list here (and out of the pre-seed that mirrors it).
+                        continue
+                    if timeframe is None:
+                        # Native (non-import) dim: derive from the field-name suffix (longest
+                        # known timeframe) so the EXACT name round-trips (created_hour -> [hour])
+                        # -- but ONLY when that suffix is an EXACT one-to-one match for the grain.
+                        # Skip the inexact/bucketing timeframes (minute15/30, milli/microsecond,
+                        # time_of_day): their coarse mapping equals the grain, so a native
+                        # created_minute15 at MINUTE grain would wrongly export [minute15]. Also
+                        # skip a suffix that CONTRADICTS the grain. Otherwise fall back to grain.
+                        for tf in sorted(self._TIME_GRANULARITY_TIMEFRAMES, key=len, reverse=True):
+                            if (
+                                tf not in self._INEXACT_NAME_TF
+                                and dim.name.endswith("_" + tf)
+                                and self._TIME_GRANULARITY_TIMEFRAMES[tf] == dim.granularity
+                            ):
+                                timeframe = tf
+                                break
+                        if timeframe is None:
+                            timeframe = granularity_mapping.get(dim.granularity, "date")
+                    if timeframe not in seen_timeframes:
+                        seen_timeframes.add(timeframe)
+                        timeframes.append(timeframe)
+                return timeframes
+
+            # PRE-SEED used_names with every field ANY dimension_group will generate BEFORE
+            # emitting collision standalones. The group winner is the FIRST entry per base; a
+            # standalone processed earlier must not pick a disambiguated name (`started_2_hour`)
+            # that a LATER group (`started_2`) also generates. Without this pre-pass the
+            # incremental seeding misses future groups' outputs.
+            _seeded_bases: set[str] = set()
+            for (base_name, _group_sql), dims in ordered_groups:
+                if base_name in _seeded_bases:
+                    continue
+                _seeded_bases.add(base_name)
+                used_names.add(base_name)
+                used_names.update(f"{base_name}_{tf}" for tf in _group_timeframes(dims))
+
+            for (base_name, group_sql), dims in ordered_groups:
+                if base_name_counts[base_name] > 1 and base_name in assigned_names:
+                    for dim in dims:
+                        # An implicit group (group_sql None) is backed by the `<base>` column;
+                        # without it the standalone would fall back to its own generated field
+                        # name and reference a column that does not exist.
+                        cdim = self._export_collision_time_dim(
+                            dim, base_name if group_sql is None else group_sql, used_names
+                        )
+                        used_names.add(cdim["name"])
+                        collision_dims.append(cdim)
+                    continue
+                # Route dims whose preserved timeframe is unsupported through the standalone
+                # collision form: a dimension_group `timeframes: [minute15]` re-imports to nothing
+                # (_is_unsupported_timeframe drops it), losing the field. The collision form emits a
+                # plain DATE_TRUNC/bucket dimension that round-trips. Keep the rest as the group.
+                group_dims = []
+                for dim in dims:
+                    tf = (dim.meta or {}).get("lookml_timeframe")
+                    if tf is not None and self._is_unsupported_timeframe(tf):
+                        cdim = self._export_collision_time_dim(
+                            dim, base_name if group_sql is None else group_sql, used_names
+                        )
+                        used_names.add(cdim["name"])
+                        collision_dims.append(cdim)
+                    else:
+                        group_dims.append(dim)
+                if not group_dims:
+                    continue
+
+                group_name = base_name
+                assigned_names.add(group_name)
 
                 dim_group_def = {
-                    "name": base_name,
+                    "name": group_name,
                     "type": "time",
-                    "timeframes": timeframes,
+                    "timeframes": _group_timeframes(group_dims),
                 }
 
-                if sql:
-                    sql = sql.replace("{model}", "${TABLE}")
-                    dim_group_def["sql"] = sql
+                if group_sql:
+                    dim_group_def["sql"] = group_sql.replace("{model}", "${TABLE}")
 
                 dimension_groups.append(dim_group_def)
 
             if dimension_groups:
                 view["dimension_groups"] = dimension_groups
+            if collision_dims:
+                view.setdefault("dimensions", []).extend(collision_dims)
 
         # Export measures
         from sidemantic.sql.aggregation_detection import sql_has_aggregate as _sql_has_aggregate

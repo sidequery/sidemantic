@@ -454,3 +454,115 @@ def test_load_from_directory_lenient_does_not_partially_parse_tmdl_project_after
             "message": "simulated project-level failure",
         }
     ]
+
+
+def test_load_from_directory_strips_template_join_after_native_overwrite(tmp_path):
+    """A LookML explore join to an `extension: required` template must be stripped even when a later
+    native model of the same name overwrites the template (so the join does not silently retarget it)."""
+    (tmp_path / "a.model.lkml").write_text(
+        "view: base {\n"
+        "  extension: required\n"
+        "  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }\n"
+        "}\n"
+        "view: orders {\n"
+        "  sql_table_name: orders ;;\n"
+        "  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }\n"
+        "  dimension: ref_col { type: number  sql: ${TABLE}.ref_col ;; }\n"
+        "}\n"
+        "explore: orders {\n"
+        "  join: base { sql_on: ${orders.ref_col} = ${base.id} ;; relationship: many_to_one }\n"
+        "}\n"
+    )
+    (tmp_path / "native.py").write_text(
+        "from sidemantic import Model, Dimension\n"
+        "base = Model(name='base', table='real_base', primary_key='id',\n"
+        "             dimensions=[Dimension(name='id', type='numeric', sql='id')])\n"
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path, strict=False)
+
+    orders = layer.graph.models.get("orders")
+    assert orders is not None
+    # The template-defined explore join is stripped; it must not point at the overwriting real model.
+    assert "base" not in {r.name for r in (orders.relationships or [])}
+    # The real model still loads.
+    assert layer.graph.models["base"].table == "real_base"
+
+
+def test_load_from_directory_preserves_native_join_to_overwritten_template_name(tmp_path):
+    """A NATIVE relationship authored for the replacement model must survive, only LookML template
+    joins to the overwritten name are stripped."""
+    (tmp_path / "a.model.lkml").write_text(
+        "view: customer {\n"
+        "  extension: required\n"
+        "  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }\n"
+        "}\n"
+    )
+    (tmp_path / "native.py").write_text(
+        "from sidemantic import Model, Dimension, Relationship\n"
+        "customer = Model(name='customer', table='real_customer', primary_key='id',\n"
+        "                 dimensions=[Dimension(name='id', type='numeric', sql='id')])\n"
+        "orders = Model(name='orders', table='orders', primary_key='id',\n"
+        "  dimensions=[Dimension(name='id', type='numeric', sql='id'), Dimension(name='cust_ref', type='numeric', sql='cust_ref')],\n"
+        "  relationships=[Relationship(name='customer', type='many_to_one', foreign_key='cust_ref')])\n"
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path, strict=False)
+
+    orders = layer.graph.models.get("orders")
+    assert orders is not None
+    # The native-authored relationship to the real customer is preserved, not stripped as a template join.
+    assert "customer" in {r.name for r in (orders.relationships or [])}
+    assert layer.graph.models["customer"].table == "real_customer"
+
+
+def test_load_from_directory_no_fk_inference_to_unincluded_lookml_view(tmp_path):
+    """FK inference must not join to a LookML view outside every model's include closure.
+
+    An archived `customers` view no model includes is kept (so an imperfect include never silently
+    drops a view), but Looker cannot see it, so `orders.customer_id -> customers` must NOT be
+    inferred against it. An INCLUDED customers view is still inferred normally."""
+    (tmp_path / "views").mkdir()
+    (tmp_path / "archive").mkdir()
+    (tmp_path / "orders.model.lkml").write_text('include: "/views/orders.view.lkml"\n')
+    (tmp_path / "views" / "orders.view.lkml").write_text(
+        "view: orders {\n  sql_table_name: orders ;;\n"
+        "  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }\n"
+        "  dimension: customer_id { type: number  sql: ${TABLE}.customer_id ;; }\n}\n"
+    )
+    (tmp_path / "archive" / "customers.view.lkml").write_text(
+        "view: customers { dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; } }\n"
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path, strict=False)
+
+    orders = layer.graph.models.get("orders")
+    assert orders is not None
+    # No inferred join to the unincluded archived customers view.
+    assert "customers" not in {r.name for r in (orders.relationships or [])}
+
+
+def test_load_from_directory_hides_extension_required_view_with_table(tmp_path):
+    """An `extension: required` base that declares a sql_table_name is still hidden (not queryable).
+
+    Looker uses such a reusable base only through `extends`, so the loader must not register it as
+    a CLI model even though it has a table. Its child still inherits its fields."""
+    (tmp_path / "m.model.lkml").write_text(
+        'include: "*.view.lkml"\n'
+        "view: base {\n  extension: required\n  sql_table_name: real_base ;;\n"
+        "  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }\n"
+        "  dimension: shared { type: string  sql: ${TABLE}.shared ;; }\n}\n"
+        "view: child {\n  extends: [base]\n  sql_table_name: child_t ;;\n"
+        "  dimension: cid { primary_key: yes  type: number  sql: ${TABLE}.cid ;; }\n}\n"
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path, strict=False)
+
+    assert "base" not in layer.graph.models  # abstract base hidden despite its table
+    child = layer.graph.models.get("child")
+    assert child is not None
+    assert child.get_dimension("shared") is not None  # child still inherited the base's fields

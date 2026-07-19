@@ -13,6 +13,109 @@ if TYPE_CHECKING:
     from sidemantic.core.semantic_layer import SemanticLayer
 
 
+def _is_registerable_model(model) -> bool:
+    """True unless ``model`` is an INTENTIONAL non-queryable template that should be
+    skipped rather than registered/validated.
+
+    Only LookML's ``extension: required`` abstract bases and unsupported derived tables
+    (kept in the parsed graph as tableless templates) are skipped -- ``add_model`` would
+    reject them and abort loading an otherwise-valid project. The skip keys off the
+    PARSER-OWNED ``lookml_template`` marker (set by the LookML adapter), NOT the public
+    ``extension_required``/``unsupported_derived_table`` keys, so a native or other-format
+    tableless model that merely carries those user-facing keys still surfaces its real
+    missing-source validation error. Any OTHER tableless model (e.g. an erroneous Hex view
+    missing its base) is likewise left in.
+    """
+    # A parser-owned LookML template (extension: required base / unsupported derived table) is never
+    # a queryable model even when it declares or inherits a sql_table_name -- Looker hides it and
+    # only uses it through extends -- so this marker is checked BEFORE the source check below.
+    if (model.meta or {}).get("lookml_template"):
+        return False
+    if model.table or model.sql or getattr(model, "dax", None) or getattr(model, "source_uri", None):
+        return True
+    return True
+
+
+def _drop_non_registerable_models(
+    all_models: dict, all_metrics: dict | None = None, template_target_names: set | None = None
+) -> dict:
+    """Filter to registerable models AND strip any relationship targeting a dropped one.
+
+    An explore may have already added a relationship pointing at a now-skipped template
+    (e.g. an `extension: required` join target); leaving it would dangle and fail
+    ``sidemantic validate``. Only relationships to models THIS function drops are removed
+    -- a relationship to a never-defined model is a real error that validation must still
+    surface, so it is left intact. Returns the filtered dict (mutating survivors' rels).
+
+    ``template_target_names`` names models that were parsed as non-registerable templates at some
+    point. A relationship to such a name is stripped even when a later same-name real model
+    OVERWROTE the template (so the name is now registerable): the join was defined against the
+    template, so it would otherwise silently point at the replacement model.
+
+    When ``all_metrics`` is given, also drop graph-level metrics contributed by a dropped
+    model -- ``SemanticGraph.add_model()`` auto-registers a model's ``time_comparison`` /
+    ``conversion`` measures into the graph, so a ``period_over_period`` measure on an
+    ``extension: required`` template would otherwise linger as a graph metric whose base
+    model is gone, breaking ``compile``/``info``. A metric still defined on a SURVIVING
+    model is kept.
+    """
+    kept = {name: model for name, model in all_models.items() if _is_registerable_model(model)}
+    dropped = set(all_models) - set(kept)
+    # A join to a name that WAS a template but got overwritten by a real model (so it is in `kept`,
+    # not `dropped`) is stripped ONLY from LookML-sourced models: the explore join that created it
+    # targeted the template. A native/other-format model's relationship to the same name was
+    # authored for the REPLACEMENT model, so it must be preserved.
+    overwritten_templates = set(template_target_names or set()) & set(kept)
+    for model in kept.values():
+        rels = getattr(model, "relationships", None)
+        if not rels:
+            continue
+        from_lookml = getattr(model, "_source_format", None) == "LookML"
+        model.relationships = [
+            r for r in rels if r.name not in dropped and not (from_lookml and r.name in overwritten_templates)
+        ]
+    if all_metrics is not None:
+        # add_model auto-registers a model's GRAPH-LEVEL measures (time_comparison/conversion)
+        # into the graph; a dropped template's such measure would linger in all_metrics with
+        # its base model gone. Drop by PROVENANCE: the LookML parser stamps a template's graph
+        # measures with `_lookml_template_metric` (surviving even when a refinement reconstructs
+        # the Metric object). That proves the metric came from a dropped template -- unlike a
+        # base-ref heuristic, it never drops a same-named STANDALONE metric from another file
+        # (no marker) nor mistakes an unqualified base that merely exists on a surviving model.
+        #
+        # The marker alone is the proof, so this does NOT key off `dropped`: the parser only
+        # stamps templates, which are never registerable. Requiring a drop this pass missed the
+        # case where a LATER file OVERWRITES the template name with a real model -- nothing is
+        # dropped, yet the template's orphaned graph metric survives and breaks compile/info.
+        # A same-named metric redefined by that later file overwrites this one and carries no
+        # marker, so it is kept.
+        #
+        # A NORMAL (non-template) LookML view's graph metric carries no template marker, but the
+        # same overwrite orphans it: a later Python/YAML model of the same name replaces the model
+        # whose measure/time dimension the metric needs. The parser stamps every LookML graph
+        # metric with its owning model, so drop it when the SURVIVING model of that name no longer
+        # defines it -- gone entirely, or replaced by a model without this measure. A later file
+        # that redefines the metric AT GRAPH LEVEL overwrites this object (no owner stamp), so it is
+        # kept. The surviving model must still define it as the SAME graph-level kind: a same-named
+        # MODEL-SCOPED metric (a normal measure named revenue_yoy) does not replace the orphaned
+        # graph-level metric in all_metrics, so a name-only match would keep a broken one.
+        for mn in list(all_metrics):
+            stale = all_metrics[mn]
+            meta = stale.meta or {}
+            if meta.get("_lookml_template_metric"):
+                all_metrics.pop(mn, None)
+                continue
+            owner = meta.get("_lookml_graph_metric_owner")
+            if owner is not None:
+                owner_model = kept.get(owner)
+                if owner_model is None or not any(
+                    getattr(x, "name", None) == mn and getattr(x, "type", None) == stale.type
+                    for x in (getattr(owner_model, "metrics", None) or [])
+                ):
+                    all_metrics.pop(mn, None)
+    return kept
+
+
 def load_from_directory(
     layer: "SemanticLayer",
     directory: str | Path,
@@ -70,6 +173,9 @@ def load_from_directory(
     # Snowflake relationship definitions whose tables live in other files.
     all_pending_relationships: list = []
     import_warnings: list[dict[str, object]] = []
+    # Model names that were parsed as non-registerable templates at some point, tracked so a join
+    # relationship targeting a template survives being OVERWRITTEN by a later same-name real model.
+    template_target_names: set[str] = set()
 
     # Project-level formats (SML/TMDL/Graphene) are directory-based; in single-file
     # mode (only_file set) skip their whole-directory scans and parse just that file.
@@ -110,6 +216,54 @@ def load_from_directory(
             _handle_parse_error(tmdl_root, e, strict=strict)
             logging.warning("Could not parse TMDL models in %s: %s", tmdl_root, e)
 
+    # LookML projects are folder-based: a view and its `+view` refinement (or an `extends` base)
+    # routinely live in DIFFERENT .lkml files. Parsing each file independently never merges those
+    # refinements, so an `extension: required` abstract base would miss its marker, get defaulted
+    # to a physical table, and be registered as queryable -- CLI validate/queries would silently
+    # target a fabricated table. Parse the whole tree once instead (mirrors the TMDL handling).
+    lookml_root = None
+    if only_file is None and any(directory.rglob("*.lkml")):
+        lookml_root = directory
+
+    if lookml_root:
+        try:
+            graph = _run_without_auto_registration(LookMLAdapter().parse, str(lookml_root))
+            _merge_graph_passthrough_metadata(layer.graph, graph)
+            _extend_import_warnings(import_warnings, graph)
+            for model in graph.models.values():
+                if not hasattr(model, "_source_format"):
+                    model._source_format = "LookML"
+                # The adapter stamps the defining .lkml file; make it relative to the load root.
+                src = getattr(model, "_source_file", None)
+                if src:
+                    try:
+                        model._source_file = str(Path(src).relative_to(directory))
+                    except ValueError:
+                        pass
+                else:
+                    model._source_file = str(lookml_root.relative_to(directory))
+            # Record template / unsupported-derived-table names before a later same-name file can
+            # overwrite them, so their dangling join relationships are still stripped (see
+            # _drop_non_registerable_models).
+            template_target_names |= {n for n, m in graph.models.items() if not _is_registerable_model(m)}
+            all_models.update(graph.models)
+            all_metrics.update(graph.metrics)
+            all_parameters.update(graph.parameters)
+        except Exception as e:
+            _append_import_warning(
+                import_warnings,
+                code="adapter_parse_error",
+                message=str(e),
+                source_format="LookML",
+                source_file=str(lookml_root.relative_to(directory)),
+            )
+            _handle_parse_error(lookml_root, e, strict=strict)  # raises when strict
+            # Non-strict: ONE malformed .lkml must not drop every valid sibling view. Fall back
+            # to the per-file scan below, which loads what it can and warns per bad file (the
+            # non-strict contract used throughout this loader). Cross-file refinements are lost
+            # in that degraded mode, but partial loading beats loading nothing.
+            lookml_root = None
+
     if only_file is None:
         _load_graphene_project(directory, all_models, all_metrics, all_parameters, strict=strict)
 
@@ -131,6 +285,8 @@ def load_from_directory(
                 continue
             adapter = TMDLAdapter()
         elif suffix == ".lkml":
+            if lookml_root:
+                continue  # already parsed as one project above (cross-file refinements)
             adapter = LookMLAdapter()
         elif suffix == ".malloy":
             from sidemantic.adapters.malloy import MalloyAdapter
@@ -298,6 +454,10 @@ def load_from_directory(
                         metric._source_format = adapter_name
                     if not hasattr(metric, "_source_file"):
                         metric._source_file = str(file_path.relative_to(directory))
+                # Record non-registerable (template / unsupported-derived-table) model names BEFORE
+                # a later same-name file overwrites them, so their dangling join relationships can
+                # still be stripped even when the name is reused by a registerable model.
+                template_target_names |= {n for n, m in graph.models.items() if not _is_registerable_model(m)}
                 all_models.update(graph.models)
                 all_metrics.update(graph.metrics)
                 all_parameters.update(graph.parameters)
@@ -331,10 +491,16 @@ def load_from_directory(
     # table pair.
     _apply_snowflake_pending_relationships(all_models, all_pending_relationships)
 
+    # Drop non-queryable template models (LookML `extension: required` abstract bases /
+    # unsupported derived tables) BEFORE inference + registration, so FK inference never
+    # targets a model that won't be registered (which would leave a dangling relationship)
+    # and add_model never rejects a template that was never meant to be queried.
+    all_models = _drop_non_registerable_models(all_models, all_metrics, template_target_names)
+
     # Infer cross-model relationships based on naming conventions
     _infer_relationships(all_models)
 
-    # Add all models to the layer (now with relationships)
+    # Add all models to the layer (now with relationships).
     for model in all_models.values():
         if model.name not in layer.graph.models:
             layer.add_model(model)
@@ -420,6 +586,8 @@ def _load_sml_directory(layer: "SemanticLayer", directory: Path, all_models: dic
         if not hasattr(model, "_source_file"):
             model._source_file = str(directory)
     all_models.update(graph.models)
+    # Drop non-queryable templates (+ their dangling rels) before inference + registration.
+    all_models = _drop_non_registerable_models(all_models)
     _infer_relationships(all_models)
     for model in all_models.values():
         if model.name not in layer.graph.models:
@@ -1207,7 +1375,14 @@ def _infer_relationships(models: dict) -> None:
     """
     from sidemantic.core.relationship import Relationship
 
+    def _unincluded(m) -> bool:
+        # A LookML view outside every model's include closure: Looker cannot see it, so it must
+        # neither originate nor receive an inferred join (see LookMLAdapter's `_lookml_unincluded`).
+        return bool((getattr(m, "meta", None) or {}).get("_lookml_unincluded"))
+
     for model_name, model in models.items():
+        if _unincluded(model):
+            continue
         # Look at all dimensions to find potential foreign keys
         for dimension in model.dimensions:
             dim_name = dimension.name.lower()
@@ -1228,7 +1403,7 @@ def _infer_relationships(models: dict) -> None:
 
             # Find if any of these tables exist
             for target in potential_targets:
-                if target in models and target != model_name:
+                if target in models and target != model_name and not _unincluded(models[target]):
                     # Check if this relationship already exists
                     existing = [r for r in model.relationships if r.name == target]
                     if not existing:

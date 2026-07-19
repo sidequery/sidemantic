@@ -4050,6 +4050,3608 @@ def test_lookml_self_referential_dimension_terminates():
     assert selfd.sql.count("+ 1") <= 2
 
 
+def test_lookml_view_with_unsupported_derived_table_not_defaulted():
+    """A view with a derived_table the adapter can't read must NOT get a default physical table."""
+    adapter = LookMLAdapter()
+    model = adapter._parse_view(
+        {
+            "name": "ndt_unknown",
+            # derived_table with no sql / explore_source the adapter understands
+            "derived_table": {"persist_for": "1 hour"},
+            "dimensions": [{"name": "id", "type": "number", "sql": "${TABLE}.id"}],
+        }
+    )
+    assert model.table is None  # not fabricated as a physical table named after the view
+
+
+def test_lookml_time_timeframe_keeps_second_precision():
+    """Looker's "time" timeframe keeps to-the-second precision, not hour."""
+    graph = _parse_lkml(
+        """
+view: v {
+  sql_table_name: t ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension_group: created {
+    type: time
+    timeframes: [time, date, minute]
+    sql: ${TABLE}.created_at ;;
+  }
+}
+"""
+    )
+    model = graph.get_model("v")
+    assert model.get_dimension("created_time").granularity == "second"
+    assert model.get_dimension("created_minute").granularity == "minute"
+    assert model.get_dimension("created_date").granularity == "day"
+
+
+def test_lookml_native_suffix_contradicting_grain_uses_grain():
+    """A native dim whose name suffix CONTRADICTS its granularity preserves the GRAIN, not the name.
+
+    created_time at hour granularity must export as [hour] (-> created_hour), not [time]
+    (which imports as second), so queries keep grouping by hour.
+    """
+    import tempfile
+
+    from sidemantic import Dimension, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="v",
+            table="t",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(name="created_time", type="time", granularity="hour", sql="ts"),  # suffix `time` != hour
+            ],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    grains = {
+        d.name: d.granularity for d in LookMLAdapter().parse(Path(out)).get_model("v").dimensions if d.type == "time"
+    }
+    assert grains == {"created_hour": "hour"}  # grain preserved (not silently downgraded to second)
+
+
+def test_lookml_minute_bucket_timeframes_are_unsupported():
+    """minute15/minute30 are N-minute buckets sidemantic cannot represent portably, so drop them.
+
+    The coarse `minute` granularity would truncate to the minute and drop the bucket, and baking
+    the bucket expression stores dialect-specific SQL (DuckDB/Postgres DATE_TRUNC + INTERVAL) into
+    Dimension.sql, which the generator does not transpile -- so it fails on BigQuery/Snowflake. The
+    import adapter has no query dialect to generate it correctly, so leave them unsupported; the
+    supported grains in the same group still import.
+    """
+    graph = _parse_lkml(
+        """
+view: orders {
+  sql_table_name: orders ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension_group: created { type: time  timeframes: [minute15, minute30, minute, hour] sql: ${TABLE}.ts ;; }
+}
+"""
+    )
+    names = {d.name for d in graph.get_model("orders").dimensions if d.type == "time"}
+    assert "created_minute15" not in names and "created_minute30" not in names  # unsupported
+    assert {"created_minute", "created_hour"} <= names  # supported grains still import
+
+
+def test_lookml_reference_to_unsupported_timeframe_does_not_resolve_to_raw():
+    """A ${...} reference to a DROPPED timeframe must not expand to the raw base column.
+
+    _build_timeframe_dimension drops minute15/minute30/millisecond/microsecond, but the reference
+    lookup was seeded for every timeframe, so ${created_minute15} in a measure expanded to the raw
+    group column and the measure ran on UNBUCKETED timestamps. The unsupported timeframes are now
+    kept out of the lookup, so the reference is left unresolved (like any unknown ref) rather than
+    silently mis-resolved; a SUPPORTED timeframe still resolves.
+    """
+    model = _parse_lkml(
+        """
+view: orders {
+  sql_table_name: orders ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension_group: created { type: time  timeframes: [minute15, date]  sql: ${TABLE}.ts ;; }
+  measure: bad { type: count_distinct  sql: ${created_minute15} ;; }
+  dimension: is_new { type: yesno  sql: ${created_minute15} > '2020-01-01' ;; }
+  measure: good { type: count_distinct  sql: ${created_date} ;; }
+}
+"""
+    ).get_model("orders")
+
+    fields = {f.name: f.sql for f in [*model.dimensions, *model.metrics]}
+    # The unsupported-timeframe refs are NOT expanded to the raw base column.
+    assert "{model}.ts" not in (fields["bad"] or "")
+    assert "{model}.ts" not in (fields["is_new"] or "")
+    # The supported `created_date` reference still resolves to the group column.
+    assert fields["good"] == "({model}.ts)"
+
+
+def test_lookml_native_minute15_name_does_not_widen_grain():
+    """A native created_minute15 at MINUTE grain must not export [minute15] (15-min buckets).
+
+    The coarse mapping of minute15 equals `minute`, so the old name-suffix inference emitted
+    [minute15] -- silently re-bucketing 1-minute data into 15-minute intervals. Inexact
+    suffixes are now excluded from name inference, so it exports [minute] (true grain).
+    """
+    import tempfile
+
+    from sidemantic import Dimension, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="ev",
+            table="t",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(name="created_minute15", type="time", granularity="minute", sql="ts"),  # no meta
+            ],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    txt = open(out).read()
+    assert "minute15" not in txt  # no silent grain widening
+    assert "minute" in txt
+    # meta-preserved minute15 still round-trips as a 15-min bucket (import path unaffected)
+    graph2 = SemanticGraph()
+    graph2.add_model(
+        Model(
+            name="ev",
+            table="t",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(
+                    name="created_minute15",
+                    type="time",
+                    granularity="minute",
+                    sql="ts",
+                    meta={"lookml_timeframe": "minute15"},
+                ),
+            ],
+        )
+    )
+    out2 = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph2, out2)
+    assert "minute15" in open(out2).read()
+
+
+def test_lookml_native_inexact_timeframe_suffix_preserves_grain_not_name():
+    """NATIVE inexact-suffix time dims (no meta) preserve the GRAIN, even if the name changes.
+
+    minute15 / minute30 / millisecond / microsecond / time_of_day map MANY-to-one onto a
+    coarser-or-finer sidemantic grain, so a native created_minute15 at MINUTE grain must NOT
+    export [minute15] (which buckets into 15-min intervals -- a silent grain change). It
+    exports at the true grain instead, so the field re-imports renamed (created_minute) but
+    with the CORRECT queryable grain. Exact name round-trip for these needs preserved
+    meta['lookml_timeframe'] (the import path), covered separately.
+    """
+    import tempfile
+
+    from sidemantic import Dimension, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    for name, grain in [
+        ("created_minute15", "minute"),
+        ("created_millisecond", "second"),
+        ("created_time_of_day", "hour"),
+    ]:
+        graph = SemanticGraph()
+        graph.add_model(
+            Model(
+                name="v",
+                table="t",
+                primary_key="id",
+                dimensions=[
+                    Dimension(name="id", type="numeric", sql="id"),
+                    Dimension(name=name, type="time", granularity=grain, sql="ts"),  # no meta
+                ],
+            )
+        )
+        out = tempfile.mktemp(suffix=".lkml")
+        LookMLAdapter().export(graph, out)
+        grains = [d.granularity for d in LookMLAdapter().parse(Path(out)).get_model("v").dimensions if d.type == "time"]
+        assert grains == [grain], f"{name}: grain not preserved -> {grains}"
+
+
+def test_lookml_subsecond_timeframes_are_unsupported():
+    """millisecond/microsecond are FINER than the finest granularity (second), so they are dropped.
+
+    A time dimension can only carry a granularity from the enum whose finest member is `second`, so
+    importing these as time dimensions truncated to the second and silently dropped the sub-second
+    precision the field name promises. Rather than expose a wrong-grain field, leave them
+    unsupported; other timeframes in the same group still import normally.
+    """
+    graph = _parse_lkml(
+        """
+view: v {
+  sql_table_name: t ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension_group: created {
+    type: time
+    timeframes: [millisecond, microsecond, second, date]
+    sql: ${TABLE}.created_at ;;
+  }
+}
+"""
+    )
+    names = {d.name for d in graph.get_model("v").dimensions if d.type == "time"}
+    assert "created_millisecond" not in names and "created_microsecond" not in names  # unsupported
+    assert {"created_second", "created_date"} <= names  # supported grains still import
+
+
+def test_lookml_preserved_unsupported_timeframe_round_trips_as_standalone():
+    """A dim preserving an unsupported timeframe exports as a standalone dim, not a lost group tf.
+
+    A dimension_group `timeframes: [minute15]` is dropped on re-import (unsupported), so a dimension
+    carrying meta['lookml_timeframe']='minute15' must export through the standalone collision form
+    (a plain N-minute bucket) so it survives the round-trip. Supported timeframes sharing the base
+    still form the group.
+    """
+    import tempfile
+
+    from sidemantic import Dimension, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="events",
+            table="events",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(
+                    name="created_date",
+                    type="time",
+                    granularity="day",
+                    sql="{model}.created_at",
+                    meta={"lookml_timeframe": "date"},
+                ),
+                Dimension(
+                    name="created_minute15",
+                    type="time",
+                    granularity="minute",
+                    sql="{model}.created_at",
+                    meta={"lookml_timeframe": "minute15"},
+                ),
+            ],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    text = open(out).read()
+    assert "[minute15]" not in text  # never emitted as an unimportable group timeframe list
+    assert "dimension: created_minute15" in text  # emitted as a standalone dimension instead
+    names = {d.name for d in LookMLAdapter().parse(Path(out)).get_model("events").dimensions}
+    # Both survive the round-trip: the supported grain via the group, the bucket via a standalone.
+    assert {"created_date", "created_minute15"} <= names
+
+
+def test_lookml_dimension_group_leading_unsupported_timeframe_resolves_ref_base_sql():
+    """A group whose FIRST timeframe is unsupported must still resolve a ${ref} in its base sql.
+
+    The base sql was keyed off timeframes[0]; when that leading timeframe is unsupported (minute15)
+    it is never seeded in the resolved lookup, so the lookup missed and fell back to the RAW group
+    sql -- leaving `sql: ${ts_src}` literally unresolved so the surviving `date` field compiled to
+    DATE_TRUNC('day', ${ts_src}). Key off the first SUPPORTED timeframe so the ref resolves.
+    """
+    from sidemantic.core.semantic_layer import SemanticLayer
+
+    graph = _parse_lkml(
+        """
+view: events {
+  sql_table_name: events ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: ts_src { type: time  sql: ${TABLE}.created_at ;; }
+  dimension_group: created {
+    type: time
+    timeframes: [minute15, date]
+    sql: ${ts_src} ;;
+  }
+}
+"""
+    )
+    created = next(d for d in graph.get_model("events").dimensions if d.name == "created_date")
+    assert "${ts_src}" not in created.sql  # ref resolved, not leaked literally
+    assert "created_at" in created.sql
+
+    layer = SemanticLayer()
+    layer.graph = graph
+    sql = layer.compile(dimensions=["events.created_date"])
+    assert "${ts_src}" not in sql  # compiles against the real column
+    assert "created_at" in sql
+
+
+def test_lookml_time_grain_roundtrip():
+    """time/hour/minute/date grains round-trip through export without grain or suffix corruption."""
+    import tempfile
+
+    graph = _parse_lkml(
+        """
+view: v {
+  sql_table_name: t ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension_group: created {
+    type: time
+    timeframes: [time, hour, minute, date]
+    sql: ${TABLE}.created_at ;;
+  }
+}
+"""
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    grains = {
+        d.name: d.granularity for d in LookMLAdapter().parse(Path(out)).get_model("v").dimensions if d.type == "time"
+    }
+    assert grains == {
+        "created_time": "second",
+        "created_hour": "hour",
+        "created_minute": "minute",
+        "created_date": "day",
+    }
+
+
+def test_lookml_native_second_grain_roundtrips():
+    """A second-grain dimension not imported from LookML (no meta) exports as `second`, not `time`."""
+    import tempfile
+
+    from sidemantic import Dimension, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="v",
+            table="t",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(name="created_second", type="time", granularity="second", sql="{model}.created_at"),
+            ],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    names = {d.name for d in LookMLAdapter().parse(Path(out)).get_model("v").dimensions if d.type == "time"}
+    assert "created_second" in names
+
+
+def test_lookml_same_prefix_time_dims_different_sources_not_merged():
+    """Same-prefix time dims backed by different columns must not merge to one group (wrong source)."""
+    import tempfile
+
+    from sidemantic import Dimension, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="v",
+            table="t",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(name="started_date", type="time", granularity="day", sql="{model}.started_at"),
+                Dimension(name="started_second", type="time", granularity="second", sql="{model}.other_at"),
+            ],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    time_dims = [d for d in LookMLAdapter().parse(Path(out)).get_model("v").dimensions if d.type == "time"]
+    sources = {d.sql for d in time_dims}
+    # Each field keeps its own source column (no rewiring to the other group's SQL).
+    assert any("started_at" in (s or "") for s in sources)
+    assert any("other_at" in (s or "") for s in sources)
+    # Split groups get suffix-free, collision-free names (no started_date_date etc.).
+    assert not any(d.name.endswith("_date_date") or d.name.endswith("_hour_hour") for d in time_dims)
+
+
+def test_lookml_collision_subsecond_timeframe_preserves_precision():
+    """A millisecond/microsecond collision dim exports DATE_TRUNC at that grain (not second).
+
+    sidemantic stores them as `second`, so the exported SQL must use the LookML timeframe
+    grain to keep sub-second precision, and re-import recovers second grain + the timeframe.
+    """
+    import tempfile
+
+    from sidemantic import Dimension, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="v",
+            table="t",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(
+                    name="started_date", type="time", granularity="day", sql="a", meta={"lookml_timeframe": "date"}
+                ),
+                Dimension(
+                    name="started_millisecond",
+                    type="time",
+                    granularity="second",
+                    sql="b",
+                    meta={"lookml_timeframe": "millisecond"},
+                ),
+            ],
+        )
+    )
+    adapter = LookMLAdapter()
+    out = tempfile.mktemp(suffix=".lkml")
+    adapter.export(graph, out)
+    assert "DATE_TRUNC('millisecond'" in open(out).read()  # sub-second precision kept, not 'second'
+    g = adapter.parse(Path(out))
+    ms = g.get_model("v").get_dimension("started_millisecond")
+    assert ms.granularity == "second" and (ms.meta or {}).get("lookml_timeframe") == "millisecond"
+    # second round-trip stable (no nested DATE_TRUNC)
+    out2 = tempfile.mktemp(suffix=".lkml")
+    adapter.export(g, out2)
+    assert "DATE_TRUNC('millisecond', DATE_TRUNC" not in open(out2).read()
+
+
+def test_lookml_collision_disambiguation_reserves_future_group_fields():
+    """Disambiguating a standalone must avoid names a LATER dimension_group will generate.
+
+    `started` + `started_hour` (base `started`) plus `started_2_hour` (base `started_2`): the
+    standalone must not disambiguate to `started_2_hour` because the `started_2` group also
+    generates it. used_names is pre-seeded with every group's generated fields, so it skips to
+    `started_3_hour` -- no duplicate LookML field across the whole view.
+    """
+    import re
+    import tempfile
+    from collections import Counter
+
+    from sidemantic import Dimension, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="ev",
+            table="t",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(name="started", type="time", granularity="hour", sql="a"),
+                Dimension(name="started_hour", type="time", granularity="hour", sql="b"),
+                Dimension(name="started_2_hour", type="time", granularity="hour", sql="c"),
+            ],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    text = open(out).read()
+    names = re.findall(r"\n  dimension: (\w+) \{", text)
+    for base, tfs in re.findall(r"dimension_group: (\w+) \{[^}]*?timeframes:\s*\[([^\]]*)\]", text, re.S):
+        names += [f"{base}_{tf.strip()}" for tf in tfs.split(",")]
+    dups = {n: c for n, c in Counter(names).items() if c > 1}
+    assert not dups, f"duplicate field names: {dups}"
+
+
+def test_lookml_minute_bucket_collision_field_deduplicated():
+    """A minute15/30 collision dim must go through the same uniqueness logic (no duplicate names).
+
+    The minute-bucket path previously returned early, bypassing used_names dedup, so a
+    suffixless `started` (minute15) colliding with an existing `started_minute15` could emit
+    two `started_minute15` fields. It now disambiguates (`started_2_minute15`), still recoverable.
+    """
+    import re
+    import tempfile
+    from collections import Counter
+
+    from sidemantic import Dimension, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="ev",
+            table="t",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(
+                    name="started", type="time", granularity="minute", sql="a", meta={"lookml_timeframe": "minute15"}
+                ),
+                Dimension(
+                    name="started_minute15",
+                    type="time",
+                    granularity="minute",
+                    sql="b",
+                    meta={"lookml_timeframe": "minute15"},
+                ),
+                Dimension(
+                    name="started_date", type="time", granularity="day", sql="c", meta={"lookml_timeframe": "date"}
+                ),
+            ],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    text = open(out).read()
+    names = re.findall(r"\n  dimension: (\w+) \{", text)
+    for base, tfs in re.findall(r"dimension_group: (\w+) \{[^}]*?timeframes:\s*\[([^\]]*)\]", text, re.S):
+        names += [f"{base}_{tf.strip()}" for tf in tfs.split(",")]
+    dups = {n: c for n, c in Counter(names).items() if c > 1}
+    assert not dups, f"duplicate field names: {dups}"
+    # the disambiguated field is still time-recoverable (ends in a real timeframe suffix)
+    g2 = LookMLAdapter().parse(Path(out))
+    assert all(d.type == "time" for d in g2.get_model("ev").dimensions if d.name.startswith("started"))
+
+
+def test_lookml_collision_disambiguated_field_stays_time_recoverable():
+    """A disambiguated collision field must stay TIME-recoverable, not become categorical.
+
+    The unrepresentable trio (`started` + `started_hour` + `started_date`, all different SQL)
+    forces one field to be renamed for uniqueness. The disambiguator goes into the STEM
+    (`started_2_hour`, not `started_hour_2`) so the trailing timeframe is preserved and the
+    field re-imports as time@hour, not a categorical dim. Stable across round-trips.
+    """
+    import tempfile
+
+    from sidemantic import Dimension, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="ev",
+            table="t",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(name="started", type="time", granularity="hour", sql="a"),
+                Dimension(name="started_hour", type="time", granularity="hour", sql="b"),
+                Dimension(name="started_date", type="time", granularity="day", sql="c"),
+            ],
+        )
+    )
+    adapter = LookMLAdapter()
+    g = graph
+    for _ in range(2):
+        out = tempfile.mktemp(suffix=".lkml")
+        adapter.export(g, out)
+        g = adapter.parse(Path(out))
+        kinds = {d.name: d.type for d in g.get_model("ev").dimensions if d.name != "id"}
+        # all three time sources stay TIME (none degraded to categorical), 3 distinct names
+        assert all(t == "time" for t in kinds.values()), kinds
+        assert len(kinds) == 3, kinds
+
+
+def test_lookml_suffixless_collision_no_dimension_group_field_duplicate():
+    """A suffixless dim must not win the group slot and GENERATE a name a sibling standalone owns.
+
+    `started` (hour) + `started_hour` (hour, diff SQL) + `started_date`: if suffixless `started`
+    won the dimension_group, the group would generate `started_hour` AND a standalone
+    `started_hour` would exist -> a runtime field collision. A suffixed sibling wins the group
+    slot instead, so every generated field name (group fields + standalones) is unique.
+    """
+    import re
+    import tempfile
+    from collections import Counter
+
+    from sidemantic import Dimension, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="ev",
+            table="t",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(name="started", type="time", granularity="hour", sql="a"),
+                Dimension(name="started_hour", type="time", granularity="hour", sql="b"),
+                Dimension(name="started_date", type="time", granularity="day", sql="c"),
+            ],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    text = open(out).read()
+    generated = re.findall(r"\n  dimension: (\w+) \{", text)  # standalones
+    for base, tfs in re.findall(r"dimension_group: (\w+) \{[^}]*?timeframes:\s*\[([^\]]*)\]", text, re.S):
+        generated += [f"{base}_{tf.strip()}" for tf in tfs.split(",")]  # group-generated fields
+    dups = {n: c for n, c in Counter(generated).items() if c > 1}
+    assert not dups, f"duplicate generated field names: {dups}"
+
+
+def test_lookml_suffixless_collision_group_field_maps_to_owning_source():
+    """The generated group field must map to the source that ORIGINALLY owned that field name.
+
+    `started` (hour, source A) + `started_hour` (hour, source B): the `dimension_group` slot must
+    go to the suffixed `started_hour` so the group's generated `started_hour` field comes from
+    source B (its own source). If the suffixless `started` won the slot, the group would generate
+    `started_hour` from source A while the real `started_hour` got renamed to `started_2_hour` --
+    so a round-tripped query for `started_hour` would silently read the WRONG column.
+    """
+    import tempfile
+
+    from sidemantic import Dimension, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="ev",
+            table="t",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(name="started", type="time", granularity="hour", sql="src_suffixless"),
+                Dimension(name="started_hour", type="time", granularity="hour", sql="src_started_hour"),
+            ],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    reloaded = LookMLAdapter().parse(out).get_model("ev")
+    by_name = {d.name: d.sql for d in reloaded.dimensions}
+    # started_hour must still resolve to its own source, not the suffixless dim's source.
+    assert "src_started_hour" in (by_name.get("started_hour") or ""), by_name
+    assert "src_suffixless" not in (by_name.get("started_hour") or ""), by_name
+    # The suffixless dim's source survives under a distinct, time-recoverable name.
+    assert any("src_suffixless" in (s or "") for n, s in by_name.items() if n != "started_hour"), by_name
+
+
+def test_lookml_suffixless_collision_synth_name_avoids_duplicate():
+    """Synthesizing a recoverable suffix must not duplicate an existing field name.
+
+    `started` (hour) alongside an EXISTING `started_hour` and a `started_date` source must not
+    emit two `started_hour` blocks; the suffixless one keeps its name (no data-losing dup).
+    """
+    import re
+    import tempfile
+    from collections import Counter
+
+    from sidemantic import Dimension, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="ev",
+            table="t",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(name="started", type="time", granularity="hour", sql="a"),
+                Dimension(name="started_hour", type="time", granularity="hour", sql="b"),  # already exists
+                Dimension(name="started_date", type="time", granularity="day", sql="c"),
+            ],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    names = re.findall(r"dimension(?:_group)?: (\w+)", open(out).read())
+    dups = {n: c for n, c in Counter(names).items() if c > 1}
+    assert not dups, f"duplicate field names emitted: {dups}"
+
+
+def test_lookml_suffixless_collision_time_dim_stays_time():
+    """A suffixless collision time dim must remain a TIME dim across round-trips, not categorical.
+
+    `started` (hour grain) colliding with `started_date` (day, different SQL) can't keep its
+    bare name as a recoverable standalone, so the collision export appends the grain timeframe
+    (-> `started_hour`) so re-import restores time granularity instead of dropping to a
+    categorical dim (which would break time queries/filters on the field).
+    """
+    import tempfile
+
+    from sidemantic import Dimension, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="ev",
+            table="t",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(name="started", type="time", granularity="hour", sql="created_at"),  # suffixless
+                Dimension(name="started_date", type="time", granularity="day", sql="updated_at"),
+            ],
+        )
+    )
+    adapter = LookMLAdapter()
+    g = graph
+    for _ in range(2):
+        out = tempfile.mktemp(suffix=".lkml")
+        adapter.export(g, out)
+        g = adapter.parse(Path(out))
+        times = {d.name: d.granularity for d in g.get_model("ev").dimensions if d.type == "time"}
+        # the suffixless dim is recoverable as time@hour (renamed started -> started_hour)
+        assert times.get("started_hour") == "hour", times
+        assert times.get("started_date") == "day", times
+
+
+def test_lookml_native_collision_inexact_name_not_widened_on_import():
+    """A NATIVE collision dim named *_minute15 (no meta) must not gain false minute15 meta.
+
+    Without meta the collision exporter writes a plain DATE_TRUNC('minute', ...), so import
+    must recover grain=minute with NO lookml_timeframe (recording 'minute15' would make the
+    next export widen the 1-minute dim into a 15-minute bucket). Stable across round-trips.
+    """
+    import tempfile
+
+    from sidemantic import Dimension, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="ev",
+            table="t",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(name="started_date", type="time", granularity="day", sql="created_at"),
+                # same prefix, DIFFERENT sql -> collision; NO meta
+                Dimension(name="started_minute15", type="time", granularity="minute", sql="updated_at"),
+            ],
+        )
+    )
+    adapter = LookMLAdapter()
+    out = tempfile.mktemp(suffix=".lkml")
+    adapter.export(graph, out)
+    assert "DATE_TRUNC('minute'" in open(out).read()  # plain minute trunc, not a 15-min bucket
+    g = adapter.parse(Path(out))
+    m15 = g.get_model("ev").get_dimension("started_minute15")
+    assert m15.granularity == "minute"
+    assert not (m15.meta or {}).get("lookml_timeframe")  # NO false minute15 meta
+    # stable: second round-trip still minute, still no bucket
+    out2 = tempfile.mktemp(suffix=".lkml")
+    adapter.export(g, out2)
+    assert "FLOOR(" not in open(out2).read()  # never widened into a bucket
+    m15b = adapter.parse(Path(out2)).get_model("ev").get_dimension("started_minute15")
+    assert m15b.granularity == "minute" and not (m15b.meta or {}).get("lookml_timeframe")
+
+
+def test_lookml_collision_minute15_bucket_roundtrips():
+    """A minute15 collision dim exports a faithful 15-min bucket (not minute) and round-trips.
+
+    sidemantic has no 15-min grain (stores minute15 as `minute` + meta), so the standalone
+    collision form must emit an explicit N-minute bucket that the importer recovers back to
+    grain=minute + meta['lookml_timeframe']='minute15', stable across repeated round-trips.
+    """
+    import tempfile
+
+    from sidemantic import Dimension, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="v",
+            table="t",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(
+                    name="started_date", type="time", granularity="day", sql="a", meta={"lookml_timeframe": "date"}
+                ),
+                Dimension(
+                    name="started_minute15",
+                    type="time",
+                    granularity="minute",
+                    sql="b",
+                    meta={"lookml_timeframe": "minute15"},
+                ),
+            ],
+        )
+    )
+    adapter = LookMLAdapter()
+    out = tempfile.mktemp(suffix=".lkml")
+    adapter.export(graph, out)
+    text = open(out).read()
+    # Faithful 15-minute bucket via PORTABLE FLOOR (not DuckDB-only //), not DATE_TRUNC('minute').
+    assert "FLOOR(" in text and " / 15) * 15" in text and "//" not in text
+    g = adapter.parse(Path(out))
+    m15 = g.get_model("v").get_dimension("started_minute15")
+    assert m15.granularity == "minute" and (m15.meta or {}).get("lookml_timeframe") == "minute15"
+    # The recovered dim KEEPS the bucket expression (so QUERIES bucket 15-min, not minute).
+    assert "FLOOR(" in (m15.sql or "")
+    # second round-trip stays stable (no nested bucket)
+    out2 = tempfile.mktemp(suffix=".lkml")
+    adapter.export(g, out2)
+    assert "FLOOR(EXTRACT(MINUTE FROM DATE_TRUNC('hour'" not in open(out2).read()  # no FLOOR(...bucket...)
+    m15b = adapter.parse(Path(out2)).get_model("v").get_dimension("started_minute15")
+    assert m15b.granularity == "minute" and (m15b.meta or {}).get("lookml_timeframe") == "minute15"
+
+
+def test_lookml_collision_minute15_query_buckets_by_15_minutes():
+    """A round-tripped minute15 collision dim must GROUP queries by 15-minute buckets, not minute."""
+    import tempfile
+
+    import duckdb
+
+    from sidemantic import Dimension, Metric, Model, SemanticLayer
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="v",
+            table="v",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(
+                    name="started_date", type="time", granularity="day", sql="a", meta={"lookml_timeframe": "date"}
+                ),
+                Dimension(
+                    name="started_minute15",
+                    type="time",
+                    granularity="minute",
+                    sql="ts",
+                    meta={"lookml_timeframe": "minute15"},
+                ),
+            ],
+            metrics=[Metric(name="cnt", agg="count")],
+        )
+    )
+    adapter = LookMLAdapter()
+    out = tempfile.mktemp(suffix=".lkml")
+    adapter.export(graph, out)
+    g = adapter.parse(Path(out))
+    layer = SemanticLayer(auto_register=False)
+    for m in g.models.values():
+        layer.add_model(m)
+    sql = layer.compile(dimensions=["v.started_minute15"], metrics=["v.cnt"])
+    con = duckdb.connect()
+    con.execute(
+        "create table v as select 1 id, TIMESTAMP '2024-01-01 10:07' a, TIMESTAMP '2024-01-01 10:07' ts "
+        "union all select 2, TIMESTAMP '2024-01-01 10:11', TIMESTAMP '2024-01-01 10:11' "
+        "union all select 3, TIMESTAMP '2024-01-01 10:22', TIMESTAMP '2024-01-01 10:22'"
+    )
+    import datetime
+
+    rows = sorted(con.execute(sql).fetchall())
+    assert rows == [(datetime.datetime(2024, 1, 1, 10, 0), 2), (datetime.datetime(2024, 1, 1, 10, 15), 1)]
+
+
+def test_lookml_collision_time_dim_multiword_timeframe_suffix_recovered():
+    """A collision standalone dim with a MULTI-WORD timeframe suffix (time_of_day) recovers.
+
+    The grain suffix is matched against the longest known LookML timeframe, not just the
+    text after the last underscore, so started_time_of_day round-trips as a time dimension
+    (gran=hour), not a renamed categorical.
+    """
+    import tempfile
+
+    from sidemantic import Dimension, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="v",
+            table="t",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(
+                    name="started_date", type="time", granularity="day", sql="a", meta={"lookml_timeframe": "date"}
+                ),
+                Dimension(
+                    name="started_time_of_day",
+                    type="time",
+                    granularity="hour",
+                    sql="b",
+                    meta={"lookml_timeframe": "time_of_day"},
+                ),
+            ],
+        )
+    )
+    adapter = LookMLAdapter()
+    # Repeated round-trips must be STABLE: the recovered timeframe is stored in meta so
+    # the next export strips the _time_of_day suffix instead of renaming the field.
+    g = graph
+    for _ in range(3):
+        out = tempfile.mktemp(suffix=".lkml")
+        adapter.export(g, out)
+        g = adapter.parse(Path(out))
+        grains = {d.name: d.granularity for d in g.get_model("v").dimensions if d.type == "time"}
+        assert grains == {"started_date": "day", "started_time_of_day": "hour"}
+
+
+def test_lookml_time_dims_grouped_by_effective_sql_not_explicit_sql():
+    """Two default-column time dims must not collapse just because both have sql=None.
+
+    `started` and `started_hour` at hour grain with no explicit sql read DIFFERENT columns, but
+    grouping on the raw `sql` field saw None for both and merged them into one dimension_group --
+    emitting a single field bound to the WRONG column and losing the other dim entirely. Group on
+    the EFFECTIVE expression (sql or name). Dims that genuinely share a source still group.
+    """
+    import tempfile
+
+    from sidemantic import Dimension, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    def roundtrip(*dims):
+        graph = SemanticGraph()
+        graph.add_model(
+            Model(
+                name="ev",
+                table="t",
+                primary_key="id",
+                dimensions=[Dimension(name="id", type="numeric", sql="id"), *dims],
+            )
+        )
+        out = tempfile.mktemp(suffix=".lkml")
+        LookMLAdapter().export(graph, out)
+        reimported = LookMLAdapter().parse(Path(out)).get_model("ev")
+        return {d.name: d.sql for d in reimported.dimensions if d.name != "id"}
+
+    # Both default-column: BOTH must survive, and started_hour must read started_hour.
+    both_default = roundtrip(
+        Dimension(name="started", type="time", granularity="hour"),
+        Dimension(name="started_hour", type="time", granularity="hour"),
+    )
+    assert len(both_default) == 2, both_default
+    assert both_default["started_hour"] == "started_hour", both_default  # not the `started` column
+    assert any("started" in (sql or "") for name, sql in both_default.items() if name != "started_hour")
+
+    # A genuinely shared source still collapses into one dimension_group (unchanged).
+    same_source = roundtrip(
+        Dimension(name="started", type="time", granularity="hour", sql="a"),
+        Dimension(name="started_hour", type="time", granularity="hour", sql="a"),
+    )
+    assert same_source == {"started_hour": "a"}, same_source
+
+
+def test_lookml_imported_dimension_group_without_sql_stays_one_group():
+    """An imported `dimension_group` that omits `sql` must round-trip as ONE group.
+
+    Its timeframes all read the same implicit `<base>` column, but each generated Dimension has
+    sql=None, so keying them on the effective expression (which falls back to the generated field
+    name) read every timeframe as its own source. The group was split into standalone dims backed
+    by columns that never existed -- `sql: DATE_TRUNC('week', created_week)`.
+    """
+    import tempfile
+
+    source = """view: orders {
+  sql_table_name: orders ;;
+  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }
+  dimension_group: created {
+    type: time
+    timeframes: [date, week, month]
+  }
+}
+"""
+    directory = Path(tempfile.mkdtemp())
+    (directory / "orders.view.lkml").write_text(source)
+    graph = LookMLAdapter().parse(str(directory / "orders.view.lkml"))
+
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    exported = Path(out).read_text()
+
+    # One dimension_group carrying every timeframe, and no phantom-column standalones.
+    assert exported.count("dimension_group:") == 1, exported
+    assert "timeframes: [date, week, month]" in exported, exported
+    assert "created_week" not in exported, exported
+    assert "created_month" not in exported, exported
+    # The implicit column stays implicit: no invented `sql:` on the group.
+    assert "sql: created" not in exported, exported
+
+    reimported = LookMLAdapter().parse(Path(out)).get_model("orders")
+    assert sorted((d.name, d.granularity) for d in reimported.dimensions if d.type == "time") == [
+        ("created_date", "day"),
+        ("created_month", "month"),
+        ("created_week", "week"),
+    ]
+
+
+def test_lookml_collision_time_of_day_recovers_timeframe_meta_and_survives_sibling_drop():
+    """A collision-exported `time_of_day` standalone must recover its timeframe into meta.
+
+    time_of_day has no finer SQL form -- its collision export is a PLAIN hour DATE_TRUNC named
+    `*_time_of_day`. On import the recovery guard must still store `lookml_timeframe=time_of_day`
+    (it was wrongly grouped with the exact-form minute-bucket / sub-second timeframes and dropped).
+    Without the meta, a later export WITHOUT a colliding sibling loses the timeframe and renames the
+    field to `*_hour`. This differs from the multiword test above, where the collision itself masks
+    the loss via name preservation.
+    """
+    import re
+    import tempfile
+
+    from sidemantic import Dimension, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    adapter = LookMLAdapter()
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="ev",
+            table="t",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(
+                    name="started", type="time", granularity="hour", sql="a", meta={"lookml_timeframe": "time_of_day"}
+                ),
+                Dimension(name="started_time_of_day", type="time", granularity="hour", sql="b"),
+            ],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    adapter.export(graph, out)
+    reimported = adapter.parse(Path(out)).get_model("ev")
+    tf = {d.name: (d.meta or {}).get("lookml_timeframe") for d in reimported.dimensions}
+    assert tf.get("started_time_of_day") == "time_of_day", tf  # recovered, not dropped
+
+    # Drop the colliding sibling so the time_of_day field exports ALONE: it must keep its name,
+    # NOT fall back to the hour timeframe and rename to started_hour.
+    reimported.dimensions = [d for d in reimported.dimensions if d.name != "started_hour"]
+    solo = SemanticGraph()
+    solo.add_model(reimported)
+    out2 = tempfile.mktemp(suffix=".lkml")
+    adapter.export(solo, out2)
+    text2 = open(out2).read()
+    names = re.findall(r"\n  dimension: (\w+) \{", text2)
+    for base, tfs in re.findall(r"dimension_group: (\w+) \{[^}]*?timeframes:\s*\[([^\]]*)\]", text2, re.S):
+        names += [f"{base}_{x.strip()}" for x in tfs.split(",")]
+    assert "started_time_of_day" in names, names
+    assert "started_hour" not in names, names  # no bogus rename
+
+
+def test_lookml_same_prefix_time_dims_roundtrip_names_and_grains_losslessly():
+    """Collision time dims must round-trip with EXACT names AND granularities.
+
+    Two same-prefix time dims on different sources can't both be dimension_groups, so
+    the extra one is exported as a standalone DATE_TRUNC dimension. Both the field name
+    and the granularity must survive re-import (no started_2_minute rename, no grain
+    loss), and a second round-trip must be stable (no nested DATE_TRUNC).
+    """
+    import tempfile
+
+    from sidemantic import Dimension, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="v",
+            table="t",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id", primary_key=True),
+                Dimension(name="started_hour", type="time", granularity="hour", sql="started_at"),
+                Dimension(name="started_minute", type="time", granularity="minute", sql="completed_at"),
+            ],
+        )
+    )
+    adapter = LookMLAdapter()
+    out1 = tempfile.mktemp(suffix=".lkml")
+    adapter.export(graph, out1)
+    g2 = adapter.parse(Path(out1))
+    grains = {d.name: d.granularity for d in g2.get_model("v").dimensions if d.type == "time"}
+    assert grains == {"started_hour": "hour", "started_minute": "minute"}
+
+    # Second round-trip is stable and never nests DATE_TRUNC.
+    out2 = tempfile.mktemp(suffix=".lkml")
+    adapter.export(g2, out2)
+    assert "DATE_TRUNC('minute', DATE_TRUNC" not in open(out2).read()
+    assert "DATE_TRUNC('hour', DATE_TRUNC" not in open(out2).read()
+    grains2 = {d.name: d.granularity for d in adapter.parse(Path(out2)).get_model("v").dimensions if d.type == "time"}
+    assert grains2 == {"started_hour": "hour", "started_minute": "minute"}
+
+
+def test_lookml_handwritten_date_trunc_dimension_not_hijacked():
+    """A hand-written DATE_TRUNC dimension must keep its name/type, not be turned into a time group.
+
+    The DATE_TRUNC granularity recovery is only for the collision-export form (name ends
+    in _<grain>); an arbitrary-named dim like `created` stays categorical (no rename to
+    created_date), and an unsupported dialect grain like 'isoweek' must not crash parsing.
+    """
+    import tempfile
+
+    # Unsupported grain must not raise a granularity validation error.
+    graph = _parse_lkml(
+        """
+view: v {
+  sql_table_name: t ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: w { type: date_time  sql: DATE_TRUNC('isoweek', ${TABLE}.created_at) ;; }
+}
+"""
+    )
+    w = graph.get_model("v").get_dimension("w")
+    assert w.type == "categorical" and w.granularity is None
+
+    # Arbitrary-named DATE_TRUNC dim keeps its exact name across a round-trip.
+    graph2 = _parse_lkml(
+        """
+view: v {
+  sql_table_name: t ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: created { type: date_time  sql: DATE_TRUNC('day', ${TABLE}.created_at) ;; }
+}
+"""
+    )
+    assert graph2.get_model("v").get_dimension("created").type == "categorical"
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph2, out)
+    names = {d.name for d in LookMLAdapter().parse(Path(out)).get_model("v").dimensions}
+    assert "created" in names and "created_date" not in names
+
+    # A hand-written dim whose NAME does carry a timeframe suffix (created_date) but also
+    # has dimension-level properties (hidden/label) is NOT the collision-export form, so
+    # it stays a plain dimension and those properties survive the round-trip.
+    graph3 = _parse_lkml(
+        """
+view: v {
+  sql_table_name: t ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: created_date { type: date_time  hidden: yes  label: "Created"  sql: DATE_TRUNC('day', ${TABLE}.created_at) ;; }
+}
+"""
+    )
+    assert graph3.get_model("v").get_dimension("created_date").type == "categorical"
+    out3 = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph3, out3)
+    text3 = open(out3).read()
+    assert "created_date" in {d.name for d in LookMLAdapter().parse(Path(out3)).get_model("v").dimensions}
+    assert "hidden: yes" in text3 and "Created" in text3  # properties preserved
+
+
+def test_lookml_split_time_group_names_avoid_existing_bases():
+    """A synthetic split-group name must not collide with an existing time-group base."""
+    import re
+    import tempfile
+
+    from sidemantic import Dimension, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="v",
+            table="t",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(name="started_date", type="time", granularity="day", sql="{model}.a"),
+                Dimension(name="started_hour", type="time", granularity="hour", sql="{model}.b"),
+                Dimension(name="started_2_hour", type="time", granularity="hour", sql="{model}.c"),
+            ],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    names = re.findall(r"dimension_group: (\w+)", open(out).read())
+    assert len(names) == len(set(names)), f"colliding dimension_group names: {names}"
+
+
+def test_lookml_native_time_named_second_grain_roundtrips():
+    """A native second-grain dim named *_time must export as `time` so the name round-trips."""
+    import tempfile
+
+    from sidemantic import Dimension, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="v",
+            table="t",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(name="created_time", type="time", granularity="second", sql="{model}.created_at"),
+            ],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    names = {d.name for d in LookMLAdapter().parse(Path(out)).get_model("v").dimensions if d.type == "time"}
+    assert "created_time" in names  # not renamed to created_second
+
+
+def test_lookml_time_and_second_timeframes_no_duplicate_export():
+    """A group with both `time` and `second` (both -> second grain) must not emit duplicate timeframes."""
+    import re
+    import tempfile
+
+    graph = _parse_lkml(
+        """
+view: v {
+  sql_table_name: t ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension_group: created {
+    type: time
+    timeframes: [time, second, hour]
+    sql: ${TABLE}.created_at ;;
+  }
+}
+"""
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    text = open(out).read()
+    timeframes = re.search(r"timeframes:\s*\[([^\]]*)\]", text).group(1)
+    parts = [p.strip() for p in timeframes.split(",")]
+    assert len(parts) == len(set(parts)), f"duplicate timeframes exported: {parts}"
+    # Both `time` and `second` are preserved (no collapse/drop) via the stored
+    # original timeframe, so re-import keeps every member.
+    names = {d.name for d in LookMLAdapter().parse(Path(out)).get_model("v").dimensions if d.type == "time"}
+    assert {"created_time", "created_second", "created_hour"} <= names
+
+
+def test_lookml_view_without_table_defaults_to_view_name():
+    """A view with no sql_table_name/derived_table should default its table to the view name."""
+    from sidemantic import SemanticLayer
+
+    graph = _parse_lkml(
+        "view: just_fields { "
+        "dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; } "
+        "measure: c { type: count } }"
+    )
+    model = graph.get_model("just_fields")
+    assert model.table == "just_fields"
+    # And it must be a valid, queryable model (previously raised ModelValidationError).
+    layer = SemanticLayer()
+    layer.add_model(model)
+    assert "just_fields" in layer.compile(metrics=["just_fields.c"])
+
+
+def test_lookml_parse_tableless_view_inside_layer_context():
+    """Parsing a tableless view inside a `with SemanticLayer()` block must not crash.
+
+    Auto-registration fires during Model construction; the default table is applied
+    after parse, so parsing must suppress registration until models are complete.
+    """
+    import tempfile
+
+    from sidemantic import SemanticLayer
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".lkml", delete=False) as f:
+        f.write(
+            "view: just_fields { dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; } measure: c { type: count } }"
+        )
+        f.flush()
+        path = Path(f.name)
+
+    with SemanticLayer() as layer:
+        LookMLAdapter().parse(path)
+    # The model is registered to the context layer with its defaulted table.
+    assert layer.graph.get_model("just_fields").table == "just_fields"
+
+
+def test_lookml_fieldless_ordinary_view_gets_default_table():
+    """An ordinary fieldless view (or one with only adapter-ignored fields) still defaults.
+
+    Looker defaults the table name to the view name regardless of parsed fields, so a
+    `view: orders {}` must not be left tableless (which would fail CLI load/registration).
+    Abstract/unsupported templates are still skipped; this only covers ordinary views.
+    """
+    import tempfile
+
+    from sidemantic import SemanticLayer
+    from sidemantic.loaders import load_from_directory
+
+    d = tempfile.mkdtemp()
+    with open(Path(d) / "v.lkml", "w") as f:
+        f.write("view: orders {}\nview: just_set { set: foo { fields: [a, b] } }\n")
+
+    layer = SemanticLayer()
+    load_from_directory(layer, d)  # must not raise the no-table ModelValidationError
+    assert layer.graph.get_model("orders").table == "orders"
+    assert layer.graph.get_model("just_set").table == "just_set"
+
+
+def test_lookml_abstract_base_not_registered_inside_layer_context():
+    """An abstract (extension: required) base must NOT be registered inside a `with` layer.
+
+    It's intentionally tableless; deferred registration must skip it (not raise) while the
+    concrete child still registers with its defaulted table.
+    """
+    import tempfile
+
+    from sidemantic import SemanticLayer
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".lkml", delete=False) as f:
+        f.write(
+            "view: base { extension: required  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; } "
+            "dimension: x { type: number  sql: ${TABLE}.x ;; } } "
+            "view: orders { extends: [base]  dimension: y { type: number  sql: ${TABLE}.y ;; } }"
+        )
+        f.flush()
+        path = Path(f.name)
+
+    with SemanticLayer() as layer:
+        LookMLAdapter().parse(path)  # must not raise ModelValidationError
+    assert "base" not in layer.graph.models  # abstract base skipped
+    assert layer.graph.get_model("orders").table == "orders"  # concrete child registered
+
+
+def test_lookml_table_backed_abstract_base_not_registered_inside_layer_context():
+    """A TABLE-BACKED abstract base must be skipped by deferred registration too.
+
+    The deferred auto-registration skip set keyed off tablelessness, so an `extension: required`
+    base that declares its own `sql_table_name` (a valid LookML abstract base) slipped through and
+    was registered as a queryable model in the active layer -- diverging from the CLI loader path,
+    which drops every `lookml_template` model regardless of source. The parser-owned marker, not
+    tablelessness, must decide.
+    """
+    import tempfile
+
+    from sidemantic import SemanticLayer
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".lkml", delete=False) as f:
+        f.write(
+            "view: base { extension: required  sql_table_name: real_base ;; "
+            "dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; } } "
+            "view: orders { extends: [base]  dimension: y { type: number  sql: ${TABLE}.y ;; } }"
+        )
+        f.flush()
+        path = Path(f.name)
+
+    with SemanticLayer() as layer:
+        LookMLAdapter().parse(path)  # must not raise
+    # The table-backed abstract base is hidden (Looker only uses it through extends), so it must not
+    # be registered even though it has a source.
+    assert "base" not in layer.graph.models
+    # The concrete child still registers, inheriting the base's table through extends.
+    assert layer.graph.get_model("orders").table == "real_base"
+
+
+def test_lookml_directory_load_merges_cross_file_refinement_before_defaulting_table():
+    """A CLI directory load must merge `+view` refinements from OTHER files before defaulting.
+
+    `view: base` in one file and `view: +base { extension: required }` in another is a normal
+    LookML layout. Parsing each .lkml independently never merged that refinement, so `base` missed
+    its abstract marker, got defaulted to a physical table named `base`, and was registered as
+    queryable -- validate/queries would silently target a fabricated table.
+    """
+    import tempfile
+
+    from sidemantic import SemanticLayer
+    from sidemantic.loaders import load_from_directory
+
+    directory = Path(tempfile.mkdtemp())
+    (directory / "a.lkml").write_text("view: base {\n  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }\n}\n")
+    (directory / "b.lkml").write_text("view: +base {\n  extension: required\n}\n")
+    (directory / "c.lkml").write_text(
+        "view: orders {\n  extends: [base]\n  sql_table_name: raw_orders ;;\n  measure: cnt { type: count }\n}\n"
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, directory)
+
+    # The refined abstract base stays non-queryable instead of getting a fabricated table.
+    assert "base" not in layer.graph.models
+    orders = layer.graph.get_model("orders")
+    assert orders.table == "raw_orders"
+    # Per-file provenance still points at the DEFINING file, not the project root.
+    assert getattr(orders, "_source_file", None) == "c.lkml"
+
+
+def test_lookml_broken_tableless_view_surfaces_error_inside_layer_context():
+    """A genuinely-broken tableless view (unresolved extends) must NOT be silently skipped.
+
+    Deferred registration skips only INTENTIONAL templates (extension:required / unsupported
+    derived tables). A `view: child { extends: [missing] }` stays tableless because its parent
+    can't resolve -- that's a real error, so add_model must still raise rather than drop it.
+    """
+    import tempfile
+
+    import pytest
+
+    from sidemantic import SemanticLayer
+    from sidemantic.validation import ModelValidationError
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".lkml", delete=False) as f:
+        f.write(
+            "view: child { extends: [missing]  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; } }"
+        )
+        f.flush()
+        path = Path(f.name)
+
+    with pytest.raises(ModelValidationError):
+        with SemanticLayer():
+            LookMLAdapter().parse(path)
+
+
+def test_lookml_export_unsupported_derived_table_stays_tableless_on_reimport():
+    """An unsupported derived_table must round-trip as tableless, not gain a physical table.
+
+    _export_view re-emits the (retained) derived_table with no `sql`, so re-import keeps it
+    marked unsupported instead of the implicit-table default assigning `table = <view name>`.
+    """
+    import tempfile
+
+    d = tempfile.mkdtemp()
+    with open(Path(d) / "v.lkml", "w") as f:
+        f.write(
+            'view: pdt { derived_table: { sql_trigger_value: "SELECT max(id) FROM orders" ;;  persist_for: "24 hours" } '
+            "  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; } }"
+        )
+    graph = LookMLAdapter().parse(Path(d))
+    assert graph.get_model("pdt").table is None
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    text = open(out).read()
+    assert "derived_table" in text and "sql_trigger_value" in text
+    reimported = LookMLAdapter().parse(Path(out))
+    m = reimported.get_model("pdt")
+    assert m.table is None  # stays tableless, not defaulted to 'pdt'
+    assert (m.meta or {}).get("unsupported_derived_table")
+
+
+def test_lookml_export_abstract_view_stays_tableless_on_reimport():
+    """An abstract (extension: required) base must round-trip as tableless, not gain a table.
+
+    _export_view must re-emit `extension: required` so the re-imported base stays non-queryable
+    instead of the implicit-table default assigning it a physical table named after the view.
+    """
+    import tempfile
+
+    d = tempfile.mkdtemp()
+    with open(Path(d) / "v.lkml", "w") as f:
+        f.write(
+            "view: base { extension: required "
+            "  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; } "
+            "  dimension: x { type: number  sql: ${TABLE}.x ;; } } "
+            "view: orders { extends: [base]  dimension: y { type: number  sql: ${TABLE}.y ;; } }"
+        )
+    graph = LookMLAdapter().parse(Path(d))
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    text = open(out).read()
+    import re
+
+    assert "extension: required" in re.search(r"view: base \{.*?\n\}", text, re.S).group(0)  # base abstract
+    # The concrete child INHERITS extension_required in meta but has its own table; it must NOT
+    # re-emit the marker (that would make the usable child abstract on round-trip).
+    assert "extension: required" not in re.search(r"view: orders \{.*?\n\}", text, re.S).group(0)
+    reimported = LookMLAdapter().parse(Path(out))
+    assert reimported.get_model("base").table is None  # base stays tableless, not defaulted
+    assert reimported.get_model("orders").table == "orders"  # child stays usable
+
+
+def test_lookml_abstract_base_does_not_break_directory_load():
+    """The CLI path (load_from_directory) must skip the abstract base, not abort the project."""
+    import tempfile
+
+    from sidemantic import SemanticLayer
+    from sidemantic.loaders import load_from_directory
+
+    d = tempfile.mkdtemp()
+    with open(Path(d) / "v.lkml", "w") as f:
+        f.write(
+            "view: base { extension: required  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; } "
+            "dimension: x { type: number  sql: ${TABLE}.x ;; } } "
+            "view: orders { extends: [base]  dimension: y { type: number  sql: ${TABLE}.y ;; } }"
+        )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, d)  # must not raise ModelValidationError on `base`
+    assert "base" not in layer.graph.models  # non-queryable abstract base skipped
+    assert layer.graph.get_model("orders").table == "orders"
+
+
+def test_lookml_drop_metrics_uses_provenance_marker_not_base_ref():
+    """Orphan-metric drop keys off the parser-owned `_lookml_template_metric` PROVENANCE marker.
+
+    A metric the LookML parser stamped as coming from a template is dropped; a same-named
+    STANDALONE metric from another file (no marker) is preserved -- regardless of whether the
+    base ref is qualified or unqualified, and regardless of object identity (refinements
+    reconstruct the object but the marker is re-stamped on the graph-registered instance).
+    """
+    from sidemantic import Metric, Model
+    from sidemantic.loaders import _drop_non_registerable_models
+
+    def pop(bm, template_metric=False):
+        meta = {"_lookml_template_metric": True} if template_metric else None
+        return Metric(
+            name="pop",
+            type="time_comparison",
+            base_metric=bm,
+            comparison_type="yoy",
+            calculation="difference",
+            meta=meta,
+        )
+
+    template = Model(name="base", meta={"lookml_template": True})
+    orders = Model(name="orders", table="orders", metrics=[Metric(name="total", agg="sum", sql="amt")])
+
+    # A standalone `pop` (NO provenance marker) is preserved, even with an UNqualified base that
+    # matches a surviving model's `total` -- and even qualified.
+    standalone = pop("total")
+    metrics = {"pop": standalone}
+    _drop_non_registerable_models({"base": template, "orders": orders}, metrics)
+    assert metrics.get("pop") is standalone
+
+    # A template's `pop` (marked) is dropped -- unqualified base, same-named surviving `total`
+    # present: the marker (not the base ref) decides.
+    metrics2 = {"pop": pop("total", template_metric=True)}
+    _drop_non_registerable_models({"base": template, "orders": orders}, metrics2)
+    assert "pop" not in metrics2
+
+    # A LATER file can OVERWRITE the template's name with a real model, so NOTHING is dropped
+    # this pass -- the marked metric is still orphaned and must go. Keying the cleanup off
+    # "something was dropped" left it registered and broke compile with "No models found".
+    real_base = Model(name="base", table="real_base", metrics=[Metric(name="cnt", agg="count", sql="id")])
+    metrics3 = {"pop": pop("revenue", template_metric=True)}
+    kept = _drop_non_registerable_models({"base": real_base, "orders": orders}, metrics3)
+    assert "pop" not in metrics3
+    assert set(kept) == {"base", "orders"}  # nothing dropped: only the orphaned metric goes
+
+
+def test_lookml_template_metric_dropped_when_later_file_overwrites_template():
+    """A template's orphaned metric must go even when a later file reuses the template's name.
+
+    The template is skipped, but a native file defining a real `base` overwrites it in the model
+    dict, so the load drops NOTHING -- and the cleanup, gated on a drop having happened, left the
+    template's auto-registered `pop` behind. `compile(metrics=["pop"])` then failed with
+    "No models found for query".
+    """
+    import tempfile
+
+    from sidemantic import SemanticLayer
+    from sidemantic.loaders import load_from_directory
+
+    directory = Path(tempfile.mkdtemp())
+    (directory / "base.view.lkml").write_text(
+        """view: base {
+  extension: required
+  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }
+  dimension_group: created { type: time  timeframes: [date]  sql: ${TABLE}.created ;; }
+  measure: revenue { type: sum  sql: ${TABLE}.amount ;; }
+  measure: pop { type: period_over_period  based_on: revenue  based_on_time: created_date  period: year }
+}
+"""
+    )
+    # Sorts after the .lkml file, so it overwrites `base` with a real model.
+    (directory / "zz_native.py").write_text(
+        "from sidemantic import Dimension, Metric, Model\n"
+        'model = Model(name="base", table="real_base", primary_key="id",\n'
+        '              dimensions=[Dimension(name="id", type="numeric", sql="id")],\n'
+        '              metrics=[Metric(name="cnt", agg="count", sql="id")])\n'
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, directory, strict=False)
+
+    assert layer.graph.models["base"].table == "real_base"  # the real model won
+    assert "pop" not in layer.graph.metrics  # the template's orphan did not survive it
+
+
+def test_lookml_normal_view_graph_metric_dropped_when_model_overwritten():
+    """A NORMAL view's graph metric must go when a later file overwrites its model without it.
+
+    A period_over_period on a plain (non-template) view auto-registers graph metric `pop`. The
+    project-level LookML load runs before the per-file scan, so a later Python model of the same
+    name replaces the model whose measure/time dimension `pop` needs -- but `pop` carries no
+    template marker, so it lingered and `compile(["pop"])` failed with "No models found". The
+    parser stamps every LookML graph metric with its owner, so the load drops it here; when the
+    model is NOT overwritten the metric survives.
+    """
+    import tempfile
+
+    from sidemantic import SemanticLayer
+    from sidemantic.loaders import load_from_directory
+
+    view = """view: orders {
+  sql_table_name: real_orders ;;
+  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }
+  dimension_group: created { type: time  timeframes: [date]  sql: ${TABLE}.created ;; }
+  measure: revenue { type: sum  sql: ${TABLE}.amount ;; }
+  measure: pop { type: period_over_period  based_on: revenue  based_on_time: created_date  period: year }
+}
+"""
+
+    # Overwritten by a later Python model that does not define `pop` -> the orphan is dropped.
+    overwritten = Path(tempfile.mkdtemp())
+    (overwritten / "orders.view.lkml").write_text(view)
+    (overwritten / "zz_native.py").write_text(
+        "from sidemantic import Dimension, Metric, Model\n"
+        'model = Model(name="orders", table="py_orders", primary_key="id",\n'
+        '              dimensions=[Dimension(name="id", type="numeric", sql="id")],\n'
+        '              metrics=[Metric(name="cnt", agg="count", sql="id")])\n'
+    )
+    layer = SemanticLayer()
+    load_from_directory(layer, overwritten, strict=False)
+    assert layer.graph.models["orders"].table == "py_orders"  # the Python model won
+    assert "pop" not in layer.graph.metrics  # its orphan did not survive
+
+    # Not overwritten: the metric is a normal, working graph metric and must be kept.
+    intact = Path(tempfile.mkdtemp())
+    (intact / "orders.view.lkml").write_text(view)
+    layer = SemanticLayer()
+    load_from_directory(layer, intact, strict=False)
+    assert "pop" in layer.graph.metrics
+
+    # Overwritten by a model whose same-named metric is MODEL-SCOPED (a normal measure), not a
+    # graph-level metric: it does not replace the orphaned graph metric, so a name-only match would
+    # wrongly keep the broken one. It must still be dropped.
+    same_name = Path(tempfile.mkdtemp())
+    (same_name / "orders.view.lkml").write_text(view)
+    (same_name / "zz_native.py").write_text(
+        "from sidemantic import Dimension, Metric, Model\n"
+        'model = Model(name="orders", table="py_orders", primary_key="id",\n'
+        '              dimensions=[Dimension(name="id", type="numeric", sql="id")],\n'
+        '              metrics=[Metric(name="pop", agg="sum", sql="id")])\n'
+    )
+    layer = SemanticLayer()
+    load_from_directory(layer, same_name, strict=False)
+    assert "pop" not in layer.graph.metrics  # the stale graph-level metric is not rescued by name
+
+
+def test_lookml_included_view_does_not_extend_unincluded_parent():
+    """An included view must not inherit fields from a parent no model include reaches.
+
+    A unique view is installed even when un-included (an imperfectly-resolved include must never
+    silently drop a view), but loaded is not in-scope: `extends: [base]` resolving against an
+    archived `base` merged fields Looker would never expose in that model. The parent is treated
+    as absent instead, leaving the child's extends unresolved -- the child still loads.
+    """
+    import tempfile
+
+    child = "view: orders {\n  extends: [base]\n  sql_table_name: orders ;;\n  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }\n}\n"
+    parent = "view: base {\n  sql_table_name: base_t ;;\n  dimension: secret { sql: ${TABLE}.secret ;; }\n  measure: leaked { type: sum  sql: ${TABLE}.amount ;; }\n}\n"
+
+    def fields(parent_dir, include):
+        directory = Path(tempfile.mkdtemp())
+        (directory / "views").mkdir()
+        (directory / parent_dir).mkdir(exist_ok=True)
+        (directory / "orders.model.lkml").write_text(f'include: "{include}"\n')
+        (directory / "views" / "orders.view.lkml").write_text(child)
+        (directory / parent_dir / "base.view.lkml").write_text(parent)
+        graph = LookMLAdapter().parse(str(directory))
+        model = graph.get_model("orders")
+        return graph, {d.name for d in model.dimensions} | {m.name for m in model.metrics}
+
+    # Parent in archive/: NOT reached by the model's include -> not inherited.
+    graph, archived = fields("archive", "/views/orders.view.lkml")
+    assert archived == {"id"}, archived
+    assert "base" in graph.models  # the un-included view still LOADS; it is just not a parent
+
+    # Parent reached by the include -> inherited as before.
+    _, included = fields("views", "/views/*.view.lkml")
+    assert {"secret", "leaked"} <= included, included
+
+    # With no include declared anywhere, scoping is off and inheritance is unaffected.
+    plain = Path(tempfile.mkdtemp())
+    (plain / "orders.view.lkml").write_text(child)
+    (plain / "base.view.lkml").write_text(parent)
+    model = LookMLAdapter().parse(str(plain)).get_model("orders")
+    assert {"secret", "leaked"} <= ({d.name for d in model.dimensions} | {m.name for m in model.metrics})
+
+
+def test_lookml_implicit_dimension_group_resolves_in_field_references():
+    """A ${created_date} reference to a no-sql dimension_group reads the implicit `<group>` column.
+
+    Resolving the group's implicit column on the generated Dimension objects alone was too late:
+    the lookup that expands ${ref}s in other fields is built first, so a measure or dimension over
+    the timeframe still queried the generated field name -- a column that does not exist -- even
+    though a direct query of the timeframe was correct.
+    """
+    import tempfile
+
+    directory = Path(tempfile.mkdtemp())
+    (directory / "orders.view.lkml").write_text(
+        """view: orders {
+  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }
+  dimension_group: created {
+    type: time
+    timeframes: [date, week]
+  }
+  measure: cd { type: count_distinct  sql: ${created_date} ;; }
+  dimension: is_new { type: yesno  sql: ${created_date} > '2020-01-01' ;; }
+}
+"""
+    )
+    model = LookMLAdapter().parse(str(directory / "orders.view.lkml")).get_model("orders")
+    fields = {f.name: f.sql for f in [*model.dimensions, *model.metrics]}
+
+    assert fields["cd"] == "({model}.created)"
+    assert fields["is_new"] == "({model}.created) > '2020-01-01'"
+    # Nothing references the generated field name, which is not a real column.
+    assert not [name for name, sql in fields.items() if sql and "created_date" in sql], fields
+
+    # An explicit sql: on the group still wins for references.
+    explicit = Path(tempfile.mkdtemp())
+    (explicit / "orders.view.lkml").write_text(
+        """view: orders {
+  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }
+  dimension_group: created {
+    type: time
+    timeframes: [date]
+    sql: ${TABLE}.ts ;;
+  }
+  measure: cd { type: count_distinct  sql: ${created_date} ;; }
+}
+"""
+    )
+    referring = LookMLAdapter().parse(str(explicit / "orders.view.lkml")).get_model("orders")
+    assert [m.sql for m in referring.metrics if m.name == "cd"] == ["({model}.ts)"]
+
+
+def test_lookml_implicit_dimension_group_compiles_against_group_column():
+    """A dimension_group without `sql` reads Looker's implicit `<group>` column.
+
+    Its generated dimensions carried sql=None, so each fell back to its OWN field name and
+    compiled DATE_TRUNC('day', created_date) -- a column that does not exist -- against an
+    otherwise valid view. The dims resolve to `created`, and export still re-emits the group
+    without inventing a `sql`, since an implicit group is marked rather than inferred from sql.
+    """
+    import tempfile
+
+    from sidemantic import SemanticLayer
+
+    directory = Path(tempfile.mkdtemp())
+    (directory / "orders.view.lkml").write_text(
+        """view: orders {
+  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }
+  dimension_group: created {
+    type: time
+    timeframes: [date, week]
+  }
+  measure: cnt { type: count }
+}
+"""
+    )
+    graph = LookMLAdapter().parse(str(directory / "orders.view.lkml"))
+    assert [d.sql for d in graph.get_model("orders").dimensions if d.name == "created_date"] == ["{model}.created"]
+
+    layer = SemanticLayer()
+    layer.graph = graph
+    sql = layer.compile(dimensions=["orders.created_date"], metrics=["orders.cnt"])
+    assert "DATE_TRUNC('day', created)" in sql, sql
+    assert "'day', created_date)" not in sql, sql  # never the generated field name
+
+    # Export still round-trips the group with no invented sql.
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    exported = Path(out).read_text()
+    assert exported.count("dimension_group:") == 1, exported
+    assert "sql:" not in exported[exported.index("dimension_group:") :], exported
+
+
+def test_lookml_conflicting_per_model_refinement_order_warns(caplog):
+    """Models disagreeing on refinement include order must be surfaced, not silently resolved.
+
+    Looker applies refinements in each model's own include order. One model per view name can
+    hold only one result, so a model including z_ref then a_ref and another doing the reverse
+    cannot both be served -- the first model file's order silently won.
+    """
+    import logging
+    import tempfile
+
+    base = "view: orders {\n  sql_table_name: real_orders ;;\n  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }\n}\n"
+    orders_include = 'include: "/views/orders.view.lkml"\n'
+    z_then_a = orders_include + 'include: "/views/z_ref.view.lkml"\ninclude: "/views/a_ref.view.lkml"\n'
+    a_then_z = orders_include + 'include: "/views/a_ref.view.lkml"\ninclude: "/views/z_ref.view.lkml"\n'
+
+    def parse(*models):
+        directory = Path(tempfile.mkdtemp())
+        (directory / "views").mkdir()
+        for name, include in models:
+            (directory / f"{name}.model.lkml").write_text(include)
+        (directory / "views" / "orders.view.lkml").write_text(base)
+        (directory / "views" / "z_ref.view.lkml").write_text("view: +orders {\n  sql_table_name: from_z ;;\n}\n")
+        (directory / "views" / "a_ref.view.lkml").write_text("view: +orders {\n  sql_table_name: from_a ;;\n}\n")
+        return LookMLAdapter().parse(str(directory))
+
+    def order_conflict(*models):
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="sidemantic.adapters.lookml"):
+            graph = parse(*models)
+        return graph, any("disagree on the include order" in r.getMessage() for r in caplog.records)
+
+    graph, conflicted = order_conflict(("a_first", z_then_a), ("b_second", a_then_z))
+    assert conflicted
+    assert graph.get_model("orders").table == "from_a"  # first model file's order; still loads
+
+    # Agreeing models are not a conflict.
+    _, conflicted = order_conflict(("a", z_then_a), ("b", z_then_a))
+    assert not conflicted
+
+    # A model including only SOME of the refinements orders nothing differently.
+    _, conflicted = order_conflict(("a", z_then_a), ("b", orders_include + 'include: "/views/a_ref.view.lkml"\n'))
+    assert not conflicted
+
+    # A single model has nothing to disagree with.
+    _, conflicted = order_conflict(("a", z_then_a))
+    assert not conflicted
+
+
+def test_lookml_refinements_merge_in_include_order_not_pathname_order():
+    """Refinements follow the model's include order; the last-included one wins.
+
+    Looker documents that refinements leverage include order, but the tree walk is sorted by
+    pathname (for determinism), so a model including z_ref then a_ref applied a_ref FIRST and let
+    z_ref win -- leaving the view pointed at the wrong table. Include order now drives the merge,
+    and the sorted walk still decides anything the includes do not order.
+    """
+    import tempfile
+
+    base = "view: orders {\n  sql_table_name: real_orders ;;\n  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }\n}\n"
+
+    def refinement(table):
+        return f"view: +orders {{\n  sql_table_name: {table} ;;\n}}\n"
+
+    def table(model_text, files):
+        directory = Path(tempfile.mkdtemp())
+        (directory / "views").mkdir()
+        (directory / "m.model.lkml").write_text(model_text)
+        (directory / "views" / "orders.view.lkml").write_text(base)
+        for name, content in files.items():
+            (directory / "views" / f"{name}.view.lkml").write_text(content)
+        return LookMLAdapter().parse(str(directory)).get_model("orders").table
+
+    refs = {"z_ref": refinement("from_z"), "a_ref": refinement("from_a")}
+
+    # Include order wins over pathname order, in both directions.
+    assert (
+        table(
+            'include: "/views/orders.view.lkml"\ninclude: "/views/z_ref.view.lkml"\ninclude: "/views/a_ref.view.lkml"\n',
+            refs,
+        )
+        == "from_a"
+    )
+    assert (
+        table(
+            'include: "/views/orders.view.lkml"\ninclude: "/views/a_ref.view.lkml"\ninclude: "/views/z_ref.view.lkml"\n',
+            refs,
+        )
+        == "from_z"
+    )
+
+    # A glob cannot express an order, so its matches stay sorted -- the load is deterministic.
+    assert table('include: "/views/*.view.lkml"\n', refs) == "from_z"
+
+    # Two refinements in ONE file keep their in-file order.
+    assert (
+        table(
+            'include: "/views/orders.view.lkml"\ninclude: "/views/multi.view.lkml"\n',
+            {"multi": refinement("from_first") + refinement("from_second")},
+        )
+        == "from_second"
+    )
+
+    # An included file's refinement lands BEFORE the includer's own: include: brings that content
+    # in where it is written, above the includer's definitions.
+    nested = Path(tempfile.mkdtemp())
+    (nested / "views").mkdir()
+    (nested / "m.model.lkml").write_text('include: "/views/orders.view.lkml"\ninclude: "/views/z_ref.view.lkml"\n')
+    (nested / "views" / "orders.view.lkml").write_text(base)
+    (nested / "views" / "z_ref.view.lkml").write_text('include: "/views/a_ref.view.lkml"\n' + refinement("from_z"))
+    (nested / "views" / "a_ref.view.lkml").write_text(refinement("from_a"))
+    assert LookMLAdapter().parse(str(nested)).get_model("orders").table == "from_z"
+
+    # A circular include must not hang the ordered walk.
+    circular = Path(tempfile.mkdtemp())
+    (circular / "views").mkdir()
+    (circular / "m.model.lkml").write_text('include: "/views/x.view.lkml"\n')
+    (circular / "views" / "x.view.lkml").write_text('include: "/views/y.view.lkml"\n' + base)
+    (circular / "views" / "y.view.lkml").write_text('include: "/views/x.view.lkml"\n' + refinement("from_y"))
+    assert LookMLAdapter().parse(str(circular)).get_model("orders").table == "from_y"
+
+    # With no include scope at all, the deterministic sorted order still applies.
+    plain = Path(tempfile.mkdtemp())
+    (plain / "orders.view.lkml").write_text(base)
+    (plain / "a_ref.view.lkml").write_text(refinement("from_a"))
+    (plain / "z_ref.view.lkml").write_text(refinement("from_z"))
+    assert LookMLAdapter().parse(str(plain)).get_model("orders").table == "from_z"
+
+
+def test_lookml_refinement_selected_by_only_some_models_warns(caplog):
+    """A refinement only SOME models include is ambiguous and must be surfaced, not silent.
+
+    Looker resolves each model separately: prod sees the plain view, staging the refined one. A
+    graph holds ONE model per view name and cannot hold both, so a staging-only
+    `+orders { sql_table_name: staging_orders }` silently repoints the view prod also uses. The
+    refinement is still applied -- refusing a valid project, or dropping it and mis-serving the
+    model that DID select it, are both worse -- but the load no longer resolves it silently.
+    """
+    import logging
+    import tempfile
+
+    base = "view: orders {\n  sql_table_name: real_orders ;;\n  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }\n}\n"
+    refinement = "view: +orders {\n  sql_table_name: staging_orders ;;\n}\n"
+
+    def parse(models, refinement_dir="views"):
+        directory = Path(tempfile.mkdtemp())
+        (directory / "views").mkdir()
+        (directory / refinement_dir).mkdir(exist_ok=True)
+        for name, include in models:
+            (directory / f"{name}.model.lkml").write_text(include)
+        (directory / "views" / "orders.view.lkml").write_text(base)
+        (directory / refinement_dir / "staging_refine.view.lkml").write_text(refinement)
+        return LookMLAdapter().parse(str(directory))
+
+    # Only staging includes the refinement, but prod uses the same view -> warn, still apply.
+    with caplog.at_level(logging.WARNING, logger="sidemantic.adapters.lookml"):
+        graph = parse(
+            [
+                ("prod", 'include: "/views/orders.view.lkml"\n'),
+                ("staging", 'include: "/views/orders.view.lkml"\ninclude: "/views/staging_refine.view.lkml"\n'),
+            ]
+        )
+    assert graph.get_model("orders").table == "staging_orders"  # applied: the project still loads
+    assert "prod.model.lkml" in caplog.text
+    assert "not included by these models" in caplog.text
+
+    # Every model that uses the view includes the refinement: unambiguous, no warning.
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="sidemantic.adapters.lookml"):
+        graph = parse([("prod", 'include: "/views/*.view.lkml"\n'), ("staging", 'include: "/views/*.view.lkml"\n')])
+    assert graph.get_model("orders").table == "staging_orders"
+    assert caplog.text == ""
+
+    # An un-included refinement is skipped as before -- not applied, and not an ambiguity.
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="sidemantic.adapters.lookml"):
+        graph = parse([("prod", 'include: "/views/*.view.lkml"\n')], refinement_dir="archive")
+    assert graph.get_model("orders").table == "real_orders"
+    assert caplog.text == ""
+
+
+def test_lookml_extends_parent_scoped_per_model_not_project_wide():
+    """A parent selected by ANOTHER model is not in scope for this model's child.
+
+    Checking the parent against the project-wide union of included paths meant that with two
+    models -- A including only orders.view.lkml, B including only base.view.lkml -- `orders`
+    inherited from `base` anyway, exposing fields from another model's include scope. The parent
+    must be visible from the CHILD's own file.
+    """
+    import tempfile
+
+    child = "view: orders {\n  extends: [base]\n  sql_table_name: orders ;;\n  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }\n}\n"
+    parent = "view: base {\n  sql_table_name: base_t ;;\n  dimension: secret { sql: ${TABLE}.secret ;; }\n  measure: leaked { type: sum  sql: ${TABLE}.amount ;; }\n}\n"
+
+    def fields(*models):
+        directory = Path(tempfile.mkdtemp())
+        (directory / "views").mkdir()
+        for name, include in models:
+            (directory / f"{name}.model.lkml").write_text(f'include: "{include}"\n')
+        (directory / "views" / "orders.view.lkml").write_text(child)
+        (directory / "views" / "base.view.lkml").write_text(parent)
+        model = LookMLAdapter().parse(str(directory)).get_model("orders")
+        return {d.name for d in model.dimensions} | {m.name for m in model.metrics}
+
+    # Separate scopes: the child's model cannot see the parent -> not inherited.
+    assert fields(("a", "/views/orders.view.lkml"), ("b", "/views/base.view.lkml")) == {"id"}
+
+    # One model selecting both still inherits.
+    assert {"secret", "leaked"} <= fields(("a", "/views/*.view.lkml"))
+
+    # The child is reached by BOTH models but only b includes the parent: EVERY model reaching the
+    # child must include the parent, else its fields would leak to a. Not inherited (see
+    # test_lookml_extends_parent_required_in_all_model_scopes for the full contract).
+    assert fields(("a", "/views/orders.view.lkml"), ("b", "/views/*.view.lkml")) == {"id"}
+
+
+def test_lookml_refinement_extends_is_additive():
+    """A refinement's `extends` is APPENDED to the base's chain, not replaced (Looker semantics).
+
+    `view: orders { extends: [base_a] }` then `view: +orders { extends: [base_b] }` must inherit
+    from BOTH bases; wholesale replacement dropped every field defined only in base_a.
+    """
+    graph = _parse_lkml(
+        """
+view: base_a { sql_table_name: base_a ;; dimension: a_field { type: string  sql: ${TABLE}.a_field ;; } }
+view: base_b { sql_table_name: base_b ;; dimension: b_field { type: string  sql: ${TABLE}.b_field ;; } }
+view: orders {
+  sql_table_name: orders ;;
+  extends: [base_a]
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+}
+view: +orders {
+  extends: [base_b]
+}
+"""
+    )
+    dims = {d.name for d in graph.get_model("orders").dimensions}
+    assert {"a_field", "b_field", "id"} <= dims  # both bases inherited, base_a not dropped
+
+
+def test_lookml_multi_parent_extends_inherits_all_bases():
+    """A single `extends: [base_a, base_b]` statement inherits from every listed parent."""
+    graph = _parse_lkml(
+        """
+view: base_a { sql_table_name: base_a ;; dimension: a_field { type: string  sql: ${TABLE}.a_field ;; } }
+view: base_b { sql_table_name: base_b ;; measure: b_total { type: sum  sql: ${TABLE}.amount ;; } }
+view: orders {
+  sql_table_name: orders ;;
+  extends: [base_a, base_b]
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+}
+"""
+    )
+    model = graph.get_model("orders")
+    assert {"a_field", "id"} <= {d.name for d in model.dimensions}
+    assert "b_total" in {m.name for m in model.metrics}
+
+
+def test_lookml_multi_parent_extends_later_parent_overrides_earlier():
+    """For a conflicting field, a LATER-listed extends parent wins (Looker precedence).
+
+    child extends: [base_a, base_b] with `amount` in both -> base_b's amount. The child's OWN
+    definition still wins over any parent.
+    """
+    graph = _parse_lkml(
+        """
+view: base_a { sql_table_name: base_a ;; dimension: amount { type: number  sql: ${TABLE}.a_amount ;; } }
+view: base_b { sql_table_name: base_b ;; dimension: amount { type: number  sql: ${TABLE}.b_amount ;; } }
+view: child {
+  sql_table_name: child ;;
+  extends: [base_a, base_b]
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+}
+"""
+    )
+    assert "b_amount" in graph.get_model("child").get_dimension("amount").sql  # later parent wins
+
+    graph2 = _parse_lkml(
+        """
+view: base_a { sql_table_name: base_a ;; dimension: amount { type: number  sql: ${TABLE}.a_amount ;; } }
+view: base_b { sql_table_name: base_b ;; dimension: amount { type: number  sql: ${TABLE}.b_amount ;; } }
+view: child {
+  sql_table_name: child ;;
+  extends: [base_a, base_b]
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: amount { type: number  sql: ${TABLE}.child_amount ;; }
+}
+"""
+    )
+    assert "child_amount" in graph2.get_model("child").get_dimension("amount").sql  # child's own wins
+
+
+def test_lookml_multi_parent_extra_fields_propagate_to_descendant():
+    """A non-first extends parent's fields reach not just the direct child but its DESCENDANTS.
+
+    Model.extends is single, so resolve_model_inheritance follows only the first parent; the extra
+    parent's fields are merged in a later pass. That pass ran per-view and only merged each view's
+    own extra parents, so `parent extends: [base, audit]` got `audit_flag`, but `child extends:
+    [parent]` was flattened from `parent` BEFORE it received `audit_flag` and never revisited it.
+    Merging bottom-up and re-pulling the first parent propagates it down the chain.
+    """
+    graph = _parse_lkml(
+        """
+view: base { sql_table_name: base_t ;; dimension: base_field { type: string  sql: ${TABLE}.bf ;; } }
+view: audit { dimension: audit_flag { type: string  sql: ${TABLE}.af ;; } }
+view: parent { extends: [base, audit]  dimension: parent_field { type: string  sql: ${TABLE}.pf ;; } }
+view: child { extends: [parent]  dimension: child_field { type: string  sql: ${TABLE}.cf ;; } }
+"""
+    )
+    parent_dims = {d.name for d in graph.get_model("parent").dimensions}
+    child_dims = {d.name for d in graph.get_model("child").dimensions}
+    assert "audit_flag" in parent_dims  # the intermediate got its extra parent's field
+    assert "audit_flag" in child_dims  # ...and it propagated to the descendant
+    assert {"base_field", "parent_field", "child_field"} <= child_dims  # nothing else lost
+
+
+def test_lookml_multi_parent_extends_inherits_source_from_later_parent():
+    """The source (sql_table_name) follows the same later-parent precedence as fields.
+
+    For `extends: [base_a, base_b]` with a table on each, resolve_model_inheritance took base_a's
+    table, but the extra-parent pass copied base_b's FIELDS -- so those fields queried real_a. The
+    later-listed parent must win for the source too, and a source the child declares itself still
+    wins over any parent.
+    """
+    graph = _parse_lkml(
+        """
+view: base_a { sql_table_name: real_a ;; dimension: a_field { type: string  sql: ${TABLE}.a ;; } }
+view: base_b { sql_table_name: real_b ;; dimension: b_field { type: string  sql: ${TABLE}.b ;; } }
+view: child { extends: [base_a, base_b]  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; } }
+"""
+    )
+    model = graph.get_model("child")
+    assert model.table == "real_b"  # later parent's table wins
+    assert {"a_field", "b_field"} <= {d.name for d in model.dimensions}  # both parents' fields present
+
+    # A source declared on the child itself still wins over the parents.
+    graph2 = _parse_lkml(
+        """
+view: base_a { sql_table_name: real_a ;; dimension: a_field { type: string  sql: ${TABLE}.a ;; } }
+view: base_b { sql_table_name: real_b ;; dimension: b_field { type: string  sql: ${TABLE}.b ;; } }
+view: child { extends: [base_a, base_b]  sql_table_name: own_t ;;  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; } }
+"""
+    )
+    assert graph2.get_model("child").table == "own_t"
+
+
+def test_lookml_export_table_backed_extension_required_reemits_marker():
+    """A table-backed `extension: required` base re-emits BOTH extension: required and its table.
+
+    Keying the export off `not model.table` dropped the abstract marker for a base with a
+    sql_table_name, so a round-trip registered it as a queryable view. Key off the parser-owned
+    lookml_template marker instead; re-import marks it a template again.
+    """
+    import tempfile
+
+    graph = _parse_lkml(
+        """
+view: base {
+  extension: required
+  sql_table_name: real_base ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+}
+view: child {
+  extends: [base]
+  sql_table_name: child_t ;;
+  dimension: cid { primary_key: yes  type: number  sql: ${TABLE}.cid ;; }
+}
+"""
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    text = open(out).read()
+    base_block = text[text.index("view: base") :]
+    base_block = base_block[: base_block.index("view: child")] if "view: child" in base_block else base_block
+    assert "extension: required" in base_block  # abstract marker re-emitted
+    assert "sql_table_name: real_base" in base_block  # its table re-emitted too
+    # Re-import marks the base a template again.
+    reimported = LookMLAdapter().parse(Path(out)).get_model("base")
+    assert (reimported.meta or {}).get("lookml_template")
+
+
+def test_lookml_multi_parent_extends_copies_segments_and_seeds_refinements():
+    """Extra extends parents contribute segments too, and a refinement of a non-first-parent field
+    seeds from the real inherited definition (not a bare categorical re-parse)."""
+    graph = _parse_lkml(
+        """
+view: base_a { sql_table_name: base_a ;; dimension: a_field { type: string  sql: ${TABLE}.a_field ;; } }
+view: base_b {
+  sql_table_name: base_b ;;
+  dimension: amount { type: number  sql: ${TABLE}.amount ;; }
+  filter: big_orders { type: number  sql: ${TABLE}.amount > 100 ;; }
+}
+view: child {
+  sql_table_name: child ;;
+  extends: [base_a, base_b]
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+}
+view: +child {
+  dimension: amount { label: "The Amount" }
+}
+"""
+    )
+    model = graph.get_model("child")
+    # A segment defined only by the non-first parent is inherited.
+    assert model.get_segment("big_orders") is not None
+    amount = model.get_dimension("amount")
+    # The partial refinement seeded from base_b's real definition: SQL preserved, label applied --
+    # not re-parsed to a bare categorical field with no sql.
+    assert amount is not None and amount.sql and "amount" in amount.sql
+    assert amount.label == "The Amount"
+    assert amount.type == "numeric"
+
+
+def test_lookml_multi_parent_extends_skips_unsupported_derived_table_parent():
+    """An extra extends parent that is an unsupported derived table has its fields skipped.
+
+    Its table is never registered (the loader drops it), so copying its fields would leave the
+    child querying a nonexistent column. The supported parent's fields still come through.
+    """
+    graph = _parse_lkml(
+        """
+view: base_a { sql_table_name: base_a ;; dimension: a_field { type: string  sql: ${TABLE}.a_field ;; } }
+view: pdt_base {
+  derived_table: { persist_for: "24 hours" }
+  dimension: pdt_only { type: string  sql: ${TABLE}.pdt_only ;; }
+}
+view: child {
+  sql_table_name: child ;;
+  extends: [base_a, pdt_base]
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+}
+"""
+    )
+    model = graph.get_model("child")
+    dims = {d.name for d in model.dimensions}
+    assert "pdt_only" not in dims  # not copied from the unsupported derived-table parent
+    assert "a_field" in dims  # the supported parent still contributes
+
+
+def test_lookml_extends_unsupported_derived_table_first_parent_not_inherited():
+    """A concrete view extending an unsupported derived table as its FIRST parent must not inherit it.
+
+    The PDT is dropped by the loader, so inheriting its fields onto the child's real table would
+    compile `secret AS pdt_only FROM child_t`. The chain is treated as unresolvable so the fields
+    are left off; the child keeps its own. A supported first parent still inherits normally.
+    """
+    graph = _parse_lkml(
+        """
+view: pdt_base {
+  derived_table: { persist_for: "24 hours" }
+  dimension: pdt_only { type: string  sql: ${TABLE}.secret ;; }
+}
+view: child {
+  extends: [pdt_base]
+  sql_table_name: child_t ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+}
+"""
+    )
+    dims = {d.name for d in graph.get_model("child").dimensions}
+    assert "pdt_only" not in dims  # unsupported PDT parent not inherited onto the child's table
+    assert "id" in dims  # the child keeps its own field
+
+
+def test_lookml_own_unsupported_derived_table_not_registered_despite_inherited_table():
+    """A view that declares its OWN unsupported derived_table must be skipped even if it inherits a
+    table from a table-backed extends parent.
+
+    resolve_model_inheritance() copies the parent's sql_table_name onto the child before the marker
+    pass runs. The unsupported-derived-table marker was gated on `table`/`sql` both being None, so
+    the child kept the inherited table, missed the `lookml_template` marker, and load_from_directory
+    exposed it as a query against the parent's PHYSICAL table -- even though Looker would use the
+    derived-table source, which this adapter cannot represent. A view whose OWN source is an
+    unsupported derived table must be marked regardless of the inherited table.
+    """
+    import tempfile
+
+    from sidemantic import SemanticLayer
+    from sidemantic.loaders import load_from_directory
+
+    directory = Path(tempfile.mkdtemp())
+    (directory / "views.view.lkml").write_text(
+        "view: base_tbl { sql_table_name: real_base ;; "
+        "dimension: id { primary_key: yes  sql: ${TABLE}.id ;; } } "
+        'view: ndt { extends: [base_tbl]  derived_table: { persist_for: "1 hour" } '
+        "dimension: name { type: string  sql: ${TABLE}.name ;; } }"
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, directory)
+    # The unsupported derived-table view is skipped, not registered against the inherited real_base.
+    assert "ndt" not in layer.graph.models
+    assert "base_tbl" in layer.graph.models  # the ordinary table-backed base still registers
+
+    # A view that INHERITS an unsupported derived table but OVERRIDES it with its own table stays
+    # queryable -- the marker must not over-reach to concrete children.
+    directory2 = Path(tempfile.mkdtemp())
+    (directory2 / "views.view.lkml").write_text(
+        'view: pdt_base { derived_table: { persist_for: "24 hours" } '
+        "dimension: pdt_only { type: string  sql: ${TABLE}.secret ;; } } "
+        "view: child { extends: [pdt_base]  sql_table_name: child_t ;; "
+        "dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; } }"
+    )
+    layer2 = SemanticLayer()
+    load_from_directory(layer2, directory2)
+    assert layer2.graph.get_model("child").table == "child_t"
+
+
+def test_lookml_rejected_extends_link_cleared_so_reresolution_does_not_remerge():
+    """A rejected extends link (out-of-scope / unsupported parent) is cleared so a downstream
+    unscoped re-resolution cannot merge the parent's fields back in. A MISSING parent is kept."""
+    from sidemantic.core.inheritance import resolve_model_inheritance
+
+    # Unsupported derived-table parent: extends cleared, so an unscoped re-resolve does not
+    # reintroduce the PDT's fields.
+    graph = _parse_lkml(
+        """
+view: pdt_base {
+  derived_table: { persist_for: "24 hours" }
+  dimension: pdt_only { type: string  sql: ${TABLE}.secret ;; }
+}
+view: child {
+  extends: [pdt_base]
+  sql_table_name: child_t ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+}
+"""
+    )
+    child = graph.get_model("child")
+    assert child.extends is None  # rejected link cleared
+    reresolved = resolve_model_inheritance(dict(graph.models))
+    assert "pdt_only" not in {d.name for d in reresolved["child"].dimensions}  # no re-merge
+
+    # A genuinely MISSING parent is a real error, so its extends is preserved for validation.
+    graph2 = _parse_lkml(
+        "view: orphan { sql_table_name: t ;; extends: [nonexistent]  "
+        "dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; } }"
+    )
+    assert graph2.get_model("orphan").extends == "nonexistent"
+
+
+def test_lookml_refinement_of_unsupported_parent_field_is_dropped():
+    """Refining a field that exists only on an unsupported derived-table parent must not add it.
+
+    Seeding skips the unsupported parent, but the refinement's bare field would still be added as an
+    own field querying a table that never gets registered, so it is dropped entirely. A refinement
+    of a SUPPORTED-parent field, and a genuinely new field, are unaffected.
+    """
+    graph = _parse_lkml(
+        """
+view: base_a { sql_table_name: base_a ;; dimension: a_field { type: string  sql: ${TABLE}.a_field ;; } }
+view: pdt_base {
+  derived_table: { persist_for: "24 hours" }
+  dimension: pdt_only { type: string  sql: ${TABLE}.pdt_only ;; }
+}
+view: child {
+  sql_table_name: child ;;
+  extends: [base_a, pdt_base]
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+}
+view: +child {
+  dimension: pdt_only { label: "The PDT field" }
+  dimension: a_field { label: "Renamed A" }
+  dimension: brand_new { type: string  sql: ${TABLE}.brand_new ;; }
+}
+"""
+    )
+    model = graph.get_model("child")
+    dims = {d.name for d in model.dimensions}
+    assert "pdt_only" not in dims  # refinement of an unsupported-parent-only field is dropped
+    assert "brand_new" in dims  # a genuinely new refinement field is still added
+    a_field = model.get_dimension("a_field")
+    assert a_field is not None and a_field.label == "Renamed A"  # supported-parent refinement seeds
+
+
+def test_lookml_refinement_to_unsupported_derived_table_clears_stale_table():
+    """A refinement adding an unsupported derived_table to a table-backed view drops the stale table.
+
+    Otherwise both keys remain, the template stamping (tableless-only) leaves it registerable, and
+    the loader queries the stale physical table instead of hiding the unsupported PDT."""
+    graph = _parse_lkml(
+        """
+view: pdt_base {
+  sql_table_name: real_table ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+}
+view: +pdt_base {
+  derived_table: { persist_for: "24 hours" }
+}
+"""
+    )
+    model = graph.get_model("pdt_base")
+    assert model.table is None  # stale sql_table_name dropped
+    assert (model.meta or {}).get("unsupported_derived_table")
+    assert (model.meta or {}).get("lookml_template")  # now stamped as a template -> loader hides it
+
+
+def test_lookml_refinement_made_unsupported_parent_not_seeded():
+    """A parent turned unsupported by an EARLIER refinement is skipped when seeding a later one.
+
+    `view: +pdt_base` turns pdt_base into an unsupported derived table; a later `view: +child`
+    refinement of a pdt_base-only field must not seed it (the loader drops pdt_base, so the field
+    would query the child's real table). Only the pre-refinement snapshot was consulted before."""
+    graph = _parse_lkml(
+        """
+view: pdt_base {
+  sql_table_name: pdt_t ;;
+  dimension: pdt_only { type: string  sql: ${TABLE}.pdt_only ;; }
+}
+view: +pdt_base {
+  derived_table: { persist_for: "24 hours" }
+}
+view: child {
+  extends: [pdt_base]
+  sql_table_name: child_t ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+}
+view: +child {
+  dimension: pdt_only { label: "The PDT field" }
+}
+"""
+    )
+    dims = {d.name for d in graph.get_model("child").dimensions}
+    assert "pdt_only" not in dims  # not seeded from the refinement-made-unsupported parent
+    assert "id" in dims
+
+
+def test_lookml_extends_parent_required_in_all_model_scopes(caplog):
+    """A parent only SOME models reaching the child include must not be inherited, and it warns.
+
+    `_scope_by_file` unioned the visible views of every model reaching a shared child, so a parent
+    that only one model included read as in-scope -- and the single graph `child` model inherited
+    it, exposing its fields to the models that could not see it. Require the parent in EVERY such
+    model's scope; when they disagree, do not inherit and report the ambiguity.
+    """
+    import logging
+    import tempfile
+
+    child = "view: child {\n  extends: [base]\n  sql_table_name: child_t ;;\n  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }\n}\n"
+    base = "view: base {\n  sql_table_name: base_t ;;\n  dimension: secret { sql: ${TABLE}.secret ;; }\n}\n"
+
+    def parse(*models):
+        directory = Path(tempfile.mkdtemp())
+        (directory / "views").mkdir()
+        for name, include in models:
+            (directory / f"{name}.model.lkml").write_text(include)
+        (directory / "views" / "child.view.lkml").write_text(child)
+        (directory / "views" / "base.view.lkml").write_text(base)
+        return LookMLAdapter().parse(str(directory)).get_model("child")
+
+    # a includes child + base, b includes only child: not inherited, and the ambiguity is warned.
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="sidemantic.adapters.lookml"):
+        model = parse(
+            ("a", 'include: "/views/child.view.lkml"\ninclude: "/views/base.view.lkml"\n'),
+            ("b", 'include: "/views/child.view.lkml"\n'),
+        )
+    assert "secret" not in {d.name for d in model.dimensions}
+    assert "only some of the models" in caplog.text
+
+    # Every model reaching the child includes the parent: inherited, no warning.
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="sidemantic.adapters.lookml"):
+        model = parse(("a", 'include: "/views/*.view.lkml"\n'), ("b", 'include: "/views/*.view.lkml"\n'))
+    assert "secret" in {d.name for d in model.dimensions}
+    assert "only some of the models" not in caplog.text
+
+
+def test_lookml_abstract_template_conflicting_with_active_model_is_not_skipped():
+    """A template whose name collides with an existing model must not silently take the skip path.
+
+    Skipping tableless templates is right in general, but when the active layer ALREADY defines
+    that name the parsed definition was dropped and the pre-existing model silently left in place.
+    Such a name must reach add_model so the conflict surfaces. With no collision the template is
+    still skipped and the concrete child registers.
+    """
+    import tempfile
+
+    from sidemantic import Dimension, Model, SemanticLayer
+
+    template = "view: base {\n  extension: required\n  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }\n}\n"
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".lkml", delete=False) as f:
+        f.write(template)
+        f.flush()
+        collide_path = Path(f.name)
+
+    layer = SemanticLayer()
+    layer.add_model(
+        Model(
+            name="base",
+            table="manual_base",
+            primary_key="id",
+            dimensions=[Dimension(name="id", type="numeric", sql="id")],
+        )
+    )
+    # Raises rather than silently keeping manual_base (the exact error depends on which
+    # validation fires first; the point is it is surfaced, not swallowed).
+    with pytest.raises(Exception):
+        with layer:
+            LookMLAdapter().parse(collide_path)
+
+    # No collision: the template is still skipped and the concrete child registers.
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".lkml", delete=False) as f:
+        f.write(template + "view: orders {\n  extends: [base]\n  sql_table_name: raw_orders ;;\n}\n")
+        f.flush()
+        ok_path = Path(f.name)
+    clean = SemanticLayer()
+    with clean:
+        LookMLAdapter().parse(ok_path)
+    assert "base" not in clean.graph.models
+    assert clean.graph.get_model("orders").table == "raw_orders"
+
+
+def test_lookml_parse_raises_on_duplicate_model_in_active_layer():
+    """A model the active layer already defines is a conflict -- deferral must not hide it.
+
+    Deferring registration must not silently skip a name that already exists: parsing a view
+    `orders` into a layer that already has a different `orders` model previously raised via
+    auto-registration, and must still raise rather than leave the old definition in place.
+    """
+    import tempfile
+
+    from sidemantic import Dimension, Model, SemanticLayer
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".lkml", delete=False) as f:
+        f.write(
+            "view: orders {\n  sql_table_name: lookml_orders ;;\n  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }\n}\n"
+        )
+        f.flush()
+        path = Path(f.name)
+
+    layer = SemanticLayer()
+    layer.add_model(
+        Model(
+            name="orders",
+            table="manual_orders",
+            primary_key="id",
+            dimensions=[Dimension(name="id", type="numeric", sql="id")],
+        )
+    )
+    with pytest.raises(ValueError, match="already exists"):
+        with layer:
+            LookMLAdapter().parse(path)
+
+
+def test_lookml_project_parse_handles_duplicate_views_and_extensionless_includes():
+    """An ARCHIVED copy of a view must not fail the load; a real duplicate must still surface.
+
+    Parsing the tree as one project means an archived copy of a view alongside the live one hits
+    add_model's duplicate error and fails everything. Includes decide the winner -- but ONLY when
+    exactly one copy is included: if both are included (or there are no includes), nothing
+    distinguishes them, so the conflict is a real project error and must be raised rather than
+    silently loading one at random. LookML also allows the .lkml suffix to be omitted
+    (`include: "/views/*.view"`), which must still resolve on disk -- else the included set is
+    skewed and stale refinements leak back in.
+    """
+    import tempfile
+
+    view = "view: orders {\n  sql_table_name: %s ;;\n  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }\n}\n"
+
+    def build(include_pattern, *, duplicate_dir=None, stale_refinement=False):
+        directory = Path(tempfile.mkdtemp())
+        (directory / "views").mkdir()
+        (directory / "archive").mkdir()
+        if include_pattern:
+            (directory / "m.model.lkml").write_text(f'include: "{include_pattern}"\nexplore: orders {{}}\n')
+        (directory / "views" / "orders.view.lkml").write_text(view % "real_orders")
+        if duplicate_dir:
+            (directory / duplicate_dir / "dup.view.lkml").write_text(view % "other_orders")
+        if stale_refinement:
+            (directory / "archive" / "stale.view.lkml").write_text("view: +orders {\n  sql_table_name: STALE ;;\n}\n")
+        return LookMLAdapter().parse(str(directory)).get_model("orders")
+
+    # Exactly one copy included: the archived one is ignored instead of failing the load.
+    assert build("/views/*.view.lkml", duplicate_dir="archive").table == "real_orders"
+    # Extensionless include patterns still resolve, so the stale refinement stays out.
+    assert build("/views/*.view", stale_refinement=True).table == "real_orders"
+    assert build("/views/orders.view", stale_refinement=True).table == "real_orders"
+    # A view no include matches is NEVER dropped -- include scoping only breaks ties.
+    assert build("/nonexistent/*.view.lkml").table == "real_orders"
+
+    # BOTH copies included, or no includes at all: nothing distinguishes them, so the duplicate is
+    # a real conflict and must surface rather than silently loading one.
+    with pytest.raises(ValueError, match="already exists"):
+        build("/views/*.view.lkml", duplicate_dir="views")
+    with pytest.raises(ValueError, match="already exists"):
+        build(None, duplicate_dir="archive")
+
+
+def test_lookml_project_parse_allows_per_model_duplicate_views(caplog):
+    """Two models each including their OWN `orders` view is valid and must not abort the load.
+
+    A single graph can hold only one `orders`, but the duplication is ACROSS models (prod model ->
+    prod/orders, stage model -> stage/orders), a layout LookML considers valid, so keep the first
+    and warn rather than raising `Model orders already exists` over the whole directory.
+    """
+    import logging
+    import tempfile
+
+    directory = Path(tempfile.mkdtemp())
+    (directory / "prod").mkdir()
+    (directory / "stage").mkdir()
+    (directory / "prod.model.lkml").write_text('include: "/prod/orders.view.lkml"\n')
+    (directory / "stage.model.lkml").write_text('include: "/stage/orders.view.lkml"\n')
+    view = "view: orders {\n  sql_table_name: %s ;;\n  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }\n}\n"
+    (directory / "prod" / "orders.view.lkml").write_text(view % "prod.orders")
+    (directory / "stage" / "orders.view.lkml").write_text(view % "stage.orders")
+
+    with caplog.at_level(logging.WARNING):
+        graph = LookMLAdapter().parse(str(directory))
+    orders = graph.get_model("orders")
+    assert orders is not None  # loaded, not aborted
+    assert orders.table in ("prod.orders", "stage.orders")  # one winner kept
+    assert any("multiple models" in rec.getMessage() for rec in caplog.records)
+
+
+def test_lookml_project_parse_resolves_view_with_several_archived_copies():
+    """SEVERAL archived copies plus one included copy must still resolve to the included one.
+
+    The decision is made over ALL candidates for a name at once: judging them pairwise as files
+    stream in mis-handles two archived copies sorting before the live one, because the first pair
+    looks unresolvable before the winner has even been seen.
+    """
+    import tempfile
+
+    view = "view: orders {\n  sql_table_name: %s ;;\n  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }\n}\n"
+    directory = Path(tempfile.mkdtemp())
+    for name in ("aa_old", "ab_old", "views"):
+        (directory / name).mkdir()
+    (directory / "m.model.lkml").write_text('include: "/views/*.view.lkml"\n')
+    (directory / "aa_old" / "o.view.lkml").write_text(view % "arch1")  # both sort BEFORE views/
+    (directory / "ab_old" / "o.view.lkml").write_text(view % "arch2")
+    (directory / "views" / "o.view.lkml").write_text(view % "real_orders")
+
+    assert LookMLAdapter().parse(str(directory)).get_model("orders").table == "real_orders"
+
+
+def test_lookml_project_parse_skips_duplicate_views_no_model_includes():
+    """Several archived copies of a view that NO model include reaches must not fail the load.
+
+    When scoping is active, a duplicate the includes can distinguish resolves to the included copy.
+    But two archived copies with no included rival used to install both and raise
+    "Model X already exists" -- failing a valid project over views it never selects. Skip them
+    instead; a lone unincluded view (no rival) still loads, so only genuinely-ambiguous dead
+    copies are dropped. A real duplicate (both included, or scoping off) still surfaces.
+    """
+    import tempfile
+
+    view = "view: %s {\n  sql_table_name: %s ;;\n  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }\n}\n"
+
+    directory = Path(tempfile.mkdtemp())
+    for name in ("views", "archive1", "archive2"):
+        (directory / name).mkdir()
+    (directory / "m.model.lkml").write_text('include: "/views/orders.view.lkml"\n')
+    (directory / "views" / "orders.view.lkml").write_text(view % ("orders", "real_orders"))
+    # Two archived copies of `legacy`; no model include reaches either.
+    (directory / "archive1" / "legacy.view.lkml").write_text(view % ("legacy", "legacy_v1"))
+    (directory / "archive2" / "legacy.view.lkml").write_text(view % ("legacy", "legacy_v2"))
+
+    graph = LookMLAdapter().parse(str(directory))  # must not raise
+    assert graph.get_model("orders").table == "real_orders"
+    assert "legacy" not in graph.models  # unreachable dead copies dropped, not installed
+
+    # One of the copies IS included: it wins, the other is ignored (unchanged behavior).
+    scoped = Path(tempfile.mkdtemp())
+    (scoped / "views").mkdir()
+    (scoped / "archive").mkdir()
+    (scoped / "m.model.lkml").write_text('include: "/views/*.view.lkml"\n')
+    (scoped / "views" / "legacy.view.lkml").write_text(view % ("legacy", "live_legacy"))
+    (scoped / "archive" / "legacy.view.lkml").write_text(view % ("legacy", "dead_legacy"))
+    assert LookMLAdapter().parse(str(scoped)).get_model("legacy").table == "live_legacy"
+
+
+def test_lookml_bracketed_include_activates_scoping():
+    """A bracketed `include: [...]` must scope like a scalar include, not be silently dropped.
+
+    lkml parses bracketed includes as a NESTED list, so the string-only guard dropped them --
+    scoping never activated and a stale un-included refinement leaked back in. Flattening the list
+    makes the bracketed form behave like the scalar one; both single and multi-element forms work.
+    """
+    import tempfile
+
+    view = "view: %s {\n  sql_table_name: %s ;;\n  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }\n}\n"
+
+    # Bracketed include selecting only the live view: an archived refinement stays excluded.
+    scoped = Path(tempfile.mkdtemp())
+    (scoped / "views").mkdir()
+    (scoped / "archive").mkdir()
+    (scoped / "orders.model.lkml").write_text('include: ["/views/orders.view.lkml"]\n')
+    (scoped / "views" / "orders.view.lkml").write_text(view % ("orders", "real_orders"))
+    (scoped / "archive" / "stale.view.lkml").write_text("view: +orders {\n  sql_table_name: STALE ;;\n}\n")
+    assert LookMLAdapter().parse(str(scoped)).get_model("orders").table == "real_orders"
+
+    # A multi-element bracketed include pulls in every listed view.
+    multi = Path(tempfile.mkdtemp())
+    (multi / "views").mkdir()
+    (multi / "orders.model.lkml").write_text('include: ["/views/orders.view.lkml", "/views/customers.view.lkml"]\n')
+    (multi / "views" / "orders.view.lkml").write_text(view % ("orders", "real_orders"))
+    (multi / "views" / "customers.view.lkml").write_text(view % ("customers", "real_customers"))
+    graph = LookMLAdapter().parse(str(multi))
+    assert graph.get_model("orders").table == "real_orders"
+    assert graph.get_model("customers").table == "real_customers"
+
+
+def test_lookml_include_scoping_follows_closure_from_model_files():
+    """Includes are a closure SEEDED from model files, not a flat set of every declaration.
+
+    Reachability from a model file is the rule. A refinement reached THROUGH a model-selected view
+    (model -> orders.view -> refine.view) is part of the project and must apply; a stray view
+    file's helper include in a directory no model selects must not switch scoping on at all.
+    """
+    import tempfile
+
+    view = "view: %s {\n  sql_table_name: %s ;;\n  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }\n}\n"
+
+    # Reachable through the selected view: the nested refinement applies.
+    nested = Path(tempfile.mkdtemp())
+    (nested / "views").mkdir()
+    (nested / "m.model.lkml").write_text('include: "/views/orders.view.lkml"\n')
+    (nested / "views" / "orders.view.lkml").write_text(
+        'include: "refine.view.lkml"\n' + (view % ("orders", "real_orders"))
+    )
+    (nested / "views" / "refine.view.lkml").write_text("view: +orders {\n  sql_table_name: REFINED ;;\n}\n")
+    assert LookMLAdapter().parse(str(nested)).get_model("orders").table == "REFINED"
+
+    # NOT reachable from any model (there is none): scoping stays off entirely.
+    stray = Path(tempfile.mkdtemp())
+    (stray / "helper.view.lkml").write_text(view % ("helper", "h"))
+    (stray / "orders.view.lkml").write_text('include: "helper.view.lkml"\n' + (view % ("orders", "real_orders")))
+    (stray / "ref.view.lkml").write_text("view: +orders {\n  sql_table_name: REFINED ;;\n}\n")
+    assert LookMLAdapter().parse(str(stray)).get_model("orders").table == "REFINED"
+
+
+def test_lookml_only_model_file_includes_activate_scoping():
+    """A VIEW file's helper include must not activate project-wide include scoping.
+
+    `include:` in a view file pulls in a helper; it says nothing about which files the project
+    selects. Letting it populate the included set made unrelated sibling refinements (and
+    explores) look un-included and silently dropped them from a plain single-directory load.
+    """
+    import tempfile
+
+    view = "view: %s {\n  sql_table_name: %s ;;\n  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }\n}\n"
+
+    directory = Path(tempfile.mkdtemp())
+    (directory / "helper.view.lkml").write_text(view % ("helper", "h"))
+    (directory / "orders.view.lkml").write_text('include: "helper.view.lkml"\n' + (view % ("orders", "real_orders")))
+    (directory / "ref.view.lkml").write_text("view: +orders {\n  sql_table_name: REFINED ;;\n}\n")
+    # The sibling refinement is valid and must still apply.
+    assert LookMLAdapter().parse(str(directory)).get_model("orders").table == "REFINED"
+
+    # A MODEL file's include still scopes: the stale refinement stays out.
+    scoped = Path(tempfile.mkdtemp())
+    (scoped / "views").mkdir()
+    (scoped / "archive").mkdir()
+    (scoped / "m.model.lkml").write_text('include: "/views/*.view.lkml"\n')
+    (scoped / "views" / "o.view.lkml").write_text(view % ("orders", "real_orders"))
+    (scoped / "archive" / "stale.view.lkml").write_text("view: +orders {\n  sql_table_name: STALE ;;\n}\n")
+    assert LookMLAdapter().parse(str(scoped)).get_model("orders").table == "real_orders"
+
+
+def test_lookml_every_model_file_seeds_include_scoping():
+    """A self-contained model file must not be scoped out by an include-based sibling.
+
+    Seeding the include closure only from models that DECLARE `include:` left a model carrying
+    its own views and explores unseeded, so once a sibling model switched scoping on, the
+    self-contained file looked un-included and its explore segment was silently dropped.
+    """
+    import tempfile
+
+    view = "view: %s {\n  sql_table_name: %s ;;\n  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }\n}\n"
+
+    directory = Path(tempfile.mkdtemp())
+    (directory / "views").mkdir()
+    (directory / "one.model.lkml").write_text('include: "/views/*.view.lkml"\n')
+    (directory / "views" / "orders.view.lkml").write_text(view % ("orders", "real_orders"))
+    # Declares no includes: its view and explore live in the file itself.
+    (directory / "two.model.lkml").write_text(
+        (view % ("local", "local_tbl")) + "explore: local {\n  sql_always_where: ${local.id} > 0 ;;\n}\n"
+    )
+
+    graph = LookMLAdapter().parse(str(directory))
+    assert [s.name for s in graph.get_model("local").segments] == ["_sql_always_where_local"]
+    # The include-based sibling still loads normally.
+    assert graph.get_model("orders").table == "real_orders"
+
+    # Model files present but NONE declaring an include leaves scoping off entirely.
+    unscoped = Path(tempfile.mkdtemp())
+    (unscoped / "m.model.lkml").write_text("explore: orders {}\n")
+    (unscoped / "orders.view.lkml").write_text(view % ("orders", "real_orders"))
+    (unscoped / "ref.view.lkml").write_text("view: +orders {\n  sql_table_name: REFINED ;;\n}\n")
+    assert LookMLAdapter().parse(str(unscoped)).get_model("orders").table == "REFINED"
+
+
+def test_lookml_partial_explore_filter_kept_and_reported(caplog):
+    """An explore's mandatory filter must not silently leak onto models without that explore.
+
+    sql_always_where / always_filter become segments on the single shared base model. When one
+    model includes the base view plus a filtered explore sidecar and another includes only the
+    base view, the filter attached to the shared model -- exposing a segment Looker would not give
+    the second model. One model per view name cannot hold both shapes, so the segment is kept (it
+    is opt-in, and dropping it would un-filter the model that wanted it) and the divergence warned.
+    """
+    import logging
+    import tempfile
+
+    view = "view: %s {\n  sql_table_name: %s ;;\n  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }\n}\n"
+    sidecar = 'include: "/views/filtered.explore.lkml"\n'
+
+    def parse(models, explore_body):
+        directory = Path(tempfile.mkdtemp())
+        (directory / "views").mkdir()
+        for name, include in models:
+            (directory / f"{name}.model.lkml").write_text(include)
+        (directory / "views" / "orders.view.lkml").write_text(view % ("orders", "real_orders"))
+        (directory / "views" / "filtered.explore.lkml").write_text(explore_body)
+        return LookMLAdapter().parse(str(directory)).get_model("orders")
+
+    where = "explore: orders {\n  sql_always_where: ${orders.id} > 100 ;;\n}\n"
+
+    # One model includes the filtered explore, another uses the base view without it -> warn, keep.
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="sidemantic.adapters.lookml"):
+        model = parse(
+            [
+                ("orders", 'include: "/views/orders.view.lkml"\n'),
+                ("filtered", 'include: "/views/orders.view.lkml"\n' + sidecar),
+            ],
+            where,
+        )
+    assert [s.name for s in model.segments] == ["_sql_always_where_orders"]  # kept
+    assert "mandatory filter" in caplog.text
+
+    # Every model using the base view includes the explore: no divergence.
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="sidemantic.adapters.lookml"):
+        model = parse(
+            [
+                ("a", 'include: "/views/orders.view.lkml"\n' + sidecar),
+                ("b", 'include: "/views/orders.view.lkml"\n' + sidecar),
+            ],
+            where,
+        )
+    assert [s.name for s in model.segments] == ["_sql_always_where_orders"]
+    assert "mandatory filter" not in caplog.text
+
+    # always_filter diverges the same way.
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="sidemantic.adapters.lookml"):
+        parse(
+            [
+                ("orders", 'include: "/views/orders.view.lkml"\n'),
+                ("filtered", 'include: "/views/orders.view.lkml"\n' + sidecar),
+            ],
+            'explore: orders {\n  always_filter: {\n    filters: [orders.id: "100"]\n  }\n}\n',
+        )
+    assert "mandatory filter" in caplog.text
+
+    # A partial explore with NO mandatory filter has nothing to leak -> no warning.
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="sidemantic.adapters.lookml"):
+        parse(
+            [
+                ("orders", 'include: "/views/orders.view.lkml"\n'),
+                ("filtered", 'include: "/views/orders.view.lkml"\n' + sidecar),
+            ],
+            'explore: orders {\n  label: "Orders"\n}\n',
+        )
+    assert "mandatory filter" not in caplog.text
+
+
+def test_lookml_shared_explore_sidecar_checked_against_one_model_scope(caplog):
+    """An explore in a sidecar two models share resolves within ONE model, not their union.
+
+    Giving a shared sidecar the combined view set let `explore: orders { join: customers }` attach
+    when an orders model included only `orders` and a customers model only `customers` -- a pair no
+    single LookML model can see -- wiring queries to an out-of-scope table. Base view and joins are
+    now checked against the same model's scope.
+    """
+    import logging
+    import tempfile
+
+    view = "view: %s {\n  sql_table_name: %s ;;\n  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }\n}\n"
+    sidecar = 'include: "/views/shared.explore.lkml"\n'
+    join = (
+        "explore: orders {\n  join: customers { sql_on: ${orders.id} = ${customers.id} ;; "
+        "relationship: many_to_one }\n}\n"
+    )
+
+    def relationships(*models):
+        directory = Path(tempfile.mkdtemp())
+        (directory / "views").mkdir()
+        for name, include in models:
+            (directory / f"{name}.model.lkml").write_text(include)
+        for name in ("orders", "customers"):
+            (directory / "views" / f"{name}.view.lkml").write_text(view % (name, f"real_{name}"))
+        (directory / "views" / "shared.explore.lkml").write_text(join)
+        graph = LookMLAdapter().parse(str(directory))
+        return [r.name for r in (graph.get_model("orders").relationships or [])]
+
+    # Neither model sees both views: the join belongs to no model.
+    assert (
+        relationships(
+            ("orders", 'include: "/views/orders.view.lkml"\n' + sidecar),
+            ("customers", 'include: "/views/customers.view.lkml"\n' + sidecar),
+        )
+        == []
+    )
+
+    # One model seeing both still wires it.
+    assert relationships(("both", 'include: "/views/*.view.lkml"\n' + sidecar)) == ["customers"]
+
+    # Two models that both see everything agree: no divergence to report.
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="sidemantic.adapters.lookml"):
+        wired = relationships(
+            ("a", 'include: "/views/*.view.lkml"\n' + sidecar), ("b", 'include: "/views/*.view.lkml"\n' + sidecar)
+        )
+    assert wired == ["customers"]
+    assert "only some of the models" not in caplog.text
+
+    # One model has the target and another does not: kept for the model that does, and reported.
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="sidemantic.adapters.lookml"):
+        wired = relationships(
+            ("a", 'include: "/views/*.view.lkml"\n' + sidecar),
+            ("b", 'include: "/views/orders.view.lkml"\n' + sidecar),
+        )
+    assert wired == ["customers"]
+    assert "only some of the models" in caplog.text
+
+
+def test_lookml_included_explore_sidecar_inherits_model_scope():
+    """An explore sidecar included by a model must be scoped like the model file itself.
+
+    Scope was keyed on the file NAME (`.model.lkml`), but explores routinely live in an included
+    `orders.explore.lkml` sidecar. That file fell through to the unscoped branch, so its joins
+    could wire to any loaded unique view -- including an archived one -- and send queries to a
+    stale table. Scope is keyed on reachability instead: a sidecar inherits its includer's scope.
+    """
+    import tempfile
+
+    view = "view: %s {\n  sql_table_name: %s ;;\n  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }\n}\n"
+    join = (
+        "explore: orders {\n  join: customers { sql_on: ${orders.id} = ${customers.id} ;; "
+        "relationship: many_to_one }\n}\n"
+    )
+
+    # Sidecar included by the model; customers.view.lkml is NOT included.
+    archived = Path(tempfile.mkdtemp())
+    (archived / "archive").mkdir()
+    (archived / "orders.model.lkml").write_text('include: "orders.view.lkml"\ninclude: "orders.explore.lkml"\n')
+    (archived / "orders.view.lkml").write_text(view % ("orders", "real_orders"))
+    (archived / "orders.explore.lkml").write_text(join)
+    (archived / "archive" / "customers.view.lkml").write_text(view % ("customers", "archived_cust"))
+
+    graph = LookMLAdapter().parse(str(archived))
+    assert [r.name for r in (graph.get_model("orders").relationships or [])] == []
+    assert graph.models["customers"].table == "archived_cust"  # loaded, but never joined
+
+    # The same sidecar wires normally when the model includes the join target.
+    included = Path(tempfile.mkdtemp())
+    (included / "orders.model.lkml").write_text(
+        'include: "orders.view.lkml"\ninclude: "customers.view.lkml"\ninclude: "orders.explore.lkml"\n'
+    )
+    (included / "orders.view.lkml").write_text(view % ("orders", "real_orders"))
+    (included / "customers.view.lkml").write_text(view % ("customers", "real_customers"))
+    (included / "orders.explore.lkml").write_text(join)
+    assert [r.name for r in (LookMLAdapter().parse(str(included)).get_model("orders").relationships or [])] == [
+        "customers"
+    ]
+
+    # A sidecar two models share is checked against ONE model's scope, never their combined views:
+    # neither model below sees both `orders` and `customers`, so the join belongs to no model. See
+    # test_lookml_shared_explore_sidecar_checked_against_one_model_scope for the full contract.
+    shared = Path(tempfile.mkdtemp())
+    (shared / "a.model.lkml").write_text('include: "orders.view.lkml"\ninclude: "shared.explore.lkml"\n')
+    (shared / "b.model.lkml").write_text('include: "customers.view.lkml"\ninclude: "shared.explore.lkml"\n')
+    (shared / "orders.view.lkml").write_text(view % ("orders", "real_orders"))
+    (shared / "customers.view.lkml").write_text(view % ("customers", "real_customers"))
+    (shared / "shared.explore.lkml").write_text(join)
+    assert [r.name for r in (LookMLAdapter().parse(str(shared)).get_model("orders").relationships or [])] == []
+
+
+def test_lookml_explore_joins_scoped_to_included_views():
+    """A join must not wire to a view the explore's own model file cannot see.
+
+    Scoping only the explore's BASE view left its joins unrestricted: unique un-included views
+    are still installed, so a model including just orders.view.lkml could silently wire
+    `join: customers` to an archived customers.view.lkml and query the wrong table. A join to a
+    NEVER-DEFINED view is still kept -- that dangling relationship is a real error `validate`
+    must surface, and dropping it would hide the typo.
+    """
+    import tempfile
+
+    view = "view: %s {\n  sql_table_name: %s ;;\n  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }\n}\n"
+
+    def relationships(explore, include, *, archived=(), views=("orders",)):
+        directory = Path(tempfile.mkdtemp())
+        (directory / "views").mkdir()
+        (directory / "archive").mkdir()
+        (directory / "orders.model.lkml").write_text(f'include: "{include}"\n' + explore)
+        for name in views:
+            (directory / "views" / f"{name}.view.lkml").write_text(view % (name, f"real_{name}"))
+        for name in archived:
+            (directory / "archive" / f"{name}.view.lkml").write_text(view % (name, f"archived_{name}"))
+        graph = LookMLAdapter().parse(str(directory))
+        return graph, [r.name for r in (graph.get_model("orders").relationships or [])]
+
+    join = (
+        "explore: orders {\n  join: customers { sql_on: ${orders.id} = ${customers.id} ;; "
+        "relationship: many_to_one }\n}\n"
+    )
+
+    # Archived join target: not reached by the model's include -> not wired.
+    graph, archived_join = relationships(join, "/views/orders.view.lkml", archived=("customers",))
+    assert archived_join == [], archived_join
+    assert "customers" in graph.models  # still loaded; just not joinable from this model
+
+    # Included join target still wires.
+    _, included_join = relationships(join, "/views/*.view.lkml", views=("orders", "customers"))
+    assert included_join == ["customers"]
+
+    # A join's from: target is the view it actually reads, so it is scoped too.
+    aliased = (
+        "explore: orders {\n  join: c_alias { from: customers  sql_on: ${orders.id} = ${c_alias.id} ;; "
+        "relationship: many_to_one }\n}\n"
+    )
+    _, aliased_join = relationships(aliased, "/views/orders.view.lkml", archived=("customers",))
+    assert aliased_join == [], aliased_join
+
+    # A never-defined target is NOT scoped away: validate must still surface it.
+    typo = (
+        "explore: orders {\n  join: typo_view { sql_on: ${orders.id} = ${typo_view.id} ;; "
+        "relationship: many_to_one }\n}\n"
+    )
+    _, dangling = relationships(typo, "/views/orders.view.lkml")
+    assert dangling == ["typo_view"], dangling
+
+
+def test_lookml_project_parse_ignores_explores_from_unincluded_files():
+    """An explore in a model file no include reaches must not mutate the live model.
+
+    Loading the tree as one project runs every file's explores against the loaded views, so an
+    archived or alternate model file's joins would silently attach to the live model. A file
+    DECLARING includes is part of the project, so the active model file's explores still apply.
+    """
+    import tempfile
+
+    view = "view: %s {\n  sql_table_name: %s ;;\n  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }\n}\n"
+    join = (
+        "explore: orders {\n  join: customers { sql_on: ${orders.id} = ${customers.id} ;; "
+        "relationship: many_to_one }\n}\n"
+    )
+
+    def relationships(*, live_explore, archived_explore):
+        directory = Path(tempfile.mkdtemp())
+        (directory / "views").mkdir()
+        (directory / "archive").mkdir()
+        (directory / "orders.model.lkml").write_text('include: "/views/*.view.lkml"\n' + (join if live_explore else ""))
+        (directory / "views" / "orders.view.lkml").write_text(view % ("orders", "real_orders"))
+        (directory / "views" / "customers.view.lkml").write_text(view % ("customers", "cust"))
+        if archived_explore:
+            (directory / "archive" / "old.model.lkml").write_text(join)
+        model = LookMLAdapter().parse(str(directory)).get_model("orders")
+        return [r.name for r in (model.relationships or [])]
+
+    assert relationships(live_explore=False, archived_explore=True) == []  # archived join must not leak
+    assert relationships(live_explore=True, archived_explore=False) == ["customers"]  # live one applies
+    assert relationships(live_explore=True, archived_explore=True) == ["customers"]  # and only once
+
+
+def test_lookml_project_parse_ignores_refinements_from_unincluded_files():
+    """A refinement in a file no `include:` reaches must not override a loaded view.
+
+    Parsing the whole tree merges every `view: +...` it finds, so a stale refinement left in e.g.
+    archive/ could silently change a model's sql_table_name even though the LookML model only
+    includes views/. Only the REFINEMENT merge is scoped -- views still all parse -- and a project
+    that declares no includes is unaffected.
+    """
+    import tempfile
+
+    def build(*, declares_includes, refinement_dir):
+        directory = Path(tempfile.mkdtemp())
+        (directory / "views").mkdir()
+        (directory / "archive").mkdir()
+        if declares_includes:
+            (directory / "orders.model.lkml").write_text('include: "/views/*.view.lkml"\nexplore: orders {}\n')
+        (directory / "views" / "orders.view.lkml").write_text(
+            "view: orders {\n  sql_table_name: real_orders ;;\n"
+            "  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }\n}\n"
+        )
+        (directory / refinement_dir / "ref.view.lkml").write_text("view: +orders {\n  sql_table_name: REFINED ;;\n}\n")
+        return LookMLAdapter().parse(str(directory)).get_model("orders").table
+
+    # Declared includes: an un-included refinement is ignored, an included one still applies.
+    assert build(declares_includes=True, refinement_dir="archive") == "real_orders"
+    assert build(declares_includes=True, refinement_dir="views") == "REFINED"
+    # No includes declared (the common single-directory project): nothing is filtered.
+    assert build(declares_includes=False, refinement_dir="archive") == "REFINED"
+
+
+def test_lookml_refinement_refreshes_graph_level_metrics():
+    """Replacing a refined model must refresh its graph-level metrics, not leave a stale one.
+
+    add_model auto-registers a view's graph-level measures (period_over_period ->
+    time_comparison) into graph.metrics. A refinement turning that measure into a normal one left
+    the ORIGINAL time_comparison registered, so a CLI load exposed a metric no model still defines.
+    A refinement that does NOT touch it must leave the graph metric registered.
+    """
+    import tempfile
+
+    base_view = (
+        "view: base {\n  sql_table_name: t ;;\n  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }\n"
+        "  dimension: created { type: time  timeframes: [date]  sql: ${TABLE}.created ;; }\n"
+        "  measure: cnt { type: count }\n"
+        "  measure: pop { type: period_over_period  based_on: cnt  period: date  kind: relative_change }\n}\n"
+    )
+
+    # Refined into a normal measure -> the stale graph-level metric must be gone.
+    refined = Path(tempfile.mkdtemp())
+    (refined / "a.lkml").write_text(base_view)
+    (refined / "b.lkml").write_text("view: +base {\n  measure: pop { type: count }\n}\n")
+    assert "pop" not in LookMLAdapter().parse(str(refined)).metrics
+
+    # An unrelated refinement leaves the graph-level metric registered.
+    untouched = Path(tempfile.mkdtemp())
+    (untouched / "a.lkml").write_text(base_view)
+    (untouched / "b.lkml").write_text("view: +base {\n  label: Refined\n}\n")
+    graph = LookMLAdapter().parse(str(untouched))
+    assert graph.metrics["pop"].type == "time_comparison"
+
+
+def test_lookml_refinement_deep_merges_partial_field_properties():
+    """A refinement that sets ONE property of a field must not clobber the field's other props.
+
+    `view: +base { dimension: id { label: "ID" } }` only sets a label, so the base field's sql /
+    type / primary_key must survive. Merging the PARSED models replaced the field wholesale (the
+    parser defaults a bare `dimension:` to a categorical with no sql), so the model silently fell
+    back to a default column. Applies to a refinement in the SAME file or another one.
+    """
+    import tempfile
+
+    base_view = (
+        "view: base {\n  sql_table_name: t ;;\n"
+        "  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }\n"
+        "  dimension: amount { type: number  sql: ${TABLE}.amount ;; }\n}\n"
+    )
+    refinement = 'view: +base {\n  dimension: id { label: "The ID" }\n}\n'
+
+    def check(model):
+        by_name = {d.name: d for d in model.dimensions}
+        assert by_name["id"].sql == "{model}.id"  # base sql survived
+        assert by_name["id"].type == "numeric"  # base type survived
+        assert by_name["id"].label == "The ID"  # refinement applied
+        assert model.primary_key == "id"  # base primary_key survived
+        assert by_name["amount"].sql == "{model}.amount"  # untouched field intact
+
+    # Same file.
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".lkml", delete=False) as f:
+        f.write(base_view + refinement)
+        f.flush()
+        check(LookMLAdapter().parse(Path(f.name)).get_model("base"))
+
+    # Across files (the CLI project-load path).
+    directory = Path(tempfile.mkdtemp())
+    (directory / "a.lkml").write_text(base_view)
+    (directory / "b.lkml").write_text(refinement)
+    check(LookMLAdapter().parse(str(directory)).get_model("base"))
+
+
+def test_lookml_refinement_of_inherited_field_keeps_inherited_definition():
+    """A partial refinement of a field a view only has via `extends` must keep the inherited props.
+
+    The target's own raw view does not contain the field, so the refinement was added as a bare new
+    field that re-parsed to a categorical with no sql and then OVERRODE the inherited definition --
+    turning an inherited numeric `amount` into a categorical dimension with no SQL. The refinement
+    now seeds from the inherited definition, so the partial props merge onto the real field.
+    """
+    import tempfile
+
+    base = (
+        "view: base {\n  sql_table_name: base_t ;;\n"
+        "  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }\n"
+        "  dimension: amount { type: number  sql: ${TABLE}.amount ;; }\n}\n"
+    )
+    child = "view: orders {\n  extends: [base]\n  sql_table_name: orders ;;\n}\n"
+
+    def amount(model):
+        return next(d for d in model.dimensions if d.name == "amount")
+
+    # A partial refinement (label only) keeps the inherited numeric type and sql.
+    partial = _parse_lkml(base + child + 'view: +orders {\n  dimension: amount { label: "Amount" }\n}\n').get_model(
+        "orders"
+    )
+    assert amount(partial).type == "numeric"
+    assert amount(partial).sql == "{model}.amount"
+    assert amount(partial).label == "Amount"
+
+    # An explicit override still applies (type -> string/categorical) while keeping inherited sql.
+    override = _parse_lkml(base + child + "view: +orders {\n  dimension: amount { type: string }\n}\n").get_model(
+        "orders"
+    )
+    assert amount(override).type == "categorical"
+    assert amount(override).sql == "{model}.amount"
+
+    # A genuinely new field (not inherited) is still added as a normal field.
+    directory = Path(tempfile.mkdtemp())
+    (directory / "v.lkml").write_text(base + child + 'view: +orders {\n  dimension: brand_new { label: "New" }\n}\n')
+    new_model = LookMLAdapter().parse(str(directory)).get_model("orders")
+    assert any(d.name == "brand_new" for d in new_model.dimensions)
+
+
+def test_lookml_refinement_seeding_respects_include_scope():
+    """Seeding an inherited field must only pull from parents IN the model's include scope.
+
+    When include scoping is active and an included `orders` extends `base` but the model does NOT
+    include `base.view.lkml`, the extends resolution leaves it unresolved -- but the refinement
+    seeding walked the unscoped raw dicts and copied the archived `base.amount` into `orders`,
+    exposing a parent field Looker would not include. Seeding now gates each extends link the same
+    way; when the parent IS included it still seeds.
+    """
+    import tempfile
+
+    child = "view: orders {\n  extends: [base]\n  sql_table_name: orders ;;\n}\n"
+    base = (
+        "view: base {\n  sql_table_name: base_t ;;\n  dimension: amount { type: number  sql: ${TABLE}.amount ;; }\n}\n"
+    )
+    refine = 'view: +orders {\n  dimension: amount { label: "Amount" }\n}\n'
+
+    def amount(directory):
+        model = LookMLAdapter().parse(str(directory)).get_model("orders")
+        return next((d for d in model.dimensions if d.name == "amount"), None)
+
+    # base is archived (NOT included): the refinement must not seed base's numeric amount.
+    unscoped_parent = Path(tempfile.mkdtemp())
+    (unscoped_parent / "views").mkdir()
+    (unscoped_parent / "archive").mkdir()
+    (unscoped_parent / "orders.model.lkml").write_text(
+        'include: "/views/orders.view.lkml"\ninclude: "/views/refine.view.lkml"\n'
+    )
+    (unscoped_parent / "views" / "orders.view.lkml").write_text(child)
+    (unscoped_parent / "archive" / "base.view.lkml").write_text(base)
+    (unscoped_parent / "views" / "refine.view.lkml").write_text(refine)
+    leaked = amount(unscoped_parent)
+    assert leaked is None or leaked.sql != "{model}.amount"  # base's field is NOT exposed
+
+    # base IS included: the inherited field is seeded (numeric sql kept, label applied).
+    scoped_parent = Path(tempfile.mkdtemp())
+    (scoped_parent / "views").mkdir()
+    (scoped_parent / "orders.model.lkml").write_text('include: "/views/*.view.lkml"\n')
+    (scoped_parent / "views" / "orders.view.lkml").write_text(child)
+    (scoped_parent / "views" / "base.view.lkml").write_text(base)
+    (scoped_parent / "views" / "refine.view.lkml").write_text(refine)
+    kept = amount(scoped_parent)
+    assert kept is not None and kept.type == "numeric" and kept.sql == "{model}.amount" and kept.label == "Amount"
+
+
+def test_lookml_project_parse_merges_refinements_deterministically():
+    """Refinements merge in sorted file order, not filesystem traversal order.
+
+    Two refinement files setting the same property must resolve the same way on every load;
+    an unsorted rglob would make the winner depend on directory traversal.
+    """
+    import tempfile
+
+    directory = Path(tempfile.mkdtemp())
+    (directory / "a.lkml").write_text(
+        "view: base {\n  sql_table_name: t ;;\n  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }\n}\n"
+    )
+    (directory / "m_second.lkml").write_text("view: +base {\n  label: SECOND\n}\n")
+    (directory / "b_first.lkml").write_text("view: +base {\n  label: FIRST\n}\n")
+
+    labels = {LookMLAdapter().parse(str(directory)).get_model("base").meta.get("label") for _ in range(5)}
+    assert len(labels) == 1, f"nondeterministic refinement merge: {labels}"
+    assert labels == {"SECOND"}  # last file in SORTED order wins
+
+
+def test_lookml_directory_load_non_strict_falls_back_after_project_parse_error():
+    """A single malformed .lkml must not drop every valid sibling in a non-strict load.
+
+    LookML is parsed as one project, so a parse error there covers the whole tree. Non-strict
+    loading must fall back to the per-file scan (loading what it can, warning about the bad file)
+    rather than skipping every .lkml. Strict mode must still raise.
+    """
+    import tempfile
+
+    from sidemantic import SemanticLayer
+    from sidemantic.loaders import load_from_directory
+
+    directory = Path(tempfile.mkdtemp())
+    (directory / "good.lkml").write_text(
+        "view: good {\n  sql_table_name: raw_good ;;\n  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }\n}\n"
+    )
+    (directory / "bad.lkml").write_text("view: bad { dimension: x { sql: ${TABLE}.x ;; }\n")  # unclosed brace
+
+    layer = SemanticLayer()
+    load_from_directory(layer, directory, strict=False)
+    assert "good" in layer.graph.models  # valid sibling survives the bad file
+
+    with pytest.raises(ValueError):
+        load_from_directory(SemanticLayer(), directory, strict=True)
+
+
+def test_lookml_directory_load_keeps_standalone_metric_overwritten_by_template():
+    """A directory load must not lose a standalone metric that shares a template metric's name.
+
+    `all_metrics.update(graph.metrics)` overwrites by name, so if a .lkml template's graph metric
+    landed AFTER a same-named standalone metric, the marked template metric won and the orphan
+    drop popped the name entirely -- silently losing the valid standalone. LookML is now parsed as
+    one project BEFORE the per-file scan, so a standalone always wins; an orphan template metric
+    with no standalone is still dropped.
+    """
+    import tempfile
+
+    from sidemantic import SemanticLayer
+    from sidemantic.loaders import load_from_directory
+
+    template = (
+        "view: tmpl {\n  extension: required\n  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }\n"
+        "  dimension: created { type: time  timeframes: [date]  sql: ${TABLE}.created ;; }\n"
+        "  measure: cnt { type: count }\n"
+        "  measure: pop { type: period_over_period  based_on: cnt  period: date  kind: relative_change }\n}\n"
+    )
+    base_model = (
+        "models:\n  - name: orders\n    table: raw_orders\n    primary_key: id\n"
+        "    dimensions:\n      - name: id\n        type: numeric\n        sql: id\n"
+        "    metrics:\n      - name: total\n        agg: sum\n        sql: amount\n"
+    )
+
+    # 'z.lkml' sorts AFTER the metric file -- the overwrite-then-drop ordering.
+    with_standalone = Path(tempfile.mkdtemp())
+    (with_standalone / "z.lkml").write_text(template)
+    (with_standalone / "metrics.yml").write_text(
+        base_model + "metrics:\n  - name: pop\n    type: ratio\n    numerator: orders.total\n"
+        "    denominator: orders.total\n"
+    )
+    layer = SemanticLayer()
+    load_from_directory(layer, with_standalone)
+    assert "tmpl" not in layer.graph.models  # abstract template still dropped
+    assert "pop" in layer.graph.metrics  # standalone survives the template's same-named metric
+    assert layer.graph.metrics["pop"].type == "ratio"  # ...and it IS the standalone
+
+    # With NO standalone, the orphan template metric is still dropped.
+    template_only = Path(tempfile.mkdtemp())
+    (template_only / "z.lkml").write_text(template)
+    (template_only / "m.yml").write_text(base_model)
+    layer2 = SemanticLayer()
+    load_from_directory(layer2, template_only)
+    assert "pop" not in layer2.graph.metrics
+
+
+def test_lookml_dropped_template_metric_dropped_despite_samename_local_measure():
+    """A dropped template's graph metric is removed even if a surviving model has a same-named measure.
+
+    The orphan check matches graph-level metric types (time_comparison/conversion), not bare
+    names: a surviving `orders.pop` SIMPLE measure must not keep the template's `pop`
+    period_over_period alive (which would expose a metric whose base model is gone).
+    """
+    import tempfile
+
+    from sidemantic import SemanticLayer
+    from sidemantic.loaders import load_from_directory
+
+    d = tempfile.mkdtemp()
+    with open(Path(d) / "v.lkml", "w") as f:
+        f.write(
+            "view: base { extension: required "
+            "  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; } "
+            "  dimension: amt { type: number  sql: ${TABLE}.amt ;; } "
+            "  measure: total { type: sum  sql: ${amt} ;; } "
+            "  measure: pop { type: period_over_period  based_on: total  period: year  kind: difference } } "
+            "view: orders { sql_table_name: orders ;; "
+            "  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; } "
+            "  measure: pop { type: count } }"
+        )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, d)
+    assert "base" not in layer.graph.models
+    assert "pop" not in layer.graph.metrics  # template graph metric dropped despite orders.pop
+    assert layer.graph.get_model("orders").get_metric("pop") is not None  # local measure survives
+
+
+def test_lookml_dropped_template_graph_metric_not_orphaned():
+    """A graph metric (period_over_period) on a dropped template must not linger after CLI load.
+
+    add_model auto-registers time_comparison/conversion measures as graph metrics; when the
+    only model carrying it is a skipped extension:required template, the metric must be
+    dropped too, else compile/info expose a metric whose base model is missing.
+    """
+    import tempfile
+
+    from sidemantic import SemanticLayer
+    from sidemantic.loaders import load_from_directory
+
+    d = tempfile.mkdtemp()
+    with open(Path(d) / "v.lkml", "w") as f:
+        f.write(
+            "view: base { extension: required "
+            "  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; } "
+            "  dimension: amt { type: number  sql: ${TABLE}.amt ;; } "
+            "  measure: total { type: sum  sql: ${amt} ;; } "
+            "  measure: pop { type: period_over_period  based_on: total  period: year  kind: difference } }"
+        )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, d)  # must not raise
+    assert "base" not in layer.graph.models  # template skipped
+    assert "pop" not in layer.graph.metrics  # orphaned graph metric dropped too
+
+
+def test_lookml_registerability_keys_off_parser_marker_not_user_meta():
+    """A tableless model with user `extension_required` meta but no parser marker must surface error.
+
+    The skip keys off the parser-owned `lookml_template` marker so a native/other-format
+    model that merely carries the public `extension_required` key is still registered (and
+    its missing-source error surfaced), not silently dropped.
+    """
+    from types import SimpleNamespace
+
+    from sidemantic.loaders import _is_registerable_model
+
+    user_meta = SimpleNamespace(table=None, sql=None, dax=None, source_uri=None, meta={"extension_required": True})
+    assert _is_registerable_model(user_meta) is True  # surfaces error, not dropped
+    template = SimpleNamespace(
+        table=None, sql=None, dax=None, source_uri=None, meta={"extension_required": True, "lookml_template": True}
+    )
+    assert _is_registerable_model(template) is False  # genuine LookML template skipped
+
+
+def test_lookml_abstract_marker_survives_later_refinement_meta_overwrite():
+    """A refinement overwriting meta must not strip the abstract marker the loader keys off.
+
+    `+base { extension: required }` then `+base { label: ... }` leaves base tableless but
+    its final meta only has the label; the marker is re-asserted so the CLI loader still
+    skips it instead of raising the no-table validation error.
+    """
+    import tempfile
+
+    from sidemantic import SemanticLayer
+    from sidemantic.loaders import load_from_directory
+
+    d = tempfile.mkdtemp()
+    with open(Path(d) / "v.lkml", "w") as f:
+        f.write(
+            "view: base { dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; } "
+            "dimension: x { type: number  sql: ${TABLE}.x ;; } } "
+            "view: +base { extension: required } "
+            'view: +base { label: "Base" } '
+            "view: orders { extends: [base]  dimension: y { type: number  sql: ${TABLE}.y ;; } }"
+        )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, d)  # must not raise even though `extension_required` was overwritten
+    assert "base" not in layer.graph.models
+    assert layer.graph.get_model("orders").table == "orders"
+
+
+def test_lookml_fk_inference_skips_abstract_template_no_dangling_rel():
+    """FK inference must not target a skipped abstract template, leaving a dangling relationship."""
+    import tempfile
+
+    from sidemantic import SemanticLayer
+    from sidemantic.loaders import load_from_directory
+
+    d = tempfile.mkdtemp()
+    with open(Path(d) / "v.lkml", "w") as f:
+        f.write(
+            "view: customer { extension: required  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; } } "
+            "view: customers { extends: [customer]  sql_table_name: customers ;; "
+            "dimension: name { type: string  sql: ${TABLE}.name ;; } } "
+            "view: orders { sql_table_name: orders ;; dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; } "
+            "dimension: customer_id { type: number  sql: ${TABLE}.customer_id ;; } }"
+        )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, d)
+    assert "customer" not in layer.graph.models  # abstract template not registered
+    # No model carries a relationship pointing at the skipped template.
+    for model in layer.graph.models.values():
+        for rel in getattr(model, "relationships", []) or []:
+            assert rel.name in layer.graph.models, f"dangling relationship to {rel.name}"
+
+
+def test_lookml_explore_join_to_template_no_dangling_rel():
+    """An explore join to a skipped template must not leave a dangling relationship."""
+    import tempfile
+
+    from sidemantic import SemanticLayer
+    from sidemantic.loaders import load_from_directory
+
+    d = tempfile.mkdtemp()
+    with open(Path(d) / "v.lkml", "w") as f:
+        f.write(
+            "view: customer { extension: required  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; } } "
+            "view: orders { sql_table_name: orders ;; dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; } "
+            "dimension: customer_id { type: number  sql: ${TABLE}.customer_id ;; } } "
+            "explore: orders { join: customer { sql_on: ${orders.customer_id} = ${customer.id} ;; relationship: many_to_one } }"
+        )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, d)
+    assert "customer" not in layer.graph.models
+    for model in layer.graph.models.values():
+        for rel in getattr(model, "relationships", []) or []:
+            assert rel.name in layer.graph.models, f"dangling relationship to {rel.name}"
+
+
+def test_lookml_active_layer_explore_join_to_template_no_dangling_rel():
+    """Same as above but via the ACTIVE-layer parse() path (with SemanticLayer())."""
+    import tempfile
+
+    from sidemantic import SemanticLayer
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".lkml", delete=False) as f:
+        f.write(
+            "view: customer { extension: required  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; } } "
+            "view: orders { sql_table_name: orders ;; dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; } "
+            "dimension: customer_id { type: number  sql: ${TABLE}.customer_id ;; } } "
+            "explore: orders { join: customer { sql_on: ${orders.customer_id} = ${customer.id} ;; relationship: many_to_one } }"
+        )
+        f.flush()
+        path = Path(f.name)
+
+    with SemanticLayer() as layer:
+        LookMLAdapter().parse(path)
+    assert "customer" not in layer.graph.models
+    for model in layer.graph.models.values():
+        for rel in getattr(model, "relationships", []) or []:
+            assert rel.name in layer.graph.models, f"dangling relationship to {rel.name}"
+
+
+def test_lookml_extends_tableless_view_keeps_own_table():
+    """A child extending a tableless base must default to its OWN name, not inherit the base's default."""
+    graph = _parse_lkml(
+        "view: base { dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; } "
+        "dimension: x { type: number  sql: ${TABLE}.x ;; } } "
+        "view: child { extends: [base]  dimension: y { type: number  sql: ${TABLE}.y ;; } }"
+    )
+    assert graph.get_model("base").table == "base"
+    assert graph.get_model("child").table == "child"
+
+
+def test_lookml_refinement_adds_fields_then_defaults_table():
+    """A fieldless base whose fields come from a +refinement still defaults its table after merge."""
+    graph = _parse_lkml(
+        "view: orders {} view: +orders { dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; } }"
+    )
+    assert graph.get_model("orders").table == "orders"
+
+
+def test_lookml_filter_only_view_gets_default_table():
+    """A view that declares only LookML `filter` fields (-> segments) still defaults its table.
+
+    Such a view is not 'fieldless' -- without the default it fails validation (no table/sql).
+    """
+    graph = _parse_lkml("view: ff { filter: recent { type: yesno  sql: ${TABLE}.x ;; } }")
+    model = graph.get_model("ff")
+    assert model.table == "ff"
+    assert [s.name for s in model.segments] == ["recent"]
+
+
+def test_lookml_concrete_child_of_abstract_view_gets_table():
+    """A concrete view extending an extension:required base must default to its OWN name, not be treated as abstract."""
+    graph = _parse_lkml(
+        "view: base { extension: required  "
+        "dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; } "
+        "dimension: x { type: number  sql: ${TABLE}.x ;; } } "
+        "view: orders { extends: [base]  dimension: y { type: number  sql: ${TABLE}.y ;; } }"
+    )
+    assert graph.get_model("base").table is None  # abstract base stays table-less
+    assert graph.get_model("orders").table == "orders"  # concrete child defaults to its name
+
+
+def test_lookml_unsupported_derived_table_marker_survives_refinement():
+    """The unsupported-derived_table marker must survive a refinement that carries meta (e.g. label)."""
+    graph = _parse_lkml(
+        "view: ndt { derived_table: { sql_trigger_value: SELECT CURRENT_DATE() ;; } "
+        "dimension: id { type: number  sql: ${TABLE}.id ;; } } "
+        'view: +ndt { label: "NDT View" }'
+    )
+    ndt = graph.get_model("ndt")
+    # Not defaulted to a physical table even though the refinement replaced its meta.
+    assert ndt.table is None
+    assert ndt.sql is None
+
+
+def test_lookml_child_inheriting_unsupported_derived_table_not_defaulted():
+    """A child extending a parent with an unsupported derived_table must stay table-less too."""
+    graph = _parse_lkml(
+        "view: base_ndt { derived_table: { sql_trigger_value: SELECT 1 ;; } "
+        "dimension: id { type: number  sql: ${TABLE}.id ;; } } "
+        "view: child_ndt { extends: [base_ndt] }"
+    )
+    # Inherited the unsupported-derived_table marker via extends -> not defaulted.
+    assert graph.get_model("child_ndt").table is None
+
+
+def test_lookml_refinement_added_extension_required_stays_abstract():
+    """A +refinement that adds extension: required must keep the refined view tableless."""
+    graph = _parse_lkml(
+        "view: base { dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; } } "
+        "view: +base { extension: required }"
+    )
+    assert graph.get_model("base").table is None
+
+
+def test_lookml_abstract_flag_survives_later_refinement():
+    """extension: required added by one refinement survives a later refinement that replaces meta."""
+    graph = _parse_lkml(
+        "view: base { dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; } } "
+        "view: +base { extension: required } "
+        'view: +base { label: "Base" }'
+    )
+    assert graph.get_model("base").table is None
+
+
+def test_lookml_child_of_unsupported_dt_with_own_meta_not_defaulted():
+    """A child extending an unsupported derived_table base must stay tableless even with its own meta."""
+    graph = _parse_lkml(
+        "view: base { derived_table: { sql_trigger_value: SELECT 1 ;; } "
+        "dimension: id { type: number  sql: ${TABLE}.id ;; } } "
+        'view: child { extends: [base]  label: "Child" }'
+    )
+    assert graph.get_model("child").table is None
+
+
 def test_lookml_export_unmapped_aggregations_not_count():
     """Unmapped aggregations / complex types must not be silently exported as COUNT."""
     import tempfile

@@ -4982,6 +4982,13 @@ def test_lookml_export_folded_filter_protects_snowflake_timeadd_and_trunc_parts(
     )
     # Numeric TRUNC(n, 2): the trailing 2 is not a date part, so the real column resolves.
     assert conds(["TRUNC(n, 2) > 5"], model) == "(TRUNC((${TABLE}.num_col), 2) > 5)"
+    # Two-argument LAST_DAY(expr, part): the part is protected; single-argument LAST_DAY is unaffected.
+    assert conds(["LAST_DAY(created_at, month) = DATE '2024-01-31'"], model) == (
+        "(LAST_DAY((${TABLE}.created_at), month) = DATE '2024-01-31')"
+    )
+    assert conds(["LAST_DAY(created_at) = DATE '2024-01-31'"], model) == (
+        "(LAST_DAY((${TABLE}.created_at)) = DATE '2024-01-31')"
+    )
 
 
 def test_lookml_export_folded_filter_numeric_trunc_scale_column_resolves():

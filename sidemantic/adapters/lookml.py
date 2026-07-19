@@ -570,6 +570,9 @@ class LookMLAdapter(BaseAdapter):
         # so the date part is the LAST argument. A numeric TRUNC(n, 2) is unaffected -- the trailing
         # `2` is not a date-part keyword, so it is never treated as a part.
         "trunc": -1, "truncate": -1,
+        # BigQuery/Snowflake two-argument LAST_DAY(expr, part): the part is the LAST argument. The
+        # single-argument LAST_DAY(date) is unaffected (no trailing date-part keyword).
+        "last_day": -1,
     }  # fmt: skip
     # DATE_TRUNC has NO fixed part position: BigQuery is DATE_TRUNC(value, part) while Snowflake is
     # DATE_TRUNC(part, expr), and the adapter has no dialect context. Disambiguate by CONTENT --

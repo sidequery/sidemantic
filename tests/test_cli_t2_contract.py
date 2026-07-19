@@ -298,6 +298,23 @@ def test_query_dry_run_defaults_to_raw_sql(project: Path):
     assert not result.stdout.startswith("sql\n")
 
 
+def test_format_default_does_not_suppress_unstructured_server_status(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    pytest.importorskip("fastapi")
+    monkeypatch.setenv("SIDEMANTIC_FORMAT", "json")
+    monkeypatch.setattr("sidemantic.api_server.start_api_server", lambda *args, **kwargs: None)
+
+    result = runner.invoke(app, ["server", "api", "--project", str(project), "--no-ui"])
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout == ""
+    assert "Starting HTTP API server" in result.stderr
+    assert "Listening on http://" in result.stderr
+    assert "Authentication: disabled" in result.stderr
+
+
 @pytest.mark.parametrize("command", ["info", "validate"])
 @pytest.mark.parametrize("output_format", ["table", "csv", "json", "jsonl"])
 def test_structured_inspection_commands_support_formats(

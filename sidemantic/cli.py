@@ -369,8 +369,6 @@ def main(
         color=selected_color,
     )
     ctx.color = selected_color
-    if cli_state().requested_format is not None or cli_state().plain:
-        resolve_output_format()
 
 
 @app.command("help", context_settings=CLI_CONTEXT_SETTINGS)

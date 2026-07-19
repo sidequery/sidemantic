@@ -1,7 +1,7 @@
 import type { DashboardChart, DashboardDocument, DashboardTab } from "../data/dashboardTypes";
 import { aliasOf, NULL_TOKEN, type ResultRow, type StructuredQuery } from "../data/types";
 import { displayDimValue, sqlLiteral } from "../lib/format";
-import { filterExprs, type DimTypes, type FilterState } from "../lib/queries";
+import { filterExprs, type DimTypes } from "../lib/queries";
 
 export type DashboardRange = { from: string; to: string };
 
@@ -72,6 +72,14 @@ export function dashboardMetricRefs(chart: DashboardChart): string[] {
 
 const TIME_GRAINS = new Set(["second", "minute", "hour", "day", "week", "month", "quarter", "year"]);
 
+function timeGrain(dimension: string): { baseDimension: string; grain: string } | null {
+  const separator = dimension.lastIndexOf("__");
+  if (separator < 0) return null;
+  const grain = dimension.slice(separator + 2);
+  if (!TIME_GRAINS.has(grain)) return null;
+  return { baseDimension: dimension.slice(0, separator), grain };
+}
+
 function nextBucketStart(value: string, grain: string): string | null {
   const date = new Date(value);
   if (!Number.isFinite(date.getTime())) return null;
@@ -87,17 +95,24 @@ function nextBucketStart(value: string, grain: string): string | null {
 }
 
 export function dashboardRangeFilter(dimension: string, range: DashboardRange): string {
-  const separator = dimension.lastIndexOf("__");
-  const grain = separator >= 0 ? dimension.slice(separator + 2) : "";
-  if (TIME_GRAINS.has(grain)) {
-    const baseDimension = dimension.slice(0, separator);
-    const exclusiveEnd = nextBucketStart(range.to, grain);
+  const grained = timeGrain(dimension);
+  if (grained) {
+    const exclusiveEnd = nextBucketStart(range.to, grained.grain);
     if (exclusiveEnd) {
-      return `${baseDimension} >= ${sqlLiteral(range.from)} AND ${baseDimension} < ${sqlLiteral(exclusiveEnd)}`;
+      return `${grained.baseDimension} >= ${sqlLiteral(range.from)} AND ${grained.baseDimension} < ${sqlLiteral(exclusiveEnd)}`;
     }
-    return `${baseDimension} >= ${sqlLiteral(range.from)} AND ${baseDimension} <= ${sqlLiteral(range.to)}`;
+    return `${grained.baseDimension} >= ${sqlLiteral(range.from)} AND ${grained.baseDimension} <= ${sqlLiteral(range.to)}`;
   }
   return `${dimension} >= ${sqlLiteral(range.from)} AND ${dimension} <= ${sqlLiteral(range.to)}`;
+}
+
+function dashboardSelectionFilter(dimension: string, value: string, types: DimTypes): string[] {
+  const grained = timeGrain(dimension);
+  if (grained) {
+    if (value === NULL_TOKEN) return [`${grained.baseDimension} IS NULL`];
+    return [dashboardRangeFilter(dimension, { from: value, to: value })];
+  }
+  return filterExprs({ [dimension]: { mode: "include", values: [value] } }, { types });
 }
 
 export function dashboardStructuredQuery(
@@ -107,15 +122,12 @@ export function dashboardStructuredQuery(
   types: DimTypes,
   ranges: DashboardViewState["ranges"] = {},
 ): StructuredQuery {
-  const filterState: FilterState = Object.fromEntries(
-    Object.entries(filters).map(([dimension, value]) => [dimension, { mode: "include", values: [value] }]),
-  );
   const request: StructuredQuery = {
     metrics: chart.query.metrics,
     dimensions: chart.query.dimensions,
     filters: [
       ...(chart.query.filters ?? []),
-      ...filterExprs(filterState, { types }),
+      ...Object.entries(filters).flatMap(([dimension, value]) => dashboardSelectionFilter(dimension, value, types)),
       ...Object.entries(ranges).map(([dimension, range]) => dashboardRangeFilter(dimension, range)),
     ],
     segments: chart.query.segments,
@@ -129,6 +141,47 @@ export function dashboardStructuredQuery(
     document.defaults?.query?.usePreaggregations;
   if (usePreaggregations !== undefined) request.usePreaggregations = usePreaggregations;
   return request;
+}
+
+function explorerDate(value: string): string | null {
+  const match = /^(\d{4}-\d{2}-\d{2})/.exec(value);
+  return match?.[1] ?? null;
+}
+
+function explorerRange(dimension: string, range: DashboardRange): DashboardRange | null {
+  const from = explorerDate(range.from);
+  if (!from) return null;
+  const grained = timeGrain(dimension);
+  if (!grained) {
+    const to = explorerDate(range.to);
+    return to ? { from, to } : null;
+  }
+  const exclusiveEnd = nextBucketStart(range.to, grained.grain);
+  if (!exclusiveEnd) return null;
+  const inclusiveEnd = new Date(exclusiveEnd);
+  inclusiveEnd.setUTCMilliseconds(inclusiveEnd.getUTCMilliseconds() - 1);
+  return { from, to: inclusiveEnd.toISOString().slice(0, 10) };
+}
+
+export function dashboardExploreUrl(chart: DashboardChart, state: DashboardViewState): string {
+  const encoded = chart.encoding?.y;
+  const metric = (Array.isArray(encoded) ? encoded[0] : encoded) ?? chart.query.metrics[0] ?? "";
+  const dimensions = chart.query.dimensions ?? [];
+  const model = metric.includes(".") ? metric.split(".")[0] : dimensions[0]?.split(".")[0] ?? "";
+  const explorerFilters = Object.fromEntries(
+    Object.entries(state.filters).map(([dimension, value]) => [dimension, [value]]),
+  );
+  const params = new URLSearchParams({ view: "explore", model, metric });
+  if (Object.keys(explorerFilters).length) params.set("filters", JSON.stringify(explorerFilters));
+
+  const xDimension = chart.encoding?.x ?? dimensions[0];
+  const range = xDimension ? state.ranges[xDimension] : undefined;
+  const dateRange = xDimension && range ? explorerRange(xDimension, range) : null;
+  if (dateRange) {
+    params.set("from", dateRange.from);
+    params.set("to", dateRange.to);
+  }
+  return `/explore?${params}`;
 }
 
 export type DashboardTimeSeries = {

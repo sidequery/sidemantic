@@ -17,6 +17,7 @@ import {
   decodeDashboardState,
   dashboardCategorySeries,
   dashboardDrillDimension,
+  dashboardExploreUrl,
   dashboardFilterValue,
   dashboardMetricRefs,
   dashboardResultColumn,
@@ -55,15 +56,6 @@ function dimensionTypes(catalog: Catalog) {
 function firstY(chart: DashboardChart): string {
   const encoded = chart.encoding?.y;
   return (Array.isArray(encoded) ? encoded[0] : encoded) ?? chart.query.metrics[0] ?? "";
-}
-
-function exploreUrl(chart: DashboardChart, filters: DashboardViewState["filters"]): string {
-  const metric = firstY(chart);
-  const model = metric.includes(".") ? metric.split(".")[0] : chart.query.dimensions?.[0]?.split(".")[0] ?? "";
-  const explorerFilters = Object.fromEntries(Object.entries(filters).map(([dimension, value]) => [dimension, [value]]));
-  const params = new URLSearchParams({ view: "explore", model, metric });
-  if (Object.keys(explorerFilters).length) params.set("filters", JSON.stringify(explorerFilters));
-  return `/explore?${params}`;
 }
 
 function CsvDownload({ chart, columns, rows }: { chart: DashboardChart; columns: string[]; rows: ResultRow[] }) {
@@ -272,7 +264,7 @@ function DashboardChartPanel({
           >
             {detailsOpen ? "Hide details" : "Drill details"}
           </button>
-          <a href={exploreUrl(chart, state.filters)} className="border border-line px-2 py-1 text-2xs text-muted hover:border-faint hover:text-ink">
+          <a href={dashboardExploreUrl(chart, state)} className="border border-line px-2 py-1 text-2xs text-muted hover:border-faint hover:text-ink">
             Explore from here
           </a>
           <CsvDownload chart={chart} columns={columns} rows={rows} />

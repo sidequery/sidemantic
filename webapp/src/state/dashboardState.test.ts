@@ -5,6 +5,7 @@ import {
   brushableDashboardDimension,
   dashboardCategorySeries,
   dashboardDrillDimension,
+  dashboardExploreUrl,
   dashboardFilterValue,
   dashboardMetricRefs,
   dashboardRangeFilter,
@@ -155,6 +156,49 @@ describe("dashboard selections", () => {
     expect(
       dashboardRangeFilter("orders.created_at__day", { from: "2026-03-01", to: "2026-03-02" }),
     ).toBe("orders.created_at >= '2026-03-01' AND orders.created_at < '2026-03-03'");
+  });
+
+  test("expands selected time buckets against their base dimension", () => {
+    const chart: DashboardChart = {
+      id: "trend",
+      query: { metrics: ["orders.revenue"], dimensions: ["orders.created_at__month"] },
+    };
+    const selected = dashboardStructuredQuery(
+      document,
+      chart,
+      { "orders.created_at__month": "2026-02-01" },
+      {},
+    );
+    expect(selected.filters).toContain(
+      "orders.created_at >= '2026-02-01' AND orders.created_at < '2026-03-01'",
+    );
+
+    const selectedNull = dashboardStructuredQuery(
+      document,
+      chart,
+      { "orders.created_at__month": NULL_TOKEN },
+      {},
+    );
+    expect(selectedNull.filters).toContain("orders.created_at IS NULL");
+  });
+
+  test("carries brushed time buckets into explorer links", () => {
+    const chart: DashboardChart = {
+      id: "trend",
+      query: { metrics: ["orders.revenue"], dimensions: ["orders.created_at__month"] },
+      encoding: { x: "orders.created_at__month" },
+    };
+    const url = new URL(
+      dashboardExploreUrl(chart, {
+        tab: "overview",
+        filters: { "orders.region": "West" },
+        ranges: { "orders.created_at__month": { from: "2026-01-01", to: "2026-03-01" } },
+      }),
+      "https://example.test",
+    );
+    expect(url.searchParams.get("from")).toBe("2026-01-01");
+    expect(url.searchParams.get("to")).toBe("2026-03-31");
+    expect(JSON.parse(url.searchParams.get("filters") ?? "{}")).toEqual({ "orders.region": ["West"] });
   });
 
   test("separates categorical series before plotting bars", () => {

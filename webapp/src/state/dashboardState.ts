@@ -84,6 +84,14 @@ function timeGrain(dimension: string): { baseDimension: string; grain: string } 
   return { baseDimension: dimension.slice(0, separator), grain };
 }
 
+export function dashboardChartType(chart: DashboardChart, types: DimTypes): "bar" | "line" | "area" {
+  if (chart.type && chart.type !== "auto") return chart.type;
+  const x = chart.encoding?.x ?? chart.query.dimensions?.[0] ?? "";
+  const grained = timeGrain(x);
+  const semanticType = types[x] ?? (grained ? types[grained.baseDimension] : undefined);
+  return semanticType === "time" ? "line" : "bar";
+}
+
 function nextBucketStart(value: string, grain: string): string | null {
   const date = new Date(value);
   if (!Number.isFinite(date.getTime())) return null;
@@ -159,6 +167,9 @@ export function dashboardStructuredQuery(
   sources: Pick<DashboardViewState, "filterSources" | "rangeSources"> = { filterSources: {}, rangeSources: {} },
 ): StructuredQuery {
   const scoped = scopedDashboardInteractions(document, chart, { filters, ranges, ...sources });
+  const x = chart.encoding?.x ?? chart.query.dimensions?.[0] ?? "";
+  const explicitOrder = chart.query.order_by ?? chart.query.orderBy;
+  const defaultTimeOrder = x && ["line", "area"].includes(dashboardChartType(chart, types)) ? [`${x} ASC`] : undefined;
   const request: StructuredQuery = {
     metrics: chart.query.metrics,
     dimensions: chart.query.dimensions,
@@ -170,7 +181,7 @@ export function dashboardStructuredQuery(
       ...Object.entries(scoped.ranges).map(([dimension, range]) => dashboardRangeFilter(dimension, range)),
     ],
     segments: chart.query.segments,
-    orderBy: chart.query.order_by ?? chart.query.orderBy,
+    orderBy: explicitOrder ?? defaultTimeOrder,
     limit: chart.query.limit ?? 500,
   };
   const usePreaggregations =

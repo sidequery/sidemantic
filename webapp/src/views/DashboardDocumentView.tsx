@@ -16,6 +16,7 @@ import {
   brushableDashboardDimension,
   decodeDashboardState,
   dashboardCategorySeries,
+  dashboardChartType,
   dashboardChartScopeKey,
   dashboardDrillDimension,
   dashboardExploreUrl,
@@ -161,7 +162,7 @@ function DashboardChartPanel({
   const yRefs = dashboardMetricRefs(chart);
   const yRef = yRefs[0] ?? firstY(chart);
   const xColumn = dashboardResultColumn(xRef, columns);
-  const chartType = chart.type === "auto" || !chart.type ? (xRef.includes("__") ? "line" : "bar") : chart.type;
+  const chartType = dashboardChartType(chart, types);
   const canSelect = selectableDashboardDimension(chart, xRef);
   const canBrush = brushableDashboardDimension(chart, xRef);
   const chartTitle = chart.title?.trim() || labelize(chart.id);

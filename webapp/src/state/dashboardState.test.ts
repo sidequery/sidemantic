@@ -4,6 +4,7 @@ import { NULL_TOKEN } from "../data/types";
 import {
   brushableDashboardDimension,
   dashboardCategorySeries,
+  dashboardChartType,
   dashboardDrillDimension,
   dashboardExploreUrl,
   dashboardFilterValue,
@@ -128,6 +129,40 @@ describe("dashboard selections", () => {
       encoding: { y: ["orders.revenue", "orders.order_count"] },
     };
     expect(dashboardMetricRefs(chart)).toEqual(["orders.revenue", "orders.order_count"]);
+  });
+
+  test("infers auto time series from semantic dimension metadata", () => {
+    const autoChart = (dimension: string): DashboardChart => ({
+      id: "trend",
+      type: "auto",
+      query: { metrics: ["orders.revenue"], dimensions: [dimension] },
+      encoding: { x: dimension },
+    });
+    const types = { "orders.created_at": "time", "orders.region": "categorical" };
+
+    expect(dashboardChartType(autoChart("orders.created_at"), types)).toBe("line");
+    expect(dashboardChartType(autoChart("orders.created_at__month"), types)).toBe("line");
+    expect(dashboardChartType(autoChart("orders.region"), types)).toBe("bar");
+    expect(dashboardChartType(autoChart("orders.unknown__month"), types)).toBe("bar");
+  });
+
+  test("defaults time-series queries to ascending x order", () => {
+    const auto: DashboardChart = {
+      id: "trend",
+      type: "auto",
+      query: { metrics: ["orders.revenue"], dimensions: ["orders.created_at"] },
+    };
+    expect(dashboardStructuredQuery(document, auto, {}, { "orders.created_at": "time" }).orderBy).toEqual([
+      "orders.created_at ASC",
+    ]);
+
+    const explicit = { ...auto, query: { ...auto.query, order_by: ["orders.created_at DESC"] } };
+    expect(dashboardStructuredQuery(document, explicit, {}, { "orders.created_at": "time" }).orderBy).toEqual([
+      "orders.created_at DESC",
+    ]);
+
+    const categorical = { ...auto, query: { ...auto.query, dimensions: ["orders.region"] } };
+    expect(dashboardStructuredQuery(document, categorical, {}, { "orders.region": "categorical" }).orderBy).toBeUndefined();
   });
 
   test("preserves the backend pre-aggregation default unless the document overrides it", () => {

@@ -144,7 +144,7 @@ jobs:
 
       - name: Exercise maintained Python surfaces
         run: >-
-          uv run pytest
+          uv run --no-sync pytest
           tests/core
           tests/lsp
           tests/widget

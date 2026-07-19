@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { aliasOf, type CatalogMetric } from "../data/types";
 import { LeaderboardPanel } from "../components/LeaderboardPanel";
 import { MetricCard } from "../components/MetricCard";
@@ -27,6 +27,13 @@ function metricHint(metric?: CatalogMetric) {
   return { format: metric?.format, type: metric?.type };
 }
 
+export function resolveExpandedLeaderboard(
+  expandedRef: string | null,
+  dimensions: ReadonlyArray<{ ref: string }>,
+): string | null {
+  return expandedRef && dimensions.some((dimension) => dimension.ref === expandedRef) ? expandedRef : null;
+}
+
 export function ExplorerView() {
   const { state, dispatch, catalog, backend, dashboard } = useExplorer();
   const [expandedLeaderboard, setExpandedLeaderboard] = useState<string | null>(null);
@@ -35,6 +42,10 @@ export function ExplorerView() {
     () => dashboardTabConfig(catalog, dashboard, state.dashboardTab),
     [catalog, dashboard, state.dashboardTab],
   );
+
+  useEffect(() => {
+    setExpandedLeaderboard(null);
+  }, [state.dashboardTab, state.model]);
 
   const metrics = configured?.metrics ?? model?.metrics ?? [];
   const configuredMetricRefs = new Set(metrics.map((metric) => metric.ref));
@@ -138,6 +149,7 @@ export function ExplorerView() {
   if (!model) return <div className="p-4"><EmptyState message="No model available in this semantic layer." /></div>;
 
   const leaderboardDims = (configured?.dimensions ?? model.dimensions).filter((dim) => dim.type !== "time");
+  const activeExpandedLeaderboard = resolveExpandedLeaderboard(expandedLeaderboard, leaderboardDims);
   const comparisonLabel = state.comparison === "year" ? "Prev year" : state.comparison === "custom" ? "Comparison" : "Prev period";
 
   // A kept result from a previous model has different metric columns. Ignore it until the fresh one
@@ -231,7 +243,7 @@ export function ExplorerView() {
       <div className="grid grid-cols-[repeat(auto-fit,minmax(220px,1fr))] gap-0 border-l border-t border-line">
         {rankMetric && leaderboardDims.length ? (
           leaderboardDims
-            .filter((dim) => expandedLeaderboard === null || expandedLeaderboard === dim.ref)
+            .filter((dim) => activeExpandedLeaderboard === null || activeExpandedLeaderboard === dim.ref)
             .map((dim) => (
               <LeaderboardPanel
                 key={dim.ref}
@@ -244,7 +256,7 @@ export function ExplorerView() {
                 baseFilters={configured?.filters}
                 baseSegments={configured?.segments}
                 usePreaggregations={configured?.usePreaggregations}
-                expanded={expandedLeaderboard === dim.ref}
+                expanded={activeExpandedLeaderboard === dim.ref}
                 onExpandedChange={(expanded) => setExpandedLeaderboard(expanded ? dim.ref : null)}
               />
             ))

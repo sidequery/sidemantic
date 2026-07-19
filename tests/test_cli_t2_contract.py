@@ -301,6 +301,42 @@ def test_query_dry_run_defaults_to_raw_sql(project: Path):
 
 
 @pytest.mark.parametrize(
+    ("environment", "config_default"),
+    [
+        ({"SIDEMANTIC_FORMAT": "csv"}, None),
+        ({"SIDEMANTIC_FORMAT": "json"}, None),
+        ({}, "csv"),
+        ({}, "jsonl"),
+    ],
+)
+def test_query_dry_run_ignores_format_defaults(
+    project: Path,
+    environment: dict[str, str],
+    config_default: str | None,
+):
+    if config_default:
+        config = project / "sidemantic.yaml"
+        config.write_text(f"{config.read_text()}cli:\n  format: {config_default}\n")
+
+    result = runner.invoke(
+        app,
+        [
+            "query",
+            "SELECT status, order_count FROM orders",
+            "--project",
+            str(project),
+            "--dry-run",
+        ],
+        env=environment,
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "SELECT" in result.stdout.upper()
+    assert not result.stdout.startswith("sql\n")
+    assert not result.stdout.lstrip().startswith(("{", "["))
+
+
+@pytest.mark.parametrize(
     ("arguments", "environment", "machine_output"),
     [
         ([], {}, False),

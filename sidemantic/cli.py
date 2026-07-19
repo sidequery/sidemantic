@@ -1164,7 +1164,7 @@ def query(
                 use_preaggregations=layer.use_preaggregations,
             )
             rewritten_sql = rewriter.rewrite(sql)
-            if cli_state().requested_format is not None and output_format in {"csv", "json", "jsonl"}:
+            if cli_state().format_explicit and output_format in {"csv", "json", "jsonl"}:
                 emit_records(
                     [{"sql": rewritten_sql}],
                     columns=("sql",),

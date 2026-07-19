@@ -21,7 +21,7 @@ from sidemantic.viz import CrossfilterDashboard, CrossfilterTab, _unique_field_a
 
 DASHBOARD_SCHEMA = "sidemantic.dashboard.v1"
 TS_SCHEMA = "sidemantic.schema.v1"
-VALID_CHART_TYPES = {"auto", "bar", "line", "area", "scatter", "point"}
+VALID_CHART_TYPES = {"auto", "bar", "line", "area"}
 VALID_RENDERERS = {"vega-lite", "plotly", "observable-plot", "d3", "crossfilter"}
 TIME_GRANULARITIES = ["second", "minute", "hour", "day", "week", "month", "quarter", "year"]
 __all__ = [
@@ -273,7 +273,7 @@ export type Metric = typeof {schema_name}.metrics[number];
 export type Dimension = typeof {schema_name}.dimensions[number];
 export type SemanticField = typeof {schema_name}.fields[number];
 export type DashboardRenderer = "vega-lite" | "plotly" | "observable-plot" | "d3" | "crossfilter";
-export type ChartType = "auto" | "bar" | "line" | "area" | "scatter" | "point";
+export type ChartType = "auto" | "bar" | "line" | "area";
 
 export interface FieldValueMap {{
 {value_map}

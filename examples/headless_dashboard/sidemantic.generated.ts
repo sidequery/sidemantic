@@ -143,7 +143,7 @@ export type Metric = typeof sidemanticSchema.metrics[number];
 export type Dimension = typeof sidemanticSchema.dimensions[number];
 export type SemanticField = typeof sidemanticSchema.fields[number];
 export type DashboardRenderer = "vega-lite" | "plotly" | "observable-plot" | "d3" | "crossfilter";
-export type ChartType = "auto" | "bar" | "line" | "area" | "scatter" | "point";
+export type ChartType = "auto" | "bar" | "line" | "area";
 
 export interface FieldValueMap {
   "orders.channel": string;
@@ -180,6 +180,10 @@ export type DashboardDefaults = {
     interaction_preaggregations?: boolean;
     usePreaggregations?: boolean;
     use_preaggregations?: boolean;
+    sourceWatermarkSql?: string;
+    source_watermark_sql?: string;
+    freshnessTtlSeconds?: number;
+    freshness_ttl_seconds?: number;
   };
   interactions?: {
     scope?: "chart" | "tab" | "dashboard";
@@ -220,6 +224,10 @@ export type ChartQuery = {
   interaction_preaggregations?: boolean;
   usePreaggregations?: boolean;
   use_preaggregations?: boolean;
+  sourceWatermarkSql?: string;
+  source_watermark_sql?: string;
+  freshnessTtlSeconds?: number;
+  freshness_ttl_seconds?: number;
 };
 
 export type ChartEncoding = {

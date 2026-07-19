@@ -46,6 +46,13 @@ export function dashboardResultColumn(ref: string, columns: string[]): string {
   return columns.find((column) => column.endsWith(leafAlias)) ?? leafAlias;
 }
 
+export function dashboardMetricRefs(chart: DashboardChart): string[] {
+  const encoded = chart.encoding?.y;
+  if (Array.isArray(encoded) && encoded.length) return encoded;
+  if (typeof encoded === "string") return [encoded];
+  return chart.query.metrics.slice(0, 1);
+}
+
 export function dashboardStructuredQuery(
   document: DashboardDocument,
   chart: DashboardChart,

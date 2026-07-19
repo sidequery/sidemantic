@@ -3,6 +3,7 @@ import type { DashboardChart, DashboardDocument } from "../data/dashboardTypes";
 import { NULL_TOKEN } from "../data/types";
 import {
   dashboardFilterValue,
+  dashboardMetricRefs,
   dashboardResultColumn,
   dashboardStructuredQuery,
   dashboardTimeSeries,
@@ -90,6 +91,15 @@ describe("dashboard selections", () => {
     expect(dashboardResultColumn("customers.status", columns)).toBe("customers_status");
     expect(dashboardResultColumn("orders.status", columns)).toBe("orders_status");
     expect(dashboardResultColumn("orders.revenue", columns)).toBe("revenue");
+  });
+
+  test("preserves every encoded y metric", () => {
+    const chart: DashboardChart = {
+      id: "trend",
+      query: { metrics: ["orders.revenue", "orders.order_count"], dimensions: ["orders.created_at__month"] },
+      encoding: { y: ["orders.revenue", "orders.order_count"] },
+    };
+    expect(dashboardMetricRefs(chart)).toEqual(["orders.revenue", "orders.order_count"]);
   });
 
   test("preserves the backend pre-aggregation default unless the document overrides it", () => {

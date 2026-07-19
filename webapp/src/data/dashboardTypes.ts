@@ -23,7 +23,7 @@ export type DashboardTab = {
 export type DashboardChart = {
   id: string;
   title?: string;
-  type?: "auto" | "bar" | "line" | "area" | "scatter" | "point";
+  type?: "auto" | "bar" | "line" | "area";
   query: {
     metrics: FieldRef[];
     dimensions?: FieldRef[];

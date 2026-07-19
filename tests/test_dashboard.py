@@ -257,6 +257,17 @@ def test_dashboard_document_supports_multiple_charts_per_tab():
     assert DashboardDocument.from_dict(payload).validate(layer, execute_sql=True) == []
 
 
+@pytest.mark.parametrize("chart_type", ["scatter", "point"])
+def test_dashboard_document_rejects_chart_types_without_canonical_renderers(chart_type):
+    layer = _build_layer()
+    payload = _dashboard_payload()
+    payload["tabs"][0]["charts"][0]["type"] = chart_type
+
+    errors = DashboardDocument.from_dict(payload).validate(layer)
+
+    assert any(".type must be one of: area, auto, bar, line" in error for error in errors)
+
+
 def test_legacy_crossfilter_adapter_reports_multi_chart_limit():
     layer = _build_layer()
     payload = _dashboard_payload()

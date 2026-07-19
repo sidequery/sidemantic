@@ -15,6 +15,7 @@ import { dimTypes } from "../lib/queries";
 import {
   decodeDashboardState,
   dashboardFilterValue,
+  dashboardMetricRefs,
   dashboardResultColumn,
   dashboardStructuredQuery,
   dashboardTimeSeries,
@@ -160,13 +161,12 @@ function DashboardChartPanel({
   const columns = query.result?.columns ?? [];
   const dimensions = chart.query.dimensions ?? [];
   const xRef = chart.encoding?.x ?? dimensions[0] ?? "";
-  const yRef = firstY(chart);
+  const yRefs = dashboardMetricRefs(chart);
+  const yRef = yRefs[0] ?? firstY(chart);
   const xColumn = dashboardResultColumn(xRef, columns);
-  const yColumn = dashboardResultColumn(yRef, columns);
   const chartType = chart.type === "auto" || !chart.type ? (xRef.includes("__") ? "line" : "bar") : chart.type;
   const canSelect = selectableDashboardDimension(chart, xRef);
   const chartTitle = chart.title?.trim() || labelize(chart.id);
-  const format = metricFormat(catalog, yRef);
 
   let visualization: React.ReactNode;
   if (query.loading && !query.result) {
@@ -195,32 +195,57 @@ function DashboardChartPanel({
       (dimension, index, refs): dimension is string => Boolean(dimension) && refs.indexOf(dimension) === index,
     );
     const seriesColumns = seriesRefs.map((dimension) => dashboardResultColumn(dimension, columns));
-    const series = dashboardTimeSeries(rows, xColumn, yColumn, seriesColumns);
-    const primary = series[0] ?? { label: "Current", points: [] };
     visualization = (
-      <TimeSeriesChart
-        points={primary.points}
-        seriesLabel={primary.label}
-        additionalSeries={series.slice(1)}
-        formatValue={(value) => formatValue(value, format)}
-        ariaLabel={`${chartTitle}, ${series.length} series and ${primary.points.length} buckets`}
-      />
+      <div className="grid grid-cols-[repeat(auto-fit,minmax(260px,1fr))] gap-3">
+        {yRefs.map((metric) => {
+          const series = dashboardTimeSeries(
+            rows,
+            xColumn,
+            dashboardResultColumn(metric, columns),
+            seriesColumns,
+          );
+          const primary = series[0] ?? { label: "Current", points: [] };
+          const format = metricFormat(catalog, metric);
+          return (
+            <div key={metric} className="min-w-0">
+              {yRefs.length > 1 ? <h3 className="mb-1 text-2xs font-semibold text-muted">{labelize(metric)}</h3> : null}
+              <TimeSeriesChart
+                points={primary.points}
+                seriesLabel={primary.label}
+                additionalSeries={series.slice(1)}
+                formatValue={(value) => formatValue(value, format)}
+                ariaLabel={`${chartTitle}, ${labelize(metric)}, ${series.length} series and ${primary.points.length} buckets`}
+              />
+            </div>
+          );
+        })}
+      </div>
     );
   } else {
-    const data = rows
-      .map((row) => {
-        const filterValue = dashboardFilterValue(row[xColumn]);
-        return { label: displayDimValue(filterValue), filterValue, value: Number(row[yColumn]) };
-      })
-      .filter((item) => Number.isFinite(item.value))
-      .slice(0, 30);
     visualization = (
-      <ColumnChart
-        data={data}
-        ariaLabel={`${chartTitle}, ${data.length} categories`}
-        selectedLabel={state.filters[xRef]}
-        onSelect={canSelect ? (value) => { setFilter(xRef, value); setDetailsOpen(true); } : undefined}
-      />
+      <div className="grid grid-cols-[repeat(auto-fit,minmax(260px,1fr))] gap-3">
+        {yRefs.map((metric) => {
+          const yColumn = dashboardResultColumn(metric, columns);
+          const data = rows
+            .map((row) => {
+              const filterValue = dashboardFilterValue(row[xColumn]);
+              return { label: displayDimValue(filterValue), filterValue, value: Number(row[yColumn]) };
+            })
+            .filter((item) => Number.isFinite(item.value))
+            .slice(0, 30);
+          return (
+            <div key={metric} className="min-w-0">
+              {yRefs.length > 1 ? <h3 className="mb-1 text-2xs font-semibold text-muted">{labelize(metric)}</h3> : null}
+              <ColumnChart
+                data={data}
+                ariaLabel={`${chartTitle}, ${labelize(metric)}, ${data.length} categories`}
+                selectedLabel={state.filters[xRef]}
+                onSelect={canSelect ? (value) => { setFilter(xRef, value); setDetailsOpen(true); } : undefined}
+              />
+            </div>
+          );
+        })}
+      </div>
     );
   }
 

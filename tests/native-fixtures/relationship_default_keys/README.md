@@ -1,7 +1,7 @@
-# Relationship Default Keys
+# Relationship Key Resolution
 
-Verifies relationship default-key compatibility between Python and Rust:
+Verifies explicit relationship-key compatibility between Python and Rust:
 
-- omitted `one_to_many` and `one_to_one` keys use `id`
-- omitted `many_to_one` foreign keys use `{name}_id`
-- omitted relationship `primary_key` resolves to the target model's declared primary key
+- `one_to_many` and `one_to_one` relationships declare their foreign-key columns
+- `many_to_one` relationships declare their foreign-key columns instead of relying on naming conventions
+- an omitted relationship `primary_key` safely resolves to the related model's declared primary key

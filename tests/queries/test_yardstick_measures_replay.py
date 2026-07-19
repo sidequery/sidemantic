@@ -692,7 +692,7 @@ def _assert_definition_blocks_match(path: Path) -> None:
             context = f"{context} ({view_name})"
 
         assert model.name == view_name, context
-        assert model.primary_key == (expected_dimensions[0].name if expected_dimensions else "id"), context
+        assert model.primary_key is None, context
         assert model.table == (expected_source_table or (view_name if expected_source_sql is None else None)), context
         assert model.sql == expected_source_sql, context
 

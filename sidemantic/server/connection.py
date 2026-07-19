@@ -20,8 +20,19 @@ from sidemantic.server.query_execution import (
 from sidemantic.sql.query_rewriter import QueryRewriter
 
 _TRANSACTION_CONTROL = re.compile(
-    r"^\s*(?:begin(?:\s+(?:work|transaction))?|start\s+transaction|commit(?:\s+work)?|rollback(?:\s+work)?)\s*;?\s*$",
-    re.IGNORECASE,
+    r"""
+    ^\s*(?:
+        (?:begin(?:\s+(?:work|transaction))?|start\s+transaction)
+        (?:\s+(?:
+            isolation\s+level\s+(?:serializable|repeatable\s+read|read\s+committed|read\s+uncommitted)
+            |read\s+(?:write|only)
+            |(?:not\s+)?deferrable
+        ))*
+        |
+        (?:commit|end|rollback)(?:\s+(?:work|transaction))?(?:\s+and\s+(?:no\s+)?chain)?
+    )\s*;?\s*$
+    """,
+    re.IGNORECASE | re.VERBOSE,
 )
 
 

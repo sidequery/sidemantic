@@ -152,7 +152,19 @@ def test_show_passthrough_is_not_wrapped_as_select(statement):
     conn.send_reader.assert_called_once_with(reader, callback)
 
 
-@pytest.mark.parametrize("statement", ["BEGIN", "BEGIN TRANSACTION;", "COMMIT", "ROLLBACK WORK"])
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "BEGIN",
+        "BEGIN TRANSACTION;",
+        "BEGIN READ ONLY",
+        "START TRANSACTION ISOLATION LEVEL READ COMMITTED",
+        "COMMIT",
+        "COMMIT AND CHAIN",
+        "END TRANSACTION",
+        "ROLLBACK WORK",
+    ],
+)
 def test_transaction_control_is_not_wrapped_as_select(statement):
     from tests.optional_dep_stubs import ensure_fake_riffq
 

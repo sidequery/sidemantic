@@ -739,6 +739,20 @@ async def _execute_http_query(
             headers={"X-Sidemantic-Query-ID": query_id, "X-Sidemantic-Request-ID": request_id},
         )
 
+    try:
+        disconnected = await request.is_disconnected()
+    except BaseException:  # noqa: BLE001 - release the slot on task cancellation too
+        admission.release()
+        raise
+    if disconnected:
+        admission.release()
+        record(error="ClientDisconnected", metadata={"queue_duration_ms": queue_ms})
+        raise HTTPException(
+            status_code=499,
+            detail="Client disconnected while waiting for an execution slot; no warehouse query was started",
+            headers={"X-Sidemantic-Query-ID": query_id, "X-Sidemantic-Request-ID": request_id},
+        )
+
     control = QueryExecutionControl()
 
     def worker() -> tuple[Any, bool]:

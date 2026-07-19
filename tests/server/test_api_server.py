@@ -4,10 +4,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import threading
 import time
 from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -680,6 +682,51 @@ def test_timed_out_cache_leader_result_is_not_inserted():
 
     assert app.state.query_admission.stats()["active"] == 0
     assert app.state.result_cache.stats()["entries"] == 0
+
+
+def test_disconnected_http_request_does_not_start_work_after_queue(monkeypatch):
+    from unittest.mock import AsyncMock, MagicMock
+
+    from fastapi import HTTPException
+
+    from sidemantic.api_server import _execute_http_query
+    from sidemantic.core.query_telemetry import QueryTelemetry
+    from sidemantic.server.query_execution import QueryAdmission, QueryLimits
+
+    admission = QueryAdmission(1, 0)
+    layer = MagicMock()
+    layer.dialect = "duckdb"
+    layer.query_telemetry = QueryTelemetry()
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            query_limits=QueryLimits(),
+            query_admission=admission,
+        )
+    )
+    request = MagicMock()
+    request.headers = {}
+    request.is_disconnected = AsyncMock(return_value=True)
+    query_table = MagicMock()
+    monkeypatch.setattr("sidemantic.api_server._query_table", query_table)
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            _execute_http_query(
+                app,
+                request,
+                layer,
+                "SELECT 1",
+                format_override=None,
+                user_attributes=None,
+            )
+        )
+
+    assert exc_info.value.status_code == 499
+    assert "no warehouse query was started" in exc_info.value.detail
+    assert admission.stats() == {"active": 0, "queued": 0}
+    query_table.assert_not_called()
+    event = layer.query_telemetry.history()[0]
+    assert event.error == "ClientDisconnected"
 
 
 def test_worker_timeout_error_is_not_swallowed_as_poll_timeout():

@@ -488,7 +488,7 @@ def create_app(
             filters=filters,
             segments=payload.segments or None,
             order_by=payload.order_by or None,
-            limit=payload.limit if payload.limit is not None else limits.max_rows + 1,
+            limit=payload.limit,
             offset=payload.offset,
             ungrouped=payload.ungrouped,
             parameters=payload.parameters,
@@ -496,6 +496,9 @@ def create_app(
             user_attributes=user_attributes,
             timezone=payload.timezone,
         )
+        # Preserve the layer's default/max-limit policy for omitted limits, then
+        # apply the server ceiling outside the compiled semantic query.
+        sql = _limit_query_sql(sql, limits.max_rows)
         return await _execute_http_query(
             app,
             request,

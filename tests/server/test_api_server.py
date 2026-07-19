@@ -323,6 +323,24 @@ def test_compile_and_query_json_endpoints(tmp_path):
     ]
 
 
+def test_structured_query_preserves_layer_default_limit(tmp_path):
+    client = _build_test_client(tmp_path)
+    client.app.state.layer.default_limit = 1
+
+    response = client.post(
+        "/query",
+        headers=_auth_headers(),
+        json={
+            "dimensions": ["orders.status"],
+            "metrics": ["orders.order_count"],
+            "order_by": ["orders.status"],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["row_count"] == 1
+
+
 def test_compile_accepts_timezone(tmp_path):
     # The optional timezone field on the structured-query request threads into
     # layer.compile so time-dimension truncation happens in the requested zone.

@@ -196,6 +196,21 @@ def test_query_dry_run_emits_sql(tmp_path):
     assert "count" in result.stdout.lower()
 
 
+@pytest.mark.parametrize("command", ["query", "rewrite"])
+def test_compile_only_commands_do_not_open_missing_duckdb(command, tmp_path):
+    _write_min_model(tmp_path)
+    missing_db = tmp_path / "not-created.duckdb"
+    args = [command, "SELECT order_count FROM orders", "--models", str(tmp_path), "--db", str(missing_db)]
+    if command == "query":
+        args.append("--dry-run")
+
+    result = runner.invoke(app, args)
+
+    assert result.exit_code == 0, result.output
+    assert "select" in result.stdout.lower()
+    assert not missing_db.exists()
+
+
 def test_explain_sql_outputs_planner_json(tmp_path):
     _write_min_model(tmp_path)
 

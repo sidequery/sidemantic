@@ -285,13 +285,22 @@ def _load_graph_layer(
     *,
     engine: str | None = None,
     fallback: bool | None = None,
+    dialect: str | None = None,
+    use_preaggregations: bool = False,
 ) -> SemanticLayer:
     """Load project models without opening the configured database."""
 
     models = _models_path(models)
     engine, resolved_fallback = _resolve_engine_options(engine, fallback)
     _configure_engine_environment(engine, resolved_fallback)
-    layer = SemanticLayer(engine=engine, fallback=resolved_fallback)
+    layer = SemanticLayer(
+        dialect=dialect,
+        engine=engine,
+        fallback=resolved_fallback,
+        preagg_database=_loaded_config.preagg_database if _loaded_config else None,
+        preagg_schema=_loaded_config.preagg_schema if _loaded_config else None,
+        use_preaggregations=use_preaggregations,
+    )
     if models.is_file():
         from sidemantic.loaders import load_from_file
 
@@ -301,6 +310,67 @@ def _load_graph_layer(
     if not layer.graph.models:
         raise ValueError("No models found")
     return layer
+
+
+def _compile_only_dialect(models: Path | None, connection: str | None, db: Path | None) -> str:
+    """Resolve a CLI compilation dialect without opening its database."""
+    if connection is not None and db is not None:
+        raise typer.BadParameter("--connection and --db are mutually exclusive")
+    if db is not None:
+        return "duckdb"
+
+    resolved = _resolve_connection(connection=connection, models=models)
+    connection_str = resolved.connection if resolved else "duckdb:///:memory:"
+    if connection_str.startswith(("duckdb://", "motherduck://")):
+        return "duckdb"
+    if connection_str.startswith(("postgres://", "postgresql://")):
+        return "postgres"
+    for scheme, dialect in (
+        ("bigquery://", "bigquery"),
+        ("snowflake://", "snowflake"),
+        ("clickhouse://", "clickhouse"),
+        ("databricks://", "databricks"),
+        ("spark://", "spark"),
+    ):
+        if connection_str.startswith(scheme):
+            return dialect
+    if connection_str.startswith("adbc://"):
+        from urllib.parse import urlsplit
+
+        driver = urlsplit(connection_str).netloc.removeprefix("adbc_driver_")
+        return {
+            "bigquery": "bigquery",
+            "duckdb": "duckdb",
+            "mysql": "mysql",
+            "postgresql": "postgres",
+            "redshift": "redshift",
+            "snowflake": "snowflake",
+            "sqlite": "sqlite",
+            "sqlserver": "tsql",
+            "trino": "trino",
+        }.get(driver, driver)
+    raise ValueError(f"Unsupported connection URL for compilation: {connection_str}")
+
+
+def _load_compile_layer(
+    models: Path | None,
+    *,
+    connection: str | None,
+    db: Path | None,
+    engine: str | None,
+    fallback: bool | None,
+    use_preaggregations: bool,
+) -> SemanticLayer:
+    """Load models and dialect for compilation without opening a warehouse."""
+    models = _models_path(models)
+    dialect = _compile_only_dialect(models, connection, db)
+    return _load_graph_layer(
+        models,
+        engine=engine,
+        fallback=fallback,
+        dialect=dialect,
+        use_preaggregations=use_preaggregations,
+    )
 
 
 @app.callback()
@@ -1040,7 +1110,7 @@ def rewrite(
     """
     try:
         sql = read_sql_input(sql)
-        layer = _load_query_layer(
+        layer = _load_compile_layer(
             models,
             connection=connection,
             db=db,
@@ -1054,7 +1124,7 @@ def rewrite(
         typer.echo(
             QueryRewriter(
                 layer.graph,
-                dialect=layer.adapter.dialect,
+                dialect=layer.dialect,
                 use_preaggregations=layer.use_preaggregations,
             ).rewrite(sql)
         )
@@ -1256,23 +1326,21 @@ def query(
     try:
         output_format = resolve_output_format(default="csv")
         sql = read_sql_input(sql)
-        layer = _load_query_layer(
-            models,
-            connection=connection,
-            db=db,
-            use_preaggregations=use_preaggregations,
-            engine=engine,
-            fallback=fallback,
-            read_only=read_only,
-        )
-
         # Dry run: show generated SQL without executing
         if dry_run:
+            layer = _load_compile_layer(
+                models,
+                connection=connection,
+                db=db,
+                use_preaggregations=use_preaggregations,
+                engine=engine,
+                fallback=fallback,
+            )
             from sidemantic.sql.query_rewriter import QueryRewriter
 
             rewriter = QueryRewriter(
                 layer.graph,
-                dialect=layer.adapter.dialect,
+                dialect=layer.dialect,
                 use_preaggregations=layer.use_preaggregations,
             )
             rewritten_sql = rewriter.rewrite(sql)
@@ -1288,6 +1356,15 @@ def query(
             return
 
         # Execute query
+        layer = _load_query_layer(
+            models,
+            connection=connection,
+            db=db,
+            use_preaggregations=use_preaggregations,
+            engine=engine,
+            fallback=fallback,
+            read_only=read_only,
+        )
         result = layer.sql(sql)
 
         # Get results

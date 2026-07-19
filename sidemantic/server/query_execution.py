@@ -170,6 +170,11 @@ def limit_query_sql(sql: str, max_rows: int, dialect: str) -> str:
     from sqlglot import exp
 
     statement = sqlglot.parse_one(sql, read=dialect)
+    if not isinstance(statement, exp.Query):
+        # Commands such as EXPLAIN, DESCRIBE, and PRAGMA may produce rows but
+        # cannot be embedded in a derived table. Their streamed results still
+        # pass through the row and byte checks in execute_bounded().
+        return statement.sql(dialect=dialect)
     if dialect == "tsql" and isinstance(statement, exp.Select):
         # SQL Server rejects ORDER BY inside a derived table unless the inner
         # query also has TOP/OFFSET. Apply or tighten TOP/FETCH on the original

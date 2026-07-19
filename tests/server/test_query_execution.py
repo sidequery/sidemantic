@@ -153,6 +153,11 @@ def test_limit_query_sql_preserves_smaller_tsql_limit():
     assert bounded == "SELECT TOP 5 value FROM facts ORDER BY value"
 
 
+@pytest.mark.parametrize("sql", ["EXPLAIN SELECT 1", "DESCRIBE facts", "PRAGMA version"])
+def test_limit_query_sql_passes_row_producing_commands_through(sql):
+    assert limit_query_sql(sql, 10, "duckdb") == sql
+
+
 def test_admission_rejects_when_bounded_queue_is_full():
     admission = QueryAdmission(max_concurrent=1, max_queued=1)
     assert admission.acquire(timeout=0.1) == "acquired"

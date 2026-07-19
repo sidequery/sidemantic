@@ -665,10 +665,11 @@ def test_progress_policy_requires_human_tty(monkeypatch: pytest.MonkeyPatch):
     assert not progress_enabled(is_tty=True)
 
 
-def test_click_8_is_an_explicit_runtime_requirement():
+def test_click_and_typer_have_compatible_runtime_floors():
     metadata = tomllib.loads(Path("pyproject.toml").read_text())
 
     assert "click>=8.0.0" in metadata["project"]["dependencies"]
+    assert "typer>=0.18.0" in metadata["project"]["dependencies"]
 
 
 def test_progress_falls_back_when_rich_is_unavailable(monkeypatch: pytest.MonkeyPatch):

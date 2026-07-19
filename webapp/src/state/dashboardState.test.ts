@@ -4,6 +4,7 @@ import { NULL_TOKEN } from "../data/types";
 import {
   brushableDashboardDimension,
   dashboardCategorySeries,
+  dashboardCategorySelection,
   dashboardChartType,
   dashboardDrillDimension,
   dashboardExploreUrl,
@@ -244,6 +245,34 @@ describe("dashboard selections", () => {
     expect(JSON.parse(url.searchParams.get("filters") ?? "{}")).toEqual({ "orders.region": ["West"] });
   });
 
+  test("carries a model-scoped time range into categorical explorer links", () => {
+    const chart: DashboardChart = {
+      id: "status",
+      query: { metrics: ["orders.revenue"], dimensions: ["orders.status"] },
+      encoding: { x: "orders.status" },
+    };
+    const url = new URL(
+      dashboardExploreUrl(
+        document,
+        chart,
+        {
+          tab: "overview",
+          filters: {},
+          ranges: {
+            "customers.created_at__month": { from: "2025-01-01", to: "2025-02-01" },
+            "orders.created_at": { from: "2026-01-01", to: "2026-03-31" },
+          },
+          filterSources: {},
+          rangeSources: {},
+        },
+        { "orders.created_at": "time" },
+      ),
+      "https://example.test",
+    );
+    expect(url.searchParams.get("from")).toBe("2026-01-01");
+    expect(url.searchParams.get("to")).toBe("2026-03-31");
+  });
+
   test("keeps tab-scoped interaction state out of charts on other tabs", () => {
     const scopedDocument: DashboardDocument = {
       ...document,
@@ -329,9 +358,29 @@ describe("dashboard selections", () => {
       ["region"],
     );
     expect(series).toEqual([
-      { label: "West", data: [{ label: "Open", filterValue: "Open", value: 10 }] },
-      { label: "East", data: [{ label: "Open", filterValue: "Open", value: 12 }] },
+      { label: "West", filterValues: ["West"], data: [{ label: "Open", filterValue: "Open", value: 10 }] },
+      { label: "East", filterValues: ["East"], data: [{ label: "Open", filterValue: "Open", value: 12 }] },
     ]);
+  });
+
+  test("includes selectable series dimensions in grouped bar selections", () => {
+    const chart: DashboardChart = {
+      id: "status",
+      query: {
+        metrics: ["orders.order_count"],
+        dimensions: ["orders.status", "orders.region", "orders.channel"],
+      },
+      interactions: { select: { fields: ["orders.status", "orders.region"] } },
+    };
+    expect(
+      dashboardCategorySelection(
+        chart,
+        "orders.status",
+        "Open",
+        ["orders.region", "orders.channel"],
+        ["West", "Retail"],
+      ),
+    ).toEqual({ "orders.status": "Open", "orders.region": "West" });
   });
 
   test("keeps time-series dimension combinations separate and aligns their buckets", () => {

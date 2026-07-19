@@ -16,6 +16,7 @@ import {
   brushableDashboardDimension,
   decodeDashboardState,
   dashboardCategorySeries,
+  dashboardCategorySelection,
   dashboardChartType,
   dashboardChartScopeKey,
   dashboardDrillDimension,
@@ -137,7 +138,7 @@ function DashboardChartPanel({
   catalog,
   backend,
   state,
-  setFilter,
+  setFilters,
   setRange,
 }: {
   document: DashboardDocument;
@@ -145,7 +146,7 @@ function DashboardChartPanel({
   catalog: Catalog;
   backend: SidemanticBackend;
   state: DashboardViewState;
-  setFilter: (dimension: string, value: string) => void;
+  setFilters: (filters: Record<string, string>) => void;
   setRange: (dimension: string, range: { from: string; to: string } | null) => void;
 }) {
   const [detailsOpen, setDetailsOpen] = useState(false);
@@ -240,7 +241,10 @@ function DashboardChartPanel({
                   data={data}
                   ariaLabel={`${chartTitle}, ${seriesLabel || labelize(metric)}, ${data.length} categories`}
                   selectedLabel={state.filters[xRef]}
-                  onSelect={canSelect ? (value) => { setFilter(xRef, value); setDetailsOpen(true); } : undefined}
+                  onSelect={canSelect ? (value) => {
+                    setFilters(dashboardCategorySelection(chart, xRef, value, seriesRefs, entry.filterValues));
+                    setDetailsOpen(true);
+                  } : undefined}
                 />
               </div>
             );
@@ -266,7 +270,7 @@ function DashboardChartPanel({
           >
             {detailsOpen ? "Hide details" : "Drill details"}
           </button>
-          <a href={dashboardExploreUrl(document, chart, state)} className="border border-line px-2 py-1 text-2xs text-muted hover:border-faint hover:text-ink">
+          <a href={dashboardExploreUrl(document, chart, state, types)} className="border border-line px-2 py-1 text-2xs text-muted hover:border-faint hover:text-ink">
             Explore from here
           </a>
           <CsvDownload chart={chart} columns={columns} rows={rows} />
@@ -274,7 +278,13 @@ function DashboardChartPanel({
       </header>
       <div className="min-h-64 overflow-hidden p-3">{visualization}</div>
       {detailsOpen ? (
-        <ChartDetails chart={chart} columns={columns} rows={rows} loading={query.loading} onDrill={setFilter} />
+        <ChartDetails
+          chart={chart}
+          columns={columns}
+          rows={rows}
+          loading={query.loading}
+          onDrill={(dimension, value) => setFilters({ [dimension]: value })}
+        />
       ) : null}
       {query.result?.sql ? <div className="border-t border-line px-3 py-2"><QueryDebugPanel queries={{ Query: query.result.sql }} /></div> : null}
     </article>
@@ -384,12 +394,15 @@ export function DashboardDocumentView({
     window.history.replaceState(null, "", `${window.location.pathname}${query ? `?${query}` : ""}`);
   }, [document, state]);
 
-  function setFilter(chart: DashboardChart, dimension: string, value: string) {
+  function setFilters(chart: DashboardChart, filters: Record<string, string>) {
     const source = dashboardChartScopeKey(document, chart);
     setState((current) => ({
       ...current,
-      filters: { ...current.filters, [dimension]: value },
-      filterSources: { ...current.filterSources, [dimension]: source },
+      filters: { ...current.filters, ...filters },
+      filterSources: {
+        ...current.filterSources,
+        ...Object.fromEntries(Object.keys(filters).map((dimension) => [dimension, source])),
+      },
     }));
   }
 
@@ -504,7 +517,7 @@ export function DashboardDocumentView({
                 catalog={catalog}
                 backend={backend}
                 state={state}
-                setFilter={(dimension, value) => setFilter(chart, dimension, value)}
+                setFilters={(filters) => setFilters(chart, filters)}
                 setRange={(dimension, range) => setRange(chart, dimension, range)}
               />
             ))}

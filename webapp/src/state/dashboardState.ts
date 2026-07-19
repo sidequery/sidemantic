@@ -74,6 +74,21 @@ export function dashboardMetricRefs(chart: DashboardChart): string[] {
   return chart.query.metrics.slice(0, 1);
 }
 
+export function dashboardCategorySelection(
+  chart: DashboardChart,
+  xDimension: string,
+  xValue: string,
+  seriesDimensions: string[],
+  seriesValues: string[],
+): Record<string, string> {
+  return Object.fromEntries(
+    [[xDimension, xValue], ...seriesDimensions.map((dimension, index) => [dimension, seriesValues[index]])].filter(
+      (entry): entry is [string, string] =>
+        typeof entry[1] === "string" && selectableDashboardDimension(chart, entry[0]),
+    ),
+  );
+}
+
 const TIME_GRAINS = new Set(["second", "minute", "hour", "day", "week", "month", "quarter", "year"]);
 
 function timeGrain(dimension: string): { baseDimension: string; grain: string } | null {
@@ -213,7 +228,12 @@ function explorerRange(dimension: string, range: DashboardRange): DashboardRange
   return { from, to: inclusiveEnd.toISOString().slice(0, 10) };
 }
 
-export function dashboardExploreUrl(document: DashboardDocument, chart: DashboardChart, state: DashboardViewState): string {
+export function dashboardExploreUrl(
+  document: DashboardDocument,
+  chart: DashboardChart,
+  state: DashboardViewState,
+  types: DimTypes = {},
+): string {
   const encoded = chart.encoding?.y;
   const metric = (Array.isArray(encoded) ? encoded[0] : encoded) ?? chart.query.metrics[0] ?? "";
   const dimensions = chart.query.dimensions ?? [];
@@ -224,8 +244,16 @@ export function dashboardExploreUrl(document: DashboardDocument, chart: Dashboar
   if (Object.keys(explorerFilters).length) params.set("filters", JSON.stringify(explorerFilters));
 
   const xDimension = chart.encoding?.x ?? dimensions[0];
-  const range = xDimension ? scoped.ranges[xDimension] : undefined;
-  const dateRange = xDimension && range ? explorerRange(xDimension, range) : null;
+  const rangeDimensions = Object.keys(scoped.ranges);
+  const rangeDimension = [xDimension, ...rangeDimensions].find((dimension, index, candidates) => {
+    if (!dimension || candidates.indexOf(dimension) !== index || !scoped.ranges[dimension]) return false;
+    const grained = timeGrain(dimension);
+    const semanticType = types[dimension] ?? (grained ? types[grained.baseDimension] : undefined);
+    const isTime = semanticType === "time" || Boolean(grained);
+    return isTime && (!model || dimension.startsWith(`${model}.`));
+  });
+  const range = rangeDimension ? scoped.ranges[rangeDimension] : undefined;
+  const dateRange = rangeDimension && range ? explorerRange(rangeDimension, range) : null;
   if (dateRange) {
     params.set("from", dateRange.from);
     params.set("to", dateRange.to);
@@ -240,6 +268,7 @@ export type DashboardTimeSeries = {
 
 export type DashboardCategorySeries = {
   label: string;
+  filterValues: string[];
   data: { label: string; filterValue: string; value: number }[];
 };
 
@@ -256,7 +285,7 @@ export function dashboardCategorySeries(
     const seriesValues = seriesColumns.map((column) => dashboardFilterValue(row[column]));
     const key = JSON.stringify(seriesValues);
     const label = seriesValues.length ? seriesValues.map(displayDimValue).join(" · ") : "Current";
-    const series = grouped.get(key) ?? { label, data: [] };
+    const series = grouped.get(key) ?? { label, filterValues: seriesValues, data: [] };
     const filterValue = dashboardFilterValue(row[xColumn]);
     series.data.push({ label: displayDimValue(filterValue), filterValue, value });
     grouped.set(key, series);

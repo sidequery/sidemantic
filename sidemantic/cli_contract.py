@@ -544,7 +544,7 @@ def configure_click_color(ctx: click.Context, *, enabled: bool) -> None:
     """
 
     forced = bool(os.environ.get("FORCE_COLOR", ""))
-    resolved = forced or (enabled and is_terminal(sys.stdout))
+    resolved = enabled and (forced or is_terminal(sys.stdout))
     ctx.color = resolved
 
     import typer.rich_utils as typer_rich_utils

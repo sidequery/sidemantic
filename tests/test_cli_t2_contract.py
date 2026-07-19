@@ -858,6 +858,15 @@ def test_terminal_detection_does_not_override_click_capture(monkeypatch: pytest.
     assert "\x1b[" in forced.stdout
 
 
+def test_explicit_color_opt_out_wins_over_force(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    opted_out = runner.invoke(app, ["--no-color", "--help"], color=True)
+
+    assert opted_out.exit_code == 0, opted_out.output
+    assert "\x1b[" not in opted_out.stdout
+
+
 def test_progress_policy_requires_human_tty(monkeypatch: pytest.MonkeyPatch):
     from sidemantic.cli_contract import cli_state, is_terminal, progress_enabled
 

@@ -323,6 +323,23 @@ def test_predicate_subqueries_fail_closed_across_sql_transports(tmp_path):
         _pg_rewrite(_layer(enforce_visibility=True), query, attrs)
 
 
+def test_projection_subqueries_fail_closed_across_sql_transports(tmp_path):
+    attrs = {"role": "analyst", "tenant_id": 999}
+    query = "SELECT (SELECT 1 FROM orders LIMIT 1) AS leaked, total_amount FROM orders"
+    client = TestClient(create_app(_layer(), auth_token="secret"))
+
+    response = client.post("/sql", json={"query": query}, headers=_headers(attrs))
+    assert response.status_code == 403
+    assert "projection subquery" in response.json()["error"]
+
+    _mcp_layer(tmp_path / "mcp-projection-subquery", attrs)
+    with pytest.raises(SecurityError, match="projection subquery"):
+        mcp_run_sql(query)
+
+    with pytest.raises(SecurityError, match="projection subquery"):
+        _pg_rewrite(_layer(), query, attrs)
+
+
 def test_rust_rewriter_is_disabled_across_secured_sql_transports(tmp_path, monkeypatch):
     from sidemantic.sql.query_rewriter import QueryRewriter
 

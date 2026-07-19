@@ -996,6 +996,12 @@ class SQLGenerator:
         parameters = parameters or {}
         aliases = aliases or {}
 
+        # Auto-include default_time_dimension from metrics before visibility
+        # validation and cache lookup. An implicit dimension is still part of
+        # the caller-visible result and must obey the same column restrictions.
+        if not skip_default_time_dimensions:
+            dimensions = self._apply_default_time_dimensions(metrics, dimensions)
+
         if self.enforce_visibility:
             from sidemantic.core.security import enforce_field_visibility
 
@@ -1044,10 +1050,6 @@ class SQLGenerator:
 
         if with_totals and ungrouped:
             raise ValueError("with_totals cannot be combined with ungrouped")
-
-        # Auto-include default_time_dimension from metrics if not already present
-        if not skip_default_time_dimensions:
-            dimensions = self._apply_default_time_dimensions(metrics, dimensions)
 
         # Resolve segments to SQL filters
         segment_filters = self._resolve_segments(segments)

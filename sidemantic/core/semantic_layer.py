@@ -924,10 +924,12 @@ class SemanticLayer:
         if security_active:
             use_preaggs = False
 
-        # The Rust SQL generator does not enforce security policies, so any query touching a
-        # model with a security policy (row filters or an access gate) must use the Python path.
-        security_forces_python = user_attributes is not None or self._query_touches_secured_model(
-            metrics, dimensions, filters, segments
+        # The Rust SQL generator does not enforce security policies or column visibility,
+        # so any active control keeps compilation on the policy-aware Python path.
+        security_forces_python = (
+            self.enforce_visibility
+            or user_attributes is not None
+            or self._query_touches_secured_model(metrics, dimensions, filters, segments)
         )
 
         inner_sql = None
@@ -1036,6 +1038,7 @@ class SemanticLayer:
             preagg_schema=self.preagg_schema,
             timezone=timezone,
             allow_non_additive_unsafe=self.allow_non_additive_unsafe,
+            enforce_visibility=self.enforce_visibility,
         )
 
         return generator.generate(

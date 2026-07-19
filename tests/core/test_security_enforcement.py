@@ -216,6 +216,26 @@ def test_enforce_visibility_default_off_allows_non_public(db):
     layer.compile(metrics=["orders.margin"])
 
 
+def test_enforce_visibility_rejects_hidden_default_time_dimension(db):
+    model = Model(
+        name="orders",
+        table="orders",
+        primary_key="id",
+        default_time_dimension="created_at",
+        default_grain="day",
+        dimensions=[
+            Dimension(name="id", type="numeric"),
+            Dimension(name="created_at", sql="id", type="time", granularity="day", public=False),
+        ],
+        metrics=[Metric(name="order_count", agg="count")],
+    )
+    layer = _layer(db, enforce_visibility=True)
+    layer.add_model(model)
+
+    with pytest.raises(SecurityError, match=r"Field 'orders\.created_at' is not public"):
+        layer.compile(metrics=["orders.order_count"])
+
+
 def test_row_filtered_query_bypasses_preaggregation(db):
     """When a participating model has active row filters, pre-agg routing is disabled."""
     from sidemantic.core.pre_aggregation import PreAggregation

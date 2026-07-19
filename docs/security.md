@@ -72,7 +72,8 @@ layer.query(metrics=["orders.revenue"], user_attributes={"tenant_id": 1}) # scop
 
 Build the layer with `enforce_visibility=True` to reject any query that references a
 `public: false` dimension or metric — whether it is projected, **filtered on, or ordered
-by** (so a hidden field cannot be used as an information-disclosure oracle):
+by**, or added implicitly as a model's default time dimension (so a hidden field cannot
+be used as an information-disclosure oracle):
 
 ```python
 layer = SemanticLayer(enforce_visibility=True)
@@ -92,9 +93,9 @@ through the semantic layer whenever a security or enforced visibility control is
 active. A statement that would pass through to an underlying table is rejected
 with an actionable `SecurityError`; `SELECT 1`-style source-free statements remain
 available. True raw database execution is never considered policy-aware.
-Predicate subqueries are rejected while controls are active because nested reads
-cannot yet be proven to receive the same policy rewrite; use structured filters or a
-modeled semantic join instead.
+Predicate and projection subqueries are rejected while controls are active because
+nested expression reads cannot yet be proven to receive the same policy rewrite; use
+structured filters or a modeled semantic join instead.
 CTE sources are resolved according to their lexical SQL scope, so a nested alias cannot
 mask an out-of-scope physical table read.
 The optional Rust semantic rewriter is also disabled for secured SQL transports until

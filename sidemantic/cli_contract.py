@@ -254,7 +254,7 @@ def emit_error(value: object) -> None:
 
 def _json_default(value: object) -> Any:
     if isinstance(value, Decimal):
-        return float(value)
+        return str(value)
     if isinstance(value, (date, datetime, time)):
         return value.isoformat()
     if dataclasses.is_dataclass(value) and not isinstance(value, type):

@@ -142,7 +142,8 @@ def test_query_formats_preserve_database_scalar_values(project: Path, output_for
             "query",
             "SELECT DATE '2024-01-02' AS day, "
             "TIMESTAMP '2024-01-02 03:04:05' AS occurred_at, "
-            "12.50::DECIMAL(10, 2) AS amount",
+            "12.50::DECIMAL(10, 2) AS amount, "
+            "9007199254740993::DECIMAL(38, 0) AS exact_count",
             "--project",
             str(project),
             "--format",
@@ -153,17 +154,23 @@ def test_query_formats_preserve_database_scalar_values(project: Path, output_for
     assert result.exit_code == 0, result.output
     if output_format == "csv":
         assert list(csv.reader(io.StringIO(result.stdout))) == [
-            ["day", "occurred_at", "amount"],
-            ["2024-01-02", "2024-01-02 03:04:05", "12.50"],
+            ["day", "occurred_at", "amount", "exact_count"],
+            ["2024-01-02", "2024-01-02 03:04:05", "12.50", "9007199254740993"],
         ]
     elif output_format in {"json", "jsonl"}:
         payload = json.loads(result.stdout)
         row = payload[0] if output_format == "json" else payload
-        assert row == {"amount": 12.5, "day": "2024-01-02", "occurred_at": "2024-01-02T03:04:05"}
+        assert row == {
+            "amount": "12.50",
+            "day": "2024-01-02",
+            "exact_count": "9007199254740993",
+            "occurred_at": "2024-01-02T03:04:05",
+        }
     else:
         assert "2024-01-02" in result.stdout
         assert "2024-01-02 03:04:05" in result.stdout
         assert "12.50" in result.stdout
+        assert "9007199254740993" in result.stdout
 
 
 def test_plain_query_preserves_database_scalar_values(project: Path):

@@ -11,6 +11,7 @@ from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
+from sidemantic.sql.lookml_expression import replace_lookml_placeholders, strip_lookml_model_qualifiers
 
 logger = logging.getLogger(__name__)
 
@@ -1071,155 +1072,9 @@ class LookMLAdapter(BaseAdapter):
         and filters untouched -- the common all-columns/no-null-test case (generator handles
         it) or any parse failure (fall back to the existing path).
         """
-        import sqlglot
-        from sqlglot import expressions as exp
+        from sidemantic.sql.lookml_expression import fold_lookml_aggregate_filters
 
-        from sidemantic.sql.aggregation_detection import _ANONYMOUS_AGGREGATE_FUNCTIONS
-
-        def _case(cond, then):
-            return exp.Case(ifs=[exp.If(this=cond, true=then)])
-
-        try:
-            tree = sqlglot.parse_one(sql.replace("{model}", "__MODEL__"))
-            parsed_conds = [sqlglot.parse_one(f.replace("{model}", "__MODEL__")) for f in filters]
-        except Exception:
-            return None
-        # Include recognized ANONYMOUS aggregates (PRODUCT/ENTROPY/WEIGHTED_AVG/... which
-        # sqlglot parses as exp.Anonymous, not exp.AggFunc) so a filter is folded into them
-        # too -- otherwise a mix like PRODUCT(amount) / COUNT(*) would fold only the COUNT,
-        # clear the filters, and leave PRODUCT computed over ALL rows.
-        aggs = list(tree.find_all(exp.AggFunc))
-        aggs += [n for n in tree.find_all(exp.Anonymous) if (n.name or "").lower() in _ANONYMOUS_AGGREGATE_FUNCTIONS]
-        if not aggs or not parsed_conds:
-            return None
-
-        # sqlglot canonicalizes some dialect-specific AGGREGATE spellings when it re-serializes the
-        # tree below (APPROX_COUNT_DISTINCT -> APPROX_DISTINCT, VAR_POP -> VARIANCE_POP, ...). The
-        # rewritten spelling can be INVALID on the warehouse the original targeted (DuckDB rejects
-        # APPROX_DISTINCT). Bail (None) so a FORCE caller -- the export/inline path, which SKIPS the
-        # measure on None -- does not emit a renamed aggregate. The import caller (force=False)
-        # instead falls back to generator column-nulling on None, which silently drops the filter on
-        # a zero-column term (a COUNT(*) denominator), so it must NOT bail here: fold and accept the
-        # rename. Only aggregate names are checked, so a SAFE structural rewrite the target still
-        # accepts (IF -> CASE, `::t` -> CAST) is allowed.
-        if force:
-            for a in aggs:
-                try:
-                    rendered_name = re.match(r"\s*(\w+)\s*\(", a.sql())
-                except Exception:
-                    return None
-                if rendered_name and not re.search(rf"\b{re.escape(rendered_name.group(1))}\s*\(", sql, re.I):
-                    return None
-
-        # An ordered-set aggregate (PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY x)) keeps its
-        # value column in the enclosing WithinGroup's ORDER BY, NOT inside the AggFunc (whose
-        # only arg is the percentile constant). Its "aggregate scope" for the column check and
-        # for folding is therefore the WithinGroup.
-        def _scope(a):
-            wg = a.find_ancestor(exp.WithinGroup)
-            return wg if wg is not None else a
-
-        # Column-nulling is UNSAFE when nulling a filter-affected column to EXCLUDE a row does
-        # NOT actually exclude it: (1) a NULL-test (`col IS NULL` / `COALESCE(col, ...)`) flips
-        # to true and counts the row; (2) a keyed symmetric-distinct aggregate hashes the key
-        # (`HASH(col)`), and HASH(NULL) is a non-NULL constant, so the row still contributes
-        # (garbage). In those cases fold the filter into the aggregate predicate instead.
-        # (3) a conditional with a non-NULL DEFAULT branch also survives nulling: nulling the
-        # predicate's column only makes the condition false, and the default still yields a
-        # non-NULL value, so the aggregate keeps counting the excluded row -- e.g.
-        # COUNT(CASE WHEN status='completed' THEN 1 ELSE 0 END) or its IF/IFF spellings return
-        # EVERY row rather than the filtered ones. Covers:
-        #   - CASE ... ELSE <x>            -> exp.Case with a `default`
-        #   - IF(cond, a, b)               -> exp.If with a non-None `false` branch. A CASE's own
-        #                                     WHEN clauses are exp.If with false=None, so a plain
-        #                                     CASE (no ELSE) is NOT matched here.
-        #   - IFF(cond, a, b) (Snowflake)  -> parsed as exp.Anonymous with 3 args
-        # (NVL / IFNULL already parse as exp.Coalesce, covered above.)
-        case_with_default = any(c.args.get("default") is not None for c in tree.find_all(exp.Case))
-        if_with_default = any(n.args.get("false") is not None for n in tree.find_all(exp.If))
-        iff_with_default = any(
-            (n.name or "").lower() in ("iff", "if") and len(n.expressions) >= 3 for n in tree.find_all(exp.Anonymous)
-        )
-        # (4) a MULTI-COLUMN DISTINCT -- COUNT(DISTINCT (a, b)) or COUNT(DISTINCT a, b) -- is unsafe
-        # to null: nulling the columns of an excluded row yields the tuple (NULL, NULL), which is
-        # NOT a NULL value (only its components are), so DISTINCT counts that phantom tuple ONCE and
-        # inflates the result by one. A single-column DISTINCT is safe (its NULL is ignored).
-        multi_col_distinct = any(
-            len(d.expressions) > 1 or any(isinstance(e, exp.Tuple) and len(e.expressions) > 1 for e in d.expressions)
-            for d in tree.find_all(exp.Distinct)
-        )
-        unsafe_nulling = (
-            tree.find(exp.Is) is not None
-            or tree.find(exp.Coalesce) is not None
-            or re.search(r"\bhash\s*\(", sql, re.I) is not None
-            or case_with_default
-            or if_with_default
-            or iff_with_default
-            or multi_col_distinct
-        )
-        # Otherwise, if every aggregate already references a column the generator can null
-        # (nulling the value/ORDER-BY column filters it; aggregates ignore NULLs), the
-        # existing path is correct AND consistent -> don't rewrite. `force` skips this: a caller
-        # INLINING this SQL into another measure has no generator column-nulling step, so the
-        # filter must always be baked into a CASE here.
-        if not force and not unsafe_nulling and all(any(True for _ in _scope(a).find_all(exp.Column)) for a in aggs):
-            return None
-
-        def _combined():
-            c = parsed_conds[0].copy()
-            for p in parsed_conds[1:]:
-                c = exp.And(this=c, expression=p.copy())
-            return c
-
-        for a in aggs:
-            # Is `a` itself windowed? Its OVER wrapper (exp.Window) is normally the direct parent,
-            # but an aggregate FILTER clause (COUNT(*) FILTER (WHERE ...) OVER ()) nests an exp.Filter
-            # between the aggregate and the Window, so walk past any Filter wrapper. (A NESTED
-            # aggregate like the inner COUNT of SUM(COUNT(*)) OVER () has a non-Filter/-Window parent,
-            # so it is correctly NOT treated as windowed and still folds.)
-            _windowed = a.parent
-            while isinstance(_windowed, exp.Filter):
-                _windowed = _windowed.parent
-            if isinstance(_windowed, exp.Window):
-                # A WINDOWED aggregate (SUM(...) OVER ()) runs AFTER grouping, so wrapping its
-                # argument in CASE WHEN <filter> puts the filter column inside the window, ungrouped
-                # -- the engine rejects it. When the window wraps a NESTED aggregate
-                # (SUM(COUNT(*)) OVER ()), that inner aggregate is also in `aggs` and carries the
-                # filter, so skip only the outer one. With no inner aggregate to carry it
-                # (SUM(amount) OVER ()), the predicate cannot be applied to this term consistently
-                # with the rest -> abort the fold rather than emit inconsistent or invalid SQL.
-                inner_aggs = [n for n in a.find_all(exp.AggFunc) if n is not a]
-                inner_aggs += [
-                    n
-                    for n in a.find_all(exp.Anonymous)
-                    if n is not a and (n.name or "").lower() in _ANONYMOUS_AGGREGATE_FUNCTIONS
-                ]
-                if inner_aggs:
-                    continue
-                return None
-            wg = a.find_ancestor(exp.WithinGroup)
-            if wg is not None:
-                # Ordered-set aggregate: fold into the ORDER BY value(s), never the percentile
-                # constant (PERCENTILE_CONT(CASE ...) would be a non-constant parameter).
-                for ordered in wg.find_all(exp.Ordered):
-                    ordered.set("this", _case(_combined(), ordered.this.copy()))
-                continue
-            if isinstance(a, exp.Anonymous):
-                # Anonymous aggregate: its arguments live in .expressions (not .this, which is
-                # the function name), so wrap each argument to carry the filter.
-                a.set("expressions", [_case(_combined(), e.copy()) for e in a.expressions])
-                continue
-            arg = a.this
-            if isinstance(arg, exp.Distinct):
-                arg.set("expressions", [_case(_combined(), e.copy()) for e in arg.expressions])
-            elif arg is None or isinstance(arg, exp.Star):
-                a.set("this", _case(_combined(), exp.Literal.number(1)))
-            else:
-                a.set("this", _case(_combined(), arg.copy()))
-        try:
-            return tree.sql().replace("__MODEL__", "{model}")
-        except Exception:
-            return None
+        return fold_lookml_aggregate_filters(sql, filters, force=force)
 
     @classmethod
     def _generator_column_nulling_suffices(cls, sql: str) -> bool:
@@ -1232,43 +1087,9 @@ class LookMLAdapter(BaseAdapter):
         applied at all -- a zero-column aggregate like ``COUNT(*) FILTER (WHERE ...) OVER ()`` has no
         column to null, so the imported filter would silently count every row.
         """
-        import sqlglot
-        from sqlglot import expressions as exp
+        from sidemantic.sql.lookml_expression import generator_column_nulling_suffices
 
-        from sidemantic.sql.aggregation_detection import _ANONYMOUS_AGGREGATE_FUNCTIONS
-
-        try:
-            tree = sqlglot.parse_one(sql.replace("{model}", "__M__"))
-        except Exception:
-            return False
-        aggs = list(tree.find_all(exp.AggFunc))
-        aggs += [n for n in tree.find_all(exp.Anonymous) if (n.name or "").lower() in _ANONYMOUS_AGGREGATE_FUNCTIONS]
-        if not aggs:
-            return False
-        unsafe = (
-            tree.find(exp.Is) is not None
-            or tree.find(exp.Coalesce) is not None
-            or re.search(r"\bhash\s*\(", sql, re.I) is not None
-            or any(c.args.get("default") is not None for c in tree.find_all(exp.Case))
-            or any(n.args.get("false") is not None for n in tree.find_all(exp.If))
-            or any(
-                (n.name or "").lower() in ("iff", "if") and len(n.expressions) >= 3
-                for n in tree.find_all(exp.Anonymous)
-            )
-            or any(
-                len(d.expressions) > 1
-                or any(isinstance(e, exp.Tuple) and len(e.expressions) > 1 for e in d.expressions)
-                for d in tree.find_all(exp.Distinct)
-            )
-        )
-        if unsafe:
-            return False
-
-        def _scope(a):
-            wg = a.find_ancestor(exp.WithinGroup)
-            return wg if wg is not None else a
-
-        return all(any(True for _ in _scope(a).find_all(exp.Column)) for a in aggs)
+        return generator_column_nulling_suffices(sql)
 
     # LookML view keys holding a named-field LIST. A refinement's entry for an EXISTING field
     # updates that field's properties; it does not replace the field.
@@ -1483,44 +1304,11 @@ class LookMLAdapter(BaseAdapter):
         from sqlglot import expressions as exp
 
         try:
-            tree = sqlglot.parse_one(sql.replace("{model}", "__m__").replace("${TABLE}", "__m__"))
+            normalized = replace_lookml_placeholders(sql, {"{model}": "__m__", "${TABLE}": "__m__"})
+            tree = sqlglot.parse_one(normalized)
         except Exception:
             return False
         return any(True for _ in tree.find_all(exp.List)) or any(True for _ in tree.find_all(exp.ArrayAgg))
-
-    # SQL date-part keywords that a date/time function can take UNQUOTED.
-    # SQL Server DATEADD/DATEDIFF/DATENAME datepart ABBREVIATIONS -> canonical name (Microsoft's
-    # accepted forms). Folded filters see these in a date function's part slot, so they must be
-    # recognised as date-part keywords and resolved to the right coarseness. They are only ever
-    # protected in the part SLOT (position-guarded), so a single-letter column like `m`/`d` used
-    # anywhere else still resolves as a column.
-    _DATE_PART_ABBR = {
-        "yy": "year", "yyyy": "year", "qq": "quarter", "q": "quarter",
-        "mm": "month", "m": "month", "dy": "dayofyear", "y": "dayofyear",
-        "dd": "day", "d": "day", "wk": "week", "ww": "week",
-        "dw": "weekday", "w": "weekday", "hh": "hour", "mi": "minute", "n": "minute",
-        "ss": "second", "s": "second", "ms": "millisecond", "mcs": "microsecond", "ns": "nanosecond",
-    }  # fmt: skip
-    # Bare tokens that are SQL SYNTAX (operators, logical/comparison keywords, literals), never a
-    # column reference -- a real column with such a name must be quoted. A folded filter must leave
-    # these intact rather than rewrite one that happens to share a dimension name (e.g. a dimension
-    # named `or` in `status = 'done' or status = 'paid'`) into that dimension's SQL.
-    _SQL_KEYWORD_TOKENS = frozenset(
-        {
-            "true", "false", "null", "unknown",
-            "and", "or", "not", "is", "in", "like", "ilike", "rlike", "similar",
-            "between", "exists", "escape", "all", "any", "some",
-            "case", "when", "then", "else", "end",
-            # Reserved grammar keywords that appear INSIDE an expression/subquery of a predicate --
-            # EXTRACT(day FROM x), CAST(x AS t), a scalar subquery's SELECT/FROM/WHERE/GROUP/ORDER/
-            # JOIN clauses, DISTINCT, set operators. An unquoted column with any of these names is
-            # invalid SQL (they must be quoted), so a bare token is always the keyword.
-            "as", "from", "where", "select", "distinct", "group", "order", "by", "having",
-            "join", "inner", "outer", "left", "right", "full", "cross", "natural", "on", "using",
-            "union", "intersect", "except", "with", "asc", "desc", "nulls", "over", "partition",
-            "within",
-        }
-    )  # fmt: skip
 
     # Nullary SQL constants that read like a bare identifier but are VALUES, not columns -- a folded
     # filter must NOT table-qualify a resolved dimension SQL equal to one of these (${TABLE}.CURRENT_DATE
@@ -1533,104 +1321,6 @@ class LookMLAdapter(BaseAdapter):
         }
     )  # fmt: skip
 
-    _DATE_PART_KEYWORDS = frozenset(
-        {
-            "year", "quarter", "month", "week", "day", "hour", "minute", "second",
-            "millisecond", "microsecond", "nanosecond", "epoch", "date", "time",
-            "dayofweek", "dayofyear", "dow", "doy", "isoweek", "isoyear", "isodow",
-            "weekday", "yearofweek", "century", "decade", "millennium",
-        }
-        | set(_DATE_PART_ABBR)
-    )  # fmt: skip
-    # Which ARGUMENT of a date/time call is the date part. Position matters: the same keyword can
-    # be a real column in another slot -- DATE_TRUNC(date, month) on a model with BOTH a `date`
-    # and a `month` dimension means column `date` truncated to part `month`. Keying only on "is a
-    # keyword inside a date function" would wrongly protect the `date` COLUMN too.
-    #   -1 => the LAST argument (BigQuery DATE_TRUNC(value, part), DATE_DIFF(a, b, part))
-    #    0 => the FIRST argument (SQL Server DATETRUNC(part, x) / DATEADD(part, n, x) /
-    #         DATEDIFF(part, a, b); also DuckDB's datetrunc(part, x) spelling)
-    # NOTE the two TRUNC spellings differ: underscored DATE_TRUNC is BigQuery's (value, part) --
-    # Postgres/DuckDB's date_trunc('part', value) quotes the part, so it is already protected as a
-    # string literal -- while the unspaced DATETRUNC is SQL Server's (part, value).
-    # Functions with NO bare date-part argument (time_bucket takes an INTERVAL, not a keyword) are
-    # deliberately absent: listing one would protect whatever sits in that slot, including a real
-    # keyword-named column. EXTRACT(part FROM x) and INTERVAL n part have their own position checks.
-    _DATE_PART_ARG_POS = {
-        "timestamp_trunc": -1, "datetime_trunc": -1, "time_trunc": -1,
-        "timestamp_diff": -1, "datetime_diff": -1, "time_diff": -1,
-        "datetrunc": 0, "datediff": 0, "dateadd": 0, "datepart": 0, "date_part": 0,
-        "timestampadd": 0, "timestampdiff": 0, "timestampdiff_big": 0, "datetimediff": 0,
-        # SQL Server functions taking the datepart as the FIRST argument. datediff_big is the
-        # sibling of the already-listed timestampdiff_big; datename and date_bucket round out the
-        # datepart-first family. Without them a folded filter's DATENAME(day, col) leaves `day`
-        # unprotected, so a model with a `day` dimension rewrites it to (${TABLE}.order_day).
-        "datename": 0, "datediff_big": 0, "date_bucket": 0,
-        # Snowflake TIMEADD/TIMEDIFF are documented aliases of DATEADD/DATEDIFF (datepart first).
-        "timeadd": 0, "timediff": 0,
-        # Snowflake's reversed-argument TRUNC/TRUNCATE alternative to DATE_TRUNC: TRUNC(expr, part),
-        # so the date part is the LAST argument. A numeric TRUNC(n, 2) is unaffected -- the trailing
-        # `2` is not a date-part keyword, so it is never treated as a part.
-        "trunc": -1, "truncate": -1,
-        # BigQuery/Snowflake two-argument LAST_DAY(expr, part): the part is the LAST argument. The
-        # single-argument LAST_DAY(date) is unaffected (no trailing date-part keyword).
-        "last_day": -1,
-    }  # fmt: skip
-    # DATE_TRUNC has NO fixed part position: BigQuery is DATE_TRUNC(value, part) while Snowflake is
-    # DATE_TRUNC(part, expr), and the adapter has no dialect context. Disambiguate by CONTENT --
-    # whichever argument is a date-part keyword is the part (see _is_date_part_argument).
-    _DATE_PART_AMBIGUOUS_TRUNC = frozenset({"date_trunc"})
-    # date_diff has NO fixed part position either: BigQuery is DATE_DIFF(end, start, part) (part
-    # LAST) while DuckDB is date_diff(part, start, end) (part FIRST), same name and no dialect
-    # context. Disambiguate by CONTENT -- whichever END argument is a date-part keyword is the part
-    # (see _is_date_part_argument). The unambiguous spellings stay in _DATE_PART_ARG_POS: `datediff`
-    # (no underscore) is part-FIRST everywhere, and BigQuery's timestamp_diff/datetime_diff/time_diff
-    # are part-LAST.
-    _DATE_PART_AMBIGUOUS_DIFF = frozenset({"date_diff"})
-    # Coarseness rank of each date-part keyword (LOWER = coarser). Used only to break the tie when
-    # BOTH arguments of an ambiguous DATE_TRUNC are keywords (a model with `date` AND `month`
-    # dimensions): truncation always goes finer -> coarser, so the COARSER keyword is the part and
-    # the other is the value column. That reads DATE_TRUNC(date, month) and DATE_TRUNC(month, date)
-    # the same way -- month truncates date -- which is right under either dialect's order.
-    _DATE_PART_RANK = {
-        "millennium": 0, "century": 1, "decade": 2,
-        "year": 3, "isoyear": 3, "yearofweek": 3,
-        "quarter": 4, "month": 5, "week": 6, "isoweek": 6,
-        "day": 7, "date": 7, "dayofweek": 7, "dayofyear": 7,
-        "dow": 7, "doy": 7, "weekday": 7, "isodow": 7,
-        "hour": 8, "time": 8, "minute": 9, "second": 10,
-        "millisecond": 11, "microsecond": 12, "nanosecond": 13, "epoch": 14,
-    }  # fmt: skip
-    # Keywords that are valid DATE_TRUNC truncation UNITS. The rest of _DATE_PART_KEYWORDS are
-    # extraction parts only (date, dow, doy, weekday, epoch, ...) -- you EXTRACT them but do not
-    # DATE_TRUNC to them. Used to break an equal-coarseness tie: DATE_TRUNC(day, date) shares rank 7
-    # for both args, but only `day` is a trunc unit, so it is the part and `date` is the column.
-    _DATE_TRUNC_UNITS = frozenset(
-        {"millennium", "century", "decade", "year", "quarter", "month", "week", "day",
-         "hour", "minute", "second", "millisecond", "microsecond", "nanosecond",
-         # ISO truncation units (BigQuery isoweek/isoyear). Without them a DATE_TRUNC(week, isoweek)
-         # tie-break saw only `week` as a unit and treated the value column as the part.
-         "isoweek", "isoyear"}
-    )  # fmt: skip
-
-    @staticmethod
-    def _blank_string_literals(s: str) -> str:
-        """Replace the CONTENTS of single/double-quoted spans with spaces, preserving length.
-
-        A paren-depth scan can then treat a ``)`` inside a string literal (``label = ')'``) as
-        non-syntax without shifting any character position the caller relies on.
-        """
-        out = list(s)
-        quote = None
-        for i, ch in enumerate(s):
-            if quote is not None:
-                if ch == quote:
-                    quote = None
-                else:
-                    out[i] = " "
-            elif ch in "'\"":
-                quote = ch
-        return "".join(out)
-
     @staticmethod
     def _model_to_table_outside_quotes(s: str) -> str:
         """Replace the ``{model}`` placeholder with ``${TABLE}`` OUTSIDE quoted literals/identifiers.
@@ -1639,248 +1329,7 @@ class LookMLAdapter(BaseAdapter):
         (``label = '{model}.status'``), changing the matched literal; only real placeholders are
         converted here.
         """
-        parts = re.split(r"""('(?:[^']|'')*'|"(?:[^"]|"")*"|`[^`]*`|\[[^\]]*\])""", s)
-        for i in range(0, len(parts), 2):  # even indices sit OUTSIDE quoted segments
-            parts[i] = parts[i].replace("{model}", "${TABLE}")
-        return "".join(parts)
-
-    @staticmethod
-    def _enclosing_call(pre: str) -> tuple[str | None, int, int]:
-        """Describe the call a token sits in, given the text ``pre`` before it.
-
-        Returns ``(function_name, arg_index, open_paren_pos)`` by scanning backwards for the first
-        unclosed ``(`` and counting the top-level commas after it. ``(None, 0, -1)`` when the token
-        is not inside a call. The scan is quote-aware: a paren or comma inside a string literal
-        (``DATE_TRUNC(CASE WHEN x = ')' THEN a END, month)``) is not counted as syntax.
-        """
-        # Blank string-literal contents first (length-preserving) so a `)`/`,` inside a quoted
-        # value does not skew the paren depth or comma count; positions stay valid for the caller.
-        pre = LookMLAdapter._blank_string_literals(pre)
-        depth, commas, i = 0, 0, len(pre) - 1
-        while i >= 0:
-            ch = pre[i]
-            if ch == ")":
-                depth += 1
-            elif ch == "(":
-                if depth == 0:
-                    m = re.search(r"(\w+)\s*$", pre[:i])
-                    return (m.group(1) if m else None), commas, i
-                depth -= 1
-            elif ch == "," and depth == 0:
-                commas += 1
-            i -= 1
-        return None, 0, -1
-
-    @classmethod
-    def _enclosing_call_arg_texts(cls, pre: str, suf: str, token: str) -> list[str]:
-        """Argument texts of the call a token sits in, reconstructed from ``pre``/``token``/``suf``.
-
-        Used to disambiguate a call whose date-part slot is not fixed (see
-        ``_DATE_PART_AMBIGUOUS_TRUNC``). Returns [] when the token is not inside a call.
-        """
-        _, _, open_pos = cls._enclosing_call(pre)
-        if open_pos < 0:
-            return []
-        depth, end = 0, len(suf)
-        for i, ch in enumerate(suf):
-            if ch in "([":
-                depth += 1
-            elif ch in ")]":
-                if depth == 0:
-                    end = i
-                    break
-                depth -= 1
-        call_args = pre[open_pos + 1 :] + token + suf[:end]
-        return [a.strip() for a in cls._split_top_level_commas(call_args, quote_aware=True)]
-
-    # Functions with a NUMERIC overload as well as a date/time one: TRUNC(date, part) vs
-    # TRUNC(number, scale). Only guard their part slot with evidence the value argument is date/time.
-    _DATE_PART_NUMERIC_OVERLOAD = frozenset({"trunc", "truncate"})
-
-    # An explicit date/time cast around a value marks the date overload of a numeric-overloaded
-    # function (a numeric scale value is never cast to a date type). Covers CAST(x AS DATE) and the
-    # `x::date` shorthand for DATE / DATETIME / TIMESTAMP(TZ) / TIME family types.
-    _DATE_VALUE_CAST_RE = re.compile(
-        r"(?i)\bCAST\s*\(.*\bAS\s+(?:DATE|DATETIME|SMALLDATETIME|TIMESTAMP\w*|TIME)\b"
-        r"|::\s*(?:DATE|DATETIME|SMALLDATETIME|TIMESTAMP\w*|TIME)\b"
-    )
-
-    @classmethod
-    def _is_date_part_argument(cls, pre: str, suf: str, token: str, time_dim_names: set | None = None) -> bool:
-        """True if ``token`` occupies the date-PART argument slot of a date/time call.
-
-        Position-aware on purpose: DATE_TRUNC(date, month) on a model with both a `date` and a
-        `month` dimension means column `date` truncated to part `month` -- only the LAST argument
-        is the part, so the `date` column must still resolve.
-
-        ``time_dim_names`` disambiguates a numeric-overloaded function (TRUNC): its part slot is
-        guarded only when the value argument is a known time dimension, so a numeric
-        ``TRUNC(amount, month)`` (month = a scale column) still resolves `month` to its dimension.
-        """
-        if token.lower() not in cls._DATE_PART_KEYWORDS:
-            return False
-        func, arg_index, open_pos = cls._enclosing_call(pre)
-        if not func:
-            return False
-        if func.lower() in cls._DATE_PART_AMBIGUOUS_TRUNC:
-            # DATE_TRUNC(a, b) is BigQuery (value, part) OR Snowflake (part, expr) -- same name,
-            # opposite orders. Decide by CONTENT, not position: the argument that IS a date-part
-            # keyword is the part, and the other is the value column.
-            args = cls._enclosing_call_arg_texts(pre, suf, token)
-            if len(args) != 2:
-                return False
-            # Strip quotes before matching: Postgres/DuckDB write the part QUOTED
-            # (DATE_TRUNC('month', date)). The quoted token is already protected from rewriting by
-            # the literal splitter, but it must still be RECOGNISED as the part here -- otherwise
-            # the other argument looks like the only keyword and a real column named `date` is
-            # left unresolved.
-            first_raw, second_raw = (a.strip() for a in (args[0], args[1]))
-            # Only a SINGLE-quoted string literal is a date PART shortcut. A double-quoted token is
-            # a quoted IDENTIFIER (a column, e.g. Snowflake DATE_TRUNC(month, "date")), so it must
-            # NOT be treated as the part -- otherwise the real part token loses its protection.
-            first_quoted = first_raw[:1] == "'"
-            second_quoted = second_raw[:1] == "'"
-            first, second = (a.strip("'\"").lower() for a in (first_raw, second_raw))
-            first_kw = first in cls._DATE_PART_KEYWORDS
-            second_kw = second in cls._DATE_PART_KEYWORDS
-            # Normalize an abbreviation (mm, dd, ...) to its canonical name so rank/unit lookups
-            # below see the real coarseness rather than defaulting to 99 / not-a-unit.
-            first_n = cls._DATE_PART_ABBR.get(first, first)
-            second_n = cls._DATE_PART_ABBR.get(second, second)
-            if first_quoted and not second_quoted:
-                # A QUOTED argument is a string literal -> can only be the date PART, never the
-                # value column. Decide by quoting BEFORE the by-keyword tie-break, which would
-                # otherwise leave a value column sharing the unit's name (DATE_TRUNC('week', week))
-                # unresolved.
-                part_index = 0
-            elif second_quoted and not first_quoted:
-                part_index = 1
-            elif first_kw and not second_kw:
-                part_index = 0  # Snowflake order
-            elif second_kw and not first_kw:
-                part_index = 1  # BigQuery order
-            elif first_kw and second_kw:
-                # A model with e.g. BOTH `date` and `month` dimensions makes both arguments look
-                # like parts. Truncation goes finer -> coarser, so the COARSER one is the part --
-                # month truncates date under either order.
-                first_rank = cls._DATE_PART_RANK.get(first_n, 99)
-                second_rank = cls._DATE_PART_RANK.get(second_n, 99)
-                if first_rank != second_rank:
-                    part_index = 0 if first_rank < second_rank else 1
-                else:
-                    # Equal coarseness (DATE_TRUNC(day, date): both rank 7) gives no finer/coarser
-                    # signal. A DATE_TRUNC part must be a truncation UNIT, so if exactly one
-                    # argument is a real unit (day) and the other an extraction-only keyword that is
-                    # also a column (date), the unit is the part and the other resolves as a column.
-                    first_unit = first_n in cls._DATE_TRUNC_UNITS
-                    second_unit = second_n in cls._DATE_TRUNC_UNITS
-                    if first_unit and not second_unit:
-                        part_index = 0
-                    elif second_unit and not first_unit:
-                        part_index = 1
-                    else:
-                        part_index = 1  # both or neither a unit: fall back to BigQuery's order
-            else:
-                return False
-            return arg_index == part_index
-        if func.lower() in cls._DATE_PART_AMBIGUOUS_DIFF:
-            # date_diff(a, b, c): BigQuery puts the part LAST, DuckDB puts it FIRST. The token is
-            # already known to be a date-part keyword, so it is the part when it sits at a candidate
-            # END (first or last argument) and the OTHER end is not itself a keyword. If both ends
-            # look like keywords (a column literally named after a unit), fall back to BigQuery's
-            # part-LAST order. A part in the MIDDLE argument never occurs, so reject it.
-            args = cls._enclosing_call_arg_texts(pre, suf, token)
-            if len(args) < 2:
-                return False
-            first = args[0].strip().strip("'\"").lower()
-            last = args[-1].strip().strip("'\"").lower()
-            first_kw = first in cls._DATE_PART_KEYWORDS
-            last_kw = last in cls._DATE_PART_KEYWORDS
-            if first_kw and not last_kw:
-                part_index = 0
-            elif last_kw and not first_kw:
-                part_index = len(args) - 1
-            else:
-                # Both ends look like keywords (a column literally named after a unit, e.g. a `date`
-                # dimension). A diff PART is a genuine unit (day, month, ...), so prefer the end that
-                # is a real truncation/diff unit; otherwise fall back to BigQuery's part-LAST order.
-                first_unit = first in cls._DATE_TRUNC_UNITS
-                last_unit = last in cls._DATE_TRUNC_UNITS
-                if first_unit and not last_unit:
-                    part_index = 0
-                else:
-                    part_index = len(args) - 1
-            return arg_index == part_index
-        want = cls._DATE_PART_ARG_POS.get(func.lower())
-        if want is None:
-            return False
-        if func.lower() in cls._DATE_PART_NUMERIC_OVERLOAD:
-            # TRUNC/TRUNCATE is also numeric (TRUNC(number, scale)). Only treat the part slot as a
-            # date part when the VALUE argument is date/time-typed; otherwise a scale column named
-            # like a unit (TRUNC(amount, month)) must still resolve to its dimension SQL.
-            _args = cls._enclosing_call_arg_texts(pre, suf, token)
-            _value_raw = _args[0].strip() if _args else ""
-            # The value is normally qualified in a folded filter ({model}.created_at); strip the
-            # model placeholder / a bare table qualifier and any quotes so it matches a time dim name.
-            _value = re.sub(r"^(?:\{model\}|\$\{TABLE\}|\w+)\.", "", _value_raw).strip("`\"[]'")
-            _is_date_value = bool(time_dim_names and _value in time_dim_names)
-            if not _is_date_value:
-                # A date EXPRESSION over a time dimension -- e.g. TRUNC(CAST({model}.created_at AS
-                # DATE), month) -- is still the date overload even though the value is not a bare
-                # dimension name. Recognize it when the value references a known time dimension as a
-                # whole word, or is wrapped in an explicit date/time cast (never a numeric scale).
-                _refs_time_dim = bool(time_dim_names) and any(
-                    re.search(rf"(?<!\w){re.escape(_dim)}\b", _value_raw) for _dim in time_dim_names
-                )
-                _is_date_value = _refs_time_dim or cls._DATE_VALUE_CAST_RE.search(_value_raw) is not None
-            if not _is_date_value:
-                return False
-        if want >= 0:
-            return arg_index == want
-        # want == -1: the part is the LAST argument -- true when no top-level comma follows the
-        # token before the call's closing paren.
-        depth = 0
-        for ch in suf:
-            if ch in "([":
-                depth += 1
-            elif ch in ")]":
-                if depth == 0:
-                    return True  # reached this call's close with no further top-level comma
-                depth -= 1
-            elif ch == "," and depth == 0:
-                return False
-        return False
-
-    @staticmethod
-    def _has_top_level_order_by(s: str) -> bool:
-        """True if ``s`` has an ``ORDER BY`` at paren depth 0, outside string literals.
-
-        Used to detect an aggregate-local ORDER BY (``SUM(amount ORDER BY created_at)``), which
-        belongs to the aggregate CALL rather than the argument expression -- so a filter must not
-        be folded into a CASE around it.
-        """
-        depth, quote, i = 0, None, 0
-        while i < len(s):
-            ch = s[i]
-            if quote is not None:
-                if ch == quote:
-                    quote = None
-                i += 1
-                continue
-            if ch in "'\"":
-                quote = ch
-            elif ch in "[(":
-                depth += 1
-            elif ch in ")]":
-                depth = max(0, depth - 1)
-            elif (
-                depth == 0
-                and (i == 0 or not (s[i - 1].isalnum() or s[i - 1] == "_"))
-                and re.match(r"(?i)order\s+by\b", s[i:])
-            ):
-                return True
-            i += 1
-        return False
+        return replace_lookml_placeholders(s, {"{model}": "${TABLE}"})
 
     @staticmethod
     def _has_subquery(sql: str) -> bool:
@@ -1952,7 +1401,7 @@ class LookMLAdapter(BaseAdapter):
                 return f"({dim_sql})" if dim_sql else f"t.{rn}"
             return "1"
 
-        probe = cls._REF_RE.sub(_probe, sql).replace("{model}", "t")
+        probe = replace_lookml_placeholders(cls._REF_RE.sub(_probe, sql), {"{model}": "t"})
         try:
             import sqlglot
             from sqlglot import expressions as exp
@@ -2593,7 +2042,7 @@ class LookMLAdapter(BaseAdapter):
             dim_sql = dim_def.get("sql")
             if dim_name and dim_sql:
                 # Replace ${TABLE} with {model} placeholder
-                dim_sql = dim_sql.replace("${TABLE}", "{model}")
+                dim_sql = replace_lookml_placeholders(dim_sql, {"${TABLE}": "{model}"})
                 dimension_sql_lookup[dim_name] = dim_sql
 
         # Also add dimension_group dimensions to the lookup
@@ -2603,7 +2052,7 @@ class LookMLAdapter(BaseAdapter):
             if not group_name:
                 continue
             if group_sql:
-                group_sql = group_sql.replace("${TABLE}", "{model}")
+                group_sql = replace_lookml_placeholders(group_sql, {"${TABLE}": "{model}"})
             else:
                 # A group that omits `sql` reads Looker's implicit `<group>` column. Seed it HERE,
                 # not just on the generated dimensions: this lookup is what expands a ${created_date}
@@ -2711,7 +2160,7 @@ class LookMLAdapter(BaseAdapter):
                 m_sql = m.get("sql")
                 if m_sql:
                     col = self._resolve_dimension_references(
-                        m_sql.replace("${TABLE}", "{model}"),
+                        replace_lookml_placeholders(m_sql, {"${TABLE}": "{model}"}),
                         resolved_dimension_sql,
                         dimension_names=declared_dim_names,
                     )
@@ -2775,7 +2224,7 @@ class LookMLAdapter(BaseAdapter):
 
         def _expand_number_measure(m_def):
             """Return (complete_sql, is_filter_sensitive) or None if not (yet) expandable."""
-            raw = m_def["sql"].replace("${TABLE}", "{model}")
+            raw = replace_lookml_placeholders(m_def["sql"], {"${TABLE}": "{model}"})
             refs = [(mm.group(1), mm.group(2)) for mm in self._REF_RE.finditer(raw)]
             # Cross-view refs and subqueries have no inline complete-SQL form.
             if any(v is not None and rn != "TABLE" for v, rn in refs) or self._has_subquery(raw):
@@ -2801,7 +2250,7 @@ class LookMLAdapter(BaseAdapter):
             expanded = self._REF_RE.sub(_sub, raw)
             # A valid measure-level expression must contain an aggregate (else it is a row-level
             # dimension expression, handled/skipped by _parse_measure itself).
-            if not sql_has_aggregate(expanded.replace("{model}", "x")):
+            if not sql_has_aggregate(replace_lookml_placeholders(expanded, {"{model}": "x"})):
                 return None
             # Apply the SAME aggregate-safety check _parse_measure uses, so a measure IT would
             # skip as invalid never lands in the lookup. `bad: ${total} + ${amount}` mixes an
@@ -2923,7 +2372,7 @@ class LookMLAdapter(BaseAdapter):
                     segment_sql, resolved_dimension_sql, dimension_names=declared_dim_names
                 )
                 # Replace ${TABLE} with {model} placeholder
-                segment_sql = segment_sql.replace("${TABLE}", "{model}")
+                segment_sql = replace_lookml_placeholders(segment_sql, {"${TABLE}": "{model}"})
                 # A cross-view reference cannot be represented inline, so an unresolved
                 # ${other_view.field} would leak into the WHERE clause when the segment is used.
                 # Drop the segment rather than import an unqueryable one, mirroring how
@@ -3052,7 +2501,7 @@ class LookMLAdapter(BaseAdapter):
         else:
             sql = dim_def.get("sql")
             if sql:
-                sql = sql.replace("${TABLE}", "{model}")
+                sql = replace_lookml_placeholders(sql, {"${TABLE}": "{model}"})
 
         # Recover the granularity of the collision-export form: a standalone time
         # dimension we emit as `type: date_time sql: DATE_TRUNC('<grain>', ...)` whose
@@ -3217,7 +2666,7 @@ class LookMLAdapter(BaseAdapter):
         else:
             base_sql = dim_group_def.get("sql")
             if base_sql:
-                base_sql = base_sql.replace("${TABLE}", "{model}")
+                base_sql = replace_lookml_placeholders(base_sql, {"${TABLE}": "{model}"})
             else:
                 base_sql = "{model}." + group_name
 
@@ -3530,13 +2979,19 @@ class LookMLAdapter(BaseAdapter):
         # Without this the duration dimension carried an unresolved ${ref} and any query on it
         # emitted invalid SQL.
         if sql_start:
-            sql_start = self._resolve_dimension_references(
-                sql_start, dimension_sql_lookup or {}, dimension_names=dimension_names
-            ).replace("${TABLE}", "{model}")
+            sql_start = replace_lookml_placeholders(
+                self._resolve_dimension_references(
+                    sql_start, dimension_sql_lookup or {}, dimension_names=dimension_names
+                ),
+                {"${TABLE}": "{model}"},
+            )
         if sql_end:
-            sql_end = self._resolve_dimension_references(
-                sql_end, dimension_sql_lookup or {}, dimension_names=dimension_names
-            ).replace("${TABLE}", "{model}")
+            sql_end = replace_lookml_placeholders(
+                self._resolve_dimension_references(
+                    sql_end, dimension_sql_lookup or {}, dimension_names=dimension_names
+                ),
+                {"${TABLE}": "{model}"},
+            )
 
         # If no sql_start/sql_end, we can't create duration dimensions
         if not sql_start or not sql_end:
@@ -3656,7 +3111,7 @@ class LookMLAdapter(BaseAdapter):
             sql = measure_def.get("sql")
             if not sql:
                 return None  # Skip placeholder percentile measures without SQL
-            sql = sql.replace("${TABLE}", "{model}")
+            sql = replace_lookml_placeholders(sql, {"${TABLE}": "{model}"})
             sql = self._resolve_dimension_references(sql, dimension_sql_lookup or {}, dimension_names=dimension_names)
             percentile_value = measure_def.get("percentile", 50)
             fraction = float(percentile_value) / 100.0
@@ -3679,7 +3134,7 @@ class LookMLAdapter(BaseAdapter):
         if measure_type == "list":
             sql = measure_def.get("sql")
             if sql:
-                sql = sql.replace("${TABLE}", "{model}")
+                sql = replace_lookml_placeholders(sql, {"${TABLE}": "{model}"})
                 sql = self._resolve_dimension_references(
                     sql, dimension_sql_lookup or {}, dimension_names=dimension_names
                 )
@@ -3767,7 +3222,7 @@ class LookMLAdapter(BaseAdapter):
         number_refs_only_columns = False
         sql = measure_def.get("sql")
         if sql:
-            sql = sql.replace("${TABLE}", "{model}")
+            sql = replace_lookml_placeholders(sql, {"${TABLE}": "{model}"})
 
             if measure_type == "number":
                 # For derived measures (type: number), convert ${measure_name} references
@@ -3809,7 +3264,9 @@ class LookMLAdapter(BaseAdapter):
                 # break sqlglot's parser, forcing the regex fallback, which misses multi-word
                 # aggregates like PERCENTILE_CONT(...) WITHIN GROUP (ORDER BY ${x}). Replacing
                 # every ${...}/{model} with a plain identifier lets sqlglot see the real agg.
-                has_inline_agg = sql_has_aggregate(self._REF_RE.sub("x", sql).replace("{model}", "x"))
+                has_inline_agg = sql_has_aggregate(
+                    replace_lookml_placeholders(self._REF_RE.sub("x", sql), {"{model}": "x"})
+                )
                 # A reference to a FILTER-SENSITIVE measure (one whose folded filter a plain
                 # derived dependency would drop) must be inlined through the complete-SQL path,
                 # not left as a bare metric-of-metrics ref -- else e.g. `${completed_sum} * 2`
@@ -4064,12 +3521,12 @@ class LookMLAdapter(BaseAdapter):
         if not sql:
             # No field to aggregate -> placeholder in an abstract view, skip.
             return None
-        sql = sql.replace("${TABLE}", "{model}")
+        sql = replace_lookml_placeholders(sql, {"${TABLE}": "{model}"})
         sql = self._resolve_dimension_references(sql, dimension_sql_lookup, dimension_names=dimension_names)
 
         sql_distinct_key = measure_def.get("sql_distinct_key")
         if sql_distinct_key:
-            sql_distinct_key = sql_distinct_key.replace("${TABLE}", "{model}")
+            sql_distinct_key = replace_lookml_placeholders(sql_distinct_key, {"${TABLE}": "{model}"})
             sql_distinct_key = self._resolve_dimension_references(
                 sql_distinct_key, dimension_sql_lookup, dimension_names=dimension_names
             )
@@ -4203,7 +3660,7 @@ class LookMLAdapter(BaseAdapter):
         measure_agg_lookup = measure_agg_lookup or {}
         measure_full_sql_lookup = measure_full_sql_lookup or {}
         filtered_base_measures = filtered_base_measures or set()
-        sql = sql.replace("${TABLE}", "{model}")
+        sql = replace_lookml_placeholders(sql, {"${TABLE}": "{model}"})
 
         def _resolve(match: re.Match) -> str:
             view, ref_name = match.group(1), match.group(2)
@@ -4674,10 +4131,10 @@ class LookMLAdapter(BaseAdapter):
         aren't rewritten). Each filter is parenthesized so a filter containing ``OR`` is
         not broken by ``AND``'s higher precedence.
         """
+        from sidemantic.sql.lookml_expression import rewrite_lookml_columns
+
         dim_sql = {d.name: d.sql for d in model.dimensions if d.sql}
         dim_names = {d.name for d in model.dimensions}
-        # Time-dimension names disambiguate a numeric-overloaded date function (TRUNC): its part
-        # slot is only guarded when the value argument is one of these (see _is_date_part_argument).
         time_dim_names = {d.name for d in model.dimensions if getattr(d, "type", None) == "time"}
 
         def _qualify(val: str) -> str:
@@ -4696,107 +4153,28 @@ class LookMLAdapter(BaseAdapter):
                 return f"({{model}}.{val})"
             return f"({val})"
 
-        # Qualified ref (group 1), OR a bare known-dimension name (group 2) used as a
-        # column anywhere (incl. inside a function like LOWER(status)). Matching is done
-        # only OUTSIDE single-quoted string literals (see _resolve), so a quoted value
-        # that happens to equal a dimension name is never rewritten. Both alternatives use a
-        # negative lookbehind for `.`/word-char: the bare one so it does NOT match the field
-        # of a foreign qualifier (`status` inside `customers.status`), and the model-name one
-        # so it does NOT match a schema-qualified ref (`orders.status` inside
-        # `schema.orders.status`). The bare alt also has negative lookaheads: for `(` so it does
-        # NOT match a function name (e.g. `date(...)`), and for `.` so it does NOT match a table
-        # QUALIFIER (`customers` inside `customers.status` on a model that also has a `customers`
-        # dimension) -- the lookbehind only guards the field AFTER a dot, not the name before it,
-        # which would otherwise emit `(${TABLE}.customer_id).status`.
-        names_alt = "|".join(re.escape(n) for n in sorted(dim_names, key=len, reverse=True))
-        pattern = rf"(?:\{{model\}}|(?<![\w.]){re.escape(model.name)})\.(\w+)"
-        if names_alt:
-            pattern += rf"|(?<![\w.])({names_alt})\b(?!\s*\()(?!\s*\.)"
-        ref_re = re.compile(pattern)
+        def _resolve(name: str, qualifiers: tuple[str, ...], quoted: bool) -> str | None:
+            if quoted:
+                return None
+            if not qualifiers:
+                return _qualify(dim_sql.get(name, name)) if name in dim_names else None
+            if len(qualifiers) == 1 and qualifiers[0] in ("{model}", "${TABLE}", model.name):
+                return _qualify(dim_sql.get(name, name))
+            return None
 
-        def _resolve(fstr: str) -> str:
-            def _make_one(base: int):
-                # `base` is this segment's absolute offset into fstr, so context checks can look
-                # at the FULL predicate -- not just the current split segment. A quoted number
-                # (`INTERVAL '7' day`) splits `day` into its own segment, so a segment-local `pre`
-                # would miss the leading INTERVAL and wrongly rewrite the unit keyword.
-                def _one(m):
-                    # The bare-dimension alternative (group 2) only exists when names_alt is
-                    # non-empty; with no declared dimensions the pattern has a single group, so
-                    # read group 2 defensively (m.group(2) would raise IndexError otherwise).
-                    bare = m.group(2) if m.re.groups >= 2 else None
-                    if bare is not None:
-                        # A bare token that is SQL SYNTAX -- a boolean/NULL literal (true/false/null)
-                        # or a logical/comparison operator/keyword (and/or/not/is/in/like/between/
-                        # case...) -- is never a column reference; a real column with such a name
-                        # must be quoted. When a dimension happens to share the name, rewriting it to
-                        # that dimension's SQL corrupts the predicate (`status = true` -> `status =
-                        # (${TABLE}.is_active)`; `a or b` -> `a (${TABLE}.or_col) b`), so leave it.
-                        if bare.lower() in cls._SQL_KEYWORD_TOKENS:
-                            return m.group(0)
-                        # Bare dimension-name alternative: skip when it sits in a SQL TYPE context
-                        # (a cast target), not a column operand -- e.g. CAST(x AS date) or x::date
-                        # with a `date` dimension. Rewriting the type token to a column would emit
-                        # invalid SQL like CAST(x AS (${TABLE}.order_date)). (Typed literals like
-                        # `date '2024-01-01'` are protected earlier, in the split below.)
-                        # The `(?:\w+\s+)*` tail also covers a MULTI-WORD type: in
-                        # `cast(x AS double precision)` the second type word `precision` is still in
-                        # the type slot (only words + spaces separate it from AS/::), so protect it
-                        # too rather than rewrite it to a same-named `precision` dimension.
-                        pre = fstr[: base + m.start()]
-                        if re.search(r"(?is)\bAS\s+(?:\w+\s+)*$", pre) or re.search(r"::\s*(?:\w+\s+)*$", pre):
-                            return m.group(0)
-                        # Skip a bare token in a DATE-PART / INTERVAL-UNIT keyword position, not a
-                        # column operand -- e.g. EXTRACT(day FROM ...) or `INTERVAL 7 day` on a
-                        # model with a `day` dimension. Rewriting the keyword to the dimension SQL
-                        # emits invalid SQL like EXTRACT((${TABLE}.order_day) FROM ...). Positions:
-                        # right after EXTRACT(, immediately before an extract's FROM, or as the unit
-                        # following an INTERVAL <number|'literal'>. (Quoted forms like
-                        # DATE_TRUNC('day', ...) and INTERVAL '7 day' are already protected as
-                        # string literals.)
-                        suf = fstr[base + m.end() :]
-                        if (
-                            re.search(r"(?i)\bextract\s*\(\s*$", pre)
-                            or re.match(r"(?is)\s+from\b", suf)
-                            or re.search(r"(?i)\binterval\s+(?:[+-]?\d+(?:\.\d+)?|'(?:[^']|'')*')\s*$", pre)
-                            # A date-part KEYWORD in the date-part ARGUMENT SLOT of a date/time
-                            # call, e.g. BigQuery's DATE_TRUNC(created_at, month) or
-                            # DATE_DIFF(a, b, day). Position-aware so a real column in another
-                            # slot of the SAME call still resolves -- DATE_TRUNC(date, month) is
-                            # column `date` truncated to part `month`.
-                            or cls._is_date_part_argument(pre, suf, bare, time_dim_names)
-                        ):
-                            return m.group(0)
-                    name = m.group(1) or bare
-                    return _qualify(dim_sql.get(name, name))
-
-                return _one
-
-            # Split out (and thus protect from rewriting) SQL TYPED LITERALS whose type keyword
-            # equals a dimension name (`date '2024-01-01'`, `timestamp '...'`, `interval '...'`)
-            # -- the whole `<type> '...'` unit is kept intact so the leading `date`/`time`/etc.
-            # is not mistaken for a column; then single-quoted string literals, double-quoted
-            # identifiers (doubled-quote escapes), backtick (BigQuery/MySQL) and [bracket] (SQL
-            # Server) quoted identifiers, AND Liquid/Jinja template segments ({{ }} / {% %}).
-            # Rewrite refs only in the remaining (even-index) segments so string VALUES, quoted
-            # identifiers, typed literals, and template variables are untouched. The template
-            # patterns require DOUBLE braces / brace-percent, so the single-brace {model} is safe.
-            # They use [\s\S]*? (not .*?) so a Liquid/Jinja tag that SPANS NEWLINES is still one
-            # protected segment -- otherwise a bare dimension name on an inner line of a multiline
-            # {% ... %} / {{ ... }} would be rewritten, corrupting the template.
-            parts = re.split(
-                r"""((?i:\b(?:date|time|timestamp|timestamptz|datetime|interval)\s+'(?:[^']|'')*')"""
-                r"""|'(?:[^']|'')*'|"(?:[^"]|"")*"|`[^`]*`|\[[^\]]*\]|\{\{[\s\S]*?\}\}|\{%[\s\S]*?%\})""",
-                fstr,
+        resolved_filters = []
+        for filter_sql in filters:
+            resolved = rewrite_lookml_columns(
+                filter_sql,
+                _resolve,
+                known_columns=dim_names,
+                time_columns=time_dim_names,
             )
-            offset = 0
-            for i, part in enumerate(parts):
-                if i % 2 == 0:
-                    parts[i] = ref_re.sub(_make_one(offset), part)
-                offset += len(part)
-            return "".join(parts)
-
-        return " AND ".join("(" + cls._model_to_table_outside_quotes(_resolve(f)) + ")" for f in filters)
+            # An expression that no supported sqlglot dialect can parse is kept intact.  We
+            # still normalize an explicit model marker, but never attempt semantic text
+            # substitution on an unparsed predicate.
+            resolved_filters.append(cls._model_to_table_outside_quotes(resolved or filter_sql))
+        return " AND ".join(f"({resolved})" for resolved in resolved_filters)
 
     @staticmethod
     def _aggregate_references_column(sql: str) -> bool:
@@ -4813,21 +4191,9 @@ class LookMLAdapter(BaseAdapter):
         a folded filter that is ONLY a template (``COUNT(CASE WHEN ({{ user_filter }}) THEN 1 END)``)
         would slip past the zero-column guard and export a measure with no real column.
         """
-        import sqlglot
-        from sqlglot import expressions as exp
+        from sidemantic.sql.lookml_expression import lookml_expression_references_column
 
-        # [\s\S]*? (not .*?) so a Liquid/Jinja tag spanning newlines is neutralised as one unit.
-        neutralised = re.sub(r"\{\{[\s\S]*?\}\}|\{%[\s\S]*?%\}", "NULL", sql or "")
-        # sqlglot cannot parse an aggregate's ALL modifier (COUNT(ALL x)), which would send every
-        # such expression to the has-columns fallback below instead of a real check. ALL is the
-        # default modifier and irrelevant to which columns are referenced, so drop it first --
-        # quote-aware, so a string literal containing "(ALL " is not mangled.
-        neutralised = LookMLAdapter._strip_all_modifier(neutralised)
-        try:
-            tree = sqlglot.parse_one(neutralised.replace("{model}", "__m__").replace("${TABLE}", "__m__"))
-        except Exception:
-            return True
-        return any(True for _ in tree.find_all(exp.Column))
+        return lookml_expression_references_column(sql)
 
     @staticmethod
     def _complete_sql_fold_is_safe(sql: str) -> bool:
@@ -4846,38 +4212,9 @@ class LookMLAdapter(BaseAdapter):
         safe -- ``_fold_complete_sql_filters`` folds the predicate into the ORDER BY value there --
         so reject only an ORDER BY that is NOT inside a WITHIN GROUP.
         """
-        import sqlglot
-        from sqlglot import expressions as exp
+        from sidemantic.sql.lookml_expression import complete_sql_fold_is_safe
 
-        from sidemantic.sql.aggregation_detection import _ANONYMOUS_AGGREGATE_FUNCTIONS
-
-        try:
-            tree = sqlglot.parse_one(sql.replace("{model}", "__m__"))
-        except Exception:
-            return False
-        # A NULL-retaining array collector (LIST / ARRAY_AGG) cannot be filtered by folding a CASE
-        # into its argument -- the excluded row becomes a NULL element rather than disappearing
-        # (ARRAY_LENGTH still counts it), exactly as the import path rejects. Skip so the measure is
-        # not exported with an ineffective filter.
-        if any(tree.find_all(exp.List)) or any(tree.find_all(exp.ArrayAgg)):
-            return False
-        # An ORDER BY in an aggregate's argument list would be buried in the CASE by folding; a
-        # WITHIN GROUP ORDER BY is folded correctly, so reject only the former.
-        if any(o.find_ancestor(exp.WithinGroup) is None for o in tree.find_all(exp.Order)):
-            return False
-        for n in tree.find_all(exp.Anonymous):
-            if (n.name or "").lower() in _ANONYMOUS_AGGREGATE_FUNCTIONS and len(n.expressions) > 1:
-                return False
-        # The folder wraps ONLY an aggregate's `this` argument, so a standard multi-INPUT aggregate
-        # (CORR(x, y), COVAR_POP, REGR_*) would filter only its first input and leave the second over
-        # all rows -- a wrong statistic. Reject any AggFunc that has a column in an argument OTHER
-        # than `this`. (A WITHIN GROUP aggregate keeps its column in the enclosing WithinGroup, not
-        # inside the AggFunc, so it has none here and stays safe.)
-        for a in tree.find_all(exp.AggFunc):
-            this_col_ids = {id(c) for c in (a.this.find_all(exp.Column) if a.this else [])}
-            if any(id(c) not in this_col_ids for c in a.find_all(exp.Column)):
-                return False
-        return all(len(d.expressions) <= 1 for d in tree.find_all(exp.Distinct))
+        return complete_sql_fold_is_safe(sql)
 
     @classmethod
     def _fold_filters_into_aggregate(cls, agg_sql: str, filters: list[str], model: Model) -> str | None:
@@ -4888,71 +4225,22 @@ class LookMLAdapter(BaseAdapter):
         expression is not exactly one outer ``FUNC(arg)`` (so the caller can fall back
         rather than mangle a complex expression).
         """
-        m = re.match(r"^\s*(\w+)\s*\((.*)\)\s*$", agg_sql, re.S)
-        if not m:
-            return None
-        func, arg = m.group(1), m.group(2)
-        # Confirm the parens wrap the WHOLE expression (no premature close, e.g.
-        # "SUM(a)/COUNT(b)" must not be treated as one outer SUM(...)). Quote-aware: a paren
-        # inside a string literal / quoted identifier (e.g. CONCAT(a, ')')) is not syntax.
-        depth = 0
-        quote = None
-        for ch in arg:
-            if quote is not None:
-                if ch == quote:
-                    quote = None
-                continue
-            if ch in "'\"`":
-                quote = ch
-            elif ch == "(":
-                depth += 1
-            elif ch == ")":
-                depth -= 1
-                if depth < 0:
-                    return None
-        if depth != 0:
-            return None
-        arg = arg.strip()
-        # The outer FUNC must itself be the aggregate. A scalar wrapper around an aggregate
-        # (e.g. ABS(SUM(amount))) has the aggregate in `arg`; folding would push CASE around
-        # the inner aggregate (ABS(CASE WHEN ... THEN SUM(amount) END)) -> wrong. Bail so the
-        # caller skips rather than emit invalid SQL.
-        from sidemantic.sql.aggregation_detection import sql_has_aggregate as _has_agg
+        from sidemantic.sql.lookml_expression import (
+            replace_lookml_placeholders,
+            restore_outer_aggregate_all,
+            strip_outer_aggregate_all,
+        )
 
-        if _has_agg(arg):
+        normalized_sql, explicit_all = strip_outer_aggregate_all(agg_sql)
+        model_sql = replace_lookml_placeholders(normalized_sql, {"${TABLE}": "{model}"})
+        if not cls._complete_sql_fold_is_safe(model_sql):
             return None
-        # An aggregate-local ORDER BY (SUM(amount ORDER BY created_at), ARRAY_AGG(x ORDER BY y))
-        # belongs to the aggregate CALL, not to the argument expression. Wrapping the whole arg
-        # in a CASE would emit `SUM(CASE WHEN ... THEN amount ORDER BY created_at END)`, which is
-        # malformed. Bail so the caller skips rather than export invalid SQL.
-        if cls._has_top_level_order_by(arg):
+        condition = replace_lookml_placeholders(cls._fold_filter_conds(filters, model), {"${TABLE}": "{model}"})
+        folded = cls._fold_complete_sql_filters(model_sql, [condition], force=True)
+        if folded is None:
             return None
-        conds = cls._fold_filter_conds(filters, model)
-        # COUNT(*) -> COUNT(CASE WHEN ... THEN 1 END): "* " can't live inside CASE.
-        if arg == "*":
-            return f"{func}(CASE WHEN {conds} THEN 1 END)"
-        # COUNT(DISTINCT x) -> COUNT(DISTINCT CASE WHEN ... THEN x END): DISTINCT stays
-        # outside the CASE (it's part of the aggregate, not the value being filtered). Accept
-        # the parenthesized spelling COUNT(DISTINCT(x)) too; the lookahead requires a space or
-        # `(` after DISTINCT so an identifier like `DISTINCTION` is not mistaken for it.
-        # DISTINCT / ALL are aggregate MODIFIERS, not row expressions: they must stay OUTSIDE
-        # the CASE (COUNT(DISTINCT CASE ... END), not COUNT(CASE ... THEN DISTINCT x END)).
-        # The lookahead keeps a column actually named `all`/`distinct` (COUNT(all)) a plain arg.
-        dm = re.match(r"(?is)^(DISTINCT|ALL)(?=[\s(])\s*(.+)$", arg)
-        if dm:
-            modifier, mod_arg = dm.group(1).upper(), dm.group(2).strip()
-            # A multi-column DISTINCT (COUNT(DISTINCT a, b)) has no single CASE result, so
-            # bail and let the caller skip rather than emit malformed `THEN a, b END`.
-            # quote_aware: a delimited composite key COUNT(DISTINCT a || ',' || b) is ONE
-            # column -- the comma in the string literal must not count as a separator.
-            if len(cls._split_top_level_commas(mod_arg, quote_aware=True)) > 1:
-                return None
-            return f"{func}({modifier} CASE WHEN {conds} THEN {mod_arg} END)"
-        # A multi-argument aggregate (WEIGHTED_AVG(price, qty)) has no single CASE result,
-        # so bail rather than emit malformed `THEN price, qty END`.
-        if len(cls._split_top_level_commas(arg, quote_aware=True)) > 1:
-            return None
-        return f"{func}(CASE WHEN {conds} THEN {arg} END)"
+        folded = replace_lookml_placeholders(folded, {"{model}": "${TABLE}"})
+        return restore_outer_aggregate_all(folded) if explicit_all else folded
 
     # DATE_TRUNC('<grain>', <expr>) emitted for collision time dimensions, and matched
     # on import to recover the grain. The grain is the first capture; expr is the rest.
@@ -5052,7 +4340,7 @@ class LookMLAdapter(BaseAdapter):
         # Fall back to the dimension's DEFAULT column expression (sql_expr == sql or name) when it
         # has no explicit sql -- an empty string would emit `sql: DATE_TRUNC('hour', ) ;;`.
         src = (group_sql if group_sql is not None else dim.sql) or dim.sql_expr
-        src = src.replace("{model}", "${TABLE}")
+        src = cls._model_to_table_outside_quotes(src)
         grain = (dim.granularity or "").lower()
         tf = (dim.meta or {}).get("lookml_timeframe")
         # Compute the exported SQL for each class of timeframe:
@@ -5161,7 +4449,7 @@ class LookMLAdapter(BaseAdapter):
 
             if dim.sql:
                 # Replace {model} with ${TABLE}
-                sql = dim.sql.replace("{model}", "${TABLE}")
+                sql = self._model_to_table_outside_quotes(dim.sql)
                 dim_def["sql"] = sql
 
             if dim.description:
@@ -5391,7 +4679,7 @@ class LookMLAdapter(BaseAdapter):
                 }
 
                 if group_sql:
-                    dim_group_def["sql"] = group_sql.replace("{model}", "${TABLE}")
+                    dim_group_def["sql"] = self._model_to_table_outside_quotes(group_sql)
 
                 dimension_groups.append(dim_group_def)
 
@@ -5449,7 +4737,7 @@ class LookMLAdapter(BaseAdapter):
             elif metric.type == "derived":
                 measure_def["type"] = "number"
                 if metric.sql:
-                    sql = metric.sql.replace("{model}", "${TABLE}")
+                    sql = self._model_to_table_outside_quotes(metric.sql)
                     measure_def["sql"] = sql
             elif metric.type == "ratio":
                 measure_def["type"] = "number"
@@ -5504,7 +4792,7 @@ class LookMLAdapter(BaseAdapter):
                         "variance": "VAR_SAMP",
                         "variance_pop": "VAR_POP",
                     }
-                    col_sql = metric.sql.replace("{model}", "${TABLE}") if metric.sql else None
+                    col_sql = self._model_to_table_outside_quotes(metric.sql) if metric.sql else None
                     # Drop an explicit ALL aggregate modifier: it is the DEFAULT and changes
                     # nothing, but emitting it produces LookML that will not round-trip -- sqlglot
                     # cannot parse `COUNT(ALL x)`, so the type: number import safety check drops
@@ -5579,7 +4867,7 @@ class LookMLAdapter(BaseAdapter):
                         # makes sqlglot fail, and the regex fallback omits var_samp/stddev_samp, so
                         # checking the raw form drops a valid sample-aggregate measure. Neutralize
                         # ${TABLE} to a clean column so sqlglot stays on the accurate parse path.
-                        and _sql_has_aggregate(col_sql.replace("${TABLE}", "x"))
+                        and _sql_has_aggregate(replace_lookml_placeholders(col_sql, {"${TABLE}": "x"}))
                     ):
                         # An agg-less measure whose SQL is itself an aggregate (a complete
                         # SUM({model}.amount) imported from Cube, or an inline aggregate
@@ -5616,7 +4904,9 @@ class LookMLAdapter(BaseAdapter):
                         # measure: the import side's _mixed_is_aggregate_safe rejects it, so a
                         # type: number here would be dropped on re-import (and Looker would GROUP BY
                         # error on the ungrouped column). Skip to keep the round-trip consistent.
-                        if not self._mixed_is_aggregate_safe(col_sql.replace("${TABLE}", "{model}"), lambda rn: False):
+                        if not self._mixed_is_aggregate_safe(
+                            replace_lookml_placeholders(col_sql, {"${TABLE}": "{model}"}), lambda rn: False
+                        ):
                             logger.warning(
                                 "Metric %r has a raw column outside an aggregate in its complete SQL "
                                 "(%r); a type: number measure would be dropped on re-import, so "
@@ -5653,9 +4943,8 @@ class LookMLAdapter(BaseAdapter):
                             measure_def["type"] = "number"
                             if metric.filters:
                                 folded = self._fold_filters_into_aggregate(col_sql, metric.filters, model)
-                                if folded is None and self._complete_sql_fold_is_safe(
-                                    col_sql.replace("${TABLE}", "{model}")
-                                ):
+                                model_col_sql = replace_lookml_placeholders(col_sql, {"${TABLE}": "{model}"})
+                                if folded is None and self._complete_sql_fold_is_safe(model_col_sql):
                                     # A MULTI-aggregate complete expr (SUM(a) / COUNT(*)) or a scalar-
                                     # wrapped one (ABS(SUM(x))) is not a single outer FUNC(arg), so
                                     # _fold_filters_into_aggregate bails. Fall back to the complete-SQL
@@ -5663,13 +4952,17 @@ class LookMLAdapter(BaseAdapter):
                                     # the import path does) -- gated above to single-argument aggregates
                                     # so a multi-arg one is not folded into malformed SQL. It works in
                                     # {model} form, so resolve the filters and convert around the call.
-                                    resolved_pred = self._fold_filter_conds(metric.filters, model).replace(
-                                        "${TABLE}", "{model}"
+                                    resolved_pred = replace_lookml_placeholders(
+                                        self._fold_filter_conds(metric.filters, model), {"${TABLE}": "{model}"}
                                     )
                                     folded_model = self._fold_complete_sql_filters(
-                                        col_sql.replace("${TABLE}", "{model}"), [resolved_pred], force=True
+                                        model_col_sql, [resolved_pred], force=True
                                     )
-                                    folded = folded_model.replace("{model}", "${TABLE}") if folded_model else None
+                                    folded = (
+                                        replace_lookml_placeholders(folded_model, {"{model}": "${TABLE}"})
+                                        if folded_model
+                                        else None
+                                    )
                                 if folded is None:
                                     logger.warning(
                                         "Metric %r has filters over a complex aggregate SQL expression that "
@@ -5713,7 +5006,7 @@ class LookMLAdapter(BaseAdapter):
                     # Parse SQL-format filters back to LookML format
                     # Input: "{model}.field = 'value'" or "{model}.field = true"
                     # Output: filters__all format for lkml
-                    sql_filter = filter_str.replace("{model}.", "")
+                    sql_filter = strip_lookml_model_qualifiers(filter_str)
 
                     # Parse "field = 'value'" or "field = value" format
                     match = re.match(r"(\w+)\s*=\s*(.+)", sql_filter)
@@ -5776,7 +5069,7 @@ class LookMLAdapter(BaseAdapter):
             for segment in model.segments:
                 filter_def = {"name": segment.name}
                 if segment.sql:
-                    sql = segment.sql.replace("{model}", "${TABLE}")
+                    sql = self._model_to_table_outside_quotes(segment.sql)
                     filter_def["sql"] = sql
                 if segment.description:
                     filter_def["description"] = segment.description

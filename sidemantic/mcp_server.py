@@ -202,6 +202,16 @@ def _format_join_key_pairs(
 mcp = FastMCP("sidemantic")
 
 
+def _visible_default_time_dimension(model: Any, enforce_visibility: bool) -> str | None:
+    name = model.default_time_dimension
+    if not name or not enforce_visibility:
+        return name
+    dimension = model.get_dimension(name)
+    if dimension is not None and not getattr(dimension, "public", True):
+        return None
+    return name
+
+
 @mcp.tool(structured_output=False)
 def get_models(model_names: list[str]) -> dict[str, Any]:
     """Get detailed information about one or more models.
@@ -360,8 +370,8 @@ def get_models(model_names: list[str]) -> dict[str, Any]:
             detail["description"] = model.description
         if model.sql:
             detail["sql"] = model.sql
-        if model.default_time_dimension:
-            detail["default_time_dimension"] = model.default_time_dimension
+        if default_time_dimension := _visible_default_time_dimension(model, layer.enforce_visibility):
+            detail["default_time_dimension"] = default_time_dimension
         if model.default_grain:
             detail["default_grain"] = model.default_grain
         if model.meta:
@@ -715,8 +725,8 @@ def get_semantic_graph() -> dict[str, Any]:
             model_info["segments"] = visible_segments
         if model.primary_key:
             model_info["primary_key"] = model.primary_key
-        if model.default_time_dimension:
-            model_info["default_time_dimension"] = model.default_time_dimension
+        if default_time_dimension := _visible_default_time_dimension(model, layer.enforce_visibility):
+            model_info["default_time_dimension"] = default_time_dimension
         models.append(model_info)
 
     # Graph-level metrics

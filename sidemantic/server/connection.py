@@ -244,11 +244,19 @@ class SemanticLayerConnection(riffq.BaseConnection):
         if "pg_catalog." in sql_lower:
             # pg_namespace - schemas
             if "pg_namespace" in sql_lower:
-                result = cursor.execute(
-                    "SELECT oid, schema_name as nspname, true as is_on_search_path, comment "
-                    "FROM duckdb_schemas() "
-                    "WHERE schema_name NOT IN ('pg_catalog', 'information_schema')"
-                )
+                from sidemantic.core.transport_security import controls_are_active
+
+                if controls_are_active(self.layer):
+                    result = cursor.execute(
+                        "SELECT 2200::BIGINT AS oid, 'semantic_layer' AS nspname, "
+                        "true AS is_on_search_path, NULL::VARCHAR AS comment"
+                    )
+                else:
+                    result = cursor.execute(
+                        "SELECT oid, schema_name as nspname, true as is_on_search_path, comment "
+                        "FROM duckdb_schemas() "
+                        "WHERE schema_name NOT IN ('pg_catalog', 'information_schema')"
+                    )
                 reader = result.fetch_record_batch()
                 self.send_reader(reader, callback)
                 return True

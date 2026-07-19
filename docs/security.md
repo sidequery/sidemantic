@@ -169,7 +169,8 @@ that same semantic catalog, preserves ordinary projection/filter/order probes, a
 omits non-public fields when visibility enforcement is enabled. Catalog queries mixed
 with other table sources are not treated as compatibility probes and pass through the
 normal fail-closed transport gate. `pg_catalog.pg_class` likewise lists semantic
-tables only while controls are active. Compatibility function handling is restricted
+tables only while controls are active, and `pg_catalog.pg_namespace` exposes only the
+synthetic `semantic_layer` namespace. Compatibility function handling is restricted
 to catalog-only probes; mixed catalog and semantic-table statements go through the
 normal policy-aware rewrite. Single catalog statements may include the usual trailing
 semicolon, and synthesized catalogs retain the standard PostgreSQL-compatible columns
@@ -182,6 +183,7 @@ with `--user-attrs-file`; it is applied to `run_query`, `create_chart`, and
 `run_sql`. `run_sql` uses the same policy-aware semantic rewrite as other transports
 and rejects unproven passthrough SQL. `--enforce-visibility` hides restricted fields
 from MCP model/graph/catalog discovery and rejects them in structured and SQL tools.
+Hidden default time dimensions are omitted from model metadata as well as field lists.
 
 For example:
 

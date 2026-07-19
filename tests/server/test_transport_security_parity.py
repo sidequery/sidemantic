@@ -41,7 +41,7 @@ except ImportError:
 from sidemantic import Dimension, Metric, Model, SecurityPolicy, SemanticLayer
 from sidemantic.api_server import create_app
 from sidemantic.core.semantic_layer import SecurityError
-from sidemantic.mcp_server import get_semantic_graph, initialize_layer
+from sidemantic.mcp_server import get_models, get_semantic_graph, initialize_layer
 from sidemantic.mcp_server import run_query as mcp_run_query
 from sidemantic.mcp_server import run_sql as mcp_run_sql
 from sidemantic.server.connection import SemanticLayerConnection
@@ -411,6 +411,9 @@ def test_secure_pg_catalog_accepts_terminators_and_preserves_schema_name():
     assert "character_octet_length" in rows[0]
     assert "datetime_precision" in rows[0]
 
+    connection._handle_query("SELECT nspname FROM pg_catalog.pg_namespace;", lambda *_: None)
+    assert [row["nspname"] for row in captured["table"].to_pylist()] == ["semantic_layer"]
+
     plain_layer = SemanticLayer()
     plain_layer.add_model(Model(name="events", table="events", dimensions=[Dimension(name="id", type="numeric")]))
     connection.layer = plain_layer
@@ -506,9 +509,16 @@ def test_hidden_column_is_rejected_and_omitted_across_transports(tmp_path):
         assert response.status_code == 403, response.text
         assert "not public" in response.json()["error"]
 
-    _mcp_layer(tmp_path / "mcp-hidden", attrs, enforce_visibility=True)
+    mcp_layer = _mcp_layer(tmp_path / "mcp-hidden", attrs, enforce_visibility=True)
+    mcp_model = mcp_layer.graph.models["orders"]
+    mcp_model.dimensions.append(
+        Dimension(name="hidden_time", sql="tenant_id", type="time", granularity="day", public=False)
+    )
+    mcp_model.default_time_dimension = "hidden_time"
     graph = get_semantic_graph()
     assert "secret_note" not in graph["models"][0]["dimensions"]
+    assert "default_time_dimension" not in graph["models"][0]
+    assert "default_time_dimension" not in get_models(["orders"])["models"][0]
     with pytest.raises(SecurityError, match="not public"):
         mcp_run_query(dimensions=["orders.secret_note"], metrics=["orders.total_amount"])
     with pytest.raises(SecurityError, match="not public"):

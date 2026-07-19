@@ -150,8 +150,11 @@ SSO system.
 
 The connecting Postgres username is mapped to user attributes via
 `--user-attrs-file` (a JSON mapping of usernames to attribute objects). A map is
-accepted only when password authentication is configured, so a client cannot select
-another mapping by spoofing the startup username.
+accepted only when password authentication is configured. When a map is present, its
+keys are the allowed startup usernames; `--username` enables authenticated mode and
+`--password-file` supplies one shared library-local password for those users. Unknown
+usernames and incorrect passwords are rejected. This is intentionally not a per-user
+credential store, SSO, or RBAC system.
 
 PostgreSQL semantic SQL is rewritten with that session's attributes and therefore
 applies access gates and row filters before execution. With
@@ -169,7 +172,8 @@ normal fail-closed transport gate. `pg_catalog.pg_class` likewise lists semantic
 tables only while controls are active. Compatibility function handling is restricted
 to catalog-only probes; mixed catalog and semantic-table statements go through the
 normal policy-aware rewrite. Single catalog statements may include the usual trailing
-semicolon, and synthesized catalogs retain PostgreSQL-compatible column names.
+semicolon, and synthesized catalogs retain the standard PostgreSQL-compatible columns
+used by BI introspection, including type and precision metadata.
 
 ### MCP server
 

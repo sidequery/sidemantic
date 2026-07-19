@@ -277,20 +277,30 @@ def test_user_attributes_lookup_by_session_user():
 
     layer = SemanticLayer(connection="duckdb:///:memory:")
     attrs_map = {"alice": {"tenant_id": 1}, "bob": {"tenant_id": 2}}
-    conn = SemanticLayerConnection(connection_id=1, executor=None, layer=layer, user_attrs_map=attrs_map)
+    conn = SemanticLayerConnection(
+        connection_id=1,
+        executor=None,
+        layer=layer,
+        username="mapped-users",
+        password="shared-secret",
+        user_attrs_map=attrs_map,
+    )
 
     # Before auth, no session user -> None.
     assert conn._user_attributes() is None
 
-    conn.handle_auth("alice", "", "localhost", callback=lambda _r: None)
+    results = []
+    conn.handle_auth("alice", "shared-secret", "localhost", callback=results.append)
     assert conn._user_attributes() == {"tenant_id": 1}
 
-    conn.handle_auth("bob", "", "localhost", callback=lambda _r: None)
+    conn.handle_auth("bob", "shared-secret", "localhost", callback=results.append)
     assert conn._user_attributes() == {"tenant_id": 2}
 
-    # Unknown user with a configured map -> None (deny-by-default upstream).
-    conn.handle_auth("mallory", "", "localhost", callback=lambda _r: None)
+    conn.handle_auth("mallory", "shared-secret", "localhost", callback=results.append)
     assert conn._user_attributes() is None
+    conn.handle_auth("alice", "wrong", "localhost", callback=results.append)
+    assert conn._user_attributes() is None
+    assert results == [True, True, False, False]
 
 
 def test_pg_rewrite_enforces_access_and_preserves_safe_queries():

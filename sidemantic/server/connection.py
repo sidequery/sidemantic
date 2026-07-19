@@ -2,6 +2,7 @@
 
 import logging
 import re
+from hmac import compare_digest
 
 import riffq
 
@@ -47,17 +48,26 @@ class SemanticLayerConnection(riffq.BaseConnection):
 
     def handle_auth(self, user, pwd, host, database=None, callback=callable):
         """Handle authentication."""
-        # Capture the connecting username so query handling can map it to
-        # security user attributes, regardless of whether password auth is on.
-        self.session_user = user
-        if self.username is None and self.password is None:
-            # No auth required
-            callback(True)
+        if self.user_attrs_map:
+            # A user map defines the allowed startup usernames. The configured
+            # password is a shared library-local credential, not an SSO/RBAC
+            # system; every accepted username still gets its own attributes.
+            authenticated = (
+                self.username is not None
+                and self.password is not None
+                and user in self.user_attrs_map
+                and compare_digest(str(pwd), self.password)
+            )
+        elif self.username is None and self.password is None:
+            authenticated = True
         elif self.username is not None and self.password is not None:
-            callback(user == self.username and pwd == self.password)
+            authenticated = user == self.username and compare_digest(str(pwd), self.password)
         else:
-            # Partial auth config must fail closed.
-            callback(False)
+            authenticated = False
+
+        # Never retain an unverified startup username for policy lookup.
+        self.session_user = user if authenticated else None
+        callback(authenticated)
 
     def handle_connect(self, ip, port, callback=callable):
         """Handle connection."""
@@ -311,31 +321,103 @@ class SemanticLayerConnection(riffq.BaseConnection):
         from sidemantic.core.catalog import get_postgres_type_for_dimension, get_postgres_type_for_metric
         from sidemantic.core.transport_security import controls_are_active
 
+        column_names = (
+            "table_catalog",
+            "table_schema",
+            "table_name",
+            "column_name",
+            "ordinal_position",
+            "column_default",
+            "is_nullable",
+            "data_type",
+            "character_maximum_length",
+            "character_octet_length",
+            "numeric_precision",
+            "numeric_precision_radix",
+            "numeric_scale",
+            "datetime_precision",
+            "interval_type",
+            "interval_precision",
+            "character_set_catalog",
+            "character_set_schema",
+            "character_set_name",
+            "collation_catalog",
+            "collation_schema",
+            "collation_name",
+            "domain_catalog",
+            "domain_schema",
+            "domain_name",
+            "udt_catalog",
+            "udt_schema",
+            "udt_name",
+            "scope_catalog",
+            "scope_schema",
+            "scope_name",
+            "maximum_cardinality",
+            "dtd_identifier",
+            "is_self_referencing",
+            "is_identity",
+            "identity_generation",
+            "identity_start",
+            "identity_increment",
+            "identity_maximum",
+            "identity_minimum",
+            "identity_cycle",
+            "is_generated",
+            "generation_expression",
+            "is_updatable",
+        )
         rows: list[str] = []
 
         def add_column(table_name: str, column_name: str, ordinal: int, data_type: str) -> None:
             char_length = "255" if data_type == "VARCHAR" else "NULL::INTEGER"
-            numeric_precision = "38" if data_type == "NUMERIC" else "NULL::INTEGER"
-            numeric_scale = "10" if data_type == "NUMERIC" else "NULL::INTEGER"
-            rows.append(
-                "("
-                + ", ".join(
-                    [
-                        "'sidemantic'",
-                        "'semantic_layer'",
-                        self._sql_literal(table_name),
-                        self._sql_literal(column_name),
-                        str(ordinal),
-                        "NULL::VARCHAR",
-                        "'YES'",
-                        self._sql_literal(data_type),
-                        char_length,
-                        numeric_precision,
-                        numeric_scale,
-                    ]
-                )
-                + ")"
-            )
+            char_octet_length = "1020" if data_type == "VARCHAR" else "NULL::INTEGER"
+            numeric_precision = {"NUMERIC": "38", "BIGINT": "64"}.get(data_type, "NULL::INTEGER")
+            numeric_radix = "10" if data_type in {"NUMERIC", "BIGINT"} else "NULL::INTEGER"
+            numeric_scale = {"NUMERIC": "10", "BIGINT": "0"}.get(data_type, "NULL::INTEGER")
+            datetime_precision = "6" if data_type == "TIMESTAMP" else "NULL::INTEGER"
+            udt_name = {
+                "BIGINT": "int8",
+                "BOOLEAN": "bool",
+                "DATE": "date",
+                "NUMERIC": "numeric",
+                "TIMESTAMP": "timestamp",
+                "VARCHAR": "varchar",
+            }.get(data_type, data_type.lower())
+            values = {
+                "table_catalog": "'sidemantic'",
+                "table_schema": "'semantic_layer'",
+                "table_name": self._sql_literal(table_name),
+                "column_name": self._sql_literal(column_name),
+                "ordinal_position": str(ordinal),
+                "column_default": "NULL::VARCHAR",
+                "is_nullable": "'YES'",
+                "data_type": self._sql_literal(data_type),
+                "character_maximum_length": char_length,
+                "character_octet_length": char_octet_length,
+                "numeric_precision": numeric_precision,
+                "numeric_precision_radix": numeric_radix,
+                "numeric_scale": numeric_scale,
+                "datetime_precision": datetime_precision,
+                "udt_catalog": "'sidemantic'",
+                "udt_schema": "'pg_catalog'",
+                "udt_name": self._sql_literal(udt_name),
+                "dtd_identifier": self._sql_literal(str(ordinal)),
+                "is_self_referencing": "'NO'",
+                "is_identity": "'NO'",
+                "identity_cycle": "'NO'",
+                "is_generated": "'NEVER'",
+                "is_updatable": "'NO'",
+            }
+            integer_columns = {
+                "interval_precision",
+                "maximum_cardinality",
+            }
+            row_values = [
+                values.get(name, "NULL::INTEGER" if name in integer_columns else "NULL::VARCHAR")
+                for name in column_names
+            ]
+            rows.append("(" + ", ".join(row_values) + ")")
 
         for model in self.layer.graph.models.values():
             ordinal = 1
@@ -378,27 +460,30 @@ class SemanticLayerConnection(riffq.BaseConnection):
                     )
                     ordinal += 1
 
-        column_names = (
-            "table_catalog, table_schema, table_name, column_name, ordinal_position, "
-            "column_default, is_nullable, data_type, character_maximum_length, "
-            "numeric_precision, numeric_scale"
-        )
+        column_list = ", ".join(column_names)
         if rows:
-            semantic_sql = f"SELECT * FROM (VALUES {', '.join(rows)}) AS semantic_columns({column_names})"
+            semantic_sql = f"SELECT * FROM (VALUES {', '.join(rows)}) AS semantic_columns({column_list})"
         else:
-            semantic_sql = (
-                "SELECT NULL::VARCHAR AS table_catalog, NULL::VARCHAR AS table_schema, "
-                "NULL::VARCHAR AS table_name, NULL::VARCHAR AS column_name, "
-                "NULL::INTEGER AS ordinal_position, NULL::VARCHAR AS column_default, "
-                "NULL::VARCHAR AS is_nullable, NULL::VARCHAR AS data_type, "
-                "NULL::INTEGER AS character_maximum_length, NULL::INTEGER AS numeric_precision, "
-                "NULL::INTEGER AS numeric_scale WHERE FALSE"
+            integer_columns = {
+                "ordinal_position",
+                "character_maximum_length",
+                "character_octet_length",
+                "numeric_precision",
+                "numeric_precision_radix",
+                "numeric_scale",
+                "datetime_precision",
+                "interval_precision",
+                "maximum_cardinality",
+            }
+            empty_columns = ", ".join(
+                f"NULL::{'INTEGER' if name in integer_columns else 'VARCHAR'} AS {name}" for name in column_names
             )
+            semantic_sql = f"SELECT {empty_columns} WHERE FALSE"
 
         if controls_are_active(self.layer):
             return semantic_sql
         return (
-            f"SELECT {column_names} FROM information_schema.columns "
+            f"SELECT {column_list} FROM information_schema.columns "
             "WHERE table_schema NOT IN ('pg_catalog', 'information_schema') UNION ALL "
             f"{semantic_sql}"
         )

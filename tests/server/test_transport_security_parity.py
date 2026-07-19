@@ -400,11 +400,49 @@ def test_secure_pg_catalog_accepts_terminators_and_preserves_schema_name():
     ]
 
     connection._handle_query(
-        "SELECT table_schema, table_name, column_name FROM information_schema.columns "
+        "SELECT table_schema, table_name, column_name, udt_name, "
+        "character_octet_length, datetime_precision FROM information_schema.columns "
         "WHERE table_schema = 'semantic_layer' AND table_name = 'orders' ORDER BY ordinal_position;",
         lambda *_: None,
     )
-    assert [row["column_name"] for row in captured["table"].to_pylist()] == ["tenant_id", "total_amount"]
+    rows = captured["table"].to_pylist()
+    assert [row["column_name"] for row in rows] == ["tenant_id", "total_amount"]
+    assert rows[0]["udt_name"] == "numeric"
+    assert "character_octet_length" in rows[0]
+    assert "datetime_precision" in rows[0]
+
+    plain_layer = SemanticLayer()
+    plain_layer.add_model(Model(name="events", table="events", dimensions=[Dimension(name="id", type="numeric")]))
+    connection.layer = plain_layer
+    connection._handle_query(
+        "SELECT udt_name, numeric_precision_radix FROM information_schema.columns "
+        "WHERE table_schema = 'semantic_layer' AND table_name = 'events';",
+        lambda *_: None,
+    )
+    assert captured["table"].to_pylist() == [{"udt_name": "numeric", "numeric_precision_radix": 10}]
+
+
+def test_mapped_pg_users_authenticate_with_shared_secret_and_keep_attributes():
+    attrs_map = {"alice": {"tenant_id": 1}, "bob": {"tenant_id": 2}}
+    connection = SemanticLayerConnection(
+        connection_id=1,
+        executor=None,
+        layer=_layer(),
+        username="mapped-users",
+        password="shared-secret",
+        user_attrs_map=attrs_map,
+    )
+    results = []
+
+    connection.handle_auth("alice", "shared-secret", "localhost", callback=results.append)
+    assert connection._user_attributes() == {"tenant_id": 1}
+    connection.handle_auth("bob", "shared-secret", "localhost", callback=results.append)
+    assert connection._user_attributes() == {"tenant_id": 2}
+    connection.handle_auth("mallory", "shared-secret", "localhost", callback=results.append)
+    assert connection._user_attributes() is None
+    connection.handle_auth("alice", "wrong", "localhost", callback=results.append)
+    assert connection._user_attributes() is None
+    assert results == [True, True, False, False]
 
 
 def test_sql_rewrite_cache_isolated_by_visibility_state():

@@ -1434,12 +1434,15 @@ def explain_sql_command(
     """
     try:
         state = cli_state()
-        if state.plain:
+        if state.plain and state.plain_explicit:
             raise InvocationError("explain does not support --plain; use --format json")
-        if state.requested_format not in {None, "json"}:
+        if state.format_explicit and state.requested_format != "json":
             raise InvocationError("explain supports only --format json")
-        if state.requested_format == "json":
+        if state.format_explicit:
             resolve_output_format(default="json")
+        else:
+            state.requested_format = None
+            state.plain = False
 
         sql = read_sql_input(sql)
         layer = _load_query_layer(

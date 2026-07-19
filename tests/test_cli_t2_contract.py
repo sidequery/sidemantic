@@ -300,11 +300,21 @@ def test_query_dry_run_defaults_to_raw_sql(project: Path):
     assert not result.stdout.startswith("sql\n")
 
 
-@pytest.mark.parametrize(("arguments", "machine_output"), [([], False), (["--format", "json"], True)])
+@pytest.mark.parametrize(
+    ("arguments", "environment", "machine_output"),
+    [
+        ([], {}, False),
+        (["--format", "json"], {}, True),
+        ([], {"SIDEMANTIC_FORMAT": "json"}, False),
+        ([], {"SIDEMANTIC_FORMAT": "csv"}, False),
+        ([], {"SIDEMANTIC_PLAIN": "1"}, False),
+    ],
+)
 def test_explain_activates_machine_mode_only_for_requested_json(
     project: Path,
     monkeypatch: pytest.MonkeyPatch,
     arguments: list[str],
+    environment: dict[str, str],
     machine_output: bool,
 ):
     modes_at_emission: list[bool] = []
@@ -322,10 +332,34 @@ def test_explain_activates_machine_mode_only_for_requested_json(
             str(project),
             *arguments,
         ],
+        env=environment,
     )
 
     assert result.exit_code == 0, result.output
     assert modes_at_emission == [machine_output]
+
+
+@pytest.mark.parametrize("configuration", ["format: json", "format: csv", "plain: true"])
+def test_explain_ignores_project_output_defaults(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    configuration: str,
+):
+    config = project / "sidemantic.yaml"
+    config.write_text(f"{config.read_text()}cli:\n  {configuration}\n")
+    modes_at_emission: list[bool] = []
+
+    def capture_json(_value: object) -> None:
+        modes_at_emission.append(cli_module.cli_state().machine_output)
+
+    monkeypatch.setattr("sidemantic.cli.emit_json", capture_json)
+    result = runner.invoke(
+        app,
+        ["explain", "SELECT status, order_count FROM orders", "--project", str(project)],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert modes_at_emission == [False]
 
 
 @pytest.mark.parametrize(

@@ -78,17 +78,20 @@ def _has_unsafe_subquery(sql: str, dialect: str) -> bool:
         return True
 
     for select in parsed.find_all(exp.Select):
-        for projection in select.expressions:
-            if any(True for _ in projection.find_all(exp.Select)):
-                return True
-        for clause_name in ("where", "having", "qualify"):
-            clause = select.args.get(clause_name)
-            if clause is not None and any(True for _ in clause.find_all(exp.Select)):
-                return True
-        for join in select.args.get("joins") or []:
-            predicate = join.args.get("on")
-            if predicate is not None and any(True for _ in predicate.find_all(exp.Select)):
-                return True
+        query: exp.Expression = select
+        while isinstance(query.parent, exp.SetOperation):
+            query = query.parent
+
+        parent = query.parent
+        if parent is None or isinstance(parent, exp.CTE):
+            continue
+        if isinstance(parent, exp.Subquery):
+            container = parent.parent
+            if isinstance(container, exp.SetOperation):
+                continue
+            if isinstance(container, (exp.From, exp.Join)) and container.this is parent:
+                continue
+        return True
     return False
 
 
@@ -122,8 +125,9 @@ def rewrite_transport_sql(
             )
         if _has_unsafe_subquery(query, layer.dialect):
             raise SecurityError(
-                f"{transport} refused a predicate subquery or projection subquery while security controls "
-                "are active because nested expression reads cannot currently prove that access gates, row "
+                f"{transport} refused a predicate subquery, projection subquery, or other expression subquery "
+                "while security controls are active because nested expression reads cannot currently prove "
+                "that access gates, row "
                 "filters, and column restrictions were enforced. Rewrite it as structured "
                 "semantic filters or a supported semantic join."
             )

@@ -340,6 +340,23 @@ def test_projection_subqueries_fail_closed_across_sql_transports(tmp_path):
         _pg_rewrite(_layer(), query, attrs)
 
 
+def test_order_by_subqueries_fail_closed_across_sql_transports(tmp_path):
+    attrs = {"role": "analyst", "tenant_id": 999}
+    query = "SELECT tenant_id, total_amount FROM orders ORDER BY (SELECT COUNT(*) FROM orders)"
+    client = TestClient(create_app(_layer(), auth_token="secret"))
+
+    response = client.post("/sql", json={"query": query}, headers=_headers(attrs))
+    assert response.status_code == 403
+    assert "expression subquery" in response.json()["error"]
+
+    _mcp_layer(tmp_path / "mcp-order-subquery", attrs)
+    with pytest.raises(SecurityError, match="expression subquery"):
+        mcp_run_sql(query)
+
+    with pytest.raises(SecurityError, match="expression subquery"):
+        _pg_rewrite(_layer(), query, attrs)
+
+
 def test_rust_rewriter_is_disabled_across_secured_sql_transports(tmp_path, monkeypatch):
     from sidemantic.sql.query_rewriter import QueryRewriter
 

@@ -556,7 +556,7 @@ class LookMLAdapter(BaseAdapter):
     # keyword-named column. EXTRACT(part FROM x) and INTERVAL n part have their own position checks.
     _DATE_PART_ARG_POS = {
         "timestamp_trunc": -1, "datetime_trunc": -1, "time_trunc": -1,
-        "date_diff": -1, "timestamp_diff": -1, "datetime_diff": -1, "time_diff": -1,
+        "timestamp_diff": -1, "datetime_diff": -1, "time_diff": -1,
         "datetrunc": 0, "datediff": 0, "dateadd": 0, "datepart": 0, "date_part": 0,
         "timestampadd": 0, "timestampdiff": 0, "timestampdiff_big": 0, "datetimediff": 0,
         # SQL Server functions taking the datepart as the FIRST argument. datediff_big is the
@@ -578,6 +578,13 @@ class LookMLAdapter(BaseAdapter):
     # DATE_TRUNC(part, expr), and the adapter has no dialect context. Disambiguate by CONTENT --
     # whichever argument is a date-part keyword is the part (see _is_date_part_argument).
     _DATE_PART_AMBIGUOUS_TRUNC = frozenset({"date_trunc"})
+    # date_diff has NO fixed part position either: BigQuery is DATE_DIFF(end, start, part) (part
+    # LAST) while DuckDB is date_diff(part, start, end) (part FIRST), same name and no dialect
+    # context. Disambiguate by CONTENT -- whichever END argument is a date-part keyword is the part
+    # (see _is_date_part_argument). The unambiguous spellings stay in _DATE_PART_ARG_POS: `datediff`
+    # (no underscore) is part-FIRST everywhere, and BigQuery's timestamp_diff/datetime_diff/time_diff
+    # are part-LAST.
+    _DATE_PART_AMBIGUOUS_DIFF = frozenset({"date_diff"})
     # Coarseness rank of each date-part keyword (LOWER = coarser). Used only to break the tie when
     # BOTH arguments of an ambiguous DATE_TRUNC are keywords (a model with `date` AND `month`
     # dimensions): truncation always goes finer -> coarser, so the COARSER keyword is the part and
@@ -767,6 +774,34 @@ class LookMLAdapter(BaseAdapter):
             else:
                 return False
             return arg_index == part_index
+        if func.lower() in cls._DATE_PART_AMBIGUOUS_DIFF:
+            # date_diff(a, b, c): BigQuery puts the part LAST, DuckDB puts it FIRST. The token is
+            # already known to be a date-part keyword, so it is the part when it sits at a candidate
+            # END (first or last argument) and the OTHER end is not itself a keyword. If both ends
+            # look like keywords (a column literally named after a unit), fall back to BigQuery's
+            # part-LAST order. A part in the MIDDLE argument never occurs, so reject it.
+            args = cls._enclosing_call_arg_texts(pre, suf, token)
+            if len(args) < 2:
+                return False
+            first = args[0].strip().strip("'\"").lower()
+            last = args[-1].strip().strip("'\"").lower()
+            first_kw = first in cls._DATE_PART_KEYWORDS
+            last_kw = last in cls._DATE_PART_KEYWORDS
+            if first_kw and not last_kw:
+                part_index = 0
+            elif last_kw and not first_kw:
+                part_index = len(args) - 1
+            else:
+                # Both ends look like keywords (a column literally named after a unit, e.g. a `date`
+                # dimension). A diff PART is a genuine unit (day, month, ...), so prefer the end that
+                # is a real truncation/diff unit; otherwise fall back to BigQuery's part-LAST order.
+                first_unit = first in cls._DATE_TRUNC_UNITS
+                last_unit = last in cls._DATE_TRUNC_UNITS
+                if first_unit and not last_unit:
+                    part_index = 0
+                else:
+                    part_index = len(args) - 1
+            return arg_index == part_index
         want = cls._DATE_PART_ARG_POS.get(func.lower())
         if want is None:
             return False
@@ -859,10 +894,18 @@ class LookMLAdapter(BaseAdapter):
         string literal like ``'(ALL users)'`` is DATA, not a modifier, so the substitution runs only
         on the segments outside any quoted token (``(`` must precede ``ALL`` regardless, so
         ``= ALL (SELECT ...)`` and a column named ``all`` are already untouched).
+
+        A LEADING ``ALL`` is also dropped: a metric SQL that IS the bare aggregate argument
+        (``Metric(agg="stddev", sql="ALL {model}.amount")``) has no ``(`` yet, and wrapping it as
+        ``STDDEV(ALL amount)`` is likewise unparseable, so the exported measure would not round-trip.
         """
         parts = re.split(r"""('(?:[^']|'')*'|"(?:[^"]|"")*"|`[^`]*`|\[[^\]]*\])""", sql or "")
         for i in range(0, len(parts), 2):  # even indices are outside any quoted token
             parts[i] = re.sub(r"(?i)\(\s*ALL\s+", "(", parts[i])
+        # Only the first outside-quotes segment can hold the string's start; a `\s+` after ALL keeps
+        # a column named `all` (or an `all(` function) untouched.
+        if parts:
+            parts[0] = re.sub(r"(?i)^\s*ALL\s+", "", parts[0])
         return "".join(parts)
 
     @classmethod

@@ -4888,6 +4888,44 @@ def test_lookml_export_folded_filter_date_part_guard_is_position_aware():
     )
 
 
+def test_lookml_export_folded_filter_date_diff_part_position_is_content_based():
+    """date_diff's part is at EITHER end depending on dialect, so decide by content, not position.
+
+    BigQuery is DATE_DIFF(end, start, part) (part LAST); DuckDB is date_diff(part, start, end) (part
+    FIRST). A fixed position leaves the DuckDB spelling's first-argument unit unprotected, so a model
+    with a `day` dimension rewrites the unit to (${TABLE}.order_day). Whichever END argument is a
+    date-part keyword is the part; the other columns still resolve.
+    """
+    from sidemantic import Dimension, Model
+
+    model = Model(
+        name="orders",
+        table="raw_orders",
+        primary_key="id",
+        dimensions=[
+            Dimension(name="date", type="time", granularity="day", sql="order_date"),
+            Dimension(name="day", type="time", granularity="day", sql="order_day"),
+            Dimension(name="created_at", type="time", granularity="day", sql="created_at"),
+            Dimension(name="start_at", type="time", granularity="day", sql="started_at"),
+            Dimension(name="end_at", type="time", granularity="day", sql="ended_at"),
+        ],
+    )
+    conds = LookMLAdapter._fold_filter_conds
+    # DuckDB: part FIRST -- `day` must stay a unit, and start/end columns still resolve.
+    assert conds(["date_diff(day, start_at, end_at) > 1"], model) == (
+        "(date_diff(day, (${TABLE}.started_at), (${TABLE}.ended_at)) > 1)"
+    )
+    # BigQuery: part LAST -- unchanged; the `date` COLUMN in the middle still resolves.
+    assert conds(["DATE_DIFF(created_at, date, day) > 1"], model) == (
+        "(DATE_DIFF((${TABLE}.created_at), (${TABLE}.order_date), day) > 1)"
+    )
+    # Both ends look like keywords (a `date` dimension at the far end): the genuine UNIT `day` wins,
+    # so the DuckDB unit is protected and the `date` column resolves.
+    assert conds(["date_diff(day, created_at, date) > 1"], model) == (
+        "(date_diff(day, (${TABLE}.created_at), (${TABLE}.order_date)) > 1)"
+    )
+
+
 def test_lookml_export_folded_filter_equal_rank_date_trunc_uses_trunc_unit_as_part():
     """When both DATE_TRUNC args share coarseness, the truncation UNIT is the part.
 
@@ -5798,6 +5836,41 @@ def test_lookml_export_normalizes_all_modifier_for_roundtrip():
     # metric still includes the same rows, while a real ALL modifier in the same SQL is stripped.
     block, kept = roundtrip("SUM(ALL CASE WHEN {model}.amount > 0 THEN 1 ELSE 0 END) || '(ALL x)'")
     assert block and "(ALL x)" in block and "SUM(ALL" not in block, block
+
+
+def test_lookml_export_strips_leading_all_modifier_in_stddev_argument():
+    """A LEADING ALL on a stddev/variance argument must be stripped, not wrapped as STDDEV(ALL x).
+
+    The stddev/variance export wraps the metric SQL as STDDEV(<arg>). When the arg itself carries an
+    explicit ALL (Metric(agg='stddev', sql='ALL {model}.amount')), emitting STDDEV(ALL amount) is
+    unparseable, so the re-imported type: number measure is dropped. The ALL is the default modifier
+    and must be normalized away before wrapping."""
+    import re
+    import tempfile
+
+    from sidemantic import Dimension, Metric, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="o",
+            table="t",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(name="amount", type="numeric", sql="amount"),
+            ],
+            metrics=[Metric(name="sd", agg="stddev", sql="ALL {model}.amount")],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    text = open(out).read()
+    block = re.search(r"measure: sd \{.*?\n  \}", text, re.S)
+    assert block and "ALL" not in block.group(0), block  # STDDEV(${TABLE}.amount), not STDDEV(ALL ...)
+    reimported = {m.name for m in LookMLAdapter().parse(Path(out)).get_model("o").metrics}
+    assert "sd" in reimported  # survives the round-trip
 
 
 def test_lookml_export_sample_aggregate_complete_measures_survive():

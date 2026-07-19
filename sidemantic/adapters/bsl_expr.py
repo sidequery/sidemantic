@@ -14,8 +14,12 @@ Uses Python's ast module for parsing since these are valid Python expressions.
 """
 
 import ast
+import keyword
 import re
 from dataclasses import dataclass
+
+import sqlglot
+from sqlglot import exp
 
 
 @dataclass
@@ -130,6 +134,14 @@ def _expr_to_sql(node: ast.AST) -> str | None:
             return ".".join(attrs)
         return None
 
+    if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.BitAnd, ast.BitOr)):
+        left = _expr_to_sql(node.left)
+        right = _expr_to_sql(node.right)
+        if left is not None and right is not None:
+            operator = "AND" if isinstance(node.op, ast.BitAnd) else "OR"
+            return f"({left}) {operator} ({right})"
+        return None
+
     if isinstance(node, ast.BinOp):
         return _binop_to_sql(node)
 
@@ -140,17 +152,78 @@ def _expr_to_sql(node: ast.AST) -> str | None:
         if isinstance(node.value, str):
             escaped = node.value.replace("'", "''")
             return f"'{escaped}'"
+        if isinstance(node.value, bool):
+            return "TRUE" if node.value else "FALSE"
+        if node.value is None:
+            return "NULL"
         if isinstance(node.value, (int, float)):
             return str(node.value)
 
     # Python parses -5 as UnaryOp(USub, Constant(5))
-    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
+    if isinstance(node, ast.UnaryOp):
         operand = _expr_to_sql(node.operand)
         if operand is not None:
-            return f"-{operand}"
+            if isinstance(node.op, ast.USub):
+                return f"-{operand}"
+            if isinstance(node.op, ast.Invert):
+                return f"NOT ({operand})"
 
     if isinstance(node, ast.Name) and node.id == "_":
         return None
+
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "getattr"
+        and len(node.args) == 2
+        and isinstance(node.args[1], ast.Constant)
+        and isinstance(node.args[1].value, str)
+    ):
+        base = "" if isinstance(node.args[0], ast.Name) and node.args[0].id == "_" else _expr_to_sql(node.args[0])
+        if base is not None:
+            identifier = '"' + node.args[1].value.replace('"', '""') + '"'
+            return f"{base}.{identifier}" if base else identifier
+
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+        args = [_expr_to_sql(arg) for arg in node.args]
+        if all(arg is not None for arg in args):
+            if node.func.id.upper() == "CAST" and len(args) == 2 and isinstance(node.args[1], ast.Constant):
+                return f"CAST({args[0]} AS {node.args[1].value})"
+            if node.func.id.upper() == "IS" and len(args) == 2:
+                return f"{args[0]} IS {args[1]}"
+            return f"{node.func.id.upper()}({', '.join(args)})"
+
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+        value = _expr_to_sql(node.func.value)
+        if (
+            node.func.attr == "isin"
+            and value is not None
+            and len(node.args) == 1
+            and isinstance(node.args[0], ast.List)
+        ):
+            values = [_expr_to_sql(item) for item in node.args[0].elts]
+            if all(item is not None for item in values):
+                return f"{value} IN ({', '.join(values)})"
+        args = [_expr_to_sql(arg) for arg in node.args]
+        if value is None or any(arg is None for arg in args):
+            return None
+        if node.func.attr == "isnull" and not args:
+            return f"{value} IS NULL"
+        if node.func.attr == "notnull" and not args:
+            return f"{value} IS NOT NULL"
+        if node.func.attr == "between" and len(args) == 2:
+            return f"{value} BETWEEN {args[0]} AND {args[1]}"
+        if node.func.attr in {"like", "ilike"} and len(args) == 1:
+            return f"{value} {node.func.attr.upper()} {args[0]}"
+        if node.func.attr in DATE_METHODS and not args:
+            return f"EXTRACT({node.func.attr.upper()} FROM {value})"
+
+    if isinstance(node, ast.IfExp):
+        condition = _expr_to_sql(node.test)
+        true = _expr_to_sql(node.body)
+        false = _expr_to_sql(node.orelse)
+        if condition is not None and true is not None and false is not None:
+            return f"CASE WHEN {condition} THEN {true} ELSE {false} END"
 
     return None
 
@@ -407,6 +480,13 @@ def _calc_node_to_sql(node: ast.AST) -> str | None:
                 return None
             return f"{node.func.id.upper()}({', '.join(args)})"
 
+    if isinstance(node, ast.IfExp):
+        condition = _calc_node_to_sql(node.test)
+        true = _calc_node_to_sql(node.body)
+        false = _calc_node_to_sql(node.orelse)
+        if condition is not None and true is not None and false is not None:
+            return f"CASE WHEN {condition} THEN {true} ELSE {false} END"
+
     return None
 
 
@@ -436,35 +516,145 @@ def _sql_to_bsl_expr(sql: str, agg: str | None) -> str:
     no original BSL expression is available. For BSL->BSL roundtrip,
     the adapter stores and reuses the original expression instead.
     """
-    # Simple column + aggregation (the common case for cross-format)
-    if not any(f" {op} " in sql for op in ["+", "-", "*", "/", "%", "=", "!=", "<", ">", "<=", ">="]):
-        base = f"_.{sql}"
-        if agg:
-            method = AGG_TO_METHOD_MAP.get(agg)
-            if method:
-                return f"{base}.{method}()"
-        return base
-
-    # Compound or comparison SQL: prefix column-like tokens with _.,
-    # and convert SQL operators to Python equivalents
-    sql_to_py_op = {"=": "==", "<>": "!="}
-    parts = re.split(r"(\s*(?:[+\-*/%]|[<>!=]=?|<>)\s*)", sql)
-    bsl_parts = []
-    for part in parts:
-        stripped = part.strip()
-        if re.match(r"^[a-zA-Z_]\w*(\.\w+)*$", stripped):
-            bsl_parts.append(f"_.{stripped}")
-        elif stripped in sql_to_py_op:
-            bsl_parts.append(part.replace(stripped, sql_to_py_op[stripped]))
-        else:
-            bsl_parts.append(part)
-    inner = "".join(bsl_parts)
+    tree = None
+    inner = None
+    if re.fullmatch(r"\s*\[[^]]+]\s*", sql):
+        dialects = ("tsql",)
+    elif "`" in sql:
+        dialects = ("bigquery", "spark")
+    else:
+        dialects = (None, "duckdb", "snowflake", "bigquery", "postgres", "tsql")
+    for dialect in dialects:
+        try:
+            tree = sqlglot.parse_one(sql, read=dialect)
+        except Exception:
+            continue
+        inner = _render_sql_node_as_bsl(tree)
+        if inner is not None:
+            break
+    if inner is None:
+        return sql
 
     if agg:
         method = AGG_TO_METHOD_MAP.get(agg)
         if method:
+            if isinstance(tree, exp.Column):
+                return f"{inner}.{method}()"
             return f"({inner}).{method}()"
     return inner
+
+
+_SQL_BINARY_TO_BSL = {
+    exp.Add: "+",
+    exp.Sub: "-",
+    exp.Mul: "*",
+    exp.Div: "/",
+    exp.Mod: "%",
+    exp.EQ: "==",
+    exp.NEQ: "!=",
+    exp.GT: ">",
+    exp.GTE: ">=",
+    exp.LT: "<",
+    exp.LTE: "<=",
+}
+
+
+def _bsl_column(column: exp.Column) -> str:
+    rendered = "_"
+    for part in column.parts:
+        if re.fullmatch(r"[A-Za-z_]\w*", part.name) and not keyword.iskeyword(part.name):
+            rendered += f".{part.name}"
+        else:
+            rendered = f"getattr({rendered}, {part.name!r})"
+    return rendered
+
+
+def _render_sql_node_as_bsl(node: exp.Expression | None) -> str | None:
+    """Render a SQLGlot expression as a syntactically valid deferred BSL expression."""
+    if node is None:
+        return None
+    if isinstance(node, exp.Column):
+        return _bsl_column(node)
+    if isinstance(node, exp.Literal):
+        return repr(node.this) if node.is_string else str(node.this)
+    if isinstance(node, exp.Null):
+        return "None"
+    if isinstance(node, exp.Boolean):
+        return "True" if node.this else "False"
+    if isinstance(node, exp.Paren):
+        inner = _render_sql_node_as_bsl(node.this)
+        return f"({inner})" if inner is not None else None
+    if isinstance(node, exp.Neg):
+        value = _render_sql_node_as_bsl(node.this)
+        return f"-{value}" if value is not None else None
+    for node_type, operator in _SQL_BINARY_TO_BSL.items():
+        if isinstance(node, node_type):
+            left = _render_sql_node_as_bsl(node.this)
+            right = _render_sql_node_as_bsl(node.expression)
+            return f"{left} {operator} {right}" if left is not None and right is not None else None
+    if isinstance(node, (exp.And, exp.Or)):
+        left = _render_sql_node_as_bsl(node.this)
+        right = _render_sql_node_as_bsl(node.expression)
+        operator = "&" if isinstance(node, exp.And) else "|"
+        return f"({left}) {operator} ({right})" if left is not None and right is not None else None
+    if isinstance(node, exp.Not):
+        if isinstance(node.this, exp.Is) and isinstance(node.this.expression, exp.Null):
+            value = _render_sql_node_as_bsl(node.this.this)
+            return f"{value}.notnull()" if value is not None else None
+        value = _render_sql_node_as_bsl(node.this)
+        return f"~({value})" if value is not None else None
+    if isinstance(node, exp.Is):
+        value = _render_sql_node_as_bsl(node.this)
+        other = node.expression
+        if value is not None and isinstance(other, exp.Null):
+            return f"{value}.isnull()"
+        rendered_other = _render_sql_node_as_bsl(other)
+        return f"IS({value}, {rendered_other})" if value is not None and rendered_other is not None else None
+    if isinstance(node, exp.Between):
+        value = _render_sql_node_as_bsl(node.this)
+        low = _render_sql_node_as_bsl(node.args.get("low"))
+        high = _render_sql_node_as_bsl(node.args.get("high"))
+        return f"{value}.between({low}, {high})" if value is not None and low is not None and high is not None else None
+    if isinstance(node, exp.In) and node.args.get("query") is None:
+        value = _render_sql_node_as_bsl(node.this)
+        items = [_render_sql_node_as_bsl(item) for item in node.expressions]
+        if value is not None and all(item is not None for item in items):
+            return f"{value}.isin([{', '.join(items)}])"
+    if isinstance(node, (exp.Like, exp.ILike)):
+        value = _render_sql_node_as_bsl(node.this)
+        pattern = _render_sql_node_as_bsl(node.expression)
+        method = "ilike" if isinstance(node, exp.ILike) else "like"
+        return f"{value}.{method}({pattern})" if value is not None and pattern is not None else None
+    if isinstance(node, exp.Extract):
+        value = _render_sql_node_as_bsl(node.expression)
+        part = str(node.this).lower()
+        if value is not None and part in DATE_METHODS:
+            return f"{value}.{part}()"
+        return None
+    if isinstance(node, exp.DPipe):
+        left = _render_sql_node_as_bsl(node.this)
+        right = _render_sql_node_as_bsl(node.expression)
+        return f"CONCAT({left}, {right})" if left is not None and right is not None else None
+    if isinstance(node, exp.Case):
+        default = _render_sql_node_as_bsl(node.args.get("default")) or "None"
+        result = default
+        for branch in reversed(node.args.get("ifs") or []):
+            condition = _render_sql_node_as_bsl(branch.this)
+            true = _render_sql_node_as_bsl(branch.args.get("true"))
+            if condition is None or true is None:
+                return None
+            result = f"{true} if {condition} else {result}"
+        return f"({result})"
+    if isinstance(node, exp.Cast):
+        value = _render_sql_node_as_bsl(node.this)
+        target = str(node.args.get("to"))
+        return f"CAST({value}, {target!r})" if value is not None else None
+    if isinstance(node, exp.Func):
+        name = node.name if isinstance(node, exp.Anonymous) else node.sql_name()
+        args = [_render_sql_node_as_bsl(child) for child in node.iter_expressions()]
+        if all(arg is not None for arg in args):
+            return f"{name.upper()}({', '.join(args)})"
+    return None
 
 
 def parse_bsl_expr(expr: str) -> ParsedExpr:
@@ -492,7 +682,7 @@ def parse_bsl_expr(expr: str) -> ParsedExpr:
     """
     expr = expr.strip()
 
-    if not expr.startswith("_.") and not expr.startswith("("):
+    if not expr.startswith("_.") and not expr.startswith("(") and not expr.startswith("getattr("):
         # Not a BSL expression, might be a calc measure reference
         return ParsedExpr(column=expr)
 
@@ -524,7 +714,10 @@ def parse_bsl_expr(expr: str) -> ParsedExpr:
 
         # Case 1b: Method call on compound expression like (_.a - _.b).sum()
         base = node.func.value
-        if isinstance(base, (ast.BinOp, ast.Compare)) and method in AGG_METHOD_MAP:
+        if (
+            isinstance(base, (ast.BinOp, ast.Compare, ast.Call, ast.IfExp, ast.UnaryOp, ast.BoolOp))
+            and method in AGG_METHOD_MAP
+        ):
             sql_expr = _expr_to_sql(base)
             if sql_expr:
                 return ParsedExpr(column=sql_expr, aggregation=method)

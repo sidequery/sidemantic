@@ -1,5 +1,7 @@
 """Unit tests for BSL adapter and expression parser."""
 
+import ast
+
 import pytest
 
 from sidemantic.adapters.bsl import BSLAdapter
@@ -1512,6 +1514,57 @@ class TestBSLCompoundExpressions:
     def test_sql_to_bsl_expr_compound_mean(self):
         result = _sql_to_bsl_expr("total_claim_cost - payer_coverage", "avg")
         assert result == "(_.total_claim_cost - _.payer_coverage).mean()"
+
+    def test_sql_to_bsl_expr_recursively_qualifies_function_arguments(self):
+        assert _sql_to_bsl_expr("COALESCE(a, 0) - b", "sum") == "(COALESCE(_.a, 0) - _.b).sum()"
+
+    def test_sql_to_bsl_expr_recursively_qualifies_parenthesized_operands(self):
+        assert _sql_to_bsl_expr("(a + b) / c", "sum") == "((_.a + _.b) / _.c).sum()"
+
+    def test_sql_to_bsl_expr_recursively_qualifies_case_columns(self):
+        result = _sql_to_bsl_expr("CASE WHEN status = 'paid' THEN amount ELSE 0 END", "sum")
+        assert result == ("((_.amount if _.status == 'paid' else 0)).sum()")
+        ast.parse(result, mode="eval")
+        assert bsl_to_sql(result) == ("CASE WHEN status = 'paid' THEN amount ELSE 0 END", "sum", None)
+
+    @pytest.mark.parametrize(
+        ("sql", "expected"),
+        [
+            ("a IS NULL", "(_.a.isnull()).sum()"),
+            ("a BETWEEN 1 AND b", "(_.a.between(1, _.b)).sum()"),
+            ("a IN (1, b)", "(_.a.isin([1, _.b])).sum()"),
+            ("a LIKE 'x%'", "(_.a.like('x%')).sum()"),
+            ("a IS NOT NULL", "(_.a.notnull()).sum()"),
+            ("EXTRACT(YEAR FROM created_at)", "(_.created_at.year()).sum()"),
+            ("a || b", "(CONCAT(_.a, _.b)).sum()"),
+            ("CAST(a AS INT)", "(CAST(_.a, 'INT')).sum()"),
+            ("-a", "(-_.a).sum()"),
+            ("COALESCE(a, NULL)", "(COALESCE(_.a, None)).sum()"),
+            ("a IS TRUE", "(IS(_.a, True)).sum()"),
+        ],
+    )
+    def test_sql_to_bsl_expr_predicates_are_qualified_and_valid(self, sql, expected):
+        result = _sql_to_bsl_expr(sql, "sum")
+        assert result == expected
+        ast.parse(result, mode="eval")
+        roundtrip_sql, roundtrip_agg, _ = bsl_to_sql(result)
+        assert roundtrip_sql is not None
+        assert roundtrip_agg == "sum"
+
+    @pytest.mark.parametrize(
+        ("sql", "expected", "roundtrip"),
+        [
+            ('"class"', "getattr(_, 'class').sum()", '"class"'),
+            ('"order amount"', "getattr(_, 'order amount').sum()", '"order amount"'),
+            ("`class`", "getattr(_, 'class').sum()", '"class"'),
+            ("[class]", "getattr(_, 'class').sum()", '"class"'),
+        ],
+    )
+    def test_sql_to_bsl_expr_uses_valid_python_for_quoted_or_keyword_columns(self, sql, expected, roundtrip):
+        result = _sql_to_bsl_expr(sql, "sum")
+        assert result == expected
+        ast.parse(result, mode="eval")
+        assert bsl_to_sql(result) == (roundtrip, "sum", None)
 
 
 class TestBSLBooleanExpressions:

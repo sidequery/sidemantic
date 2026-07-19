@@ -17,9 +17,41 @@ import pytest
 import yaml
 
 from sidemantic import SemanticLayer
-from sidemantic.adapters.cube import CubeAdapter, CubeImportWarning, _normalize_cube_sql
+from sidemantic.adapters.cube import CubeAdapter, CubeImportWarning, _model_placeholder_to_cube, _normalize_cube_sql
 from sidemantic.core.preagg_matcher import GRANULARITY_HIERARCHY
 from sidemantic.core.relationship import Relationship
+
+
+def test_derived_export_only_rewrites_executable_semantic_member_references():
+    convert = CubeAdapter._derived_sql_to_cube
+    known = {"orders.total"}
+
+    assert convert('"orders.total" + orders.total', known) == '"orders.total" + ${orders.total}'
+    assert convert("`orders.total` + orders.total", known) == "`orders.total` + ${orders.total}"
+    assert convert("[orders.total] + orders.total", known) == "[orders.total] + ${orders.total}"
+    assert convert("orders.total /* orders.total */", known) == "${orders.total} /* orders.total */"
+    assert convert("orders.total = $$orders.total$$", known) == "${orders.total} = $$orders.total$$"
+    assert convert("orders.total = $tag$orders.total$tag$", known) == ("${orders.total} = $tag$orders.total$tag$")
+    assert convert("orders . total", known) == "${orders . total}"
+    assert convert("orders/* member */.total", known) == "${orders/* member */.total}"
+    assert convert("(SELECT orders.total FROM audit AS orders)", known) == (
+        "(SELECT orders.total FROM audit AS orders)"
+    )
+    assert convert("(SELECT orders.total FROM audit AS ORDERS)", known) == (
+        "(SELECT orders.total FROM audit AS ORDERS)"
+    )
+
+
+def test_model_placeholder_export_uses_the_same_sql_lexical_boundary():
+    sql = "{model}.amount = '{model}' AND \"{model}\" = `{model}` AND [{model}] = $$ {model} $$ /* {model} */"
+
+    assert _model_placeholder_to_cube(sql) == (
+        "${CUBE}.amount = '{model}' AND \"{model}\" = `{model}` AND [{model}] = $$ {model} $$ /* {model} */"
+    )
+    assert _model_placeholder_to_cube("${model}.amount + {model}.tax") == "${model}.amount + ${CUBE}.tax"
+    assert _model_placeholder_to_cube("{model}.x /* outer /* inner */ {model}.y */") == (
+        "${CUBE}.x /* outer /* inner */ {model}.y */"
+    )
 
 
 def _parse(yaml_text: str):

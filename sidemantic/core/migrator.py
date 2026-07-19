@@ -33,6 +33,21 @@ _AGG_NAME_MAP = {
     "approxquantile": "median",
 }
 
+# Time dimensions must declare their base granularity in native Sidemantic
+# models. When query analysis observes more than one DATE_TRUNC/EXTRACT grain
+# for the same column, preserve the finest one so every coarser observed query
+# remains representable.
+_TIME_GRANULARITY_ORDER = {
+    "second": 0,
+    "minute": 1,
+    "hour": 2,
+    "day": 3,
+    "week": 4,
+    "month": 5,
+    "quarter": 6,
+    "year": 7,
+}
+
 
 def _normalize_agg_name(node) -> str:
     """Normalize a sqlglot aggregate node's class name to a sidemantic agg name."""
@@ -1390,24 +1405,36 @@ class Migrator:
 
             # Add dimensions
             dims = []
-            # Build set of time dimension column names for this table
-            time_dim_cols = {col_name for col_name, _ in table_time_dimensions.get(table, set())}
+            # Collapse all observed grains for each time column to its finest
+            # grain. Emitting one dimension per observed grain would create
+            # duplicate dimension names, while omitting the grain produces a
+            # model that fails native validation immediately after generation.
+            time_dim_granularities: dict[str, str] = {}
+            for col_name, granularity in table_time_dimensions.get(table, set()):
+                current = time_dim_granularities.get(col_name)
+                if current is None or _TIME_GRANULARITY_ORDER.get(granularity, 999) < _TIME_GRANULARITY_ORDER.get(
+                    current, 999
+                ):
+                    time_dim_granularities[col_name] = granularity
+
+            time_dim_cols = set(time_dim_granularities)
 
             if table in table_dimensions:
                 for dim_name in sorted(table_dimensions[table]):
                     # Check if this is a time dimension
                     dim_type = "time" if dim_name in time_dim_cols else "categorical"
-                    dims.append(
-                        {
-                            "name": dim_name,
-                            "sql": dim_name,
-                            "type": dim_type,
-                        }
-                    )
+                    dimension = {
+                        "name": dim_name,
+                        "sql": dim_name,
+                        "type": dim_type,
+                    }
+                    if dim_type == "time":
+                        dimension["granularity"] = time_dim_granularities[dim_name]
+                    dims.append(dimension)
 
             # Add time dimensions that weren't in GROUP BY
             if table in table_time_dimensions:
-                for col_name, _granularity in sorted(table_time_dimensions[table]):
+                for col_name, granularity in sorted(time_dim_granularities.items()):
                     # Only add if not already added from GROUP BY
                     if col_name not in table_dimensions.get(table, set()):
                         dims.append(
@@ -1415,6 +1442,7 @@ class Migrator:
                                 "name": col_name,
                                 "sql": col_name,
                                 "type": "time",
+                                "granularity": granularity,
                             }
                         )
 

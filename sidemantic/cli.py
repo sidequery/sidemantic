@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import os
-import tempfile
 from pathlib import Path
 
 import typer
 
 from sidemantic import __version__
-from sidemantic.config import SidemanticConfig, build_connection_string, find_config, get_init_sql, load_config
+from sidemantic.config import SidemanticConfig
+from sidemantic.project import ProjectContext, ProjectResolutionError
 
 
 def SemanticLayer(*args, **kwargs):  # noqa: N802 - deliberately shadows the class so call sites stay unchanged while deferring the import
@@ -38,7 +38,7 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 dashboard_app = typer.Typer(
-    help="Validate, serve, and type semantic dashboard specs",
+    help="Serve, validate, and type semantic dashboard specs",
     no_args_is_help=True,
 )
 app.add_typer(dashboard_app, name="dashboard")
@@ -46,10 +46,53 @@ gen_app = typer.Typer(
     help="Generate typed TypeScript clients from the semantic layer",
     no_args_is_help=True,
 )
-app.add_typer(gen_app, name="gen")
+app.add_typer(gen_app, name="gen", hidden=True)
+app.add_typer(gen_app, name="generate")
+migrate_app = typer.Typer(
+    help="Generate semantic models from SQL or check migration coverage",
+    no_args_is_help=True,
+)
+app.add_typer(migrate_app, name="migrate")
+server_app = typer.Typer(
+    help="Run Sidemantic API, PostgreSQL, or MCP servers",
+    no_args_is_help=True,
+)
+app.add_typer(server_app, name="server")
 
 # Global state for config (set in callback, used in commands)
 _loaded_config: SidemanticConfig | None = None
+_project_context: ProjectContext | None = None
+
+
+def _project() -> ProjectContext:
+    """Return the project selected by the root command callback."""
+
+    return _project_context or ProjectContext.discover()
+
+
+def _models_path(explicit: Path | None = None) -> Path:
+    """Resolve the shared model source for a project-aware command."""
+
+    try:
+        return _project().resolve_models(explicit)
+    except ProjectResolutionError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--models") from exc
+
+
+def _dashboard_path(explicit: Path | None = None) -> Path:
+    try:
+        resolved = _project().resolve_dashboard(explicit)
+        assert resolved is not None
+        return resolved
+    except ProjectResolutionError as exc:
+        raise typer.BadParameter(str(exc), param_hint="dashboard spec") from exc
+
+
+def _resolve_connection(**kwargs):
+    try:
+        return _project().resolve_connection(**kwargs)
+    except ProjectResolutionError as exc:
+        raise typer.BadParameter(str(exc)) from exc
 
 
 def _normalize_engine(engine: str | None) -> str | None:
@@ -90,27 +133,17 @@ def _resolve_engine_options(engine: str | None, fallback: bool | None) -> tuple[
 
     if resolved_fallback is None:
         resolved_fallback = resolved_engine == "auto"
-    elif resolved_engine == "auto" and not resolved_fallback:
-        resolved_fallback = True
+
+    if resolved_engine is None and fallback is not None:
+        raise typer.BadParameter("--fallback/--no-fallback requires --engine or runtime.engine in config")
+    if resolved_engine == "python" and resolved_fallback:
+        raise typer.BadParameter("--fallback is only meaningful with the rust or auto engine")
 
     return resolved_engine, resolved_fallback
 
 
-def _normalize_chart_renderer(renderer: str) -> str:
-    normalized = renderer.lower().replace("_", "-")
-    aliases = {
-        "vegalite": "vega-lite",
-        "vl": "vega-lite",
-        "observable": "observable-plot",
-        "plot": "observable-plot",
-        "linked": "crossfilter",
-        "dashboard": "crossfilter",
-    }
-    return aliases.get(normalized, normalized)
-
-
 def _load_query_layer(
-    models: Path,
+    models: Path | None = None,
     connection: str | None = None,
     db: Path | None = None,
     use_preaggregations: bool = False,
@@ -121,21 +154,10 @@ def _load_query_layer(
     engine, resolved_fallback = _resolve_engine_options(engine, fallback)
     _configure_engine_environment(engine, resolved_fallback)
 
-    connection_str = None
-    init_sql = None
-    if connection:
-        connection_str = connection
-    elif db:
-        connection_str = f"duckdb:///{db.absolute()}"
-    elif _loaded_config and _loaded_config.connection:
-        connection_str = build_connection_string(_loaded_config)
-        init_sql = get_init_sql(_loaded_config)
-    else:
-        data_dir = models / "data"
-        if data_dir.exists():
-            db_files = list(data_dir.glob("*.db"))
-            if db_files:
-                connection_str = f"duckdb:///{db_files[0].absolute()}"
+    models = _models_path(models)
+    resolved_connection = _resolve_connection(connection=connection, database=db, models=models)
+    connection_str = resolved_connection.connection if resolved_connection else None
+    init_sql = resolved_connection.init_sql if resolved_connection else None
 
     preagg_db = _loaded_config.preagg_database if _loaded_config else None
     preagg_sch = _loaded_config.preagg_schema if _loaded_config else None
@@ -164,11 +186,35 @@ def _load_query_layer(
     return layer
 
 
+def _load_graph_layer(
+    models: Path | None = None,
+    *,
+    engine: str | None = None,
+    fallback: bool | None = None,
+) -> SemanticLayer:
+    """Load project models without opening the configured database."""
+
+    models = _models_path(models)
+    engine, resolved_fallback = _resolve_engine_options(engine, fallback)
+    _configure_engine_environment(engine, resolved_fallback)
+    layer = SemanticLayer(engine=engine, fallback=resolved_fallback)
+    if models.is_file():
+        from sidemantic.loaders import load_from_file
+
+        load_from_file(layer, models)
+    else:
+        load_from_directory(layer, str(models))
+    if not layer.graph.models:
+        raise ValueError("No models found")
+    return layer
+
+
 @app.callback()
 def main(
     version: bool = typer.Option(
         None, "--version", "-v", callback=version_callback, is_eager=True, help="Show version"
     ),
+    project: Path = typer.Option(None, "--project", "-p", help="Project root (defaults to discovery from cwd)"),
     config: Path = typer.Option(None, "--config", "-c", help="Path to config file (sidemantic.yaml)"),
 ):
     """Sidemantic CLI.
@@ -176,29 +222,20 @@ def main(
     You can use a config file (sidemantic.yaml or sidemantic.json) to set default values.
     CLI arguments override config file values.
     """
-    global _loaded_config
+    global _loaded_config, _project_context
 
-    # Try to load config
-    config_path = None
-    if config:
-        # Explicit config path provided
-        config_path = config
-    else:
-        # Try to auto-discover config
-        config_path = find_config()
-
-    if config_path:
-        try:
-            _loaded_config = load_config(config_path)
-            typer.echo(f"Loaded config from: {config_path}", err=True)
-        except Exception as e:
-            typer.echo(f"Warning: Failed to load config: {e}", err=True)
-            _loaded_config = None
+    try:
+        _project_context = ProjectContext.discover(start_dir=project, config_path=config)
+        _loaded_config = _project_context.config
+    except ProjectResolutionError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--config") from exc
 
 
-@app.command()
+@app.command(hidden=True)
 def migrator(
-    directory: Path = typer.Argument(".", help="Directory containing semantic layer files (defaults to current dir)"),
+    directory: Path = typer.Argument(
+        None, help="Directory containing semantic layer files (defaults to project models)"
+    ),
     queries: Path = typer.Option(
         None, "--queries", "-q", help="Path to file or folder containing SQL queries to analyze"
     ),
@@ -216,6 +253,7 @@ def migrator(
         "-g",
         help="Generate model definitions from queries and write to this directory",
     ),
+    _warn_deprecated: bool = typer.Option(True, hidden=True),
 ):
     """
     Migrate SQL queries to semantic layer by generating model definitions.
@@ -229,6 +267,9 @@ def migrator(
       sidemantic migrator models/ --queries queries/ --verbose
     """
     from sidemantic.core.migrator import Migrator
+
+    if _warn_deprecated:
+        typer.echo("Warning: `migrator` is deprecated; use `migrate generate` or `migrate check`", err=True)
 
     source_dialect = "duckdb"
 
@@ -317,20 +358,16 @@ def migrator(
                 err=True,
             )
 
+        except typer.Exit:
+            raise
         except Exception as e:
             typer.echo(f"Error: {e}", err=True)
-            import traceback
-
-            traceback.print_exc()
             raise typer.Exit(1)
 
     # Coverage analysis mode - compare queries against existing models
     else:
-        if not directory.exists():
-            typer.echo(f"Error: Directory {directory} does not exist", err=True)
-            raise typer.Exit(1)
-
         try:
+            directory = _models_path(directory)
             # Load semantic layer
             layer = SemanticLayer()
             load_from_directory(layer, str(directory))
@@ -352,17 +389,100 @@ def migrator(
             # Print report
             analyzer.print_report(report, verbose=verbose)
 
+        except typer.Exit:
+            raise
         except Exception as e:
             typer.echo(f"Error: {e}", err=True)
-            import traceback
-
-            traceback.print_exc()
             raise typer.Exit(1)
+
+
+def _migration_queries(queries: Path | None) -> Path:
+    project = _project()
+    if queries is None:
+        resolved = project.root / "queries"
+    else:
+        resolved = queries.expanduser()
+        if not resolved.is_absolute():
+            resolved = project.root / resolved
+    resolved = resolved.resolve()
+    if not resolved.exists():
+        raise typer.BadParameter(
+            f"Query source not found: {resolved}",
+            param_hint="QUERIES",
+        )
+    return resolved
+
+
+@migrate_app.command("generate")
+def migrate_generate(
+    queries: Path = typer.Argument(None, help="SQL file or directory (defaults to project queries/)"),
+    output: Path = typer.Option(None, "--output", "-o", help="Output project root (defaults to current project)"),
+    history: bool = typer.Option(False, "--history", help="Generate from configured warehouse query history"),
+    connection: str = typer.Option(None, "--connection", help="Connection override for --history"),
+    days_back: int = typer.Option(7, "--days", "-d"),
+    limit: int = typer.Option(1000, "--limit", "-l"),
+):
+    """Generate models and rewritten queries from SQL or warehouse history."""
+
+    if history and queries is not None:
+        raise typer.BadParameter("QUERIES and --history are mutually exclusive")
+    if connection and not history:
+        raise typer.BadParameter("--connection requires --history")
+    resolved_connection = None
+    if history:
+        selected = _resolve_connection(connection=connection, required=True)
+        assert selected is not None
+        resolved_connection = selected.connection
+    migrator(
+        directory=None,
+        queries=None if history else _migration_queries(queries),
+        connection=resolved_connection,
+        days_back=days_back,
+        limit=limit,
+        verbose=False,
+        generate_models=output or _project().root,
+        _warn_deprecated=False,
+    )
+
+
+@migrate_app.command("check")
+def migrate_check(
+    queries: Path = typer.Argument(None, help="SQL file or directory (defaults to project queries/)"),
+    models: Path = typer.Option(None, "--models", "-m", help="Models override"),
+    history: bool = typer.Option(False, "--history", help="Check configured warehouse query history"),
+    connection: str = typer.Option(None, "--connection", help="Connection override for --history"),
+    days_back: int = typer.Option(7, "--days", "-d"),
+    limit: int = typer.Option(1000, "--limit", "-l"),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+):
+    """Check how well the project models cover existing SQL."""
+
+    if history and queries is not None:
+        raise typer.BadParameter("QUERIES and --history are mutually exclusive")
+    if connection and not history:
+        raise typer.BadParameter("--connection requires --history")
+    resolved_connection = None
+    if history:
+        selected = _resolve_connection(connection=connection, required=True)
+        assert selected is not None
+        resolved_connection = selected.connection
+    migrator(
+        directory=_models_path(models),
+        queries=None if history else _migration_queries(queries),
+        connection=resolved_connection,
+        days_back=days_back,
+        limit=limit,
+        verbose=verbose,
+        generate_models=None,
+        _warn_deprecated=False,
+    )
 
 
 @app.command()
 def info(
-    directory: Path = typer.Argument(".", help="Directory containing semantic layer files (defaults to current dir)"),
+    directory: Path = typer.Argument(
+        None, help="Directory containing semantic layer files (defaults to project models)"
+    ),
 ):
     """
     Show quick info about the semantic layer.
@@ -371,11 +491,8 @@ def info(
       sidemantic info
       sidemantic info ./models
     """
-    if not directory.exists():
-        typer.echo(f"Error: Directory {directory} does not exist", err=True)
-        raise typer.Exit(1)
-
     try:
+        directory = _models_path(directory)
         layer = SemanticLayer()
         load_from_directory(layer, str(directory))
 
@@ -396,14 +513,19 @@ def info(
                 typer.echo(f"  Connected to: {', '.join(rel_names)}")
             typer.echo()
 
+    except typer.Exit:
+        raise
     except Exception as e:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(1)
 
 
-@app.command()
+@app.command(hidden=True)
 def mcp_serve(
-    directory: Path = typer.Argument(".", help="Directory containing semantic layer files (defaults to current dir)"),
+    directory: Path = typer.Argument(
+        None, help="Directory containing semantic layer files (defaults to project models)"
+    ),
+    connection: str = typer.Option(None, "--connection", help="Database connection string"),
     db: Path = typer.Option(None, "--db", help="Path to DuckDB database file (optional)"),
     init_sql: list[str] = typer.Option(
         [], "--init-sql", help="SQL statements to run after connecting (e.g., LOAD httpfs)"
@@ -448,26 +570,21 @@ def mcp_serve(
         directory = demo_dir
         # For demo mode, use in-memory database
         db_path = ":memory:"
-    elif not directory.exists():
-        typer.echo(f"Error: Directory {directory} does not exist", err=True)
-        raise typer.Exit(1)
     else:
+        directory = _models_path(directory)
         db_path = str(db) if db else None
 
     # Resolve connection from CLI args or config
     connection_str = None
     effective_init_sql: list[str] | None = init_sql if init_sql else None
 
-    if db_path and db_path != ":memory:":
-        connection_str = f"duckdb:///{Path(db_path).absolute()}"
-    elif db_path == ":memory:":
+    if db_path == ":memory:":
         connection_str = "duckdb:///:memory:"
-    elif _loaded_config and _loaded_config.connection:
-        connection_str = build_connection_string(_loaded_config)
-        if not effective_init_sql:
-            effective_init_sql = get_init_sql(_loaded_config)
-    elif not effective_init_sql and _loaded_config:
-        effective_init_sql = get_init_sql(_loaded_config)
+    elif not demo:
+        resolved_connection = _resolve_connection(connection=connection, database=db, models=directory)
+        connection_str = resolved_connection.connection if resolved_connection else None
+        if resolved_connection and not effective_init_sql:
+            effective_init_sql = resolved_connection.init_sql
 
     try:
         # Initialize the semantic layer
@@ -541,17 +658,27 @@ def mcp_serve(
         # Run the MCP server
         mcp.run(transport=transport)
 
+    except typer.Exit:
+        raise
     except Exception as e:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(1)
 
 
+server_app.command("mcp")(mcp_serve)
+
+
 @app.command()
 def rewrite(
     sql: str = typer.Argument(..., help="Semantic SQL query to rewrite"),
-    models: Path = typer.Option(".", "--models", "-m", help="Directory containing semantic layer files"),
+    models: Path = typer.Option(None, "--models", "-m", help="Directory containing semantic layer files"),
+    connection: str = typer.Option(None, "--connection", help="Database connection string (sets SQL dialect)"),
+    db: Path = typer.Option(None, "--db", help="Path to DuckDB database file"),
     engine: str = typer.Option(None, "--engine", help="Runtime engine: python, rust, or auto"),
     fallback: bool | None = typer.Option(None, "--fallback/--no-fallback", help="Allow Rust engine fallback to Python"),
+    use_preaggregations: bool = typer.Option(
+        False, "--use-preaggregations", help="Enable automatic pre-aggregation routing"
+    ),
 ):
     """
     Rewrite semantic SQL to ordinary SQL without executing it.
@@ -560,31 +687,66 @@ def rewrite(
       sidemantic rewrite "SELECT orders.revenue FROM orders" --models ./models
       sidemantic rewrite "SELECT orders.revenue FROM orders" --models ./models --engine rust
     """
-    if not models.exists():
-        typer.echo(f"Error: Directory {models} does not exist", err=True)
-        raise typer.Exit(1)
-
     try:
-        engine, fallback = _resolve_engine_options(engine, fallback)
-        _configure_engine_environment(engine, fallback)
-
-        layer = SemanticLayer(engine=engine, fallback=fallback)
-        load_from_directory(layer, str(models))
-        if not layer.graph.models:
-            typer.echo("Error: No models found", err=True)
-            raise typer.Exit(1)
+        layer = _load_query_layer(
+            models,
+            connection=connection,
+            db=db,
+            engine=engine,
+            fallback=fallback,
+            use_preaggregations=use_preaggregations,
+        )
 
         from sidemantic.sql.query_rewriter import QueryRewriter
 
-        typer.echo(QueryRewriter(layer.graph, dialect=layer.adapter.dialect).rewrite(sql))
+        typer.echo(
+            QueryRewriter(
+                layer.graph,
+                dialect=layer.adapter.dialect,
+                use_preaggregations=layer.use_preaggregations,
+            ).rewrite(sql)
+        )
+    except typer.Exit:
+        raise
     except Exception as e:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(1)
 
 
-@app.command("export-native")
+@app.command()
+def convert(
+    source: Path = typer.Argument(None, help="Semantic project, directory, or exact file to convert"),
+    output: Path = typer.Option(None, "--output", "-o", help="Destination file or directory"),
+    source_format: str = typer.Option("auto", "--from", help="Source format (default: auto-detect)"),
+    target_format: str = typer.Option("sidemantic", "--to", help="Destination format"),
+    force: bool = typer.Option(False, "--force", help="Allow writing to an existing destination"),
+):
+    """Convert semantic definitions through the shared format registry."""
+
+    try:
+        from sidemantic.formats import convert_semantic_source
+
+        source = _models_path(source)
+        output = output or (_project().root / f"converted.{target_format}.yml")
+        if output.exists() and not force:
+            raise ValueError(f"Destination already exists: {output}; pass --force to replace it")
+        graph = convert_semantic_source(
+            source,
+            output,
+            source_format=source_format,
+            target_format=target_format,
+        )
+        typer.echo(f"Converted {len(graph.models)} model(s) to {target_format}: {output}", err=True)
+    except typer.Exit:
+        raise
+    except Exception as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(1)
+
+
+@app.command("export-native", hidden=True)
 def export_native(
-    source: Path = typer.Argument(..., help="File or directory containing semantic layer definitions"),
+    source: Path = typer.Argument(None, help="File or directory containing semantic layer definitions"),
     output: Path = typer.Option(..., "--output", "-o", help="Native Sidemantic YAML file to write"),
     validate_rust: bool = typer.Option(
         False,
@@ -599,24 +761,15 @@ def export_native(
       sidemantic export-native ./lookml --output native.yml
       sidemantic export-native ./models --output native.yml --validate-rust
     """
-    if not source.exists():
-        typer.echo(f"Error: Source {source} does not exist", err=True)
-        raise typer.Exit(1)
-
     try:
-        layer = SemanticLayer()
-        if source.is_dir():
-            load_from_directory(layer, str(source))
-        else:
-            # Native projects are directory-contextual: sibling files may provide
-            # inherited models, SQL definitions, or source metadata used by this file.
-            load_from_directory(layer, str(source.parent))
+        typer.echo("Warning: `export-native` is deprecated; use `convert --to sidemantic`", err=True)
+        source = _models_path(source)
+        from sidemantic.formats import convert_semantic_source
 
-        if not layer.graph.models:
+        graph = convert_semantic_source(source, output, target_format="sidemantic")
+        if not graph.models:
             typer.echo("Error: No models found", err=True)
             raise typer.Exit(1)
-
-        layer.to_yaml(output)
 
         if validate_rust:
             from sidemantic.rust_bridge import load_graph_from_yaml_with_rust
@@ -625,6 +778,8 @@ def export_native(
             typer.echo(f"Exported native YAML to {output} and validated it with Rust", err=True)
         else:
             typer.echo(f"Exported native YAML to {output}", err=True)
+    except typer.Exit:
+        raise
     except Exception as e:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(1)
@@ -633,7 +788,7 @@ def export_native(
 @app.command()
 def query(
     sql: str = typer.Argument(..., help="SQL query to execute"),
-    models: Path = typer.Option(".", "--models", "-m", help="Directory containing semantic layer files"),
+    models: Path = typer.Option(None, "--models", "-m", help="Directory containing semantic layer files"),
     output: Path = typer.Option(None, "--output", "-o", help="Output file (default: stdout)"),
     connection: str = typer.Option(
         None, "--connection", help="Database connection string (e.g., postgres://host/db, bigquery://project/dataset)"
@@ -658,10 +813,6 @@ def query(
       sidemantic query "SELECT revenue FROM orders" --dry-run
       sidemantic query "SELECT revenue FROM orders" --use-preaggregations --dry-run
     """
-    if not models.exists():
-        typer.echo(f"Error: Directory {models} does not exist", err=True)
-        raise typer.Exit(1)
-
     try:
         layer = _load_query_layer(
             models,
@@ -707,143 +858,8 @@ def query(
             writer.writerow(columns)
             writer.writerows(rows)
 
-    except Exception as e:
-        typer.echo(f"Error: {e}", err=True)
-        raise typer.Exit(1)
-
-
-@app.command()
-def chart(
-    metric: str = typer.Argument(..., help="Metric to chart, e.g. orders.revenue"),
-    by: list[str] = typer.Option([], "--by", help="Dimension to group by; may be repeated"),
-    extra_metric: list[str] = typer.Option([], "--metric", help="Additional metric to chart; may be repeated"),
-    mark: str = typer.Option("auto", "--mark", help="Chart mark: auto, bar, line, area, scatter, or point"),
-    renderer: str = typer.Option(
-        "vega-lite",
-        "--renderer",
-        "-r",
-        help="Renderer spec to emit: vega-lite, plotly, observable-plot, d3, or crossfilter",
-    ),
-    output_format: str = typer.Option("json", "--format", help="Output format: json or html"),
-    output: Path = typer.Option(None, "--output", "-o", help="Output file (default: stdout)"),
-    output_dir: Path = typer.Option(None, "--output-dir", help="Directory for --serve assets"),
-    title: str = typer.Option(None, "--title", help="Chart title"),
-    where: list[str] = typer.Option([], "--where", help="Filter expression; may be repeated"),
-    order_by: list[str] = typer.Option([], "--order-by", help="Order expression; may be repeated"),
-    limit: int = typer.Option(None, "--limit", help="Maximum rows to query"),
-    interactive: bool = typer.Option(False, "--interactive", help="Add portable interval selection metadata"),
-    serve_chart: bool = typer.Option(
-        False,
-        "--serve",
-        help="Serve a live database-backed crossfilter chart",
-    ),
-    host: str = typer.Option("127.0.0.1", "--host", help="Host for --serve"),
-    port: int = typer.Option(8877, "--port", help="Port for --serve"),
-    interaction_preaggregations: bool = typer.Option(
-        False,
-        "--interaction-preaggregations",
-        help="Build and route live crossfilter selections through database-side interaction preaggregates",
-    ),
-    warm_interaction_preaggregations: bool = typer.Option(
-        False,
-        "--warm-interaction-preaggregations",
-        help="Build interaction preaggregates before accepting requests",
-    ),
-    models: Path = typer.Option(".", "--models", "-m", help="Directory containing semantic layer files"),
-    connection: str = typer.Option(
-        None, "--connection", help="Database connection string (e.g., postgres://host/db, bigquery://project/dataset)"
-    ),
-    db: Path = typer.Option(None, "--db", help="Path to DuckDB database file (shorthand for duckdb:/// connection)"),
-    use_preaggregations: bool = typer.Option(
-        False, "--use-preaggregations", help="Enable automatic pre-aggregation routing"
-    ),
-):
-    """
-    Build a headless chart spec from semantic fields.
-
-    Examples:
-      sidemantic chart orders.revenue --by orders.created_at__month --mark line
-      sidemantic chart orders.revenue --by orders.region --mark bar --renderer plotly
-      sidemantic chart orders.revenue --by orders.created_at__month --interactive --format html -o chart.html
-      sidemantic chart orders.revenue --by orders.created_at__month --by orders.region --renderer crossfilter --format html
-      sidemantic chart orders.revenue --metric orders.order_count --by orders.created_at__month --by orders.region --renderer crossfilter --serve --interaction-preaggregations
-    """
-    if not models.exists():
-        typer.echo(f"Error: Directory {models} does not exist", err=True)
-        raise typer.Exit(1)
-
-    normalized_format = output_format.lower()
-    if normalized_format not in {"json", "html"}:
-        typer.echo("Error: --format must be one of: json, html", err=True)
-        raise typer.Exit(1)
-
-    if mark not in {"auto", "bar", "line", "area", "scatter", "point"}:
-        typer.echo("Error: --mark must be one of: auto, bar, line, area, scatter, point", err=True)
-        raise typer.Exit(1)
-
-    normalized_renderer = _normalize_chart_renderer(renderer)
-    if serve_chart and normalized_renderer != "crossfilter":
-        typer.echo("Error: --serve currently requires --renderer crossfilter", err=True)
-        raise typer.Exit(1)
-    if interaction_preaggregations and normalized_renderer != "crossfilter":
-        typer.echo("Error: --interaction-preaggregations requires --renderer crossfilter", err=True)
-        raise typer.Exit(1)
-    if interaction_preaggregations and not serve_chart:
-        typer.echo("Error: --interaction-preaggregations requires --serve", err=True)
-        raise typer.Exit(1)
-    if warm_interaction_preaggregations and not interaction_preaggregations:
-        typer.echo("Error: --warm-interaction-preaggregations requires --interaction-preaggregations", err=True)
-        raise typer.Exit(1)
-
-    try:
-        import json
-
-        layer = _load_query_layer(
-            models,
-            connection=connection,
-            db=db,
-            use_preaggregations=use_preaggregations,
-        )
-        builder = layer.chart(
-            [metric, *extra_metric],
-            by=by or None,
-            mark=mark,
-            filters=where or None,
-            order_by=order_by or None,
-            limit=limit,
-            title=title,
-            use_preaggregations=use_preaggregations,
-        )
-        if interactive:
-            builder.interactive()
-
-        if serve_chart:
-            from sidemantic.viz import CrossfilterDashboard, CrossfilterTab
-
-            session = builder.crossfilter(interaction_preaggregations=interaction_preaggregations)
-            chart_title = title or str(session.spec.get("title") or metric)
-            dashboard = CrossfilterDashboard(
-                chart_title,
-                [CrossfilterTab("chart", chart_title, session)],
-            )
-            serve_dir = output_dir or Path(tempfile.mkdtemp(prefix="sidemantic-chart-"))
-            if warm_interaction_preaggregations:
-                typer.echo("Building interaction preaggregations...", err=True)
-                dashboard.warm_interaction_preaggregations()
-            dashboard.serve(serve_dir, host=host, port=port)
-            return
-
-        if normalized_format == "html":
-            rendered = builder.to_html(normalized_renderer)
-        else:
-            rendered = json.dumps(builder.to_renderer(normalized_renderer), indent=2, default=str)
-
-        if output:
-            output.write_text(rendered)
-            typer.echo(f"Chart written to {output}", err=True)
-        else:
-            typer.echo(rendered)
-
+    except typer.Exit:
+        raise
     except Exception as e:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(1)
@@ -851,8 +867,8 @@ def chart(
 
 @dashboard_app.command("validate")
 def dashboard_validate(
-    spec: Path = typer.Argument(..., help="Dashboard YAML or JSON spec"),
-    models: Path = typer.Option(".", "--models", "-m", help="Directory containing semantic layer files"),
+    spec: Path = typer.Argument(None, help="Dashboard YAML or JSON spec (defaults to the project dashboard)"),
+    models: Path = typer.Option(None, "--models", "-m", help="Directory containing semantic layer files"),
     connection: str = typer.Option(
         None, "--connection", help="Database connection string (e.g., postgres://host/db, bigquery://project/dataset)"
     ),
@@ -865,6 +881,7 @@ def dashboard_validate(
     try:
         from sidemantic.dashboard import DashboardDocument
 
+        spec = _dashboard_path(spec)
         layer = _load_query_layer(
             models,
             connection=connection,
@@ -872,7 +889,10 @@ def dashboard_validate(
             use_preaggregations=use_preaggregations,
         )
         document = DashboardDocument.from_file(spec)
-        errors = document.validate(layer, execute_sql=bool(connection or db))
+        errors = document.validate(
+            layer,
+            execute_sql=_resolve_connection(connection=connection, database=db, models=models) is not None,
+        )
         if errors:
             for error in errors:
                 typer.echo(f"Error: {error}", err=True)
@@ -888,28 +908,31 @@ def dashboard_validate(
 
 @dashboard_app.command("serve")
 def dashboard_serve(
-    spec: Path = typer.Argument(..., help="Dashboard YAML or JSON spec"),
-    models: Path = typer.Option(".", "--models", "-m", help="Directory containing semantic layer files"),
+    spec: Path = typer.Argument(None, help="Dashboard YAML or JSON spec (defaults to the project dashboard)"),
+    models: Path = typer.Option(None, "--models", "-m", help="Directory containing semantic layer files"),
     connection: str = typer.Option(
         None, "--connection", help="Database connection string (e.g., postgres://host/db, bigquery://project/dataset)"
     ),
     db: Path = typer.Option(None, "--db", help="Path to DuckDB database file (shorthand for duckdb:/// connection)"),
-    output_dir: Path = typer.Option(None, "--output-dir", help="Directory for served dashboard assets"),
-    host: str = typer.Option("127.0.0.1", "--host", help="Host for dashboard server"),
-    port: int = typer.Option(8877, "--port", help="Port for dashboard server"),
+    host: str = typer.Option(None, "--host", "-H", help="Host for dashboard server"),
+    port: int = typer.Option(None, "--port", "-p", help="Port for dashboard server"),
     use_preaggregations: bool = typer.Option(
         False, "--use-preaggregations", help="Enable automatic pre-aggregation routing"
     ),
-    warm_interaction_preaggregations: bool = typer.Option(
-        False,
-        "--warm-interaction-preaggregations",
-        help="Build declared interaction preaggregates before accepting requests",
-    ),
+    output_dir: Path = typer.Option(None, "--output-dir", hidden=True),
+    warm_interaction_preaggregations: bool = typer.Option(False, "--warm-interaction-preaggregations", hidden=True),
 ):
-    """Serve a database-backed dashboard spec with live crossfilter interactions."""
+    """Serve a dashboard spec in the official Sidemantic React UI."""
     try:
+        from sidemantic.api_server import start_api_server, ui_static_dir
         from sidemantic.dashboard import DashboardDocument
 
+        spec = _dashboard_path(spec)
+        if output_dir is not None or warm_interaction_preaggregations:
+            typer.echo(
+                "Warning: the legacy crossfilter serve options are deprecated and ignored by the official UI",
+                err=True,
+            )
         layer = _load_query_layer(
             models,
             connection=connection,
@@ -922,12 +945,29 @@ def dashboard_serve(
             for error in errors:
                 typer.echo(f"Error: {error}", err=True)
             raise typer.Exit(1)
-        dashboard = document.to_crossfilter_dashboard(layer)
-        serve_dir = output_dir or Path(tempfile.mkdtemp(prefix="sidemantic-dashboard-"))
-        if warm_interaction_preaggregations:
-            typer.echo("Building interaction preaggregations...", err=True)
-            dashboard.warm_interaction_preaggregations()
-        dashboard.serve(serve_dir, host=host, port=port)
+
+        serve_ui = ui_static_dir().joinpath("index.html").exists()
+        if not serve_ui:
+            typer.echo("Error: Official web UI is not built (run scripts/build_webapp.py)", err=True)
+            raise typer.Exit(1)
+
+        api_config = _loaded_config.api_server if _loaded_config else None
+        resolved_host = host or (api_config.host if api_config else "127.0.0.1")
+        resolved_port = port or (api_config.port if api_config else 4400)
+        typer.echo(f"Dashboard: {document.title}", err=True)
+        typer.echo(f"Web UI: http://{resolved_host}:{resolved_port}/", err=True)
+        start_api_server(
+            layer,
+            host=resolved_host,
+            port=resolved_port,
+            serve_ui=True,
+            dashboard=document,
+            auth_token=api_config.auth_token if api_config else None,
+            cors_origins=api_config.cors_origins if api_config else None,
+            max_request_body_bytes=api_config.max_request_body_bytes if api_config else 1024 * 1024,
+            result_cache_mb=api_config.result_cache_mb if api_config else 0,
+            result_cache_ttl=api_config.result_cache_ttl if api_config else 60.0,
+        )
     except typer.Exit:
         raise
     except Exception as e:
@@ -937,7 +977,7 @@ def dashboard_serve(
 
 @dashboard_app.command("types")
 def dashboard_types(
-    models: Path = typer.Option(".", "--models", "-m", help="Directory containing semantic layer files"),
+    models: Path = typer.Option(None, "--models", "-m", help="Directory containing semantic layer files"),
     output: Path = typer.Option(None, "--out", "--output", "-o", help="TypeScript output file; defaults to stdout"),
     schema_name: str = typer.Option(
         "sidemanticSchema", "--schema-name", help="Generated TypeScript schema export name"
@@ -947,21 +987,23 @@ def dashboard_types(
     try:
         from sidemantic.dashboard import generate_dashboard_typescript
 
-        layer = _load_query_layer(models)
+        layer = _load_graph_layer(models)
         rendered = generate_dashboard_typescript(layer, schema_name=schema_name)
         if output:
             output.write_text(rendered)
             typer.echo(f"Dashboard TypeScript definitions written to {output}", err=True)
         else:
             typer.echo(rendered)
+    except typer.Exit:
+        raise
     except Exception as e:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(1)
 
 
-@gen_app.command("types")
+@gen_app.command("types", hidden=True)
 def gen_types(
-    models: Path = typer.Option(".", "--models", "-m", help="Directory or file with semantic layer definitions"),
+    models: Path = typer.Option(None, "--models", "-m", help="Directory or file with semantic layer definitions"),
     output: Path = typer.Option(None, "--out", "--output", "-o", help="TypeScript output file; defaults to stdout"),
     no_yaml: bool = typer.Option(False, "--no-yaml", help="Omit the embedded SCHEMA_YAML constant"),
 ):
@@ -973,22 +1015,27 @@ def gen_types(
     try:
         from sidemantic.codegen import generate_client_schema_ts
 
-        layer = _load_query_layer(models)
+        layer = _load_graph_layer(models)
         rendered = generate_client_schema_ts(layer, include_yaml=not no_yaml)
         if output:
             output.write_text(rendered)
             typer.echo(f"Client schema written to {output}", err=True)
         else:
             typer.echo(rendered)
+    except typer.Exit:
+        raise
     except Exception as e:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(1)
 
 
+gen_app.command("client")(gen_types)
+
+
 @gen_app.command("sql")
 def gen_sql(
     sources: list[str] = typer.Argument(None, help="TypeScript files, directories, or globs to scan"),
-    models: Path = typer.Option(".", "--models", "-m", help="Directory or file with semantic layer definitions"),
+    models: Path = typer.Option(None, "--models", "-m", help="Directory or file with semantic layer definitions"),
     output: Path = typer.Option(None, "--out", "--output", "-o", help="TypeScript output file; defaults to stdout"),
     call: str = typer.Option("query", "--call", help="Call name whose first string-literal argument is semantic SQL"),
 ):
@@ -1005,7 +1052,7 @@ def gen_sql(
         if not sources:
             typer.echo("Error: provide at least one TypeScript source file, directory, or glob", err=True)
             raise typer.Exit(1)
-        layer = _load_query_layer(models)
+        layer = _load_graph_layer(models)
         literals = extract_sql_literals(expand_sources(sources), call=call)
         if not literals:
             typer.echo(f"Error: no `{call}(...)` semantic SQL literals found in the given sources", err=True)
@@ -1023,10 +1070,10 @@ def gen_sql(
         raise typer.Exit(1)
 
 
-@app.command("explain-sql")
+@app.command("explain-sql", hidden=True)
 def explain_sql_command(
     sql: str = typer.Argument(..., help="SQL query to explain"),
-    models: Path = typer.Option(".", "--models", "-m", help="Directory containing semantic layer files"),
+    models: Path = typer.Option(None, "--models", "-m", help="Directory containing semantic layer files"),
     connection: str = typer.Option(
         None, "--connection", help="Database connection string (e.g., postgres://host/db, bigquery://project/dataset)"
     ),
@@ -1034,6 +1081,8 @@ def explain_sql_command(
     use_preaggregations: bool = typer.Option(
         False, "--use-preaggregations", help="Enable automatic pre-aggregation routing"
     ),
+    engine: str = typer.Option(None, "--engine", help="Runtime engine: python, rust, or auto"),
+    fallback: bool | None = typer.Option(None, "--fallback/--no-fallback", help="Allow Rust engine fallback to Python"),
     strict: bool = typer.Option(True, "--strict/--no-strict", help="Fail on unsupported semantic SQL"),
 ):
     """
@@ -1044,10 +1093,6 @@ def explain_sql_command(
       sidemantic explain-sql "SELECT * FROM (SELECT revenue, status FROM orders) sq WHERE status = 'completed'"
       sidemantic explain-sql "SELECT revenue, status FROM orders" --use-preaggregations
     """
-    if not models.exists():
-        typer.echo(f"Error: Directory {models} does not exist", err=True)
-        raise typer.Exit(1)
-
     try:
         import json
 
@@ -1056,18 +1101,27 @@ def explain_sql_command(
             connection=connection,
             db=db,
             use_preaggregations=use_preaggregations,
+            engine=engine,
+            fallback=fallback,
         )
         explanation = layer.explain_sql(sql, strict=strict)
         typer.echo(json.dumps(explanation.to_dict(), indent=2, default=str))
 
+    except typer.Exit:
+        raise
     except Exception as e:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(1)
 
 
-@app.command()
+app.command("explain")(explain_sql_command)
+
+
+@app.command(hidden=True)
 def serve(
-    directory: Path = typer.Argument(".", help="Directory containing semantic layer files (defaults to current dir)"),
+    directory: Path = typer.Argument(
+        None, help="Directory containing semantic layer files (defaults to project models)"
+    ),
     demo: bool = typer.Option(False, "--demo", help="Use demo data"),
     connection: str = typer.Option(
         None, "--connection", help="Database connection string (e.g., postgres://host/db, bigquery://project/dataset)"
@@ -1128,25 +1182,12 @@ def serve(
                 raise typer.Exit(1)
 
         directory = demo_dir
-    elif directory == Path(".") and _loaded_config:
-        # Use config file models_dir if using default directory
-        directory = Path(_loaded_config.models_dir)
-
-    if not directory.exists():
-        typer.echo(f"Error: Directory {directory} does not exist", err=True)
-        raise typer.Exit(1)
+    else:
+        directory = _models_path(directory)
 
     # Build connection string from args or config
-    connection_str = None
-    if connection:
-        # Explicit --connection arg provided
-        connection_str = connection
-    elif db:
-        # Explicit --db arg provided
-        connection_str = f"duckdb:///{db.absolute()}"
-    elif _loaded_config and _loaded_config.connection:
-        # Use connection from config
-        connection_str = build_connection_string(_loaded_config)
+    resolved_connection = _resolve_connection(connection=connection, database=db, models=directory)
+    connection_str = resolved_connection.connection if resolved_connection else None
 
     # Resolve host, port, username, password from args or config
     host_resolved = host or (_loaded_config.pg_server.host if _loaded_config else "127.0.0.1")
@@ -1234,9 +1275,14 @@ def serve(
     )
 
 
-@app.command()
+server_app.command("postgres")(serve)
+
+
+@app.command(hidden=True)
 def api_serve(
-    directory: Path = typer.Argument(".", help="Directory containing semantic layer files (defaults to current dir)"),
+    directory: Path = typer.Argument(
+        None, help="Directory containing semantic layer files (defaults to project models)"
+    ),
     demo: bool = typer.Option(False, "--demo", help="Use demo data"),
     connection: str = typer.Option(
         None, "--connection", help="Database connection string (e.g., postgres://host/db, bigquery://project/dataset)"
@@ -1305,22 +1351,12 @@ def api_serve(
                 raise typer.Exit(1)
 
         directory = demo_dir
-    elif directory == Path(".") and _loaded_config:
-        directory = Path(_loaded_config.models_dir)
+    else:
+        directory = _models_path(directory)
 
-    if not directory.exists():
-        typer.echo(f"Error: Directory {directory} does not exist", err=True)
-        raise typer.Exit(1)
-
-    connection_str = None
-    init_sql = None
-    if connection:
-        connection_str = connection
-    elif db:
-        connection_str = f"duckdb:///{db.absolute()}"
-    elif _loaded_config and _loaded_config.connection:
-        connection_str = build_connection_string(_loaded_config)
-        init_sql = get_init_sql(_loaded_config)
+    resolved_connection = _resolve_connection(connection=connection, database=db, models=directory)
+    connection_str = resolved_connection.connection if resolved_connection else None
+    init_sql = resolved_connection.init_sql if resolved_connection else None
 
     host_resolved = host or (_loaded_config.api_server.host if _loaded_config else "127.0.0.1")
     port_resolved = port if port is not None else (_loaded_config.api_server.port if _loaded_config else 4400)
@@ -1421,6 +1457,9 @@ def api_serve(
     )
 
 
+server_app.command("api")(api_serve)
+
+
 @app.command(hidden=True)
 def tree(
     directory: Path = typer.Argument(..., help="Directory containing semantic layer files"),
@@ -1443,7 +1482,9 @@ def tree(
 
 @app.command()
 def validate(
-    directory: Path = typer.Argument(".", help="Directory containing semantic layer files (defaults to current dir)"),
+    directory: Path = typer.Argument(
+        None, help="Directory containing semantic layer files (defaults to project models)"
+    ),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Show detailed validation results"),
     engine: str = typer.Option(None, "--engine", help="Runtime engine: python, rust, or auto"),
     fallback: bool | None = typer.Option(None, "--fallback/--no-fallback", help="Allow Rust engine fallback to Python"),
@@ -1457,9 +1498,7 @@ def validate(
       sidemantic validate
       sidemantic validate ./models --verbose
     """
-    if not directory.exists():
-        typer.echo(f"Error: Directory {directory} does not exist", err=True)
-        raise typer.Exit(1)
+    directory = _models_path(directory)
 
     engine, fallback = _resolve_engine_options(engine, fallback)
     _configure_engine_environment(engine, fallback)
@@ -1473,12 +1512,14 @@ def validate(
             if verbose:
                 for model_name in sorted(graph.models):
                     typer.echo(f"  - {model_name}")
-            return
         except Exception as e:
             if engine == "rust" or not fallback:
                 typer.echo(f"Error: Rust validation failed: {e}", err=True)
                 raise typer.Exit(1)
 
+    # Canonical semantic checks are always Python-backed; Rust validation above
+    # is an additional compatibility check, not a different definition of valid.
+    _configure_engine_environment("python", False)
     try:
         from sidemantic.validation_runner import validate_directory
 
@@ -1513,7 +1554,9 @@ def validate(
 
 @app.command()
 def workbench(
-    directory: Path = typer.Argument(".", help="Directory containing semantic layer files (defaults to current dir)"),
+    directory: Path = typer.Argument(
+        None, help="Directory containing semantic layer files (defaults to project models)"
+    ),
     demo: bool = typer.Option(False, "--demo", help="Launch with demo data (multi-format example)"),
     connection: str = typer.Option(
         None, "--connection", help="Database connection string (e.g., postgres://host/db, bigquery://project/dataset)"
@@ -1558,21 +1601,10 @@ def workbench(
         except WorkbenchDependencyError as e:
             typer.echo(f"Error: {e}", err=True)
             raise typer.Exit(1)
-    elif not directory.exists():
-        typer.echo(f"Error: Directory {directory} does not exist", err=True)
-        raise typer.Exit(1)
     else:
-        # Build connection string from args or config
-        connection_str = None
-        if connection:
-            # Explicit --connection arg provided
-            connection_str = connection
-        elif db:
-            # Explicit --db arg provided
-            connection_str = f"duckdb:///{db.absolute()}"
-        elif _loaded_config and _loaded_config.connection:
-            # Use connection from config
-            connection_str = build_connection_string(_loaded_config)
+        directory = _models_path(directory)
+        resolved_connection = _resolve_connection(connection=connection, database=db, models=directory)
+        connection_str = resolved_connection.connection if resolved_connection else None
 
         # Only pass connection if it's not None
         try:
@@ -1614,16 +1646,19 @@ def preagg_recommend(
     """
     from sidemantic.core.preagg_recommender import PreAggregationRecommender
 
-    if not queries and not connection and not db:
-        typer.echo("Error: Must specify --queries, --connection, or --db", err=True)
-        raise typer.Exit(1)
-
     try:
         recommender = PreAggregationRecommender(min_query_count=min_count, min_benefit_score=min_score)
+        resolved_connection = None
+        if not queries:
+            resolved_connection = _resolve_connection(
+                connection=connection,
+                database=db,
+                required=True,
+            )
 
         # Fetch/parse queries (same as analyze command)
-        if connection or db:
-            connection_str = connection if connection else f"duckdb:///{db.absolute()}"
+        if resolved_connection:
+            connection_str = resolved_connection.connection
             from sidemantic import SemanticLayer
 
             preagg_db = _loaded_config.preagg_database if _loaded_config else None
@@ -1683,17 +1718,16 @@ def preagg_recommend(
 
         typer.echo("Run 'sidemantic preagg apply' to add these to your models", err=True)
 
+    except typer.Exit:
+        raise
     except Exception as e:
         typer.echo(f"Error: {e}", err=True)
-        import traceback
-
-        traceback.print_exc()
         raise typer.Exit(1)
 
 
 @preagg_app.command("apply")
 def preagg_apply(
-    directory: Path = typer.Argument(".", help="Directory containing semantic layer YAML files"),
+    directory: Path = typer.Argument(None, help="Directory containing semantic layer YAML files"),
     queries: Path = typer.Option(None, "--queries", "-q", help="Path to file/folder with SQL queries"),
     connection: str = typer.Option(None, "--connection", help="Database connection string to fetch query history"),
     db: Path = typer.Option(None, "--db", help="Path to DuckDB database file (shorthand for duckdb:/// connection)"),
@@ -1714,24 +1748,24 @@ def preagg_apply(
       sidemantic preagg apply models/ --db data.db --top 5
       sidemantic preagg apply models/ --queries queries.sql --dry-run
     """
-    import yaml
-
+    from sidemantic.core.preagg_management import apply_recommendations_to_yaml
     from sidemantic.core.preagg_recommender import PreAggregationRecommender
 
-    if not directory.exists():
-        typer.echo(f"Error: Directory {directory} does not exist", err=True)
-        raise typer.Exit(1)
-
-    if not queries and not connection and not db:
-        typer.echo("Error: Must specify --queries, --connection, or --db", err=True)
-        raise typer.Exit(1)
-
     try:
+        directory = _models_path(directory)
         recommender = PreAggregationRecommender(min_query_count=min_count, min_benefit_score=min_score)
+        resolved_connection = None
+        if not queries:
+            resolved_connection = _resolve_connection(
+                connection=connection,
+                database=db,
+                models=directory,
+                required=True,
+            )
 
         # Fetch/parse queries
-        if connection or db:
-            connection_str = connection if connection else f"duckdb:///{db.absolute()}"
+        if resolved_connection:
+            connection_str = resolved_connection.connection
             from sidemantic import SemanticLayer
 
             preagg_db = _loaded_config.preagg_database if _loaded_config else None
@@ -1759,95 +1793,31 @@ def preagg_apply(
 
         typer.echo(f"\nFound {len(recommendations)} recommendations to apply\n", err=True)
 
-        # Group recommendations by model
-        by_model = {}
-        for rec in recommendations:
-            model_name = rec.pattern.model
-            if model_name not in by_model:
-                by_model[model_name] = []
-            by_model[model_name].append(rec)
-
-        # Find and update model YAML files
-        yaml_files = list(directory.glob("**/*.yml")) + list(directory.glob("**/*.yaml"))
-
-        updated_count = 0
-        for model_name, recs in by_model.items():
-            # Find YAML file for this model
-            model_file = None
-            for yaml_file in yaml_files:
-                with open(yaml_file) as f:
-                    data = yaml.safe_load(f)
-                    if not data:
-                        continue
-
-                    # Check if this file contains the model
-                    models = data.get("models", [])
-                    for model_def in models:
-                        if model_def.get("name") == model_name:
-                            model_file = yaml_file
-                            break
-                    if model_file:
-                        break
-
-            if not model_file:
-                typer.echo(f"Warning: Could not find YAML file for model '{model_name}'", err=True)
-                continue
-
-            # Load and update the YAML file
-            with open(model_file) as f:
-                data = yaml.safe_load(f)
-
-            # Find the model in the file
-            for model_def in data.get("models", []):
-                if model_def.get("name") == model_name:
-                    # Get existing pre_aggregations or create new list
-                    if "pre_aggregations" not in model_def:
-                        model_def["pre_aggregations"] = []
-
-                    # Add new pre-aggregations
-                    for rec in recs:
-                        preagg_def = recommender.generate_preagg_definition(rec)
-
-                        # Convert to dict for YAML
-                        preagg_dict = {"name": preagg_def.name, "measures": preagg_def.measures}
-
-                        if preagg_def.dimensions:
-                            preagg_dict["dimensions"] = preagg_def.dimensions
-                        if preagg_def.time_dimension:
-                            preagg_dict["time_dimension"] = preagg_def.time_dimension
-                        if preagg_def.granularity:
-                            preagg_dict["granularity"] = preagg_def.granularity
-
-                        model_def["pre_aggregations"].append(preagg_dict)
-
-                        typer.echo(f"  + {model_name}.{preagg_def.name} ({rec.query_count} queries)", err=True)
-                        updated_count += 1
-
-            # Write back to file (unless dry run)
-            if not dry_run:
-                with open(model_file, "w") as f:
-                    yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+        result = apply_recommendations_to_yaml(directory, recommendations, recommender, dry_run=dry_run)
 
         if dry_run:
-            typer.echo(f"\nDry run: Would add {updated_count} pre-aggregations", err=True)
+            typer.echo(f"\nDry run: Would add {result.added} pre-aggregations", err=True)
             typer.echo("Remove --dry-run to apply changes", err=True)
         else:
-            typer.echo(f"\n✓ Added {updated_count} pre-aggregations to model files", err=True)
+            typer.echo(f"\n✓ Added {result.added} pre-aggregations to model files", err=True)
+        if result.skipped:
+            typer.echo(f"Skipped {result.skipped} already-present definitions", err=True)
 
+    except typer.Exit:
+        raise
     except Exception as e:
         typer.echo(f"Error: {e}", err=True)
-        import traceback
-
-        traceback.print_exc()
         raise typer.Exit(1)
 
 
 @preagg_app.command("refresh")
 def refresh(
-    directory: Path = typer.Argument(".", help="Directory containing semantic layer files (defaults to current dir)"),
-    model: str = typer.Option(None, "--model", "-m", help="Only refresh pre-aggregations for this model"),
+    directory: Path = typer.Argument(
+        None, help="Directory containing semantic layer files (defaults to project models)"
+    ),
+    model: str = typer.Option(None, "--model", help="Only refresh pre-aggregations for this model"),
     preagg: str = typer.Option(None, "--preagg", "-p", help="Only refresh this specific pre-aggregation"),
-    mode: str = typer.Option("incremental", "--mode", help="Refresh mode: full, incremental, or merge"),
+    mode: str = typer.Option("auto", "--mode", help="Refresh mode: auto, full, incremental, merge, or engine"),
     connection: str = typer.Option(
         None, "--connection", help="Database connection string (e.g., postgres://host/db, bigquery://project/dataset)"
     ),
@@ -1864,11 +1834,10 @@ def refresh(
       sidemantic preagg refresh models/ --model orders --mode full
       sidemantic preagg refresh models/ --connection "postgres://localhost:5432/db"
     """
-    if not directory.exists():
-        typer.echo(f"Error: Directory {directory} does not exist", err=True)
-        raise typer.Exit(1)
-
     try:
+        from sidemantic.core.preagg_management import resolve_preaggregation_targets, resolve_refresh_mode
+
+        directory = _models_path(directory)
         # Load semantic layer
         preagg_db = _loaded_config.preagg_database if _loaded_config else None
         preagg_sch = _loaded_config.preagg_schema if _loaded_config else None
@@ -1879,17 +1848,14 @@ def refresh(
             typer.echo("Error: No models found", err=True)
             raise typer.Exit(1)
 
-        # Build connection string
-        connection_str = None
-        if connection:
-            connection_str = connection
-        elif db:
-            connection_str = f"duckdb:///{db.absolute()}"
-        elif _loaded_config and _loaded_config.connection:
-            connection_str = build_connection_string(_loaded_config)
-        else:
-            typer.echo("Error: No database connection specified. Use --db or --connection", err=True)
-            raise typer.Exit(1)
+        resolved_connection = _resolve_connection(
+            connection=connection,
+            database=db,
+            models=directory,
+            required=True,
+        )
+        assert resolved_connection is not None
+        connection_str = resolved_connection.connection
 
         # Connect to database
         if connection_str.startswith("duckdb://"):
@@ -1913,20 +1879,11 @@ def refresh(
             typer.echo("Use --mode engine for Snowflake, ClickHouse, BigQuery materialized views", err=True)
             raise typer.Exit(1)
 
-        # Find pre-aggregations to refresh
-        preaggs_to_refresh = []
-
-        for model_name, model_obj in layer.graph.models.items():
-            # Filter by model if specified
-            if model and model_name != model:
-                continue
-
-            for preagg_obj in model_obj.pre_aggregations:
-                # Filter by preagg name if specified
-                if preagg and preagg_obj.name != preagg:
-                    continue
-
-                preaggs_to_refresh.append((model_name, model_obj, preagg_obj))
+        preaggs_to_refresh = resolve_preaggregation_targets(
+            layer.graph.models,
+            model_name=model,
+            preagg_name=preagg,
+        )
 
         if not preaggs_to_refresh:
             typer.echo("No pre-aggregations found to refresh", err=True)
@@ -1952,6 +1909,7 @@ def refresh(
 
         # Refresh each pre-aggregation
         for model_name, model_obj, preagg_obj in preaggs_to_refresh:
+            resolved_mode = resolve_refresh_mode(preagg_obj, mode)
             # Get database/schema from config if available
             database = _loaded_config.preagg_database if _loaded_config else None
             schema = _loaded_config.preagg_schema if _loaded_config else None
@@ -1962,16 +1920,16 @@ def refresh(
 
             # Determine watermark column
             watermark_column = None
-            if mode in ["incremental", "merge"] and preagg_obj.time_dimension and preagg_obj.granularity:
+            if resolved_mode in ["incremental", "merge"] and preagg_obj.time_dimension and preagg_obj.granularity:
                 watermark_column = f"{preagg_obj.time_dimension}_{preagg_obj.granularity}"
 
             # Refresh
-            typer.echo(f"Refreshing {model_name}.{preagg_obj.name} ({mode})...", err=True)
+            typer.echo(f"Refreshing {model_name}.{preagg_obj.name} ({resolved_mode})...", err=True)
             result = preagg_obj.refresh(
                 connection=conn,
                 source_sql=source_sql,
                 table_name=table_name,
-                mode=mode,
+                mode=resolved_mode,
                 watermark_column=watermark_column,
                 dialect=dialect,
                 model=model_obj,
@@ -1987,11 +1945,10 @@ def refresh(
 
         typer.echo("\nDone!", err=True)
 
+    except typer.Exit:
+        raise
     except Exception as e:
         typer.echo(f"Error: {e}", err=True)
-        import traceback
-
-        traceback.print_exc()
         raise typer.Exit(1)
 
 

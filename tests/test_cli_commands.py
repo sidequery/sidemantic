@@ -3,6 +3,7 @@
 import builtins
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -12,7 +13,6 @@ from typer.testing import CliRunner
 
 import sidemantic.cli as cli_module
 from sidemantic.cli import app
-from sidemantic.config import SidemanticConfig
 from tests.optional_dep_stubs import ensure_fake_mcp, ensure_fake_riffq
 
 runner = CliRunner()
@@ -257,11 +257,14 @@ def test_query_engine_rust_sets_rewriter_env(monkeypatch, tmp_path):
 def test_query_uses_config_runtime_engine(monkeypatch, tmp_path):
     _write_min_model(tmp_path)
     captured = {}
-    cli_module._loaded_config = SidemanticConfig.model_validate(
-        {
-            "models_dir": str(tmp_path),
-            "runtime": {"engine": "rust", "fallback": True},
-        }
+    config_path = tmp_path / "sidemantic.yaml"
+    config_path.write_text(
+        f"""
+models_dir: {tmp_path}
+runtime:
+  engine: rust
+  fallback: true
+"""
     )
 
     class FakeRewriter:
@@ -277,7 +280,15 @@ def test_query_uses_config_runtime_engine(monkeypatch, tmp_path):
 
     result = runner.invoke(
         app,
-        ["query", "SELECT order_count FROM orders", "--models", str(tmp_path), "--dry-run"],
+        [
+            "--config",
+            str(config_path),
+            "query",
+            "SELECT order_count FROM orders",
+            "--models",
+            str(tmp_path),
+            "--dry-run",
+        ],
     )
 
     assert result.exit_code == 0
@@ -349,7 +360,7 @@ def test_export_native_validate_rust_calls_bridge(monkeypatch, tmp_path):
     assert "version: 1" in captured["yaml"]
 
 
-def test_export_native_file_input_loads_parent_directory_context(tmp_path):
+def test_export_native_file_input_loads_exact_file(tmp_path):
     source_dir = tmp_path / "models"
     source_dir.mkdir()
     (source_dir / "orders.yml").write_text(
@@ -373,10 +384,10 @@ models:
     assert result.exit_code == 0
     output = output_path.read_text()
     assert "name: orders" in output
-    assert "name: customers" in output
+    assert "name: customers" not in output
 
 
-def test_query_writes_csv_using_autodetected_data_db(tmp_path):
+def test_query_writes_csv_using_legacy_models_data_db(tmp_path):
     models_dir = tmp_path / "models"
     _write_min_model(models_dir)
     data_dir = models_dir / "data"
@@ -402,6 +413,23 @@ def test_query_writes_csv_using_autodetected_data_db(tmp_path):
     assert "status,order_count" in output
     assert "completed,1" in output
     assert "pending,1" in output
+
+
+def test_query_prefers_project_root_data_db(monkeypatch, tmp_path):
+    models_dir = tmp_path / "models"
+    _write_min_model(models_dir)
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    _write_orders_db(data_dir / "warehouse.duckdb")
+    (tmp_path / "sidemantic.yaml").write_text("models_dir: models\n")
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(app, ["query", "SELECT status, order_count FROM orders ORDER BY status"])
+
+    assert result.exit_code == 0, result.output
+    assert "status,order_count" in result.output
+    assert "completed,1" in result.output
+    assert "pending,1" in result.output
 
 
 def test_workbench_calls_runner(monkeypatch, tmp_path):
@@ -506,16 +534,29 @@ def test_validate_engine_rust_uses_rust_loader(monkeypatch, tmp_path):
         called["directory"] = directory
         return FakeGraph()
 
+    class FakeReport:
+        errors = []
+        warnings = []
+        info = ["canonical Python validation ran"]
+
+    def fake_validate_directory(directory):
+        called["python_directory"] = directory
+        return FakeReport()
+
     monkeypatch.setattr(
         "sidemantic.rust_bridge.load_graph_from_directory_with_rust",
         fake_load_graph_from_directory_with_rust,
     )
+    monkeypatch.setattr("sidemantic.validation_runner.validate_directory", fake_validate_directory)
 
     result = runner.invoke(app, ["validate", str(tmp_path), "--engine", "rust", "--verbose"])
 
     assert result.exit_code == 0
     assert called["directory"] == tmp_path
+    assert called["python_directory"] == tmp_path
     assert "Validated 1 models with Rust" in result.stdout
+    assert "canonical Python validation ran" in result.stdout
+    assert "Validation Passed" in result.stdout
     assert "orders" in result.stdout
 
 
@@ -622,7 +663,7 @@ pg_server:
     monkeypatch.setattr("sidemantic.server.server.start_server", fake_start_server)
 
     cli_module._loaded_config = None
-    result = runner.invoke(app, ["--config", str(config_path), "serve"])
+    result = runner.invoke(app, ["--config", str(config_path), "server", "postgres"])
 
     assert result.exit_code == 0
     assert called["host"] == "0.0.0.0"
@@ -630,73 +671,14 @@ pg_server:
     assert called["username"] == "config-user"
     assert called["password"] == "config-pass"
     assert called["layer"].connection_string == "duckdb:///:memory:"
-    assert "Loaded config from:" in result.stderr
+    assert "Loaded config from:" not in result.stderr
 
 
-def test_chart_serve_uses_crossfilter_dashboard(monkeypatch, tmp_path):
-    called = {}
-    output_dir = tmp_path / "chart-assets"
-    db_path = tmp_path / "orders.db"
-    _write_min_model(tmp_path)
-    _write_orders_db(db_path)
+def test_cross_library_chart_renderer_is_not_a_cli_product_surface():
+    result = runner.invoke(app, ["chart", "--help"])
 
-    def fake_serve(self, output_dir_arg, *, host, port):
-        called["dashboard"] = self
-        called["output_dir"] = output_dir_arg
-        called["host"] = host
-        called["port"] = port
-
-    monkeypatch.setattr("sidemantic.viz.CrossfilterDashboard.serve", fake_serve)
-
-    result = runner.invoke(
-        app,
-        [
-            "chart",
-            "orders.order_count",
-            "--by",
-            "orders.status",
-            "--renderer",
-            "crossfilter",
-            "--serve",
-            "--interaction-preaggregations",
-            "--models",
-            str(tmp_path),
-            "--db",
-            str(db_path),
-            "--output-dir",
-            str(output_dir),
-            "--host",
-            "0.0.0.0",
-            "--port",
-            "9001",
-        ],
-    )
-
-    assert result.exit_code == 0
-    assert called["output_dir"] == output_dir
-    assert called["host"] == "0.0.0.0"
-    assert called["port"] == 9001
-    assert called["dashboard"].tabs[0].session.interaction_preaggregations is True
-
-
-def test_chart_interaction_preaggregations_require_serve(tmp_path):
-    _write_min_model(tmp_path)
-
-    result = runner.invoke(
-        app,
-        [
-            "chart",
-            "orders.order_count",
-            "--renderer",
-            "crossfilter",
-            "--interaction-preaggregations",
-            "--models",
-            str(tmp_path),
-        ],
-    )
-
-    assert result.exit_code == 1
-    assert "--interaction-preaggregations requires --serve" in result.output
+    assert result.exit_code != 0
+    assert "No such command 'chart'" in result.output
 
 
 def test_api_serve_calls_start_server(monkeypatch, tmp_path):
@@ -716,6 +698,7 @@ def test_api_serve_calls_start_server(monkeypatch, tmp_path):
         require_user_attrs=False,
         enforce_visibility=False,
         user_header="X-Sidemantic-User",
+        dashboard=None,
     ):
         called["layer"] = layer
         called["host"] = host
@@ -729,6 +712,7 @@ def test_api_serve_calls_start_server(monkeypatch, tmp_path):
         called["require_user_attrs"] = require_user_attrs
         called["enforce_visibility"] = enforce_visibility
         called["user_header"] = user_header
+        called["dashboard"] = dashboard
 
     monkeypatch.setattr("sidemantic.api_server.start_api_server", fake_start_api_server)
 
@@ -736,7 +720,8 @@ def test_api_serve_calls_start_server(monkeypatch, tmp_path):
     result = runner.invoke(
         app,
         [
-            "api-serve",
+            "server",
+            "api",
             str(tmp_path),
             "--port",
             "4410",
@@ -755,6 +740,31 @@ def test_api_serve_calls_start_server(monkeypatch, tmp_path):
     assert called["auth_token"] == "secret"
     assert called["cors_origins"] == ["https://app.example.com"]
     assert called["max_request_body_bytes"] == 2048
+    assert called["dashboard"] is None
+
+
+def test_normalized_command_families_are_visible_and_legacy_aliases_are_hidden():
+    root_help = runner.invoke(app, ["--help"])
+
+    assert root_help.exit_code == 0
+    for family in ("server", "generate", "migrate", "convert"):
+        assert family in root_help.output
+
+    for legacy in ("serve", "api-serve", "mcp-serve", "gen", "migrator", "export-native", "explain-sql"):
+        assert re.search(rf"│\s+{re.escape(legacy)}\s", root_help.output) is None
+        alias_help = runner.invoke(app, [legacy, "--help"])
+        assert alias_help.exit_code == 0, f"{legacy}: {alias_help.output}"
+
+    expected_children = {
+        "server": ("api", "postgres", "mcp"),
+        "generate": ("client", "sql"),
+        "migrate": ("generate", "check"),
+    }
+    for family, children in expected_children.items():
+        family_help = runner.invoke(app, [family, "--help"])
+        assert family_help.exit_code == 0, family_help.output
+        for child in children:
+            assert child in family_help.output
 
 
 def test_tree_alias_calls_workbench(monkeypatch, tmp_path):
@@ -865,11 +875,16 @@ connection:
 def test_query_uses_loaded_config_init_sql(monkeypatch, tmp_path):
     models_dir = tmp_path / "models"
     _write_min_model(models_dir)
-    cli_module._loaded_config = SidemanticConfig.model_validate(
-        {
-            "models_dir": str(models_dir),
-            "connection": {"type": "duckdb", "path": ":memory:", "init_sql": ["select 7"]},
-        }
+    config_path = tmp_path / "sidemantic.yaml"
+    config_path.write_text(
+        f"""
+models_dir: {models_dir}
+connection:
+  type: duckdb
+  path: ":memory:"
+  init_sql:
+    - select 7
+"""
     )
     captured = {}
 
@@ -894,7 +909,17 @@ def test_query_uses_loaded_config_init_sql(monkeypatch, tmp_path):
     monkeypatch.setattr("sidemantic.cli.SemanticLayer", FakeLayer)
     monkeypatch.setattr("sidemantic.cli.load_from_directory", fake_load_from_directory)
 
-    result = runner.invoke(app, ["query", "SELECT order_count, status FROM orders", "--models", str(models_dir)])
+    result = runner.invoke(
+        app,
+        [
+            "--config",
+            str(config_path),
+            "query",
+            "SELECT order_count, status FROM orders",
+            "--models",
+            str(models_dir),
+        ],
+    )
 
     assert result.exit_code == 0
     assert captured["kwargs"]["connection"] == "duckdb:///:memory:"

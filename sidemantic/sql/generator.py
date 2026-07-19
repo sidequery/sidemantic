@@ -2410,6 +2410,12 @@ class SQLGenerator:
             qualify_clause = f"\n  QUALIFY {time_col} = {window_expr}"
 
         # Build CTE
+        if not select_cols:
+            # A complete-SQL measure whose SQL references no columns (e.g. a bare COUNT(*))
+            # contributes no projection, so select_cols is empty here. `SELECT FROM t` is a
+            # syntax error, so emit a constant instead. One constant per source row keeps the
+            # outer COUNT(*) (and any other row-count aggregate) correct.
+            select_cols.append(f"1 AS {self._quote_alias('_sidemantic_row')}")
         select_str = ",\n    ".join(select_cols)
         cte_sql = (
             f"{self._quote_identifier(self._cte_name(model_name))} AS "

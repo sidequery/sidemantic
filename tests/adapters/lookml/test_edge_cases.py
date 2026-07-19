@@ -2970,6 +2970,47 @@ view: orders {
     assert con.execute(layer.compile(metrics=["orders.n_amounts"])).fetchall() == [(3,)]
 
 
+def test_lookml_number_measure_zero_column_aggregate_compiles():
+    """A complete-SQL measure whose SQL references no columns (bare COUNT(*)) must still compile.
+
+    ``has_inline_agg`` marks ``type: number  sql: COUNT(*)`` as complete, but the complete-SQL CTE
+    only projects columns from _complete_sql_columns(), which is empty for COUNT(*). Without a
+    fallback the CTE becomes ``SELECT <nothing> FROM orders``, which every engine rejects. The
+    generator must emit a constant projection so the outer COUNT(*) still counts source rows.
+    """
+    import duckdb
+
+    from sidemantic import SemanticLayer
+
+    graph = _parse_lkml(
+        """
+view: orders {
+  sql_table_name: orders ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: status { type: string  sql: ${TABLE}.status ;; }
+  measure: cnt { type: number  sql: COUNT(*) ;; }
+  measure: cnt_const { type: number  sql: COUNT(DISTINCT 1) ;; }
+}
+"""
+    )
+    model = graph.get_model("orders")
+    assert model.get_metric("cnt") is not None
+    layer = SemanticLayer(auto_register=False)
+    layer.add_model(model)
+    con = duckdb.connect()
+    con.execute("create table orders(id int, status text)")
+    con.execute("insert into orders values (1,'a'),(2,'b'),(3,'a')")
+    # Ungrouped COUNT(*) over the CTE must equal the source row count, not raise a syntax error.
+    assert con.execute(layer.compile(metrics=["orders.cnt"])).fetchall() == [(3,)]
+    # Grouped by a real dimension it still counts per group.
+    assert sorted(con.execute(layer.compile(metrics=["orders.cnt"], dimensions=["orders.status"])).fetchall()) == [
+        ("a", 2),
+        ("b", 1),
+    ]
+    # A zero-column DISTINCT constant is also valid.
+    assert con.execute(layer.compile(metrics=["orders.cnt_const"])).fetchall() == [(1,)]
+
+
 def test_lookml_number_measure_constant_dimension_is_aggregate_safe():
     """A CONSTANT-valued dimension in a mixed number measure must not read as a raw column.
 
@@ -4007,6 +4048,2611 @@ def test_lookml_self_referential_dimension_terminates():
     selfd = graph.get_model("v").get_dimension("selfd")
     # Resolution stops at the cycle rather than expanding many levels deep.
     assert selfd.sql.count("+ 1") <= 2
+
+
+def test_lookml_export_unmapped_aggregations_not_count():
+    """Unmapped aggregations / complex types must not be silently exported as COUNT."""
+    import tempfile
+
+    from sidemantic import Dimension, Metric, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    model = Model(
+        name="orders",
+        table="orders",
+        primary_key="id",
+        dimensions=[Dimension(name="id", type="numeric", sql="id")],
+        metrics=[
+            Metric(name="med", agg="median", sql="amount"),
+            Metric(name="sd", agg="stddev", sql="amount"),
+            Metric(name="va", agg="variance", sql="amount"),
+            Metric(name="cnt", agg="count"),
+            Metric(name="sm", agg="sum", sql="amount"),
+            Metric(name="cum", type="cumulative", sql="amount"),
+        ],
+    )
+    graph = SemanticGraph()
+    graph.add_model(model)
+
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    text = open(out).read()
+
+    # median has a native Looker type
+    assert "type: median" in text
+    # stddev/variance become type: number with an explicit SQL aggregate
+    assert "STDDEV(" in text
+    assert "VAR_SAMP(" in text
+    # the complex cumulative metric is skipped (no LookML equivalent), not COUNT
+    assert "measure: cum" not in text
+    # genuine count/sum unchanged
+    assert "type: count" in text
+    assert "type: sum" in text
+
+    # Round-trip: median survives, none of these come back as a plain count corruption
+    reimported = {m.name: m for m in LookMLAdapter().parse(Path(out)).get_model("orders").metrics}
+    assert reimported["med"].agg == "median"
+    assert "cum" not in reimported  # skipped on export
+
+
+def test_lookml_export_complex_type_with_agg_skipped():
+    """A complex-type metric carrying an agg (e.g. cumulative rolling avg) must be skipped, not exported as a plain measure."""
+    import tempfile
+
+    from sidemantic import Dimension, Metric, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="o",
+            table="o",
+            primary_key="id",
+            dimensions=[Dimension(name="id", type="numeric", sql="id")],
+            metrics=[Metric(name="roll", type="cumulative", agg="avg", sql="amount")],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    text = open(out).read()
+    assert "measure: roll" not in text
+    assert "type: average" not in text  # not silently downgraded to a plain average
+
+
+def test_lookml_export_filtered_distinct_stddev_keeps_distinct_outside_case():
+    """A filtered DISTINCT stddev/variance must keep DISTINCT OUTSIDE the folded CASE."""
+    import tempfile
+
+    from sidemantic import Dimension, Metric, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="o",
+            table="t",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(name="status", type="categorical", sql="status"),
+                Dimension(name="amount", type="numeric", sql="amount"),
+            ],
+            metrics=[
+                Metric(name="sd", agg="stddev", sql="DISTINCT {model}.amount", filters=["{model}.status = 'done'"])
+            ],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    text = open(out).read()
+    assert "measure: sd" in text
+    assert "STDDEV(DISTINCT CASE WHEN" in text  # DISTINCT outside the CASE
+    assert "THEN DISTINCT" not in text  # never DISTINCT inside the CASE (invalid SQL)
+
+
+def test_lookml_export_filtered_sql_aggregate_folds_filter():
+    """A filtered stddev/variance (type: number path) must fold the filter into SQL, not drop it."""
+    import tempfile
+
+    from sidemantic import Dimension, Metric, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="o",
+            table="o",
+            primary_key="id",
+            dimensions=[Dimension(name="id", type="numeric", sql="id")],
+            metrics=[Metric(name="sd", agg="stddev", sql="amount", filters=["{model}.status = 'done'"])],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    text = open(out).read()
+    # The single measure folds its filter into the SQL aggregate (the model-qualified
+    # ref is resolved to a ${TABLE}-qualified column)...
+    assert "STDDEV(CASE WHEN" in text
+    assert "(${TABLE}.status) = 'done'" in text
+    # ...and is not also emitted as a (non-applied) LookML filters block.
+    assert "filters" not in text
+
+
+def test_lookml_approximate_distinct_preserved_in_post_sql_measure():
+    """A post-SQL measure (percent_of_total) over an approximate count_distinct must stay approximate."""
+    graph = _parse_lkml(
+        """
+view: v {
+  sql_table_name: t ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  measure: uu { type: count_distinct  sql: ${TABLE}.user_id ;; approximate: yes }
+  measure: pct { type: percent_of_total  sql: ${uu} ;; }
+}
+"""
+    )
+    pct = graph.get_model("v").get_metric("pct")
+    assert "APPROX_COUNT_DISTINCT" in pct.sql
+    assert "COUNT(DISTINCT" not in pct.sql
+
+
+def test_lookml_post_sql_measure_preserves_filtered_base_measure_filter():
+    """A post-SQL measure over a FILTERED base must keep the base's filter.
+
+    A percent_of_total over `uu` (count_distinct, approximate, filtered to completed) expanded via
+    the bare `<AGG>({model}.uu)` template, which carries no filter -- so the percent was computed
+    over every row instead of the filtered population. A filtered base must expand through the
+    FILTERED aggregate built in the first pass. An UNFILTERED base keeps the template form.
+    """
+    graph = _parse_lkml(
+        """
+view: orders {
+  sql_table_name: orders ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: user_id { type: number  sql: ${TABLE}.user_id ;; }
+  dimension: status { type: string  sql: ${TABLE}.status ;; }
+  measure: uu { type: count_distinct  approximate: yes  sql: ${user_id} ;; filters: [status: "completed"] }
+  measure: pct { type: percent_of_total  sql: ${uu} ;; }
+  measure: total { type: sum  sql: ${TABLE}.amount ;; }
+  measure: pct_unfiltered { type: percent_of_total  sql: ${total} ;; }
+}
+"""
+    )
+    model = graph.get_model("orders")
+    pct = model.get_metric("pct")
+    # The base's filter is carried into the expansion, over the REAL column, still approximate.
+    assert "completed" in pct.sql, pct.sql
+    assert "APPROX_COUNT_DISTINCT" in pct.sql and "COUNT(DISTINCT" not in pct.sql, pct.sql
+    assert "user_id" in pct.sql, pct.sql
+    # An UNFILTERED base is unchanged (still the aggregate template over the measure ref).
+    assert "{model}.total" in model.get_metric("pct_unfiltered").sql
+
+
+def test_lookml_post_sql_measure_expands_untemplated_complete_base():
+    """A post-SQL measure over an UNTEMPLATED complete type:number base must expand its full SQL.
+
+    An unfiltered complete base like STDDEV has no native <AGG>({model}.<measure>) template, so the
+    percent_of_total resolved it to `{model}.sd` -- but complete measures are projected via
+    dedicated raw aliases, so the query referenced a missing `orders_cte.sd` and failed. Expand
+    such a base through its full SQL; a native aggregate base keeps the template form.
+    """
+    import duckdb
+
+    from sidemantic import SemanticLayer
+
+    graph = _parse_lkml(
+        """
+view: orders {
+  sql_table_name: orders ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: amount { type: number  sql: ${TABLE}.amount ;; }
+  measure: sd { type: number  sql: STDDEV(${amount}) ;; }
+  measure: total { type: sum  sql: ${amount} ;; }
+  measure: pct { type: percent_of_total  sql: ${sd} ;; }
+  measure: pct_native { type: percent_of_total  sql: ${total} ;; }
+}
+"""
+    )
+    model = graph.get_model("orders")
+    # The complete base's full SQL is inlined; the native base keeps its measure-ref template.
+    assert "STDDEV" in model.get_metric("pct").sql and "{model}.sd" not in model.get_metric("pct").sql
+    assert "{model}.total" in model.get_metric("pct_native").sql
+
+    layer = SemanticLayer(auto_register=False)
+    layer.add_model(model)
+    sql = layer.compile(metrics=["orders.pct"])
+    con = duckdb.connect()
+    con.execute("create table orders as select 1 id, 10.0 amount union all select 2, 30 union all select 3, 60")
+    assert con.execute(sql).fetchall() == [(1.0,)]  # single group -> its share is 1.0
+
+
+def test_lookml_post_sql_measure_with_unresolvable_base_dropped():
+    """A percent_of_total over a filtered type:number base whose complete SQL can't be cached is dropped.
+
+    A filtered type: number using a dialect-renamed aggregate (APPROX_COUNT_DISTINCT) has its
+    force-fold prepass bail, so the base is not in measure_full_sql_lookup; the ref would fall
+    through to a bare {model}.<measure> the complete measure never projects as a column. Drop the
+    post-SQL measure instead of emitting a missing-column CTE. A resolvable base still works.
+    """
+    graph = _parse_lkml(
+        """
+view: orders {
+  sql_table_name: orders ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: status { type: string  sql: ${TABLE}.status ;; }
+  measure: approx_ratio {
+    type: number
+    sql: APPROX_COUNT_DISTINCT(${TABLE}.user_id) / NULLIF(COUNT(*), 0) ;;
+    filters: [status: "completed"]
+  }
+  measure: total { type: sum  sql: ${TABLE}.amount ;; }
+  measure: pct_bad { type: percent_of_total  sql: ${approx_ratio} ;; }
+  measure: pct_ok { type: percent_of_total  sql: ${total} ;; }
+}
+"""
+    )
+    names = {m.name for m in graph.get_model("orders").metrics}
+    assert "pct_bad" not in names  # unresolvable base -> dropped
+    assert "pct_ok" in names  # resolvable native base -> kept
+    assert "approx_ratio" in names  # the base measure itself still imports
+
+
+def test_lookml_export_running_total_roundtrips():
+    """An imported running_total (cumulative + table_calculation meta) round-trips, not dropped."""
+    import tempfile
+
+    graph = _parse_lkml(
+        """
+view: v {
+  sql_table_name: t ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  measure: total { type: sum  sql: ${TABLE}.amt ;; }
+  measure: rt { type: running_total  sql: ${total} ;; }
+}
+"""
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    assert "type: running_total" in open(out).read()
+    reimported = {m.name: m for m in LookMLAdapter().parse(Path(out)).get_model("v").metrics}
+    assert "rt" in reimported
+    assert (reimported["rt"].meta or {}).get("table_calculation") == "running_total"
+
+
+def test_lookml_export_approximate_distinct_preserved():
+    """approx_count_distinct must export as count_distinct + approximate: yes and round-trip."""
+    import tempfile
+
+    from sidemantic import Dimension, Metric, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="o",
+            table="o",
+            primary_key="id",
+            dimensions=[Dimension(name="id", type="numeric", sql="id")],
+            metrics=[Metric(name="uu", agg="approx_count_distinct", sql="user_id")],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    text = open(out).read()
+    assert "type: count_distinct" in text
+    assert "approximate: yes" in text
+    reimported = {m.name: m for m in LookMLAdapter().parse(Path(out)).get_model("o").metrics}
+    assert reimported["uu"].agg == "approx_count_distinct"
+
+
+def test_lookml_export_opaque_complete_sql_measure_skipped():
+    """An agg-less sql_is_complete measure has no faithful LookML form and is skipped, not exported as broken derived."""
+    import tempfile
+
+    from sidemantic import Dimension, Metric, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="o",
+            table="o",
+            primary_key="id",
+            dimensions=[Dimension(name="id", type="numeric", sql="id")],
+            metrics=[Metric(name="opaque", agg=None, sql="status_label", sql_is_complete=True)],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    assert "measure: opaque" not in open(out).read()
+
+
+def test_lookml_export_folded_filter_resolves_dimension_sql():
+    """A folded filter must reference the dimension's SQL column, not the bare dimension name."""
+    import tempfile
+
+    from sidemantic import Dimension, Metric, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="o",
+            table="o",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(name="status", type="categorical", sql="order_status"),
+            ],
+            metrics=[Metric(name="sd", agg="stddev", sql="amount", filters=["{model}.status = 'done'"])],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    # Resolved dimension column is qualified (${TABLE}.) and parenthesized.
+    assert "(${TABLE}.order_status) = 'done'" in open(out).read()
+
+
+def test_lookml_export_folded_filter_resolves_model_qualified_ref():
+    """A folded filter qualified by the model's own NAME (orders.status) resolves too."""
+    import tempfile
+
+    from sidemantic import Dimension, Metric, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="orders",
+            table="raw_orders",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(name="status", type="categorical", sql="order_status"),
+            ],
+            metrics=[Metric(name="sd", agg="stddev", sql="amount", filters=["orders.status = 'done'"])],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    text = open(out).read()
+    assert "(${TABLE}.order_status) = 'done'" in text
+    assert "orders.status" not in text  # model-name prefix was normalized away
+
+
+def test_lookml_export_complete_aggregate_sql_measure_not_dropped():
+    """An opaque COMPLETE aggregate measure (e.g. from Cube) exports as type: number, not dropped."""
+    import tempfile
+
+    from sidemantic import Dimension, Metric, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="orders",
+            table="t",
+            primary_key="id",
+            dimensions=[Dimension(name="id", type="numeric", sql="id")],
+            metrics=[Metric(name="total_amt", agg=None, sql="SUM({model}.amount)", sql_is_complete=True)],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    text = open(out).read()
+    assert "measure: total_amt" in text  # not dropped
+    assert "type: number" in text
+    assert "SUM(${TABLE}.amount)" in text
+
+
+def test_lookml_export_string_measure_not_forced_to_number():
+    """A non-aggregate (string/yesno/row-level) agg-less measure must NOT export as number.
+
+    Looker measures aggregate; forcing a raw column measure to type: number re-imports as
+    a derived metric and crashes ({model}.status read as a metric dep), so it is skipped.
+    """
+    import tempfile
+
+    from sidemantic import Dimension, Metric, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="orders",
+            table="t",
+            primary_key="id",
+            dimensions=[Dimension(name="id", type="numeric", sql="id")],
+            metrics=[Metric(name="label", agg=None, sql="{model}.status")],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    assert "measure: label" not in open(out).read()  # skipped, not exported as type: number
+
+
+def test_lookml_export_complete_aggregate_with_filters_folds_into_aggregate():
+    """A complete aggregate measure WITH filters folds them into the aggregate (not a dropped filter)."""
+    import tempfile
+
+    from sidemantic import Dimension, Metric, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="orders",
+            table="t",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(name="status", type="categorical", sql="order_status"),
+            ],
+            metrics=[
+                Metric(
+                    name="done_amt",
+                    agg=None,
+                    sql="SUM({model}.amount)",
+                    sql_is_complete=True,
+                    filters=["{model}.status = 'done'"],
+                )
+            ],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    text = open(out).read()
+    # Filter folded INSIDE the aggregate, and no separate (ignored-on-reimport) filters block.
+    assert "SUM(CASE WHEN" in text
+    assert "(${TABLE}.order_status) = 'done'" in text
+    measure_block = text[text.index("measure: done_amt") :]
+    measure_block = measure_block[: measure_block.index("}")]
+    assert "filters:" not in measure_block
+
+
+def test_lookml_export_folded_filter_resolves_compact_dimension():
+    """A folded filter over a COMPACT (no-sql) dimension resolves to ${TABLE}.col, not <model>.col."""
+    import tempfile
+
+    from sidemantic import Dimension, Metric, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="orders",
+            table="raw_orders",
+            primary_key="id",
+            dimensions=[Dimension(name="id", type="numeric", sql="id"), Dimension(name="status", type="categorical")],
+            metrics=[Metric(name="sd", agg="stddev", sql="amount", filters=["orders.status = 'done'"])],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    text = open(out).read()
+    assert "(${TABLE}.status) = 'done'" in text  # default column, qualified to ${TABLE}
+    assert "orders.status" not in text  # not left pointing at a literal `orders` table
+
+
+def test_lookml_export_folded_filter_resolves_unqualified_dimension():
+    """An UNqualified folded filter field (status = 'done') resolves through dimension SQL."""
+    import tempfile
+
+    from sidemantic import Dimension, Metric, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="orders",
+            table="raw_orders",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(name="status", type="categorical", sql="order_status"),
+            ],
+            metrics=[Metric(name="sd", agg="stddev", sql="amount", filters=["status = 'done'"])],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    text = open(out).read()
+    assert "(${TABLE}.order_status) = 'done'" in text  # unqualified dim -> its real column
+    # 'done' (a string VALUE) must NOT be rewritten even though it's not a dimension.
+    assert "'done'" in text
+
+
+def test_lookml_export_folded_filter_resolves_dimension_inside_function():
+    """An unqualified dimension INSIDE a function (LOWER(status)) resolves; quoted value is safe."""
+    import tempfile
+
+    from sidemantic import Dimension, Metric, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="orders",
+            table="raw_orders",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(name="status", type="categorical", sql="order_status"),
+            ],
+            # LOWER(status): dim inside a function; and a quoted value equal to a dim name.
+            metrics=[Metric(name="sd", agg="stddev", sql="amount", filters=["LOWER(status) = 'status'"])],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    text = open(out).read()
+    assert "LOWER((${TABLE}.order_status))" in text  # dim resolved inside the function
+    assert "= 'status'" in text  # the quoted value was NOT rewritten
+
+
+def test_lookml_export_folded_filter_leaves_quoted_identifier_untouched():
+    """A double-quoted identifier in a folded filter must not be substituted inside."""
+    import tempfile
+
+    from sidemantic import Dimension, Metric, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="orders",
+            table="raw_orders",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(name="status", type="categorical", sql="order_status"),
+            ],
+            metrics=[Metric(name="sd", agg="stddev", sql="amount", filters=["\"status\" = 'done'"])],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    text = open(out).read()
+    assert "\"status\" = 'done'" in text  # quoted identifier passes through verbatim
+    assert '"(${TABLE}' not in text  # NOT substituted inside the quotes (invalid SQL)
+
+
+def test_lookml_export_folded_filter_leaves_foreign_qualified_field_untouched():
+    """A foreign-qualified field (customers.status) must not have its `status` part rewritten."""
+    import tempfile
+
+    from sidemantic import Dimension, Metric, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="orders",
+            table="raw_orders",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(name="status", type="categorical", sql="order_status"),
+            ],
+            metrics=[Metric(name="sd", agg="stddev", sql="amount", filters=["customers.status = 'vip'"])],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    text = open(out).read()
+    assert "customers.status = 'vip'" in text  # foreign qualifier left intact
+    assert "customers.(" not in text  # the `status` part is NOT rewritten into a malformed ref
+
+
+def test_lookml_export_folded_filter_does_not_rewrite_function_name():
+    """A folded filter's SQL function name equal to a dimension name must not be rewritten."""
+    import tempfile
+
+    from sidemantic import Dimension, Metric, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="orders",
+            table="raw_orders",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(name="date", type="time", granularity="day", sql="order_date"),
+            ],
+            metrics=[Metric(name="sd", agg="stddev", sql="amount", filters=["date(created_at) = '2024-01-01'"])],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    text = open(out).read()
+    assert "date(created_at)" in text  # function call left intact
+    assert "order_date)(" not in text  # the function name is NOT rewritten to a column
+
+
+def test_lookml_export_folded_filter_does_not_rewrite_template_variable():
+    """A folded filter's Liquid/Jinja template variable equal to a dimension name is untouched."""
+    import tempfile
+
+    from sidemantic import Dimension, Metric, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="orders",
+            table="t",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(name="status", type="categorical", sql="order_status"),  # dim named 'status'
+                Dimension(name="amount", type="numeric", sql="amount"),
+            ],
+            metrics=[Metric(name="sd", agg="stddev", sql="{model}.amount", filters=["{model}.status = {{ status }}"])],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    text = open(out).read()
+    assert "measure: sd" in text
+    assert "{{ status }}" in text  # template variable left intact
+    assert "{{ (${TABLE}" not in text  # NOT rewritten inside the template
+    assert "order_status" in text  # the real column operand IS resolved
+
+
+def test_lookml_export_folded_filter_protects_multiline_liquid_block():
+    """A Liquid/Jinja tag that SPANS NEWLINES must be protected whole, not corrupted mid-tag.
+
+    The template patterns used `.*?` without DOTALL, so a `{% ... %}` / `{{ ... }}` spanning a
+    newline was not split out as one protected segment, and a bare dimension name on an inner line
+    was rewritten to its column -- corrupting the template. Using `[\\s\\S]*?` spans newlines.
+    """
+    from sidemantic import Dimension, Model
+
+    model = Model(
+        name="orders",
+        table="raw",
+        primary_key="id",
+        dimensions=[Dimension(name="status", type="categorical", sql="order_status")],
+    )
+    conds = LookMLAdapter._fold_filter_conds
+
+    # Each tag itself spans a newline: the inner `status` must NOT become `order_status`.
+    for predicate in (
+        "{% condition\n status %}\n1\n{% endcondition %}",
+        "{{\n  status\n}} = 1",
+        "{% condition\nstatus\n%} 1 {% endcondition %}",
+    ):
+        assert "order_status" not in conds([predicate], model), predicate
+
+    # A real bare-dimension filter (no template) still resolves to its column.
+    assert conds(["status = 'x'"], model) == "((${TABLE}.order_status) = 'x')"
+
+
+def test_lookml_export_folded_filter_no_dimensions_does_not_crash():
+    """Folding a qualified filter on a model with NO dimensions must not IndexError.
+
+    With no declared dimensions the bare-name alternative is absent from the regex (one group),
+    so the callback must read group 2 defensively instead of raising 'no such group'.
+    """
+    import tempfile
+
+    from sidemantic import Metric, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="o",
+            table="t",
+            primary_key="id",
+            dimensions=[],  # no dimensions -> names_alt empty -> single-group regex
+            metrics=[Metric(name="sd", agg="stddev", sql="{model}.amount", filters=["{model}.status = 'done'"])],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)  # must not raise IndexError
+    text = open(out).read()
+    assert "measure: sd" in text
+    assert "${TABLE}.status" in text  # qualified filter still folded
+
+
+def test_lookml_export_folded_filter_does_not_rewrite_typed_date_literal():
+    """A folded filter's typed date literal (`date '...'`) must not be rewritten as a column."""
+    import tempfile
+
+    from sidemantic import Dimension, Metric, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="orders",
+            table="raw_orders",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(name="date", type="time", granularity="day", sql="order_date"),  # dim named 'date'
+                Dimension(name="amount", type="numeric", sql="amount"),
+            ],
+            metrics=[
+                Metric(name="sd", agg="stddev", sql="{model}.amount", filters=["created_at >= date '2024-01-01'"])
+            ],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    text = open(out).read()
+    assert "measure: sd" in text
+    assert "date '2024-01-01'" in text  # typed literal left intact
+    assert "order_date) '2024" not in text  # NOT rewritten into a column
+
+
+def test_lookml_export_folded_filter_does_not_rewrite_cast_type():
+    """A folded filter's SQL CAST type token equal to a dimension name must not be rewritten."""
+    import tempfile
+
+    from sidemantic import Dimension, Metric, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="orders",
+            table="raw_orders",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(name="date", type="time", granularity="day", sql="order_date"),  # dim named 'date'
+                Dimension(name="amount", type="numeric", sql="amount"),
+            ],
+            metrics=[
+                Metric(
+                    name="sd", agg="stddev", sql="{model}.amount", filters=["CAST(created_at AS date) = '2024-01-01'"]
+                )
+            ],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    text = open(out).read()
+    assert "measure: sd" in text  # not skipped
+    assert "CAST(created_at AS date)" in text  # type token intact
+    assert "AS (${TABLE}" not in text  # the cast type is NOT rewritten to a column
+
+
+def test_lookml_export_folded_filter_does_not_rewrite_unquoted_date_part_argument():
+    """An UNQUOTED date part passed to a date/time function must not be rewritten as a column.
+
+    BigQuery-style DATE_TRUNC(created_at, month) / DATE_DIFF(a, b, day) pass the part unquoted, so
+    on a model with `month`/`day` dimensions it became DATE_TRUNC(..., (${TABLE}.order_month)).
+    Protection is gated on the date-part KEYWORD set, so a real column argument of the SAME call
+    (created_at) still resolves, and a keyword-named column outside a date function still resolves.
+    """
+    from sidemantic import Dimension, Model
+
+    model = Model(
+        name="orders",
+        table="raw_orders",
+        primary_key="id",
+        dimensions=[
+            Dimension(name="month", type="time", granularity="month", sql="order_month"),
+            Dimension(name="day", type="time", granularity="day", sql="order_day"),
+            Dimension(name="created_at", type="time", granularity="day", sql="created_at"),
+        ],
+    )
+    conds = LookMLAdapter._fold_filter_conds
+    # The part is protected; the column argument of the same call IS resolved.
+    assert conds(["DATE_TRUNC(created_at, month) = DATE '2024-01-01'"], model) == (
+        "(DATE_TRUNC((${TABLE}.created_at), month) = DATE '2024-01-01')"
+    )
+    assert conds(["DATE_DIFF(created_at, created_at, day) > 1"], model) == (
+        "(DATE_DIFF((${TABLE}.created_at), (${TABLE}.created_at), day) > 1)"
+    )
+    # A keyword-named column used for real is still rewritten (not over-protected).
+    assert conds(["month = '2024-01'"], model) == "((${TABLE}.order_month) = '2024-01')"
+    assert conds(["UPPER(day) = 'X'"], model) == "(UPPER((${TABLE}.order_day)) = 'X')"
+
+
+def test_lookml_export_folded_filter_date_part_guard_is_position_aware():
+    """Only the date-part ARGUMENT SLOT is protected -- a keyword-named column elsewhere resolves.
+
+    `DATE_TRUNC(date, month)` on a model with BOTH a `date` and a `month` dimension means column
+    `date` truncated to part `month`: protecting every keyword inside a date function would leave
+    the `date` COLUMN unresolved. Covers both argument conventions -- BigQuery puts the part LAST
+    (DATE_TRUNC(value, part), DATE_DIFF(a, b, part)), SQL Server FIRST (DATEDIFF(part, a, b)).
+    """
+    from sidemantic import Dimension, Model
+
+    model = Model(
+        name="orders",
+        table="raw_orders",
+        primary_key="id",
+        dimensions=[
+            Dimension(name="date", type="time", granularity="day", sql="order_date"),
+            Dimension(name="month", type="time", granularity="month", sql="order_month"),
+            Dimension(name="day", type="time", granularity="day", sql="order_day"),
+            Dimension(name="created_at", type="time", granularity="day", sql="created_at"),
+        ],
+    )
+    conds = LookMLAdapter._fold_filter_conds
+    # BigQuery: part is the LAST arg -- the `date` COLUMN in slot 0 must still resolve.
+    assert conds(["DATE_TRUNC(date, month) = DATE '2024-01-01'"], model) == (
+        "(DATE_TRUNC((${TABLE}.order_date), month) = DATE '2024-01-01')"
+    )
+    assert conds(["DATE_DIFF(created_at, date, day) > 1"], model) == (
+        "(DATE_DIFF((${TABLE}.created_at), (${TABLE}.order_date), day) > 1)"
+    )
+    # SQL Server: part is the FIRST arg; the trailing columns still resolve.
+    assert conds(["DATEDIFF(day, created_at, date) > 1"], model) == (
+        "(DATEDIFF(day, (${TABLE}.created_at), (${TABLE}.order_date)) > 1)"
+    )
+    # The unspaced TIMESTAMPADD/TIMESTAMPDIFF aliases also take the part first.
+    assert conds(["TIMESTAMPADD(day, 1, created_at) > 1"], model) == (
+        "(TIMESTAMPADD(day, 1, (${TABLE}.created_at)) > 1)"
+    )
+    assert conds(["TIMESTAMPDIFF(day, created_at, date) > 1"], model) == (
+        "(TIMESTAMPDIFF(day, (${TABLE}.created_at), (${TABLE}.order_date)) > 1)"
+    )
+    # The two TRUNC spellings differ: underscored DATE_TRUNC is BigQuery's (value, part), while
+    # the unspaced DATETRUNC is SQL Server's (part, value).
+    assert conds(["DATETRUNC(month, created_at) = DATE '2024-01-01'"], model) == (
+        "(DATETRUNC(month, (${TABLE}.created_at)) = DATE '2024-01-01')"
+    )
+    # A function with NO bare date-part argument must not protect its slots: time_bucket takes an
+    # INTERVAL, so a keyword-named COLUMN in its last slot is still resolved.
+    assert conds(["time_bucket(INTERVAL '5 minutes', date) = 1"], model) == (
+        "(time_bucket(INTERVAL '5 minutes', (${TABLE}.order_date)) = 1)"
+    )
+    # DATE_TRUNC has NO fixed part position -- BigQuery is (value, part), Snowflake is (part, expr)
+    # -- so it is disambiguated by CONTENT: whichever argument is a date-part keyword is the part.
+    assert conds(["DATE_TRUNC(month, created_at) = DATE '2024-01-01'"], model) == (
+        "(DATE_TRUNC(month, (${TABLE}.created_at)) = DATE '2024-01-01')"
+    )  # Snowflake order
+    # When BOTH arguments are keywords (a model with `date` AND `month` dimensions) neither order
+    # is decisive, so coarseness decides: truncation goes finer -> coarser, so `month` is the part
+    # and `date` the column -- the SAME reading under either dialect's argument order.
+    assert conds(["DATE_TRUNC(date, month) = DATE '2024-01-01'"], model) == (
+        "(DATE_TRUNC((${TABLE}.order_date), month) = DATE '2024-01-01')"
+    )
+    assert conds(["DATE_TRUNC(month, date) = DATE '2024-01-01'"], model) == (
+        "(DATE_TRUNC(month, (${TABLE}.order_date)) = DATE '2024-01-01')"
+    )
+    # Postgres/DuckDB quote the part. The quoted token is already protected from rewriting, but it
+    # must still be RECOGNISED as the part -- otherwise the `date` COLUMN looks like the only
+    # keyword and is left unresolved.
+    assert conds(["DATE_TRUNC('month', date) = DATE '2024-01-01'"], model) == (
+        "(DATE_TRUNC('month', (${TABLE}.order_date)) = DATE '2024-01-01')"
+    )
+    assert conds(["DATE_TRUNC(\"month\", date) = DATE '2024-01-01'"], model) == (
+        "(DATE_TRUNC(\"month\", (${TABLE}.order_date)) = DATE '2024-01-01')"
+    )
+
+
+def test_lookml_export_folded_filter_trunc_date_expression_protects_part():
+    """A TRUNC over a date EXPRESSION (not a bare dimension) is still the date overload.
+
+    TRUNC is numeric-overloaded (TRUNC(number, scale)), so its part slot is only guarded when the
+    value is date-typed. The old guard only accepted a value that was EXACTLY a time dimension name,
+    so TRUNC(CAST({model}.created_at AS DATE), month) on a model that also has a `month` dimension
+    left `month` looking like a plain column: it got rewritten to the dimension SQL, corrupting the
+    exported unit. A value that references a time dimension, or is wrapped in an explicit date cast,
+    must be recognised as the date overload -- while a genuinely numeric TRUNC(amount, month) still
+    resolves `month` to its column.
+    """
+    from sidemantic import Dimension, Model
+
+    model = Model(
+        name="orders",
+        table="raw_orders",
+        primary_key="id",
+        dimensions=[
+            Dimension(name="created_at", type="time", granularity="day", sql="created_at"),
+            Dimension(name="month", type="time", granularity="month", sql="order_month"),
+            Dimension(name="amount", type="numeric", sql="amount"),
+        ],
+    )
+    conds = LookMLAdapter._fold_filter_conds
+    # CAST(... AS DATE) value: `month` stays the PART; the cast's `created_at` still resolves.
+    assert conds(["TRUNC(CAST({model}.created_at AS DATE), month) = DATE '2024-01-01'"], model) == (
+        "(TRUNC(CAST((${TABLE}.created_at) AS DATE), month) = DATE '2024-01-01')"
+    )
+    # Postgres `::date` shorthand is recognised the same way.
+    assert conds(["TRUNC({model}.created_at::date, month) = DATE '2024-01-01'"], model) == (
+        "(TRUNC((${TABLE}.created_at)::date, month) = DATE '2024-01-01')"
+    )
+    # A genuinely numeric TRUNC (value is a numeric dimension, no date cast) is untouched: `month`
+    # is a scale COLUMN and must resolve to its dimension SQL, not be protected as a part.
+    assert conds(["TRUNC({model}.amount, month) > 5"], model) == (
+        "(TRUNC((${TABLE}.amount), (${TABLE}.order_month)) > 5)"
+    )
+
+
+def test_lookml_export_folded_filter_date_diff_part_position_is_content_based():
+    """date_diff's part is at EITHER end depending on dialect, so decide by content, not position.
+
+    BigQuery is DATE_DIFF(end, start, part) (part LAST); DuckDB is date_diff(part, start, end) (part
+    FIRST). A fixed position leaves the DuckDB spelling's first-argument unit unprotected, so a model
+    with a `day` dimension rewrites the unit to (${TABLE}.order_day). Whichever END argument is a
+    date-part keyword is the part; the other columns still resolve.
+    """
+    from sidemantic import Dimension, Model
+
+    model = Model(
+        name="orders",
+        table="raw_orders",
+        primary_key="id",
+        dimensions=[
+            Dimension(name="date", type="time", granularity="day", sql="order_date"),
+            Dimension(name="day", type="time", granularity="day", sql="order_day"),
+            Dimension(name="created_at", type="time", granularity="day", sql="created_at"),
+            Dimension(name="start_at", type="time", granularity="day", sql="started_at"),
+            Dimension(name="end_at", type="time", granularity="day", sql="ended_at"),
+        ],
+    )
+    conds = LookMLAdapter._fold_filter_conds
+    # DuckDB: part FIRST -- `day` must stay a unit, and start/end columns still resolve.
+    assert conds(["date_diff(day, start_at, end_at) > 1"], model) == (
+        "(date_diff(day, (${TABLE}.started_at), (${TABLE}.ended_at)) > 1)"
+    )
+    # BigQuery: part LAST -- unchanged; the `date` COLUMN in the middle still resolves.
+    assert conds(["DATE_DIFF(created_at, date, day) > 1"], model) == (
+        "(DATE_DIFF((${TABLE}.created_at), (${TABLE}.order_date), day) > 1)"
+    )
+    # Both ends look like keywords (a `date` dimension at the far end): the genuine UNIT `day` wins,
+    # so the DuckDB unit is protected and the `date` column resolves.
+    assert conds(["date_diff(day, created_at, date) > 1"], model) == (
+        "(date_diff(day, (${TABLE}.created_at), (${TABLE}.order_date)) > 1)"
+    )
+
+
+def test_lookml_export_folded_filter_equal_rank_date_trunc_uses_trunc_unit_as_part():
+    """When both DATE_TRUNC args share coarseness, the truncation UNIT is the part.
+
+    DATE_TRUNC(day, date) has both args at rank 7, so the coarseness tie-break gave no signal and
+    fell back to a fixed position -- picking `date` as the part and leaving the real `date` column
+    unresolved (or rewriting `day`). A DATE_TRUNC part must be a truncation unit, and only `day`
+    is one (`date`/`dow`/`doy` are extraction-only), so `day` is the part and `date` resolves.
+    """
+    from sidemantic import Dimension, Model
+
+    model = Model(
+        name="orders",
+        table="raw",
+        primary_key="id",
+        dimensions=[
+            Dimension(name="date", type="time", granularity="day", sql="order_date"),
+            Dimension(name="day", type="time", granularity="day", sql="order_day"),
+        ],
+    )
+    conds = LookMLAdapter._fold_filter_conds
+    # Snowflake order (part first): day is the part, date resolves to its column.
+    assert conds(["DATE_TRUNC(day, date) = DATE '2024-01-01'"], model) == (
+        "(DATE_TRUNC(day, (${TABLE}.order_date)) = DATE '2024-01-01')"
+    )
+    # BigQuery order (part last): still day is the part, date resolves.
+    assert conds(["DATE_TRUNC(date, day) = DATE '2024-01-01'"], model) == (
+        "(DATE_TRUNC((${TABLE}.order_date), day) = DATE '2024-01-01')"
+    )
+
+
+def test_lookml_export_folded_filter_protects_sql_server_datepart_first_functions():
+    """SQL Server functions taking the datepart FIRST must protect that part token.
+
+    DATENAME / DATEDIFF_BIG / DATE_BUCKET were absent from the datepart-position map, so on a model
+    with a `day` dimension a folded filter's DATENAME(day, created_at) rewrote `day` to
+    (${TABLE}.order_day) -- and the stddev/complete-aggregate export paths suppress the filters
+    block, so the exported LookML SQL was invalid. The trailing column arguments still resolve.
+    """
+    from sidemantic import Dimension, Model
+
+    model = Model(
+        name="orders",
+        table="raw_orders",
+        primary_key="id",
+        dimensions=[
+            Dimension(name="day", type="time", granularity="day", sql="order_day"),
+            Dimension(name="created_at", type="time", granularity="day", sql="created_at"),
+            Dimension(name="start_at", type="time", granularity="day", sql="started_at"),
+        ],
+    )
+    conds = LookMLAdapter._fold_filter_conds
+    # The datepart token is protected; the column argument(s) of the SAME call still resolve.
+    assert conds(["DATENAME(day, created_at) = 'Monday'"], model) == (
+        "(DATENAME(day, (${TABLE}.created_at)) = 'Monday')"
+    )
+    assert conds(["DATEDIFF_BIG(day, start_at, created_at) > 1"], model) == (
+        "(DATEDIFF_BIG(day, (${TABLE}.started_at), (${TABLE}.created_at)) > 1)"
+    )
+    assert conds(["DATE_BUCKET(day, 1, created_at) > 1"], model) == ("(DATE_BUCKET(day, 1, (${TABLE}.created_at)) > 1)")
+    # A keyword-named column used for real (outside a date function) is still rewritten.
+    assert conds(["UPPER(day) = 'X'"], model) == "(UPPER((${TABLE}.order_day)) = 'X')"
+
+
+def test_lookml_export_folded_filter_protects_snowflake_timeadd_and_trunc_parts():
+    """Snowflake TIMEADD/TIMEDIFF (datepart first) and TRUNC/TRUNCATE (datepart last) protect the part.
+
+    Without these aliases a folded filter's TIMEADD(day, 1, x) or TRUNC(x, month) rewrote the unit
+    to a same-named dimension's SQL. Numeric TRUNC(n, 2) is unaffected -- the trailing 2 is not a
+    date part.
+    """
+    from sidemantic import Dimension, Model
+
+    model = Model(
+        name="orders",
+        table="t",
+        primary_key="id",
+        dimensions=[
+            Dimension(name="day", type="time", granularity="day", sql="order_day"),
+            Dimension(name="month", type="time", granularity="month", sql="order_month"),
+            Dimension(name="created_at", type="time", granularity="day", sql="created_at"),
+            Dimension(name="n", type="numeric", sql="num_col"),
+        ],
+    )
+    conds = LookMLAdapter._fold_filter_conds
+    assert conds(["TIMEADD(day, 1, created_at) > 1"], model) == "(TIMEADD(day, 1, (${TABLE}.created_at)) > 1)"
+    assert conds(["TIMEDIFF(day, created_at, created_at) > 1"], model) == (
+        "(TIMEDIFF(day, (${TABLE}.created_at), (${TABLE}.created_at)) > 1)"
+    )
+    # TRUNC(expr, part): the LAST arg is the part -> month protected, created_at resolves.
+    assert conds(["TRUNC(created_at, month) = DATE '2024-01-01'"], model) == (
+        "(TRUNC((${TABLE}.created_at), month) = DATE '2024-01-01')"
+    )
+    # Numeric TRUNC(n, 2): the trailing 2 is not a date part, so the real column resolves.
+    assert conds(["TRUNC(n, 2) > 5"], model) == "(TRUNC((${TABLE}.num_col), 2) > 5)"
+    # Two-argument LAST_DAY(expr, part): the part is protected; single-argument LAST_DAY is unaffected.
+    assert conds(["LAST_DAY(created_at, month) = DATE '2024-01-31'"], model) == (
+        "(LAST_DAY((${TABLE}.created_at), month) = DATE '2024-01-31')"
+    )
+    assert conds(["LAST_DAY(created_at) = DATE '2024-01-31'"], model) == (
+        "(LAST_DAY((${TABLE}.created_at)) = DATE '2024-01-31')"
+    )
+
+
+def test_lookml_export_folded_filter_numeric_trunc_scale_column_resolves():
+    """TRUNC's numeric overload must not protect a scale column named like a date part.
+
+    TRUNC(amount, month) where amount is numeric is TRUNC(number, scale), so `month` is a scale
+    COLUMN and must resolve to its dimension SQL -- only a date/time value argument makes the last
+    arg a date part (TRUNC(created_at, month)).
+    """
+    from sidemantic import Dimension, Model
+
+    numeric = Model(
+        name="orders",
+        table="t",
+        primary_key="id",
+        dimensions=[
+            Dimension(name="amount", type="numeric", sql="amt"),
+            Dimension(name="month", type="numeric", sql="scale_col"),
+        ],
+    )
+    conds = LookMLAdapter._fold_filter_conds
+    # Numeric value arg -> `month` is a scale column, resolved (not protected as a part).
+    assert conds(["TRUNC(amount, month) > 0"], numeric) == "(TRUNC((${TABLE}.amt), (${TABLE}.scale_col)) > 0)"
+
+    dated = Model(
+        name="orders",
+        table="t",
+        primary_key="id",
+        dimensions=[
+            Dimension(name="created_at", type="time", granularity="day", sql="created_at"),
+            Dimension(name="month", type="time", granularity="month", sql="order_month"),
+        ],
+    )
+    # Time value arg -> `month` is the date part, protected.
+    assert conds(["TRUNC(created_at, month) = DATE '2024-01-01'"], dated) == (
+        "(TRUNC((${TABLE}.created_at), month) = DATE '2024-01-01')"
+    )
+    # The QUALIFIED form ({model}.created_at) must still be recognized as a time value.
+    assert conds(["TRUNC({model}.created_at, month) = DATE '2024-01-01'"], dated) == (
+        "(TRUNC((${TABLE}.created_at), month) = DATE '2024-01-01')"
+    )
+    # And a qualified numeric value still resolves the scale column.
+    assert conds(["TRUNC({model}.amount, month) > 0"], numeric) == ("(TRUNC((${TABLE}.amt), (${TABLE}.scale_col)) > 0)")
+
+
+def test_lookml_export_folded_filter_iso_date_trunc_units_resolve_value_column():
+    """DATE_TRUNC ISO units (isoweek/isoyear) are recognized so the value column still resolves."""
+    from sidemantic import Dimension, Model
+
+    model = Model(
+        name="orders",
+        table="t",
+        primary_key="id",
+        dimensions=[
+            Dimension(name="week", type="time", granularity="week", sql="order_week"),
+            Dimension(name="year", type="time", granularity="year", sql="order_year"),
+        ],
+    )
+    conds = LookMLAdapter._fold_filter_conds
+    assert conds(["DATE_TRUNC(week, isoweek) = DATE '2024-01-01'"], model) == (
+        "(DATE_TRUNC((${TABLE}.order_week), isoweek) = DATE '2024-01-01')"
+    )
+    assert conds(["DATE_TRUNC(year, isoyear) = DATE '2024-01-01'"], model) == (
+        "(DATE_TRUNC((${TABLE}.order_year), isoyear) = DATE '2024-01-01')"
+    )
+
+
+def test_lookml_export_folded_filter_quoted_date_trunc_unit_resolves_value_column():
+    """A QUOTED DATE_TRUNC unit (part) is decided by its quotes, so a same-named value column resolves.
+
+    DATE_TRUNC('week', week) on a model with a `week` dimension: the quoted 'week' is the part and
+    the bare `week` is the value column. Stripping quotes made both look like the unit, and the
+    tie-break picked the value column as the part, leaving it unresolved. Quoting decides the part.
+    """
+    from sidemantic import Dimension, Model
+
+    model = Model(
+        name="orders",
+        table="t",
+        primary_key="id",
+        dimensions=[
+            Dimension(name="week", type="time", granularity="week", sql="order_week"),
+            Dimension(name="date", type="time", granularity="day", sql="order_date"),
+        ],
+    )
+    conds = LookMLAdapter._fold_filter_conds
+    # Postgres/DuckDB order (quoted part first): the value column resolves, the quoted part stays.
+    assert conds(["DATE_TRUNC('week', week) = DATE '2024-01-01'"], model) == (
+        "(DATE_TRUNC('week', (${TABLE}.order_week)) = DATE '2024-01-01')"
+    )
+    assert conds(["DATE_TRUNC('month', date) = DATE '2024-01-01'"], model) == (
+        "(DATE_TRUNC('month', (${TABLE}.order_date)) = DATE '2024-01-01')"
+    )
+    # BigQuery order (unquoted, value first) is unaffected: date resolves, month is the part.
+    assert conds(["DATE_TRUNC(date, month) = DATE '2024-01-01'"], model) == (
+        "(DATE_TRUNC((${TABLE}.order_date), month) = DATE '2024-01-01')"
+    )
+    # A DOUBLE-quoted second argument is a quoted IDENTIFIER, not a string-literal part, so it must
+    # NOT be treated as the part -- the real `month` part token stays protected (Snowflake style).
+    assert conds(["DATE_TRUNC(month, \"date\") = DATE '2024-01-01'"], model) == (
+        "(DATE_TRUNC(month, \"date\") = DATE '2024-01-01')"
+    )
+
+
+def test_lookml_export_folded_filter_protects_sql_server_datepart_abbreviations():
+    """SQL Server datepart ABBREVIATIONS (dd, mm, d, ...) in a part slot must be protected.
+
+    DATEADD/DATEDIFF accept abbreviated dateparts, but they were absent from the keyword set, so on
+    a model with a `dd`/`mm` dimension a folded filter's DATEADD(dd, 1, created_at) rewrote `dd` to
+    (${TABLE}.order_dd), producing invalid SQL. They are protected only in the part slot, so a
+    same-named column used elsewhere still resolves.
+    """
+    from sidemantic import Dimension, Model
+
+    model = Model(
+        name="orders",
+        table="raw_orders",
+        primary_key="id",
+        dimensions=[
+            Dimension(name="dd", type="time", granularity="day", sql="order_dd"),
+            Dimension(name="mm", type="time", granularity="month", sql="order_mm"),
+            Dimension(name="d", type="time", granularity="day", sql="order_d"),
+            Dimension(name="created_at", type="time", granularity="day", sql="created_at"),
+        ],
+    )
+    conds = LookMLAdapter._fold_filter_conds
+    # Abbreviated part is protected; the trailing column arguments resolve. Covers two-letter and
+    # single-letter forms and the datepart-first DATENAME.
+    assert conds(["DATEADD(dd, 1, created_at) > 1"], model) == "(DATEADD(dd, 1, (${TABLE}.created_at)) > 1)"
+    assert conds(["DATEDIFF(mm, created_at, created_at) > 1"], model) == (
+        "(DATEDIFF(mm, (${TABLE}.created_at), (${TABLE}.created_at)) > 1)"
+    )
+    assert conds(["DATEADD(d, 1, created_at) > 1"], model) == "(DATEADD(d, 1, (${TABLE}.created_at)) > 1)"
+    assert conds(["DATENAME(dd, created_at) = 'x'"], model) == "(DATENAME(dd, (${TABLE}.created_at)) = 'x')"
+    # A same-named column used outside a date function is still rewritten.
+    assert conds(["mm = '2024-01'"], model) == "((${TABLE}.order_mm) = '2024-01')"
+
+
+def test_lookml_export_folded_filter_date_part_scan_is_quote_aware():
+    """A `)` inside a string literal must not break the date-part call scan.
+
+    The backward scan that finds the enclosing DATE_TRUNC counted the `)` inside `= ')'` as syntax
+    and lost the call, so the `month` date-part token was rewritten to the `month` dimension SQL.
+    The scan is now quote-aware, so the part token stays intact and the real column still resolves.
+    """
+    from sidemantic import Dimension, Model
+
+    model = Model(
+        name="orders",
+        table="raw_orders",
+        primary_key="id",
+        dimensions=[
+            Dimension(name="id", type="numeric", sql="id"),
+            Dimension(name="month", type="time", granularity="month", sql="order_month"),
+            Dimension(name="created_at", type="time", granularity="day", sql="created_at"),
+        ],
+    )
+    conds = LookMLAdapter._fold_filter_conds
+    out = conds(["DATE_TRUNC(CASE WHEN label = ')' THEN created_at END, month) = DATE '2024-01-01'"], model)
+    assert ", month)" in out  # date-part token untouched despite the ')' inside the string
+    assert "order_month" not in out  # not rewritten to the same-named dimension
+    assert "(${TABLE}.created_at)" in out  # the real column argument still resolves
+    # A same-named `month` column used as a real operand still resolves.
+    assert conds(["month = '2024-01'"], model) == "((${TABLE}.order_month) = '2024-01')"
+
+
+def test_lookml_export_folded_filter_protects_multi_word_cast_type():
+    """Every token of a multi-word cast type (double precision) is protected, not just the first."""
+    from sidemantic import Dimension, Model
+
+    model = Model(
+        name="orders",
+        table="t",
+        primary_key="id",
+        dimensions=[
+            Dimension(name="id", type="numeric", sql="id"),
+            Dimension(name="precision", type="numeric", sql="precision_col"),
+            Dimension(name="amount", type="numeric", sql="amt"),
+        ],
+    )
+    conds = LookMLAdapter._fold_filter_conds
+    assert conds(["cast(amount as double precision) > 0"], model) == "(cast((${TABLE}.amt) as double precision) > 0)"
+    # The `::` form is protected across the whole multi-word type too.
+    assert conds(["amount::double precision > 0"], model) == "((${TABLE}.amt)::double precision > 0)"
+    # A same-named `precision` column used as a real operand still resolves.
+    assert conds(["precision > 5"], model) == "((${TABLE}.precision_col) > 5)"
+
+
+def test_lookml_export_dialect_renamed_aggregate_skipped():
+    """A filtered complete metric whose aggregate sqlglot would RENAME on export is skipped, not mangled.
+
+    Serializing the fold rewrites APPROX_COUNT_DISTINCT to APPROX_DISTINCT, which DuckDB rejects, so
+    the fold bails and the measure is skipped rather than exported with an invalid function name. A
+    plain SUM/COUNT (no renamed aggregate) still folds and exports.
+    """
+    import tempfile
+
+    from sidemantic import Dimension, Metric, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    # The fold bails (returns None) on a renamed aggregate ONLY for a FORCE caller (export/inline,
+    # which skips the measure on None), but folds a stable one.
+    assert (
+        LookMLAdapter._fold_complete_sql_filters(
+            "APPROX_COUNT_DISTINCT({model}.user_id) / COUNT(*)", ["{model}.status = 'x'"], force=True
+        )
+        is None
+    )
+    assert (
+        LookMLAdapter._fold_complete_sql_filters("SUM({model}.amount) / COUNT(*)", ["{model}.status = 'x'"], force=True)
+        is not None
+    )
+    # The IMPORT caller (force=False) falls back to column-nulling on None, which would drop the
+    # filter on a zero-column COUNT(*) denominator, so it must NOT bail on a rename -- it folds,
+    # filtering BOTH the numerator and the denominator.
+    _imported = LookMLAdapter._fold_complete_sql_filters(
+        "APPROX_COUNT_DISTINCT({model}.user_id) / NULLIF(COUNT(*), 0)", ["{model}.status = 'completed'"]
+    )
+    assert _imported is not None
+    assert "COUNT(CASE" in _imported  # denominator folded, not left over all rows
+
+    def _export(sql, name):
+        graph = SemanticGraph()
+        graph.add_model(
+            Model(
+                name="orders",
+                table="t",
+                primary_key="id",
+                dimensions=[
+                    Dimension(name="id", type="numeric", sql="id"),
+                    Dimension(name="status", type="categorical", sql="status"),
+                ],
+                metrics=[Metric(name=name, agg=None, sql=sql, sql_is_complete=True, filters=["{model}.status = 'x'"])],
+            )
+        )
+        out = tempfile.mktemp(suffix=".lkml")
+        LookMLAdapter().export(graph, out)
+        return open(out).read()
+
+    assert "measure: au" not in _export("APPROX_COUNT_DISTINCT({model}.user_id) / COUNT(*)", "au")  # skipped
+    assert "measure: ratio" in _export("SUM({model}.amount) / COUNT(*)", "ratio")  # ordinary fold exports
+
+
+def test_lookml_export_folded_filter_keeps_boolean_null_literals():
+    """A bare true/false/null in a folded filter stays a literal even when a dimension shares the name.
+
+    SQL requires a real column named `true` to be quoted, so a bare token is always the literal.
+    Rewriting it to a same-named dimension's SQL silently changed the predicate
+    (`status = true` -> `status = (${TABLE}.is_active)`). The literal must survive; a genuine
+    same-named column used as an operand (LHS) still resolves.
+    """
+    from sidemantic import Dimension, Model
+
+    model = Model(
+        name="orders",
+        table="t",
+        primary_key="id",
+        dimensions=[
+            Dimension(name="status", type="categorical", sql="status_col"),
+            Dimension(name="true", type="boolean", sql="is_active"),
+            Dimension(name="false", type="boolean", sql="is_closed"),
+            Dimension(name="null", type="categorical", sql="missing_col"),
+        ],
+    )
+    conds = LookMLAdapter._fold_filter_conds
+    # RHS literals are preserved, not rewritten to the same-named dimension SQL.
+    assert conds(["{model}.status = true"], model) == "((${TABLE}.status_col) = true)"
+    assert conds(["{model}.status = false"], model) == "((${TABLE}.status_col) = false)"
+    assert conds(["{model}.status IS NOT null"], model) == "((${TABLE}.status_col) IS NOT null)"
+    # Case-insensitive: TRUE / NULL keywords are literals too.
+    assert conds(["{model}.status = TRUE"], model) == "((${TABLE}.status_col) = TRUE)"
+
+
+def test_lookml_export_folded_filter_keeps_sql_operator_keywords():
+    """Bare SQL operators/keywords (or/and/in/between) stay operators even when a dimension shares the name.
+
+    An unquoted `or` is always the operator, never a column, so a folded filter must not rewrite it
+    to a same-named `or` dimension's SQL (which produced invalid `... 'done' (${TABLE}.or_col) ...`).
+    """
+    from sidemantic import Dimension, Model
+
+    model = Model(
+        name="orders",
+        table="t",
+        primary_key="id",
+        dimensions=[
+            Dimension(name="status", type="categorical", sql="status_col"),
+            Dimension(name="created_at", type="time", sql="created_col"),
+            Dimension(name="or", type="categorical", sql="or_col"),
+            Dimension(name="and", type="categorical", sql="and_col"),
+            Dimension(name="in", type="categorical", sql="in_col"),
+            Dimension(name="from", type="categorical", sql="from_col"),
+            Dimension(name="as", type="categorical", sql="as_col"),
+        ],
+    )
+    conds = LookMLAdapter._fold_filter_conds
+    assert conds(["status = 'done' or status = 'paid'"], model) == (
+        "((${TABLE}.status_col) = 'done' or (${TABLE}.status_col) = 'paid')"
+    )
+    assert conds(["status in ('a', 'b') and status = 'c'"], model) == (
+        "((${TABLE}.status_col) in ('a', 'b') and (${TABLE}.status_col) = 'c')"
+    )
+    # Grammar keywords inside an expression (EXTRACT ... FROM, CAST ... AS) stay keywords; the real
+    # column argument still resolves.
+    assert conds(["extract(day from created_at) = 5"], model) == ("(extract(day from (${TABLE}.created_col)) = 5)")
+    assert conds(["cast(created_at as date) = '2024-01-01'"], model) == (
+        "(cast((${TABLE}.created_col) as date) = '2024-01-01')"
+    )
+
+
+def test_lookml_export_ordered_set_aggregate_with_filter_skipped():
+    """A filtered ordered-set aggregate can't fold (ORDER BY would land inside the CASE) -> skipped.
+
+    Folding wraps only the aggregate ARGUMENT in CASE, so SUM(x ORDER BY y) would become
+    SUM(CASE WHEN ... THEN x ORDER BY y END) -- ORDER BY buried inside the CASE, malformed LookML
+    SQL. _complete_sql_fold_is_safe must reject it so the measure is skipped, not emitted broken.
+    """
+    import tempfile
+
+    from sidemantic import Dimension, Metric, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    assert LookMLAdapter._complete_sql_fold_is_safe("SUM({model}.amount ORDER BY {model}.created_at)") is False
+    # A plain aggregate (no ORDER BY) is still foldable.
+    assert LookMLAdapter._complete_sql_fold_is_safe("SUM({model}.amount) / COUNT({model}.id)") is True
+    # A NULL-retaining array collector (LIST/ARRAY_AGG) is NOT foldable -- a folded CASE leaves the
+    # excluded row as a NULL element, so the measure must be skipped on export (as import does).
+    assert LookMLAdapter._complete_sql_fold_is_safe("ARRAY_LENGTH(LIST({model}.amount))") is False
+    assert LookMLAdapter._complete_sql_fold_is_safe("ARRAY_LENGTH(ARRAY_AGG({model}.amount))") is False
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="orders",
+            table="t",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(name="status", type="categorical", sql="status"),
+            ],
+            metrics=[
+                Metric(
+                    name="oa",
+                    agg=None,
+                    sql="SUM({model}.amount ORDER BY {model}.created_at)",
+                    sql_is_complete=True,
+                    filters=["{model}.status = 'x'"],
+                )
+            ],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    text = open(out).read()
+    assert "measure: oa" not in text  # skipped, not emitted with ORDER BY inside the CASE
+    assert "ORDER BY ${TABLE}.created_at END" not in text  # never the malformed inside-CASE form
+    # A WITHIN GROUP ordered-set aggregate IS foldable (the folder targets the ORDER BY value), so
+    # it must NOT be rejected -- filtered percentile/median metrics still export.
+    assert (
+        LookMLAdapter._complete_sql_fold_is_safe("PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY {model}.amount)") is True
+    )
+
+
+def test_lookml_export_template_only_folded_filter_skipped():
+    """A folded filter that is ONLY a Liquid template leaves no real column -> skip the measure.
+
+    sqlglot cannot parse a Liquid segment, and the column check treats a parse failure as
+    "has columns", so COUNT(*) with filters: ["{{ user_filter }}"] folded to
+    COUNT(CASE WHEN ({{ user_filter }}) THEN 1 END) slipped past the zero-column guard and
+    exported a type: number with no real column. Templates are neutralised before parsing; a
+    template COMBINED with a real column still exports.
+    """
+    import re
+    import tempfile
+
+    from sidemantic import Dimension, Metric, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    def export_measure(filters):
+        graph = SemanticGraph()
+        graph.add_model(
+            Model(
+                name="o",
+                table="t",
+                primary_key="id",
+                dimensions=[
+                    Dimension(name="id", type="numeric", sql="id"),
+                    Dimension(name="status", type="categorical", sql="status"),
+                ],
+                metrics=[Metric(name="c", agg=None, sql="COUNT(*)", sql_is_complete=True, filters=filters)],
+            )
+        )
+        out = tempfile.mktemp(suffix=".lkml")
+        LookMLAdapter().export(graph, out)
+        m = re.search(r"measure: c \{.*?\n  \}", open(out).read(), re.S)
+        return m.group(0) if m else None
+
+    assert export_measure(["{{ user_filter }}"]) is None  # template-only -> no real column
+    assert export_measure(["{model}.status = 'x'"]) is not None  # real column filter still exports
+    assert export_measure(["{model}.status = 'x' AND {{ f }}"]) is not None  # template + column
+
+    # The helper itself: a template is not a column, but a genuine column alongside one is.
+    assert not LookMLAdapter._aggregate_references_column("COUNT(CASE WHEN ({{ user_filter }}) THEN 1 END)")
+    assert LookMLAdapter._aggregate_references_column("COUNT(CASE WHEN (status = 'x' AND {{ f }}) THEN 1 END)")
+
+
+def test_lookml_export_folded_filter_does_not_rewrite_table_qualifier():
+    """A foreign table QUALIFIER that matches a dimension name must not be rewritten.
+
+    On an `orders` model that also has a `customers` dimension, the filter
+    `customers.status = 'vip'` qualifies another table. The lookbehind only guards the field
+    AFTER a dot, so `customers` (before the dot) still matched and produced
+    `(${TABLE}.customer_id).status = 'vip'`. A bare name followed by a dot is a qualifier, not a
+    column; a same-named dimension WITHOUT a dot is still a column.
+    """
+    from sidemantic import Dimension, Model
+
+    model = Model(
+        name="orders",
+        table="raw_orders",
+        primary_key="id",
+        dimensions=[
+            Dimension(name="customers", type="numeric", sql="customer_id"),
+            Dimension(name="status", type="categorical", sql="order_status"),
+        ],
+    )
+    conds = LookMLAdapter._fold_filter_conds
+    # Foreign qualifier left intact (neither the qualifier nor its field rewritten).
+    assert conds(["customers.status = 'vip'"], model) == "(customers.status = 'vip')"
+    # The same name used as a real column (no dot) IS still rewritten.
+    assert conds(["customers = 5"], model) == "((${TABLE}.customer_id) = 5)"
+    # Own-model and {model} qualifiers still resolve.
+    assert conds(["orders.status = 'done'"], model) == "((${TABLE}.order_status) = 'done')"
+    assert conds(["{model}.status = 'done'"], model) == "((${TABLE}.order_status) = 'done')"
+
+
+def test_lookml_export_folded_filter_does_not_rewrite_date_part_keyword():
+    """A folded filter's date-part / interval-unit keyword equal to a dimension must not be rewritten.
+
+    With a `day` dimension, EXTRACT(day FROM ...) and INTERVAL 7 day contain the SQL keyword `day`
+    in a non-column position. Rewriting it to the dimension SQL emits invalid LookML such as
+    EXTRACT((${TABLE}.order_day) FROM ...); the keyword must be protected while genuine column uses
+    (and the extract SOURCE column) are still rewritten.
+    """
+    from sidemantic import Dimension, Model
+
+    model = Model(
+        name="orders",
+        table="raw_orders",
+        primary_key="id",
+        dimensions=[
+            Dimension(name="id", type="numeric", sql="id"),
+            Dimension(name="day", type="time", granularity="day", sql="order_day"),  # dim named 'day'
+            Dimension(name="created_at", type="time", granularity="day", sql="created_at"),
+        ],
+    )
+    conds = LookMLAdapter._fold_filter_conds
+    # EXTRACT part keyword protected; the FROM source column IS rewritten.
+    assert conds(["EXTRACT(day FROM created_at) = 1"], model) == "(EXTRACT(day FROM (${TABLE}.created_at)) = 1)"
+    # INTERVAL unit keyword protected -- both bare and quoted-number spellings.
+    assert conds(["created_at >= CURRENT_DATE - INTERVAL 7 day"], model) == (
+        "((${TABLE}.created_at) >= CURRENT_DATE - INTERVAL 7 day)"
+    )
+    assert conds(["created_at >= CURRENT_DATE - INTERVAL '7' day"], model) == (
+        "((${TABLE}.created_at) >= CURRENT_DATE - INTERVAL '7' day)"
+    )
+    # A genuine column use of the same name IS still rewritten (not over-protected).
+    assert conds(["day = '2024-01-01'"], model) == "((${TABLE}.order_day) = '2024-01-01')"
+    assert conds(["LOWER(day) = 'x'"], model) == "(LOWER((${TABLE}.order_day)) = 'x')"
+
+
+def test_lookml_export_scalar_wrapped_aggregate_filter_folds_into_inner():
+    """A scalar-wrapped aggregate with filters (ABS(SUM(x))) folds into the INNER aggregate.
+
+    The complete-SQL folder wraps the filter around SUM's argument -- ABS(SUM(CASE WHEN ... THEN
+    amount END)) -- which is faithful, so the measure exports. It must NEVER push the CASE around
+    the nested aggregate itself (ABS(CASE WHEN ... THEN SUM(amount) END)), which would be wrong.
+    """
+    import tempfile
+
+    from sidemantic import Dimension, Metric, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="o",
+            table="t",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(name="status", type="categorical", sql="status"),
+            ],
+            metrics=[
+                Metric(
+                    name="aw",
+                    agg=None,
+                    sql="ABS(SUM({model}.amount))",
+                    sql_is_complete=True,
+                    filters=["{model}.status = 'x'"],
+                )
+            ],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    text = open(out).read()
+    assert "measure: aw" in text  # exports: the filter folds into the inner SUM
+    assert "ABS(CASE WHEN" not in text  # never push CASE around the nested aggregate
+    assert "SUM(CASE WHEN" in text  # the CASE wraps SUM's argument, correctly
+
+
+def test_lookml_export_multi_column_distinct_filter_skipped():
+    """A multi-column COUNT(DISTINCT a, b) with filters can't fold to one CASE -> skipped, not malformed."""
+    import tempfile
+
+    from sidemantic import Dimension, Metric, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="orders",
+            table="t",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(name="status", type="categorical", sql="status"),
+            ],
+            metrics=[
+                Metric(
+                    name="du",
+                    agg=None,
+                    sql="COUNT(DISTINCT {model}.a, {model}.b)",
+                    sql_is_complete=True,
+                    filters=["{model}.status = 'x'"],
+                )
+            ],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    assert "measure: du" not in open(out).read()  # skipped, no malformed `THEN a, b END`
+
+
+def test_lookml_export_multi_input_aggregate_filter_skipped():
+    """A filtered two-input aggregate (CORR(x, y)) can't fold consistently -> skipped, not mis-filtered.
+
+    The folder wraps only the aggregate's first argument, so CORR(CASE WHEN ... THEN x END, y) would
+    filter x but leave y over all rows -- a wrong statistic. _complete_sql_fold_is_safe rejects it.
+    """
+    import tempfile
+
+    from sidemantic import Dimension, Metric, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    assert LookMLAdapter._complete_sql_fold_is_safe("CORR({model}.x, {model}.y)") is False
+    assert LookMLAdapter._complete_sql_fold_is_safe("COVAR_POP({model}.x, {model}.y)") is False
+    assert LookMLAdapter._complete_sql_fold_is_safe("SUM({model}.amount) / COUNT(*)") is True
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="orders",
+            table="t",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(name="status", type="categorical", sql="status"),
+            ],
+            metrics=[
+                Metric(
+                    name="c",
+                    agg=None,
+                    sql="CORR({model}.x, {model}.y)",
+                    sql_is_complete=True,
+                    filters=["{model}.status = 'x'"],
+                )
+            ],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    assert "measure: c" not in open(out).read()  # skipped rather than filtering only the first input
+
+
+def test_lookml_export_aggregate_with_scalar_subquery_skipped():
+    """An agg-less complete measure carrying a scalar subquery is skipped, not silently lost on re-import.
+
+    SUM({model}.amount) / (SELECT COUNT(*) FROM other) would export as type: number, but the import
+    side's _parse_measure rejects subquery SQL, so the measure vanishes on re-import. Skip it on
+    export so the round-trip stays consistent rather than dropping a measure the adapter emitted.
+    """
+    import tempfile
+
+    from sidemantic import Dimension, Metric, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="orders",
+            table="t",
+            primary_key="id",
+            dimensions=[Dimension(name="id", type="numeric", sql="id")],
+            metrics=[
+                Metric(name="sq", agg=None, sql="SUM({model}.amount) / (SELECT COUNT(*) FROM other)"),
+                Metric(name="total", agg="sum", sql="{model}.amount"),
+            ],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    text = open(out).read()
+    assert "measure: sq" not in text  # subquery measure skipped rather than emitted-then-dropped
+    assert "measure: total" in text  # ordinary aggregates still export
+
+
+def test_lookml_export_complete_sql_with_raw_column_outside_aggregate_skipped():
+    """An aggregate expression with a raw column OUTSIDE any aggregate is skipped, not lost on re-import.
+
+    SUM({model}.amount) + {model}.tax_rate is not a valid grouped measure (tax_rate is ungrouped);
+    the import side's _mixed_is_aggregate_safe rejects it, so a type: number export would be dropped
+    on re-import. Skip on export to keep the round-trip consistent; a pure aggregate still exports.
+    """
+    import tempfile
+
+    from sidemantic import Dimension, Metric, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="orders",
+            table="t",
+            primary_key="id",
+            dimensions=[Dimension(name="id", type="numeric", sql="id")],
+            metrics=[
+                Metric(name="mixed", agg=None, sql="SUM({model}.amount) + {model}.tax_rate", sql_is_complete=True),
+                Metric(name="ratio", agg=None, sql="SUM({model}.amount) / COUNT(*)", sql_is_complete=True),
+            ],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    text = open(out).read()
+    assert "measure: mixed" not in text  # raw column outside aggregate -> skipped
+    assert "measure: ratio" in text  # fully-aggregated expression still exports
+
+
+def test_lookml_export_folded_filter_keeps_constant_dimension_sql_unqualified():
+    """A folded filter over a constant-SQL dimension keeps the literal unqualified, not ${TABLE}.1."""
+    from sidemantic import Dimension, Model
+
+    model = Model(
+        name="orders",
+        table="t",
+        primary_key="id",
+        dimensions=[
+            Dimension(name="status", type="categorical", sql="status_col"),
+            Dimension(name="flag", type="numeric", sql="1"),  # constant-valued dimension
+            Dimension(name="active", type="boolean", sql="TRUE"),
+            Dimension(name="today", type="time", sql="CURRENT_DATE"),  # nullary SQL constant
+            Dimension(name="ts", type="time", sql="current_timestamp"),
+        ],
+    )
+    conds = LookMLAdapter._fold_filter_conds
+    # A constant/literal resolved SQL is parenthesized WITHOUT a table qualifier.
+    assert conds(["{model}.flag = 1"], model) == "((1) = 1)"
+    assert conds(["{model}.active = true"], model) == "((TRUE) = true)"
+    # A nullary SQL constant (CURRENT_DATE / current_timestamp) is a value, not a column.
+    assert conds(["{model}.today = CURRENT_DATE"], model) == "((CURRENT_DATE) = CURRENT_DATE)"
+    assert conds(["{model}.ts > current_timestamp"], model) == "((current_timestamp) > current_timestamp)"
+    # A genuine column still gets qualified.
+    assert conds(["{model}.status = 'x'"], model) == "((${TABLE}.status_col) = 'x')"
+
+
+def test_lookml_export_folded_filter_leaves_backtick_identifier_untouched():
+    """A folded filter's backtick/bracket-quoted identifier must not be rewritten inside the quotes."""
+    import tempfile
+
+    from sidemantic import Dimension, Metric, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="orders",
+            table="t",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(name="status", type="categorical", sql="order_status"),  # dim named 'status'
+                Dimension(name="amount", type="numeric", sql="amount"),
+            ],
+            metrics=[Metric(name="sd", agg="stddev", sql="{model}.amount", filters=["`status` = 'done'"])],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    text = open(out).read()
+    assert "measure: sd" in text
+    assert "`status`" in text  # backtick identifier intact
+    assert "`(${TABLE}" not in text  # not rewritten inside the backticks
+
+
+def test_lookml_export_folded_filter_model_placeholder_in_string_literal_preserved():
+    """A `{model}` inside a string LITERAL is a value, not a placeholder, so it must not become ${TABLE}."""
+    from sidemantic import Dimension, Model
+
+    model = Model(
+        name="orders",
+        table="t",
+        primary_key="id",
+        dimensions=[
+            Dimension(name="label", type="categorical", sql="label_col"),
+            Dimension(name="status", type="categorical", sql="status_col"),
+        ],
+    )
+    conds = LookMLAdapter._fold_filter_conds
+    # The literal value keeps `{model}`; a real placeholder outside the quotes is converted.
+    assert conds(["{model}.label = '{model}.status'"], model) == "((${TABLE}.label_col) = '{model}.status')"
+    assert conds(["{model}.label = {model}.status"], model) == "((${TABLE}.label_col) = (${TABLE}.status_col))"
+
+
+def test_lookml_export_string_literal_paren_in_aggregate_arg_folds():
+    """A valid aggregate whose arg has a paren inside a STRING LITERAL must fold, not be rejected."""
+    import tempfile
+
+    from sidemantic import Dimension, Metric, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="o",
+            table="t",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(name="status", type="categorical", sql="status"),
+            ],
+            metrics=[
+                Metric(
+                    name="du",
+                    agg=None,
+                    sql="COUNT(DISTINCT CONCAT({model}.a, ')'))",  # literal ')' must not break depth scan
+                    sql_is_complete=True,
+                    filters=["{model}.status = 'x'"],
+                )
+            ],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    text = open(out).read()
+    assert "measure: du" in text  # folded, not skipped
+    assert "DISTINCT CASE WHEN" in text
+
+
+def test_lookml_export_normalizes_all_modifier_for_roundtrip():
+    """An explicit ALL modifier must be normalized away so the exported measure round-trips.
+
+    ALL is the DEFAULT aggregate modifier and changes nothing, but sqlglot cannot parse
+    COUNT(ALL x), so a type: number measure exported with it is DROPPED on re-import. Strip it on
+    export; DISTINCT (which is NOT a no-op) and a column named `all` must survive untouched.
+    """
+    import re
+    import tempfile
+
+    from sidemantic import Dimension, Metric, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    def roundtrip(expr):
+        graph = SemanticGraph()
+        graph.add_model(
+            Model(
+                name="o",
+                table="t",
+                primary_key="id",
+                dimensions=[
+                    Dimension(name="id", type="numeric", sql="id"),
+                    Dimension(name="amount", type="numeric", sql="amount"),
+                ],
+                metrics=[Metric(name="c", agg=None, sql=expr, sql_is_complete=True)],
+            )
+        )
+        out = tempfile.mktemp(suffix=".lkml")
+        LookMLAdapter().export(graph, out)
+        text = open(out).read()
+        block = re.search(r"measure: c \{.*?\n  \}", text, re.S)
+        reimported = "c" in {m.name for m in LookMLAdapter().parse(Path(out)).get_model("o").metrics}
+        return (block.group(0) if block else None), reimported
+
+    for expr in ("COUNT(ALL {model}.id)", "SUM(ALL {model}.amount)"):
+        block, kept = roundtrip(expr)
+        assert block and "ALL" not in block, block  # normalized away
+        assert kept, f"{expr} must survive the round-trip"
+
+    # DISTINCT is not a no-op and must be preserved; a plain aggregate is unchanged.
+    block, kept = roundtrip("COUNT(DISTINCT {model}.id)")
+    assert block and "DISTINCT" in block and kept
+    block, kept = roundtrip("SUM({model}.amount)")
+    assert block and kept
+
+    # `(ALL ` inside a STRING LITERAL is data, not a modifier -- it must be left intact so the
+    # metric still includes the same rows, while a real ALL modifier in the same SQL is stripped.
+    block, kept = roundtrip("SUM(ALL CASE WHEN {model}.amount > 0 THEN 1 ELSE 0 END) || '(ALL x)'")
+    assert block and "(ALL x)" in block and "SUM(ALL" not in block, block
+
+
+def test_lookml_export_strips_leading_all_modifier_in_stddev_argument():
+    """A LEADING ALL on a stddev/variance argument must be stripped, not wrapped as STDDEV(ALL x).
+
+    The stddev/variance export wraps the metric SQL as STDDEV(<arg>). When the arg itself carries an
+    explicit ALL (Metric(agg='stddev', sql='ALL {model}.amount')), emitting STDDEV(ALL amount) is
+    unparseable, so the re-imported type: number measure is dropped. The ALL is the default modifier
+    and must be normalized away before wrapping."""
+    import re
+    import tempfile
+
+    from sidemantic import Dimension, Metric, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="o",
+            table="t",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(name="amount", type="numeric", sql="amount"),
+            ],
+            metrics=[Metric(name="sd", agg="stddev", sql="ALL {model}.amount")],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    text = open(out).read()
+    block = re.search(r"measure: sd \{.*?\n  \}", text, re.S)
+    assert block and "ALL" not in block.group(0), block  # STDDEV(${TABLE}.amount), not STDDEV(ALL ...)
+    reimported = {m.name for m in LookMLAdapter().parse(Path(out)).get_model("o").metrics}
+    assert "sd" in reimported  # survives the round-trip
+
+
+def test_lookml_export_sample_aggregate_complete_measures_survive():
+    """Agg-less complete measures using sample-aggregate aliases must export, not be dropped.
+
+    The agg-detection at the export gate ran on the raw {model} SQL. sqlglot happens to parse
+    {model}.col as a struct so VAR_SAMP/STDDEV_SAMP are detected today, but if that ever failed the
+    regex fallback (which omits var_samp/stddev_samp) would skip the measure. Neutralizing {model}
+    first (as the sibling call sites do) keeps detection on sqlglot's accurate path.
+    """
+    import tempfile
+
+    from sidemantic import Dimension, Metric, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    def exports(sql):
+        graph = SemanticGraph()
+        graph.add_model(
+            Model(
+                name="orders",
+                table="t",
+                primary_key="id",
+                dimensions=[
+                    Dimension(name="id", type="numeric", sql="id"),
+                    Dimension(name="amount", type="numeric", sql="amount"),
+                ],
+                metrics=[Metric(name="m", agg=None, sql=sql, sql_is_complete=True)],
+            )
+        )
+        out = tempfile.mktemp(suffix=".lkml")
+        LookMLAdapter().export(graph, out)
+        text = open(out).read()
+        reimported = "m" in {x.name for x in LookMLAdapter().parse(Path(out)).get_model("orders").metrics}
+        return "measure: m" in text and reimported
+
+    for sql in (
+        "VAR_SAMP({model}.amount)",
+        "STDDEV_SAMP({model}.amount)",
+        "VARIANCE({model}.amount)",
+        "STDDEV_POP({model}.amount)",
+        "VAR_POP({model}.amount)",
+        # An explicit ALL modifier makes sqlglot fail; detection must run on the ALL-stripped
+        # col_sql, not the raw metric.sql, so these are not dropped.
+        "VAR_SAMP(ALL {model}.amount)",
+        "STDDEV_SAMP(ALL {model}.amount)",
+    ):
+        assert exports(sql), sql
+
+
+def test_lookml_export_zero_column_stddev_skipped():
+    """A stddev/variance over a CONSTANT also emits type: number -> needs the zero-column guard.
+
+    STDDEV(1) references no column, so re-importing builds a metric over an empty model CTE --
+    the same failure the agg-less path already guards. A filter needn't add a column either, so
+    the folded SQL is re-checked. Column-based and native aggregates are unaffected.
+    """
+    import re
+    import tempfile
+
+    from sidemantic import Dimension, Metric, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    def export_measure(**metric_kwargs):
+        graph = SemanticGraph()
+        graph.add_model(
+            Model(
+                name="o",
+                table="t",
+                primary_key="id",
+                dimensions=[
+                    Dimension(name="id", type="numeric", sql="id"),
+                    Dimension(name="status", type="categorical", sql="status"),
+                    Dimension(name="amount", type="numeric", sql="amount"),
+                ],
+                metrics=[Metric(name="c", **metric_kwargs)],
+            )
+        )
+        out = tempfile.mktemp(suffix=".lkml")
+        LookMLAdapter().export(graph, out)
+        m = re.search(r"measure: c \{.*?\n  \}", open(out).read(), re.S)
+        return m.group(0) if m else None
+
+    assert export_measure(agg="stddev", sql="1") is None  # STDDEV(1) -> no column
+    assert export_measure(agg="variance", sql="1") is None
+    assert export_measure(agg="stddev", sql="1", filters=["1 = 1"]) is None  # filter adds no column
+    # A real column still exports, filtered or not.
+    assert "type: number" in (export_measure(agg="stddev", sql="{model}.amount") or "")
+    assert "type: number" in (
+        export_measure(agg="stddev", sql="{model}.amount", filters=["{model}.status = 'x'"]) or ""
+    )
+    # A natively-mapped aggregate is untouched.
+    assert "type: sum" in (export_measure(agg="sum", sql="{model}.amount") or "")
+
+
+def test_lookml_export_folded_zero_column_aggregate_skipped():
+    """A filter that adds NO column must not sneak a zero-column aggregate past the guard.
+
+    The zero-column check runs before folding, but a filter needn't reference a column: COUNT(*)
+    with `1 = 1` folds to COUNT(CASE WHEN (1 = 1) THEN 1 END), which STILL references none and
+    re-imports as a metric over an empty model CTE. Re-check the folded SQL. A filter that does
+    reference a column must still export.
+    """
+    import re
+    import tempfile
+
+    from sidemantic import Dimension, Metric, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    def export_measure(expr, filters):
+        graph = SemanticGraph()
+        graph.add_model(
+            Model(
+                name="o",
+                table="t",
+                primary_key="id",
+                dimensions=[
+                    Dimension(name="id", type="numeric", sql="id"),
+                    Dimension(name="status", type="categorical", sql="status"),
+                ],
+                metrics=[Metric(name="c", agg=None, sql=expr, sql_is_complete=True, filters=filters)],
+            )
+        )
+        out = tempfile.mktemp(suffix=".lkml")
+        LookMLAdapter().export(graph, out)
+        m = re.search(r"measure: c \{.*?\n  \}", open(out).read(), re.S)
+        return m.group(0) if m else None
+
+    # Folds to COUNT(CASE WHEN (1 = 1) THEN 1 END) -> still zero-column -> skipped.
+    assert export_measure("COUNT(*)", ["1 = 1"]) is None
+    # A filter that DOES reference a column still exports (the folded CASE reads it).
+    block = export_measure("COUNT(*)", ["{model}.status = 'x'"])
+    assert block and "COUNT(CASE WHEN" in block and "THEN 1 END" in block
+
+
+def test_lookml_export_aggregate_order_by_not_folded_into_case():
+    """An aggregate-local ORDER BY belongs to the aggregate call, not the CASE result.
+
+    SUM(amount ORDER BY created_at) must NOT fold to
+    SUM(CASE WHEN ... THEN amount ORDER BY created_at END) (malformed); bail so the caller skips.
+    An ORDER BY inside a string literal or nested parens is not a top-level one.
+    """
+    from sidemantic import Dimension, Model
+
+    model = Model(
+        name="o",
+        table="t",
+        primary_key="id",
+        dimensions=[Dimension(name="status", type="categorical", sql="status")],
+    )
+    filters = ["{model}.status = 'x'"]
+    assert (
+        LookMLAdapter._fold_filters_into_aggregate("SUM({model}.amount ORDER BY {model}.created_at)", filters, model)
+        is None
+    )
+    # A plain aggregate still folds normally.
+    folded = LookMLAdapter._fold_filters_into_aggregate("SUM({model}.amount)", filters, model)
+    assert folded and folded.startswith("SUM(CASE WHEN")
+
+    # The detector itself: only a TOP-LEVEL, unquoted ORDER BY counts.
+    assert LookMLAdapter._has_top_level_order_by("{model}.a ORDER BY {model}.b")
+    assert LookMLAdapter._has_top_level_order_by("{model}.a order by {model}.b")  # case-insensitive
+    assert not LookMLAdapter._has_top_level_order_by("'a order by b'")  # string literal
+    assert not LookMLAdapter._has_top_level_order_by("F({model}.a, ' order by ')")  # literal in a call
+    assert not LookMLAdapter._has_top_level_order_by("{model}.reorder_by_date")  # word boundary
+
+
+def test_lookml_export_all_modifier_stays_outside_folded_case():
+    """COUNT(ALL x) must fold as COUNT(ALL CASE ... END), not COUNT(CASE ... THEN ALL x END).
+
+    ALL is an aggregate MODIFIER like DISTINCT, not a row expression, so wrapping it inside the
+    CASE emits malformed SQL while the separate filters block is suppressed. A column actually
+    NAMED `all` must still be treated as a plain argument.
+    """
+    import duckdb
+
+    from sidemantic import Dimension, Model
+
+    model = Model(
+        name="o",
+        table="t",
+        primary_key="id",
+        dimensions=[Dimension(name="status", type="categorical", sql="status")],
+    )
+    folded = LookMLAdapter._fold_filters_into_aggregate("COUNT(ALL {model}.user_id)", ["{model}.status = 'x'"], model)
+    assert folded is not None
+    assert folded.startswith("COUNT(ALL CASE WHEN"), folded  # modifier outside the CASE
+    assert "THEN ALL " not in folded, folded  # NOT the malformed generic wrapper
+
+    # The folded SQL must actually execute.
+    con = duckdb.connect()
+    con.execute("create table t as select * from (values (1,'x'),(2,'y'),(3,'x')) v(user_id,status)")
+    runnable = folded.replace("${TABLE}.", "").replace("{model}.", "")
+    assert con.execute(f"select {runnable} from t").fetchone() == (2,)
+
+    # A column literally named `all` is a plain argument, not a modifier.
+    plain = LookMLAdapter._fold_filters_into_aggregate("COUNT({model}.all)", ["{model}.status = 'x'"], model)
+    assert plain is not None and "COUNT(ALL CASE" not in plain, plain
+
+    # Multi-column ALL has no single CASE result -> bail so the caller skips it.
+    assert (
+        LookMLAdapter._fold_filters_into_aggregate("COUNT(ALL {model}.a, {model}.b)", ["{model}.status = 'x'"], model)
+        is None
+    )
+
+
+def test_lookml_export_parenthesized_distinct_filter_folds():
+    """COUNT(DISTINCT(x)) (parenthesized, no space) must fold its filter, not emit malformed SQL."""
+    import tempfile
+
+    from sidemantic import Dimension, Metric, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="o",
+            table="t",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(name="status", type="categorical", sql="status"),
+            ],
+            metrics=[
+                Metric(
+                    name="du",
+                    agg=None,
+                    sql="COUNT(DISTINCT({model}.uid))",
+                    sql_is_complete=True,
+                    filters=["{model}.status = 'x'"],
+                )
+            ],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    text = open(out).read()
+    assert "measure: du" in text
+    assert "DISTINCT CASE WHEN" in text  # folded as DISTINCT over a CASE
+    assert "THEN DISTINCT(" not in text  # NOT the malformed generic-wrapper output
+
+
+def test_lookml_export_delimited_distinct_filter_folds_not_skipped():
+    """A single-arg DISTINCT containing a comma STRING LITERAL must fold, not be mis-rejected.
+
+    COUNT(DISTINCT a || ',' || b) is one column; the arity check must ignore the comma
+    inside the string literal (quote-aware split) instead of treating it as multi-column.
+    """
+    import tempfile
+
+    from sidemantic import Dimension, Metric, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="orders",
+            table="t",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(name="status", type="categorical", sql="status"),
+            ],
+            metrics=[
+                Metric(
+                    name="composite_distinct",
+                    agg=None,
+                    sql="COUNT(DISTINCT {model}.a || ',' || {model}.b)",
+                    sql_is_complete=True,
+                    filters=["{model}.status = 'x'"],
+                )
+            ],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    txt = open(out).read()
+    assert "measure: composite_distinct" in txt  # folded, NOT skipped
+    assert "DISTINCT CASE WHEN" in txt  # filter folded inside the single-column DISTINCT
+
+
+def test_lookml_export_filtered_multi_aggregate_measure_folds_and_roundtrips():
+    """A filtered complete measure with MULTIPLE aggregates must export, folding each aggregate.
+
+    SUM(a) / NULLIF(COUNT(*), 0) is not a single outer FUNC(arg), so _fold_filters_into_aggregate
+    bailed and the measure was skipped. The complete-SQL folder wraps EVERY aggregate's argument in
+    the filter, so it exports and round-trips to the correct filtered value; a renamed filter
+    dimension resolves to its column.
+    """
+    import tempfile
+
+    import duckdb
+
+    from sidemantic import Dimension, Metric, Model, SemanticLayer
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="orders",
+            table="orders",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(name="amount", type="numeric", sql="amount"),
+                Dimension(name="status", type="categorical", sql="order_status"),  # renamed column
+            ],
+            metrics=[
+                Metric(
+                    name="avg_completed",
+                    agg=None,
+                    sql="SUM({model}.amount) / NULLIF(COUNT(*), 0)",
+                    sql_is_complete=True,
+                    filters=["{model}.status = 'completed'"],
+                )
+            ],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    reimported = LookMLAdapter().parse(Path(out)).get_model("orders")
+    assert reimported.get_metric("avg_completed") is not None  # not skipped
+
+    layer = SemanticLayer(auto_register=False)
+    layer.add_model(reimported)
+    con = duckdb.connect()
+    con.execute(
+        "create table orders as select 1 id, 10 amount, 'completed' order_status "
+        "union all select 2, 30, 'pending' union all select 3, 20, 'completed'"
+    )
+    # completed rows: amount 10 + 20 = 30 over 2 rows -> 15.0.
+    assert con.execute(layer.compile(metrics=["orders.avg_completed"])).fetchall() == [(15.0,)]
+
+
+def test_lookml_export_multi_arg_aggregate_filter_skipped():
+    """A multi-argument aggregate WEIGHTED_AVG(price, qty) with filters skips, not malformed CASE."""
+    import tempfile
+
+    from sidemantic import Dimension, Metric, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="o",
+            table="t",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(name="status", type="categorical", sql="status"),
+            ],
+            metrics=[
+                Metric(
+                    name="wavg",
+                    agg=None,
+                    sql="WEIGHTED_AVG({model}.price, {model}.qty)",
+                    sql_is_complete=True,
+                    filters=["{model}.status = 'x'"],
+                )
+            ],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    assert "measure: wavg" not in open(out).read()  # skipped, no malformed `THEN price, qty END`
+
+
+def test_lookml_export_count_constant_uses_native_count_type():
+    """COUNT over any NON-NULL constant is a native row count and exports as type: count.
+
+    COUNT(1)/COUNT(0), plus COUNT(TRUE), COUNT('x'), COUNT(1.0), COUNT(.5) all count every row.
+    Exporting them as type: number would re-import as a zero-column complete-SQL metric whose
+    query hits an empty model CTE (SELECT FROM ...). Every OTHER zero-column aggregate that is NOT
+    a plain row count -- COUNT(NULL), COUNT(DISTINCT 1), SUM(1), MAX('x') -- has no faithful native
+    form, so it is SKIPPED (not emitted as a broken type: number).
+    """
+    import re
+    import tempfile
+
+    from sidemantic import Dimension, Metric, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    def export_measure(expr):
+        graph = SemanticGraph()
+        graph.add_model(
+            Model(
+                name="o",
+                table="t",
+                primary_key="id",
+                dimensions=[Dimension(name="id", type="numeric", sql="id")],
+                metrics=[Metric(name="c", agg=None, sql=expr, sql_is_complete=True)],
+            )
+        )
+        out = tempfile.mktemp(suffix=".lkml")
+        LookMLAdapter().export(graph, out)
+        m = re.search(r"measure: c \{.*?\n  \}", open(out).read(), re.S)
+        return m.group(0) if m else None
+
+    for expr in ("COUNT(1)", "COUNT(0)", "COUNT(TRUE)", "COUNT('x')", "COUNT(1.0)", "COUNT(.5)"):
+        block = export_measure(expr)
+        assert block and "type: count" in block and expr not in block, f"{expr} -> {block}"
+
+    # Zero-column aggregates that are NOT plain row counts have no round-trippable form -> skipped.
+    for expr in ("COUNT(NULL)", "COUNT(DISTINCT 1)", "SUM(1)", "MAX('x')"):
+        assert export_measure(expr) is None, f"{expr} should be skipped, not exported"
+
+    # An explicit ALL modifier is the default and does not change the count, so COUNT(ALL <const>)
+    # is the same native row count. (sqlglot cannot parse ALL, so the column check strips it --
+    # otherwise every ALL form fell back to "has columns" and COUNT(ALL NULL) exported broken.)
+    for expr in ("COUNT(ALL 1)", "COUNT(ALL TRUE)", "COUNT(ALL 'x')"):
+        block = export_measure(expr)
+        assert block and "type: count" in block, f"{expr} -> {block}"
+    assert export_measure("COUNT(ALL NULL)") is None  # still not a row count
+    assert "type: number" in (export_measure("COUNT(ALL {model}.id)") or "")  # a real column stays
+
+
+def test_lookml_export_spaced_count_star_maps_to_native_count():
+    """A spaced `COUNT (*)` complete aggregate must still export as native type: count."""
+    import tempfile
+
+    from sidemantic import Dimension, Metric, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="o",
+            table="t",
+            primary_key="id",
+            dimensions=[Dimension(name="id", type="numeric", sql="id")],
+            metrics=[Metric(name="c", agg=None, sql="COUNT (*)", sql_is_complete=True)],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    import re
+
+    block = re.search(r"measure: c \{.*?\}", open(out).read(), re.S)
+    assert block and "type: count" in block.group(0)  # native count, not a number over empty CTE
+
+
+def test_lookml_export_count_star_and_distinct_filters_fold_validly():
+    """COUNT(*) / COUNT(DISTINCT x) complete aggregates with filters fold to valid SQL that runs."""
+    import tempfile
+
+    import duckdb
+
+    from sidemantic import Dimension, Metric, Model, SemanticLayer
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="orders",
+            table="orders",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(name="status", type="categorical", sql="order_status"),
+            ],
+            metrics=[
+                Metric(name="cnt", agg=None, sql="COUNT(*)", sql_is_complete=True, filters=["{model}.status = 'done'"]),
+                Metric(
+                    name="du",
+                    agg=None,
+                    sql="COUNT(DISTINCT {model}.user_id)",
+                    sql_is_complete=True,
+                    filters=["{model}.status = 'done'"],
+                ),
+            ],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    text = open(out).read()
+    assert "COUNT(CASE WHEN" in text and "THEN 1 END)" in text  # COUNT(*) -> THEN 1
+    assert "COUNT(DISTINCT CASE WHEN" in text  # DISTINCT stays outside the CASE
+
+    layer = SemanticLayer(auto_register=False)
+    for m in LookMLAdapter().parse(Path(out)).models.values():
+        layer.add_model(m)
+    con = duckdb.connect()
+    con.execute("create table orders(id int, user_id int, order_status text)")
+    con.execute("insert into orders values (1,7,'done'),(2,7,'open'),(3,8,'done')")
+    assert con.execute(layer.compile(metrics=["orders.cnt"])).fetchall() == [(2,)]
+    assert con.execute(layer.compile(metrics=["orders.du"])).fetchall() == [(2,)]
+
+
+def test_lookml_export_bare_count_star_uses_native_count_type():
+    """A bare COUNT(*) complete aggregate exports as native type: count (round-trips + runs).
+
+    type: number would re-import as a derived metric over an empty CTE (SELECT FROM ...),
+    which the compiler rejects; native type: count counts rows and round-trips cleanly.
+    """
+    import tempfile
+
+    import duckdb
+
+    from sidemantic import Dimension, Metric, Model, SemanticLayer
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="orders",
+            table="orders",
+            primary_key="id",
+            dimensions=[Dimension(name="id", type="numeric", sql="id")],
+            metrics=[Metric(name="cnt", agg=None, sql="COUNT(*)", sql_is_complete=True)],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    assert "type: count" in open(out).read()
+    reimported = LookMLAdapter().parse(Path(out))
+    assert reimported.get_model("orders").get_metric("cnt").agg == "count"
+    layer = SemanticLayer(auto_register=False)
+    for m in reimported.models.values():
+        layer.add_model(m)
+    con = duckdb.connect()
+    con.execute("create table orders as select 1 id union all select 2")
+    assert con.execute(layer.compile(metrics=["orders.cnt"])).fetchall() == [(2,)]
+
+
+def test_lookml_export_running_total_cross_view_ref_not_double_wrapped():
+    """A cumulative metric whose sql is a single already-braced cross-view ref exports as-is (no ${${}}).
+
+    Such a metric is no longer importable from LookML (a cross-view ref is dropped at parse time,
+    see test_lookml_cross_view_reference), but it can still arrive via the Python API, so the export
+    path must pass the single ${...} ref straight through rather than re-wrap it into ${${...}}.
+    """
+    import tempfile
+
+    from sidemantic import Dimension, Metric, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="orders",
+            table="t",
+            primary_key="id",
+            dimensions=[Dimension(name="id", type="numeric", sql="id")],
+            metrics=[
+                Metric(
+                    name="rt",
+                    type="cumulative",
+                    sql="${other_view.total}",
+                    meta={"table_calculation": "running_total"},
+                )
+            ],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    text = open(out).read()
+    assert "${${" not in text
+    assert "sql: ${other_view.total}" in text
+
+
+def test_lookml_export_running_total_braced_ref_plus_expression_skipped():
+    """A running_total whose sql is a braced cross-view ref PLUS more must be skipped, not exported.
+
+    `${other.total} + tax` contains `${` so a substring check would wrongly accept it and emit
+    a malformed `sql: ${other.total} + tax` (the local `tax` ref already lost its braces). Only
+    a string that is EXACTLY one `${...}` reference may pass through.
+    """
+    import tempfile
+
+    from sidemantic import Dimension, Metric, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="o",
+            table="t",
+            primary_key="id",
+            dimensions=[Dimension(name="id", type="numeric", sql="id")],
+            metrics=[
+                Metric(
+                    name="rt",
+                    type="cumulative",
+                    sql="${other.total} + tax",
+                    meta={"table_calculation": "running_total"},
+                )
+            ],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    text = open(out).read()
+    assert "measure: rt" not in text  # not a single ref -> skipped
+    assert "${other.total} + tax" not in text  # never emit the malformed mixed expression
+
+
+def test_lookml_export_folded_filter_does_not_rewrite_schema_qualified_ref():
+    """A folded filter's schema-qualified own-model ref must not match the model-name suffix."""
+    import tempfile
+
+    from sidemantic import Dimension, Metric, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="orders",
+            table="raw_orders",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(name="status", type="categorical", sql="order_status"),
+                Dimension(name="amount", type="numeric", sql="amount"),
+            ],
+            metrics=[Metric(name="sd", agg="stddev", sql="{model}.amount", filters=["schema.orders.status = 'done'"])],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    text = open(out).read()
+    assert "measure: sd" in text
+    assert "schema.orders.status" in text  # schema-qualified ref left intact
+    assert "schema.(${TABLE}" not in text  # not mangled into a column substitution
+
+
+def test_lookml_export_running_total_expression_skipped():
+    """A running_total over an EXPRESSION (not a single base measure ref) is skipped, not malformed."""
+    import tempfile
+
+    from sidemantic import Dimension, Metric, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="o",
+            table="t",
+            primary_key="id",
+            dimensions=[Dimension(name="id", type="numeric", sql="id")],
+            metrics=[
+                Metric(name="total", agg="sum", sql="{model}.amt"),
+                Metric(name="rt", type="cumulative", sql="total + tax", meta={"table_calculation": "running_total"}),
+            ],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    text = open(out).read()
+    assert "measure: rt" not in text  # expression isn't a valid running_total base -> skipped
+    assert "${total + tax}" not in text  # never emit a malformed field reference
+
+
+def test_lookml_export_multiple_folded_filters_parenthesized():
+    """Each folded filter is parenthesized so a filter containing OR isn't broken by AND precedence."""
+    import tempfile
+
+    from sidemantic import Dimension, Metric, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="o",
+            table="o",
+            primary_key="id",
+            dimensions=[Dimension(name=n, type="numeric", sql=n) for n in ("id", "a", "b", "c")],
+            metrics=[
+                Metric(
+                    name="sd", agg="stddev", sql="amount", filters=["{model}.a = 1 OR {model}.b = 1", "{model}.c = 1"]
+                )
+            ],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    text = open(out).read()
+    # The OR filter is grouped before being AND-joined with the second filter.
+    assert "((${TABLE}.a) = 1 OR (${TABLE}.b) = 1) AND ((${TABLE}.c) = 1)" in text
+
+
+def test_lookml_export_folded_filter_parenthesizes_expression_dimension():
+    """A folded filter on a dimension whose SQL is an expression must be parenthesized."""
+    import tempfile
+
+    from sidemantic import Dimension, Metric, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="o",
+            table="o",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric", sql="id"),
+                Dimension(name="eligible", type="categorical", sql="{model}.amount > 10 OR {model}.special"),
+            ],
+            metrics=[Metric(name="sd", agg="stddev", sql="amount", filters=["{model}.eligible = false"])],
+        )
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    assert "(${TABLE}.amount > 10 OR ${TABLE}.special) = false" in open(out).read()
 
 
 if __name__ == "__main__":

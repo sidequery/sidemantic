@@ -103,6 +103,27 @@ def test_explore_defaults_compile_and_mandatory_filters_apply():
     assert "LIMIT 25" in sql
 
 
+def test_explore_qualifies_relative_filter_and_order_expressions():
+    layer = _layer()
+    layer.graph.add_explore(
+        Explore(
+            name="relative_contract",
+            model="orders",
+            default_metrics=["revenue"],
+            filters=["status != 'deleted'"],
+            default_filters=["status = 'paid'"],
+            default_order_by=["revenue DESC"],
+        )
+    )
+
+    sql = layer.compile(explore="relative_contract")
+
+    assert "status <> 'deleted'" in sql
+    assert "status = 'paid'" in sql
+    assert "status AS status" in sql
+    assert "revenue DESC" in sql
+
+
 def test_explore_enforces_allowlists_and_max_limit():
     layer = _layer()
 
@@ -210,6 +231,70 @@ saved_queries:
     assert exported["explores"][0]["allowed_metrics"] == ["revenue"]
     assert exported["explores"][0]["allowed_filter_fields"] == ["status"]
     assert exported["saved_queries"][0]["name"] == "revenue_by_status"
+
+
+def test_native_sql_frontmatter_extracts_root_consumption_contracts(tmp_path: Path):
+    source = tmp_path / "orders.sql"
+    source.write_text(
+        """
+---
+version: 1
+name: orders
+table: orders
+dimensions:
+  - name: status
+explores:
+  - name: revenue_overview
+    model: orders
+    default_metrics: [revenue]
+views:
+  - name: order_statuses
+    model: orders
+    default_dimensions: [status]
+saved_queries:
+  - name: revenue_by_status
+    explore: revenue_overview
+    dimensions: [status]
+    metrics: [revenue]
+---
+
+METRIC (
+  name revenue,
+  agg sum,
+  sql amount
+);
+""".strip()
+    )
+
+    graph = SidemanticAdapter().parse(source)
+
+    assert set(graph.models) == {"orders"}
+    assert set(graph.explores) == {"revenue_overview", "order_statuses"}
+    assert graph.saved_queries["revenue_by_status"].explore == "revenue_overview"
+
+
+def test_native_sql_frontmatter_can_contain_only_consumption_contracts(tmp_path: Path):
+    source = tmp_path / "contracts.sql"
+    source.write_text(
+        """
+---
+version: 1
+explores:
+  - name: revenue_overview
+    model: orders
+saved_queries:
+  - name: revenue_by_status
+    explore: revenue_overview
+    metrics: [revenue]
+---
+""".strip()
+    )
+
+    graph = SidemanticAdapter().parse(source)
+
+    assert graph.models == {}
+    assert set(graph.explores) == {"revenue_overview"}
+    assert set(graph.saved_queries) == {"revenue_by_status"}
 
 
 def test_validation_catalog_and_description_include_consumption_contracts():

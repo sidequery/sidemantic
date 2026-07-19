@@ -8,7 +8,14 @@ from pathlib import Path
 
 import yaml
 
-from sidemantic.core.consumption import Explore, SavedQuery, expression_field_references, graph_metric_is_public
+from sidemantic.core.consumption import (
+    Explore,
+    SavedQuery,
+    expression_field_references,
+    graph_metric_is_public,
+    qualify_expression_fields,
+    qualify_order_by_fields,
+)
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.semantic_graph import SemanticGraph
@@ -970,7 +977,11 @@ class SemanticLayer:
             )
             if denied:
                 raise ValueError(f"Explore '{explore_name}' does not allow filter field(s): {', '.join(denied)}")
-        filters = [*contract.filters, *selected_filters]
+        filters = qualify_expression_fields(
+            [*contract.filters, *selected_filters],
+            contract.model,
+            graph_metrics=graph_metrics,
+        )
         if order_by is None:
             order_by = list(contract.default_order_by)
         if contract.allowed_order_by is not None:
@@ -980,6 +991,7 @@ class SemanticLayer:
             )
             if denied:
                 raise ValueError(f"Explore '{explore_name}' does not allow ordering by: {', '.join(denied)}")
+        order_by = qualify_order_by_fields(order_by, contract.model, graph_metrics=graph_metrics)
         if limit is None:
             limit = contract.default_limit
         if contract.max_limit is not None and limit is not None and limit > contract.max_limit:

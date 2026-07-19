@@ -30,6 +30,55 @@ def expression_field_references(
     return references
 
 
+def qualify_expression_fields(
+    expressions: Collection[str],
+    base_model: str,
+    *,
+    graph_metrics: Collection[str] = (),
+) -> list[str]:
+    """Qualify bare semantic fields in SQL-like contract expressions."""
+    from sqlglot import exp, parse_one
+
+    qualified: list[str] = []
+    for expression in expressions:
+        parsed = parse_one(expression)
+
+        def qualify_column(node: exp.Expression) -> exp.Expression:
+            if not isinstance(node, exp.Column) or node.table or node.name in graph_metrics:
+                return node
+            result = node.copy()
+            result.set("table", exp.to_identifier(base_model))
+            return result
+
+        qualified.append(parsed.transform(qualify_column).sql())
+    return qualified
+
+
+def qualify_order_by_fields(
+    expressions: Collection[str],
+    base_model: str,
+    *,
+    graph_metrics: Collection[str] = (),
+) -> list[str]:
+    """Qualify bare semantic fields while preserving ORDER BY direction."""
+    from sqlglot import exp, parse_one
+
+    qualified: list[str] = []
+    for expression in expressions:
+        statement = parse_one(f"SELECT 1 ORDER BY {expression}")
+        ordered = statement.args["order"].expressions
+
+        def qualify_column(node: exp.Expression) -> exp.Expression:
+            if not isinstance(node, exp.Column) or node.table or node.name in graph_metrics:
+                return node
+            result = node.copy()
+            result.set("table", exp.to_identifier(base_model))
+            return result
+
+        qualified.extend(item.transform(qualify_column).sql() for item in ordered)
+    return qualified
+
+
 class Explore(GovernedObject):
     """Curated entrypoint over one or more models in the semantic graph.
 

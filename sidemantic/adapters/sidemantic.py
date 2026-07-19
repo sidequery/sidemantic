@@ -331,6 +331,9 @@ def normalize_sql_frontmatter(frontmatter: dict) -> dict:
     normalized.pop("connection", None)
     normalized.pop("models", None)
     normalized.pop("parameters", None)
+    normalized.pop("explores", None)
+    normalized.pop("views", None)
+    normalized.pop("saved_queries", None)
     # ``metadata`` is a root-only native field (graph-level), so it must not by
     # itself make the frontmatter look like a model definition. Graph metadata is
     # extracted separately by the caller before this decision.
@@ -403,6 +406,22 @@ class SidemanticAdapter(BaseAdapter):
                     )
                 except Exception as exc:
                     raise ValueError(f"{source_path}: invalid SQL definitions: {exc}") from exc
+
+                # SQL model files may colocate root-level consumption contracts
+                # with model frontmatter. Extract them before deciding whether
+                # the remaining frontmatter describes a model.
+                explore_defs = [*(frontmatter.get("explores") or []), *(frontmatter.get("views") or [])]
+                for explore_def in explore_defs:
+                    reject_unknown_fields(explore_def, EXPLORE_FIELDS, "explore", source_path=source_path)
+                    graph.add_explore(Explore(**explore_def))
+                for saved_query_def in frontmatter.get("saved_queries") or []:
+                    reject_unknown_fields(
+                        saved_query_def,
+                        SAVED_QUERY_FIELDS,
+                        "saved_query",
+                        source_path=source_path,
+                    )
+                    graph.add_saved_query(SavedQuery(**saved_query_def))
 
                 # Parse frontmatter as a model only when it still contains model fields
                 # after native contract metadata such as `version`/`metadata` is removed.

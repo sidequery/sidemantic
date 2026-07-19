@@ -3360,6 +3360,7 @@ version = "0.10.2"
 source = { editable = "." }
 dependencies = [
     { name = "antlr4-python3-runtime" },
+    { name = "click" },
     { name = "duckdb" },
     { name = "jinja2" },
     { name = "pydantic" },
@@ -3528,6 +3529,7 @@ requires-dist = [
     { name = "antlr4-python3-runtime", marker = "extra == 'dev'", specifier = ">=4.13.2" },
     { name = "antlr4-python3-runtime", marker = "extra == 'malloy'", specifier = ">=4.13.2" },
     { name = "anywidget", marker = "extra == 'widget'", specifier = ">=0.9.0" },
+    { name = "click", specifier = ">=8.0.0" },
     { name = "clickhouse-connect", marker = "extra == 'clickhouse'", specifier = ">=0.6.0" },
     { name = "databricks-sql-connector", marker = "extra == 'databricks'", specifier = ">=2.0.0" },
     { name = "duckdb", specifier = ">=1.0.0" },

@@ -5,6 +5,8 @@ from __future__ import annotations
 import csv
 import io
 import json
+import sys
+import tomllib
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -661,6 +663,25 @@ def test_progress_policy_requires_human_tty(monkeypatch: pytest.MonkeyPatch):
     state.machine_output = False
     monkeypatch.setenv("CI", "true")
     assert not progress_enabled(is_tty=True)
+
+
+def test_click_8_is_an_explicit_runtime_requirement():
+    metadata = tomllib.loads(Path("pyproject.toml").read_text())
+
+    assert "click>=8.0.0" in metadata["project"]["dependencies"]
+
+
+def test_progress_falls_back_when_rich_is_unavailable(monkeypatch: pytest.MonkeyPatch):
+    import sidemantic.cli_contract as contract
+
+    monkeypatch.setattr(contract, "progress_enabled", lambda: True)
+    monkeypatch.setitem(sys.modules, "rich.console", None)
+    entered = False
+
+    with contract.progress("Working"):
+        entered = True
+
+    assert entered
 
 
 def test_convert_uses_shared_progress_seam(project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

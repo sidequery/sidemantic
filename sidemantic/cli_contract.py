@@ -461,7 +461,11 @@ def progress(message: str) -> Iterator[None]:
     if not progress_enabled():
         yield
         return
-    from rich.console import Console
+    try:
+        from rich.console import Console
+    except ImportError:
+        yield
+        return
 
     console = Console(stderr=True, force_terminal=cli_state().color)
     with console.status(message):

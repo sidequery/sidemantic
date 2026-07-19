@@ -409,6 +409,37 @@ def test_validation_rejects_expression_models_without_a_join_path():
     assert any("filter expression is incompatible" in error and "No join path found" in error for error in errors)
 
 
+def test_validation_checks_saved_query_with_mandatory_explore_filters():
+    layer = _layer()
+    layer.add_model(
+        Model(
+            name="customers",
+            table="customers",
+            metrics=[Metric(name="customer_count", agg="count")],
+        )
+    )
+    layer.graph.add_explore(
+        Explore(
+            name="mandatory_orders_filter",
+            model="orders",
+            filters=["status = 'paid'"],
+        )
+    )
+    saved_query = SavedQuery(
+        name="disconnected_from_mandatory_filter",
+        explore="mandatory_orders_filter",
+        metrics=["customers.customer_count"],
+    )
+
+    errors, _warnings = validate_saved_query(saved_query, layer.graph)
+
+    assert any(
+        "inherited Explore 'mandatory_orders_filter' filter expression is incompatible" in error
+        and "No join path found" in error
+        for error in errors
+    )
+
+
 def test_validation_requires_order_fields_in_default_or_saved_selection():
     layer = _layer()
     explore = Explore(

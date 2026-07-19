@@ -276,6 +276,17 @@ def validate_saved_query(saved_query: "SavedQuery", graph: "SemanticGraph") -> t
                     f"on model '{model_name}'"
                 )
         if explore is not None:
+            errors.extend(
+                _validate_consumption_expressions(
+                    f"Saved query '{saved_query.name}' inherited Explore '{explore.name}'",
+                    "filter",
+                    explore.filters,
+                    base_model,
+                    graph,
+                    query_metrics=metrics,
+                    query_dimensions=dimensions,
+                )
+            )
             if explore.allowed_metrics is not None:
                 allowed_metrics = set(_qualified_consumption_metrics(explore.allowed_metrics, base_model, graph))
                 denied_metrics = sorted(set(metrics) - allowed_metrics)

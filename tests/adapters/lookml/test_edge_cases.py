@@ -2831,6 +2831,23 @@ view: orders {
     assert LookMLAdapter._generator_column_nulling_suffices("STDDEV({model}.amount)") is True
 
 
+def test_lookml_hash_with_space_classified_unsafe_like_no_space():
+    """`HASH (col)` (space before the paren) must be classified unsafe just like `HASH(col)`.
+
+    A keyed symmetric-distinct aggregate hashes the key; HASH(NULL) is a non-NULL constant, so
+    nulling the key does NOT exclude the row -- column-nulling produces garbage. The unsafe check
+    must be whitespace-tolerant, otherwise a `HASH (id)` spelling slips through and the filtered
+    measure is silently imported with ineffective column-nulling."""
+    no_space = "SUM(DISTINCT HASH({model}.id) * 100 + {model}.amount)"
+    with_space = "SUM(DISTINCT HASH ({model}.id) * 100 + {model}.amount)"
+    # column-nulling is NOT sufficient for either spelling
+    assert LookMLAdapter._generator_column_nulling_suffices(no_space) is False
+    assert LookMLAdapter._generator_column_nulling_suffices(with_space) is False
+    # ...and both are treated as unsafe-to-null, so folding proceeds rather than early-returning None
+    assert LookMLAdapter._fold_complete_sql_filters(no_space, ["{model}.status = 'x'"]) is not None
+    assert LookMLAdapter._fold_complete_sql_filters(with_space, ["{model}.status = 'x'"]) is not None
+
+
 def test_lookml_number_measure_case_with_else_folds_filter():
     """A CASE with an ELSE default survives column-nulling, so its filter must be FOLDED.
 

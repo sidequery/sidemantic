@@ -332,7 +332,7 @@ class LookMLAdapter(BaseAdapter):
         unsafe_nulling = (
             tree.find(exp.Is) is not None
             or tree.find(exp.Coalesce) is not None
-            or "hash(" in sql.lower()
+            or re.search(r"\bhash\s*\(", sql, re.I) is not None
             or case_with_default
             or if_with_default
             or iff_with_default
@@ -429,7 +429,7 @@ class LookMLAdapter(BaseAdapter):
         unsafe = (
             tree.find(exp.Is) is not None
             or tree.find(exp.Coalesce) is not None
-            or "hash(" in sql.lower()
+            or re.search(r"\bhash\s*\(", sql, re.I) is not None
             or any(c.args.get("default") is not None for c in tree.find_all(exp.Case))
             or any(n.args.get("false") is not None for n in tree.find_all(exp.If))
             or any(
@@ -437,7 +437,8 @@ class LookMLAdapter(BaseAdapter):
                 for n in tree.find_all(exp.Anonymous)
             )
             or any(
-                len(d.expressions) > 1 or any(isinstance(e, exp.Tuple) and len(e.expressions) > 1 for e in d.expressions)
+                len(d.expressions) > 1
+                or any(isinstance(e, exp.Tuple) and len(e.expressions) > 1 for e in d.expressions)
                 for d in tree.find_all(exp.Distinct)
             )
         )

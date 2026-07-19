@@ -1,6 +1,7 @@
 """PostgreSQL wire protocol connection handler for semantic layer."""
 
 import logging
+import queue
 import re
 import threading
 import time
@@ -121,19 +122,22 @@ class SemanticLayerConnection(riffq.BaseConnection):
             # information_schema, pg_catalog) are unaffected.
             user_attributes = self._user_attributes()
 
+            # PG clients commonly bracket read-only SELECTs in transactions. The
+            # server executes each query on its own database handle, so acknowledge
+            # these controls without opening a disposable warehouse transaction or
+            # trying to fetch rows from a command result.
+            if _is_transaction_control(sql):
+                import pyarrow as pa
+
+                reader = pa.table({"ok": pa.array([], type=pa.bool_())}).to_reader()
+                self.send_reader(reader, callback)
+                return
+
             # Each executor thread gets its own cursor so concurrent reads do not
             # serialize on a single shared connection. For DuckDB this is an
             # independent handle over the same database; other adapters fall back
             # to a lock-guarded wrapper preserving today's behavior.
             cursor = self.layer.adapter.cursor()
-
-            # Transaction control must remain pass-through. Wrapping BEGIN / COMMIT /
-            # ROLLBACK as a bounded SELECT produces invalid SQL for PG-wire clients.
-            if _is_transaction_control(sql):
-                result = cursor.execute(sql.strip().removesuffix(";"))
-                reader = result.fetch_record_batch()
-                self.send_reader(reader, callback)
-                return
 
             # Check for DML commands first (before multi-statement check)
             # These are often PostgreSQL session config and should just succeed
@@ -193,68 +197,88 @@ class SemanticLayerConnection(riffq.BaseConnection):
             started = time.monotonic()
             control = QueryExecutionControl()
             timed_out = threading.Event()
-            error: Exception | None = None
-            row_count: int | None = None
-            response_bytes: int | None = None
-
-            def cancel_at_deadline() -> None:
-                timed_out.set()
-                control.cancel()
-
-            timer = threading.Timer(query_limits.execution_timeout_seconds, cancel_at_deadline)
-            timer.daemon = True
             if not hasattr(self, "_active_controls_lock"):
                 self._active_controls_lock = threading.Lock()
                 self._active_controls = set()
             with self._active_controls_lock:
                 self._active_controls.add(control)
-            timer.start()
+            result_queue = queue.Queue(maxsize=1)
+            execution_cursor = cursor
+
+            def execute_in_worker() -> None:
+                bounded = None
+                error = None
+                row_count = None
+                response_bytes = None
+                try:
+                    bounded_sql = limit_query_sql(rendered_sql, query_limits.max_rows, self.layer.dialect)
+                    bounded = execute_bounded(
+                        self.layer,
+                        bounded_sql,
+                        limits=query_limits,
+                        control=control,
+                        cursor=execution_cursor,
+                    )
+                    row_count = bounded.row_count
+                    response_bytes = int(bounded.table.nbytes)
+                except Exception as exc:
+                    error = exc
+                finally:
+                    try:
+                        sanitized_sql, fingerprint = sanitize_sql(rendered_sql, self.layer.dialect)
+                        outcome = control.cancellation_outcome
+                        self.layer.query_telemetry.record(
+                            QueryEvent(
+                                query_id=query_id,
+                                request_id=str(getattr(self, "connection_id", "unknown")),
+                                duration_ms=(time.monotonic() - started) * 1000,
+                                dialect=self.layer.dialect,
+                                row_count=row_count,
+                                response_bytes=response_bytes,
+                                used_preaggregation="used_preagg=true" in rendered_sql,
+                                cancelled=bool(outcome and outcome.cancelled),
+                                timed_out=timed_out.is_set(),
+                                error=(
+                                    type(error).__name__
+                                    if error is not None
+                                    else "TimeoutError"
+                                    if timed_out.is_set()
+                                    else None
+                                ),
+                                sql=sanitized_sql,
+                                sql_fingerprint=fingerprint,
+                                plan_metadata={"source": "postgres_wire", "timeout": control.timeout_diagnostic},
+                                cancellation_diagnostic=outcome.diagnostic if outcome else None,
+                            )
+                        )
+                    except Exception:
+                        logging.exception("Error recording query telemetry")
+                    finally:
+                        close = getattr(execution_cursor, "close", None)
+                        if callable(close):
+                            close()
+                        with self._active_controls_lock:
+                            self._active_controls.discard(control)
+                        query_admission.release()
+                        result_queue.put((bounded, error))
+
+            worker = threading.Thread(target=execute_in_worker, daemon=True)
+            worker.start()
+            # The worker owns this cursor through execution and cleanup. Do not let
+            # the outer finally close it when a local deadline returns first.
+            cursor = None
             try:
-                bounded_sql = limit_query_sql(rendered_sql, query_limits.max_rows, self.layer.dialect)
-                bounded = execute_bounded(
-                    self.layer,
-                    bounded_sql,
-                    limits=query_limits,
-                    control=control,
-                    cursor=cursor,
-                )
-                row_count = bounded.row_count
-                response_bytes = int(bounded.table.nbytes)
-                if timed_out.is_set():
-                    outcome = control.cancellation_outcome
-                    diagnostic = outcome.diagnostic if outcome else "cancellation was unavailable"
-                    raise TimeoutError(
-                        f"Query exceeded the {query_limits.execution_timeout_seconds:g}s deadline. {diagnostic}"
-                    )
+                bounded, error = result_queue.get(timeout=query_limits.execution_timeout_seconds)
+            except queue.Empty:
+                timed_out.set()
+                outcome = control.cancel()
+                raise TimeoutError(
+                    f"Query exceeded the {query_limits.execution_timeout_seconds:g}s deadline. {outcome.diagnostic}"
+                ) from None
+            if error is not None:
+                raise error
+            if bounded is not None:
                 self.send_reader(bounded.table.to_reader(), callback)
-            except Exception as exc:
-                error = exc
-                raise
-            finally:
-                timer.cancel()
-                with self._active_controls_lock:
-                    self._active_controls.discard(control)
-                query_admission.release()
-                sanitized_sql, fingerprint = sanitize_sql(rendered_sql, self.layer.dialect)
-                outcome = control.cancellation_outcome
-                self.layer.query_telemetry.record(
-                    QueryEvent(
-                        query_id=query_id,
-                        request_id=str(getattr(self, "connection_id", "unknown")),
-                        duration_ms=(time.monotonic() - started) * 1000,
-                        dialect=self.layer.dialect,
-                        row_count=row_count,
-                        response_bytes=response_bytes,
-                        used_preaggregation="used_preagg=true" in rendered_sql,
-                        cancelled=bool(outcome and outcome.cancelled),
-                        timed_out=timed_out.is_set(),
-                        error=type(error).__name__ if error is not None else None,
-                        sql=sanitized_sql,
-                        sql_fingerprint=fingerprint,
-                        plan_metadata={"source": "postgres_wire", "timeout": control.timeout_diagnostic},
-                        cancellation_diagnostic=outcome.diagnostic if outcome else None,
-                    )
-                )
 
         except Exception:
             logging.exception("Error executing query")

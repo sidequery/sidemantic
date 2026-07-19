@@ -170,7 +170,7 @@ def _with_duckdb_access_mode(connection: str | None, read_only: bool | None = No
     """Apply the safe CLI DuckDB access mode without overriding explicit config."""
     if connection is None or not connection.startswith("duckdb://") or connection.startswith("duckdb://md:"):
         return connection
-    from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+    from urllib.parse import parse_qsl, urlencode, urlsplit
 
     parsed = urlsplit(connection)
     if parsed.path in {"", "/", "/:memory:", ":memory:"}:
@@ -180,7 +180,11 @@ def _with_duckdb_access_mode(connection: str | None, read_only: bool | None = No
         return connection
     params = [(key, value) for key, value in params if key != "read_only"]
     params.append(("read_only", "true" if read_only is not False else "false"))
-    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode(params), parsed.fragment))
+    # urlunsplit collapses ``duckdb:///path`` to ``duckdb:/path`` when the
+    # authority is empty. Rebuild the scheme separator explicitly so documented
+    # three- and four-slash DuckDB URLs remain valid connection strings.
+    fragment = f"#{parsed.fragment}" if parsed.fragment else ""
+    return f"{parsed.scheme}://{parsed.netloc}{parsed.path}?{urlencode(params)}{fragment}"
 
 
 def _normalize_engine(engine: str | None) -> str | None:

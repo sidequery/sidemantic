@@ -714,6 +714,22 @@ def test_duckdb_access_mode_preserves_repeated_query_parameters():
     ]
 
 
+@pytest.mark.parametrize(
+    "connection",
+    [
+        "duckdb:///path/to/warehouse.duckdb",
+        "duckdb:///relative.duckdb",
+        "duckdb:////tmp/warehouse.duckdb",
+    ],
+)
+def test_duckdb_access_mode_preserves_url_slashes(connection):
+    safe = cli_module._with_duckdb_access_mode(connection)
+
+    assert safe is not None
+    assert safe.startswith(f"{connection}?")
+    assert safe.endswith("read_only=true")
+
+
 def test_duckdb_memory_access_mode_stays_writable():
     assert cli_module._with_duckdb_access_mode("duckdb:///:memory:") == "duckdb:///:memory:"
 

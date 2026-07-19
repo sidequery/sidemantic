@@ -790,19 +790,22 @@ def test_normalized_command_families_are_visible_and_legacy_aliases_are_hidden()
 
 
 def test_tree_alias_calls_workbench(monkeypatch, tmp_path):
-    pytest.importorskip("textual")
     called = {}
+    events = []
 
     def fake_run_workbench(directory):
+        events.append("start")
         called["directory"] = directory
 
     monkeypatch.setattr("sidemantic.workbench.run_workbench", fake_run_workbench)
+    monkeypatch.setattr("sidemantic.cli_contract.emit_warning", lambda _message: events.append("warning"))
 
     _write_min_model(tmp_path)
     result = runner.invoke(app, ["tree", str(tmp_path)])
 
     assert result.exit_code == 0
     assert called["directory"] == tmp_path
+    assert events == ["warning", "start"]
 
 
 def test_cli_source_uses_public_adapter():

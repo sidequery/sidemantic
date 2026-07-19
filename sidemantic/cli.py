@@ -1948,6 +1948,7 @@ def tree(
     """
     Alias for 'workbench' command (deprecated).
     """
+    emit_pending_deprecation("tree")
     from sidemantic.workbench import WorkbenchDependencyError, run_workbench
 
     if not directory.exists():

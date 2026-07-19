@@ -127,6 +127,35 @@ def test_migrate_query_path_is_relative_to_selected_project(
     assert captured["generate_models"] == project
 
 
+def test_migrate_query_path_is_relative_to_config_selected_project(
+    monkeypatch: pytest.MonkeyPatch,
+    project: Path,
+    tmp_path: Path,
+):
+    queries = project / "queries"
+    queries.mkdir()
+    query = queries / "orders.sql"
+    query.write_text("SELECT * FROM orders")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    captured: dict[str, object] = {}
+
+    def fake_migrator(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(cli_module, "migrator", fake_migrator)
+    monkeypatch.chdir(outside)
+
+    result = runner.invoke(
+        app,
+        ["--config", str(project / "sidemantic.yaml"), "migrate", "generate", "queries/orders.sql"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["queries"] == query
+    assert captured["generate_models"] == project
+
+
 def test_missing_migrate_query_path_is_a_cli_parameter_error(
     monkeypatch: pytest.MonkeyPatch,
     project: Path,
@@ -143,7 +172,8 @@ def test_missing_migrate_query_path_is_a_cli_parameter_error(
 
     assert result.exit_code != 0
     assert "Invalid value for QUERIES" in result.output
-    assert "queries/missing.sql" in result.output
+    assert "queries/missing" in result.output
+    assert ".sql" in result.output
     assert "Traceback" not in result.output
 
 

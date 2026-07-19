@@ -403,7 +403,7 @@ def _migration_queries(queries: Path | None) -> Path:
     else:
         resolved = queries.expanduser()
         if not resolved.is_absolute():
-            resolved = project.start_dir / resolved
+            resolved = project.root / resolved
     resolved = resolved.resolve()
     if not resolved.exists():
         raise typer.BadParameter(

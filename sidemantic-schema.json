@@ -1,5 +1,67 @@
 {
   "$defs": {
+    "Deprecation": {
+      "additionalProperties": false,
+      "description": "Lifecycle details for a deprecated semantic object.",
+      "properties": {
+        "deprecated_at": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Date the object became deprecated",
+          "title": "Deprecated At"
+        },
+        "message": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Human-readable migration guidance",
+          "title": "Message"
+        },
+        "replaced_by": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Replacement semantic object reference",
+          "title": "Replaced By"
+        },
+        "sunset_at": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Date after which the object may be removed",
+          "title": "Sunset At"
+        }
+      },
+      "title": "Deprecation",
+      "type": "object"
+    },
     "Dimension": {
       "description": "Dimension (attribute) definition.\n\nDimensions are used for grouping and filtering in queries.",
       "properties": {
@@ -274,7 +336,7 @@
     },
     "Freshness": {
       "additionalProperties": false,
-      "description": "Model-level freshness policy for live chart/runtime responses.\n\nPrefer ``watermark`` for normal semantic-model usage. ``sql`` is retained as\nan advanced escape hatch when the source freshness marker cannot be expressed\nas a model dimension or physical column.",
+      "description": "Freshness expectation for models, metrics, and curated explores.\n\nPrefer ``watermark`` for normal semantic-model usage. ``sql`` is retained as\nan advanced escape hatch when the source freshness marker cannot be expressed\nas a model dimension or physical column.",
       "properties": {
         "sql": {
           "anyOf": [
@@ -355,6 +417,118 @@
       "type": "object"
     },
     "Metric": {
+      "$defs": {
+        "Deprecation": {
+          "additionalProperties": false,
+          "description": "Lifecycle details for a deprecated semantic object.",
+          "properties": {
+            "deprecated_at": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Date the object became deprecated",
+              "title": "Deprecated At"
+            },
+            "message": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Human-readable migration guidance",
+              "title": "Message"
+            },
+            "replaced_by": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Replacement semantic object reference",
+              "title": "Replaced By"
+            },
+            "sunset_at": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Date after which the object may be removed",
+              "title": "Sunset At"
+            }
+          },
+          "title": "Deprecation",
+          "type": "object"
+        },
+        "Freshness": {
+          "additionalProperties": false,
+          "description": "Freshness expectation for models, metrics, and curated explores.\n\nPrefer ``watermark`` for normal semantic-model usage. ``sql`` is retained as\nan advanced escape hatch when the source freshness marker cannot be expressed\nas a model dimension or physical column.",
+          "properties": {
+            "sql": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Advanced SQL query returning one scalar freshness marker",
+              "title": "Sql"
+            },
+            "ttl_seconds": {
+              "anyOf": [
+                {
+                  "exclusiveMinimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Maximum allowed age in seconds before data is considered stale",
+              "title": "Ttl Seconds"
+            },
+            "watermark": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Dimension or source column whose MAX value represents source freshness",
+              "title": "Watermark"
+            }
+          },
+          "title": "Freshness",
+          "type": "object"
+        }
+      },
       "description": "Measure definition - supports simple aggregations and complex metric types.\n\nMeasures can be:\n- Simple aggregations: SUM(amount), COUNT(*), AVG(price)\n- Ratios: revenue / order_count\n- Derived formulas: (revenue - cost) / revenue\n- Cumulative: running totals, period-to-date\n- Time comparisons: YoY, MoM growth\n- Conversion funnels: signup -> purchase rate\n\nAuto-registers as a graph-level metric with the current semantic layer context if available.",
       "properties": {
         "activity_event": {
@@ -440,6 +614,37 @@
           "default": null,
           "description": "Comparison calculation (default: percent_change)",
           "title": "Calculation"
+        },
+        "category": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Catalog category",
+          "title": "Category"
+        },
+        "certification": {
+          "anyOf": [
+            {
+              "enum": [
+                "certified",
+                "verified",
+                "uncertified"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Trust or review state",
+          "title": "Certification"
         },
         "cohort_event": {
           "anyOf": [
@@ -527,6 +732,18 @@
           "description": "Denominator measure for ratio",
           "title": "Denominator"
         },
+        "deprecation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Deprecation"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Deprecation lifecycle and migration guidance"
+        },
         "description": {
           "anyOf": [
             {
@@ -539,6 +756,19 @@
           "default": null,
           "description": "Human-readable description",
           "title": "Description"
+        },
+        "domain": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Business domain",
+          "title": "Domain"
         },
         "drill_fields": {
           "anyOf": [
@@ -662,6 +892,18 @@
           "default": null,
           "description": "Display format string (e.g., '$#,##0.00', '0.00%')",
           "title": "Format"
+        },
+        "freshness": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Freshness"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Expected data freshness policy"
         },
         "grain_to_date": {
           "anyOf": [
@@ -824,6 +1066,19 @@
           "description": "Time offset for denominator (e.g., '1 month')",
           "title": "Offset Window"
         },
+        "owner": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Accountable person or team",
+          "title": "Owner"
+        },
         "periods": {
           "anyOf": [
             {
@@ -880,6 +1135,24 @@
           "title": "Sql Is Complete",
           "type": "boolean"
         },
+        "status": {
+          "anyOf": [
+            {
+              "enum": [
+                "draft",
+                "active",
+                "deprecated"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Semantic object lifecycle status",
+          "title": "Status"
+        },
         "steps": {
           "anyOf": [
             {
@@ -911,6 +1184,14 @@
           "default": null,
           "description": "Alternative names for this measure/metric",
           "title": "Synonyms"
+        },
+        "tags": {
+          "description": "Searchable catalog tags",
+          "items": {
+            "type": "string"
+          },
+          "title": "Tags",
+          "type": "array"
         },
         "time_offset": {
           "anyOf": [
@@ -959,6 +1240,17 @@
           "default": null,
           "description": "Named format (e.g., 'usd', 'percent', 'decimal_2')",
           "title": "Value Format Name"
+        },
+        "visibility": {
+          "default": "public",
+          "description": "Catalog visibility; not an authorization policy",
+          "enum": [
+            "public",
+            "internal",
+            "private"
+          ],
+          "title": "Visibility",
+          "type": "string"
         },
         "window": {
           "anyOf": [
@@ -1657,6 +1949,118 @@
     "metrics": {
       "description": "Top-level metric definitions (optional - can also define in models)",
       "items": {
+        "$defs": {
+          "Deprecation": {
+            "additionalProperties": false,
+            "description": "Lifecycle details for a deprecated semantic object.",
+            "properties": {
+              "deprecated_at": {
+                "anyOf": [
+                  {
+                    "format": "date",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Date the object became deprecated",
+                "title": "Deprecated At"
+              },
+              "message": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Human-readable migration guidance",
+                "title": "Message"
+              },
+              "replaced_by": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Replacement semantic object reference",
+                "title": "Replaced By"
+              },
+              "sunset_at": {
+                "anyOf": [
+                  {
+                    "format": "date",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Date after which the object may be removed",
+                "title": "Sunset At"
+              }
+            },
+            "title": "Deprecation",
+            "type": "object"
+          },
+          "Freshness": {
+            "additionalProperties": false,
+            "description": "Freshness expectation for models, metrics, and curated explores.\n\nPrefer ``watermark`` for normal semantic-model usage. ``sql`` is retained as\nan advanced escape hatch when the source freshness marker cannot be expressed\nas a model dimension or physical column.",
+            "properties": {
+              "sql": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Advanced SQL query returning one scalar freshness marker",
+                "title": "Sql"
+              },
+              "ttl_seconds": {
+                "anyOf": [
+                  {
+                    "exclusiveMinimum": 0,
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Maximum allowed age in seconds before data is considered stale",
+                "title": "Ttl Seconds"
+              },
+              "watermark": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Dimension or source column whose MAX value represents source freshness",
+                "title": "Watermark"
+              }
+            },
+            "title": "Freshness",
+            "type": "object"
+          }
+        },
         "description": "Measure definition - supports simple aggregations and complex metric types.\n\nMeasures can be:\n- Simple aggregations: SUM(amount), COUNT(*), AVG(price)\n- Ratios: revenue / order_count\n- Derived formulas: (revenue - cost) / revenue\n- Cumulative: running totals, period-to-date\n- Time comparisons: YoY, MoM growth\n- Conversion funnels: signup -> purchase rate\n\nAuto-registers as a graph-level metric with the current semantic layer context if available.",
         "properties": {
           "activity_event": {
@@ -1742,6 +2146,37 @@
             "default": null,
             "description": "Comparison calculation (default: percent_change)",
             "title": "Calculation"
+          },
+          "category": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Catalog category",
+            "title": "Category"
+          },
+          "certification": {
+            "anyOf": [
+              {
+                "enum": [
+                  "certified",
+                  "verified",
+                  "uncertified"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Trust or review state",
+            "title": "Certification"
           },
           "cohort_event": {
             "anyOf": [
@@ -1829,6 +2264,18 @@
             "description": "Denominator measure for ratio",
             "title": "Denominator"
           },
+          "deprecation": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Deprecation"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Deprecation lifecycle and migration guidance"
+          },
           "description": {
             "anyOf": [
               {
@@ -1841,6 +2288,19 @@
             "default": null,
             "description": "Human-readable description",
             "title": "Description"
+          },
+          "domain": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Business domain",
+            "title": "Domain"
           },
           "drill_fields": {
             "anyOf": [
@@ -1964,6 +2424,18 @@
             "default": null,
             "description": "Display format string (e.g., '$#,##0.00', '0.00%')",
             "title": "Format"
+          },
+          "freshness": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Freshness"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Expected data freshness policy"
           },
           "grain_to_date": {
             "anyOf": [
@@ -2126,6 +2598,19 @@
             "description": "Time offset for denominator (e.g., '1 month')",
             "title": "Offset Window"
           },
+          "owner": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Accountable person or team",
+            "title": "Owner"
+          },
           "periods": {
             "anyOf": [
               {
@@ -2182,6 +2667,24 @@
             "title": "Sql Is Complete",
             "type": "boolean"
           },
+          "status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "draft",
+                  "active",
+                  "deprecated"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Semantic object lifecycle status",
+            "title": "Status"
+          },
           "steps": {
             "anyOf": [
               {
@@ -2213,6 +2716,14 @@
             "default": null,
             "description": "Alternative names for this measure/metric",
             "title": "Synonyms"
+          },
+          "tags": {
+            "description": "Searchable catalog tags",
+            "items": {
+              "type": "string"
+            },
+            "title": "Tags",
+            "type": "array"
           },
           "time_offset": {
             "anyOf": [
@@ -2261,6 +2772,17 @@
             "default": null,
             "description": "Named format (e.g., 'usd', 'percent', 'decimal_2')",
             "title": "Value Format Name"
+          },
+          "visibility": {
+            "default": "public",
+            "description": "Catalog visibility; not an authorization policy",
+            "enum": [
+              "public",
+              "internal",
+              "private"
+            ],
+            "title": "Visibility",
+            "type": "string"
           },
           "window": {
             "anyOf": [
@@ -2327,6 +2849,68 @@
       "description": "Model definitions",
       "items": {
         "$defs": {
+          "Deprecation": {
+            "additionalProperties": false,
+            "description": "Lifecycle details for a deprecated semantic object.",
+            "properties": {
+              "deprecated_at": {
+                "anyOf": [
+                  {
+                    "format": "date",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Date the object became deprecated",
+                "title": "Deprecated At"
+              },
+              "message": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Human-readable migration guidance",
+                "title": "Message"
+              },
+              "replaced_by": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Replacement semantic object reference",
+                "title": "Replaced By"
+              },
+              "sunset_at": {
+                "anyOf": [
+                  {
+                    "format": "date",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Date after which the object may be removed",
+                "title": "Sunset At"
+              }
+            },
+            "title": "Deprecation",
+            "type": "object"
+          },
           "Dimension": {
             "description": "Dimension (attribute) definition.\n\nDimensions are used for grouping and filtering in queries.",
             "properties": {
@@ -2601,7 +3185,7 @@
           },
           "Freshness": {
             "additionalProperties": false,
-            "description": "Model-level freshness policy for live chart/runtime responses.\n\nPrefer ``watermark`` for normal semantic-model usage. ``sql`` is retained as\nan advanced escape hatch when the source freshness marker cannot be expressed\nas a model dimension or physical column.",
+            "description": "Freshness expectation for models, metrics, and curated explores.\n\nPrefer ``watermark`` for normal semantic-model usage. ``sql`` is retained as\nan advanced escape hatch when the source freshness marker cannot be expressed\nas a model dimension or physical column.",
             "properties": {
               "sql": {
                 "anyOf": [
@@ -2768,6 +3352,37 @@
                 "description": "Comparison calculation (default: percent_change)",
                 "title": "Calculation"
               },
+              "category": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Catalog category",
+                "title": "Category"
+              },
+              "certification": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "certified",
+                      "verified",
+                      "uncertified"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Trust or review state",
+                "title": "Certification"
+              },
               "cohort_event": {
                 "anyOf": [
                   {
@@ -2854,6 +3469,18 @@
                 "description": "Denominator measure for ratio",
                 "title": "Denominator"
               },
+              "deprecation": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Deprecation"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Deprecation lifecycle and migration guidance"
+              },
               "description": {
                 "anyOf": [
                   {
@@ -2866,6 +3493,19 @@
                 "default": null,
                 "description": "Human-readable description",
                 "title": "Description"
+              },
+              "domain": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Business domain",
+                "title": "Domain"
               },
               "drill_fields": {
                 "anyOf": [
@@ -2989,6 +3629,18 @@
                 "default": null,
                 "description": "Display format string (e.g., '$#,##0.00', '0.00%')",
                 "title": "Format"
+              },
+              "freshness": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Freshness"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Expected data freshness policy"
               },
               "grain_to_date": {
                 "anyOf": [
@@ -3151,6 +3803,19 @@
                 "description": "Time offset for denominator (e.g., '1 month')",
                 "title": "Offset Window"
               },
+              "owner": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Accountable person or team",
+                "title": "Owner"
+              },
               "periods": {
                 "anyOf": [
                   {
@@ -3207,6 +3872,24 @@
                 "title": "Sql Is Complete",
                 "type": "boolean"
               },
+              "status": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "draft",
+                      "active",
+                      "deprecated"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Semantic object lifecycle status",
+                "title": "Status"
+              },
               "steps": {
                 "anyOf": [
                   {
@@ -3238,6 +3921,14 @@
                 "default": null,
                 "description": "Alternative names for this measure/metric",
                 "title": "Synonyms"
+              },
+              "tags": {
+                "description": "Searchable catalog tags",
+                "items": {
+                  "type": "string"
+                },
+                "title": "Tags",
+                "type": "array"
               },
               "time_offset": {
                 "anyOf": [
@@ -3286,6 +3977,17 @@
                 "default": null,
                 "description": "Named format (e.g., 'usd', 'percent', 'decimal_2')",
                 "title": "Value Format Name"
+              },
+              "visibility": {
+                "default": "public",
+                "description": "Catalog visibility; not an authorization policy",
+                "enum": [
+                  "public",
+                  "internal",
+                  "private"
+                ],
+                "title": "Visibility",
+                "type": "string"
               },
               "window": {
                 "anyOf": [
@@ -3907,6 +4609,37 @@
             "title": "Auto Dimensions",
             "type": "boolean"
           },
+          "category": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Catalog category",
+            "title": "Category"
+          },
+          "certification": {
+            "anyOf": [
+              {
+                "enum": [
+                  "certified",
+                  "verified",
+                  "uncertified"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Trust or review state",
+            "title": "Certification"
+          },
           "dax": {
             "anyOf": [
               {
@@ -3956,6 +4689,18 @@
             "description": "Default time dimension for metrics (auto-included in queries)",
             "title": "Default Time Dimension"
           },
+          "deprecation": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Deprecation"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Deprecation lifecycle and migration guidance"
+          },
           "description": {
             "anyOf": [
               {
@@ -3976,6 +4721,19 @@
             },
             "title": "Dimensions",
             "type": "array"
+          },
+          "domain": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Business domain",
+            "title": "Domain"
           },
           "expression_language": {
             "anyOf": [
@@ -4017,7 +4775,7 @@
               }
             ],
             "default": null,
-            "description": "Model-level source freshness policy inherited by live chart runtimes"
+            "description": "Expected data freshness policy"
           },
           "meta": {
             "anyOf": [
@@ -4059,6 +4817,19 @@
             "description": "Unique model name",
             "title": "Name",
             "type": "string"
+          },
+          "owner": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Accountable person or team",
+            "title": "Owner"
           },
           "pre_aggregations": {
             "description": "Pre-aggregation definitions for query optimization",
@@ -4141,6 +4912,24 @@
             "description": "SQL expression for derived tables",
             "title": "Sql"
           },
+          "status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "draft",
+                  "active",
+                  "deprecated"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Semantic object lifecycle status",
+            "title": "Status"
+          },
           "table": {
             "anyOf": [
               {
@@ -4153,6 +4942,14 @@
             "default": null,
             "description": "Physical table name (schema.table)",
             "title": "Table"
+          },
+          "tags": {
+            "description": "Searchable catalog tags",
+            "items": {
+              "type": "string"
+            },
+            "title": "Tags",
+            "type": "array"
           },
           "unique_keys": {
             "anyOf": [
@@ -4172,6 +4969,17 @@
             "default": null,
             "description": "Unique key constraints (each is a list of columns)",
             "title": "Unique Keys"
+          },
+          "visibility": {
+            "default": "public",
+            "description": "Catalog visibility; not an authorization policy",
+            "enum": [
+              "public",
+              "internal",
+              "private"
+            ],
+            "title": "Visibility",
+            "type": "string"
           }
         },
         "required": [

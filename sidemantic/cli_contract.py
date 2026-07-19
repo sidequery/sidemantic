@@ -20,7 +20,8 @@ from typing import Any, NoReturn, TextIO
 
 import click
 import typer
-from typer.core import TyperGroup
+
+from sidemantic.cli_polish import SuggestionGroup, emit_deprecation, recovery_hint
 
 
 class ExitCode(IntEnum):
@@ -49,6 +50,7 @@ class CLIState:
     plain: bool = False
     plain_explicit: bool = False
     color: bool | None = None
+    pager: bool | None = None
     redactions: set[str] = field(default_factory=set, repr=False)
 
     def reset(
@@ -62,6 +64,7 @@ class CLIState:
         plain: bool = False,
         plain_explicit: bool = False,
         color: bool | None = None,
+        pager: bool | None = None,
     ) -> None:
         """Reset state at the start of each root invocation."""
 
@@ -74,6 +77,7 @@ class CLIState:
         self.plain = plain
         self.plain_explicit = plain_explicit
         self.color = color
+        self.pager = pager
         self.redactions.clear()
 
     @property
@@ -111,11 +115,19 @@ class InvocationError(CLIError):
 HELP_REQUESTED_META_KEY = "sidemantic_help_requested"
 
 
-class ContractGroup(TyperGroup):
+class ContractGroup(SuggestionGroup):
     """Root Click group that enforces concise failures and the debug contract."""
 
     _global_value_options = {"--project", "--config", "--format"}
-    _global_flag_options = {"--plain", "--quiet", "--verbose", "--debug", "--no-color"}
+    _global_flag_options = {
+        "--plain",
+        "--quiet",
+        "--verbose",
+        "--debug",
+        "--no-color",
+        "--pager",
+        "--no-pager",
+    }
 
     def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
         """Accept unambiguous long global options after a subcommand.
@@ -170,16 +182,28 @@ class ContractGroup(TyperGroup):
         if self._is_help_request(ctx):
             ctx.meta[HELP_REQUESTED_META_KEY] = True
         try:
-            return super().invoke(ctx)
-        except (click.ClickException, click.exceptions.Exit, click.Abort):
+            result = super().invoke(ctx)
+            self._emit_deprecations(ctx)
+            return result
+        except click.ClickException as exc:
+            hint = recovery_hint(exc.format_message()) if cli_state().human_extras else None
+            if hint is not None:
+                exc.message = f"{exc.message}\nHint: {hint}"
+            raise
+        except (click.exceptions.Exit, click.Abort):
             raise
         except CLIError as exc:
+            self._emit_deprecations(ctx)
             emit_error(str(exc))
+            self._emit_recovery(str(exc))
             raise click.exceptions.Exit(int(exc.exit_code)) from exc
         except Exception as exc:
             if cli_state().debug:
                 raise
-            emit_error(str(exc) or exc.__class__.__name__)
+            message = str(exc) or exc.__class__.__name__
+            self._emit_deprecations(ctx)
+            emit_error(message)
+            self._emit_recovery(message)
             raise click.exceptions.Exit(int(ExitCode.OPERATIONAL_ERROR)) from exc
 
     def _is_help_request(self, ctx: click.Context) -> bool:
@@ -205,6 +229,23 @@ class ContractGroup(TyperGroup):
             command = child
             index += 1
         return index == len(tokens) and isinstance(command, click.Group) and bool(command.no_args_is_help)
+
+    @staticmethod
+    def _emit_deprecations(ctx: click.Context) -> None:
+        if ctx.parent is not None:
+            return
+        for command_name in ctx.meta.pop("deprecated_commands", []):
+            emit_deprecation(
+                command_name,
+                human_output=cli_state().human_extras,
+                emit_diagnostic=emit_warning,
+            )
+
+    @staticmethod
+    def _emit_recovery(message: str) -> None:
+        hint = recovery_hint(message)
+        if hint is not None:
+            emit_guidance(hint)
 
 
 def sanitize(text: object) -> str:
@@ -596,7 +637,10 @@ def resolve_secret(
         raise InvocationError(f"inline {label} and its credential-file setting cannot both be configured")
     if direct is not None:
         cli_state().redactions.add(direct)
-        emit_warning(f"{direct_option} is deprecated because command-line secrets can leak; use {file_option}")
+        emit_warning(
+            f"{direct_option} is deprecated because command-line secrets can leak; "
+            f"use {file_option}. It remains supported through 0.x and may be removed in Sidemantic 1.0.0."
+        )
         return direct
     if secret_file is not None:
         return read_secret(secret_file, label=label)

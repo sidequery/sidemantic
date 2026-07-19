@@ -105,7 +105,7 @@ The scaffold copies readable source from `assets/templates/static-dashboard/` an
 - Python-backed analytics app: use `sidemantic.api_server.create_app()` or `start_api_server()` when a FastAPI API is acceptable.
 - Browser-only demo: use the `sidemantic-wasm` npm package (Sidemantic Rust WASM) + DuckDB-WASM, or Pyodide + DuckDB-WASM, only for static demos or docs pages that must run without a backend.
 - Notebook or Python embedded view: use `sidemantic.widget.MetricsExplorer` instead of rebuilding the widget.
-- MCP app surface: use `sidemantic mcp-serve --apps --http --port 4100` and existing chart resources when the target is an MCP Apps-compatible host.
+- MCP app surface: use `sidemantic server mcp --apps --http --port 4100` and existing chart resources when the target is an MCP Apps-compatible host.
 
 5. Implement a narrow query contract. Prefer structured query payloads over ad hoc SQL strings:
 

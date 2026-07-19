@@ -255,6 +255,8 @@ def emit_error(value: object) -> None:
 def _json_default(value: object) -> Any:
     if isinstance(value, Decimal):
         return str(value)
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return bytes(value).hex()
     if isinstance(value, (date, datetime, time)):
         return value.isoformat()
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
@@ -306,6 +308,8 @@ def _record_value(value: object) -> object:
         return value
     if isinstance(value, (Decimal, date, datetime, time, Path)):
         return str(value)
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return bytes(value).hex()
     return json.dumps(value, sort_keys=True, default=_json_default)
 
 

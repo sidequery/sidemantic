@@ -350,10 +350,10 @@ def main(
 
     format_priority = source_priority("output_format", configured_format)
     plain_priority = source_priority("plain", configured_plain)
-    if selected_plain and selected_format not in {None, "table"}:
+    if selected_plain and selected_format is not None:
         if format_priority > plain_priority:
             selected_plain = False
-        elif plain_priority > format_priority:
+        elif selected_format != "table" and plain_priority > format_priority:
             selected_format = None
 
     selected_no_color = bool(no_color) if no_color is not None else bool(configured and configured.no_color)

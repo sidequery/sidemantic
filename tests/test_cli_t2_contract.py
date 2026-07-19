@@ -194,6 +194,41 @@ def test_plain_query_preserves_database_scalar_values(project: Path):
     ]
 
 
+@pytest.mark.parametrize("output_format", ["table", "csv", "json", "jsonl"])
+def test_query_formats_render_binary_values(project: Path, output_format: str):
+    result = runner.invoke(
+        app,
+        [
+            "query",
+            "SELECT from_hex('00ff') AS payload",
+            "--project",
+            str(project),
+            "--format",
+            output_format,
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    if output_format == "csv":
+        assert list(csv.reader(io.StringIO(result.stdout))) == [["payload"], ["00ff"]]
+    elif output_format in {"json", "jsonl"}:
+        payload = json.loads(result.stdout)
+        row = payload[0] if output_format == "json" else payload
+        assert row == {"payload": "00ff"}
+    else:
+        assert "00ff" in result.stdout
+
+
+def test_plain_query_renders_binary_values(project: Path):
+    result = runner.invoke(
+        app,
+        ["query", "SELECT from_hex('00ff') AS payload", "--project", str(project), "--plain"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout.splitlines() == ["payload", "00ff"]
+
+
 @pytest.mark.parametrize("output_format", [None, "table", "csv", "json", "jsonl"])
 def test_query_formats_preserve_duplicate_columns_by_position(project: Path, output_format: str | None):
     arguments = ["query", "SELECT 1 AS x, 2 AS x", "--project", str(project)]
@@ -344,15 +379,29 @@ def test_explicit_json_overrides_plain_defaults(project: Path, default_source: s
     assert json.loads(result.stdout)["models"][0]["name"] == "orders"
 
 
-def test_explicit_format_overrides_plain_environment_default(project: Path):
+@pytest.mark.parametrize("output_format", ["table", "json"])
+@pytest.mark.parametrize("default_source", ["environment", "config"])
+def test_explicit_format_overrides_plain_defaults(project: Path, output_format: str, default_source: str):
+    environment = {}
+    if default_source == "environment":
+        environment["SIDEMANTIC_PLAIN"] = "1"
+    else:
+        config = project / "sidemantic.yaml"
+        config.write_text(f"{config.read_text()}cli:\n  plain: true\n")
+
     result = runner.invoke(
         app,
-        ["info", "--project", str(project), "--format", "json"],
-        env={"SIDEMANTIC_PLAIN": "1"},
+        ["info", "--project", str(project), "--format", output_format],
+        env=environment,
     )
 
     assert result.exit_code == 0, result.output
-    assert json.loads(result.stdout)["models"][0]["name"] == "orders"
+    if output_format == "json":
+        assert json.loads(result.stdout)["models"][0]["name"] == "orders"
+    else:
+        lines = result.stdout.splitlines()
+        assert lines[0].split() == ["name", "table", "dimensions", "metrics", "relationships", "connected_to"]
+        assert "--" in lines[1]
 
 
 def test_long_global_options_work_after_subcommand(project: Path):

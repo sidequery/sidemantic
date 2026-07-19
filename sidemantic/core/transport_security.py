@@ -11,16 +11,14 @@ def has_declared_security(layer: Any) -> bool:
 
 
 def has_enforced_column_restrictions(layer: Any) -> bool:
-    """Return whether visibility enforcement has any restricted fields to protect."""
-    if not getattr(layer, "enforce_visibility", False):
-        return False
-    if any(not getattr(metric, "public", True) for metric in layer.graph.metrics.values()):
-        return True
-    return any(
-        not getattr(field, "public", True)
-        for model in layer.graph.models.values()
-        for field in [*model.dimensions, *model.metrics, *model.segments]
-    )
+    """Return whether semantic column visibility is being enforced.
+
+    The enforcement flag itself is the security boundary. Even when every
+    declared semantic field is public, physical source columns that are absent
+    from the model must not become discoverable or queryable through another
+    transport.
+    """
+    return bool(getattr(layer, "enforce_visibility", False))
 
 
 def controls_are_active(layer: Any) -> bool:

@@ -209,7 +209,7 @@ def test_obj_description_does_not_short_circuit_mixed_user_sql():
     )
     conn = SemanticLayerConnection(connection_id=1, executor=None, layer=layer)
     cursor = layer.adapter.cursor()
-    mixed = "SELECT secret_note, obj_description(oid, 'pg_namespace') FROM orders"
+    mixed = "SELECT secret_note, obj_description(1, 'pg_namespace') FROM orders"
 
     assert conn._try_handle_system_query(mixed, mixed.lower(), lambda *_: None, cursor) is False
     with pytest.raises(SecurityError, match="not public"):

@@ -198,6 +198,7 @@ class HexAdapter(BaseAdapter):
             description=view_def.get("description"),
             metadata={"label": name} if name else None,
             meta=meta,
+            visibility=view_def.get("visibility", "public"),
         )
 
     @staticmethod

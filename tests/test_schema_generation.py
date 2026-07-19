@@ -13,7 +13,9 @@ def test_generate_yaml_schema_structure():
     assert "models" in schema["properties"]
     assert "metrics" in schema["properties"]
     assert "parameters" in schema["properties"]
-    assert schema["required"] == ["models"]
+    assert {"required": ["models"]} in schema["anyOf"]
+    assert {"required": ["explores"]} in schema["anyOf"]
+    assert {"required": ["saved_queries"]} in schema["anyOf"]
 
     defs = schema["$defs"]
     assert "Dimension" in defs

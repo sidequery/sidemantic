@@ -105,7 +105,10 @@ def generate_yaml_schema() -> dict:
                 "items": saved_query_schema,
             },
         },
-        "required": ["models"],
+        "anyOf": [
+            {"required": [section]}
+            for section in ("models", "metrics", "parameters", "explores", "views", "saved_queries")
+        ],
         "$defs": {
             **model_schema.get("$defs", {}),
             **metric_schema.get("$defs", {}),

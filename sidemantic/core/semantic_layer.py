@@ -900,6 +900,7 @@ class SemanticLayer:
         """Resolve defaults and enforce a named consumption contract."""
         if saved_query_name:
             supplied = {
+                "explore": explore_name,
                 "metrics": metrics,
                 "dimensions": dimensions,
                 "filters": filters,
@@ -922,12 +923,7 @@ class SemanticLayer:
             if metricflow_metadata.get("executable") is False:
                 message = metricflow_metadata.get("compatibility_message") or "source syntax is not executable"
                 raise ValueError(f"Saved query '{saved_query_name}' cannot execute: {message}")
-            if explore_name and definition.explore and explore_name != definition.explore:
-                raise ValueError(
-                    f"Saved query '{saved_query_name}' is governed by explore '{definition.explore}', "
-                    f"not '{explore_name}'"
-                )
-            explore_name = definition.explore or explore_name
+            explore_name = definition.explore
             metrics = list(definition.metrics)
             dimensions = list(definition.dimensions)
             filters = list(definition.filters)

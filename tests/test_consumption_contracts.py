@@ -128,6 +128,12 @@ def test_saved_query_is_immutable_and_compiles_through_its_explore():
         layer.compile(saved_query="paid_revenue", offset=5)
     with pytest.raises(ValueError, match="ungrouped"):
         layer.compile(saved_query="paid_revenue", ungrouped=True)
+    with pytest.raises(ValueError, match="explore"):
+        layer.compile(saved_query="paid_revenue", explore="revenue_overview")
+
+    layer.graph.add_saved_query(SavedQuery(name="all_revenue", metrics=["orders.revenue"]))
+    with pytest.raises(ValueError, match="explore"):
+        layer.compile(saved_query="all_revenue", explore="revenue_overview")
 
 
 def test_native_yaml_roundtrip_preserves_contracts_and_governance(tmp_path: Path):
@@ -388,6 +394,8 @@ def test_schema_and_cli_expose_contracts(tmp_path: Path):
     schema = generate_yaml_schema()
     assert "explores" in schema["properties"]
     assert "saved_queries" in schema["properties"]
+    assert {"required": ["explores"]} in schema["anyOf"]
+    assert {"required": ["saved_queries"]} in schema["anyOf"]
 
     model_file = tmp_path / "models.yml"
     model_file.write_text(
@@ -484,6 +492,27 @@ def test_lossless_adapter_bridges_create_typed_contracts():
     sql = lookml_layer.compile(explore="completed_orders", dimensions=["fact_orders.status"])
     assert "{'model': model}" not in sql
     assert "status = 'completed'" in sql
+
+
+def test_hex_private_view_is_private_as_model_and_explore(tmp_path: Path):
+    source = tmp_path / "private_view.yml"
+    source.write_text(
+        """
+id: subscriptions
+type: model
+base_sql_table: analytics.subscriptions
+---
+id: private_revenue
+type: view
+base: subscriptions
+visibility: private
+contents: []
+""".strip()
+    )
+
+    graph = HexAdapter().parse(source)
+    assert graph.models["private_revenue"].visibility == "private"
+    assert graph.explores["private_revenue"].visibility == "private"
 
 
 def test_lookml_joined_always_filter_preserves_join_target(tmp_path: Path):

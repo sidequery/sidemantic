@@ -5379,6 +5379,37 @@ def test_lookml_abstract_base_not_registered_inside_layer_context():
     assert layer.graph.get_model("orders").table == "orders"  # concrete child registered
 
 
+def test_lookml_table_backed_abstract_base_not_registered_inside_layer_context():
+    """A TABLE-BACKED abstract base must be skipped by deferred registration too.
+
+    The deferred auto-registration skip set keyed off tablelessness, so an `extension: required`
+    base that declares its own `sql_table_name` (a valid LookML abstract base) slipped through and
+    was registered as a queryable model in the active layer -- diverging from the CLI loader path,
+    which drops every `lookml_template` model regardless of source. The parser-owned marker, not
+    tablelessness, must decide.
+    """
+    import tempfile
+
+    from sidemantic import SemanticLayer
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".lkml", delete=False) as f:
+        f.write(
+            "view: base { extension: required  sql_table_name: real_base ;; "
+            "dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; } } "
+            "view: orders { extends: [base]  dimension: y { type: number  sql: ${TABLE}.y ;; } }"
+        )
+        f.flush()
+        path = Path(f.name)
+
+    with SemanticLayer() as layer:
+        LookMLAdapter().parse(path)  # must not raise
+    # The table-backed abstract base is hidden (Looker only uses it through extends), so it must not
+    # be registered even though it has a source.
+    assert "base" not in layer.graph.models
+    # The concrete child still registers, inheriting the base's table through extends.
+    assert layer.graph.get_model("orders").table == "real_base"
+
+
 def test_lookml_directory_load_merges_cross_file_refinement_before_defaulting_table():
     """A CLI directory load must merge `+view` refinements from OTHER files before defaulting.
 

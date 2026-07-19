@@ -59,21 +59,24 @@ class LookMLAdapter(BaseAdapter):
             set_current_layer(prev_layer)
         # Defer auto-registration until models are complete (tables defaulted). Skip ONLY
         # intentional non-queryable templates -- abstract extension:required bases and
-        # unsupported derived tables, marked in meta -- which add_model's validation would
-        # reject; mirrors loaders._is_registerable_model. A merely-broken tableless view
-        # (e.g. extends:[missing], left unresolved) is NOT skipped, so add_model still
-        # surfaces the real "no table/sql" error instead of silently dropping it. Strip
-        # survivors' relationships pointing at a skipped template (e.g. an explore join to
-        # it) so the active layer is not left with a dangling relationship validation flags.
-        # A name the layer ALREADY defines is NOT skipped: that is a genuine duplicate-model
-        # conflict, and add_model must surface it (as auto-registration did before this
-        # deferral) rather than silently leaving the pre-existing definition in place.
+        # unsupported derived tables, flagged with the parser-owned `lookml_template` meta
+        # marker -- which add_model's validation would reject; mirrors
+        # loaders._is_registerable_model. The marker (not tablelessness) is decisive: an
+        # `extension: required` base that declares or inherits a sql_table_name is STILL a
+        # template Looker only uses through extends, so it must be skipped even though it has
+        # a source. A merely-broken tableless view (e.g. extends:[missing], left unresolved)
+        # never carries the marker, so it is NOT skipped and add_model still surfaces the real
+        # "no table/sql" error instead of silently dropping it. Strip survivors' relationships
+        # pointing at a skipped template (e.g. an explore join to it) so the active layer is
+        # not left with a dangling relationship validation flags. A name the layer ALREADY
+        # defines is NOT skipped: that is a genuine duplicate-model conflict, and add_model must
+        # surface it (as auto-registration did before this deferral) rather than silently
+        # leaving the pre-existing definition in place.
         if prev_layer is not None:
             skipped = {
                 name
                 for name, m in graph.models.items()
-                if not (m.table or m.sql or getattr(m, "dax", None) or getattr(m, "source_uri", None))
-                and (m.meta or {}).get("lookml_template")
+                if (m.meta or {}).get("lookml_template")
                 # ...but a name the layer ALREADY defines is a duplicate-model conflict, not a
                 # skippable template: let add_model raise it rather than silently keeping the
                 # pre-existing model. (Mirrors the non-template case below.)

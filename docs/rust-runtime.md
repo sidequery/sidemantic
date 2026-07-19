@@ -7,8 +7,9 @@ Use Python to import external semantic formats, then export or normalize them in
 Export adapter output to the native contract with:
 
 ```bash
-sidemantic convert ./adapter-project --to sidemantic --output sidemantic.yml
-sidemantic validate sidemantic.yml --engine rust
+mkdir -p ./native-models
+sidemantic convert ./adapter-project --to sidemantic --output ./native-models/sidemantic.yml
+sidemantic validate ./native-models --engine rust
 ```
 
 ## Supported Inputs

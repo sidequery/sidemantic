@@ -60,3 +60,13 @@ def test_rust_native_runtime_release_docs_cover_install_and_compatibility() -> N
             "DuckDB extension artifacts are ABI-sensitive",
         ],
     )
+
+
+def test_rust_runtime_conversion_example_validates_a_directory() -> None:
+    assert_file_contains(
+        "docs/rust-runtime.md",
+        [
+            "--output ./native-models/sidemantic.yml",
+            "sidemantic validate ./native-models --engine rust",
+        ],
+    )

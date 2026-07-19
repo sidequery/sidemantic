@@ -659,5 +659,72 @@ models:
     assert report.connection_errors == ["Could not connect to warehouse: warehouse unavailable"]
 
 
+def test_snowflake_warehouse_identifiers_match_unquoted_metadata_case():
+    from sidemantic.validation_runner import _split_table_reference, _warehouse_column_type, _warehouse_table_exists
+
+    table_ref = _split_table_reference("public.orders", "snowflake")
+
+    assert table_ref is not None
+    assert _warehouse_table_exists(table_ref, {("PUBLIC", "ORDERS")}, "snowflake")
+    assert _warehouse_column_type({"ORDER_ID": "NUMBER"}, "order_id", "snowflake") == "NUMBER"
+
+
+def test_warehouse_table_reference_preserves_catalog_for_inspection():
+    from sidemantic.validation_runner import _split_table_reference
+
+    table_ref = _split_table_reference("analytics.public.orders", "snowflake")
+
+    assert table_ref is not None
+    assert table_ref.catalog == "analytics"
+    assert table_ref.schema == "public"
+    assert table_ref.name == "orders"
+    assert table_ref.qualified_name == "analytics.public.orders"
+
+
+def test_warehouse_validation_inspects_catalog_qualified_snowflake_table(monkeypatch, tmp_path):
+    (tmp_path / "models.yml").write_text(
+        """
+models:
+  - name: orders
+    table: analytics.public.orders
+    primary_key: order_id
+"""
+    )
+
+    inspected = []
+
+    class FakeSnowflakeAdapter:
+        def get_tables(self):
+            # Catalog-less metadata describes only the connection's current database.
+            return [{"schema": "PUBLIC", "table_name": "CURRENT_DATABASE_TABLE"}]
+
+        def get_columns(self, table_name, schema=None):
+            inspected.append((table_name, schema))
+            return [{"column_name": "ORDER_ID", "data_type": "NUMBER"}]
+
+        def close(self):
+            pass
+
+    from sidemantic.validation_runner import SemanticLayer as RealSemanticLayer
+
+    def semantic_layer(*args, **kwargs):
+        layer = RealSemanticLayer(auto_register=False)
+        if kwargs.get("connection") is not None:
+            layer.adapter = FakeSnowflakeAdapter()
+            layer.dialect = "snowflake"
+        return layer
+
+    monkeypatch.setattr("sidemantic.validation_runner.SemanticLayer", semantic_layer)
+
+    report = validate_directory(
+        tmp_path,
+        connection="snowflake://unused",
+        check_queries=False,
+    )
+
+    assert report.passed, report.all_errors
+    assert inspected == [("analytics.public.orders", None)]
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

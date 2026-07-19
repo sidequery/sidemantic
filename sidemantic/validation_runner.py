@@ -131,12 +131,65 @@ def validate_directory(
     return report
 
 
-def _split_table_reference(table: str, dialect: str) -> tuple[str, str | None] | None:
+@dataclass(frozen=True)
+class _TableReference:
+    name: str
+    schema: str | None = None
+    catalog: str | None = None
+    name_quoted: bool = False
+    schema_quoted: bool = False
+
+    @property
+    def qualified_name(self) -> str:
+        return ".".join(part for part in (self.catalog, self.schema, self.name) if part)
+
+
+def _split_table_reference(table: str, dialect: str) -> _TableReference | None:
     try:
         parsed = sqlglot.parse_one(table, into=exp.Table, dialect=dialect)
     except Exception:
         return None
-    return parsed.name, parsed.db or None
+    name_identifier = parsed.this
+    schema_identifier = parsed.args.get("db")
+    return _TableReference(
+        name=parsed.name,
+        schema=parsed.db or None,
+        catalog=parsed.catalog or None,
+        name_quoted=bool(getattr(name_identifier, "args", {}).get("quoted")),
+        schema_quoted=bool(getattr(schema_identifier, "args", {}).get("quoted")),
+    )
+
+
+def _warehouse_identifier_matches(expected: str, actual: str, dialect: str, *, quoted: bool = False) -> bool:
+    if dialect == "snowflake" and not quoted:
+        expected = expected.upper()
+    return expected == actual
+
+
+def _warehouse_table_exists(
+    table_ref: _TableReference,
+    available: set[tuple[str, str]],
+    dialect: str,
+) -> bool:
+    for known_schema, known_name in available:
+        if not _warehouse_identifier_matches(table_ref.name, known_name, dialect, quoted=table_ref.name_quoted):
+            continue
+        if table_ref.schema is None or _warehouse_identifier_matches(
+            table_ref.schema,
+            known_schema,
+            dialect,
+            quoted=table_ref.schema_quoted,
+        ):
+            return True
+    return False
+
+
+def _warehouse_column_type(actual: dict[str, str], column: str, dialect: str) -> str | None:
+    if column in actual:
+        return actual[column]
+    if dialect == "snowflake":
+        return actual.get(column.upper())
+    return None
 
 
 def _single_column(expression: str | None, fallback: str | None = None) -> str | None:
@@ -450,18 +503,23 @@ def _validate_warehouse(
                         f"Model '{model.name}' table '{model.table}' is not a simple warehouse table reference"
                     )
                     continue
-                table_name, schema = table_ref
+                # get_tables() is scoped to the adapter's current catalog on several
+                # warehouses. For a catalog-qualified model, let get_columns() inspect
+                # the fully qualified source instead of rejecting it against incomplete
+                # current-catalog metadata.
                 if (
-                    table_names
-                    and (schema or "", table_name) not in table_names
-                    and not any(known_name == table_name for _, known_name in table_names)
+                    table_ref.catalog is None
+                    and table_names
+                    and not _warehouse_table_exists(table_ref, table_names, layer.dialect)
                 ):
                     report.warehouse_errors.append(
                         f"Model '{model.name}' table '{model.table}' does not exist in the warehouse"
                     )
                     continue
                 try:
-                    warehouse_columns = layer.adapter.get_columns(table_name, schema=schema)
+                    inspection_name = table_ref.qualified_name if table_ref.catalog else table_ref.name
+                    inspection_schema = None if table_ref.catalog else table_ref.schema
+                    warehouse_columns = layer.adapter.get_columns(inspection_name, schema=inspection_schema)
                 except Exception as exc:
                     report.warehouse_errors.append(
                         f"Model '{model.name}' table '{model.table}' could not be inspected: {exc}"
@@ -471,19 +529,21 @@ def _validate_warehouse(
                 actual = {
                     str(column.get("column_name")): str(column.get("data_type") or "") for column in warehouse_columns
                 }
-                warehouse_types[model.name] = actual
+                warehouse_types[model.name] = {}
                 for column, expected_type in _required_columns(model, layer.graph).items():
-                    if column not in actual:
+                    actual_type = _warehouse_column_type(actual, column, layer.dialect)
+                    if actual_type is None:
                         report.warehouse_errors.append(
                             f"Model '{model.name}' references missing column '{column}' in table '{model.table}'"
                         )
                         continue
+                    warehouse_types[model.name][column] = actual_type
                     if expected_type in {"numeric", "time", "boolean"}:
-                        actual_family = _warehouse_type_family(actual[column])
+                        actual_family = _warehouse_type_family(actual_type)
                         if actual_family is not None and actual_family != expected_type:
                             report.warehouse_errors.append(
                                 f"Model '{model.name}' column '{column}' is declared {expected_type} but warehouse "
-                                f"type is {actual[column]}"
+                                f"type is {actual_type}"
                             )
 
             if check_keys and (model.table or model.sql):

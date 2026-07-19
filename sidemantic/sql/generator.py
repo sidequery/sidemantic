@@ -6210,7 +6210,8 @@ LEFT JOIN {preagg_table} AS {rollup_alias}
             # dimensions; otherwise the stored rows are aggregated and must not
             # be served ungrouped. Fall through to raw tables.
             preagg_dims = set(preagg.dimensions or [])
-            if not set(model.primary_key_columns).issubset(preagg_dims):
+            primary_key_columns = set(model.primary_key_columns)
+            if not primary_key_columns or not primary_key_columns.issubset(preagg_dims):
                 return None
 
         # Generate SQL against pre-aggregation table

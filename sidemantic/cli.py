@@ -696,8 +696,9 @@ def _migration_queries(queries: Path | None) -> Path:
             resolved = project.root / resolved
     resolved = resolved.resolve()
     if not resolved.exists():
+        display_path = queries if queries is not None else resolved
         raise typer.BadParameter(
-            f"Query source not found: {resolved}",
+            f"Query source not found: {display_path}",
             param_hint="QUERIES",
         )
     return resolved

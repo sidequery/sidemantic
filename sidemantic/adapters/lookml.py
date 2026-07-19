@@ -153,48 +153,415 @@ class LookMLAdapter(BaseAdapter):
         for explore_def in parsed.get("explores") or []:
             self._parse_explore(explore_def, graph)
 
-    def _resolve_dimension_references(self, sql: str, dimension_sql_lookup: dict[str, str], max_depth: int = 10) -> str:
-        """Resolve ${dimension_name} references in SQL expressions.
+    # Matches ${field} and ${view.field}. ${TABLE} is handled specially.
+    _REF_RE = re.compile(r"\$\{(?:([a-zA-Z_]\w*)\.)?([a-zA-Z_]\w*)\}")
 
-        This handles LookML's dimension reference syntax where measures and dimensions
-        can reference other dimensions using ${dimension_name}. It handles recursive
-        resolution when a dimension references another dimension.
+    @staticmethod
+    def _strip_self_view_qualifiers(view_def: dict, view_name: str) -> dict:
+        """Rewrite ``${view_name.field}`` -> ``${field}`` in this view's SQL.
+
+        In LookML a self-qualified reference (``${this_view.field}``) is identical
+        to the bare ``${field}``. Normalizing it here (in place) lets the
+        bare-reference resolver handle it instead of leaking the literal ``${...}``
+        into generated SQL (which the database rejects).
+        """
+        pat = re.compile(r"\$\{" + re.escape(view_name) + r"\.([a-zA-Z_]\w*)\}")
+
+        def fix(value):
+            return pat.sub(r"${\1}", value) if isinstance(value, str) else value
+
+        # `filters` are view-level segments; their `sql` can self-qualify a field the same way
+        # (`sql: ${orders.status} = 'completed' ;;`) and must be normalized too, else the leaked
+        # ${orders.status} reaches the WHERE clause and the database rejects it.
+        for key in ("dimensions", "dimension_groups", "measures", "filters"):
+            for item in view_def.get(key) or []:
+                if not isinstance(item, dict):
+                    continue
+                for sql_key in ("sql", "sql_start", "sql_end", "sql_distinct_key"):
+                    if sql_key in item:
+                        item[sql_key] = fix(item[sql_key])
+        derived = view_def.get("derived_table")
+        if isinstance(derived, dict) and "sql" in derived:
+            derived["sql"] = fix(derived["sql"])
+        return view_def
+
+    def _resolve_dimension_references(
+        self,
+        sql: str,
+        dimension_sql_lookup: dict[str, str],
+        max_depth: int = 10,
+        dimension_names: set[str] | None = None,
+    ) -> str:
+        """Resolve ``${dimension}`` references in a SQL expression.
+
+        Handles LookML's reference syntax where dimensions/measures reference other
+        dimensions via ``${name}``. Resolution is recursive (a dimension may
+        reference another dimension) with cycle detection, so acyclic chains of any
+        depth resolve fully and circular references terminate instead of either
+        looping forever or silently truncating at a fixed depth.
+
+        ``${TABLE}`` is left untouched (handled separately). Self-view qualifiers
+        are expected to have been normalized away already (see
+        ``_strip_self_view_qualifiers``); any remaining ``${view.field}`` is a
+        cross-view reference, which sidemantic cannot represent inline, so it is
+        emitted as a qualified column ``view.field`` with a warning rather than
+        leaking the literal ``${...}`` (a guaranteed SQL syntax error).
 
         Args:
-            sql: SQL expression that may contain ${dimension_name} references
-            dimension_sql_lookup: Dict mapping dimension names to their SQL expressions
-            max_depth: Maximum recursion depth to prevent infinite loops
+            sql: SQL expression that may contain ``${...}`` references.
+            dimension_sql_lookup: Map of dimension name -> its SQL expression.
+            max_depth: Retained for compatibility; cycle detection is authoritative.
 
         Returns:
-            SQL with all dimension references resolved
+            SQL with references resolved.
         """
-        if not sql or max_depth <= 0:
+        if not sql:
             return sql
 
-        # Pattern to match ${name} but NOT ${TABLE} or ${model.field}
-        pattern = r"\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}"
-
-        def replace_ref(match: re.Match) -> str:
-            ref_name = match.group(1)
-            if ref_name == "TABLE":
-                # Keep ${TABLE} as-is, it's handled separately
+        def resolve(text: str, path: frozenset) -> str:
+            def replace_ref(match: re.Match) -> str:
+                view, name = match.group(1), match.group(2)
+                if view is None and name == "TABLE":
+                    return match.group(0)
+                if view is not None:
+                    # Cross-view reference (self-view already normalized away).
+                    # Sidemantic cannot represent an inline cross-model column, so
+                    # leave the ${view.field} literal and warn rather than emitting a
+                    # qualified column that the generator can't join (which would
+                    # produce wrong SQL or fail with "no join path").
+                    logger.warning(
+                        "LookML cross-view reference ${%s.%s} is not supported (sidemantic "
+                        "has no inline cross-model column); left unresolved.",
+                        view,
+                        name,
+                    )
+                    return match.group(0)
+                if name in dimension_sql_lookup:
+                    if name in path:
+                        # Circular reference: stop expanding to avoid infinite loop.
+                        return match.group(0)
+                    return f"({resolve(dimension_sql_lookup[name], path | {name})})"
+                if dimension_names and name in dimension_names:
+                    # Compact dimension (declared with no explicit sql) -> its default
+                    # column. Without this the literal ${name} would leak into SQL.
+                    return f"({{model}}.{name})"
+                # Unknown bare reference: leave as-is.
                 return match.group(0)
-            if ref_name in dimension_sql_lookup:
-                # Return the dimension's SQL, wrapped in parentheses for safety
-                return f"({dimension_sql_lookup[ref_name]})"
-            # Unknown reference, keep as-is
-            return match.group(0)
 
-        resolved = re.sub(pattern, replace_ref, sql)
+            return self._REF_RE.sub(replace_ref, text)
 
-        # If we made changes and there are still references, recurse
-        if resolved != sql and re.search(pattern, resolved):
-            # Check if remaining refs are just ${TABLE} or unknown
-            remaining_refs = re.findall(pattern, resolved)
-            if any(ref != "TABLE" and ref in dimension_sql_lookup for ref in remaining_refs):
-                return self._resolve_dimension_references(resolved, dimension_sql_lookup, max_depth - 1)
+        return resolve(sql, frozenset())
 
-        return resolved
+    @classmethod
+    def _fold_complete_sql_filters(cls, sql: str, filters: list[str], force: bool = False) -> str | None:
+        """Fold measure ``filters`` INTO a complete-SQL aggregate when the generator's
+        column-nulling can't apply them safely.
+
+        The generator filters an opaque complete-SQL measure by projecting each column the
+        SQL references wrapped in ``CASE WHEN <filter> THEN col ELSE NULL END``; the outer
+        aggregate then ignores the NULLs. That works for ``SUM(amount)`` but is WRONG in two
+        cases: (1) a ZERO-column aggregate like ``COUNT(*)`` has no column to null so the
+        filter is silently dropped (and a mix like ``COUNT(*) / COUNT(DISTINCT id)`` filters
+        inconsistently); (2) the SQL tests a filter-affected column for NULL (``col IS NULL``
+        / ``COALESCE(col, ...)``) -- nulling the column to EXCLUDE a row instead makes
+        ``col IS NULL`` true, COUNTING the excluded row. In either case rewrite EVERY
+        aggregate to carry the filter via a portable ``CASE WHEN`` inside its argument and
+        return the new SQL (caller then clears ``filters``). Returns None to leave the SQL
+        and filters untouched -- the common all-columns/no-null-test case (generator handles
+        it) or any parse failure (fall back to the existing path).
+        """
+        import sqlglot
+        from sqlglot import expressions as exp
+
+        from sidemantic.sql.aggregation_detection import _ANONYMOUS_AGGREGATE_FUNCTIONS
+
+        def _case(cond, then):
+            return exp.Case(ifs=[exp.If(this=cond, true=then)])
+
+        try:
+            tree = sqlglot.parse_one(sql.replace("{model}", "__MODEL__"))
+            parsed_conds = [sqlglot.parse_one(f.replace("{model}", "__MODEL__")) for f in filters]
+        except Exception:
+            return None
+        # Include recognized ANONYMOUS aggregates (PRODUCT/ENTROPY/WEIGHTED_AVG/... which
+        # sqlglot parses as exp.Anonymous, not exp.AggFunc) so a filter is folded into them
+        # too -- otherwise a mix like PRODUCT(amount) / COUNT(*) would fold only the COUNT,
+        # clear the filters, and leave PRODUCT computed over ALL rows.
+        aggs = list(tree.find_all(exp.AggFunc))
+        aggs += [n for n in tree.find_all(exp.Anonymous) if (n.name or "").lower() in _ANONYMOUS_AGGREGATE_FUNCTIONS]
+        if not aggs or not parsed_conds:
+            return None
+
+        # An ordered-set aggregate (PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY x)) keeps its
+        # value column in the enclosing WithinGroup's ORDER BY, NOT inside the AggFunc (whose
+        # only arg is the percentile constant). Its "aggregate scope" for the column check and
+        # for folding is therefore the WithinGroup.
+        def _scope(a):
+            wg = a.find_ancestor(exp.WithinGroup)
+            return wg if wg is not None else a
+
+        # Column-nulling is UNSAFE when nulling a filter-affected column to EXCLUDE a row does
+        # NOT actually exclude it: (1) a NULL-test (`col IS NULL` / `COALESCE(col, ...)`) flips
+        # to true and counts the row; (2) a keyed symmetric-distinct aggregate hashes the key
+        # (`HASH(col)`), and HASH(NULL) is a non-NULL constant, so the row still contributes
+        # (garbage). In those cases fold the filter into the aggregate predicate instead.
+        # (3) a conditional with a non-NULL DEFAULT branch also survives nulling: nulling the
+        # predicate's column only makes the condition false, and the default still yields a
+        # non-NULL value, so the aggregate keeps counting the excluded row -- e.g.
+        # COUNT(CASE WHEN status='completed' THEN 1 ELSE 0 END) or its IF/IFF spellings return
+        # EVERY row rather than the filtered ones. Covers:
+        #   - CASE ... ELSE <x>            -> exp.Case with a `default`
+        #   - IF(cond, a, b)               -> exp.If with a non-None `false` branch. A CASE's own
+        #                                     WHEN clauses are exp.If with false=None, so a plain
+        #                                     CASE (no ELSE) is NOT matched here.
+        #   - IFF(cond, a, b) (Snowflake)  -> parsed as exp.Anonymous with 3 args
+        # (NVL / IFNULL already parse as exp.Coalesce, covered above.)
+        case_with_default = any(c.args.get("default") is not None for c in tree.find_all(exp.Case))
+        if_with_default = any(n.args.get("false") is not None for n in tree.find_all(exp.If))
+        iff_with_default = any(
+            (n.name or "").lower() in ("iff", "if") and len(n.expressions) >= 3 for n in tree.find_all(exp.Anonymous)
+        )
+        # (4) a MULTI-COLUMN DISTINCT -- COUNT(DISTINCT (a, b)) or COUNT(DISTINCT a, b) -- is unsafe
+        # to null: nulling the columns of an excluded row yields the tuple (NULL, NULL), which is
+        # NOT a NULL value (only its components are), so DISTINCT counts that phantom tuple ONCE and
+        # inflates the result by one. A single-column DISTINCT is safe (its NULL is ignored).
+        multi_col_distinct = any(
+            len(d.expressions) > 1 or any(isinstance(e, exp.Tuple) and len(e.expressions) > 1 for e in d.expressions)
+            for d in tree.find_all(exp.Distinct)
+        )
+        unsafe_nulling = (
+            tree.find(exp.Is) is not None
+            or tree.find(exp.Coalesce) is not None
+            or re.search(r"\bhash\s*\(", sql, re.I) is not None
+            or case_with_default
+            or if_with_default
+            or iff_with_default
+            or multi_col_distinct
+        )
+        # Otherwise, if every aggregate already references a column the generator can null
+        # (nulling the value/ORDER-BY column filters it; aggregates ignore NULLs), the
+        # existing path is correct AND consistent -> don't rewrite. `force` skips this: a caller
+        # INLINING this SQL into another measure has no generator column-nulling step, so the
+        # filter must always be baked into a CASE here.
+        if not force and not unsafe_nulling and all(any(True for _ in _scope(a).find_all(exp.Column)) for a in aggs):
+            return None
+
+        def _combined():
+            c = parsed_conds[0].copy()
+            for p in parsed_conds[1:]:
+                c = exp.And(this=c, expression=p.copy())
+            return c
+
+        for a in aggs:
+            # Is `a` itself windowed? Its OVER wrapper (exp.Window) is normally the direct parent,
+            # but an aggregate FILTER clause (COUNT(*) FILTER (WHERE ...) OVER ()) nests an exp.Filter
+            # between the aggregate and the Window, so walk past any Filter wrapper. (A NESTED
+            # aggregate like the inner COUNT of SUM(COUNT(*)) OVER () has a non-Filter/-Window parent,
+            # so it is correctly NOT treated as windowed and still folds.)
+            _windowed = a.parent
+            while isinstance(_windowed, exp.Filter):
+                _windowed = _windowed.parent
+            if isinstance(_windowed, exp.Window):
+                # A WINDOWED aggregate (SUM(...) OVER ()) runs AFTER grouping, so wrapping its
+                # argument in CASE WHEN <filter> puts the filter column inside the window, ungrouped
+                # -- the engine rejects it. When the window wraps a NESTED aggregate
+                # (SUM(COUNT(*)) OVER ()), that inner aggregate is also in `aggs` and carries the
+                # filter, so skip only the outer one. With no inner aggregate to carry it
+                # (SUM(amount) OVER ()), the predicate cannot be applied to this term consistently
+                # with the rest -> abort the fold rather than emit inconsistent or invalid SQL.
+                inner_aggs = [n for n in a.find_all(exp.AggFunc) if n is not a]
+                inner_aggs += [
+                    n
+                    for n in a.find_all(exp.Anonymous)
+                    if n is not a and (n.name or "").lower() in _ANONYMOUS_AGGREGATE_FUNCTIONS
+                ]
+                if inner_aggs:
+                    continue
+                return None
+            wg = a.find_ancestor(exp.WithinGroup)
+            if wg is not None:
+                # Ordered-set aggregate: fold into the ORDER BY value(s), never the percentile
+                # constant (PERCENTILE_CONT(CASE ...) would be a non-constant parameter).
+                for ordered in wg.find_all(exp.Ordered):
+                    ordered.set("this", _case(_combined(), ordered.this.copy()))
+                continue
+            if isinstance(a, exp.Anonymous):
+                # Anonymous aggregate: its arguments live in .expressions (not .this, which is
+                # the function name), so wrap each argument to carry the filter.
+                a.set("expressions", [_case(_combined(), e.copy()) for e in a.expressions])
+                continue
+            arg = a.this
+            if isinstance(arg, exp.Distinct):
+                arg.set("expressions", [_case(_combined(), e.copy()) for e in arg.expressions])
+            elif arg is None or isinstance(arg, exp.Star):
+                a.set("this", _case(_combined(), exp.Literal.number(1)))
+            else:
+                a.set("this", _case(_combined(), arg.copy()))
+        try:
+            return tree.sql().replace("__MODEL__", "{model}")
+        except Exception:
+            return None
+
+    @classmethod
+    def _generator_column_nulling_suffices(cls, sql: str) -> bool:
+        """True if the generator's column-nulling can faithfully apply a filter to this complete SQL.
+
+        Mirrors the early-return in ``_fold_complete_sql_filters``: nulling the columns each
+        aggregate references filters it only when EVERY aggregate has a column to null and no
+        unsafe-nulling construct (NULL-test, COALESCE, HASH, CASE/IF/IFF-with-default, multi-column
+        DISTINCT) is present. When this is False AND folding also aborts, the filter cannot be
+        applied at all -- a zero-column aggregate like ``COUNT(*) FILTER (WHERE ...) OVER ()`` has no
+        column to null, so the imported filter would silently count every row.
+        """
+        import sqlglot
+        from sqlglot import expressions as exp
+
+        from sidemantic.sql.aggregation_detection import _ANONYMOUS_AGGREGATE_FUNCTIONS
+
+        try:
+            tree = sqlglot.parse_one(sql.replace("{model}", "__M__"))
+        except Exception:
+            return False
+        aggs = list(tree.find_all(exp.AggFunc))
+        aggs += [n for n in tree.find_all(exp.Anonymous) if (n.name or "").lower() in _ANONYMOUS_AGGREGATE_FUNCTIONS]
+        if not aggs:
+            return False
+        unsafe = (
+            tree.find(exp.Is) is not None
+            or tree.find(exp.Coalesce) is not None
+            or re.search(r"\bhash\s*\(", sql, re.I) is not None
+            or any(c.args.get("default") is not None for c in tree.find_all(exp.Case))
+            or any(n.args.get("false") is not None for n in tree.find_all(exp.If))
+            or any(
+                (n.name or "").lower() in ("iff", "if") and len(n.expressions) >= 3
+                for n in tree.find_all(exp.Anonymous)
+            )
+            or any(
+                len(d.expressions) > 1
+                or any(isinstance(e, exp.Tuple) and len(e.expressions) > 1 for e in d.expressions)
+                for d in tree.find_all(exp.Distinct)
+            )
+        )
+        if unsafe:
+            return False
+
+        def _scope(a):
+            wg = a.find_ancestor(exp.WithinGroup)
+            return wg if wg is not None else a
+
+        return all(any(True for _ in _scope(a).find_all(exp.Column)) for a in aggs)
+
+    @staticmethod
+    def _sql_has_list_aggregate(sql: str) -> bool:
+        """True if ``sql`` contains a NULL-retaining array collector -- ``LIST(...)`` (sqlglot's
+        ``exp.List``) or ``ARRAY_AGG(...)`` (``exp.ArrayAgg``).
+
+        Callers use this to refuse FILTERING such an expression: these collectors keep NULL inputs,
+        so a filter can be applied neither by column-nulling (the excluded row's NULL is still an
+        element -- ARRAY_LENGTH still counts it) nor by a folded CASE.
+        """
+        import sqlglot
+        from sqlglot import expressions as exp
+
+        try:
+            tree = sqlglot.parse_one(sql.replace("{model}", "__m__").replace("${TABLE}", "__m__"))
+        except Exception:
+            return False
+        return any(True for _ in tree.find_all(exp.List)) or any(True for _ in tree.find_all(exp.ArrayAgg))
+
+    @staticmethod
+    def _has_subquery(sql: str) -> bool:
+        """True if ``sql`` contains a SELECT outside any quoted token.
+
+        A raw ``\\bselect\\b`` scan also matches the word inside a VALUE
+        (``SUM(CASE WHEN status = 'select' THEN amount END)``) or inside a quoted IDENTIFIER for a
+        column named after a reserved word (``SUM(${TABLE}."select")``, ``SUM(`select`)``), inside a
+        SQL COMMENT (``/* select paid rows */ SUM(amount)``), or inside a LookML ``${...}`` field
+        reference to a column named ``select`` (``SUM(${select})``) -- none is a subquery, and all
+        are valid inline aggregates. This runs on the RAW SQL before refs are resolved, so blank out
+        every quoted form, every comment, AND every ``${...}`` placeholder first -- in one left-to-
+        right pass so a comment inside a string (or a quote inside a comment) is consumed by
+        whichever opens first, leaving only real SQL keywords.
+        """
+        stripped = re.sub(
+            r"""'(?:[^']|'')*'|"(?:[^"]|"")*"|`[^`]*`|\[[^\]]*\]|--[^\n]*|/\*[\s\S]*?\*/|\$\{[^}]*\}""",
+            " ",
+            sql or "",
+        )
+        return bool(re.search(r"(?is)\bselect\b", stripped))
+
+    @classmethod
+    def _mixed_is_aggregate_safe(cls, sql: str, is_dim_ref, dim_sql_lookup: dict[str, str] | None = None) -> bool:
+        """For a ``type: number`` measure that mixes measure refs with dimension refs,
+        return True iff every dimension column ends up INSIDE an aggregate (no raw,
+        ungrouped column -- which would be a GROUP BY error).
+
+        Probes with measure refs as aggregate-valued constants (``1``) and dimension refs
+        as their RESOLVED SQL (falling back to a raw column ``t.<name>`` for a compact
+        dimension with no explicit sql), then checks via sqlglot that no column sits
+        outside an aggregate. Using the resolved SQL matters for a CONSTANT-valued
+        dimension (``sql: 0.07 ;;``): probing it as ``t.<name>`` would look like a raw
+        ungrouped column and wrongly drop a valid measure such as
+        ``${total} * ${tax_rate}`` (really ``SUM(amount) * 0.07``).
+        Returns False on any parse failure (treat as unsafe).
+        """
+
+        def _probe(m):
+            v, rn = m.group(1), m.group(2)
+            if v is None and rn != "TABLE" and is_dim_ref(rn):
+                # Parenthesized so the substituted expression keeps its precedence; the
+                # caller's {model} -> t replacement below rewrites any table qualifier.
+                dim_sql = (dim_sql_lookup or {}).get(rn)
+                return f"({dim_sql})" if dim_sql else f"t.{rn}"
+            return "1"
+
+        probe = cls._REF_RE.sub(_probe, sql).replace("{model}", "t")
+        try:
+            import sqlglot
+            from sqlglot import expressions as exp
+
+            from sidemantic.sql.aggregation_detection import _ANONYMOUS_AGGREGATE_FUNCTIONS
+
+            tree = sqlglot.parse_one(probe)
+        except Exception:
+            return False
+
+        def _is_agg_scope(node) -> bool:
+            # A node that groups its argument columns: an aggregate function (incl. an
+            # anonymous/engine-specific aggregate), an aggregate FILTER (WHERE ...) predicate
+            # (sqlglot nests that under exp.Filter, not exp.AggFunc), an ordered-set aggregate's
+            # WITHIN GROUP (ORDER BY ...) (exp.WithinGroup, e.g. PERCENTILE_CONT(0.5) WITHIN
+            # GROUP (ORDER BY x)), or a LIST(...) collector (DuckDB's LIST -> exp.List, which
+            # aggregation_detection also counts as an aggregate, so this must agree).
+            return isinstance(node, (exp.AggFunc, exp.Filter, exp.WithinGroup, exp.List)) or (
+                isinstance(node, exp.Anonymous) and (node.name or "").lower() in _ANONYMOUS_AGGREGATE_FUNCTIONS
+            )
+
+        def _column_is_grouped(c) -> bool:
+            # Walk up from the column to the FIRST aggregate-or-window boundary.
+            node = c.parent
+            while node is not None:
+                if isinstance(node, exp.Window):
+                    # Reached a window before any plain aggregate: the column is a raw per-row
+                    # argument of the window (SUM(x) OVER (), LAG(x) OVER ()) -- still ungrouped.
+                    return False
+                if _is_agg_scope(node):
+                    # A plain aggregate consumes the column and produces a grouped value. But if
+                    # that aggregate is ITSELF windowed (SUM(x) OVER ()), the column is a raw
+                    # per-row argument, so only a NON-windowed aggregate groups it. A nested
+                    # aggregate inside a window -- SUM(SUM(x)) OVER () -- is reached here at the
+                    # inner SUM, whose parent is the outer SUM (not the Window), so it is grouped.
+                    # An aggregate FILTER clause nests exp.Filter between the aggregate and its OVER
+                    # window (SUM(x) FILTER (WHERE ...) OVER ()), so walk past Filter wrappers to see
+                    # the window -- otherwise a raw windowed aggregate reads as grouped.
+                    _p = node.parent
+                    while isinstance(_p, exp.Filter):
+                        _p = _p.parent
+                    return not isinstance(_p, exp.Window)
+                node = node.parent
+            return False
+
+        return all(_column_is_grouped(c) for c in tree.find_all(exp.Column))
 
     # Plain decimal numeric literal: optional sign, then digits with optional fraction,
     # or a bare fraction. Deliberately excludes Python-/float()-only spellings that this
@@ -284,6 +651,57 @@ class LookMLAdapter(BaseAdapter):
         r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
         r"week|month|year)\b"
     )
+
+    def _measure_filter_conds(self, measure_def: dict, view_name: str | None = None) -> tuple[list[str], bool]:
+        """Convert a measure's LookML ``filters`` to SQL condition strings.
+
+        Handles both the shorthand list-of-dicts (``filters: [status: "x"]``) and the
+        block (``filter: { field: ...  value: ... }``) syntaxes that ``lkml`` collapses
+        into ``filters__all``. A SELF-view qualifier (``<this_view>.status``) is stripped
+        so the converter builds ``{model}.status``.
+
+        Returns ``(conds, has_cross_view)``: a CROSS-view qualifier (``other_view.field``) cannot be
+        represented in the single-table model CTE, so its condition is omitted and the flag is set
+        for the caller to drop the whole measure rather than import a broken filter.
+        """
+
+        def _bare(field: str) -> str:
+            if isinstance(field, str) and view_name and field.startswith(f"{view_name}."):
+                rest = field[len(view_name) + 1 :]
+                if re.fullmatch(r"\w+", rest):
+                    return rest
+            return field
+
+        # A filter field that still carries a dot after stripping the self-view qualifier is a
+        # CROSS-view reference (customers.active): the converter would build {model}.customers.active,
+        # and the model CTE (single base table) has no `customers` alias, so the measure fails to
+        # query. Flag it so the caller drops the whole measure, matching how a cross-view inline sql
+        # ref is dropped -- rather than importing a measure with a broken filter.
+        has_cross_view = False
+
+        def _add(field, value):
+            nonlocal has_cross_view
+            bare = _bare(field)
+            if isinstance(bare, str) and re.search(r"[^\W]+\.[^\W]", bare) and "${" not in bare:
+                has_cross_view = True
+                return
+            fs = self._convert_lookml_filter_to_sql(bare, value)
+            if fs:
+                conds.append(fs)
+
+        conds: list[str] = []
+        for item in measure_def.get("filters__all") or []:
+            if isinstance(item, list):
+                for filter_dict in item:
+                    if isinstance(filter_dict, dict):
+                        for field, value in filter_dict.items():
+                            _add(field, value)
+            elif isinstance(item, dict):
+                field = item.get("field")
+                value = item.get("value")
+                if field and value:
+                    _add(field, value)
+        return conds, has_cross_view
 
     def _convert_lookml_filter_to_sql(self, field: str, value: str) -> str:
         """Convert a LookML filter value to a SQL condition.
@@ -695,6 +1113,10 @@ class LookMLAdapter(BaseAdapter):
         if not name:
             return None
 
+        # Normalize self-view-qualified references (${this_view.field} -> ${field})
+        # so they resolve like bare references instead of leaking literal ${...}.
+        view_def = self._strip_self_view_qualifiers(view_def, name.lstrip("+"))
+
         # Get table name
         table = view_def.get("sql_table_name")
 
@@ -732,11 +1154,24 @@ class LookMLAdapter(BaseAdapter):
                     if timeframe != "raw":
                         dimension_sql_lookup[f"{group_name}_{timeframe}"] = group_sql
 
+        # All declared dimension names (including compact dimensions with no explicit
+        # sql), so ${ref}s to a compact dimension resolve to its default column rather
+        # than leaking the literal ${name}.
+        declared_dim_names: set[str] = {d.get("name") for d in dimension_defs if d.get("name")}
+        for dim_group_def in view_def.get("dimension_groups") or []:
+            group_name = dim_group_def.get("name")
+            if group_name:
+                for timeframe in dim_group_def.get("timeframes", ["date"]):
+                    if timeframe != "raw":
+                        declared_dim_names.add(f"{group_name}_{timeframe}")
+
         # Resolve any dimension-to-dimension references in the lookup
         # (e.g., line_total references quantity, unit_price, line_discount)
         resolved_dimension_sql: dict[str, str] = {}
         for dim_name, dim_sql in dimension_sql_lookup.items():
-            resolved_sql = self._resolve_dimension_references(dim_sql, dimension_sql_lookup)
+            resolved_sql = self._resolve_dimension_references(
+                dim_sql, dimension_sql_lookup, dimension_names=declared_dim_names
+            )
             resolved_dimension_sql[dim_name] = resolved_sql
 
         # Parse dimensions with resolved SQL
@@ -754,7 +1189,7 @@ class LookMLAdapter(BaseAdapter):
 
         # Parse dimension_group (time dimensions)
         for dim_group_def in view_def.get("dimension_groups") or []:
-            dims = self._parse_dimension_group(dim_group_def, resolved_dimension_sql)
+            dims = self._parse_dimension_group(dim_group_def, resolved_dimension_sql, declared_dim_names)
             dimensions.extend(dims)
 
         # Build a set of dimension names for measure reference resolution
@@ -767,23 +1202,233 @@ class LookMLAdapter(BaseAdapter):
         # measure's own aggregate function.
         measure_names: set[str] = set()
         measure_agg_lookup: dict[str, str] = {}
+        # Full resolved aggregate SQL per measure (e.g. total -> "SUM({model}.amount)"),
+        # used to expand a measure ref inside an aggregate-safe mixed number measure into
+        # its base aggregate over the REAL column (not a phantom {model}.<measure>).
+        measure_full_sql_lookup: dict[str, str] = {}
+
+        def _folded_measure_filter(m_def):
+            # AND-joined predicate for a base measure's OWN filters, with each filter field
+            # resolved through the dimension SQL ({model}.state -> ({model}.status) when the
+            # dimension renames the column) so the folded aggregate hits the real column.
+            conds, _ = self._measure_filter_conds(m_def, name.lstrip("+"))
+            if not conds:
+                return None
+            resolved = []
+            for c in conds:
+                c = re.sub(
+                    r"\{model\}\.(\w+)",
+                    lambda mm: f"({resolved_dimension_sql[mm.group(1)]})"
+                    if mm.group(1) in resolved_dimension_sql
+                    else mm.group(0),
+                    c,
+                )
+                resolved.append(f"({c})")
+            return " AND ".join(resolved)
+
         for m in view_def.get("measures") or []:
             m_name = m.get("name")
             if not m_name:
                 continue
             measure_names.add(m_name)
-            agg_template = self._SQL_AGG_FUNC.get(m.get("type", "count"))
+            m_type = m.get("type", "count")
+            agg_template = self._SQL_AGG_FUNC.get(m_type)
             if agg_template:
                 measure_agg_lookup[m_name] = agg_template
+                m_sql = m.get("sql")
+                if m_sql:
+                    col = self._resolve_dimension_references(
+                        m_sql.replace("${TABLE}", "{model}"),
+                        resolved_dimension_sql,
+                        dimension_names=declared_dim_names,
+                    )
+                    # Fold the base measure's OWN LookML filters into its aggregate so a
+                    # mixed-expr expansion of a filtered measure (e.g. completed_total with
+                    # filters: [status: "completed"]) keeps the filter, not SUM(amount).
+                    joined = _folded_measure_filter(m)
+                    if m_type == "count" and col.strip() == "*":
+                        # `type: count sql: * ;;` is the row-count form; `*` can't live inside
+                        # a CASE, so route it through the no-sql count path instead of emitting
+                        # an invalid COUNT(CASE WHEN ... THEN * END).
+                        measure_full_sql_lookup[m_name] = (
+                            f"COUNT(CASE WHEN {joined} THEN 1 END)" if joined else "COUNT(*)"
+                        )
+                    else:
+                        if joined:
+                            col = f"CASE WHEN {joined} THEN {col} END"
+                        measure_full_sql_lookup[m_name] = agg_template.format(col)
+                elif m_type == "count":
+                    # type: count with no sql -> COUNT(*); fold the measure's own filters
+                    # so a filtered count (completed_count) keeps its filter in a mixed-expr
+                    # expansion instead of counting all rows.
+                    joined = _folded_measure_filter(m)
+                    if joined:
+                        measure_full_sql_lookup[m_name] = f"COUNT(CASE WHEN {joined} THEN 1 END)"
+                    else:
+                        measure_full_sql_lookup[m_name] = "COUNT(*)"
+            elif m_type in ("sum_distinct", "average_distinct", "median_distinct", "percentile_distinct"):
+                # Supported distinct aggregates: reuse _parse_distinct_measure's generated SQL
+                # so a complete `type: number` expression that references one (e.g.
+                # ${sum_distinct_total} / SUM(${amount})) can EXPAND it instead of being
+                # dropped as unexpandable. Only expand UNFILTERED distinct measures: their
+                # SQL (esp. the keyed symmetric-aggregate / quantile forms) has no single
+                # foldable predicate slot, so a filtered distinct can't be expanded faithfully
+                # -- leave it out so the referencing expr is skipped with a warning rather than
+                # silently producing an UNfiltered distinct.
+                if not self._measure_filter_conds(m, name.lstrip("+"))[0]:
+                    dm = self._parse_distinct_measure(m_name, m_type, m, resolved_dimension_sql, declared_dim_names)
+                    if dm and dm.sql:
+                        measure_full_sql_lookup[m_name] = dm.sql
+
+        # Second pass: also expand `type: number` measures into measure_full_sql_lookup so a
+        # LATER number measure that references them can go through the complete-SQL path. Covers
+        # (a) inline-aggregate "complete" measures (SUM(${amount}) with filters) and (b) pure
+        # derived metric-of-metrics (${revenue} - ${cost}). Without this, referencing them either
+        # drops the measure as unexpandable or silently loses a referenced measure's filter.
+        # Iterate to a fixpoint so chains (avg_margin -> gross_margin -> revenue/cost) resolve
+        # regardless of declaration order. filter_sensitive_measures tracks measures whose folded
+        # filter a plain derived reference would drop -- a referencing expr must INLINE them.
+        from sidemantic.sql.aggregation_detection import sql_has_aggregate
+
+        number_measure_defs = {
+            m["name"]: m
+            for m in (view_def.get("measures") or [])
+            if m.get("name") and m.get("type") == "number" and m.get("sql")
+        }
+        filter_sensitive_measures: set[str] = set()
+
+        def _expand_number_measure(m_def):
+            """Return (complete_sql, is_filter_sensitive) or None if not (yet) expandable."""
+            raw = m_def["sql"].replace("${TABLE}", "{model}")
+            refs = [(mm.group(1), mm.group(2)) for mm in self._REF_RE.finditer(raw)]
+            # Cross-view refs and subqueries have no inline complete-SQL form.
+            if any(v is not None and rn != "TABLE" for v, rn in refs) or self._has_subquery(raw):
+                return None
+            # Every measure ref must already be resolvable (a dim, a compact dim, or already in
+            # the lookup); otherwise retry next round (it may be a later-added number measure).
+            for v, rn in refs:
+                if v is not None or rn == "TABLE" or rn in resolved_dimension_sql or rn in declared_dim_names:
+                    continue
+                if rn not in measure_full_sql_lookup:
+                    return None
+
+            def _sub(mm):
+                v, rn = mm.group(1), mm.group(2)
+                if v is None and rn == "TABLE":
+                    return mm.group(0)
+                if rn in resolved_dimension_sql:
+                    return f"({resolved_dimension_sql[rn]})"
+                if rn in declared_dim_names:
+                    return f"({{model}}.{rn})"
+                return f"({measure_full_sql_lookup[rn]})"
+
+            expanded = self._REF_RE.sub(_sub, raw)
+            # A valid measure-level expression must contain an aggregate (else it is a row-level
+            # dimension expression, handled/skipped by _parse_measure itself).
+            if not sql_has_aggregate(expanded.replace("{model}", "x")):
+                return None
+            # Apply the SAME aggregate-safety check _parse_measure uses, so a measure IT would
+            # skip as invalid never lands in the lookup. `bad: ${total} + ${amount}` mixes an
+            # aggregate measure with a RAW dimension: _parse_measure drops it, but without this
+            # check the prepass would still cache `SUM(amount) + amount`, and a later
+            # `outer: ${bad} / NULLIF(COUNT(*), 0)` would inline that raw ungrouped column and
+            # fail on grouped queries instead of the unsupported measure being unavailable.
+            if not self._mixed_is_aggregate_safe(
+                raw,
+                lambda rn: rn in resolved_dimension_sql or rn in declared_dim_names,
+                resolved_dimension_sql,
+            ):
+                return None
+            joined = _folded_measure_filter(m_def)
+            if joined:
+                # A filtered LIST(...) has no faithful form -- LIST keeps NULL inputs, so no
+                # filtering strategy excludes a row (see _parse_measure, which skips these).
+                # Without this the prepass would fold only the OTHER aggregates and cache a
+                # PARTIALLY filtered SQL, so a later measure referencing it would inline an
+                # unfiltered LIST over a filtered denominator. Keep prepass and parser in step.
+                if self._sql_has_list_aggregate(expanded):
+                    return None
+                # force=True: this SQL will be INLINED into a referencing measure with no
+                # generator column-nulling, so the filter must be baked into a CASE unconditionally.
+                folded = self._fold_complete_sql_filters(expanded, [joined], force=True)
+                if folded is None:
+                    return None  # can't fold the filter safely -> leave unexpandable
+                return folded, True
+            return expanded, False
+
+        _expanding = True
+        while _expanding:
+            _expanding = False
+            for m_name, m_def in number_measure_defs.items():
+                if m_name in measure_full_sql_lookup:
+                    continue
+                result = _expand_number_measure(m_def)
+                if result is None:
+                    continue
+                measure_full_sql_lookup[m_name], _sensitive = result
+                if _sensitive:
+                    filter_sensitive_measures.add(m_name)
+                _expanding = True
 
         # Parse measures with dimension SQL lookup for reference resolution
         measures = []
         for measure_def in view_def.get("measures") or []:
             measure = self._parse_measure(
-                measure_def, dimension_names, resolved_dimension_sql, measure_names, measure_agg_lookup
+                measure_def,
+                dimension_names,
+                resolved_dimension_sql,
+                measure_names,
+                measure_agg_lookup,
+                measure_full_sql_lookup,
+                view_name=name.lstrip("+"),
+                filter_sensitive_measures=filter_sensitive_measures,
             )
+            if measure and self._leaks_cross_view_ref(measure.sql):
+                # Like a cross-view dimension, a measure whose SQL references another view
+                # inline (${other_view.field}) would leak that literal into the model CTE
+                # (SELECT ${customers.balance} ...). Drop it; the fixpoint below then drops any
+                # measure that depended on it.
+                logger.warning(
+                    "LookML measure %r references another view inline (%s), which sidemantic "
+                    "cannot represent; dropping the measure instead of importing unqueryable SQL.",
+                    measure.name,
+                    measure.sql,
+                )
+                measure = None
             if measure:
                 measures.append(measure)
+
+        # Drop measures that reference a measure which did NOT survive parsing. A row-level helper
+        # (`bad { sql: ${amount} }`) is skipped above, but a dependent (`outer { sql: ${bad} * 2 }`)
+        # still resolved ${bad} to a bare `bad` and imported as `bad * 2`, which compile cannot
+        # resolve ("Metric bad not found"). Collect each measure's UNQUALIFIED measure refs from the
+        # raw SQL, then iterate to a fixpoint so a dependent of a dependent is dropped too.
+        _measure_refs: dict[str, set[str]] = {}
+        for measure_def in view_def.get("measures") or []:
+            _mn = measure_def.get("name")
+            if not _mn:
+                continue
+            _measure_refs[_mn] = {
+                _r.group(2)
+                for _r in self._REF_RE.finditer(measure_def.get("sql") or "")
+                if _r.group(1) is None and _r.group(2) in measure_names and _r.group(2) != _mn
+            }
+        _surviving = {m.name for m in measures}
+        _changed = True
+        while _changed:
+            _changed = False
+            for _m in list(measures):
+                _dead = {r for r in _measure_refs.get(_m.name, set()) if r not in _surviving}
+                if _dead:
+                    logger.warning(
+                        "LookML measure %r references measure(s) %s that were not imported "
+                        "(e.g. a skipped row-level helper); skipping it too.",
+                        _m.name,
+                        ", ".join(sorted(_dead)),
+                    )
+                    measures.remove(_m)
+                    _surviving.discard(_m.name)
+                    _changed = True
 
         # Parse segments
         from sidemantic.core.segment import Segment
@@ -794,8 +1439,26 @@ class LookMLAdapter(BaseAdapter):
             segment_name = segment_def.get("name")
             segment_sql = segment_def.get("sql")
             if segment_name and segment_sql:
+                # Resolve ${field} references (incl. self-qualified ones normalized above) through
+                # the dimension SQL, exactly like dimensions/measures -- otherwise a segment such as
+                # `${orders.status} = 'completed'` leaks an unresolved ${...} into the WHERE clause.
+                segment_sql = self._resolve_dimension_references(
+                    segment_sql, resolved_dimension_sql, dimension_names=declared_dim_names
+                )
                 # Replace ${TABLE} with {model} placeholder
                 segment_sql = segment_sql.replace("${TABLE}", "{model}")
+                # A cross-view reference cannot be represented inline, so an unresolved
+                # ${other_view.field} would leak into the WHERE clause when the segment is used.
+                # Drop the segment rather than import an unqueryable one, mirroring how
+                # dimensions/measures with the same leak are dropped.
+                if self._leaks_cross_view_ref(segment_sql):
+                    logger.warning(
+                        "LookML segment %r references another view inline (%s), which sidemantic "
+                        "cannot represent; dropping the segment instead of importing unqueryable SQL.",
+                        segment_name,
+                        segment_sql,
+                    )
+                    continue
                 segments.append(
                     Segment(
                         name=segment_name,
@@ -855,6 +1518,22 @@ class LookMLAdapter(BaseAdapter):
 
         return Model(**model_kwargs)
 
+    # A ${...} reference containing a dot is a cross-view reference (${other_view.field}).
+    # ${TABLE} has no dot inside the braces, and self-view qualifiers are normalized away
+    # before resolution, so any remaining dotted ${...} is an unresolvable cross-view ref
+    # that sidemantic cannot represent inline.
+    _CROSS_VIEW_REF_RE = re.compile(r"\$\{[^}]*\.[^}]*\}")
+
+    @classmethod
+    def _leaks_cross_view_ref(cls, sql: str | None) -> bool:
+        """True if ``sql`` still carries an unresolved cross-view ``${view.field}`` reference.
+
+        A resolved reference is a plain/qualified column or a parenthesized expression; a
+        remaining dotted ``${...}`` would leak the literal into generated SQL (e.g.
+        ``SELECT ${customers.name} ...``), a guaranteed syntax error.
+        """
+        return bool(sql) and bool(cls._CROSS_VIEW_REF_RE.search(sql))
+
     def _parse_dimension(self, dim_def: dict, dimension_sql_lookup: dict[str, str] | None = None) -> Dimension | None:
         """Parse LookML dimension.
 
@@ -902,6 +1581,20 @@ class LookMLAdapter(BaseAdapter):
         if dim_def.get("can_filter") in ("no", False):
             meta["can_filter"] = False
 
+        # A queryable dimension whose SQL still references another view inline
+        # (${other_view.field}) would emit that literal into the model CTE -- e.g.
+        # SELECT ${customers.name} AS cust_name FROM orders -- so every query touching it
+        # fails with invalid SQL. Sidemantic has no inline cross-model column, so drop the
+        # dimension rather than import an unqueryable field.
+        if self._leaks_cross_view_ref(sql):
+            logger.warning(
+                "LookML dimension %r references another view inline (%s), which sidemantic "
+                "cannot represent; dropping the dimension instead of importing unqueryable SQL.",
+                name,
+                sql,
+            )
+            return None
+
         return Dimension(
             name=name,
             type=sidemantic_type,
@@ -914,13 +1607,18 @@ class LookMLAdapter(BaseAdapter):
         )
 
     def _parse_dimension_group(
-        self, dim_group_def: dict, dimension_sql_lookup: dict[str, str] | None = None
+        self,
+        dim_group_def: dict,
+        dimension_sql_lookup: dict[str, str] | None = None,
+        dimension_names: set[str] | None = None,
     ) -> list[Dimension]:
         """Parse LookML dimension_group (time dimensions).
 
         Args:
             dim_group_def: Dimension group definition
             dimension_sql_lookup: Optional dict of dimension names to resolved SQL
+            dimension_names: All declared dimension names, so a ${ref} to a COMPACT dimension (no
+                explicit sql) resolves to its default column instead of leaking the literal
 
         Returns:
             List of time dimensions with different granularities
@@ -933,7 +1631,7 @@ class LookMLAdapter(BaseAdapter):
 
         # Handle duration type separately
         if group_type == "duration":
-            return self._parse_duration_group(group_name, dim_group_def)
+            return self._parse_duration_group(group_name, dim_group_def, dimension_sql_lookup, dimension_names)
 
         if group_type != "time":
             return []
@@ -948,6 +1646,18 @@ class LookMLAdapter(BaseAdapter):
             base_sql = dim_group_def.get("sql")
             if base_sql:
                 base_sql = base_sql.replace("${TABLE}", "{model}")
+
+        # A dimension_group whose base SQL references another view inline (${other.ts})
+        # would leak that literal into every generated timeframe field, so drop the whole
+        # group rather than import unqueryable time dimensions (see _parse_dimension).
+        if self._leaks_cross_view_ref(base_sql):
+            logger.warning(
+                "LookML dimension_group %r references another view inline (%s), which sidemantic "
+                "cannot represent; dropping the group instead of importing unqueryable SQL.",
+                group_name,
+                base_sql,
+            )
+            return []
 
         # Create a dimension for each timeframe
         dimensions = []
@@ -1191,7 +1901,13 @@ class LookMLAdapter(BaseAdapter):
 
         return "\n".join(sql_parts)
 
-    def _parse_duration_group(self, group_name: str, dim_group_def: dict) -> list[Dimension]:
+    def _parse_duration_group(
+        self,
+        group_name: str,
+        dim_group_def: dict,
+        dimension_sql_lookup: dict[str, str] | None = None,
+        dimension_names: set[str] | None = None,
+    ) -> list[Dimension]:
         """Parse LookML dimension_group with type: duration.
 
         Duration dimension groups calculate the difference between two timestamps
@@ -1200,6 +1916,9 @@ class LookMLAdapter(BaseAdapter):
         Args:
             group_name: Name of the dimension group
             dim_group_def: Dimension group definition
+            dimension_sql_lookup: Resolved dimension SQL for ${ref} resolution in sql_start/sql_end
+            dimension_names: All declared dimension names, so a ${ref} to a COMPACT dimension (no
+                explicit sql) resolves to its default column rather than leaking the literal
 
         Returns:
             List of duration dimensions
@@ -1208,13 +1927,36 @@ class LookMLAdapter(BaseAdapter):
         sql_start = dim_group_def.get("sql_start", "")
         sql_end = dim_group_def.get("sql_end", "")
 
+        # Resolve ${dimension} references (self-view refs normalized to bare ${name}) so a
+        # sql_start/sql_end like ${started_at} becomes the real column instead of leaking the
+        # literal ${...} into DATE_DIFF; ${TABLE} is handled next. Pass dimension_names so a ref to
+        # a COMPACT dimension (declared with no sql) resolves to its default column, not a leak.
+        # Without this the duration dimension carried an unresolved ${ref} and any query on it
+        # emitted invalid SQL.
         if sql_start:
-            sql_start = sql_start.replace("${TABLE}", "{model}")
+            sql_start = self._resolve_dimension_references(
+                sql_start, dimension_sql_lookup or {}, dimension_names=dimension_names
+            ).replace("${TABLE}", "{model}")
         if sql_end:
-            sql_end = sql_end.replace("${TABLE}", "{model}")
+            sql_end = self._resolve_dimension_references(
+                sql_end, dimension_sql_lookup or {}, dimension_names=dimension_names
+            ).replace("${TABLE}", "{model}")
 
         # If no sql_start/sql_end, we can't create duration dimensions
         if not sql_start or not sql_end:
+            return []
+
+        # A cross-view reference cannot be represented inline, so an unresolved ${other.field} would
+        # still leak. Drop the whole group rather than import unqueryable duration dimensions
+        # (mirrors _parse_dimension / _parse_dimension_group).
+        if self._leaks_cross_view_ref(sql_start) or self._leaks_cross_view_ref(sql_end):
+            logger.warning(
+                "LookML duration group %r references another view inline (sql_start=%r sql_end=%r), which "
+                "sidemantic cannot represent; dropping the group instead of importing unqueryable SQL.",
+                group_name,
+                sql_start,
+                sql_end,
+            )
             return []
 
         dimensions = []
@@ -1246,6 +1988,9 @@ class LookMLAdapter(BaseAdapter):
         dimension_sql_lookup: dict[str, str] | None = None,
         measure_names: set[str] | None = None,
         measure_agg_lookup: dict[str, str] | None = None,
+        measure_full_sql_lookup: dict[str, str] | None = None,
+        view_name: str | None = None,
+        filter_sensitive_measures: set[str] | None = None,
     ) -> Metric | None:
         """Parse LookML measure.
 
@@ -1255,6 +2000,8 @@ class LookMLAdapter(BaseAdapter):
             dimension_sql_lookup: Dict mapping dimension names to their resolved SQL
             measure_names: Set of measure names in this view (for base-measure resolution)
             measure_agg_lookup: Dict mapping base measure names to their SQL aggregate template
+            filter_sensitive_measures: Measures whose folded filter a plain derived reference
+                would drop, so a referencing number measure must INLINE them (complete path).
 
         Returns:
             Metric instance or None
@@ -1265,6 +2012,9 @@ class LookMLAdapter(BaseAdapter):
 
         dimension_names = dimension_names or set()
         dimension_sql_lookup = dimension_sql_lookup or {}
+        measure_agg_lookup = measure_agg_lookup or {}
+        measure_full_sql_lookup = measure_full_sql_lookup or {}
+        filter_sensitive_measures = filter_sensitive_measures or set()
 
         # Check if type is explicitly set
         has_explicit_type = "type" in measure_def
@@ -1309,7 +2059,7 @@ class LookMLAdapter(BaseAdapter):
             if not sql:
                 return None  # Skip placeholder percentile measures without SQL
             sql = sql.replace("${TABLE}", "{model}")
-            sql = self._resolve_dimension_references(sql, dimension_sql_lookup or {})
+            sql = self._resolve_dimension_references(sql, dimension_sql_lookup or {}, dimension_names=dimension_names)
             percentile_value = measure_def.get("percentile", 50)
             fraction = float(percentile_value) / 100.0
             percentile_sql = f"PERCENTILE_CONT({fraction}) WITHIN GROUP (ORDER BY {sql})"
@@ -1332,7 +2082,9 @@ class LookMLAdapter(BaseAdapter):
             sql = measure_def.get("sql")
             if sql:
                 sql = sql.replace("${TABLE}", "{model}")
-                sql = self._resolve_dimension_references(sql, dimension_sql_lookup or {})
+                sql = self._resolve_dimension_references(
+                    sql, dimension_sql_lookup or {}, dimension_names=dimension_names
+                )
                 list_sql = f"STRING_AGG(DISTINCT {sql}, ', ')"
                 meta = {}
                 if measure_def.get("hidden") in ("yes", True):
@@ -1354,7 +2106,7 @@ class LookMLAdapter(BaseAdapter):
         # (e.g. caused by join fanout) using sql_distinct_key when present.
         # Looker: sum_distinct, average_distinct, median_distinct, percentile_distinct.
         if measure_type in ("sum_distinct", "average_distinct", "median_distinct", "percentile_distinct"):
-            return self._parse_distinct_measure(name, measure_type, measure_def, dimension_sql_lookup)
+            return self._parse_distinct_measure(name, measure_type, measure_def, dimension_sql_lookup, dimension_names)
 
         # Handle post-SQL / table-calculation measure types. These reference
         # another numeric measure and compute a column-wise calculation.
@@ -1395,28 +2147,20 @@ class LookMLAdapter(BaseAdapter):
         # 2. Block syntax: filters: { field: x value: y }
         #    -> lkml returns [{'field': 'flight_length', 'value': '>120'}]
         # We need to handle both formats.
-        filters = []
-        filters_all = measure_def.get("filters__all") or []
-        if filters_all:
-            for item in filters_all:
-                if isinstance(item, list):
-                    # Format 1: Shorthand syntax - list of dicts with field:value pairs
-                    for filter_dict in item:
-                        if isinstance(filter_dict, dict):
-                            for field, value in filter_dict.items():
-                                filter_sql = self._convert_lookml_filter_to_sql(field, value)
-                                if filter_sql:
-                                    filters.append(filter_sql)
-                elif isinstance(item, dict):
-                    # Format 2: Block syntax - dict with 'field' and 'value' keys
-                    field = item.get("field")
-                    value = item.get("value")
-                    if field and value:
-                        filter_sql = self._convert_lookml_filter_to_sql(field, value)
-                        if filter_sql:
-                            filters.append(filter_sql)
+        filters, _filters_cross_view = self._measure_filter_conds(measure_def, view_name)
+        if _filters_cross_view:
+            # A filter references another view inline, which the model CTE cannot resolve; drop the
+            # measure rather than import one whose filter emits invalid SQL (mirrors the cross-view
+            # inline-sql drop).
+            logger.warning(
+                "LookML measure %r has a filter referencing another view inline, which sidemantic "
+                "cannot represent; dropping the measure instead of importing unqueryable SQL.",
+                measure_def.get("name"),
+            )
+            return None
 
         # Replace ${TABLE} and resolve ${dimension_ref} placeholders in SQL
+        number_refs_only_columns = False
         sql = measure_def.get("sql")
         if sql:
             sql = sql.replace("${TABLE}", "{model}")
@@ -1427,21 +2171,154 @@ class LookMLAdapter(BaseAdapter):
                 # We need to distinguish measure references from dimension references:
                 # - ${measure_name} where measure_name is NOT a dimension -> plain measure_name
                 # - ${dimension_name} -> resolved SQL from dimension
+                # Pre-scan the refs: a derived metric is a metric-of-metrics, so it can
+                # carry measure references OR raw dimension columns. A mix is representable
+                # ONLY when every dimension column ends up inside an aggregate (so there is
+                # no raw, ungrouped column); then we expand each measure ref to its base
+                # aggregate SQL and emit opaque complete SQL. A mix with a raw ungrouped
+                # column has no valid SQL form and is skipped with a warning.
+                def _is_dim_ref(rn):
+                    return rn in dimension_sql_lookup or rn in dimension_names
+
+                referenced_measure = False
+                referenced_dimension = False
+                for _m in self._REF_RE.finditer(sql):
+                    _v, _rn = _m.group(1), _m.group(2)
+                    if _v is not None or _rn == "TABLE":
+                        continue
+                    if _is_dim_ref(_rn):
+                        referenced_dimension = True
+                    else:
+                        referenced_measure = True
+
+                from sidemantic.sql.aggregation_detection import sql_has_aggregate
+
+                # An expression needs OPAQUE/complete SQL (not a metric-of-metrics derived
+                # metric) when it mixes a measure ref with a dimension ref, OR it contains
+                # an INLINE aggregate (SUM(...)/COUNT(*)/...). In both, the derived-metric
+                # path mishandles it: a raw dimension column or an inline aggregate makes
+                # the generator skip dependency replacement, leaving bare measure tokens
+                # that reference nonexistent columns. So expand measure refs to their base
+                # aggregate SQL and mark the whole thing complete. Pure metric-of-metrics
+                # ratios (no inline aggregate, no dimension) stay derived.
+                # Detect inline aggregates on a ref-NEUTRALIZED copy: raw ${ref} placeholders
+                # break sqlglot's parser, forcing the regex fallback, which misses multi-word
+                # aggregates like PERCENTILE_CONT(...) WITHIN GROUP (ORDER BY ${x}). Replacing
+                # every ${...}/{model} with a plain identifier lets sqlglot see the real agg.
+                has_inline_agg = sql_has_aggregate(self._REF_RE.sub("x", sql).replace("{model}", "x"))
+                # A reference to a FILTER-SENSITIVE measure (one whose folded filter a plain
+                # derived dependency would drop) must be inlined through the complete-SQL path,
+                # not left as a bare metric-of-metrics ref -- else e.g. `${completed_sum} * 2`
+                # silently expands to SUM(amount)*2 over ALL rows, ignoring completed_sum's filter.
+                refs_filter_sensitive = any(
+                    _m.group(1) is None and _m.group(2) != "TABLE" and _m.group(2) in filter_sensitive_measures
+                    for _m in self._REF_RE.finditer(sql)
+                )
+                needs_complete = (
+                    (referenced_measure and referenced_dimension) or has_inline_agg or refs_filter_sensitive
+                )
+                expand_measures = needs_complete and referenced_measure
+                if needs_complete:
+                    if self._has_subquery(sql):
+                        # A scalar subquery in the expr can't go through the complete-SQL
+                        # path: its builder rewrites EVERY parsed column -- including columns
+                        # INSIDE the subquery -- to this measure's CTE raw alias, producing a
+                        # wrong correlated query. No faithful form, so skip on import.
+                        logger.warning(
+                            "LookML number measure %r contains a subquery, which the complete-SQL "
+                            "path cannot represent (it would rewrite the subquery's columns); "
+                            "skipping on import.",
+                            name,
+                        )
+                        return None
+                    cross_view = any(
+                        m.group(1) is not None and m.group(2) != "TABLE" for m in self._REF_RE.finditer(sql)
+                    )
+                    unexpandable = expand_measures and any(
+                        m.group(1) is None
+                        and m.group(2) != "TABLE"
+                        and not _is_dim_ref(m.group(2))
+                        and m.group(2) not in measure_full_sql_lookup
+                        for m in self._REF_RE.finditer(sql)
+                    )
+                    if (
+                        cross_view
+                        or unexpandable
+                        or not self._mixed_is_aggregate_safe(sql, _is_dim_ref, dimension_sql_lookup)
+                    ):
+                        logger.warning(
+                            "LookML number measure %r combines a measure/dimension reference with "
+                            "a raw ungrouped column or an unsupported reference, which has no valid "
+                            "aggregate SQL form; skipping on import.",
+                            name,
+                        )
+                        return None
+
                 def resolve_reference(match):
-                    ref_name = match.group(1)
+                    view, ref_name = match.group(1), match.group(2)
+                    if view is None and ref_name == "TABLE":
+                        return match.group(0)
+                    if view is not None:
+                        # Cross-view ref (self-view already normalized away): sidemantic
+                        # cannot represent an inline cross-model column, so leave the
+                        # literal and warn rather than emitting a column the derived
+                        # metric builder can't resolve (it would fail with "no join path").
+                        logger.warning(
+                            "LookML cross-view reference ${%s.%s} is not supported (sidemantic "
+                            "has no inline cross-model column); left unresolved.",
+                            view,
+                            ref_name,
+                        )
+                        return match.group(0)
                     if ref_name in dimension_sql_lookup:
                         # It's a dimension reference - use the resolved SQL
                         return f"({dimension_sql_lookup[ref_name]})"
-                    else:
-                        # It's a measure reference - use plain measure_name
-                        # The dependency analyzer will resolve this
-                        return ref_name
+                    if ref_name in dimension_names:
+                        # Compact dimension (no explicit sql) -> its default column.
+                        return f"({{model}}.{ref_name})"
+                    if expand_measures:
+                        # Complete expr: expand the measure ref to its base aggregate over
+                        # the REAL column so the whole thing is valid opaque SQL (e.g.
+                        # total -> SUM({model}.amount)).
+                        return f"({measure_full_sql_lookup[ref_name]})"
+                    # It's a measure reference - use plain measure_name; the
+                    # dependency analyzer will resolve this.
+                    return ref_name
 
-                sql = re.sub(r"\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}", resolve_reference, sql)
+                sql = self._REF_RE.sub(resolve_reference, sql)
+
+                # Re-check the RESOLVED expression for a SUBQUERY: a dimension ref may have EXPANDED
+                # into one, and the pre-resolution guard above only saw the raw ${refs}. The
+                # complete-SQL builder rewrites EVERY column -- including those INSIDE the subquery --
+                # to this measure's CTE raw aliases, producing wrong correlated SQL, so skip it.
+                if needs_complete and self._has_subquery(sql):
+                    logger.warning(
+                        "LookML number measure %r resolves to a scalar subquery (via a dimension "
+                        "reference), which the complete-SQL path cannot represent; skipping on import.",
+                        name,
+                    )
+                    return None
+
+                # A number measure that references ONLY raw dimension columns with NO
+                # aggregate (e.g. ${amount} / 2) is a row-level expression, not a valid
+                # aggregate measure: as a metric it returns one value per input row, not a
+                # scalar. It belongs as a dimension, so skip it with a warning rather than
+                # emit a measure with wrong cardinality.
+                if not needs_complete and not referenced_measure and referenced_dimension and bool(sql):
+                    logger.warning(
+                        "LookML number measure %r is a row-level dimension expression (no "
+                        "aggregate); it would return one row per input row, so it is skipped "
+                        "on import (define it as a dimension instead).",
+                        name,
+                    )
+                    return None
+                # Complete exprs (mixed or inline-aggregate, measure refs expanded above)
+                # are opaque SQL; pure metric-of-metrics ratios stay derived metrics.
+                number_refs_only_columns = needs_complete
             else:
                 # For regular aggregation measures (sum, avg, count_distinct, etc.),
                 # resolve dimension references to their SQL expressions
-                sql = self._resolve_dimension_references(sql, dimension_sql_lookup)
+                sql = self._resolve_dimension_references(sql, dimension_sql_lookup, dimension_names=dimension_names)
 
         # Determine if this is a derived/ratio metric
         metric_type = None
@@ -1467,11 +2344,71 @@ class LookMLAdapter(BaseAdapter):
         if measure_def.get("tags"):
             meta["tags"] = measure_def["tags"]
 
+        # A filtered LIST(...) aggregate has NO faithful portable form. Unlike every other
+        # aggregate, DuckDB's LIST KEEPS NULL inputs, so neither filtering strategy excludes a
+        # row: the generator's column-nulling and a folded CASE both leave one NULL element per
+        # non-matching row (LIST(CASE WHEN s='x' THEN amount END) over 3 rows -> [1, NULL, 3]),
+        # so ARRAY_LENGTH still counts them. Only a dialect-specific FILTER (WHERE ...) clause
+        # would work. Skip rather than silently import a measure that ignores its filter.
+        if number_refs_only_columns and filters and self._sql_has_list_aggregate(sql):
+            logger.warning(
+                "LookML number measure %r combines a LIST(...) aggregate with filters, which has "
+                "no faithful form (LIST keeps NULL inputs, so neither column-nulling nor a folded "
+                "CASE excludes a row); skipping on import.",
+                name,
+            )
+            return None
+
+        # A COMPLETE (opaque) measure's filters are applied by the generator without
+        # resolving dimension refs (it just strips {model}), so resolve {model}.<dim> to
+        # the dimension's real column SQL here -- a renamed dimension's filter must hit the
+        # actual column (status), not the dimension name (state).
+        if number_refs_only_columns and filters:
+            filters = [
+                re.sub(
+                    r"\{model\}\.(\w+)",
+                    lambda mm: f"({dimension_sql_lookup[mm.group(1)]})"
+                    if mm.group(1) in dimension_sql_lookup
+                    else mm.group(0),
+                    f,
+                )
+                for f in filters
+            ]
+            # A filter field that is a local alias for a DROPPED cross-view dimension expands to its
+            # leaked ${other_view.field} SQL above, which the generator would emit into the model
+            # CTE. The measure.sql leak check does not see filters, so reject the measure here.
+            if any(self._leaks_cross_view_ref(f) for f in filters):
+                logger.warning(
+                    "LookML measure %r has a filter that expands to a cross-view reference, which "
+                    "sidemantic cannot represent; dropping the measure instead of importing "
+                    "unqueryable SQL.",
+                    name,
+                )
+                return None
+            # The generator filters a complete-SQL measure by nulling the raw columns its SQL
+            # references; that drops the filter for a zero-column aggregate (COUNT(*)) and
+            # corrupts a NULL-test predicate (status IS NULL). Fold into the aggregate instead.
+            folded = self._fold_complete_sql_filters(sql, filters)
+            if folded is not None:
+                sql = folded
+                filters = None
+            elif not self._generator_column_nulling_suffices(sql):
+                # Folding aborted AND column-nulling cannot apply the filter (a zero-column /
+                # windowed aggregate has no column to null), so keeping the filter would silently
+                # count every row. Drop the measure rather than import ineffective filters.
+                logger.warning(
+                    "LookML measure %r has filters that can be applied neither by folding nor by "
+                    "generator column-nulling (e.g. a zero-column windowed aggregate); dropping it.",
+                    name,
+                )
+                return None
+
         return Metric(
             name=name,
             type=metric_type,
             agg=agg_type,
             sql=sql,
+            sql_is_complete=number_refs_only_columns,
             filters=filters if filters else None,
             description=measure_def.get("description"),
             label=measure_def.get("label"),
@@ -1500,6 +2437,7 @@ class LookMLAdapter(BaseAdapter):
         measure_type: str,
         measure_def: dict,
         dimension_sql_lookup: dict[str, str],
+        dimension_names: set[str] | None = None,
     ) -> Metric | None:
         """Parse a distinct aggregate measure (sum/average/median/percentile_distinct).
 
@@ -1523,12 +2461,14 @@ class LookMLAdapter(BaseAdapter):
             # No field to aggregate -> placeholder in an abstract view, skip.
             return None
         sql = sql.replace("${TABLE}", "{model}")
-        sql = self._resolve_dimension_references(sql, dimension_sql_lookup)
+        sql = self._resolve_dimension_references(sql, dimension_sql_lookup, dimension_names=dimension_names)
 
         sql_distinct_key = measure_def.get("sql_distinct_key")
         if sql_distinct_key:
             sql_distinct_key = sql_distinct_key.replace("${TABLE}", "{model}")
-            sql_distinct_key = self._resolve_dimension_references(sql_distinct_key, dimension_sql_lookup)
+            sql_distinct_key = self._resolve_dimension_references(
+                sql_distinct_key, dimension_sql_lookup, dimension_names=dimension_names
+            )
 
         # With a sql_distinct_key, Looker dedupes by the *key entity*, not by the
         # aggregated value: two distinct orders that both have amount 10 must
@@ -1658,8 +2598,18 @@ class LookMLAdapter(BaseAdapter):
         sql = sql.replace("${TABLE}", "{model}")
 
         def _resolve(match: re.Match) -> str:
-            ref_name = match.group(1)
-            if ref_name == "TABLE":
+            view, ref_name = match.group(1), match.group(2)
+            if view is None and ref_name == "TABLE":
+                return match.group(0)
+            if view is not None:
+                # Cross-view reference (self-view already normalized away): sidemantic
+                # has no inline cross-model column, so leave the literal and warn.
+                logger.warning(
+                    "LookML cross-view reference ${%s.%s} is not supported (sidemantic "
+                    "has no inline cross-model column); left unresolved.",
+                    view,
+                    ref_name,
+                )
                 return match.group(0)
             if ref_name in dimension_sql_lookup:
                 return f"({dimension_sql_lookup[ref_name]})"
@@ -1670,7 +2620,7 @@ class LookMLAdapter(BaseAdapter):
                 return f"{{model}}.{ref_name}"
             return ref_name
 
-        return re.sub(r"\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}", _resolve, sql)
+        return self._REF_RE.sub(_resolve, sql)
 
     def _parse_post_sql_measure(
         self,

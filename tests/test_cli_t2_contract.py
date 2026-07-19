@@ -208,6 +208,32 @@ def test_json_alias_matches_format_json(project: Path):
     assert json.loads(legacy.stdout) == json.loads(standard.stdout)
 
 
+@pytest.mark.parametrize(
+    ("environment", "config_default"),
+    [({"SIDEMANTIC_FORMAT": "csv"}, None), ({}, "csv")],
+)
+def test_json_alias_overrides_non_cli_format_defaults(
+    project: Path,
+    environment: dict[str, str],
+    config_default: str | None,
+):
+    if config_default:
+        config = project / "sidemantic.yaml"
+        config.write_text(f"{config.read_text()}cli:\n  format: {config_default}\n")
+
+    result = runner.invoke(app, ["--project", str(project), "info", "--json"], env=environment)
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["models"][0]["name"] == "orders"
+
+
+def test_json_alias_rejects_explicit_non_json_format(project: Path):
+    result = runner.invoke(app, ["--project", str(project), "--format", "csv", "info", "--json"])
+
+    assert result.exit_code == 2
+    assert "cannot be combined" in result.stderr
+
+
 def test_plain_rejects_machine_format(project: Path):
     result = runner.invoke(app, ["info", "--project", str(project), "--plain", "--format", "json"])
 
@@ -294,6 +320,29 @@ def test_project_config_supplies_presentation_defaults(project: Path):
     assert result.exit_code == 0, result.output
     assert json.loads(result.stdout)["models"][0]["name"] == "orders"
     assert result.stderr == ""
+
+
+@pytest.mark.parametrize("output_format", ["table", "csv", "json", "jsonl"])
+def test_validate_parse_failures_preserve_requested_format(project: Path, output_format: str):
+    (project / "models" / "orders.yml").write_text("models: [not valid")
+
+    result = runner.invoke(
+        app,
+        ["validate", "--project", str(project), "--format", output_format],
+    )
+
+    assert result.exit_code == 1, result.output
+    if output_format == "json":
+        payload = json.loads(result.stdout)
+        assert payload["valid"] is False
+        assert payload["errors"]
+    elif output_format == "jsonl":
+        assert json.loads(result.stdout)["level"] == "error"
+    elif output_format == "csv":
+        rows = list(csv.DictReader(io.StringIO(result.stdout)))
+        assert rows[0]["level"] == "error"
+    else:
+        assert "error" in result.stdout.lower()
 
 
 def test_root_and_complex_help_include_examples_docs_and_support():

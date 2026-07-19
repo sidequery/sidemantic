@@ -313,6 +313,7 @@ def main(
         quiet=bool(quiet),
         verbose=bool(verbose),
         requested_format=output_format,
+        format_explicit=ctx.get_parameter_source("output_format") is click.core.ParameterSource.COMMANDLINE,
         plain=bool(plain),
         color=color_enabled(no_color=bool(no_color)),
     )
@@ -337,6 +338,7 @@ def main(
         quiet=bool(quiet) if quiet is not None else bool(configured and configured.quiet),
         verbose=bool(verbose) if verbose is not None else bool(configured and configured.verbose),
         requested_format=output_format if output_format is not None else (configured.format if configured else None),
+        format_explicit=ctx.get_parameter_source("output_format") is click.core.ParameterSource.COMMANDLINE,
         plain=bool(plain) if plain is not None else bool(configured and configured.plain),
         color=selected_color,
     )
@@ -1866,16 +1868,20 @@ def validate(
     except Exception as e:
         if cli_state().debug:
             raise
-        if json_output:
-            emit_json(
-                {
-                    "valid": False,
-                    "path": str(directory),
-                    "engine": engine or "python",
-                    "errors": [str(e)],
-                    "warnings": [],
-                    "info": [],
-                }
+        payload = {
+            "valid": False,
+            "path": str(directory),
+            "engine": engine or "python",
+            "errors": [str(e)],
+            "warnings": [],
+            "info": [],
+        }
+        if structured:
+            emit_records(
+                [{"level": "error", "message": str(e)}],
+                columns=("level", "message"),
+                output_format=output_format,
+                json_value=payload,
             )
         else:
             emit_error(e)

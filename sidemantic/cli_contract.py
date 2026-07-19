@@ -44,6 +44,7 @@ class CLIState:
     verbose: bool = False
     machine_output: bool = False
     requested_format: str | None = None
+    format_explicit: bool = False
     plain: bool = False
     color: bool | None = None
     redactions: set[str] = field(default_factory=set, repr=False)
@@ -55,6 +56,7 @@ class CLIState:
         quiet: bool = False,
         verbose: bool = False,
         requested_format: str | None = None,
+        format_explicit: bool = False,
         plain: bool = False,
         color: bool | None = None,
     ) -> None:
@@ -65,6 +67,7 @@ class CLIState:
         self.verbose = verbose or debug
         self.machine_output = False
         self.requested_format = requested_format
+        self.format_explicit = format_explicit
         self.plain = plain
         self.color = color
         self.redactions.clear()
@@ -276,7 +279,7 @@ def resolve_output_format(*, default: str = "table", json_output: bool = False) 
         requested = requested.lower()
         if requested not in OUTPUT_FORMATS:
             raise InvocationError(f"--format must be one of: {', '.join(OUTPUT_FORMATS)}")
-    if json_output and requested not in {None, "json"}:
+    if json_output and requested not in {None, "json"} and state.format_explicit:
         raise InvocationError("--json cannot be combined with a non-JSON --format")
     selected = "json" if json_output else (requested or default)
     if state.plain:

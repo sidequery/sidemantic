@@ -72,16 +72,44 @@ wheels = [
 name = "altair"
 version = "5.5.0"
 source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version < '3.12'",
+    "python_full_version == '3.12.*'",
+    "python_full_version == '3.13.*' and platform_python_implementation != 'PyPy'",
+    "python_full_version == '3.13.*' and platform_python_implementation == 'PyPy'",
+]
 dependencies = [
     { name = "jinja2" },
     { name = "jsonschema" },
     { name = "narwhals" },
     { name = "packaging" },
-    { name = "typing-extensions", marker = "python_full_version < '3.14'" },
+    { name = "typing-extensions" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/16/b1/f2969c7bdb8ad8bbdda031687defdce2c19afba2aa2c8e1d2a17f78376d8/altair-5.5.0.tar.gz", hash = "sha256:d960ebe6178c56de3855a68c47b516be38640b73fb3b5111c2a9ca90546dd73d", size = 705305, upload-time = "2024-11-23T23:39:58.542Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/aa/f3/0b6ced594e51cc95d8c1fc1640d3623770d01e4969d29c0bd09945fafefa/altair-5.5.0-py3-none-any.whl", hash = "sha256:91a310b926508d560fe0148d02a194f38b824122641ef528113d029fcd129f8c", size = 731200, upload-time = "2024-11-23T23:39:56.4Z" },
+]
+
+[[package]]
+name = "altair"
+version = "6.2.2"
+source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version >= '3.15' and platform_python_implementation == 'PyPy'",
+    "python_full_version == '3.14.*' and platform_python_implementation == 'PyPy'",
+    "python_full_version >= '3.15' and platform_python_implementation != 'PyPy'",
+    "python_full_version == '3.14.*' and platform_python_implementation != 'PyPy'",
+]
+dependencies = [
+    { name = "jinja2" },
+    { name = "jsonschema" },
+    { name = "narwhals" },
+    { name = "packaging" },
+    { name = "typing-extensions", marker = "python_full_version < '3.15'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/06/a1/5e6cc638a66da48cfc89a79c2f4810dfec00b63385f9b009ab1f069779bb/altair-6.2.2.tar.gz", hash = "sha256:a1ff9d9cfe81c75414641826312b9471780e19d39293ba0b012933f6b6cba0fe", size = 766606, upload-time = "2026-06-23T12:47:13.384Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e3/99/d6031f4f146298951c46b1bf1cc160c2a63f6e44b3c13a30054add100d5f/altair-6.2.2-py3-none-any.whl", hash = "sha256:94014f8ad8617c3cb163d1137359cd6db5ba134b9b46d93cfd8b609fd245a583", size = 797613, upload-time = "2026-06-23T12:47:11.451Z" },
 ]
 
 [[package]]
@@ -2628,7 +2656,8 @@ api = [
     { name = "uvicorn" },
 ]
 apps = [
-    { name = "altair" },
+    { name = "altair", version = "5.5.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.14'" },
+    { name = "altair", version = "6.2.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.14'" },
     { name = "mcp", extra = ["cli"] },
     { name = "vl-convert-python" },
 ]
@@ -2637,7 +2666,8 @@ bigquery = [
     { name = "pyarrow" },
 ]
 charts = [
-    { name = "altair" },
+    { name = "altair", version = "5.5.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.14'" },
+    { name = "altair", version = "6.2.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.14'" },
     { name = "vl-convert-python" },
 ]
 clickhouse = [
@@ -2652,7 +2682,8 @@ dax = [
     { name = "sidemantic-dax" },
 ]
 dev = [
-    { name = "altair" },
+    { name = "altair", version = "5.5.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.14'" },
+    { name = "altair", version = "6.2.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.14'" },
     { name = "antlr4-python3-runtime" },
     { name = "anywidget" },
     { name = "fastapi" },
@@ -2682,7 +2713,8 @@ fast = [
     { name = "sqlglot", extra = ["c"] },
 ]
 full = [
-    { name = "altair" },
+    { name = "altair", version = "5.5.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.14'" },
+    { name = "altair", version = "6.2.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.14'" },
     { name = "antlr4-python3-runtime" },
     { name = "anywidget" },
     { name = "fastapi" },
@@ -2747,9 +2779,12 @@ workbench = [
 [package.metadata]
 requires-dist = [
     { name = "adbc-driver-manager", marker = "extra == 'adbc'", specifier = ">=1.0.0" },
-    { name = "altair", marker = "extra == 'apps'", specifier = ">=5.0.0" },
-    { name = "altair", marker = "extra == 'charts'", specifier = ">=5.0.0" },
-    { name = "altair", marker = "extra == 'dev'", specifier = ">=5.0.0" },
+    { name = "altair", marker = "python_full_version >= '3.14' and extra == 'apps'", specifier = ">=6.0.0" },
+    { name = "altair", marker = "python_full_version >= '3.14' and extra == 'charts'", specifier = ">=6.0.0" },
+    { name = "altair", marker = "python_full_version >= '3.14' and extra == 'dev'", specifier = ">=6.0.0" },
+    { name = "altair", marker = "python_full_version < '3.14' and extra == 'apps'", specifier = ">=5.0.0" },
+    { name = "altair", marker = "python_full_version < '3.14' and extra == 'charts'", specifier = ">=5.0.0" },
+    { name = "altair", marker = "python_full_version < '3.14' and extra == 'dev'", specifier = ">=5.0.0" },
     { name = "antlr4-python3-runtime", specifier = ">=4.13.2" },
     { name = "antlr4-python3-runtime", marker = "extra == 'dev'", specifier = ">=4.13.2" },
     { name = "antlr4-python3-runtime", marker = "extra == 'malloy'", specifier = ">=4.13.2" },

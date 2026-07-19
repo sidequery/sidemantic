@@ -1,5 +1,6 @@
 import type { DashboardChart, DashboardDocument, DashboardTab } from "../data/dashboardTypes";
-import { aliasOf, NULL_TOKEN, type ResultRow } from "../data/types";
+import { aliasOf, NULL_TOKEN, type ResultRow, type StructuredQuery } from "../data/types";
+import { filterExprs, type DimTypes, type FilterState } from "../lib/queries";
 
 export type DashboardViewState = {
   tab: string;
@@ -43,6 +44,70 @@ export function dashboardResultColumn(ref: string, columns: string[]): string {
   if (qualifiedAlias !== leafAlias && columns.includes(qualifiedAlias)) return qualifiedAlias;
   if (columns.includes(leafAlias)) return leafAlias;
   return columns.find((column) => column.endsWith(leafAlias)) ?? leafAlias;
+}
+
+export function dashboardStructuredQuery(
+  document: DashboardDocument,
+  chart: DashboardChart,
+  filters: DashboardViewState["filters"],
+  types: DimTypes,
+): StructuredQuery {
+  const filterState: FilterState = Object.fromEntries(
+    Object.entries(filters).map(([dimension, value]) => [dimension, { mode: "include", values: [value] }]),
+  );
+  const request: StructuredQuery = {
+    metrics: chart.query.metrics,
+    dimensions: chart.query.dimensions,
+    filters: [...(chart.query.filters ?? []), ...filterExprs(filterState, { types })],
+    segments: chart.query.segments,
+    orderBy: chart.query.order_by ?? chart.query.orderBy,
+    limit: chart.query.limit ?? 500,
+  };
+  const usePreaggregations =
+    chart.query.use_preaggregations ??
+    chart.query.usePreaggregations ??
+    document.defaults?.query?.use_preaggregations ??
+    document.defaults?.query?.usePreaggregations;
+  if (usePreaggregations !== undefined) request.usePreaggregations = usePreaggregations;
+  return request;
+}
+
+export type DashboardTimeSeries = {
+  label: string;
+  points: { x: string; y: number }[];
+};
+
+export function dashboardTimeSeries(
+  rows: ResultRow[],
+  xColumn: string,
+  yColumn: string,
+  seriesColumns: string[],
+): DashboardTimeSeries[] {
+  const xValues: string[] = [];
+  const seenX = new Set<string>();
+  const grouped = new Map<string, { label: string; values: Map<string, number> }>();
+
+  for (const row of rows) {
+    if (row[xColumn] == null) continue;
+    const x = String(row[xColumn]);
+    const y = Number(row[yColumn]);
+    if (!Number.isFinite(y)) continue;
+    if (!seenX.has(x)) {
+      seenX.add(x);
+      xValues.push(x);
+    }
+    const seriesValues = seriesColumns.map((column) => dashboardFilterValue(row[column]));
+    const key = JSON.stringify(seriesValues);
+    const label = seriesValues.length ? seriesValues.map((value) => (value === NULL_TOKEN ? "—" : value)).join(" · ") : "Current";
+    const series = grouped.get(key) ?? { label, values: new Map<string, number>() };
+    series.values.set(x, y);
+    grouped.set(key, series);
+  }
+
+  return [...grouped.values()].map((series) => ({
+    label: series.label,
+    points: xValues.map((x) => ({ x, y: series.values.get(x) ?? Number.NaN })),
+  }));
 }
 
 function validFilters(value: unknown, allowedDimensions: Set<string>): Record<string, string> {

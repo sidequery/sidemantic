@@ -4,6 +4,8 @@ import { NULL_TOKEN } from "../data/types";
 import {
   dashboardFilterValue,
   dashboardResultColumn,
+  dashboardStructuredQuery,
+  dashboardTimeSeries,
   decodeDashboardState,
   encodeDashboardState,
   rowsToCsv,
@@ -88,5 +90,39 @@ describe("dashboard selections", () => {
     expect(dashboardResultColumn("customers.status", columns)).toBe("customers_status");
     expect(dashboardResultColumn("orders.status", columns)).toBe("orders_status");
     expect(dashboardResultColumn("orders.revenue", columns)).toBe("revenue");
+  });
+
+  test("preserves the backend pre-aggregation default unless the document overrides it", () => {
+    const chart: DashboardChart = { id: "revenue", query: { metrics: ["orders.revenue"] } };
+    const implicit = dashboardStructuredQuery(document, chart, {}, {});
+    expect(implicit).not.toHaveProperty("usePreaggregations");
+
+    const explicit = dashboardStructuredQuery(
+      { ...document, defaults: { query: { use_preaggregations: false } } },
+      chart,
+      {},
+      {},
+    );
+    expect(explicit.usePreaggregations).toBe(false);
+  });
+
+  test("keeps time-series dimension combinations separate and aligns their buckets", () => {
+    const series = dashboardTimeSeries(
+      [
+        { month: "2026-01", region: "West", revenue: 10 },
+        { month: "2026-01", region: "East", revenue: 20 },
+        { month: "2026-02", region: "West", revenue: 15 },
+      ],
+      "month",
+      "revenue",
+      ["region"],
+    );
+    expect(series.map((entry) => entry.label)).toEqual(["West", "East"]);
+    expect(series[0].points).toEqual([
+      { x: "2026-01", y: 10 },
+      { x: "2026-02", y: 15 },
+    ]);
+    expect(series[1].points[0]).toEqual({ x: "2026-01", y: 20 });
+    expect(Number.isNaN(series[1].points[1].y)).toBe(true);
   });
 });

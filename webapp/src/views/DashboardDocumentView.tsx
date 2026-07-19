@@ -9,13 +9,15 @@ import { ThemeToggle } from "../components/ThemeToggle";
 import { TimeSeriesChart } from "../components/TimeSeriesChart";
 import type { SidemanticBackend } from "../data/backend";
 import type { DashboardChart, DashboardDocument } from "../data/dashboardTypes";
-import type { Catalog, ResultRow, StructuredQuery } from "../data/types";
+import type { Catalog, ResultRow } from "../data/types";
 import { displayDimValue, formatValue, labelize } from "../lib/format";
-import { dimTypes, filterExprs, type FilterState } from "../lib/queries";
+import { dimTypes } from "../lib/queries";
 import {
   decodeDashboardState,
   dashboardFilterValue,
   dashboardResultColumn,
+  dashboardStructuredQuery,
+  dashboardTimeSeries,
   encodeDashboardState,
   loadSavedDashboardViews,
   rowsToCsv,
@@ -44,31 +46,6 @@ function metricFormat(catalog: Catalog, ref: string) {
 
 function dimensionTypes(catalog: Catalog) {
   return dimTypes(catalog.models.flatMap((model) => model.dimensions));
-}
-
-function chartQuery(
-  document: DashboardDocument,
-  chart: DashboardChart,
-  filters: DashboardViewState["filters"],
-  types: ReturnType<typeof dimensionTypes>,
-): StructuredQuery {
-  const filterState: FilterState = Object.fromEntries(
-    Object.entries(filters).map(([dimension, value]) => [dimension, { mode: "include", values: [value] }]),
-  );
-  const usePreaggregations =
-    chart.query.use_preaggregations ??
-    chart.query.usePreaggregations ??
-    document.defaults?.query?.use_preaggregations ??
-    document.defaults?.query?.usePreaggregations;
-  return {
-    metrics: chart.query.metrics,
-    dimensions: chart.query.dimensions,
-    filters: [...(chart.query.filters ?? []), ...filterExprs(filterState, { types })],
-    segments: chart.query.segments,
-    orderBy: chart.query.order_by ?? chart.query.orderBy,
-    limit: chart.query.limit ?? 500,
-    usePreaggregations,
-  };
 }
 
 function firstY(chart: DashboardChart): string {
@@ -174,7 +151,10 @@ function DashboardChartPanel({
 }) {
   const [detailsOpen, setDetailsOpen] = useState(false);
   const types = useMemo(() => dimensionTypes(catalog), [catalog]);
-  const request = useMemo(() => chartQuery(document, chart, state.filters, types), [chart, document, state.filters, types]);
+  const request = useMemo(
+    () => dashboardStructuredQuery(document, chart, state.filters, types),
+    [chart, document, state.filters, types],
+  );
   const query = useQueryResult(backend, request);
   const rows = query.result?.rows ?? [];
   const columns = query.result?.columns ?? [];
@@ -211,14 +191,19 @@ function DashboardChartPanel({
       </div>
     );
   } else if (chartType === "line" || chartType === "area") {
-    const points = rows
-      .map((row) => ({ x: String(row[xColumn] ?? ""), y: Number(row[yColumn]) }))
-      .filter((point) => point.x && Number.isFinite(point.y));
+    const seriesRefs = [chart.encoding?.color, ...dimensions.filter((dimension) => dimension !== xRef)].filter(
+      (dimension, index, refs): dimension is string => Boolean(dimension) && refs.indexOf(dimension) === index,
+    );
+    const seriesColumns = seriesRefs.map((dimension) => dashboardResultColumn(dimension, columns));
+    const series = dashboardTimeSeries(rows, xColumn, yColumn, seriesColumns);
+    const primary = series[0] ?? { label: "Current", points: [] };
     visualization = (
       <TimeSeriesChart
-        points={points}
+        points={primary.points}
+        seriesLabel={primary.label}
+        additionalSeries={series.slice(1)}
         formatValue={(value) => formatValue(value, format)}
-        ariaLabel={`${chartTitle}, ${points.length} points`}
+        ariaLabel={`${chartTitle}, ${series.length} series and ${primary.points.length} buckets`}
       />
     );
   } else {

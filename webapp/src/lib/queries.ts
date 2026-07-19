@@ -129,8 +129,18 @@ export function composeFilters(
 }
 
 /** Aggregate totals for one or more metrics (no group-by). */
-export function metricTotals(metrics: FieldRef[], filters: string[], segments?: FieldRef[]): StructuredQuery {
-  return { metrics, filters, ...(segments?.length ? { segments } : {}) };
+export function metricTotals(
+  metrics: FieldRef[],
+  filters: string[],
+  segments?: FieldRef[],
+  usePreaggregations?: boolean,
+): StructuredQuery {
+  return {
+    metrics,
+    filters,
+    ...(segments?.length ? { segments } : {}),
+    ...(usePreaggregations != null ? { usePreaggregations } : {}),
+  };
 }
 
 // Upper bound on buckets per grain — generous enough to cover any realistic range (so the series
@@ -151,6 +161,7 @@ export function metricSeries(
   grain: Grain,
   filters: string[],
   segments?: FieldRef[],
+  usePreaggregations?: boolean,
 ): StructuredQuery {
   const timeDim = `${timeRef}__${grain}`;
   return {
@@ -158,6 +169,7 @@ export function metricSeries(
     dimensions: [timeDim],
     filters,
     ...(segments?.length ? { segments } : {}),
+    ...(usePreaggregations != null ? { usePreaggregations } : {}),
     orderBy: [`${timeDim} ASC`],
     limit: GRAIN_BUCKET_CAP[grain] ?? 2000,
   };
@@ -170,12 +182,14 @@ export function dimensionLeaderboard(
   filters: string[],
   limit = 6,
   segments?: FieldRef[],
+  usePreaggregations?: boolean,
 ): StructuredQuery {
   return {
     metrics: [metricRef],
     dimensions: [dimRef],
     filters,
     ...(segments?.length ? { segments } : {}),
+    ...(usePreaggregations != null ? { usePreaggregations } : {}),
     orderBy: [`${metricRef} DESC`],
     limit,
   };

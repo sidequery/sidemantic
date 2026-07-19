@@ -21,6 +21,7 @@ export type DashboardTabConfig = {
   grain: Grain;
   filters: string[];
   segments: string[];
+  usePreaggregations?: boolean;
 };
 
 function dimensionForRef(model: CatalogModel, ref: string): CatalogDimension | undefined {
@@ -87,5 +88,6 @@ export function dashboardTabConfig(
     grain: timeRef ? grainForRef(timeRef, fallbackGrain) : fallbackGrain,
     filters: chart.query.filters ?? [],
     segments: chart.query.segments ?? [],
+    usePreaggregations: chart.query.use_preaggregations ?? chart.query.usePreaggregations,
   };
 }

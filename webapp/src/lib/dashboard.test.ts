@@ -84,6 +84,7 @@ describe("dashboardTabConfig", () => {
                 metrics: ["orders.revenue", "orders.order_count"],
                 dimensions: ["orders.created_at__month"],
                 segments: ["orders.completed"],
+                use_preaggregations: false,
               },
               encoding: {
                 x: "orders.created_at__month",
@@ -97,7 +98,27 @@ describe("dashboardTabConfig", () => {
 
     const config = dashboardTabConfig(catalog, segmented);
     expect(config?.segments).toEqual(["orders.completed"]);
+    expect(config?.usePreaggregations).toBe(false);
     expect(config?.selectedMetric).toBe("orders.order_count");
+  });
+
+  test("accepts the camel-case pre-aggregation override", () => {
+    const configured: DashboardSpec = {
+      title: "Raw orders",
+      tabs: [
+        {
+          id: "raw",
+          charts: [
+            {
+              id: "orders",
+              query: { metrics: ["orders.order_count"], usePreaggregations: false },
+            },
+          ],
+        },
+      ],
+    };
+
+    expect(dashboardTabConfig(catalog, configured)?.usePreaggregations).toBe(false);
   });
 
   test("selects the owner model for a graph-only metric", () => {

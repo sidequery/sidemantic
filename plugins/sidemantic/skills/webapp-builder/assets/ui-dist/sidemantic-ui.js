@@ -899,8 +899,11 @@ function distinctValues(dimRef, filters, limit = 50) {
 // webapp/src/state/ExplorerContext.tsx
 import { createContext, useContext, useEffect as useEffect4, useMemo, useReducer } from "react";
 
+// webapp/src/lib/dashboard.ts
+var GRAINS = new Set(["hour", "day", "week", "month", "quarter", "year"]);
+
 // webapp/src/state/url.ts
-var GRAINS = new Set(ALL_GRAINS);
+var GRAINS2 = new Set(ALL_GRAINS);
 var CONTEXT_COLUMNS = new Set(["none", "pctTotal", "delta", "deltaPct"]);
 var COMPARISONS = new Set(["off", "previous", "year", "custom"]);
 var FILTER_MODES = new Set(["include", "exclude", "contains"]);
@@ -1295,20 +1298,20 @@ function Leaderboard({
     "data-dimension": dimension,
     "data-expanded": expanded || undefined,
     "aria-label": `${title}, ranked by ${metricLabel}`,
-    className: "flex min-h-60 flex-col border-b border-r border-line bg-surface data-[expanded=true]:col-span-full",
+    className: "flex flex-col border border-line bg-surface data-[expanded=true]:col-span-full",
     children: [
       /* @__PURE__ */ jsxs8("header", {
-        className: "flex items-center justify-between gap-3 px-3 pb-2 pt-2.5",
+        className: "flex items-center justify-between gap-3 border-b border-line px-3 py-2",
         children: [
           /* @__PURE__ */ jsxs8("div", {
             className: "flex min-w-0 items-baseline gap-2",
             children: [
               /* @__PURE__ */ jsx11("h3", {
-                className: "truncate text-sm font-semibold text-ink",
+                className: "truncate text-xs font-semibold text-ink",
                 children: title
               }),
               /* @__PURE__ */ jsxs8("p", {
-                className: "sr-only",
+                className: "hidden shrink-0 text-2xs text-faint sm:block",
                 children: [
                   "Ranked by ",
                   metricLabel
@@ -1356,11 +1359,11 @@ function Leaderboard({
             "data-tone": tone,
             onClick: () => onToggle?.(row.value),
             "aria-pressed": isSelected,
-            className: `leaderboard-row relative grid w-full ${rowGrid} items-center gap-3 overflow-hidden border-0 bg-transparent px-3 py-1 text-left text-xs text-ink data-[selected=true]:bg-chart-primary-selected`,
+            className: `leaderboard-row relative grid w-full ${rowGrid} items-center gap-3 overflow-hidden border-b border-line px-3 py-1.5 text-left text-xs last:border-b-0 hover:bg-surface-soft data-[selected=true]:bg-accent-soft`,
             children: [
               /* @__PURE__ */ jsx11("span", {
                 "aria-hidden": "true",
-                className: `absolute inset-y-0 left-0 ${tone === "negative" ? "bg-danger-soft" : "bg-chart-primary-soft"}`,
+                className: `absolute inset-y-0 left-0 ${tone === "negative" ? "bg-danger-soft" : "bg-accent-soft"}`,
                 style: { width }
               }),
               /* @__PURE__ */ jsx11("span", {
@@ -1368,7 +1371,7 @@ function Leaderboard({
                 children: displayDimValue(row.value)
               }),
               /* @__PURE__ */ jsx11("strong", {
-                className: "relative tnum font-semibold text-ink",
+                className: "relative font-mono tnum font-medium text-ink",
                 children: formatMetric(row.metric)
               }),
               showContext ? /* @__PURE__ */ jsx11("span", {
@@ -1386,7 +1389,7 @@ function Leaderboard({
         "data-action": expanded ? "leaderboard-back" : "leaderboard-expand",
         "aria-expanded": expanded,
         onClick: () => onExpandedChange?.(!expanded),
-        className: "leaderboard-expand mt-1 min-h-9 border-0 border-t border-line bg-transparent px-3 text-left text-xs font-normal text-faint hover:text-accent",
+        className: "leaderboard-expand border-0 border-t border-line bg-transparent px-3 py-2 text-left text-xs font-normal text-faint hover:text-accent",
         children: expanded ? "← All dimensions" : `Expand table (${rows.length})`
       }) : null
     ]

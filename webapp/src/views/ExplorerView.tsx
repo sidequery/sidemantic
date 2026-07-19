@@ -88,18 +88,29 @@ export function ExplorerView() {
   // Strip queries — one aggregate per shape, covering every metric at once.
   const totals = useQueryResult(
     backend,
-    stripMetricRefs.length ? withTz(metricTotals(stripMetricRefs, baseFilters, configured?.segments)) : null,
+    stripMetricRefs.length
+      ? withTz(metricTotals(stripMetricRefs, baseFilters, configured?.segments, configured?.usePreaggregations))
+      : null,
   );
   const series = useQueryResult(
     backend,
     stripMetricRefs.length && timeRef
-      ? withTz(metricSeries(stripMetricRefs, timeRef, state.grain, baseFilters, configured?.segments))
+      ? withTz(
+          metricSeries(
+            stripMetricRefs,
+            timeRef,
+            state.grain,
+            baseFilters,
+            configured?.segments,
+            configured?.usePreaggregations,
+          ),
+        )
       : null,
   );
   const comparison = useQueryResult(
     backend,
     stripMetricRefs.length && prevFilters
-      ? withTz(metricTotals(stripMetricRefs, prevFilters, configured?.segments))
+      ? withTz(metricTotals(stripMetricRefs, prevFilters, configured?.segments, configured?.usePreaggregations))
       : null,
   );
   // The single extra query the chart needs: the focused metric over the *previous* period (the
@@ -107,7 +118,16 @@ export function ExplorerView() {
   const prevSeries = useQueryResult(
     backend,
     rankMetric && timeRef && prevFilters
-      ? withTz(metricSeries([rankMetric.ref], timeRef, state.grain, prevFilters, configured?.segments))
+      ? withTz(
+          metricSeries(
+            [rankMetric.ref],
+            timeRef,
+            state.grain,
+            prevFilters,
+            configured?.segments,
+            configured?.usePreaggregations,
+          ),
+        )
       : null,
   );
 
@@ -223,6 +243,7 @@ export function ExplorerView() {
                 comparisonRange={prevRange ?? undefined}
                 baseFilters={configured?.filters}
                 baseSegments={configured?.segments}
+                usePreaggregations={configured?.usePreaggregations}
                 expanded={expandedLeaderboard === dim.ref}
                 onExpandedChange={(expanded) => setExpandedLeaderboard(expanded ? dim.ref : null)}
               />

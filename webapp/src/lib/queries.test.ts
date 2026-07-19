@@ -150,11 +150,17 @@ describe("isEmptyFilter", () => {
   });
 });
 
-describe("dashboard query segments", () => {
-  test("threads segments through totals, series, and leaderboard queries", () => {
+describe("dashboard query configuration", () => {
+  test("threads segments and pre-aggregation opt-outs through every Explore query", () => {
     const segments = ["orders.completed"];
-    expect(metricTotals(["orders.revenue"], [], segments).segments).toEqual(segments);
-    expect(metricSeries(["orders.revenue"], "orders.created_at", "month", [], segments).segments).toEqual(segments);
-    expect(dimensionLeaderboard("orders.revenue", "orders.region", [], 6, segments).segments).toEqual(segments);
+    const queries = [
+      metricTotals(["orders.revenue"], [], segments, false),
+      metricSeries(["orders.revenue"], "orders.created_at", "month", [], segments, false),
+      dimensionLeaderboard("orders.revenue", "orders.region", [], 6, segments, false),
+    ];
+    for (const query of queries) {
+      expect(query.segments).toEqual(segments);
+      expect(query.usePreaggregations).toBe(false);
+    }
   });
 });

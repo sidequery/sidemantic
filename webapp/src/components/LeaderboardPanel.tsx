@@ -32,6 +32,7 @@ export function LeaderboardPanel({
   comparisonRange,
   baseFilters = EMPTY_FILTERS,
   baseSegments = EMPTY_SEGMENTS,
+  usePreaggregations,
   limit = 6,
   expanded = false,
   onExpandedChange,
@@ -48,6 +49,8 @@ export function LeaderboardPanel({
   baseFilters?: string[];
   /** Segments declared by a dashboard spec; always applied to current and comparison queries. */
   baseSegments?: string[];
+  /** Per-dashboard override for materialized pre-aggregation routing. */
+  usePreaggregations?: boolean;
   limit?: number;
   expanded?: boolean;
   onExpandedChange?: (expanded: boolean) => void;
@@ -62,7 +65,7 @@ export function LeaderboardPanel({
   );
   const { result, loading, error } = useQueryResult(
     backend,
-    dimensionLeaderboard(rankMetric.ref, dim.ref, filters, limit, baseSegments),
+    dimensionLeaderboard(rankMetric.ref, dim.ref, filters, limit, baseSegments, usePreaggregations),
   );
 
   // Only an include-mode selection is a "checked" row; exclude/contains filters don't highlight
@@ -108,7 +111,9 @@ export function LeaderboardPanel({
   );
   const prev = useQueryResult(
     backend,
-    prevFilters ? dimensionLeaderboard(rankMetric.ref, dim.ref, prevFilters, limit, baseSegments) : null,
+    prevFilters
+      ? dimensionLeaderboard(rankMetric.ref, dim.ref, prevFilters, limit, baseSegments, usePreaggregations)
+      : null,
   );
   const metricAlias = aliasOf(rankMetric.ref);
   // While a slow reload is in flight, useQueryResult keeps the *previous* result visible. If the

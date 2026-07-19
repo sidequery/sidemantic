@@ -26,9 +26,14 @@ def _is_registerable_model(model) -> bool:
     missing-source validation error. Any OTHER tableless model (e.g. an erroneous Hex view
     missing its base) is likewise left in.
     """
+    # A parser-owned LookML template (extension: required base / unsupported derived table) is never
+    # a queryable model even when it declares or inherits a sql_table_name -- Looker hides it and
+    # only uses it through extends -- so this marker is checked BEFORE the source check below.
+    if (model.meta or {}).get("lookml_template"):
+        return False
     if model.table or model.sql or getattr(model, "dax", None) or getattr(model, "source_uri", None):
         return True
-    return not (model.meta or {}).get("lookml_template")
+    return True
 
 
 def _drop_non_registerable_models(

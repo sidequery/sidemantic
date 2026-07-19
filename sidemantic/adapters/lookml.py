@@ -678,14 +678,18 @@ class LookMLAdapter(BaseAdapter):
         # `unsupported_derived_table` keys -- a native/other-format model that happens to
         # carry those user-facing keys must still surface its missing-source error.
         for model_name, model in graph.models.items():
-            if model.table is not None or model.sql is not None:
-                continue
             is_template = False
             if model_name in abstract_views:
+                # An `extension: required` view is hidden by Looker even when it declares or inherits
+                # a sql_table_name (valid for a reusable base), so stamp the template marker BEFORE
+                # the source check -- otherwise the loader registers the table-backed base as a
+                # queryable model.
                 model.meta = {**(model.meta or {}), "extension_required": True, "lookml_template": True}
                 is_template = True
-            elif _extends_chain_has(model_name, unsupported_dt_views) or (model.meta or {}).get(
-                "unsupported_derived_table"
+            elif (
+                model.table is None
+                and model.sql is None
+                and (_extends_chain_has(model_name, unsupported_dt_views) or (model.meta or {}).get("unsupported_derived_table"))
             ):
                 model.meta = {**(model.meta or {}), "unsupported_derived_table": True, "lookml_template": True}
                 is_template = True

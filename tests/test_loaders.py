@@ -543,3 +543,26 @@ def test_load_from_directory_no_fk_inference_to_unincluded_lookml_view(tmp_path)
     assert orders is not None
     # No inferred join to the unincluded archived customers view.
     assert "customers" not in {r.name for r in (orders.relationships or [])}
+
+
+def test_load_from_directory_hides_extension_required_view_with_table(tmp_path):
+    """An `extension: required` base that declares a sql_table_name is still hidden (not queryable).
+
+    Looker uses such a reusable base only through `extends`, so the loader must not register it as
+    a CLI model even though it has a table. Its child still inherits its fields."""
+    (tmp_path / "m.model.lkml").write_text(
+        'include: "*.view.lkml"\n'
+        "view: base {\n  extension: required\n  sql_table_name: real_base ;;\n"
+        "  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }\n"
+        "  dimension: shared { type: string  sql: ${TABLE}.shared ;; }\n}\n"
+        "view: child {\n  extends: [base]\n  sql_table_name: child_t ;;\n"
+        "  dimension: cid { primary_key: yes  type: number  sql: ${TABLE}.cid ;; }\n}\n"
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path, strict=False)
+
+    assert "base" not in layer.graph.models  # abstract base hidden despite its table
+    child = layer.graph.models.get("child")
+    assert child is not None
+    assert child.get_dimension("shared") is not None  # child still inherited the base's fields

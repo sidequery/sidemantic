@@ -304,7 +304,7 @@ Sidemantic can export its semantic model back to Malloy format.
 | Filtered measures | Supported (exported as `agg(x) { where: filter }`) |
 | Derived measures | Supported (expression exported as-is) |
 | Ratio metrics | Supported (exported as `numerator / denominator`) |
-| `primary_key:` | Supported (exported when not the default `id`) |
+| `primary_key:` | Supported (exported whenever explicitly declared) |
 | `join_one:` / `join_many:` with `with` clause | Supported |
 | `join_one:` / `join_many:` with `on` condition | Supported (full `on` condition exported from `metadata["on_condition"]` when available) |
 | `where:` (segments) | Supported (source-level where clauses exported) |

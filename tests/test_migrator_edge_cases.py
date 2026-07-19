@@ -277,8 +277,15 @@ def test_generate_models_implicit_join():
     assert "orders" in models
 
     # Should extract relationship from WHERE clause
-    orders = models["orders"]
-    assert "relationships" in orders
+    customers = models["customers"]
+    assert customers["relationships"] == [
+        {
+            "name": "orders",
+            "type": "many_to_many",
+            "foreign_key": "id",
+            "primary_key": "customer_id",
+        }
+    ]
 
 
 def test_generate_models_self_join():

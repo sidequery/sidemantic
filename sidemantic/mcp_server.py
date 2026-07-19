@@ -129,7 +129,7 @@ def _format_join_condition(model_name: str, rel, models: dict[str, Any]) -> str 
         return None
 
     if rel.type == "many_to_one":
-        fk = rel.foreign_key or f"{related_name}_id"
+        fk = rel.foreign_key
         pk = rel.primary_key or related_model.primary_key
         return _format_join_key_pairs(model_name, _key_columns(fk), related_name, _key_columns(pk))
 
@@ -174,6 +174,8 @@ def _format_join_condition(model_name: str, rel, models: dict[str, Any]) -> str 
 
 
 def _key_columns(value: Any) -> list[str]:
+    if value is None:
+        return []
     if isinstance(value, list):
         return [str(column) for column in value]
     return [str(value)]

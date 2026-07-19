@@ -95,7 +95,7 @@ Dictionary form:
 | `source_uri` | string | No | -- | Remote data source URI (DuckDB) |
 | `description` | string | No | -- | Human-readable description |
 | `extends` | string | No | -- | Parent model name for inheritance |
-| `primary_key` | string or list | No | `"id"` | Primary key column(s) |
+| `primary_key` | string or list | No | `null` | Primary key column(s); omitted means identity is unknown |
 | `unique_keys` | list[list[string]] | No | -- | Unique constraints (Pydantic only, not in YAML adapter) |
 | `default_time_dimension` | string | No | -- | Auto-included time dimension for queries |
 | `default_grain` | string | No | -- | Default granularity: `hour`, `day`, `week`, `month`, `quarter`, `year` |
@@ -287,7 +287,7 @@ Current model-level validation aligns with this set (`sum`, `count`, `count_dist
 | `name` | string | Yes | -- | Name of the related model |
 | `type` | string | Yes | -- | `many_to_one`, `one_to_one`, `one_to_many`, `many_to_many` |
 | `foreign_key` | string or list | No | `{name}_id` (many_to_one) | FK column(s) in this model |
-| `primary_key` | string or list | No | `"id"` | PK in related model |
+| `primary_key` | string or list | Conditional | target/source model key | Explicit unique key on the relationship's one side |
 | `through` | string | No | -- | Junction model for many_to_many |
 | `through_foreign_key` | string | No | -- | FK in junction pointing to this model |
 | `related_foreign_key` | string | No | -- | FK in junction pointing to related model |

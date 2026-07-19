@@ -1137,8 +1137,8 @@ Model extra_child {
 # =============================================================================
 
 
-def test_holistics_primary_key_default_and_definition_name():
-    """Default primary_key is id; definition matching name is omitted."""
+def test_holistics_unknown_primary_key_and_definition_name():
+    """An undeclared primary key stays unknown; a definition matching its name is omitted."""
     aml_content = """
 Model test_model {
   table_name: 'test_table'
@@ -1158,7 +1158,7 @@ Model test_model {
         graph = adapter.parse(temp_path)
 
         model = graph.models["test_model"]
-        assert model.primary_key == "id"
+        assert model.primary_key is None
         assert model.description == "Test model"
 
         name_dim = model.get_dimension("name")

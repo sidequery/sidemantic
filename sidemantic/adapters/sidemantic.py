@@ -160,6 +160,7 @@ RELATIONSHIP_FIELDS = {
     "related_foreign_key_columns",
     "sql",
     "metadata",
+    "active",
 }
 SEGMENT_FIELDS = {
     "name",
@@ -961,7 +962,7 @@ class SidemanticAdapter(BaseAdapter):
             ]
 
         # Export primary key
-        if model.primary_key != "id":  # Only export if non-default
+        if model.primary_key is not None:
             result["primary_key"] = model.primary_key
 
         # Export dimensions

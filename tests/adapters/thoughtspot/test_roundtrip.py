@@ -71,6 +71,7 @@ def test_thoughtspot_export_one_to_many_join_direction(tmp_path: Path):
     model = Model(
         name="customers",
         table="customers",
+        primary_key="id",
         relationships=[Relationship(name="orders", type="one_to_many", foreign_key="customer_id")],
     )
     graph = SemanticGraph()

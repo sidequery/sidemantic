@@ -13,9 +13,8 @@ from sidemantic.validation import (
 from sidemantic.validation_runner import validate_directory
 
 
-def test_model_has_default_primary_key(layer):
-    """Test that models have a default primary key."""
-    # Model without explicit primary_key should default to "id"
+def test_model_without_primary_key_remains_explicitly_keyless(layer):
+    """Models must not manufacture an ``id`` key when none was declared."""
     model = Model(
         name="orders",
         table="orders",
@@ -25,7 +24,8 @@ def test_model_has_default_primary_key(layer):
     )
 
     layer.add_model(model)
-    assert model.primary_key == "id"
+    assert model.primary_key is None
+    assert model.primary_key_columns == []
 
 
 def test_model_validation_no_table(layer):
@@ -425,6 +425,238 @@ models:
     joined = "\n".join(report.warnings)
     assert "type 'lambda' is parsed but not executed" in joined
     assert "partition_granularity" not in joined  # now functional via build_partitions(), no longer warned
+
+
+def _write_warehouse_validation_model(tmp_path, *, foreign_key: str = "customer_id"):
+    (tmp_path / "models.yml").write_text(
+        f"""
+models:
+  - name: orders
+    table: orders
+    primary_key: order_id
+    dimensions:
+      - name: created_at
+        type: time
+        granularity: day
+      - name: status
+        type: categorical
+    metrics:
+      - name: revenue
+        agg: sum
+        sql: amount
+    relationships:
+      - name: customers
+        type: many_to_one
+        foreign_key: {foreign_key}
+  - name: customers
+    table: customers
+    primary_key: customer_id
+    dimensions:
+      - name: region
+        type: categorical
+"""
+    )
+
+
+def test_warehouse_validation_checks_schema_types_joins_and_queries(tmp_path):
+    import duckdb
+
+    _write_warehouse_validation_model(tmp_path)
+    database = tmp_path / "warehouse.duckdb"
+    connection = duckdb.connect(str(database))
+    connection.execute(
+        "CREATE TABLE customers (customer_id INTEGER PRIMARY KEY, region VARCHAR); "
+        "CREATE TABLE orders (order_id INTEGER PRIMARY KEY, customer_id INTEGER, created_at TIMESTAMP, "
+        "status VARCHAR, amount DECIMAL(12, 2))"
+    )
+    connection.close()
+
+    report = validate_directory(tmp_path, connection=f"duckdb:///{database}")
+
+    assert report.passed, report.all_errors
+    assert report.connection_errors == []
+    assert report.warehouse_errors == []
+    assert any("Warehouse validation:" in item for item in report.info)
+
+
+def test_warehouse_validation_reports_missing_columns_and_type_mismatches(tmp_path):
+    import duckdb
+
+    _write_warehouse_validation_model(tmp_path, foreign_key="missing_customer_id")
+    database = tmp_path / "warehouse.duckdb"
+    connection = duckdb.connect(str(database))
+    connection.execute(
+        "CREATE TABLE customers (customer_id INTEGER, region VARCHAR); "
+        "CREATE TABLE orders (order_id INTEGER, created_at VARCHAR, status VARCHAR, amount VARCHAR)"
+    )
+    connection.close()
+
+    report = validate_directory(
+        tmp_path,
+        connection=f"duckdb:///{database}",
+        check_queries=False,
+    )
+
+    errors = "\n".join(report.warehouse_errors)
+    assert report.errors == []
+    assert "missing column 'missing_customer_id'" in errors
+    assert "column 'created_at' is declared time" in errors
+    assert "column 'amount' is declared numeric" in errors
+
+
+def test_warehouse_validation_reports_incompatible_join_key_types(tmp_path):
+    import duckdb
+
+    _write_warehouse_validation_model(tmp_path)
+    database = tmp_path / "warehouse.duckdb"
+    connection = duckdb.connect(str(database))
+    connection.execute(
+        "CREATE TABLE customers (customer_id VARCHAR, region VARCHAR); "
+        "CREATE TABLE orders (order_id INTEGER, customer_id INTEGER, created_at TIMESTAMP, "
+        "status VARCHAR, amount DECIMAL(12, 2))"
+    )
+    connection.close()
+
+    report = validate_directory(tmp_path, connection=f"duckdb:///{database}", check_queries=False)
+
+    errors = "\n".join(report.warehouse_errors)
+    assert "Relationship 'orders.customers' joins incompatible warehouse types" in errors
+    assert "orders.customer_id is INTEGER" in errors
+    assert "customers.customer_id is VARCHAR" in errors
+
+
+def test_warehouse_key_checks_find_null_and_duplicate_primary_keys(tmp_path):
+    import duckdb
+
+    (tmp_path / "models.yml").write_text(
+        """
+models:
+  - name: events
+    table: events
+    primary_key: event_id
+    dimensions:
+      - name: category
+        type: categorical
+"""
+    )
+    database = tmp_path / "warehouse.duckdb"
+    connection = duckdb.connect(str(database))
+    connection.execute("CREATE TABLE events (event_id INTEGER, category VARCHAR)")
+    connection.execute("INSERT INTO events VALUES (1, 'a'), (1, 'b'), (NULL, 'c')")
+    connection.close()
+
+    report = validate_directory(
+        tmp_path,
+        connection=f"duckdb:///{database}",
+        check_keys=True,
+        check_queries=False,
+    )
+
+    errors = "\n".join(report.warehouse_errors)
+    assert "contains NULL values" in errors
+    assert "is not unique" in errors
+
+
+def test_warehouse_key_checks_verify_one_to_one_cardinality(tmp_path):
+    import duckdb
+
+    (tmp_path / "models.yml").write_text(
+        """
+models:
+  - name: customers
+    table: customers
+    primary_key: customer_id
+    dimensions:
+      - name: name
+        type: categorical
+    relationships:
+      - name: profiles
+        type: one_to_one
+        foreign_key: customer_id
+  - name: profiles
+    table: profiles
+    primary_key: profile_id
+    dimensions:
+      - name: plan
+        type: categorical
+"""
+    )
+    database = tmp_path / "warehouse.duckdb"
+    connection = duckdb.connect(str(database))
+    connection.execute("CREATE TABLE customers (customer_id INTEGER, name VARCHAR)")
+    connection.execute("CREATE TABLE profiles (profile_id INTEGER, customer_id INTEGER, plan VARCHAR)")
+    connection.execute("INSERT INTO profiles VALUES (1, 7, 'free'), (2, 7, 'paid')")
+    connection.close()
+
+    report = validate_directory(
+        tmp_path,
+        connection=f"duckdb:///{database}",
+        check_keys=True,
+        check_queries=False,
+    )
+
+    errors = "\n".join(report.warehouse_errors)
+    assert "relationship 'customers.profiles' foreign_key ['customer_id'] is not unique" in errors
+
+
+def test_warehouse_key_checks_allow_multiple_null_one_to_one_foreign_keys(tmp_path):
+    import duckdb
+
+    (tmp_path / "models.yml").write_text(
+        """
+models:
+  - name: customers
+    table: customers
+    primary_key: customer_id
+    relationships:
+      - name: profiles
+        type: one_to_one
+        foreign_key: customer_id
+  - name: profiles
+    table: profiles
+    primary_key: profile_id
+"""
+    )
+    database = tmp_path / "warehouse.duckdb"
+    connection = duckdb.connect(str(database))
+    connection.execute("CREATE TABLE customers (customer_id INTEGER)")
+    connection.execute("CREATE TABLE profiles (profile_id INTEGER, customer_id INTEGER)")
+    connection.execute("INSERT INTO profiles VALUES (1, NULL), (2, NULL), (3, 7)")
+    connection.close()
+
+    report = validate_directory(
+        tmp_path,
+        connection=f"duckdb:///{database}",
+        check_keys=True,
+        check_queries=False,
+    )
+
+    assert report.passed, report.all_errors
+
+
+def test_warehouse_connection_failure_is_separate_from_structural_errors(monkeypatch, tmp_path):
+    (tmp_path / "models.yml").write_text(
+        """
+models:
+  - name: events
+    table: events
+"""
+    )
+
+    from sidemantic.validation_runner import SemanticLayer as RealSemanticLayer
+
+    def fail_to_connect(*args, **kwargs):
+        if kwargs.get("connection") is not None:
+            raise RuntimeError("warehouse unavailable")
+        return RealSemanticLayer(*args, **kwargs)
+
+    monkeypatch.setattr("sidemantic.validation_runner.SemanticLayer", fail_to_connect)
+
+    report = validate_directory(tmp_path, connection="duckdb:///unreachable.duckdb")
+
+    assert report.errors == []
+    assert report.warehouse_errors == []
+    assert report.connection_errors == ["Could not connect to warehouse: warehouse unavailable"]
 
 
 if __name__ == "__main__":

@@ -164,7 +164,7 @@ class GoodDataAdapter(BaseAdapter):
             table = None
 
         grain_ids = self._parse_grain_ids(dataset_def)
-        primary_key = grain_ids[0] if grain_ids else "id"
+        primary_key = grain_ids[0] if grain_ids else None
 
         attributes = self._as_list(dataset_def.get("attributes"))
         facts = self._as_list(dataset_def.get("facts"))
@@ -531,7 +531,7 @@ class GoodDataAdapter(BaseAdapter):
         label_map = self._build_legacy_label_map(dataset_def.get("labels"))
 
         dimensions = []
-        primary_key = "id"
+        primary_key = None
 
         anchor_def = dataset_def.get("anchor")
         if isinstance(anchor_def, dict):

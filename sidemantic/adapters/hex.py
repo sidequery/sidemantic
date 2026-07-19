@@ -105,7 +105,7 @@ class HexAdapter(BaseAdapter):
 
         # Parse dimensions and find primary key
         dimensions = []
-        primary_key = "id"  # default
+        primary_key = None
 
         for dim_def in model_def.get("dimensions") or []:
             dim = self._parse_dimension(dim_def)

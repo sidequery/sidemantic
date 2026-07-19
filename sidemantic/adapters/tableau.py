@@ -1118,16 +1118,9 @@ class TableauAdapter(BaseAdapter):
         # Parse groups as segments
         segments = self._parse_groups_as_segments(ds_elem)
 
-        # Determine primary key
-        primary_key = self._infer_primary_key(dimensions, metrics, metadata_lookup, collection_info)
-        if collection_info and sql:
-            sql = self._inject_collection_primary_key_sql(
-                sql,
-                primary_key,
-                collection_info,
-                metadata_lookup,
-            )
-            primary_key = "__tableau_pk"
+        # Tableau fields and collection columns do not declare uniqueness. Keep identity unknown
+        # instead of manufacturing a key from an id-shaped or first projected field.
+        primary_key = None
 
         # Surface Tableau Semantics-layer attributes (semantic-layer / is-legacy)
         # from the object-graph as model metadata so downstream consumers can
@@ -1645,77 +1638,6 @@ class TableauAdapter(BaseAdapter):
         table_name, column_name = field_sources.get(normalized, (expected_table, normalized))
         alias = alias_by_table.get(table_name, alias_by_table[expected_table])
         return f"{alias}.{_quote_sql_identifier(column_name)}"
-
-    def _infer_primary_key(
-        self,
-        dimensions: list[Dimension],
-        metrics: list[Metric],
-        metadata_lookup: dict[str, dict],
-        collection_info: _CollectionInfo | None,
-    ) -> str:
-        """Infer a primary key from actual imported fields instead of hard-coding id."""
-        fields: list[tuple[str, str | None]] = []
-        field_sources = self._build_collection_field_sources(metadata_lookup)
-        for dimension in dimensions:
-            fields.append((dimension.name, field_sources.get(dimension.name, (None, None))[0]))
-        for metric in metrics:
-            fields.append((metric.name, field_sources.get(metric.name, (None, None))[0]))
-
-        def rank(field_name: str) -> tuple[int, int]:
-            lowered = field_name.lower()
-            if lowered == "id":
-                return (0, 0)
-            if lowered in {"row id", "rowid"}:
-                return (1, 0)
-            if lowered.endswith("_id") or lowered.endswith(" id"):
-                return (2, 0)
-            if lowered.endswith("_key") or lowered.endswith(" key") or lowered.endswith("key"):
-                return (3, 0)
-            return (99, 0)
-
-        preferred_table = collection_info.base_table_name if collection_info else None
-        preferred_fields = [
-            field_name
-            for field_name, table_name in fields
-            if preferred_table is not None and table_name == preferred_table
-        ]
-        scored_preferred = [field_name for field_name in preferred_fields if rank(field_name)[0] < 99]
-        if scored_preferred:
-            return min(scored_preferred, key=rank)
-
-        scored_fields = [field_name for field_name, _ in fields if rank(field_name)[0] < 99]
-        if scored_fields:
-            return min(scored_fields, key=rank)
-
-        if preferred_fields:
-            return preferred_fields[0]
-        if fields:
-            return fields[0][0]
-        return "id"
-
-    def _inject_collection_primary_key_sql(
-        self,
-        sql: str,
-        primary_key: str,
-        collection_info: _CollectionInfo,
-        metadata_lookup: dict[str, dict],
-    ) -> str:
-        """Inject a stable projected PK alias into collection SQL."""
-        field_sources = self._build_collection_field_sources(metadata_lookup)
-        base_table = collection_info.base_table_name
-        if not base_table:
-            return sql
-
-        source_table, source_column = field_sources.get(primary_key, (base_table, primary_key))
-        alias_by_table = {table_name: f"j{i}" for i, (table_name, _) in enumerate(collection_info.tables)}
-        pk_expr = (
-            f"{alias_by_table.get(source_table, alias_by_table[base_table])}.{_quote_sql_identifier(source_column)}"
-        )
-        return sql.replace(
-            "SELECT\n",
-            f"SELECT\n  {pk_expr} AS {_quote_sql_identifier('__tableau_pk')},\n",
-            1,
-        )
 
     # --- Phase 2: Multi-table joins ---
 

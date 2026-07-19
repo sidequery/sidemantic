@@ -282,7 +282,7 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         self.current_model_name: str | None = None
         self.current_table: str | None = None
         self.current_sql: str | None = None
-        self.current_primary_key: str = "id"
+        self.current_primary_key: str | None = None
         self.current_description: str | None = None
         self.current_extends: str | None = None
         self.current_connection: str | None = None
@@ -296,7 +296,7 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         self.current_model_name = None
         self.current_table = None
         self.current_sql = None
-        self.current_primary_key = "id"
+        self.current_primary_key = None
         self.current_description = None
         self.current_extends = None
         self.current_connection = None
@@ -1925,7 +1925,7 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         self.current_model_name = join_name
         self.current_table = None
         self.current_sql = None
-        self.current_primary_key = "id"
+        self.current_primary_key = None
         self.current_description = None
         self.current_extends = None
         self.current_connection = None
@@ -2276,7 +2276,7 @@ class MalloyAdapter(BaseAdapter):
             lines.append(f"source: {model.name} extend {{")
 
         # Primary key
-        if model.primary_key and model.primary_key != "id":
+        if model.primary_key:
             lines.append(f"  primary_key: {model.primary_key}")
 
         # Segments (source-level where clauses) - Tier 4.1

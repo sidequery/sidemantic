@@ -303,7 +303,7 @@ class MetricFlowAdapter(BaseAdapter):
         model_sql = model_def.get("sql")
 
         # Parse entities to extract primary key and relationships
-        primary_key = "id"  # default
+        primary_key = None
         relationships = []
         # Map entity name -> backing SQL column, so semi-additive window_groupings that name an
         # entity (e.g. `user`, backed by `user_id`) resolve to the real column the generator can
@@ -418,7 +418,7 @@ class MetricFlowAdapter(BaseAdapter):
         # The underlying table is the dbt model itself.
         table = model_def.get("name")
 
-        primary_key = "id"
+        primary_key = None
         relationships = []
         dimensions = []
 
@@ -963,23 +963,28 @@ class MetricFlowAdapter(BaseAdapter):
         # Export entities (convert from relationships and primary_key)
         result["entities"] = []
 
-        # Add primary entity
-        result["entities"].append(
-            {
-                "name": model.name,  # Use model name as entity name
-                "type": "primary",
-                "expr": model.primary_key,
-            }
-        )
+        # Add a primary entity only when the source model actually declares one.
+        if model.primary_key is not None:
+            result["entities"].append(
+                {
+                    "name": model.name,
+                    "type": "primary",
+                    "expr": model.primary_key,
+                }
+            )
 
         # Add foreign entities from relationships
         for rel in model.relationships:
             if rel.type == "many_to_one":
+                if not rel.foreign_key:
+                    raise ValueError(
+                        f"Cannot export relationship '{model.name}.{rel.name}' to MetricFlow without foreign_key"
+                    )
                 result["entities"].append(
                     {
                         "name": rel.name,
                         "type": "foreign",
-                        "expr": rel.foreign_key or f"{rel.name}_id",
+                        "expr": rel.foreign_key,
                     }
                 )
 

@@ -550,10 +550,9 @@ def _pick_execution_query(graph):
         execution_model_name, requires_model_override = _execution_model_name(model.name)
         base_requires_sql_override = bool(model.sql)
 
-        primary_keys = model.primary_key if isinstance(model.primary_key, list) else [model.primary_key]
-        if any(not isinstance(pk, str) or not pk.strip() for pk in primary_keys):
-            continue
-        base_column_types = {pk: "INTEGER" for pk in primary_keys}
+        # Isolated model queries do not require an entity key. Unknown identity is represented by
+        # an empty list rather than inventing an ``id`` column for execution fixtures.
+        base_column_types = {pk: "INTEGER" for pk in model.primary_key_columns}
 
         def pick_metric_candidate():
             for metric in model.metrics:

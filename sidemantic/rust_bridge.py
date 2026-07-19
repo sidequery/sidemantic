@@ -441,14 +441,14 @@ def models_to_rust_yaml(
     models_by_name = {m.name: m for m in models}
 
     for model in models:
-        primary_key_columns = model.primary_key if isinstance(model.primary_key, list) else [model.primary_key]
+        primary_key_columns = model.primary_key_columns
         model_data = {
             "name": model.name,
             "extends": model.extends if include_extends else None,
             "table": model.table,
             "sql": model.sql,
             "source_uri": model.source_uri,
-            "primary_key": primary_key_columns[0] if primary_key_columns else "id",
+            "primary_key": primary_key_columns[0] if primary_key_columns else None,
             "primary_key_columns": primary_key_columns,
             "unique_keys": model.unique_keys,
             "description": model.description,
@@ -1602,15 +1602,13 @@ def _normalize_filter_sql(filter_sql: str) -> str:
 
 def _serialize_relationship(relationship, source_model, target_model) -> dict | None:
     foreign_keys = _as_list(relationship.foreign_key)
-    if not foreign_keys:
-        foreign_keys = [f"{relationship.name}_id"] if relationship.type == "many_to_one" else ["id"]
 
     if relationship.primary_key is not None:
         primary_keys = _as_list(relationship.primary_key)
     elif target_model:
         primary_keys = target_model.primary_key_columns
     else:
-        primary_keys = ["id"]
+        primary_keys = []
 
     sql = None
     if len(foreign_keys) > 1 and len(foreign_keys) == len(primary_keys):

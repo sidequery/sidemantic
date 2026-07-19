@@ -164,9 +164,9 @@ class TestBookingsSource:
             assert r.type == "many_to_one"
 
     def test_primary_entity_shorthand_not_handled(self, graph):
-        """primary_entity shorthand (outside entities list) defaults pk to 'id'."""
+        """Unsupported primary_entity shorthand does not invent an id key."""
         model = graph.models["bookings_source"]
-        assert model.primary_key == "id"
+        assert model.primary_key is None
 
     def test_default_time_dimension(self, graph):
         """defaults.agg_time_dimension is captured."""
@@ -370,9 +370,9 @@ class TestSCDTypeII:
         assert model.primary_key == "company_id"
 
     def test_primary_entity_shorthand_not_handled(self, graph):
-        """primary_entity shorthand on listings/primary_accounts defaults pk to 'id'."""
-        assert graph.models["listings"].primary_key == "id"
-        assert graph.models["primary_accounts"].primary_key == "id"
+        """Unsupported primary_entity shorthand does not invent id keys."""
+        assert graph.models["listings"].primary_key is None
+        assert graph.models["primary_accounts"].primary_key is None
 
     def test_categorical_dimensions(self, graph):
         """Categorical dimensions on SCD models parse correctly."""

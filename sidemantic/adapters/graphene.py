@@ -372,7 +372,7 @@ class GrapheneAdapter(BaseAdapter):
         for model_name, model in graph.models.items():
             if model_name in explicit_primary_keys:
                 continue
-            if model.primary_key != "id":
+            if model.primary_key is not None:
                 continue
             model.primary_key = _choose_primary_key(model.dimensions, candidates.get(model_name))
 
@@ -1483,19 +1483,14 @@ def _graphene_metadata(metadata: dict[str, Any], extra: dict[str, Any] | None = 
     return {"graphene": payload} if payload else None
 
 
-def _choose_primary_key(dimensions: list[Dimension], candidates: list[str] | None) -> str:
+def _choose_primary_key(dimensions: list[Dimension], candidates: list[str] | None) -> str | None:
     dimension_names = {dimension.name for dimension in dimensions}
     if candidates:
         for candidate in candidates:
             if candidate in dimension_names:
                 return candidate
         return candidates[0]
-    if "id" in dimension_names:
-        return "id"
-    for dimension in dimensions:
-        if dimension.name.endswith("_id"):
-            return dimension.name
-    return dimensions[0].name if dimensions else "id"
+    return None
 
 
 def _model_name_from_ref(ref: str) -> str:

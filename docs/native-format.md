@@ -112,7 +112,7 @@ At least one of `table`, `sql`, or `source_uri` should be present unless the mod
 | `sql` | Conditional | SQL subquery used as the model source. |
 | `source_uri` | Conditional | Source URI for external data discovery or file-backed sources. Native loaders preserve it; execution is adapter/runtime-specific until a concrete backend maps URI sources. |
 | `extends` | No | Parent model name. Child fields override or extend parent fields. |
-| `primary_key` | No | Single primary key string or list of columns. Defaults to `id`. |
+| `primary_key` | No | Single primary key string or list of columns. Omitted means the model's entity key is unknown. |
 | `primary_key_columns` | No | Explicit list form for primary keys. |
 | `unique_keys` | No | List of unique key column lists. |
 | `description` | No | Human-readable description. |
@@ -401,11 +401,20 @@ relationships:
 | `related_foreign_key_columns` | For many-to-many | Explicit through-to-target key columns. |
 | `sql` | No | Custom join SQL using `{from}` and `{to}` runtime placeholders. |
 
-For CLI-authored native files, prefer explicit `foreign_key` and `primary_key`
-fields. Omitted keys are still supported for compatibility: `many_to_one`
-defaults the source key to `{name}_id`, while `one_to_many` and `one_to_one`
-default the related-side key to `id`; omitted `primary_key` resolves to the
-target model's declared primary key when building graph joins.
+Join columns are never inferred from names. Every non-cross relationship without
+custom `sql` must declare `foreign_key`. A `many_to_one` relationship may omit
+`primary_key` only when the target model declares its `primary_key`; a
+`one_to_many` or `one_to_one` relationship may omit it only when the source model
+declares its `primary_key`. Use relationship `primary_key` for a scoped alternate
+unique key, or model `unique_keys` when the uniqueness applies model-wide.
+
+Cardinality is a data contract: the key on the "one" side must be unique. Run
+warehouse validation with `--check-keys` to verify the declared contract against
+data. Structural validation rejects missing keys and mismatched composite-key
+arity before SQL compilation.
+
+See [Explicit model keys and warehouse validation](model-key-migration.md) for
+the compatibility and migration path from implicit keys.
 
 When `sql` is present, Python and Rust use it instead of the FK/PK-generated
 predicate. `{from}` is replaced with the source model's runtime alias and `{to}`

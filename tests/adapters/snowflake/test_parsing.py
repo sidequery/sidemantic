@@ -213,7 +213,7 @@ tables:
         assert "test_table" in graph.models
         model = graph.models["test_table"]
         assert model.table == "test"
-        assert model.primary_key == "id"  # Default
+        assert model.primary_key is None
 
     def test_parse_table_without_base_table(self, adapter, tmp_path):
         """Test parsing a table without base_table."""

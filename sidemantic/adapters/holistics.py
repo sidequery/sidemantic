@@ -1159,7 +1159,7 @@ def _parse_model_block(block: AmlBlock, constants: dict[str, AmlValue], context:
         table=table_name if model_type == "table" else None,
         sql=query_expr if model_type == "query" else None,
         description=description,
-        primary_key=primary_key or "id",
+        primary_key=primary_key,
         dimensions=dimensions,
         metrics=metrics,
     )
@@ -1538,7 +1538,7 @@ def _parse_dataset_block(
     return Model(
         name=block.name,
         description=description or label,
-        primary_key="id",
+        primary_key=None,
         dimensions=dimensions,
         metrics=metrics,
     )

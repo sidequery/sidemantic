@@ -533,14 +533,14 @@ class CubeAdapter(BaseAdapter):
         if native_sql:
             return Relationship(name=join_name, type=rel_type, sql=native_sql)
 
-        # Unparseable (references another cube, or no recognizable members): fall back
-        # to Cube's naming convention, but warn instead of silently faking a join.
+        # Preserve the relationship shape, but leave its key unknown. Structural validation will
+        # require the user to supply the real key instead of compiling a guessed join.
         warnings.warn(
             f"Could not parse Cube join '{self_name}' -> '{join_name}' from SQL {join_sql!r}; "
-            f"falling back to foreign key '{join_name}_id'.",
+            "leaving the foreign key unknown.",
             stacklevel=2,
         )
-        return Relationship(name=join_name, type=rel_type, foreign_key=f"{join_name}_id")
+        return Relationship(name=join_name, type=rel_type)
 
     @staticmethod
     def _native_join_sql_to_cube(native_sql: str, join_name: str) -> str:

@@ -35,7 +35,7 @@ Features are marked **supported**, **partial support**, or **unsupported**. Part
 | `custom_extensions` (dataset level) | Supported (stored in `Model.meta["custom_extensions"]`) |
 | Dataset without `name` | Supported (gracefully skipped) |
 | Multi-file directory parsing (recursive `.yml`/`.yaml` discovery) | Supported |
-| Default primary key when omitted | Supported (defaults to `"id"`) |
+| Omitted primary key | Supported (preserved as unknown / `None`) |
 
 ---
 
@@ -94,8 +94,8 @@ Not mapped: `type` (the OSI `type` hint on metrics, e.g. `type: count`, is ignor
 | Relationship `name` | Supported (stored in `Relationship.metadata["osi_name"]` and reused on export) |
 | Relationship `ai_context` | Supported (stored in `Relationship.metadata["ai_context"]`) |
 | Relationship `custom_extensions` | Supported (stored in `Relationship.metadata["custom_extensions"]`) |
-| Missing `from_columns` | Supported (defaults foreign key to `{to_model}_id`) |
-| Missing `to_columns` | Supported (defaults primary key to `id`) |
+| Missing `from_columns` | Preserved as an unknown foreign key; structural validation rejects joins that need it |
+| Missing `to_columns` | Uses the target model's declared key when available; otherwise remains unknown |
 | Relationship with missing `from` or `to` | Supported (gracefully skipped) |
 | Relationship to non-existent model | Supported (gracefully skipped if the `from` model is not in the graph) |
 | `left_dataset` / `right_dataset` / `cardinality` format | Unsupported |

@@ -381,6 +381,60 @@ def test_validation_preflights_consumption_filter_and_order_fields():
     assert "Saved query 'invalid_expressions' ordering field 'orders.unknown' is not a metric or dimension" in errors
 
 
+def test_validation_rejects_expression_models_without_a_join_path():
+    layer = _layer()
+    layer.add_model(
+        Model(
+            name="customers",
+            table="customers",
+            dimensions=[Dimension(name="region", type="categorical")],
+        )
+    )
+    explore = Explore(
+        name="disconnected_filter",
+        model="orders",
+        default_metrics=["revenue"],
+        filters=["customers.region = 'West'"],
+    )
+    errors, _warnings = validate_explore(explore, layer.graph)
+    assert any("filter expression is incompatible" in error and "No join path found" in error for error in errors)
+
+    saved_query = SavedQuery(
+        name="disconnected_saved_query",
+        explore="revenue_overview",
+        metrics=["revenue"],
+        filters=["customers.region = 'West'"],
+    )
+    errors, _warnings = validate_saved_query(saved_query, layer.graph)
+    assert any("filter expression is incompatible" in error and "No join path found" in error for error in errors)
+
+
+def test_validation_requires_order_fields_in_default_or_saved_selection():
+    layer = _layer()
+    explore = Explore(
+        name="unselected_default_order",
+        model="orders",
+        default_metrics=["revenue"],
+        default_order_by=["status"],
+    )
+    errors, _warnings = validate_explore(explore, layer.graph)
+    assert (
+        "Explore 'unselected_default_order' default ordering field(s) must be selected by the query: orders.status"
+        in errors
+    )
+
+    saved_query = SavedQuery(
+        name="unselected_saved_order",
+        explore="revenue_overview",
+        metrics=["revenue"],
+        order_by=["status"],
+    )
+    errors, _warnings = validate_saved_query(saved_query, layer.graph)
+    assert (
+        "Saved query 'unselected_saved_order' ordering field(s) must be selected by the query: orders.status" in errors
+    )
+
+
 def test_visibility_enforcement_covers_models_metrics_and_explores():
     layer = _layer()
     layer.enforce_visibility = True

@@ -73,6 +73,9 @@ def _validate_consumption_expressions(
     expressions: list[str],
     base_model: str,
     graph: "SemanticGraph",
+    *,
+    query_metrics: list[str] | None = None,
+    query_dimensions: list[str] | None = None,
 ) -> list[str]:
     from sidemantic.core.consumption import expression_field_references
 
@@ -80,11 +83,51 @@ def _validate_consumption_expressions(
         references = expression_field_references(expressions, base_model, graph_metrics=graph.metrics.keys())
     except Exception as error:
         return [f"{label} contains an invalid {field_kind} expression: {error}"]
-    return [
+    errors = [
         f"{label} {field_kind} field '{reference}' is not a metric or dimension"
         for reference in sorted(references)
         if not _is_metric_or_dimension(reference, graph)
     ]
+    if errors:
+        return errors
+
+    expression_metrics: list[str] = []
+    expression_dimensions: list[str] = []
+    for reference in sorted(references):
+        if not validate_query([reference], [], graph):
+            expression_metrics.append(reference)
+        else:
+            expression_dimensions.append(reference)
+    compatibility_errors = validate_query(
+        [*(query_metrics or []), *expression_metrics],
+        [*(query_dimensions or []), *expression_dimensions],
+        graph,
+    )
+    return [
+        f"{label} {field_kind} expression is incompatible with its selected query: {error}"
+        for error in compatibility_errors
+    ]
+
+
+def _validate_order_fields_selected(
+    label: str,
+    expressions: list[str],
+    selected_metrics: list[str],
+    selected_dimensions: list[str],
+    base_model: str,
+    graph: "SemanticGraph",
+) -> list[str]:
+    from sidemantic.core.consumption import expression_field_references
+
+    try:
+        references = expression_field_references(expressions, base_model, graph_metrics=graph.metrics.keys())
+    except Exception:
+        return []
+    selected = {*selected_metrics, *selected_dimensions}
+    outside = sorted(references - selected)
+    if not outside:
+        return []
+    return [f"{label} ordering field(s) must be selected by the query: {', '.join(outside)}"]
 
 
 def validate_explore(explore: "Explore", graph: "SemanticGraph") -> tuple[list[str], list[str]]:
@@ -95,10 +138,12 @@ def validate_explore(explore: "Explore", graph: "SemanticGraph") -> tuple[list[s
         return errors, warnings
     dimensions = [*(explore.allowed_dimensions or []), *explore.default_dimensions]
     metrics = [*(explore.allowed_metrics or []), *explore.default_metrics]
+    qualified_metrics = _qualified_consumption_metrics(metrics, explore.model, graph)
+    qualified_dimensions = _qualified_consumption_refs(dimensions, explore.model)
     errors.extend(
         validate_query(
-            _qualified_consumption_metrics(metrics, explore.model, graph),
-            _qualified_consumption_refs(dimensions, explore.model),
+            qualified_metrics,
+            qualified_dimensions,
             graph,
         )
     )
@@ -116,11 +161,29 @@ def validate_explore(explore: "Explore", graph: "SemanticGraph") -> tuple[list[s
             [*explore.filters, *explore.default_filters],
             explore.model,
             graph,
+            query_metrics=qualified_metrics,
+            query_dimensions=qualified_dimensions,
         )
     )
     errors.extend(
         _validate_consumption_expressions(
-            f"Explore '{explore.name}'", "ordering", explore.default_order_by, explore.model, graph
+            f"Explore '{explore.name}'",
+            "ordering",
+            explore.default_order_by,
+            explore.model,
+            graph,
+            query_metrics=qualified_metrics,
+            query_dimensions=qualified_dimensions,
+        )
+    )
+    errors.extend(
+        _validate_order_fields_selected(
+            f"Explore '{explore.name}' default",
+            explore.default_order_by,
+            _qualified_consumption_metrics(explore.default_metrics, explore.model, graph),
+            _qualified_consumption_refs(explore.default_dimensions, explore.model),
+            explore.model,
+            graph,
         )
     )
     if not metrics and not dimensions:
@@ -160,12 +223,34 @@ def validate_saved_query(saved_query: "SavedQuery", graph: "SemanticGraph") -> t
         errors.extend(validate_query(metrics, dimensions, graph))
         errors.extend(
             _validate_consumption_expressions(
-                f"Saved query '{saved_query.name}'", "filter", saved_query.filters, base_model, graph
+                f"Saved query '{saved_query.name}'",
+                "filter",
+                saved_query.filters,
+                base_model,
+                graph,
+                query_metrics=metrics,
+                query_dimensions=dimensions,
             )
         )
         errors.extend(
             _validate_consumption_expressions(
-                f"Saved query '{saved_query.name}'", "ordering", saved_query.order_by, base_model, graph
+                f"Saved query '{saved_query.name}'",
+                "ordering",
+                saved_query.order_by,
+                base_model,
+                graph,
+                query_metrics=metrics,
+                query_dimensions=dimensions,
+            )
+        )
+        errors.extend(
+            _validate_order_fields_selected(
+                f"Saved query '{saved_query.name}'",
+                saved_query.order_by,
+                metrics,
+                dimensions,
+                base_model,
+                graph,
             )
         )
         for raw_segment in saved_query.segments:

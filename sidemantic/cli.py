@@ -1160,10 +1160,13 @@ def query(
                 use_preaggregations=layer.use_preaggregations,
             )
             rewritten_sql = rewriter.rewrite(sql)
-            if output_format == "json":
-                emit_json({"sql": rewritten_sql})
-            elif output_format == "jsonl":
-                emit_records([{"sql": rewritten_sql}], output_format=output_format)
+            if output_format in {"csv", "json", "jsonl"}:
+                emit_records(
+                    [{"sql": rewritten_sql}],
+                    columns=("sql",),
+                    output_format=output_format,
+                    json_value={"sql": rewritten_sql},
+                )
             else:
                 emit_result(rewritten_sql)
             return
@@ -1227,7 +1230,16 @@ def dashboard_validate(
                 "errors": list(errors),
             }
             emit_records(
-                [{"valid": not errors, "spec": str(spec), "tabs": len(document.tabs), "charts": chart_count}],
+                [
+                    {
+                        "valid": not errors,
+                        "spec": str(spec),
+                        "tabs": len(document.tabs),
+                        "charts": chart_count,
+                        "errors": list(errors),
+                    }
+                ],
+                columns=("valid", "spec", "tabs", "charts", "errors"),
                 output_format=output_format,
                 json_value=payload,
             )

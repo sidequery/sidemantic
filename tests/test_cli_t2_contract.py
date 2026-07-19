@@ -217,6 +217,28 @@ def test_plain_query_preserves_duplicate_columns_by_position(project: Path):
     assert result.stdout.splitlines() == ["x\tx", "1\t2"]
 
 
+def test_query_dry_run_honors_csv_format(project: Path):
+    result = runner.invoke(
+        app,
+        [
+            "query",
+            "SELECT status, order_count FROM orders",
+            "--project",
+            str(project),
+            "--dry-run",
+            "--format",
+            "csv",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    rows = list(csv.reader(io.StringIO(result.stdout)))
+    assert rows[0] == ["sql"]
+    assert len(rows) == 2
+    assert "SELECT" in rows[1][0]
+    assert "," in rows[1][0]
+
+
 @pytest.mark.parametrize("command", ["info", "validate"])
 @pytest.mark.parametrize("output_format", ["table", "csv", "json", "jsonl"])
 def test_structured_inspection_commands_support_formats(
@@ -477,6 +499,36 @@ def test_empty_jsonl_result_emits_no_blank_record(tmp_path: Path):
 
     assert result.exit_code == 0, result.output
     assert result.stdout == ""
+
+
+@pytest.mark.parametrize("output_mode", ["table", "csv", "jsonl", "plain"])
+def test_dashboard_validation_records_include_errors(project: Path, output_mode: str):
+    dashboard = project / "broken-dashboard.yaml"
+    dashboard.write_text("schema: unsupported\ntabs: []\n")
+    arguments = [
+        "dashboard",
+        "validate",
+        str(dashboard),
+        "--project",
+        str(project),
+    ]
+    arguments.extend(["--plain"] if output_mode == "plain" else ["--format", output_mode])
+
+    result = runner.invoke(app, arguments)
+
+    assert result.exit_code == 1, result.output
+    if output_mode == "jsonl":
+        record = json.loads(result.stdout)
+        assert any("schema must be" in error for error in record["errors"])
+        assert "title is required" in record["errors"]
+    elif output_mode == "csv":
+        record = next(csv.DictReader(io.StringIO(result.stdout)))
+        errors = json.loads(record["errors"])
+        assert any("schema must be" in error for error in errors)
+        assert "title is required" in errors
+    else:
+        assert "schema must be" in result.stdout
+        assert "title is required" in result.stdout
 
 
 def test_root_and_complex_help_include_examples_docs_and_support():

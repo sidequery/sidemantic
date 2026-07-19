@@ -87,6 +87,7 @@ class StructuredQueryRequest(BaseModel):
             or self.offset is not None
             or self.ungrouped
             or self.parameters is not None
+            or self.timezone is not None
         ):
             raise ValueError("saved_query cannot be combined with structured query overrides")
         return self

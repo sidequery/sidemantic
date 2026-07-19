@@ -27,6 +27,7 @@ from sidemantic.adapters.metricflow import MetricFlowAdapter
 from sidemantic.adapters.sidemantic import SidemanticAdapter
 from sidemantic.api_server import create_app
 from sidemantic.cli import app
+from sidemantic.core.consumption import expression_field_references, qualify_expression_fields
 from sidemantic.schema import generate_yaml_schema
 from sidemantic.validation import validate_explore, validate_governance, validate_saved_query
 
@@ -124,6 +125,42 @@ def test_explore_qualifies_relative_filter_and_order_expressions():
     assert "revenue DESC" in sql
 
 
+def test_explore_filter_qualification_skips_subquery_columns():
+    expression = "status IN (SELECT status FROM allowed_statuses)"
+
+    assert qualify_expression_fields([expression], "orders") == [
+        "orders.status IN (SELECT status FROM allowed_statuses)"
+    ]
+    assert expression_field_references([expression], "orders") == {"orders.status"}
+
+
+def test_explore_queries_remain_anchored_to_the_base_model():
+    layer = _layer()
+    layer.graph.models["orders"].relationships.append(
+        Relationship(name="customers", type="many_to_one", foreign_key="customer_id")
+    )
+    layer.add_model(
+        Model(
+            name="customers",
+            table="customers",
+            primary_key="customer_id",
+            dimensions=[Dimension(name="region", type="categorical")],
+        )
+    )
+    layer.graph.add_explore(
+        Explore(
+            name="orders_by_customer",
+            model="orders",
+            allowed_dimensions=["customers.region"],
+        )
+    )
+
+    sql = layer.compile(explore="orders_by_customer", dimensions=["customers.region"])
+
+    assert "FROM orders_cte" in sql
+    assert "JOIN customers_cte" in sql
+
+
 def test_explore_enforces_allowlists_and_max_limit():
     layer = _layer()
 
@@ -149,6 +186,8 @@ def test_saved_query_is_immutable_and_compiles_through_its_explore():
         layer.compile(saved_query="paid_revenue", offset=5)
     with pytest.raises(ValueError, match="ungrouped"):
         layer.compile(saved_query="paid_revenue", ungrouped=True)
+    with pytest.raises(ValueError, match="timezone"):
+        layer.compile(saved_query="paid_revenue", timezone="America/Los_Angeles")
     with pytest.raises(ValueError, match="explore"):
         layer.compile(saved_query="paid_revenue", explore="revenue_overview")
 
@@ -529,6 +568,12 @@ def test_meta_api_exposes_consumption_contracts():
     compiled = client.post("/compile", json={"saved_query": "paid_revenue"})
     assert compiled.status_code == 200, compiled.text
     assert "LIMIT 10" in compiled.json()["sql"]
+    for endpoint in ("/compile", "/query"):
+        timezone_override = client.post(
+            endpoint,
+            json={"saved_query": "paid_revenue", "timezone": "America/Los_Angeles"},
+        )
+        assert timezone_override.status_code == 422, timezone_override.text
 
     explicit_empty = client.post(
         "/compile",

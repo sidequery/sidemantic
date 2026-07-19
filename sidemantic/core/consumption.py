@@ -21,6 +21,8 @@ def expression_field_references(
     for expression in expressions:
         parsed = parse_one(expression)
         for column in parsed.find_all(exp.Column):
+            if column.find_ancestor(exp.Select, exp.Subquery) is not None:
+                continue
             if column.table:
                 references.add(f"{column.table}.{column.name}")
             elif column.name in graph_metrics:
@@ -44,7 +46,12 @@ def qualify_expression_fields(
         parsed = parse_one(expression)
 
         def qualify_column(node: exp.Expression) -> exp.Expression:
-            if not isinstance(node, exp.Column) or node.table or node.name in graph_metrics:
+            if (
+                not isinstance(node, exp.Column)
+                or node.table
+                or node.name in graph_metrics
+                or node.find_ancestor(exp.Select, exp.Subquery) is not None
+            ):
                 return node
             result = node.copy()
             result.set("table", exp.to_identifier(base_model))

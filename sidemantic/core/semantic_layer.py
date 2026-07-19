@@ -903,6 +903,7 @@ class SemanticLayer:
         offset: int | None,
         ungrouped: bool,
         parameters: dict | None,
+        timezone: str | None,
     ) -> tuple:
         """Resolve defaults and enforce a named consumption contract."""
         if saved_query_name:
@@ -917,6 +918,7 @@ class SemanticLayer:
                 "offset": offset,
                 "ungrouped": True if ungrouped else None,
                 "parameters": parameters,
+                "timezone": timezone,
             }
             overridden = [name for name, value in supplied.items() if value is not None]
             if overridden:
@@ -940,7 +942,7 @@ class SemanticLayer:
             parameters = dict(definition.parameters) if definition.parameters is not None else None
 
         if not explore_name:
-            return metrics, dimensions, filters, segments, order_by, limit, parameters
+            return metrics, dimensions, filters, segments, order_by, limit, parameters, None
 
         contract = self.graph.get_explore(explore_name)
         if contract.visibility != "public" and self.enforce_visibility:
@@ -996,7 +998,7 @@ class SemanticLayer:
             limit = contract.default_limit
         if contract.max_limit is not None and limit is not None and limit > contract.max_limit:
             raise ValueError(f"Explore '{explore_name}' limit {limit} exceeds max_limit {contract.max_limit}")
-        return metrics, dimensions, filters, segments, order_by, limit, parameters
+        return metrics, dimensions, filters, segments, order_by, limit, parameters, contract.model
 
     def compile(
         self,
@@ -1057,7 +1059,16 @@ class SemanticLayer:
         """
         from sidemantic.validation import QueryValidationError, validate_query
 
-        metrics, dimensions, filters, segments, order_by, limit, parameters = self._resolve_consumption_contract(
+        (
+            metrics,
+            dimensions,
+            filters,
+            segments,
+            order_by,
+            limit,
+            parameters,
+            consumption_base_model,
+        ) = self._resolve_consumption_contract(
             explore_name=explore,
             saved_query_name=saved_query,
             metrics=metrics,
@@ -1069,6 +1080,7 @@ class SemanticLayer:
             offset=offset,
             ungrouped=ungrouped,
             parameters=parameters,
+            timezone=timezone,
         )
         metrics = metrics or []
         dimensions = dimensions or []
@@ -1117,7 +1129,13 @@ class SemanticLayer:
         # The Rust generator implements neither query-timezone bucketing nor with_totals
         # GROUPING SETS, so use the Python path when either is requested.
         # (Pre-agg bypass for timezone queries is enforced inside SQLGenerator.generate.)
-        if self._use_rust_sql_generator and not timezone and not with_totals and not security_forces_python:
+        if (
+            self._use_rust_sql_generator
+            and not timezone
+            and not with_totals
+            and not security_forces_python
+            and consumption_base_model is None
+        ):
             inner_sql = self._compile_with_rust(
                 metrics=metrics,
                 dimensions=dimensions,
@@ -1148,6 +1166,7 @@ class SemanticLayer:
                     parameters=parameters,
                     use_preaggregations=use_preaggs,
                     aliases=aliases,
+                    base_model=consumption_base_model,
                 )
                 if inner_sql.strip() != python_sql.strip():
                     if self._rust_no_fallback or self._strict_rust_sql_generator_entrypoint:
@@ -1171,6 +1190,7 @@ class SemanticLayer:
                 timezone=timezone,
                 with_totals=with_totals,
                 user_attributes=user_attributes,
+                base_model=consumption_base_model,
             )
 
         return self._apply_post_process(inner_sql, post_process)
@@ -1211,6 +1231,7 @@ class SemanticLayer:
         timezone: str | None = None,
         with_totals: bool = False,
         user_attributes: dict | None = None,
+        base_model: str | None = None,
     ) -> str:
         generator = SQLGenerator(
             self.graph,
@@ -1219,6 +1240,7 @@ class SemanticLayer:
             preagg_schema=self.preagg_schema,
             timezone=timezone,
             allow_non_additive_unsafe=self.allow_non_additive_unsafe,
+            base_model=base_model,
         )
 
         return generator.generate(

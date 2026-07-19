@@ -293,6 +293,9 @@ def _check_key_columns(
     require_non_null: bool = True,
     require_unique: bool = True,
 ) -> None:
+    if not columns:
+        return
+
     adapter = layer.adapter
     dialect = layer.dialect
     source = _model_source_sql(model, dialect)

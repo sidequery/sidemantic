@@ -634,6 +634,38 @@ models:
     assert report.passed, report.all_errors
 
 
+def test_warehouse_key_checks_skip_custom_one_to_one_without_structured_keys(tmp_path):
+    import duckdb
+
+    (tmp_path / "models.yml").write_text(
+        """
+models:
+  - name: customers
+    table: customers
+    relationships:
+      - name: profiles
+        type: one_to_one
+        sql: "{from}.customer_id = {to}.customer_id"
+  - name: profiles
+    table: profiles
+"""
+    )
+    database = tmp_path / "warehouse.duckdb"
+    connection = duckdb.connect(str(database))
+    connection.execute("CREATE TABLE customers (customer_id INTEGER)")
+    connection.execute("CREATE TABLE profiles (customer_id INTEGER)")
+    connection.close()
+
+    report = validate_directory(
+        tmp_path,
+        connection=f"duckdb:///{database}",
+        check_keys=True,
+        check_queries=False,
+    )
+
+    assert report.passed, report.all_errors
+
+
 def test_warehouse_connection_failure_is_separate_from_structural_errors(monkeypatch, tmp_path):
     (tmp_path / "models.yml").write_text(
         """

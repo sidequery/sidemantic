@@ -341,6 +341,7 @@ def _compile_only_dialect(models: Path | None, connection: str | None, db: Path 
         return {
             "bigquery": "bigquery",
             "duckdb": "duckdb",
+            "mssql": "tsql",
             "mysql": "mysql",
             "postgresql": "postgres",
             "redshift": "redshift",

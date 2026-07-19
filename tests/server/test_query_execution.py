@@ -153,6 +153,15 @@ def test_limit_query_sql_preserves_smaller_tsql_limit():
     assert bounded == "SELECT TOP 5 value FROM facts ORDER BY value"
 
 
+@pytest.mark.parametrize("operator", ["UNION", "EXCEPT", "INTERSECT"])
+def test_limit_query_sql_hoists_order_from_tsql_set_queries(operator):
+    bounded = limit_query_sql(f"SELECT 1 AS value {operator} SELECT 2 AS value ORDER BY value", 10, "tsql")
+
+    assert bounded == (
+        f"SELECT TOP 11 * FROM (SELECT 1 AS value {operator} SELECT 2 AS value) AS _sidemantic_bounded ORDER BY value"
+    )
+
+
 @pytest.mark.parametrize("sql", ["EXPLAIN SELECT 1", "DESCRIBE facts", "PRAGMA version"])
 def test_limit_query_sql_passes_row_producing_commands_through(sql):
     assert limit_query_sql(sql, 10, "duckdb") == sql

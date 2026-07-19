@@ -211,6 +211,10 @@ def test_compile_only_commands_do_not_open_missing_duckdb(command, tmp_path):
     assert not missing_db.exists()
 
 
+def test_compile_only_dialect_maps_mssql_adbc_to_tsql():
+    assert cli_module._compile_only_dialect(None, "adbc://mssql?uri=ignored", None) == "tsql"
+
+
 def test_explain_sql_outputs_planner_json(tmp_path):
     _write_min_model(tmp_path)
 

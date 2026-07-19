@@ -188,6 +188,34 @@ def limit_query_sql(sql: str, max_rows: int, dialect: str) -> str:
             if int(existing_count.this) <= cap:
                 return statement.sql(dialect=dialect)
         return statement.limit(cap).sql(dialect=dialect)
+    if dialect == "tsql" and isinstance(statement, (exp.Union, exp.Except, exp.Intersect)):
+        # SQLGlot implements limit() on set operations by nesting the complete
+        # expression. Hoist ORDER BY to the capped outer SELECT so SQL Server
+        # does not see an illegal ordered derived table.
+        cap = max_rows + 1
+        existing_limit = statement.args.get("limit")
+        existing_count = None
+        if existing_limit is not None:
+            existing_count = existing_limit.args.get("expression") or existing_limit.args.get("count")
+        if isinstance(existing_count, exp.Literal) and existing_count.is_int and int(existing_count.this) <= cap:
+            return statement.sql(dialect=dialect)
+        inner = statement.copy()
+        order = inner.args.get("order")
+        if order is not None:
+            inner.set("order", None)
+        else:
+            # SQLGlot represents a trailing TSQL ORDER BY on the rightmost
+            # SELECT rather than on the set-operation node.
+            rightmost = inner
+            while isinstance(rightmost, (exp.Union, exp.Except, exp.Intersect)):
+                rightmost = rightmost.expression
+            order = rightmost.args.get("order")
+            rightmost.set("order", None)
+        inner.set("limit", None)
+        bounded = exp.select("*").from_(inner.subquery("_sidemantic_bounded")).limit(cap)
+        if order is not None:
+            bounded.set("order", order.copy())
+        return bounded.sql(dialect=dialect)
     bounded = exp.select("*").from_(statement.subquery("_sidemantic_bounded")).limit(max_rows + 1)
     return bounded.sql(dialect=dialect)
 

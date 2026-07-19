@@ -94,6 +94,7 @@ def test_bad_parameter_recovery_is_human_only(tmp_path: Path) -> None:
 
     assert human.exit_code == 2
     assert "Hint: Check the query path" in human.stderr
+    assert human.stderr.count("Hint: Check the query path") == 1
     assert "Hint:" not in machine.stderr
 
 
@@ -133,7 +134,10 @@ def test_explain_routes_human_output_but_not_json_through_pager_seam(tmp_path: P
     explanation = SimpleNamespace(to_dict=lambda: {"rewritten_sql": "SELECT 1"})
     layer = SimpleNamespace(explain_sql=lambda *_args, **_kwargs: explanation)
     monkeypatch.setattr(cli_module, "_load_query_layer", lambda *_args, **_kwargs: layer)
-    monkeypatch.setattr(cli_module, "_emit_long_report", reports.append)
+    monkeypatch.setattr(
+        "sidemantic.cli_contract.emit_long_output",
+        lambda text, **_kwargs: reports.append(text),
+    )
 
     human = CliRunner().invoke(_cli(), ["explain", "SELECT 1"])
     machine = CliRunner().invoke(_cli(), ["explain", "SELECT 1", "--format", "json"])

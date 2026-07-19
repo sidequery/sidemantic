@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import sys
 from pathlib import Path
@@ -28,6 +27,7 @@ from sidemantic.cli_contract import (
     emit_result,
     emit_warning,
     fail,
+    page_json_output,
     progress,
     read_sql_input,
     read_text_input,
@@ -1565,7 +1565,8 @@ def explain_sql_command(
         if cli_state().machine_output:
             emit_json(payload)
         else:
-            _emit_long_report(json.dumps(payload, indent=2, sort_keys=True))
+            with page_json_output():
+                emit_json(payload)
 
     except typer.Exit:
         raise

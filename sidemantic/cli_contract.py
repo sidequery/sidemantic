@@ -11,6 +11,7 @@ import os
 import sys
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import date, datetime, time
 from decimal import Decimal
@@ -21,7 +22,14 @@ from typing import Any, NoReturn, TextIO
 import click
 import typer
 
-from sidemantic.cli_polish import SuggestionGroup, emit_deprecation, recovery_hint
+from sidemantic.cli_polish import (
+    SuggestionGroup,
+    emit_deprecation,
+    emit_long_output,
+    recovery_hint,
+)
+
+_PAGE_JSON_OUTPUT: ContextVar[bool] = ContextVar("sidemantic_page_json_output", default=False)
 
 
 class ExitCode(IntEnum):
@@ -186,8 +194,8 @@ class ContractGroup(SuggestionGroup):
             self._emit_deprecations(ctx)
             return result
         except click.ClickException as exc:
-            hint = recovery_hint(exc.format_message()) if cli_state().human_extras else None
-            if hint is not None:
+            hint = recovery_hint(exc.format_message()) if self._human_recovery_enabled() else None
+            if hint is not None and f"Hint: {hint}" not in exc.message:
                 exc.message = f"{exc.message}\nHint: {hint}"
             raise
         except (click.exceptions.Exit, click.Abort):
@@ -243,9 +251,17 @@ class ContractGroup(SuggestionGroup):
 
     @staticmethod
     def _emit_recovery(message: str) -> None:
+        if not ContractGroup._human_recovery_enabled():
+            return
         hint = recovery_hint(message)
         if hint is not None:
             emit_guidance(hint)
+
+    @staticmethod
+    def _human_recovery_enabled() -> bool:
+        state = cli_state()
+        explicit_machine_format = state.format_explicit and state.requested_format in {"csv", "json", "jsonl"}
+        return state.human_extras and not explicit_machine_format
 
 
 def emit_pending_deprecation(command_name: str) -> None:
@@ -567,8 +583,30 @@ def credential_file_from_env(name: str) -> Path | None:
 def emit_json(value: object) -> None:
     """Write stable, valid JSON and nothing else to stdout."""
 
-    cli_state().machine_output = True
-    emit_result(_json_dumps(value, indent=2, sort_keys=True))
+    state = cli_state()
+    rendered = _json_dumps(value, indent=2, sort_keys=True)
+    if _PAGE_JSON_OUTPUT.get():
+        emit_long_output(
+            rendered,
+            stream=sys.stdout,
+            human_output=state.human_extras,
+            pager_enabled=state.pager,
+            color=bool(state.color),
+        )
+        return
+    state.machine_output = True
+    emit_result(rendered)
+
+
+@contextmanager
+def page_json_output() -> Iterator[None]:
+    """Route JSON-shaped human output through the shared pager contract."""
+
+    token = _PAGE_JSON_OUTPUT.set(True)
+    try:
+        yield
+    finally:
+        _PAGE_JSON_OUTPUT.reset(token)
 
 
 def fail(exc: Exception | str, *, usage: bool = False) -> NoReturn:

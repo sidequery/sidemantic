@@ -772,7 +772,10 @@ class LookMLAdapter(BaseAdapter):
             # date part when the VALUE argument is a known time dimension; otherwise a scale column
             # named like a unit (TRUNC(amount, month)) must still resolve to its dimension SQL.
             _args = cls._enclosing_call_arg_texts(pre, suf, token)
-            _value = _args[0].strip().strip("`\"[]'") if _args else ""
+            # The value is normally qualified in a folded filter ({model}.created_at); strip the
+            # model placeholder / a bare table qualifier and any quotes so it matches a time dim name.
+            _value = _args[0].strip() if _args else ""
+            _value = re.sub(r"^(?:\{model\}|\$\{TABLE\}|\w+)\.", "", _value).strip("`\"[]'")
             if not (time_dim_names and _value in time_dim_names):
                 return False
         if want >= 0:
@@ -3574,6 +3577,12 @@ class LookMLAdapter(BaseAdapter):
         try:
             tree = sqlglot.parse_one(sql.replace("{model}", "__m__"))
         except Exception:
+            return False
+        # A NULL-retaining array collector (LIST / ARRAY_AGG) cannot be filtered by folding a CASE
+        # into its argument -- the excluded row becomes a NULL element rather than disappearing
+        # (ARRAY_LENGTH still counts it), exactly as the import path rejects. Skip so the measure is
+        # not exported with an ineffective filter.
+        if any(tree.find_all(exp.List)) or any(tree.find_all(exp.ArrayAgg)):
             return False
         # An ORDER BY in an aggregate's argument list would be buried in the CASE by folding; a
         # WITHIN GROUP ORDER BY is folded correctly, so reject only the former.

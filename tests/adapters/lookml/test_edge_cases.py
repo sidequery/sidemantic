@@ -5019,6 +5019,12 @@ def test_lookml_export_folded_filter_numeric_trunc_scale_column_resolves():
     assert conds(["TRUNC(created_at, month) = DATE '2024-01-01'"], dated) == (
         "(TRUNC((${TABLE}.created_at), month) = DATE '2024-01-01')"
     )
+    # The QUALIFIED form ({model}.created_at) must still be recognized as a time value.
+    assert conds(["TRUNC({model}.created_at, month) = DATE '2024-01-01'"], dated) == (
+        "(TRUNC((${TABLE}.created_at), month) = DATE '2024-01-01')"
+    )
+    # And a qualified numeric value still resolves the scale column.
+    assert conds(["TRUNC({model}.amount, month) > 0"], numeric) == ("(TRUNC((${TABLE}.amt), (${TABLE}.scale_col)) > 0)")
 
 
 def test_lookml_export_folded_filter_iso_date_trunc_units_resolve_value_column():
@@ -5301,6 +5307,10 @@ def test_lookml_export_ordered_set_aggregate_with_filter_skipped():
     assert LookMLAdapter._complete_sql_fold_is_safe("SUM({model}.amount ORDER BY {model}.created_at)") is False
     # A plain aggregate (no ORDER BY) is still foldable.
     assert LookMLAdapter._complete_sql_fold_is_safe("SUM({model}.amount) / COUNT({model}.id)") is True
+    # A NULL-retaining array collector (LIST/ARRAY_AGG) is NOT foldable -- a folded CASE leaves the
+    # excluded row as a NULL element, so the measure must be skipped on export (as import does).
+    assert LookMLAdapter._complete_sql_fold_is_safe("ARRAY_LENGTH(LIST({model}.amount))") is False
+    assert LookMLAdapter._complete_sql_fold_is_safe("ARRAY_LENGTH(ARRAY_AGG({model}.amount))") is False
 
     graph = SemanticGraph()
     graph.add_model(

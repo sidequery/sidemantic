@@ -82,10 +82,6 @@ pub struct ModelConfig {
     pub sql_segments: Option<String>,
 }
 
-fn default_primary_key() -> String {
-    "id".to_string()
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum KeyConfig {
@@ -508,15 +504,14 @@ impl SidemanticConfig {
 impl ModelConfig {
     /// Convert to core Model type
     pub fn into_model(self) -> Model {
-        // An explicitly empty columns list is the cross-runtime representation of
-        // a known-keyless model. When both fields are omitted, retain the legacy
-        // native-format `id` default for backward compatibility.
+        // Missing or explicitly empty key fields both represent a model whose
+        // primary key is unknown. Never manufacture an `id` column here.
         let primary_key_columns = match self.primary_key_columns {
             Some(columns) => columns,
             None => self
                 .primary_key
                 .map(KeyConfig::into_columns)
-                .unwrap_or_else(|| vec![default_primary_key()]),
+                .unwrap_or_default(),
         };
         let primary_key = primary_key_columns.first().cloned().unwrap_or_default();
 
@@ -1199,7 +1194,7 @@ models:
     }
 
     #[test]
-    fn test_omitted_primary_key_retains_legacy_id_default() {
+    fn test_omitted_primary_key_preserves_keyless_model() {
         let yaml = r#"
 models:
   - name: events
@@ -1212,8 +1207,8 @@ models:
             .unwrap();
         let model = models.remove(0);
 
-        assert_eq!(model.primary_key, "id");
-        assert_eq!(model.primary_keys(), vec!["id".to_string()]);
+        assert_eq!(model.primary_key, "");
+        assert!(model.primary_keys().is_empty());
     }
 
     #[test]

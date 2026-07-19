@@ -965,9 +965,8 @@ class SidemanticAdapter(BaseAdapter):
         if model.primary_key is not None:
             result["primary_key"] = model.primary_key
         else:
-            # Native Rust loaders retain the legacy `id` default for an omitted
-            # key. The empty columns marker distinguishes an explicitly keyless
-            # model without breaking older hand-authored definitions.
+            # Keep an explicit marker for compatibility with older Rust loaders
+            # that treated an omitted native key as `id`.
             result["primary_key_columns"] = []
 
         # Export dimensions

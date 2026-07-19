@@ -1,5 +1,6 @@
 """Behavioral contract tests for human-facing CLI polish."""
 
+import inspect
 import os
 from io import StringIO
 from pathlib import Path
@@ -16,6 +17,8 @@ from sidemantic.cli_polish import (
     complete_model,
     complete_path,
     complete_semantic_format,
+    complete_source_format,
+    complete_target_format,
     emit_deprecation,
     emit_long_output,
     emit_next_step,
@@ -23,6 +26,21 @@ from sidemantic.cli_polish import (
     recovery_hint,
     should_page,
 )
+
+
+def test_typer_completion_callbacks_use_supported_parameter_names() -> None:
+    callbacks = (
+        complete_semantic_format,
+        complete_source_format,
+        complete_target_format,
+        complete_dashboard_spec,
+        complete_path,
+        complete_model,
+    )
+
+    for callback in callbacks:
+        names = set(inspect.signature(callback).parameters)
+        assert names <= {"ctx", "param", "args", "incomplete"}
 
 
 class TTYBuffer(StringIO):

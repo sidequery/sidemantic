@@ -277,25 +277,28 @@ def _configured_pager():
 
 
 def complete_semantic_format(
-    _ctx: click.Context,
+    ctx: click.Context,
     param: click.Parameter,
     incomplete: str,
 ) -> list[CompletionItem]:
     """Complete import/export formats without importing adapter dependencies."""
 
+    del ctx
     operation = "export" if param.name == "target_format" else "import"
     return _semantic_format_choices(operation, incomplete)
 
 
-def complete_source_format(_ctx: click.Context, incomplete: str) -> list[tuple[str, str]]:
+def complete_source_format(ctx: click.Context, incomplete: str) -> list[tuple[str, str]]:
     """Complete import formats for Typer's completion callback contract."""
 
+    del ctx
     return [(item.value, item.help or "") for item in _semantic_format_choices("import", incomplete)]
 
 
-def complete_target_format(_ctx: click.Context, incomplete: str) -> list[tuple[str, str]]:
+def complete_target_format(ctx: click.Context, incomplete: str) -> list[tuple[str, str]]:
     """Complete export formats for Typer's completion callback contract."""
 
+    del ctx
     return [(item.value, item.help or "") for item in _semantic_format_choices("export", incomplete)]
 
 
@@ -314,11 +317,12 @@ def _semantic_format_choices(operation: Literal["import", "export"], incomplete:
 
 
 def complete_dashboard_spec(
-    _ctx: click.Context,
+    ctx: click.Context,
     incomplete: str,
 ) -> list[str]:
     """Complete dashboard directories plus YAML and JSON specification files."""
 
+    del ctx
     raw = Path(incomplete)
     parent = raw.parent
     prefix = raw.name
@@ -339,11 +343,12 @@ def complete_dashboard_spec(
 
 
 def complete_path(
-    _ctx: click.Context,
+    ctx: click.Context,
     incomplete: str,
 ) -> list[str]:
     """Complete readable files and directories for project input paths."""
 
+    del ctx
     raw = Path(incomplete)
     parent = raw.parent
     prefix = raw.name

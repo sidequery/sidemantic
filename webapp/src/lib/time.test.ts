@@ -2,6 +2,10 @@ import { describe, expect, test } from "bun:test";
 import { addDays, bucketOffset, endOfBucket, formatBucketLabel, previousRange, previousYearRange } from "./time";
 
 describe("bucketOffset", () => {
+  test("counts second and minute timestamp buckets", () => {
+    expect(bucketOffset("2024-01-01T00:00:00", "2024-01-01T00:00:42", "second")).toBe(42);
+    expect(bucketOffset("2024-01-01T00:00:00", "2024-01-01T00:42:00", "minute")).toBe(42);
+  });
   test("counts whole grain units between two bucket starts", () => {
     expect(bucketOffset("2024-01-01", "2024-01-01", "day")).toBe(0);
     expect(bucketOffset("2024-01-01", "2024-01-05", "day")).toBe(4);
@@ -89,6 +93,10 @@ describe("addDays", () => {
 });
 
 describe("formatBucketLabel", () => {
+  test("retains clock precision for second and minute grains", () => {
+    expect(formatBucketLabel("2024-01-02T03:04:05", "second")).toBe("2024-01-02 03:04:05");
+    expect(formatBucketLabel("2024-01-02T03:04:00", "minute")).toBe("2024-01-02 03:04");
+  });
   // The backend already truncates in the selected timezone and returns local wall-clock
   // bucket labels, so formatBucketLabel must NOT re-zone them (that double-shifts the date).
   test("presents day-grain labels as their local calendar date, without shifting", () => {

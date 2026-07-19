@@ -17,6 +17,7 @@ import { ViewSwitcher } from "./components/ViewSwitcher";
 import { grainOptions } from "./lib/time";
 import { dashboardTabConfig } from "./lib/dashboard";
 import { ExplorerProvider, useExplorer } from "./state/ExplorerContext";
+import { initialStateFromCatalog } from "./state/explorerState";
 import { useQueryActive } from "./state/queryActivity";
 import { ExploreIndexView } from "./views/ExploreIndexView";
 import { ExplorerView } from "./views/ExplorerView";
@@ -84,9 +85,18 @@ function Shell() {
   const isDashboard = Boolean(dashboard);
   const isHome = state.view === "home" && !isDashboard;
   const model = catalog.models.find((m) => m.name === state.model);
+  const configured = useMemo(
+    () => dashboardTabConfig(catalog, dashboard, state.dashboardTab),
+    [catalog, dashboard, state.dashboardTab],
+  );
+  const resetInitial = useMemo(
+    () => (dashboard ? initialStateFromCatalog(catalog, dashboard, state.dashboardTab) : initial),
+    [catalog, dashboard, initial, state.dashboardTab],
+  );
   const dirty = state.dateRange != null || Object.keys(state.filters).length > 0;
-  const hasTime = Boolean(model?.timeDimension);
-  const grains = grainOptions(model?.timeDimension?.supportedGranularities);
+  const activeTimeDimension = configured?.timeDimension ?? model?.timeDimension;
+  const hasTime = Boolean(activeTimeDimension);
+  const grains = grainOptions(activeTimeDimension?.supportedGranularities);
   // Resolve a filtered dimension's ref back to its catalog dimension + owning model, so a pill can
   // open the editor. Filters target the active model's dimensions in practice.
   const dimByRef = useMemo(() => {
@@ -171,7 +181,7 @@ function Shell() {
       {dirty ? (
         <button
           type="button"
-          onClick={() => dispatch({ type: "reset", initial })}
+          onClick={() => dispatch({ type: "reset", initial: resetInitial })}
           className="border border-line bg-surface px-2 py-1 text-2xs text-muted hover:border-faint hover:text-ink"
         >
           Reset

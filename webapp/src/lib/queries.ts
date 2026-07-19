@@ -158,6 +158,8 @@ export function metricTotals(
 // Upper bound on buckets per grain — generous enough to cover any realistic range (so the series
 // is never truncated to its oldest 500 buckets) while still bounding the points sent to the chart.
 const GRAIN_BUCKET_CAP: Record<Grain, number> = {
+  second: 86_400, // one day secondly
+  minute: 525_600, // one year minutely
   hour: 9600, // ~13 months hourly
   day: 4000, // ~11 years daily
   week: 800,
@@ -212,8 +214,21 @@ export function dimensionLeaderboard(
  * dimension with no metric yields `SELECT DISTINCT <dim> … GROUP BY <dim>` at the backend; the
  * `filters` already fold in the search text (an ILIKE) and the surrounding crossfilter context.
  */
-export function distinctValues(dimRef: FieldRef, filters: string[], limit = 50): StructuredQuery {
-  return { dimensions: [dimRef], filters, orderBy: [`${dimRef} ASC`], limit };
+export function distinctValues(
+  dimRef: FieldRef,
+  filters: string[],
+  limit = 50,
+  segments?: FieldRef[],
+  usePreaggregations?: boolean,
+): StructuredQuery {
+  return {
+    dimensions: [dimRef],
+    filters,
+    ...(segments?.length ? { segments } : {}),
+    ...(usePreaggregations != null ? { usePreaggregations } : {}),
+    orderBy: [`${dimRef} ASC`],
+    limit,
+  };
 }
 
 /** Grouped pivot table: N dimensions x M metrics. */
@@ -232,6 +247,16 @@ export function previewRows(
   fields: { dimensions: FieldRef[]; metrics: FieldRef[] },
   filters: string[],
   limit = 50,
+  segments?: FieldRef[],
+  usePreaggregations?: boolean,
 ): StructuredQuery {
-  return { dimensions: fields.dimensions, metrics: fields.metrics, filters, ungrouped: true, limit };
+  return {
+    dimensions: fields.dimensions,
+    metrics: fields.metrics,
+    filters,
+    ...(segments?.length ? { segments } : {}),
+    ...(usePreaggregations != null ? { usePreaggregations } : {}),
+    ungrouped: true,
+    limit,
+  };
 }

@@ -1,6 +1,6 @@
 import type { Catalog, CatalogModel, DashboardSpec, Grain } from "../data/types";
 import { graphMetricsForModel } from "../lib/catalog";
-import { dashboardTabConfig } from "../lib/dashboard";
+import { dashboardTabConfig, type DashboardTabConfig } from "../lib/dashboard";
 import { isEmptyFilter, type FilterMode, type FilterState } from "../lib/queries";
 import type { DateRange } from "../lib/time";
 
@@ -178,8 +178,12 @@ export function defaultMetric(model: CatalogModel | undefined, catalog: Catalog)
 }
 
 /** Derive a fresh initial state from the loaded catalog. */
-export function initialStateFromCatalog(catalog: Catalog, dashboard?: DashboardSpec | null): ExplorerState {
-  const configured = dashboardTabConfig(catalog, dashboard);
+export function initialStateFromCatalog(
+  catalog: Catalog,
+  dashboard?: DashboardSpec | null,
+  dashboardTab?: string,
+): ExplorerState {
+  const configured = dashboardTabConfig(catalog, dashboard, dashboardTab);
   const model = configured?.model ?? primaryModel(catalog);
   const metric = configured?.selectedMetric ?? defaultMetric(model, catalog);
   return {
@@ -199,5 +203,26 @@ export function initialStateFromCatalog(catalog: Catalog, dashboard?: DashboardS
     // Left empty so the pivot falls back to the active metric for whatever model is selected,
     // rather than pinning the primary model's first metric across model switches.
     pivotMetrics: [],
+  };
+}
+
+/** Apply the selected dashboard tab while retaining explicit, valid metric/grain URL selections. */
+export function applyDashboardConfig(
+  decoded: ExplorerState,
+  configured: DashboardTabConfig,
+  search: string,
+): ExplorerState {
+  const params = new URLSearchParams(search);
+  const metric = params.get("metric");
+  const grain = params.get("grain");
+  const keepMetric = metric === decoded.selectedMetric && configured.metrics.some((candidate) => candidate.ref === metric);
+  const keepGrain = grain === decoded.grain;
+  return {
+    ...decoded,
+    view: "explore",
+    dashboardTab: configured.id,
+    model: configured.model.name,
+    selectedMetric: keepMetric ? decoded.selectedMetric : configured.selectedMetric,
+    grain: keepGrain ? decoded.grain : configured.grain,
   };
 }

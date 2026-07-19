@@ -26,6 +26,7 @@ const EMPTY_SEGMENTS: string[] = [];
 export function LeaderboardPanel({
   dim,
   model,
+  timeDimensionRef,
   rankMetric,
   contextColumn,
   metricTotal,
@@ -39,6 +40,7 @@ export function LeaderboardPanel({
 }: {
   dim: CatalogDimension;
   model: CatalogModel;
+  timeDimensionRef?: string;
   rankMetric: CatalogMetric;
   contextColumn: ContextColumn;
   /** Focused-metric ungrouped total under the current filters (threaded from the scorecard strip). */
@@ -56,7 +58,7 @@ export function LeaderboardPanel({
   onExpandedChange?: (expanded: boolean) => void;
 }) {
   const { state, dispatch, backend, catalog } = useExplorer();
-  const timeRef = model.timeDimension?.ref;
+  const timeRef = timeDimensionRef ?? model.timeDimension?.ref;
   const types = useMemo(() => catalogDimTypes(catalog), [catalog]);
   const filters = useMemo(
     // Exclude this dimension's own filter so its leaderboard keeps showing every value.

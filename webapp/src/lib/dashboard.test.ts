@@ -99,6 +99,59 @@ describe("dashboardTabConfig", () => {
     expect(config?.segments).toEqual(["orders.completed"]);
   });
 
+  test("preserves second and minute grains from dashboard time refs", () => {
+    for (const grain of ["second", "minute"] as const) {
+      const configured: DashboardSpec = {
+        title: `${grain} dashboard`,
+        tabs: [
+          {
+            id: grain,
+            charts: [
+              {
+                id: "orders",
+                query: { metrics: "orders.revenue", dimensions: `orders.created_at__${grain}` },
+                encoding: { x: `orders.created_at__${grain}`, y: "orders.revenue" },
+              },
+            ],
+          },
+        ],
+      };
+
+      expect(dashboardTabConfig(catalog, configured)?.grain).toBe(grain);
+    }
+  });
+
+  test("preserves a non-default dashboard time dimension", () => {
+    const shippedAt = {
+      ref: "orders.shipped_at",
+      name: "shipped_at",
+      model: "orders",
+      label: "Shipped",
+      type: "time",
+    };
+    const timeCatalog: Catalog = {
+      ...catalog,
+      models: [{ ...catalog.models[0], dimensions: [...catalog.models[0].dimensions, shippedAt] }],
+    };
+    const configured: DashboardSpec = {
+      title: "Shipped orders",
+      tabs: [
+        {
+          id: "shipped",
+          charts: [
+            {
+              id: "orders",
+              query: { metrics: "orders.revenue", dimensions: "orders.shipped_at__month" },
+              encoding: { x: "orders.shipped_at__month", y: "orders.revenue" },
+            },
+          ],
+        },
+      ],
+    };
+
+    expect(dashboardTabConfig(timeCatalog, configured)?.timeDimension?.ref).toBe("orders.shipped_at");
+  });
+
   test("preserves segments and honors the ordered y-metric encoding", () => {
     const segmented: DashboardSpec = {
       title: "Segmented orders",
@@ -184,6 +237,28 @@ describe("dashboardTabConfig", () => {
     };
 
     expect(dashboardTabConfig(catalog, configured)?.usePreaggregations).toBe(true);
+  });
+
+  test("honors interaction pre-aggregation opt-outs before general query defaults", () => {
+    for (const key of ["interaction_preaggregations", "interactionPreaggregations"] as const) {
+      const configured: DashboardSpec = {
+        title: "Raw interactions",
+        defaults: { query: { use_preaggregations: true } },
+        tabs: [
+          {
+            id: "raw",
+            charts: [
+              {
+                id: "orders",
+                query: { metrics: "orders.order_count", [key]: false },
+              },
+            ],
+          },
+        ],
+      };
+
+      expect(dashboardTabConfig(catalog, configured)?.usePreaggregations).toBe(false);
+    }
   });
 
   test("selects the owner model for a graph-only metric", () => {

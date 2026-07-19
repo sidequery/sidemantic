@@ -8,7 +8,7 @@ import type {
 } from "../data/types";
 import { graphMetricsForModel } from "./catalog";
 
-const GRAINS = new Set<Grain>(["hour", "day", "week", "month", "quarter", "year"]);
+const GRAINS = new Set<Grain>(["second", "minute", "hour", "day", "week", "month", "quarter", "year"]);
 
 function asList<T>(value: T | T[] | undefined): T[] {
   if (value === undefined) return [];
@@ -22,6 +22,7 @@ export type DashboardTabConfig = {
   model: CatalogModel;
   metrics: CatalogMetric[];
   dimensions: CatalogDimension[];
+  timeDimension?: CatalogDimension;
   selectedMetric: string;
   grain: Grain;
   filters: string[];
@@ -45,6 +46,22 @@ function defaultPreaggregations(dashboard: DashboardSpec): boolean | undefined {
   if (!query || typeof query !== "object") return undefined;
   const defaults = query as Record<string, unknown>;
   const value = defaults.use_preaggregations ?? defaults.usePreaggregations;
+  return typeof value === "boolean" ? value : undefined;
+}
+
+function interactionPreaggregations(
+  dashboard: DashboardSpec,
+  chart: DashboardSpec["tabs"][number]["charts"][number],
+): boolean | undefined {
+  const defaults = dashboard.defaults?.query;
+  const defaultQuery = defaults && typeof defaults === "object" ? (defaults as Record<string, unknown>) : {};
+  const value =
+    chart.query.interaction_preaggregations ??
+    chart.query.interactionPreaggregations ??
+    chart.interaction_preaggregations ??
+    chart.interactionPreaggregations ??
+    defaultQuery.interaction_preaggregations ??
+    defaultQuery.interactionPreaggregations;
   return typeof value === "boolean" ? value : undefined;
 }
 
@@ -94,6 +111,7 @@ export function dashboardTabConfig(
     (encodedTime && dimensionForRef(catalog, encodedTime)?.type === "time" ? encodedTime : undefined) ??
     dimensionRefs.find((ref) => dimensionForRef(catalog, ref)?.type === "time");
   const fallbackGrain = (model.defaultGrain as Grain | undefined) ?? "month";
+  const timeDimension = timeRef ? dimensionForRef(catalog, timeRef) : model.timeDimension;
 
   return {
     id: tab.id,
@@ -102,11 +120,15 @@ export function dashboardTabConfig(
     model,
     metrics: metrics.length ? metrics : model.metrics,
     dimensions: dimensions.length ? dimensions : model.dimensions,
+    timeDimension,
     selectedMetric,
     grain: timeRef ? grainForRef(timeRef, fallbackGrain) : fallbackGrain,
     filters: asList(chart.query.filters),
     segments: asList(chart.query.segments),
     usePreaggregations:
-      chart.query.use_preaggregations ?? chart.query.usePreaggregations ?? defaultPreaggregations(dashboard),
+      interactionPreaggregations(dashboard, chart) ??
+      chart.query.use_preaggregations ??
+      chart.query.usePreaggregations ??
+      defaultPreaggregations(dashboard),
   };
 }

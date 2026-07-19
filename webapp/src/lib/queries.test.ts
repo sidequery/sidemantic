@@ -3,12 +3,14 @@ import { NULL_TOKEN, type Catalog } from "../data/types";
 import {
   catalogDimTypes,
   dimensionLeaderboard,
+  distinctValues,
   filterExprs,
   includeFilter,
   isEmptyFilter,
   likeEscape,
   metricSeries,
   metricTotals,
+  previewRows,
   type DimFilter,
 } from "./queries";
 
@@ -182,6 +184,21 @@ describe("dashboard query configuration", () => {
       dimensionLeaderboard("orders.revenue", "orders.region", [], 6, segments, false),
     ];
     for (const query of queries) {
+      expect(query.segments).toEqual(segments);
+      expect(query.usePreaggregations).toBe(false);
+    }
+  });
+
+  test("threads dashboard context through distinct-value and row-preview queries", () => {
+    const filters = ["orders.tenant_id = 7"];
+    const segments = ["orders.completed"];
+    const queries = [
+      distinctValues("orders.status", filters, 50, segments, false),
+      previewRows({ dimensions: ["orders.status"], metrics: [] }, filters, 50, segments, false),
+    ];
+
+    for (const query of queries) {
+      expect(query.filters).toEqual(filters);
       expect(query.segments).toEqual(segments);
       expect(query.usePreaggregations).toBe(false);
     }

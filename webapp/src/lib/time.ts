@@ -1,6 +1,6 @@
 import type { Grain } from "../data/types";
 
-export const ALL_GRAINS: Grain[] = ["hour", "day", "week", "month", "quarter", "year"];
+export const ALL_GRAINS: Grain[] = ["second", "minute", "hour", "day", "week", "month", "quarter", "year"];
 
 /** Grains offered in the UI, restricted to a dimension's supported set when known. */
 export function grainOptions(supported?: string[]): Grain[] {
@@ -89,10 +89,11 @@ export function previousYearRange(range: DateRange): DateRange {
 export function formatBucketLabel(label: string, grain: Grain): string {
   const trimmed = label.trim();
   const date = trimmed.slice(0, 10);
-  if (grain !== "hour") return date || label;
-  // Pull HH:MM out of "YYYY-MM-DD[ T]HH:MM(:SS)?" when the label carries a clock time.
-  const time = trimmed.slice(10).match(/(\d{2}):(\d{2})/);
-  return time ? `${date} ${time[1]}:${time[2]}` : date || label;
+  if (grain !== "second" && grain !== "minute" && grain !== "hour") return date || label;
+  const time = trimmed.slice(10).match(/(\d{2}):(\d{2})(?::(\d{2}))?/);
+  if (!time) return date || label;
+  const clock = grain === "second" && time[3] ? `${time[1]}:${time[2]}:${time[3]}` : `${time[1]}:${time[2]}`;
+  return `${date} ${clock}`;
 }
 
 export type DatePreset = { key: string; label: string; days: number };
@@ -130,8 +131,9 @@ export function timeFilters(ref: string, range: DateRange): string[] {
  *  series to the current one by bucket position rather than ordinal index, so missing (sparse)
  *  buckets in either period don't shift the overlay. */
 export function bucketOffset(first: string, label: string, grain: Grain): number {
-  if (grain === "hour") {
-    return Math.round((Date.parse(normalizeBucketLabel(label)) - Date.parse(normalizeBucketLabel(first))) / 3_600_000);
+  if (grain === "second" || grain === "minute" || grain === "hour") {
+    const divisor = grain === "second" ? 1_000 : grain === "minute" ? 60_000 : 3_600_000;
+    return Math.round((Date.parse(normalizeBucketLabel(label)) - Date.parse(normalizeBucketLabel(first))) / divisor);
   }
   const a = parseISO(first);
   const b = parseISO(label);
@@ -156,6 +158,8 @@ export function endOfBucket(start: string, grain: Grain): string {
   const normalizedStart = dateOnly(start);
   const date = parseISO(normalizedStart);
   switch (grain) {
+    case "second":
+    case "minute":
     case "hour":
     case "day":
       return normalizedStart;

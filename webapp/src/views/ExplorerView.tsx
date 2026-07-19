@@ -52,7 +52,7 @@ export function ExplorerView() {
   const graphMetrics = graphMetricsForModel(catalog, state.model).filter(
     (metric) => !configured || configuredMetricRefs.has(metric.ref),
   );
-  const timeRef = model?.timeDimension?.ref;
+  const timeRef = configured?.timeDimension?.ref ?? model?.timeDimension?.ref;
 
   // Focused metric drives the chart + leaderboard ranking. It may be a graph-level metric that
   // isn't one of the model's strip metrics.
@@ -249,6 +249,7 @@ export function ExplorerView() {
                 key={dim.ref}
                 dim={dim}
                 model={model}
+                timeDimensionRef={timeRef}
                 rankMetric={rankMetric}
                 contextColumn={state.contextColumn}
                 metricTotal={Number.isFinite(chartTotal) ? chartTotal : undefined}

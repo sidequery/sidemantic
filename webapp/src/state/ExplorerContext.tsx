@@ -3,6 +3,7 @@ import type { SidemanticBackend } from "../data/backend";
 import type { Catalog, DashboardSpec } from "../data/types";
 import { dashboardTabConfig } from "../lib/dashboard";
 import {
+  applyDashboardConfig,
   explorerReducer,
   initialStateFromCatalog,
   type ExplorerAction,
@@ -40,14 +41,7 @@ export function ExplorerProvider({
       const decoded = decodeState(window.location.search, initial);
       const configured = dashboardTabConfig(catalog, dashboard, decoded.dashboardTab);
       if (!configured) return decoded;
-      return {
-        ...decoded,
-        view: "explore",
-        dashboardTab: configured.id,
-        model: configured.model.name,
-        selectedMetric: configured.selectedMetric,
-        grain: configured.grain,
-      } as ExplorerState;
+      return applyDashboardConfig(decoded, configured, window.location.search);
     },
   );
 

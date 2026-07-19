@@ -162,4 +162,48 @@ describe("dashboardTabConfig", () => {
     expect(config?.metrics.map((metric) => metric.ref)).toEqual(["gross_margin_rate"]);
     expect(config?.selectedMetric).toBe("gross_margin_rate");
   });
+
+  test("keeps metrics from a model related to the dashboard dimension model", () => {
+    const crossModelCatalog: Catalog = {
+      models: [
+        {
+          name: "customers",
+          label: "Customers",
+          metrics: [{ ref: "customers.count", name: "count", model: "customers", label: "Customers" }],
+          dimensions: [
+            {
+              ref: "customers.country",
+              name: "country",
+              model: "customers",
+              label: "Country",
+              type: "categorical",
+            },
+          ],
+        },
+        catalog.models[0],
+      ],
+      graphMetrics: [],
+      joinablePairs: [{ from: "customers", to: "orders" }],
+    };
+    const crossModelDashboard: DashboardSpec = {
+      title: "Revenue by customer country",
+      tabs: [
+        {
+          id: "country",
+          charts: [
+            {
+              id: "revenue",
+              query: { metrics: ["orders.revenue"], dimensions: ["customers.country"] },
+              encoding: { x: "customers.country", y: "orders.revenue" },
+            },
+          ],
+        },
+      ],
+    };
+
+    const config = dashboardTabConfig(crossModelCatalog, crossModelDashboard);
+    expect(config?.model.name).toBe("customers");
+    expect(config?.metrics.map((metric) => metric.ref)).toEqual(["orders.revenue"]);
+    expect(config?.selectedMetric).toBe("orders.revenue");
+  });
 });

@@ -1647,8 +1647,12 @@ def serve(
     else:
         directory = _models_path(directory)
 
-    # Build connection string from args or config
-    resolved_connection = _resolve_connection(connection=connection, database=db, models=directory)
+    # Demo data is isolated in memory unless the user explicitly selects a target database.
+    resolved_connection = (
+        None
+        if demo and connection is None and db is None
+        else _resolve_connection(connection=connection, database=db, models=directory)
+    )
     connection_str = resolved_connection.connection if resolved_connection else None
 
     # Resolve host, port, username, password from args or config
@@ -1826,7 +1830,11 @@ def api_serve(
     else:
         directory = _models_path(directory)
 
-    resolved_connection = _resolve_connection(connection=connection, database=db, models=directory)
+    resolved_connection = (
+        None
+        if demo and connection is None and db is None
+        else _resolve_connection(connection=connection, database=db, models=directory)
+    )
     connection_str = resolved_connection.connection if resolved_connection else None
     init_sql = resolved_connection.init_sql if resolved_connection else None
 

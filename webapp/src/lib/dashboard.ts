@@ -55,7 +55,10 @@ export function dashboardTabConfig(
   const model = catalog.models.find((candidate) => candidate.name === modelName) ?? catalog.models[0];
   if (!model) return null;
 
-  const availableMetrics = [...model.metrics, ...graphMetricsForModel(catalog, model.name)];
+  const availableMetrics = [
+    ...catalog.models.flatMap((candidate) => candidate.metrics),
+    ...graphMetricsForModel(catalog, model.name),
+  ];
   const metrics = metricRefs
     .map((ref) => availableMetrics.find((metric) => metric.ref === ref))
     .filter((metric): metric is CatalogMetric => Boolean(metric));

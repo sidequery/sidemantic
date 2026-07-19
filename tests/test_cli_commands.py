@@ -765,6 +765,40 @@ def test_api_serve_legacy_warning_precedes_start_server(monkeypatch, tmp_path):
     assert events == ["warning", "start"]
 
 
+def test_demo_servers_ignore_discovered_project_database(monkeypatch, tmp_path):
+    pytest.importorskip("fastapi")
+    ensure_fake_riffq()
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    project_db = data_dir / "warehouse.duckdb"
+    duckdb.connect(str(project_db)).close()
+    monkeypatch.chdir(tmp_path)
+
+    def unexpected_resolution(**_kwargs):
+        pytest.fail("demo mode must not resolve a project database without an explicit CLI option")
+
+    layers = []
+
+    def fake_start_api_server(layer, **_kwargs):
+        layers.append(layer)
+
+    def fake_start_server(layer, **_kwargs):
+        layers.append(layer)
+
+    monkeypatch.setattr(cli_module, "_resolve_connection", unexpected_resolution)
+    monkeypatch.setattr("sidemantic.api_server.start_api_server", fake_start_api_server)
+    monkeypatch.setattr("sidemantic.server.server.start_server", fake_start_server)
+
+    api_result = runner.invoke(app, ["server", "api", "--demo", "--no-ui"])
+    postgres_result = runner.invoke(app, ["server", "postgres", "--demo"])
+
+    assert api_result.exit_code == 0, api_result.output
+    assert postgres_result.exit_code == 0, postgres_result.output
+    assert len(layers) == 2
+    assert all(layer.connection_string == "duckdb:///:memory:" for layer in layers)
+    assert duckdb.connect(str(project_db)).execute("SHOW TABLES").fetchall() == []
+
+
 def test_normalized_command_families_are_visible_and_legacy_aliases_are_hidden():
     root_help = runner.invoke(app, ["--help"])
 

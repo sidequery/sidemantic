@@ -519,6 +519,8 @@ def fail(exc: Exception | str, *, usage: bool = False) -> NoReturn:
 
     if isinstance(exc, CLIError):
         raise exc
+    if isinstance(exc, click.UsageError):
+        raise InvocationError(exc.format_message()) from exc
     if isinstance(exc, Exception) and cli_state().debug:
         raise exc
     error_type = InvocationError if usage else OperationalError

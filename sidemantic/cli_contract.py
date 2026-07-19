@@ -344,6 +344,57 @@ def render_records(
     return "\n".join([header, separator, *body])
 
 
+def _unique_column_names(columns: Sequence[str]) -> list[str]:
+    """Return deterministic object keys while preserving every positional column."""
+
+    unique: list[str] = []
+    used: set[str] = set()
+    for column in columns:
+        candidate = column
+        suffix = 2
+        while candidate in used:
+            candidate = f"{column}_{suffix}"
+            suffix += 1
+        used.add(candidate)
+        unique.append(candidate)
+    return unique
+
+
+def render_rows(
+    rows: Sequence[Sequence[object]],
+    *,
+    columns: Sequence[str],
+    output_format: str,
+) -> str:
+    """Render positional query rows without collapsing duplicate column names."""
+
+    selected_columns = list(columns)
+    if output_format in {"json", "jsonl"}:
+        object_columns = _unique_column_names(selected_columns)
+        records = [dict(zip(object_columns, row, strict=True)) for row in rows]
+        if output_format == "json":
+            return json.dumps(records, indent=2, sort_keys=True, default=_json_default)
+        return "\n".join(json.dumps(record, sort_keys=True, default=_json_default) for record in records)
+
+    rendered_rows = [[str(_record_value(value)) for value in row] for row in rows]
+    buffer = io.StringIO()
+    if output_format == "csv" or cli_state().plain:
+        dialect = "excel" if output_format == "csv" else "excel-tab"
+        writer = csv.writer(buffer, dialect=dialect, lineterminator="\n")
+        writer.writerow(selected_columns)
+        writer.writerows(rendered_rows)
+        return buffer.getvalue().rstrip("\n")
+
+    widths = [
+        max(len(column), *(len(row[index]) for row in rendered_rows)) if rendered_rows else len(column)
+        for index, column in enumerate(selected_columns)
+    ]
+    header = "  ".join(column.ljust(widths[index]) for index, column in enumerate(selected_columns)).rstrip()
+    separator = "  ".join("-" * width for width in widths).rstrip()
+    body = ["  ".join(value.ljust(widths[index]) for index, value in enumerate(row)).rstrip() for row in rendered_rows]
+    return "\n".join([header, separator, *body])
+
+
 def emit_records(
     records: Sequence[dict[str, object]],
     *,

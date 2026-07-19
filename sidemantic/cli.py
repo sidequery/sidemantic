@@ -26,7 +26,7 @@ from sidemantic.cli_contract import (
     progress,
     read_sql_input,
     read_text_input,
-    render_records,
+    render_rows,
     resolve_output_format,
     resolve_secret,
     write_text_output,
@@ -1149,8 +1149,7 @@ def query(
         columns = [desc[0] for desc in result.description]
         rows = result.fetchall()
 
-        records = [dict(zip(columns, row, strict=True)) for row in rows]
-        rendered = render_records(records, columns=columns, output_format=output_format)
+        rendered = render_rows(rows, columns=columns, output_format=output_format)
         write_text_output(output, rendered)
         if output and str(output) != "-":
             emit_diagnostic(f"Results written to {output}")

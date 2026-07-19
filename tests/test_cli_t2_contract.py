@@ -180,6 +180,36 @@ def test_plain_query_preserves_database_scalar_values(project: Path):
     ]
 
 
+@pytest.mark.parametrize("output_format", [None, "table", "csv", "json", "jsonl"])
+def test_query_formats_preserve_duplicate_columns_by_position(project: Path, output_format: str | None):
+    arguments = ["query", "SELECT 1 AS x, 2 AS x", "--project", str(project)]
+    if output_format:
+        arguments.extend(["--format", output_format])
+
+    result = runner.invoke(app, arguments)
+
+    assert result.exit_code == 0, result.output
+    if output_format in {"json", "jsonl"}:
+        payload = json.loads(result.stdout)
+        row = payload[0] if output_format == "json" else payload
+        assert row == {"x": 1, "x_2": 2}
+    elif output_format == "table":
+        assert result.stdout.splitlines()[0].split() == ["x", "x"]
+        assert result.stdout.splitlines()[2].split() == ["1", "2"]
+    else:
+        assert list(csv.reader(io.StringIO(result.stdout))) == [["x", "x"], ["1", "2"]]
+
+
+def test_plain_query_preserves_duplicate_columns_by_position(project: Path):
+    result = runner.invoke(
+        app,
+        ["query", "SELECT 1 AS x, 2 AS x", "--project", str(project), "--plain"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout.splitlines() == ["x\tx", "1\t2"]
+
+
 @pytest.mark.parametrize("command", ["info", "validate"])
 @pytest.mark.parametrize("output_format", ["table", "csv", "json", "jsonl"])
 def test_structured_inspection_commands_support_formats(

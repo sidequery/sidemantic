@@ -166,7 +166,7 @@ uvx --from "sidemantic[serve]" sidemantic server postgres --demo --port 5433
 
 **HTTP API server** (JSON or Arrow):
 ```bash
-uvx --from "sidemantic[api]" sidemantic server api --demo --port 4400 --auth-token-file .secrets/api-token
+uvx --from "sidemantic[api]" sidemantic server api --demo --port 4400
 ```
 
 **Colab notebooks:**

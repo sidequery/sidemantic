@@ -1,47 +1,99 @@
-"""Tests for chart generation (skipped if altair not installed)."""
+"""Behavior tests for the optional Altair chart surface."""
+
+import base64
 
 import pytest
 
+from sidemantic import charts
+
 
 def test_chart_generation_available():
-    """Test that chart generation module can be imported."""
-    try:
-        from sidemantic import charts
-
-        assert charts is not None
-    except ImportError:
-        pytest.skip("altair not installed - chart generation unavailable")
+    assert charts.alt is not None
+    assert charts.vl_convert is not None
 
 
 def test_format_label():
-    """Test label formatting logic."""
-    try:
-        from sidemantic.charts import _format_label
-
-        assert _format_label("order_count") == "Order Count"
-        assert _format_label("total_revenue") == "Total Revenue"
-        assert _format_label("created_at__month") == "Created At (Month)"
-        assert _format_label("orders.revenue") == "Revenue"
-    except ImportError:
-        pytest.skip("altair not installed")
+    assert charts._format_label("order_count") == "Order Count"
+    assert charts._format_label("total_revenue") == "Total Revenue"
+    assert charts._format_label("created_at__month") == "Created At (Month)"
+    assert charts._format_label("orders.revenue") == "Revenue"
 
 
 def test_color_palette():
-    """Test that color palette is well-defined."""
-    try:
-        from sidemantic.charts import COLORS
+    assert "primary" in charts.COLORS
+    assert "categorical" in charts.COLORS
+    assert len(charts.COLORS["categorical"]) >= 8
+    assert all(color.startswith("#") for color in charts.COLORS["categorical"])
 
-        assert "primary" in COLORS
-        assert "categorical" in COLORS
-        assert len(COLORS["categorical"]) >= 8  # Need enough colors for variety
-        assert all(c.startswith("#") for c in COLORS["categorical"])  # Valid hex colors
-    except ImportError:
-        pytest.skip("altair not installed")
+
+def test_create_chart_auto_selects_temporal_area_with_readable_axes():
+    chart = charts.create_chart(
+        [
+            {"created_at__month": "2025-01-01", "total_revenue": 120.0},
+            {"created_at__month": "2025-02-01", "total_revenue": 180.0},
+        ],
+        title="Monthly revenue",
+        width=480,
+        height=240,
+    )
+
+    spec = charts.chart_to_vega(chart)
+
+    assert spec["mark"]["type"] == "area"
+    assert spec["encoding"]["x"]["type"] == "temporal"
+    assert spec["encoding"]["x"]["title"] == "Created At (Month)"
+    assert spec["encoding"]["y"]["title"] == "Total Revenue"
+    assert spec["title"] == "Monthly revenue"
+    assert spec["width"] == 480
+    assert spec["height"] == 240
+
+
+def test_create_chart_folds_multiple_metrics_into_series():
+    chart = charts.create_chart(
+        [
+            {"month": "2025-01", "revenue": 120.0, "orders": 3},
+            {"month": "2025-02", "revenue": 180.0, "orders": 5},
+        ],
+        x="month",
+        y=["revenue", "orders"],
+        chart_type="line",
+    )
+
+    spec = chart.to_dict()
+
+    assert spec["mark"]["type"] == "line"
+    assert spec["transform"] == [{"fold": ["revenue", "orders"], "as": ["metric", "value"]}]
+    assert spec["encoding"]["color"]["field"] == "metric"
+    assert spec["encoding"]["y"]["field"] == "value"
+
+
+def test_create_chart_auto_selects_scatter_for_numeric_x():
+    chart = charts.create_chart([{"spend": 10.0, "revenue": 25.0}], x="spend", y="revenue")
+
+    spec = chart.to_dict()
+
+    assert spec["mark"]["type"] == "circle"
+    assert spec["encoding"]["x"]["type"] == "quantitative"
+    assert spec["encoding"]["y"]["type"] == "quantitative"
+
+
+def test_chart_png_exports_are_real_png_payloads():
+    chart = charts.create_chart([{"region": "west", "revenue": 42.0}], x="region", y="revenue")
+
+    png = charts.chart_to_png(chart)
+    data_url = charts.chart_to_base64_png(chart)
+
+    assert png.startswith(b"\x89PNG\r\n\x1a\n")
+    assert data_url.startswith("data:image/png;base64,")
+    assert base64.b64decode(data_url.split(",", 1)[1]) == png
+
+
+def test_create_chart_rejects_empty_data():
+    with pytest.raises(ValueError, match="No data provided"):
+        charts.create_chart([])
 
 
 def test_missing_chart_dependencies_hint_names_charts_extra(monkeypatch):
-    from sidemantic import charts
-
     monkeypatch.setattr(charts, "alt", None)
     monkeypatch.setattr(charts, "vl_convert", None)
 

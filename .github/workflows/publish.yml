@@ -38,6 +38,22 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra dev
 
+      - name: Check core import without DAX extra
+        run: |
+          uv run python - <<'PY'
+          import sys
+
+          from sidemantic import Dimension, Metric, Model
+
+          assert Model.__name__ == "Model"
+          assert Dimension.__name__ == "Dimension"
+          assert Metric.__name__ == "Metric"
+          assert "sidemantic_dax" not in sys.modules
+          PY
+
+      - name: Install DAX dependencies
+        run: uv sync --extra dev --extra dax
+
       - name: Install browser test runtime
         run: uv run python -m playwright install --with-deps chromium
 
@@ -130,12 +146,17 @@ jobs:
         run: |
           uv run ruff check . --exclude docs/_extensions --exclude sidemantic-duckdb/extension-ci-tools --exclude sidemantic-duckdb/scripts --exclude sidemantic-duckdb/duckdb --exclude sidemantic/adapters/malloy_grammar --exclude sidemantic/adapters/holistics_grammar
           uv run ruff format --check . --exclude docs/_extensions --exclude sidemantic-duckdb/extension-ci-tools --exclude sidemantic-duckdb/scripts --exclude sidemantic-duckdb/duckdb --exclude sidemantic/adapters/malloy_grammar --exclude sidemantic/adapters/holistics_grammar
+          uv run mypy
           uv run pytest -v
+          uv run python scripts/build_widget.py --check
+          uv run python scripts/build_webapp.py --check
+          uv run python scripts/build_ui_distribution.py --check
 
       - name: Build packages
         run: |
           uv build crates/dax-pyo3 --sdist --out-dir dist
           uv build --out-dir dist
+          unzip -l "$(find dist -name 'sidemantic-[0-9]*.whl' -print -quit)" | grep -q 'sidemantic/py.typed'
 
       - name: Run installed-wheel DAX smoke
         run: |

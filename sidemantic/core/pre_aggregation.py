@@ -968,13 +968,13 @@ AS
                 parts = self.refresh_key.every.split()
                 if len(parts) == 2:
                     value, unit = parts
-                    value = int(value)
+                    numeric_value = int(value)
                     if "minute" in unit.lower():
-                        refresh_interval_minutes = value
+                        refresh_interval_minutes = numeric_value
                     elif "hour" in unit.lower():
-                        refresh_interval_minutes = value * 60
+                        refresh_interval_minutes = numeric_value * 60
                     elif "day" in unit.lower():
-                        refresh_interval_minutes = value * 60 * 24
+                        refresh_interval_minutes = numeric_value * 60 * 24
 
             ddl = f"""
 CREATE MATERIALIZED VIEW IF NOT EXISTS {table_name}

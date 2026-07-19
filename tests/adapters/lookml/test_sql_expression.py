@@ -51,6 +51,16 @@ def test_subquery_detection_ignores_postgres_dollar_quoted_literals():
     assert detect("SUM(amount) / NULLIF((SELECT SUM(amount) FROM orders), 0)")
 
 
+def test_subquery_detection_fails_closed_for_unparseable_liquid_sql():
+    detect = LookMLAdapter._has_subquery
+
+    assert detect(
+        "SUM(amount) / (SELECT SUM(amount) FROM orders WHERE {% condition status %} status {% endcondition %})"
+    )
+    assert not detect("SUM({% condition select %} amount {% endcondition %})")
+    assert not detect("SUM(amount) /* SELECT {% condition status %} */")
+
+
 def test_all_modifier_stripping_uses_syntax_tokens():
     strip = LookMLAdapter._strip_all_modifier
 

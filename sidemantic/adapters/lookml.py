@@ -12,7 +12,7 @@ from sidemantic.core.model import Model
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.sql.lookml_expression import (
-    parse_lookml_expression,
+    lookml_expression_has_subquery,
     replace_lookml_placeholders,
     strip_aggregate_all,
     strip_lookml_model_qualifiers,
@@ -1339,12 +1339,7 @@ class LookMLAdapter(BaseAdapter):
     @staticmethod
     def _has_subquery(sql: str) -> bool:
         """True only when parsed executable SQL contains an actual SELECT node."""
-        from sqlglot import exp
-
-        parsed = parse_lookml_expression(sql or "")
-        if parsed is None:
-            return False
-        return parsed.tree.find(exp.Select) is not None
+        return lookml_expression_has_subquery(sql or "")
 
     @staticmethod
     def _strip_all_modifier(sql: str) -> str:

@@ -54,6 +54,8 @@ describe("dashboard URL state", () => {
       ranges: { "orders.region": { from: "A", to: "Z" } },
       filterSources: { "customers.tier": "customers:tiers" },
       rangeSources: { "orders.region": "overview:trend" },
+      chartFilters: {},
+      chartRanges: {},
     });
   });
 
@@ -65,6 +67,8 @@ describe("dashboard URL state", () => {
       ranges: {},
       filterSources: {},
       rangeSources: {},
+      chartFilters: {},
+      chartRanges: {},
     });
   });
 });
@@ -313,14 +317,14 @@ describe("dashboard selections", () => {
     );
   });
 
-  test("keeps chart-scoped interactions with their source chart and explorer", () => {
+  test("keeps repeated chart-scoped dimensions isolated by source", () => {
     const first: DashboardChart = {
       id: "first",
-      query: { metrics: ["orders.revenue"], dimensions: ["orders.region"] },
+      query: { metrics: ["orders.revenue"], dimensions: ["orders.region", "orders.created_at__month"] },
     };
     const second: DashboardChart = {
       id: "second",
-      query: { metrics: ["orders.order_count"], dimensions: ["orders.region"] },
+      query: { metrics: ["orders.order_count"], dimensions: ["orders.region", "orders.created_at__month"] },
     };
     const scopedDocument: DashboardDocument = {
       ...document,
@@ -329,21 +333,43 @@ describe("dashboard selections", () => {
     };
     const state = {
       tab: "overview",
-      filters: { "orders.region": "West" },
+      filters: {},
       ranges: {},
-      filterSources: { "orders.region": "overview:first" },
+      filterSources: {},
       rangeSources: {},
+      chartFilters: {
+        "overview:first": { "orders.region": "West" },
+        "overview:second": { "orders.region": "East" },
+      },
+      chartRanges: {
+        "overview:first": { "orders.created_at__month": { from: "2026-01-01", to: "2026-02-01" } },
+        "overview:second": { "orders.created_at__month": { from: "2026-04-01", to: "2026-05-01" } },
+      },
     };
 
     expect(dashboardStructuredQuery(scopedDocument, first, state.filters, {}, state.ranges, state).filters).toContain(
       "orders.region = 'West'",
     );
-    expect(dashboardStructuredQuery(scopedDocument, second, state.filters, {}, state.ranges, state).filters).toEqual([]);
+    expect(dashboardStructuredQuery(scopedDocument, second, state.filters, {}, state.ranges, state).filters).toContain(
+      "orders.region = 'East'",
+    );
+    expect(dashboardStructuredQuery(scopedDocument, first, state.filters, {}, state.ranges, state).filters).toContain(
+      "orders.created_at >= '2026-01-01' AND orders.created_at < '2026-03-01'",
+    );
+    expect(dashboardStructuredQuery(scopedDocument, second, state.filters, {}, state.ranges, state).filters).toContain(
+      "orders.created_at >= '2026-04-01' AND orders.created_at < '2026-06-01'",
+    );
     expect(new URL(dashboardExploreUrl(scopedDocument, first, state), "https://example.test").searchParams.has("filters")).toBe(
       true,
     );
-    expect(new URL(dashboardExploreUrl(scopedDocument, second, state), "https://example.test").searchParams.has("filters")).toBe(
-      false,
+    expect(
+      JSON.parse(new URL(dashboardExploreUrl(scopedDocument, second, state), "https://example.test").searchParams.get("filters") ?? "{}"),
+    ).toEqual({ "orders.region": ["East"] });
+    expect(decodeDashboardState(encodeDashboardState(state, scopedDocument), scopedDocument).chartFilters).toEqual(
+      state.chartFilters,
+    );
+    expect(decodeDashboardState(encodeDashboardState(state, scopedDocument), scopedDocument).chartRanges).toEqual(
+      state.chartRanges,
     );
   });
 

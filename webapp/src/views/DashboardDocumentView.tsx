@@ -24,6 +24,7 @@ import {
   dashboardFilterValue,
   dashboardMetricRefs,
   dashboardResultColumn,
+  dashboardScopedInteractions,
   dashboardStructuredQuery,
   dashboardTimeSeries,
   encodeDashboardState,
@@ -163,6 +164,7 @@ function DashboardChartPanel({
   const yRefs = dashboardMetricRefs(chart);
   const yRef = yRefs[0] ?? firstY(chart);
   const xColumn = dashboardResultColumn(xRef, columns);
+  const scopedInteractions = dashboardScopedInteractions(document, chart, state);
   const chartType = dashboardChartType(chart, types);
   const canSelect = selectableDashboardDimension(chart, xRef);
   const canBrush = brushableDashboardDimension(chart, xRef);
@@ -240,7 +242,7 @@ function DashboardChartPanel({
                 <ColumnChart
                   data={data}
                   ariaLabel={`${chartTitle}, ${seriesLabel || labelize(metric)}, ${data.length} categories`}
-                  selectedLabel={state.filters[xRef]}
+                  selectedLabel={scopedInteractions.filters[xRef]}
                   onSelect={canSelect ? (value) => {
                     setFilters(dashboardCategorySelection(chart, xRef, value, seriesRefs, entry.filterValues));
                     setDetailsOpen(true);
@@ -396,6 +398,16 @@ export function DashboardDocumentView({
 
   function setFilters(chart: DashboardChart, filters: Record<string, string>) {
     const source = dashboardChartScopeKey(document, chart);
+    if ((document.defaults?.interactions?.scope ?? "dashboard") === "chart") {
+      setState((current) => ({
+        ...current,
+        chartFilters: {
+          ...(current.chartFilters ?? {}),
+          [source]: { ...(current.chartFilters?.[source] ?? {}), ...filters },
+        },
+      }));
+      return;
+    }
     setState((current) => ({
       ...current,
       filters: { ...current.filters, ...filters },
@@ -408,6 +420,18 @@ export function DashboardDocumentView({
 
   function setRange(chart: DashboardChart, dimension: string, range: { from: string; to: string } | null) {
     const source = dashboardChartScopeKey(document, chart);
+    if ((document.defaults?.interactions?.scope ?? "dashboard") === "chart") {
+      setState((current) => {
+        const chartRanges = { ...(current.chartRanges ?? {}) };
+        const ranges = { ...(chartRanges[source] ?? {}) };
+        if (range) ranges[dimension] = range;
+        else delete ranges[dimension];
+        if (Object.keys(ranges).length) chartRanges[source] = ranges;
+        else delete chartRanges[source];
+        return { ...current, chartRanges };
+      });
+      return;
+    }
     setState((current) => {
       const ranges = { ...current.ranges };
       const rangeSources = { ...current.rangeSources };
@@ -430,7 +454,13 @@ export function DashboardDocumentView({
       <DashboardQueryStatus />
     </>
   );
-  const filters = Object.entries(state.filters).length || Object.entries(state.ranges).length ? (
+  const chartFilterEntries = Object.entries(state.chartFilters ?? {}).flatMap(([source, values]) =>
+    Object.entries(values).map(([dimension, value]) => ({ source, dimension, value })),
+  );
+  const chartRangeEntries = Object.entries(state.chartRanges ?? {}).flatMap(([source, values]) =>
+    Object.entries(values).map(([dimension, range]) => ({ source, dimension, range })),
+  );
+  const filters = Object.entries(state.filters).length || Object.entries(state.ranges).length || chartFilterEntries.length || chartRangeEntries.length ? (
     <>
       <span className="shrink-0 text-2xs font-semibold uppercase tracking-wide text-faint">Filters</span>
       {Object.entries(state.filters).map(([dimension, value]) => (
@@ -469,7 +499,43 @@ export function DashboardDocumentView({
           {labelize(dimension)}: {range.from}–{range.to} ×
         </button>
       ))}
-      <button type="button" onClick={() => setState((current) => ({ ...current, filters: {}, ranges: {}, filterSources: {}, rangeSources: {} }))} className="text-2xs text-muted hover:text-ink">
+      {chartFilterEntries.map(({ source, dimension, value }) => (
+        <button
+          key={`chart-filter-${source}-${dimension}`}
+          type="button"
+          aria-label={`Remove filter ${labelize(dimension)} ${value} from ${source}`}
+          onClick={() => setState((current) => {
+            const chartFilters = { ...(current.chartFilters ?? {}) };
+            const values = { ...(chartFilters[source] ?? {}) };
+            delete values[dimension];
+            if (Object.keys(values).length) chartFilters[source] = values;
+            else delete chartFilters[source];
+            return { ...current, chartFilters };
+          })}
+          className="border border-line bg-surface px-2 py-1 text-2xs text-muted hover:border-danger"
+        >
+          {labelize(dimension)} = {value} · {source} ×
+        </button>
+      ))}
+      {chartRangeEntries.map(({ source, dimension, range }) => (
+        <button
+          key={`chart-range-${source}-${dimension}`}
+          type="button"
+          aria-label={`Remove range ${labelize(dimension)} ${range.from} to ${range.to} from ${source}`}
+          onClick={() => setState((current) => {
+            const chartRanges = { ...(current.chartRanges ?? {}) };
+            const values = { ...(chartRanges[source] ?? {}) };
+            delete values[dimension];
+            if (Object.keys(values).length) chartRanges[source] = values;
+            else delete chartRanges[source];
+            return { ...current, chartRanges };
+          })}
+          className="border border-line bg-surface px-2 py-1 text-2xs text-muted hover:border-danger"
+        >
+          {labelize(dimension)}: {range.from}–{range.to} · {source} ×
+        </button>
+      ))}
+      <button type="button" onClick={() => setState((current) => ({ ...current, filters: {}, ranges: {}, filterSources: {}, rangeSources: {}, chartFilters: {}, chartRanges: {} }))} className="text-2xs text-muted hover:text-ink">
         Clear all
       </button>
     </>
@@ -498,7 +564,7 @@ export function DashboardDocumentView({
                   if ((document.defaults?.interactions?.scope ?? "dashboard") === "dashboard") {
                     return { ...current, tab: tab.id };
                   }
-                  return { ...current, tab: tab.id, filters: {}, ranges: {}, filterSources: {}, rangeSources: {} };
+                  return { ...current, tab: tab.id, filters: {}, ranges: {}, filterSources: {}, rangeSources: {}, chartFilters: {}, chartRanges: {} };
                 })
               }
               className="border border-b-0 border-line px-3 py-2 text-xs text-muted aria-selected:border-accent aria-selected:bg-bg aria-selected:text-ink"

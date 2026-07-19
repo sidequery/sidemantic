@@ -116,6 +116,17 @@ def rewrite_transport_sql(
         use_preaggregations=requested_preaggregations,
         enforce_visibility=getattr(layer, "enforce_visibility", False),
     )
+    # Yardstick's AGGREGATE/AT fast path expands measures directly against
+    # physical model tables. It does not currently route those reads through
+    # SQLGenerator, so it cannot apply per-user access checks, row filters, or
+    # field visibility. Use the rewriter's own syntax classifier so every form
+    # that would take that path is denied until it can enforce these controls.
+    if controls_are_active(layer) and rewriter._looks_like_yardstick_query(query):
+        raise SecurityError(
+            f"{transport} refused Yardstick semantic SQL while security controls are active "
+            "because that rewrite path cannot prove access gates, row filters, and column "
+            "restrictions were enforced. Use a structured query or standard semantic SQL."
+        )
     rewritten = rewriter.rewrite(query, strict=strict, user_attributes=user_attributes)
 
     def canonical(value: str) -> str:

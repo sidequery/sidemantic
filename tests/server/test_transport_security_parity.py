@@ -248,6 +248,23 @@ def test_raw_and_unproven_sql_fail_closed_across_sql_transports(tmp_path):
         _pg_rewrite(pg_layer, mixed, attrs)
 
 
+def test_yardstick_sql_fails_closed_across_sql_transports(tmp_path):
+    attrs = {"role": "analyst", "tenant_id": 1}
+    query = "SELECT AGGREGATE(total_amount) FROM orders"
+    client = TestClient(create_app(_layer(), auth_token="secret"))
+
+    response = client.post("/sql", json={"query": query}, headers=_headers(attrs))
+    assert response.status_code == 403
+    assert "Yardstick semantic SQL" in response.json()["error"]
+
+    _mcp_layer(tmp_path / "mcp-yardstick", attrs)
+    with pytest.raises(SecurityError, match="Yardstick semantic SQL"):
+        mcp_run_sql(query)
+
+    with pytest.raises(SecurityError, match="Yardstick semantic SQL"):
+        _pg_rewrite(_layer(), query, attrs)
+
+
 def test_hidden_column_is_rejected_and_omitted_across_transports(tmp_path):
     attrs = {"role": "analyst", "tenant_id": 1}
     http_layer = _layer(enforce_visibility=True)

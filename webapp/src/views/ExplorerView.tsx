@@ -9,7 +9,7 @@ import type { BrushRange } from "../components/TimeSeriesChart";
 import { formatDelta, formatValue } from "../lib/format";
 import { graphMetricsForModel } from "../lib/catalog";
 import { dashboardTabConfig } from "../lib/dashboard";
-import { composeFilters, dimTypes, metricSeries, metricTotals } from "../lib/queries";
+import { catalogDimTypes, composeFilters, metricSeries, metricTotals } from "../lib/queries";
 import type { StructuredQuery } from "../data/types";
 import {
   bucketOffset,
@@ -68,7 +68,7 @@ export function ExplorerView() {
     return rankMetric && !focusedInStrip ? [...refs, rankMetric.ref] : refs;
   }, [metrics, rankMetric, focusedInStrip]);
 
-  const types = useMemo(() => dimTypes(model?.dimensions ?? []), [model]);
+  const types = useMemo(() => catalogDimTypes(catalog), [catalog]);
   const baseFilters = useMemo(
     () => [...(configured?.filters ?? []), ...composeFilters(state.filters, { timeRef, range: state.dateRange, types })],
     [configured, state.filters, timeRef, state.dateRange, types],

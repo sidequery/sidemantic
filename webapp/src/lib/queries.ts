@@ -1,4 +1,11 @@
-import { NULL_TOKEN, type CatalogDimension, type FieldRef, type Grain, type StructuredQuery } from "../data/types";
+import {
+  NULL_TOKEN,
+  type Catalog,
+  type CatalogDimension,
+  type FieldRef,
+  type Grain,
+  type StructuredQuery,
+} from "../data/types";
 import { sqlLiteral } from "./format";
 import { timeFilters, type DateRange } from "./time";
 
@@ -30,6 +37,11 @@ export type DimTypes = Record<FieldRef, string>;
 
 export function dimTypes(dimensions: CatalogDimension[]): DimTypes {
   return Object.fromEntries(dimensions.map((dim) => [dim.ref, dim.type]));
+}
+
+/** Include dimensions from every model so cross-model dashboard filters retain their SQL types. */
+export function catalogDimTypes(catalog: Pick<Catalog, "models">): DimTypes {
+  return dimTypes(catalog.models.flatMap((model) => model.dimensions));
 }
 
 /** Render a single filter value as a SQL literal, honoring the dimension's type so numeric and

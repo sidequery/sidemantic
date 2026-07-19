@@ -71,6 +71,34 @@ describe("dashboardTabConfig", () => {
     expect(config?.dimensions.map((dimension) => dimension.ref)).toEqual(["orders.channel"]);
   });
 
+  test("normalizes scalar query fields accepted by dashboard YAML", () => {
+    const scalarDashboard: DashboardSpec = {
+      title: "Scalar fields",
+      tabs: [
+        {
+          id: "scalar",
+          charts: [
+            {
+              id: "orders",
+              query: {
+                metrics: "orders.revenue",
+                dimensions: "orders.region",
+                filters: "orders.region = 'West'",
+                segments: "orders.completed",
+              },
+            },
+          ],
+        },
+      ],
+    };
+
+    const config = dashboardTabConfig(catalog, scalarDashboard);
+    expect(config?.metrics.map((metric) => metric.ref)).toEqual(["orders.revenue"]);
+    expect(config?.dimensions.map((dimension) => dimension.ref)).toEqual(["orders.region"]);
+    expect(config?.filters).toEqual(["orders.region = 'West'"]);
+    expect(config?.segments).toEqual(["orders.completed"]);
+  });
+
   test("preserves segments and honors the ordered y-metric encoding", () => {
     const segmented: DashboardSpec = {
       title: "Segmented orders",

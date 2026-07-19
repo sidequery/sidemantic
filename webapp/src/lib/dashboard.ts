@@ -10,6 +10,11 @@ import { graphMetricsForModel } from "./catalog";
 
 const GRAINS = new Set<Grain>(["hour", "day", "week", "month", "quarter", "year"]);
 
+function asList<T>(value: T | T[] | undefined): T[] {
+  if (value === undefined) return [];
+  return Array.isArray(value) ? value : [value];
+}
+
 export type DashboardTabConfig = {
   id: string;
   label: string;
@@ -53,8 +58,8 @@ export function dashboardTabConfig(
   const chart = tab.charts[0];
   if (!chart) return null;
 
-  const dimensionRefs = chart.query.dimensions ?? [];
-  const metricRefs = chart.query.metrics ?? [];
+  const dimensionRefs = asList(chart.query.dimensions);
+  const metricRefs = asList(chart.query.metrics);
   const graphMetricOwner = metricRefs
     .map((ref) => catalog.graphMetrics.find((metric) => metric.ref === ref)?.ownerModel)
     .find((owner): owner is string => Boolean(owner));
@@ -99,8 +104,8 @@ export function dashboardTabConfig(
     dimensions: dimensions.length ? dimensions : model.dimensions,
     selectedMetric,
     grain: timeRef ? grainForRef(timeRef, fallbackGrain) : fallbackGrain,
-    filters: chart.query.filters ?? [],
-    segments: chart.query.segments ?? [],
+    filters: asList(chart.query.filters),
+    segments: asList(chart.query.segments),
     usePreaggregations:
       chart.query.use_preaggregations ?? chart.query.usePreaggregations ?? defaultPreaggregations(dashboard),
   };

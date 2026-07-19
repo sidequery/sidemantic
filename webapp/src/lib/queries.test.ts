@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { NULL_TOKEN } from "../data/types";
+import { NULL_TOKEN, type Catalog } from "../data/types";
 import {
+  catalogDimTypes,
   dimensionLeaderboard,
   filterExprs,
   includeFilter,
@@ -38,6 +39,28 @@ describe("filterExprs (include mode — preserved behavior)", () => {
     const types = { "orders.amount": "numeric", "orders.is_paid": "boolean" };
     expect(filterExprs({ "orders.amount": inc(["5"]) }, { types })).toEqual(["orders.amount = 5"]);
     expect(filterExprs({ "orders.is_paid": inc(["true"]) }, { types })).toEqual(["orders.is_paid = true"]);
+  });
+
+  test("catalog type maps include dimensions from related models", () => {
+    const catalog: Catalog = {
+      models: [
+        { name: "orders", label: "Orders", dimensions: [], metrics: [] },
+        {
+          name: "customers",
+          label: "Customers",
+          dimensions: [
+            { ref: "customers.age", name: "age", model: "customers", label: "Age", type: "numeric" },
+            { ref: "customers.active", name: "active", model: "customers", label: "Active", type: "boolean" },
+          ],
+          metrics: [],
+        },
+      ],
+      graphMetrics: [],
+    };
+    const types = catalogDimTypes(catalog);
+
+    expect(filterExprs({ "customers.age": inc(["42"]) }, { types })).toEqual(["customers.age = 42"]);
+    expect(filterExprs({ "customers.active": inc(["true"]) }, { types })).toEqual(["customers.active = true"]);
   });
 
   test("a non-numeric value on a numeric dimension still quotes (no silent bad SQL)", () => {

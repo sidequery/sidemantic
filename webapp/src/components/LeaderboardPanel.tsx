@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { aliasOf, NULL_TOKEN, type CatalogDimension, type CatalogMetric, type CatalogModel } from "../data/types";
 import { formatCompact, formatDeltaAbs, formatDeltaPct, formatPercentOfTotal, sqlLiteral, type Tone } from "../lib/format";
-import { composeFilters, dimTypes, dimensionLeaderboard } from "../lib/queries";
+import { catalogDimTypes, composeFilters, dimensionLeaderboard } from "../lib/queries";
 import type { DateRange } from "../lib/time";
 import type { ContextColumn } from "../state/explorerState";
 import { useExplorer } from "../state/ExplorerContext";
@@ -55,9 +55,9 @@ export function LeaderboardPanel({
   expanded?: boolean;
   onExpandedChange?: (expanded: boolean) => void;
 }) {
-  const { state, dispatch, backend } = useExplorer();
+  const { state, dispatch, backend, catalog } = useExplorer();
   const timeRef = model.timeDimension?.ref;
-  const types = useMemo(() => dimTypes(model.dimensions), [model]);
+  const types = useMemo(() => catalogDimTypes(catalog), [catalog]);
   const filters = useMemo(
     // Exclude this dimension's own filter so its leaderboard keeps showing every value.
     () => [...baseFilters, ...composeFilters(state.filters, { timeRef, range: state.dateRange, excludeDim: dim.ref, types })],

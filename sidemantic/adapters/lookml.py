@@ -720,7 +720,10 @@ class LookMLAdapter(BaseAdapter):
             elif (
                 model.table is None
                 and model.sql is None
-                and (_extends_chain_has(model_name, unsupported_dt_views) or (model.meta or {}).get("unsupported_derived_table"))
+                and (
+                    _extends_chain_has(model_name, unsupported_dt_views)
+                    or (model.meta or {}).get("unsupported_derived_table")
+                )
             ):
                 model.meta = {**(model.meta or {}), "unsupported_derived_table": True, "lookml_template": True}
                 is_template = True
@@ -2896,6 +2899,11 @@ class LookMLAdapter(BaseAdapter):
         if unsupported_derived_table:
             model_meta["unsupported_derived_table"] = True
             model_meta["_unsupported_derived_table_raw"] = view_def["derived_table"]
+            # A refinement can add a `derived_table` to a view that already had `sql_table_name`,
+            # leaving both keys. The view is now derived (not a physical table), so drop the stale
+            # sql_table_name -- otherwise the template stamping (which only marks tableless
+            # unsupported PDTs) leaves it registerable and the loader queries the stale table.
+            table = None
 
         # Build kwargs conditionally so that unset scalars don't appear in
         # model_fields_set. This matters for refinements: merge_model treats

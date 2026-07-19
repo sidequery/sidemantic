@@ -6269,6 +6269,28 @@ view: +child {
     assert a_field is not None and a_field.label == "Renamed A"  # supported-parent refinement seeds
 
 
+def test_lookml_refinement_to_unsupported_derived_table_clears_stale_table():
+    """A refinement adding an unsupported derived_table to a table-backed view drops the stale table.
+
+    Otherwise both keys remain, the template stamping (tableless-only) leaves it registerable, and
+    the loader queries the stale physical table instead of hiding the unsupported PDT."""
+    graph = _parse_lkml(
+        """
+view: pdt_base {
+  sql_table_name: real_table ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+}
+view: +pdt_base {
+  derived_table: { persist_for: "24 hours" }
+}
+"""
+    )
+    model = graph.get_model("pdt_base")
+    assert model.table is None  # stale sql_table_name dropped
+    assert (model.meta or {}).get("unsupported_derived_table")
+    assert (model.meta or {}).get("lookml_template")  # now stamped as a template -> loader hides it
+
+
 def test_lookml_refinement_made_unsupported_parent_not_seeded():
     """A parent turned unsupported by an EARLIER refinement is skipped when seeding a later one.
 

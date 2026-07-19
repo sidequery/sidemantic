@@ -51,21 +51,33 @@ export function DateRangeControl({
   const comparisonDisabled = !range;
 
   return (
-    <details ref={details} className="relative text-2xs">
+    <details
+      ref={details}
+      className="relative text-xs"
+      onToggle={(event) => {
+        if (disabled) event.currentTarget.open = false;
+      }}
+    >
       <summary
-        className={`flex cursor-pointer items-center gap-1.5 border border-line bg-surface px-2 py-1 text-ink ${
-          disabled ? "pointer-events-none opacity-50" : ""
+        aria-disabled={disabled || undefined}
+        tabIndex={disabled ? -1 : undefined}
+        onClick={(event) => disabled && event.preventDefault()}
+        onKeyDown={(event) => {
+          if (disabled && (event.key === "Enter" || event.key === " ")) event.preventDefault();
+        }}
+        className={`flex min-h-9 items-center gap-1.5 rounded-full border border-line bg-surface px-3 text-ink transition-colors hover:bg-surface-soft ${
+          disabled ? "cursor-not-allowed opacity-50" : ""
         }`}
       >
         <span className="text-faint">Range</span>
         <span className="font-mono tnum">{summary}</span>
         <span aria-hidden="true" className="text-faint">▾</span>
       </summary>
-      <div className="absolute right-0 z-50 mt-1 w-64 border border-line bg-surface p-2 shadow-lg">
+      <div className="absolute right-0 z-50 mt-2 w-72 rounded-xl bg-surface p-3 shadow-floating">
         <button
           type="button"
           onClick={() => apply(undefined)}
-          className="mb-2 w-full border border-line px-2 py-1 text-left text-2xs text-muted hover:bg-surface-soft"
+          className="mb-2 min-h-9 w-full rounded-lg border border-line px-3 text-left text-xs text-muted hover:bg-surface-soft hover:text-ink"
         >
           All time
         </button>
@@ -75,7 +87,7 @@ export function DateRangeControl({
               key={preset.key}
               type="button"
               onClick={() => apply(presetRange(preset.days))}
-              className="border border-line px-2 py-1 text-2xs text-muted hover:bg-surface-soft"
+              className="min-h-9 rounded-lg border border-line px-2 text-xs text-muted hover:bg-surface-soft hover:text-ink"
             >
               {preset.label}
             </button>
@@ -88,7 +100,7 @@ export function DateRangeControl({
               aria-label="From date"
               value={from}
               onChange={(event) => setFrom(event.target.value)}
-              className="min-w-0 flex-1 border border-line bg-surface px-1.5 py-1 text-2xs text-ink"
+              className="min-h-9 min-w-0 flex-1 rounded-lg border border-line bg-surface px-2 text-xs text-ink"
             />
             <span className="text-faint">→</span>
             <input
@@ -96,14 +108,14 @@ export function DateRangeControl({
               aria-label="To date"
               value={to}
               onChange={(event) => setTo(event.target.value)}
-              className="min-w-0 flex-1 border border-line bg-surface px-1.5 py-1 text-2xs text-ink"
+              className="min-h-9 min-w-0 flex-1 rounded-lg border border-line bg-surface px-2 text-xs text-ink"
             />
           </div>
           <button
             type="button"
             disabled={!from || !to}
             onClick={() => apply({ from, to })}
-            className="mt-2 w-full border border-accent bg-accent-soft px-2 py-1 text-2xs font-medium text-accent disabled:opacity-50"
+            className="mt-2 min-h-9 w-full rounded-lg bg-accent px-3 text-xs font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50"
           >
             Apply custom range
           </button>
@@ -111,15 +123,16 @@ export function DateRangeControl({
 
         <div className="mt-2 border-t border-line pt-2" data-testid="comparison-picker">
           <p className="mb-1 text-2xs font-semibold uppercase tracking-wide text-faint">Compare to</p>
-          <div className={`grid grid-cols-2 gap-1 ${comparisonDisabled ? "pointer-events-none opacity-50" : ""}`}>
+          <div className={`grid grid-cols-2 gap-1 ${comparisonDisabled ? "opacity-50" : ""}`}>
             {COMPARISON_OPTIONS.map((option) => (
               <button
                 key={option.key}
                 type="button"
+                disabled={comparisonDisabled}
                 data-comparison={option.key}
                 data-active={comparison === option.key || undefined}
                 onClick={() => applyComparison(option.key)}
-                className="border border-line px-2 py-1 text-2xs text-muted hover:bg-surface-soft data-[active=true]:border-accent data-[active=true]:bg-accent-soft data-[active=true]:text-accent"
+                className="min-h-9 rounded-lg border border-line px-2 text-xs text-muted hover:bg-surface-soft data-[active=true]:border-accent data-[active=true]:bg-accent-soft data-[active=true]:text-accent disabled:cursor-not-allowed"
               >
                 {option.label}
               </button>
@@ -133,7 +146,7 @@ export function DateRangeControl({
                   aria-label="Comparison from date"
                   value={cmpFrom}
                   onChange={(event) => setCmpFrom(event.target.value)}
-                  className="min-w-0 flex-1 border border-line bg-surface px-1.5 py-1 text-2xs text-ink"
+                  className="min-h-9 min-w-0 flex-1 rounded-lg border border-line bg-surface px-2 text-xs text-ink"
                 />
                 <span className="text-faint">→</span>
                 <input
@@ -141,14 +154,14 @@ export function DateRangeControl({
                   aria-label="Comparison to date"
                   value={cmpTo}
                   onChange={(event) => setCmpTo(event.target.value)}
-                  className="min-w-0 flex-1 border border-line bg-surface px-1.5 py-1 text-2xs text-ink"
+                  className="min-h-9 min-w-0 flex-1 rounded-lg border border-line bg-surface px-2 text-xs text-ink"
                 />
               </div>
               <button
                 type="button"
                 disabled={!cmpFrom || !cmpTo}
                 onClick={() => onComparisonChange("custom", { from: cmpFrom, to: cmpTo })}
-                className="mt-2 w-full border border-accent bg-accent-soft px-2 py-1 text-2xs font-medium text-accent disabled:opacity-50"
+                className="mt-2 min-h-9 w-full rounded-lg bg-accent px-3 text-xs font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50"
               >
                 Apply comparison
               </button>

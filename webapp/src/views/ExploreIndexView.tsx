@@ -19,12 +19,13 @@ export function ExploreIndexView() {
   };
 
   return (
-    <div className="mx-auto w-full max-w-5xl p-6">
-      <div className="mb-4">
-        <h1 className="text-base font-semibold text-ink">Explore</h1>
-        <p className="text-2xs text-muted">{plural(catalog.models.length, "model")} · pick one to explore</p>
+    <div className="mx-auto w-full max-w-6xl px-5 py-10 sm:px-8 sm:py-14">
+      <div className="mb-8 max-w-2xl">
+        <p className="mb-2 text-xs font-semibold uppercase tracking-[0.12em] text-accent">Semantic layer</p>
+        <h1 className="text-3xl font-semibold tracking-[-0.03em] text-ink sm:text-4xl">Explore your data</h1>
+        <p className="mt-2 text-base text-muted">Choose from {plural(catalog.models.length, "model")} to inspect metrics, trends, and dimensions.</p>
       </div>
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {catalog.models.map((model) => (
           <button
             key={model.name}
@@ -32,22 +33,25 @@ export function ExploreIndexView() {
             data-testid="explore-card"
             data-model={model.name}
             onClick={() => open(model.name)}
-            className="flex min-h-32 flex-col gap-2 border border-line bg-surface p-4 text-left hover:border-faint hover:bg-surface-soft"
+            className="group flex min-h-48 flex-col gap-3 rounded-2xl bg-surface p-5 text-left shadow-sm transition-[transform,box-shadow] duration-200 ease-out hover:-translate-y-0.5 hover:shadow-floating"
           >
             <div className="flex items-baseline justify-between gap-2">
-              <span className="truncate text-sm font-medium text-ink">{model.label}</span>
-              {model.timeDimension ? <span className="shrink-0 text-2xs text-faint">time series</span> : null}
+              <span className="truncate text-lg font-semibold tracking-[-0.015em] text-ink">{model.label}</span>
+              {model.timeDimension ? <span className="shrink-0 rounded-full bg-accent-soft px-2.5 py-1 text-2xs font-medium text-accent">Time series</span> : null}
             </div>
-            {model.description ? <p className="line-clamp-2 text-2xs text-muted">{model.description}</p> : null}
-            <div className="mt-auto flex flex-wrap gap-1 pt-1">
+            {model.description ? <p className="line-clamp-2 text-sm leading-relaxed text-muted">{model.description}</p> : null}
+            <div className="mt-auto flex flex-wrap gap-1.5 pt-2">
               {model.metrics.slice(0, 3).map((metric) => (
-                <span key={metric.ref} className="border border-line px-1.5 py-0.5 text-2xs text-muted">
+                <span key={metric.ref} className="rounded-full bg-surface-soft px-2.5 py-1 text-xs text-muted">
                   {metric.label}
                 </span>
               ))}
             </div>
-            <div className="text-2xs uppercase tracking-wide text-faint">
+            <div className="flex items-center justify-between border-t border-line/70 pt-3 text-xs text-faint">
+              <span>
               {plural(model.metrics.length, "metric")} · {plural(model.dimensions.length, "dimension")}
+              </span>
+              <span aria-hidden="true" className="text-base text-muted transition-transform group-hover:translate-x-1">→</span>
             </div>
           </button>
         ))}

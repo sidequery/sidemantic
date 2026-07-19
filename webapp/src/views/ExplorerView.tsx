@@ -140,11 +140,11 @@ export function ExplorerView() {
   }
 
   return (
-    <div className="flex flex-col gap-4 p-4">
+    <div className="mx-auto flex w-full max-w-[1600px] flex-col gap-6 p-4 sm:p-6">
       {queryError ? <ErrorState message={queryError} /> : null}
 
       {/* KPI scorecard strip */}
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6" data-testid="metric-totals">
+      <div className="grid grid-cols-1 gap-3 min-[420px]:grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6" data-testid="metric-totals">
         {metrics.length === 0 ? (
           <div className="col-span-full"><EmptyState message="This model has no metrics." /></div>
         ) : (
@@ -188,7 +188,7 @@ export function ExplorerView() {
       ) : null}
 
       {/* Dimension leaderboards */}
-      <div className="grid grid-cols-[repeat(auto-fit,minmax(220px,1fr))] gap-0 border-l border-t border-line">
+      <div className="grid grid-cols-[repeat(auto-fit,minmax(250px,1fr))] gap-3">
         {rankMetric && leaderboardDims.length ? (
           leaderboardDims
             .filter((dim) => expandedLeaderboard === null || expandedLeaderboard === dim.ref)

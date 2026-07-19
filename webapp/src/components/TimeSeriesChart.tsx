@@ -153,7 +153,7 @@ export function TimeSeriesChart({
       : `Time series chart, ${count} points from ${formatLabel(points[0].x)} to ${formatLabel(points[count - 1].x)}.`);
 
   return (
-    <div className="relative border border-line bg-surface text-accent">
+    <div className="relative overflow-hidden rounded-xl bg-bg text-accent">
       {/* legend */}
       <div className="absolute right-3 top-2 z-10 flex items-center gap-3 text-2xs text-faint">
         <span className="flex items-center gap-1">
@@ -239,7 +239,7 @@ export function TimeSeriesChart({
 
       {hoverCur ? (
         <div
-          className="pointer-events-none absolute top-8 z-20 -translate-x-1/2 whitespace-nowrap border border-line bg-surface px-2 py-1.5 text-2xs shadow-[var(--shadow)]"
+          className="pointer-events-none absolute top-8 z-20 -translate-x-1/2 whitespace-nowrap rounded-lg bg-surface px-3 py-2 text-xs shadow-floating"
           style={{ left: tooltipLeft }}
         >
           <div className="mb-0.5 font-mono text-faint">{formatLabel(hoverCur.x)}</div>

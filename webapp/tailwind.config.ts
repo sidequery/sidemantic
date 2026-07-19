@@ -1,8 +1,7 @@
 import type { Config } from "tailwindcss";
 
-// Semantic color tokens are driven by CSS variables (see src/index.css) so a dark theme
-// can be layered later without touching component classes. Palette seeded from hogflare's
-// "data tool" tokens: hairline borders, one primary accent, mono numerals.
+// Semantic color tokens are driven by CSS variables (see src/index.css) so themes stay
+// centralized. The palette and type stack follow Sidequery's restrained product system.
 const config: Config = {
   content: ["./index.html", "./src/**/*.{ts,tsx}"],
   theme: {
@@ -24,8 +23,8 @@ const config: Config = {
         "chart-primary-selected": "var(--chart-primary-selected)",
       },
       fontFamily: {
-        sans: ["Inter", "system-ui", "-apple-system", "Segoe UI", "Roboto", "sans-serif"],
-        mono: ["SFMono-Regular", "ui-monospace", "Menlo", "Consolas", "monospace"],
+        sans: ["Geist Sans", "-apple-system", "BlinkMacSystemFont", "SF Pro Text", "Segoe UI", "sans-serif"],
+        mono: ["Geist Mono", "SFMono-Regular", "ui-monospace", "Menlo", "Consolas", "monospace"],
       },
       fontSize: {
         "2xs": ["11px", { lineHeight: "1.3" }],
@@ -35,6 +34,10 @@ const config: Config = {
       },
       borderColor: {
         DEFAULT: "var(--line)",
+      },
+      boxShadow: {
+        sm: "var(--shadow-sm)",
+        floating: "var(--shadow)",
       },
     },
   },

@@ -266,7 +266,7 @@ function DataTable({ columns, rows, loading, sortKey, sortDir, onSort, renderCel
     setPage(0);
   }, [rows, pageSize, sortKey, sortDir]);
   return /* @__PURE__ */ jsxs2("div", {
-    className: "overflow-hidden border border-line bg-surface",
+    className: "overflow-hidden rounded-xl bg-surface shadow-sm",
     children: [
       /* @__PURE__ */ jsx3("div", {
         className: "overflow-auto",
@@ -276,16 +276,16 @@ function DataTable({ columns, rows, loading, sortKey, sortDir, onSort, renderCel
           children: [
             /* @__PURE__ */ jsx3("thead", {
               children: /* @__PURE__ */ jsx3("tr", {
-                className: "bg-surface-soft",
+                className: "bg-surface-soft/80",
                 children: columns.map((column) => {
                   const active = sortKey === column.key;
                   return /* @__PURE__ */ jsx3("th", {
-                    className: `max-w-80 whitespace-nowrap border-b border-line px-3 py-1.5 font-semibold text-faint ${column.numeric ? "min-w-32 text-right" : "min-w-40 text-left"}`,
+                    className: `max-w-80 whitespace-nowrap border-b border-line px-4 py-2 font-semibold text-muted ${column.numeric ? "min-w-32 text-right" : "min-w-40 text-left"}`,
                     children: column.sortable && onSort ? /* @__PURE__ */ jsxs2("button", {
                       type: "button",
                       onClick: () => onSort(column.key),
                       "aria-label": `Sort by ${column.label}${active ? `, currently ${sortDir === "asc" ? "ascending" : "descending"}` : ""}`,
-                      className: `inline-flex min-h-11 max-w-full items-center gap-1 whitespace-nowrap hover:text-ink ${active ? "text-ink" : ""}`,
+                      className: `inline-flex min-h-11 max-w-full items-center gap-1 whitespace-nowrap rounded-md hover:text-ink ${active ? "text-ink" : ""}`,
                       children: [
                         /* @__PURE__ */ jsx3("span", {
                           className: "truncate",
@@ -324,7 +324,7 @@ function DataTable({ columns, rows, loading, sortKey, sortDir, onSort, renderCel
                 children: columns.map((column) => {
                   const cellText = renderCell(column, row[column.key]);
                   return /* @__PURE__ */ jsx3("td", {
-                    className: `max-w-80 whitespace-nowrap border-b border-line px-3 py-1.5 text-muted ${column.numeric ? "min-w-32 text-right font-mono tnum text-ink" : "min-w-40"}`,
+                    className: `max-w-80 whitespace-nowrap border-b border-line/70 px-4 py-2 text-muted ${column.numeric ? "min-w-32 text-right font-mono tnum text-ink" : "min-w-40"}`,
                     children: /* @__PURE__ */ jsx3("span", {
                       className: "block max-w-80 truncate",
                       title: cellText,
@@ -533,7 +533,7 @@ function TimeSeriesChart({
   const delta = hoverCur && hoverPrev && hoverPrev.y !== 0 ? (hoverCur.y - hoverPrev.y) / Math.abs(hoverPrev.y) * 100 : null;
   const summary = ariaLabel ?? (empty ? "Time series chart: not enough data to plot." : `Time series chart, ${count} points from ${formatLabel(points[0].x)} to ${formatLabel(points[count - 1].x)}.`);
   return /* @__PURE__ */ jsxs4("div", {
-    className: "relative border border-line bg-surface text-accent",
+    className: "relative overflow-hidden rounded-xl bg-bg text-accent",
     children: [
       /* @__PURE__ */ jsxs4("div", {
         className: "absolute right-3 top-2 z-10 flex items-center gap-3 text-2xs text-faint",
@@ -678,7 +678,7 @@ function TimeSeriesChart({
         })
       }),
       hoverCur ? /* @__PURE__ */ jsxs4("div", {
-        className: "pointer-events-none absolute top-8 z-20 -translate-x-1/2 whitespace-nowrap border border-line bg-surface px-2 py-1.5 text-2xs shadow-[var(--shadow)]",
+        className: "pointer-events-none absolute top-8 z-20 -translate-x-1/2 whitespace-nowrap rounded-lg bg-surface px-3 py-2 text-xs shadow-floating",
         style: { left: tooltipLeft },
         children: [
           /* @__PURE__ */ jsx5("div", {
@@ -1078,7 +1078,7 @@ function FilterEditor({
     "aria-modal": "true",
     "aria-labelledby": labelId,
     onKeyDown,
-    className: "absolute left-0 z-50 mt-1 w-64 border border-line bg-surface p-2 text-2xs shadow-lg",
+    className: "absolute left-0 z-50 mt-2 w-72 rounded-xl bg-surface p-3 text-xs shadow-floating",
     children: [
       /* @__PURE__ */ jsxs6("div", {
         id: labelId,
@@ -1092,7 +1092,7 @@ function FilterEditor({
             type: "button",
             "aria-label": "Close filter editor",
             onClick: onClose,
-            className: "grid size-4 place-items-center rounded-full bg-surface-soft text-faint hover:bg-line hover:text-ink",
+            className: "grid size-8 place-items-center rounded-full bg-surface-soft text-faint hover:bg-line hover:text-ink",
             children: "×"
           })
         ]
@@ -1100,12 +1100,12 @@ function FilterEditor({
       /* @__PURE__ */ jsx9("div", {
         role: "group",
         "aria-label": "Filter mode",
-        className: "mb-2 grid grid-cols-3 gap-px border border-line bg-line",
+        className: "mb-3 grid grid-cols-3 gap-1 rounded-lg bg-surface-soft p-1",
         children: MODES.map(({ mode: m, label }) => /* @__PURE__ */ jsx9("button", {
           type: "button",
           "aria-pressed": mode === m,
           onClick: () => setMode(m),
-          className: `px-1.5 py-1 text-center ${mode === m ? "bg-accent-soft font-medium text-accent" : "bg-surface text-muted hover:bg-surface-soft"}`,
+          className: `min-h-8 rounded-md px-2 text-center ${mode === m ? "bg-surface font-medium text-accent shadow-sm" : "text-muted hover:text-ink"}`,
           children: label
         }, m))
       }),
@@ -1116,7 +1116,7 @@ function FilterEditor({
         placeholder: "Substring…",
         value: patternDraft,
         onChange: (event) => setPatternDraft(event.target.value),
-        className: "w-full border border-line bg-surface px-1.5 py-1 text-2xs text-ink placeholder:text-faint"
+        className: "min-h-10 w-full rounded-lg border border-line bg-surface px-3 text-sm text-ink placeholder:text-faint"
       }) : /* @__PURE__ */ jsxs6(Fragment2, {
         children: [
           /* @__PURE__ */ jsx9("input", {
@@ -1126,7 +1126,7 @@ function FilterEditor({
             placeholder: "Search values…",
             value: search,
             onChange: (event) => setSearch(event.target.value),
-            className: "w-full border border-line bg-surface px-1.5 py-1 text-2xs text-ink placeholder:text-faint"
+            className: "min-h-10 w-full rounded-lg border border-line bg-surface px-3 text-sm text-ink placeholder:text-faint"
           }),
           /* @__PURE__ */ jsx9("div", {
             className: "mt-2 max-h-56 overflow-y-auto",
@@ -1146,7 +1146,7 @@ function FilterEditor({
             }) : values.map((value) => {
               const checked = selected.has(value);
               return /* @__PURE__ */ jsxs6("label", {
-                className: "flex cursor-pointer items-center gap-2 px-1 py-1 hover:bg-surface-soft",
+                className: "flex min-h-9 cursor-pointer items-center gap-2 rounded-md px-2 py-1 hover:bg-surface-soft",
                 children: [
                   /* @__PURE__ */ jsx9("input", {
                     type: "checkbox",
@@ -1176,7 +1176,7 @@ function FilterEditor({
           /* @__PURE__ */ jsx9("button", {
             type: "button",
             onClick: onClose,
-            className: "border border-line px-2 py-1 text-muted hover:bg-surface-soft",
+            className: "min-h-8 rounded-full bg-surface-soft px-3 font-medium text-muted hover:bg-line hover:text-ink",
             children: "Done"
           })
         ]
@@ -1193,7 +1193,7 @@ function FilterPill(props) {
     return /* @__PURE__ */ jsxs7("span", {
       "data-dimension": props.dimension,
       "data-value": props.value,
-      className: "inline-flex max-w-full items-center gap-1.5 border border-line bg-surface px-2 py-0.5 text-2xs text-muted",
+      className: "inline-flex min-h-8 max-w-full items-center gap-1.5 rounded-full bg-surface-soft px-3 text-xs text-muted",
       children: [
         /* @__PURE__ */ jsxs7("span", {
           className: "truncate",
@@ -1213,7 +1213,7 @@ function FilterPill(props) {
           type: "button",
           "aria-label": `Remove filter ${props.value}`,
           onClick: props.onRemove,
-          className: "grid size-3.5 place-items-center rounded-full bg-surface-soft text-faint hover:bg-line hover:text-ink",
+          className: "grid size-5 place-items-center rounded-full text-faint hover:bg-line hover:text-ink",
           children: "×"
         }) : null
       ]
@@ -1226,7 +1226,7 @@ function FilterPill(props) {
     "data-mode": filter.mode,
     children: [
       /* @__PURE__ */ jsxs7("span", {
-        className: "inline-flex max-w-full items-center gap-1.5 border border-line bg-surface px-2 py-0.5 text-2xs text-muted",
+        className: "inline-flex min-h-8 max-w-full items-center gap-1.5 rounded-full bg-surface-soft px-3 text-xs text-muted",
         children: [
           /* @__PURE__ */ jsxs7("button", {
             type: "button",
@@ -1248,7 +1248,7 @@ function FilterPill(props) {
             type: "button",
             "aria-label": `Remove filter ${dim.label}`,
             onClick: onRemove,
-            className: "grid size-3.5 shrink-0 place-items-center rounded-full bg-surface-soft text-faint hover:bg-line hover:text-ink",
+            className: "grid size-5 shrink-0 place-items-center rounded-full text-faint hover:bg-line hover:text-ink",
             children: "×"
           })
         ]
@@ -1295,10 +1295,10 @@ function Leaderboard({
     "data-dimension": dimension,
     "data-expanded": expanded || undefined,
     "aria-label": `${title}, ranked by ${metricLabel}`,
-    className: "flex min-h-60 flex-col border-b border-r border-line bg-surface data-[expanded=true]:col-span-full",
+    className: "flex min-h-64 flex-col overflow-hidden rounded-xl bg-surface shadow-sm data-[expanded=true]:col-span-full",
     children: [
       /* @__PURE__ */ jsxs8("header", {
-        className: "flex items-center justify-between gap-3 px-3 pb-2 pt-2.5",
+        className: "flex items-center justify-between gap-3 px-4 pb-3 pt-4",
         children: [
           /* @__PURE__ */ jsxs8("div", {
             className: "flex min-w-0 items-baseline gap-2",
@@ -1320,7 +1320,7 @@ function Leaderboard({
             role: "group",
             "aria-label": "Context column",
             "data-testid": "leaderboard-context-toggle",
-            className: "flex shrink-0 overflow-hidden border border-line text-2xs",
+            className: "flex shrink-0 overflow-hidden rounded-full bg-surface-soft p-0.5 text-2xs",
             children: contextOptions.map((option) => /* @__PURE__ */ jsx11("button", {
               type: "button",
               title: option.title,
@@ -1328,7 +1328,8 @@ function Leaderboard({
               "data-context": option.key,
               "data-active": contextColumn === option.key || undefined,
               onClick: () => onContextColumn(option.key),
-              className: "border-l border-line px-1.5 py-0.5 font-mono text-faint first:border-l-0 hover:bg-surface-soft data-[active=true]:bg-accent-soft data-[active=true]:text-accent",
+              "aria-label": option.title,
+              className: "min-h-7 min-w-7 rounded-full px-1.5 font-mono text-faint hover:text-ink data-[active=true]:bg-surface data-[active=true]:text-accent data-[active=true]:shadow-sm",
               children: option.label
             }, option.key))
           }) : null
@@ -1356,7 +1357,7 @@ function Leaderboard({
             "data-tone": tone,
             onClick: () => onToggle?.(row.value),
             "aria-pressed": isSelected,
-            className: `leaderboard-row relative grid w-full ${rowGrid} items-center gap-3 overflow-hidden border-0 bg-transparent px-3 py-1 text-left text-xs text-ink data-[selected=true]:bg-chart-primary-selected`,
+            className: `leaderboard-row relative grid min-h-9 w-full ${rowGrid} items-center gap-3 overflow-hidden border-0 bg-transparent px-4 py-1.5 text-left text-sm text-ink data-[selected=true]:bg-chart-primary-selected`,
             children: [
               /* @__PURE__ */ jsx11("span", {
                 "aria-hidden": "true",
@@ -1386,7 +1387,7 @@ function Leaderboard({
         "data-action": expanded ? "leaderboard-back" : "leaderboard-expand",
         "aria-expanded": expanded,
         onClick: () => onExpandedChange?.(!expanded),
-        className: "leaderboard-expand mt-1 min-h-9 border-0 border-t border-line bg-transparent px-3 text-left text-xs font-normal text-faint hover:text-accent",
+        className: "leaderboard-expand mt-auto min-h-10 border-0 border-t border-line/70 bg-transparent px-4 text-left text-xs font-medium text-muted hover:bg-surface-soft hover:text-accent",
         children: expanded ? "← All dimensions" : `Expand table (${rows.length})`
       }) : null
     ]
@@ -1600,7 +1601,7 @@ function MetricCard({
         className: "flex items-baseline justify-between gap-2",
         children: [
           /* @__PURE__ */ jsx13("span", {
-            className: "truncate text-2xs font-semibold uppercase tracking-wide text-faint",
+            className: "truncate text-xs font-medium text-muted",
             children: label
           }),
           sparkHover?.label ? /* @__PURE__ */ jsx13("span", {
@@ -1621,14 +1622,14 @@ function MetricCard({
         ]
       }),
       /* @__PURE__ */ jsx13("div", {
-        className: "font-mono tnum text-base font-semibold text-ink",
+        className: "font-mono tnum text-xl font-semibold tracking-[-0.025em] text-ink",
         children: loading ? /* @__PURE__ */ jsx13("span", {
           className: "skeleton inline-block h-5 w-24 align-middle"
         }) : sparkHover ? formatValue(sparkHover.value, format) : valueText ?? formatValue(value, format)
       })
     ]
   });
-  const className = "group flex w-full flex-col gap-1.5 border border-line bg-surface px-3 py-2.5 text-left data-[selected=true]:border-accent data-[selected=true]:ring-1 data-[selected=true]:ring-accent";
+  const className = "group flex min-h-36 w-full flex-col gap-2 rounded-xl bg-surface px-4 py-3.5 text-left shadow-sm transition-[transform,box-shadow] duration-150 ease-out hover:-translate-y-px hover:shadow-floating data-[selected=true]:ring-2 data-[selected=true]:ring-accent";
   const sparkline = /* @__PURE__ */ jsx13(Sparkline, {
     values: sparkValues,
     labels: sparkLabels,
@@ -1660,7 +1661,7 @@ function MetricCard({
         "data-metric": metric,
         "aria-pressed": !!selected,
         onClick: () => onSelect(metric),
-        className: "-m-1 flex flex-col gap-1 border-0 bg-transparent p-1 text-left transition hover:opacity-75",
+        className: "-m-1 flex min-h-12 flex-col gap-1 rounded-lg border-0 bg-transparent p-1 text-left transition-colors hover:text-accent",
         children: summary
       }),
       sparkline
@@ -1738,15 +1739,15 @@ ${sql}`).join(`
 `);
   const tokens = tokenizeSql(text || "No queries yet.");
   return /* @__PURE__ */ jsxs11("details", {
-    className: "border border-line bg-surface",
+    className: "overflow-hidden rounded-xl bg-surface shadow-sm",
     children: [
       /* @__PURE__ */ jsx14("summary", {
-        className: "cursor-pointer px-3 py-2 text-2xs font-semibold uppercase tracking-wide text-faint",
+        className: "min-h-11 px-4 py-3 text-xs font-medium text-muted hover:bg-surface-soft hover:text-ink",
         children: "Generated SQL"
       }),
       Object.keys(inputs).length > 0 ? /* @__PURE__ */ jsx14("div", {
         "data-testid": "query-inputs",
-        className: "grid gap-px border-t border-line bg-line sm:grid-cols-2",
+        className: "grid gap-px border-t border-line/70 bg-line sm:grid-cols-2",
         children: Object.entries(inputs).map(([name, input]) => input ? /* @__PURE__ */ jsxs11("section", {
           className: "min-w-0 bg-surface px-3 py-2 text-2xs",
           children: [
@@ -1778,7 +1779,7 @@ ${sql}`).join(`
       }) : null,
       /* @__PURE__ */ jsx14("pre", {
         "data-testid": "query-debug",
-        className: "max-h-72 overflow-auto whitespace-pre-wrap border-t border-line px-3 py-2 font-mono text-2xs text-muted",
+        className: "max-h-72 overflow-auto whitespace-pre-wrap border-t border-line/70 bg-bg px-4 py-3 font-mono text-xs leading-relaxed text-muted",
         children: tokens.map((token, index) => TOKEN_CLASS[token.kind] ? /* @__PURE__ */ jsx14("span", {
           className: TOKEN_CLASS[token.kind],
           "data-token": token.kind,
@@ -1793,23 +1794,26 @@ import { jsx as jsx15, jsxs as jsxs12 } from "react/jsx-runtime";
 function StateBox({ tone, title, message }) {
   const danger = tone === "danger";
   return /* @__PURE__ */ jsx15("div", {
-    className: `grid min-h-[200px] place-items-center border bg-surface p-6 text-center ${danger ? "border-danger/40" : "border-line"}`,
+    className: `grid min-h-[220px] place-items-center rounded-2xl bg-surface p-8 text-center shadow-sm ${danger ? "ring-1 ring-danger/30" : ""}`,
     "data-state": tone,
     role: danger ? "alert" : "status",
     "aria-live": danger ? "assertive" : "polite",
     children: /* @__PURE__ */ jsxs12("div", {
       className: "max-w-md",
       children: [
-        tone === "loading" ? /* @__PURE__ */ jsx15("span", {
+        /* @__PURE__ */ jsx15("span", {
           "aria-hidden": "true",
-          className: "motion-safe:animate-pulse inline-block size-2 rounded-full bg-accent"
-        }) : null,
+          className: `mx-auto mb-4 grid size-10 place-items-center rounded-full ${danger ? "bg-danger-soft text-danger" : "bg-surface-soft text-muted"}`,
+          children: tone === "loading" ? /* @__PURE__ */ jsx15("span", {
+            className: "spinner size-4 rounded-full border-2 border-line border-t-accent"
+          }) : danger ? "!" : "—"
+        }),
         title ? /* @__PURE__ */ jsx15("h3", {
-          className: `text-sm font-semibold ${danger ? "text-danger" : "text-ink"}`,
+          className: `text-base font-semibold tracking-[-0.01em] ${danger ? "text-danger" : "text-ink"}`,
           children: title
         }) : null,
         /* @__PURE__ */ jsx15("p", {
-          className: `mt-1 text-xs ${danger ? "text-danger" : "text-muted"}`,
+          className: `mt-1.5 text-sm ${danger ? "text-danger" : "text-muted"}`,
           children: message
         })
       ]

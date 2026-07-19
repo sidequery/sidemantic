@@ -160,7 +160,7 @@ export function FilterEditor({
       aria-modal="true"
       aria-labelledby={labelId}
       onKeyDown={onKeyDown}
-      className="absolute left-0 z-50 mt-1 w-64 border border-line bg-surface p-2 text-2xs shadow-lg"
+      className="absolute left-0 z-50 mt-2 w-72 rounded-xl bg-surface p-3 text-xs shadow-floating"
     >
       <div id={labelId} className="mb-2 flex items-baseline justify-between gap-2">
         <span className="truncate font-semibold text-ink">{dim.label}</span>
@@ -168,22 +168,22 @@ export function FilterEditor({
           type="button"
           aria-label="Close filter editor"
           onClick={onClose}
-          className="grid size-4 place-items-center rounded-full bg-surface-soft text-faint hover:bg-line hover:text-ink"
+          className="grid size-8 place-items-center rounded-full bg-surface-soft text-faint hover:bg-line hover:text-ink"
         >
           ×
         </button>
       </div>
 
       {/* Mode segmented control */}
-      <div role="group" aria-label="Filter mode" className="mb-2 grid grid-cols-3 gap-px border border-line bg-line">
+      <div role="group" aria-label="Filter mode" className="mb-3 grid grid-cols-3 gap-1 rounded-lg bg-surface-soft p-1">
         {MODES.map(({ mode: m, label }) => (
           <button
             key={m}
             type="button"
             aria-pressed={mode === m}
             onClick={() => setMode(m)}
-            className={`px-1.5 py-1 text-center ${
-              mode === m ? "bg-accent-soft font-medium text-accent" : "bg-surface text-muted hover:bg-surface-soft"
+            className={`min-h-8 rounded-md px-2 text-center ${
+              mode === m ? "bg-surface font-medium text-accent shadow-sm" : "text-muted hover:text-ink"
             }`}
           >
             {label}
@@ -199,7 +199,7 @@ export function FilterEditor({
           placeholder="Substring…"
           value={patternDraft}
           onChange={(event) => setPatternDraft(event.target.value)}
-          className="w-full border border-line bg-surface px-1.5 py-1 text-2xs text-ink placeholder:text-faint"
+          className="min-h-10 w-full rounded-lg border border-line bg-surface px-3 text-sm text-ink placeholder:text-faint"
         />
       ) : (
         <>
@@ -210,7 +210,7 @@ export function FilterEditor({
             placeholder="Search values…"
             value={search}
             onChange={(event) => setSearch(event.target.value)}
-            className="w-full border border-line bg-surface px-1.5 py-1 text-2xs text-ink placeholder:text-faint"
+            className="min-h-10 w-full rounded-lg border border-line bg-surface px-3 text-sm text-ink placeholder:text-faint"
           />
           <div className="mt-2 max-h-56 overflow-y-auto" role="group" aria-label={`${dim.label} values`}>
             {error ? (
@@ -229,7 +229,7 @@ export function FilterEditor({
                 return (
                   <label
                     key={value}
-                    className="flex cursor-pointer items-center gap-2 px-1 py-1 hover:bg-surface-soft"
+                    className="flex min-h-9 cursor-pointer items-center gap-2 rounded-md px-2 py-1 hover:bg-surface-soft"
                   >
                     <input
                       type="checkbox"
@@ -257,7 +257,7 @@ export function FilterEditor({
         <button
           type="button"
           onClick={onClose}
-          className="border border-line px-2 py-1 text-muted hover:bg-surface-soft"
+          className="min-h-8 rounded-full bg-surface-soft px-3 font-medium text-muted hover:bg-line hover:text-ink"
         >
           Done
         </button>

@@ -2875,12 +2875,15 @@ view: orders {
   dimension: status { type: string  sql: ${TABLE}.status ;; }
   measure: n_completed { type: number  sql: ARRAY_LENGTH(LIST(${amount})) ;; filters: [status: "completed"] }
   measure: n_all { type: number  sql: ARRAY_LENGTH(LIST(${amount})) ;; }
+  measure: arr_completed { type: number  sql: ARRAY_LENGTH(ARRAY_AGG(${amount})) ;; filters: [status: "completed"] }
   measure: sum_completed { type: number  sql: SUM(${amount}) ;; filters: [status: "completed"] }
 }
 """
     )
     model = graph.get_model("orders")
     assert model.get_metric("n_completed") is None  # would have silently ignored its filter
+    # ARRAY_AGG retains NULLs just like LIST, so a filtered ARRAY_AGG measure is dropped too.
+    assert model.get_metric("arr_completed") is None
     assert model.get_metric("n_all") is not None  # unfiltered LIST is fine
     assert model.get_metric("sum_completed") is not None  # a foldable filtered aggregate is fine
 

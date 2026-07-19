@@ -452,10 +452,12 @@ class LookMLAdapter(BaseAdapter):
 
     @staticmethod
     def _sql_has_list_aggregate(sql: str) -> bool:
-        """True if ``sql`` contains a ``LIST(...)`` collector (sqlglot's ``exp.List``).
+        """True if ``sql`` contains a NULL-retaining array collector -- ``LIST(...)`` (sqlglot's
+        ``exp.List``) or ``ARRAY_AGG(...)`` (``exp.ArrayAgg``).
 
-        Callers use this to refuse FILTERING such an expression: LIST keeps NULL inputs, so a
-        filter can be applied neither by column-nulling nor by a folded CASE.
+        Callers use this to refuse FILTERING such an expression: these collectors keep NULL inputs,
+        so a filter can be applied neither by column-nulling (the excluded row's NULL is still an
+        element -- ARRAY_LENGTH still counts it) nor by a folded CASE.
         """
         import sqlglot
         from sqlglot import expressions as exp
@@ -464,7 +466,7 @@ class LookMLAdapter(BaseAdapter):
             tree = sqlglot.parse_one(sql.replace("{model}", "__m__").replace("${TABLE}", "__m__"))
         except Exception:
             return False
-        return any(True for _ in tree.find_all(exp.List))
+        return any(True for _ in tree.find_all(exp.List)) or any(True for _ in tree.find_all(exp.ArrayAgg))
 
     @staticmethod
     def _has_subquery(sql: str) -> bool:

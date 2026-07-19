@@ -6115,6 +6115,60 @@ view: child {
     assert "child_amount" in graph2.get_model("child").get_dimension("amount").sql  # child's own wins
 
 
+def test_lookml_multi_parent_extra_fields_propagate_to_descendant():
+    """A non-first extends parent's fields reach not just the direct child but its DESCENDANTS.
+
+    Model.extends is single, so resolve_model_inheritance follows only the first parent; the extra
+    parent's fields are merged in a later pass. That pass ran per-view and only merged each view's
+    own extra parents, so `parent extends: [base, audit]` got `audit_flag`, but `child extends:
+    [parent]` was flattened from `parent` BEFORE it received `audit_flag` and never revisited it.
+    Merging bottom-up and re-pulling the first parent propagates it down the chain.
+    """
+    graph = _parse_lkml(
+        """
+view: base { sql_table_name: base_t ;; dimension: base_field { type: string  sql: ${TABLE}.bf ;; } }
+view: audit { dimension: audit_flag { type: string  sql: ${TABLE}.af ;; } }
+view: parent { extends: [base, audit]  dimension: parent_field { type: string  sql: ${TABLE}.pf ;; } }
+view: child { extends: [parent]  dimension: child_field { type: string  sql: ${TABLE}.cf ;; } }
+"""
+    )
+    parent_dims = {d.name for d in graph.get_model("parent").dimensions}
+    child_dims = {d.name for d in graph.get_model("child").dimensions}
+    assert "audit_flag" in parent_dims  # the intermediate got its extra parent's field
+    assert "audit_flag" in child_dims  # ...and it propagated to the descendant
+    assert {"base_field", "parent_field", "child_field"} <= child_dims  # nothing else lost
+
+
+def test_lookml_multi_parent_extends_inherits_source_from_later_parent():
+    """The source (sql_table_name) follows the same later-parent precedence as fields.
+
+    For `extends: [base_a, base_b]` with a table on each, resolve_model_inheritance took base_a's
+    table, but the extra-parent pass copied base_b's FIELDS -- so those fields queried real_a. The
+    later-listed parent must win for the source too, and a source the child declares itself still
+    wins over any parent.
+    """
+    graph = _parse_lkml(
+        """
+view: base_a { sql_table_name: real_a ;; dimension: a_field { type: string  sql: ${TABLE}.a ;; } }
+view: base_b { sql_table_name: real_b ;; dimension: b_field { type: string  sql: ${TABLE}.b ;; } }
+view: child { extends: [base_a, base_b]  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; } }
+"""
+    )
+    model = graph.get_model("child")
+    assert model.table == "real_b"  # later parent's table wins
+    assert {"a_field", "b_field"} <= {d.name for d in model.dimensions}  # both parents' fields present
+
+    # A source declared on the child itself still wins over the parents.
+    graph2 = _parse_lkml(
+        """
+view: base_a { sql_table_name: real_a ;; dimension: a_field { type: string  sql: ${TABLE}.a ;; } }
+view: base_b { sql_table_name: real_b ;; dimension: b_field { type: string  sql: ${TABLE}.b ;; } }
+view: child { extends: [base_a, base_b]  sql_table_name: own_t ;;  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; } }
+"""
+    )
+    assert graph2.get_model("child").table == "own_t"
+
+
 def test_lookml_export_table_backed_extension_required_reemits_marker():
     """A table-backed `extension: required` base re-emits BOTH extension: required and its table.
 

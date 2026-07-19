@@ -609,9 +609,47 @@ class LookMLAdapter(BaseAdapter):
                 by_name[item.name] = item.model_copy(deep=True)  # later parent overrides earlier
             return [by_name[n] for n in order]
 
-        for name, model in graph.models.items():
-            raw = raw_view_defs.get(name)
+        # The in-scope, registerable extends parents of a raw view, in declaration order. An
+        # unsupported derived-table parent is dropped by the loader, so copying its fields would
+        # leave the child querying a column from a table that never gets registered -- skip it here
+        # exactly as the first-parent chain does.
+        def _mergeable_parents(nm: str) -> list[str]:
+            raw = raw_view_defs.get(nm)
             if raw is None:
+                return []
+            return [
+                p
+                for p in self._all_extends_parents(raw)
+                if p in graph.models and _parent_in_scope(nm, p) and p not in unsupported_dt_views
+            ]
+
+        # Merge extra parents in DEPENDENCY order (a view after every parent it extends). Model.extends
+        # is single, so resolve_model_inheritance() above flattened only each view's FIRST-parent
+        # chain -- and it did so BEFORE a multi-parent intermediate received its own extra-parent
+        # fields, so a descendant that extends that intermediate would otherwise miss them. Processing
+        # bottom-up and re-pulling the first parent (add-only) propagates those fields down the chain.
+        _extends_order: list[str] = []
+        _extends_state: dict[str, int] = {}  # 1 = visiting, 2 = done
+
+        def _order_extends(nm: str) -> None:
+            if _extends_state.get(nm):
+                return  # done, or a back-edge (real cycles already rejected by resolve_model_inheritance)
+            _extends_state[nm] = 1
+            for p in _mergeable_parents(nm):
+                _order_extends(p)
+            _extends_state[nm] = 2
+            _extends_order.append(nm)
+
+        for _nm in list(graph.models):
+            _order_extends(_nm)
+
+        for name in _extends_order:
+            model = graph.models.get(name)
+            raw = raw_view_defs.get(name)
+            if model is None or raw is None:
+                continue
+            parents = _mergeable_parents(name)
+            if not parents:
                 continue
             # The child's OWN field names, so an extra parent never overrides them. Dimensions come
             # from raw `dimensions` and the timeframe fields a raw `dimension_group` generates
@@ -626,20 +664,47 @@ class LookMLAdapter(BaseAdapter):
             def _protected_dim(dname, _own_dims=_own_dims, _own_group_prefixes=_own_group_prefixes):
                 return dname in _own_dims or dname.startswith(_own_group_prefixes)
 
-            for parent_name in self._all_extends_parents(raw)[1:]:
+            for idx, parent_name in enumerate(parents):
                 parent = graph.models.get(parent_name)
-                if parent is None or not _parent_in_scope(name, parent_name):
+                if parent is None:
                     continue
-                if parent_name in unsupported_dt_views:
-                    # An unsupported derived-table parent is dropped by the loader; copying its
-                    # fields would leave the child querying a column from a table that never gets
-                    # registered. The first-parent chain already skips these -- do the same here.
-                    continue
-                model.dimensions = _override_list(
-                    model.dimensions, parent.dimensions, {d.name for d in model.dimensions if _protected_dim(d.name)}
-                )
-                model.metrics = _override_list(model.metrics, parent.metrics, _own_metrics)
-                model.segments = _override_list(model.segments, parent.segments, _own_segments)
+                if idx == 0:
+                    # First parent: resolve_model_inheritance() already flattened it into this model,
+                    # but before the parent gained its OWN extra-parent fields. Re-pull ADD-ONLY
+                    # (protect every field already present) so those fields propagate to this
+                    # descendant without clobbering the child's own or extra-parent fields. This is a
+                    # no-op for an ordinary single-parent chain (all first-parent fields already here).
+                    model.dimensions = _override_list(
+                        model.dimensions, parent.dimensions, {d.name for d in model.dimensions}
+                    )
+                    model.metrics = _override_list(model.metrics, parent.metrics, {m.name for m in model.metrics})
+                    model.segments = _override_list(model.segments, parent.segments, {s.name for s in model.segments})
+                else:
+                    # Extra parent: Looker gives a later-listed parent precedence, so it OVERRIDES an
+                    # earlier parent's conflicting field; only the child's OWN fields are protected.
+                    model.dimensions = _override_list(
+                        model.dimensions,
+                        parent.dimensions,
+                        {d.name for d in model.dimensions if _protected_dim(d.name)},
+                    )
+                    model.metrics = _override_list(model.metrics, parent.metrics, _own_metrics)
+                    model.segments = _override_list(model.segments, parent.segments, _own_segments)
+
+            # Looker applies the same later-parent precedence to the SOURCE. resolve_model_inheritance
+            # took the first parent's table/sql; if the child declares no source of its own, let the
+            # LATEST-listed parent that declares one win, so the inherited fields query the right
+            # physical table instead of the first parent's (or the view-name default).
+            if not (raw.get("sql_table_name") or raw.get("derived_table")):
+                _inherited_table = None
+                _inherited_sql = None
+                _have_source = False
+                for parent_name in parents:
+                    parent = graph.models.get(parent_name)
+                    if parent is not None and (parent.table or parent.sql):
+                        _inherited_table, _inherited_sql, _have_source = parent.table, parent.sql, True
+                if _have_source:
+                    model.table = _inherited_table
+                    model.sql = _inherited_sql
 
         def _extends_chain_has(name: str, flagset: set[str]) -> bool:
             """True if name or any of its extends-ancestors is in flagset."""
@@ -721,9 +786,7 @@ class LookMLAdapter(BaseAdapter):
                 model.meta = {**(model.meta or {}), "extension_required": True, "lookml_template": True}
                 is_template = True
             elif (model.meta or {}).get("unsupported_derived_table") or (
-                model.table is None
-                and model.sql is None
-                and _extends_chain_has(model_name, unsupported_dt_views)
+                model.table is None and model.sql is None and _extends_chain_has(model_name, unsupported_dt_views)
             ):
                 # A view that declares its OWN unsupported derived_table is non-representable even
                 # when it INHERITED a sql_table_name from a table-backed extends parent -- Looker

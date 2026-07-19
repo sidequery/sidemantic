@@ -695,6 +695,7 @@ def get_semantic_graph() -> dict[str, Any]:
         model_info: dict[str, Any] = {
             "name": model_name,
             "table": model.table,
+            "primary_key": model.primary_key,
             "dimensions": [d.name for d in model.dimensions],
             "metrics": [m.name for m in model.metrics],
             "relationships": [{"name": r.name, "type": r.type} for r in model.relationships],
@@ -703,8 +704,6 @@ def get_semantic_graph() -> dict[str, Any]:
             model_info["description"] = model.description
         if model.segments:
             model_info["segments"] = [s.name for s in model.segments]
-        if model.primary_key:
-            model_info["primary_key"] = model.primary_key
         if model.default_time_dimension:
             model_info["default_time_dimension"] = model.default_time_dimension
         models.append(model_info)

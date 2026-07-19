@@ -6,6 +6,7 @@ import sqlglot
 from sqlglot import exp
 
 from sidemantic import Dimension, Metric, Model, Relationship, Segment, SemanticLayer
+from sidemantic.validation import QueryValidationError
 from tests.utils import df_rows
 
 
@@ -766,15 +767,8 @@ def test_count_distinct_with_actual_data(layer):
     assert counts["Los Angeles"] == 3
 
 
-def test_direct_many_to_many_without_target_key_joins_on_model_pk():
-    """Regression: a direct (no-bridge) many_to_many that records only a foreign_key (the related
-    side's column) and no target primary_key must join the local side on the model's primary key.
-
-    Treating foreign_key as the local column too would emit a join on a column the source CTE does
-    not have. (A TMDL many-to-many records both endpoints via primary_key and is handled separately.)
-    """
-    import re
-
+def test_direct_many_to_many_without_target_key_fails_validation():
+    """A direct many-to-many must declare both endpoints instead of compiling a guessed join."""
     layer = SemanticLayer()
     layer.add_model(
         Model(
@@ -795,10 +789,8 @@ def test_direct_many_to_many_without_target_key_joins_on_model_pk():
         )
     )
 
-    sql = layer.compile(metrics=["a.cnt"], dimensions=["b.label"])
-    # Local side joins on A's primary key; it never references a raw a_id column (A has none).
-    assert re.search(r"a_cte\.id\b", sql)
-    assert "a_cte.a_id" not in sql
+    with pytest.raises(QueryValidationError, match="explicit foreign_key and primary_key columns"):
+        layer.compile(metrics=["a.cnt"], dimensions=["b.label"])
 
 
 if __name__ == "__main__":

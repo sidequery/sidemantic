@@ -9,6 +9,7 @@ from pathlib import Path
 
 import duckdb
 import pytest
+from click.utils import strip_ansi
 from typer.testing import CliRunner
 
 import sidemantic.cli as cli_module
@@ -599,7 +600,7 @@ def test_validate_check_keys_requires_warehouse(tmp_path):
     result = runner.invoke(app, ["validate", str(tmp_path), "--check-keys"])
 
     assert result.exit_code == 2
-    assert "--check-keys requires" in result.output
+    assert "--check-keys requires" in strip_ansi(result.output)
 
 
 def test_lsp_command_calls_main(monkeypatch):

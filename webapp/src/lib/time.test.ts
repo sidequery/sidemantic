@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { addDays, bucketOffset, endOfBucket, formatBucketLabel, previousRange, previousYearRange } from "./time";
+import { addDays, bucketOffset, endOfBucket, formatBucketLabel, grainOptions, previousRange, previousYearRange } from "./time";
 
 describe("bucketOffset", () => {
   test("counts second and minute timestamp buckets", () => {
@@ -116,5 +116,12 @@ describe("formatBucketLabel", () => {
   test("passes empty / unparseable labels through", () => {
     expect(formatBucketLabel("", "day")).toBe("");
     expect(formatBucketLabel("not-a-date", "day")).toBe("not-a-date");
+  });
+});
+
+describe("grainOptions", () => {
+  test("keeps an active fine-grain dashboard option when catalog support is unspecified", () => {
+    expect(grainOptions(undefined, "minute")).toEqual(["minute", "day", "week", "month", "quarter", "year"]);
+    expect(grainOptions(undefined, "second")).toEqual(["second", "day", "week", "month", "quarter", "year"]);
   });
 });

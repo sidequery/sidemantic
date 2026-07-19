@@ -176,6 +176,11 @@ describe("isEmptyFilter", () => {
 });
 
 describe("dashboard query configuration", () => {
+  test("caps fine-grain series at a render-safe point count", () => {
+    expect(metricSeries(["orders.revenue"], "orders.created_at", "second", []).limit).toBe(2000);
+    expect(metricSeries(["orders.revenue"], "orders.created_at", "minute", []).limit).toBe(2000);
+  });
+
   test("threads segments and pre-aggregation opt-outs through every Explore query", () => {
     const segments = ["orders.completed"];
     const queries = [

@@ -3,13 +3,15 @@ import type { Grain } from "../data/types";
 export const ALL_GRAINS: Grain[] = ["second", "minute", "hour", "day", "week", "month", "quarter", "year"];
 
 /** Grains offered in the UI, restricted to a dimension's supported set when known. */
-export function grainOptions(supported?: string[]): Grain[] {
+export function grainOptions(supported?: string[], active?: Grain): Grain[] {
   if (supported?.length) {
     const set = new Set(supported.map((g) => g.toLowerCase()));
     const filtered = ALL_GRAINS.filter((g) => set.has(g));
     if (filtered.length) return filtered;
   }
-  return ["day", "week", "month", "quarter", "year"];
+  const defaults: Grain[] = ["day", "week", "month", "quarter", "year"];
+  if (active && !defaults.includes(active)) return ALL_GRAINS.filter((grain) => grain === active || defaults.includes(grain));
+  return defaults;
 }
 
 /** Inclusive day range, ISO dates (YYYY-MM-DD). */

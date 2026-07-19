@@ -155,11 +155,12 @@ export function metricTotals(
   };
 }
 
-// Upper bound on buckets per grain — generous enough to cover any realistic range (so the series
-// is never truncated to its oldest 500 buckets) while still bounding the points sent to the chart.
+// Upper bound on buckets per grain. Fine-grain dashboards can open without a date range, so keep
+// their initial response small enough to render safely instead of returning a day of seconds or a
+// year of minutes before the user can narrow the query.
 const GRAIN_BUCKET_CAP: Record<Grain, number> = {
-  second: 86_400, // one day secondly
-  minute: 525_600, // one year minutely
+  second: 2000,
+  minute: 2000,
   hour: 9600, // ~13 months hourly
   day: 4000, // ~11 years daily
   week: 800,

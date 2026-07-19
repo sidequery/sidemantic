@@ -96,7 +96,7 @@ function Shell() {
   const dirty = state.dateRange != null || Object.keys(state.filters).length > 0;
   const activeTimeDimension = configured?.timeDimension ?? model?.timeDimension;
   const hasTime = Boolean(activeTimeDimension);
-  const grains = grainOptions(activeTimeDimension?.supportedGranularities);
+  const grains = grainOptions(activeTimeDimension?.supportedGranularities, state.grain);
   // Resolve a filtered dimension's ref back to its catalog dimension + owning model, so a pill can
   // open the editor. Filters target the active model's dimensions in practice.
   const dimByRef = useMemo(() => {

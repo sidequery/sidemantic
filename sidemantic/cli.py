@@ -1731,6 +1731,8 @@ def validate(
                     typer.echo(f"  - {model_name}")
         except Exception as e:
             if engine == "rust" or not fallback:
+                if cli_state().debug:
+                    raise
                 if json_output:
                     emit_json(
                         {
@@ -1754,6 +1756,8 @@ def validate(
 
         report = validate_directory(directory)
     except Exception as e:
+        if cli_state().debug:
+            raise
         if json_output:
             emit_json(
                 {

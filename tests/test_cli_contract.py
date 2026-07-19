@@ -305,6 +305,25 @@ def test_debug_propagates_unexpected_exception(monkeypatch: pytest.MonkeyPatch, 
     assert isinstance(debug.exception, RuntimeError)
 
 
+def test_validate_debug_propagates_unexpected_exception(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    models = tmp_path / "models"
+    _write_model(models)
+
+    def explode(_directory):
+        raise RuntimeError("unexpected validation failure")
+
+    monkeypatch.setattr("sidemantic.validation_runner.validate_directory", explode)
+
+    concise = runner.invoke(app, ["validate", str(models)])
+    debug = runner.invoke(app, ["--debug", "validate", str(models)])
+
+    assert concise.exit_code == 1
+    assert "unexpected validation failure" in concise.stderr
+    assert "Traceback" not in concise.output
+    assert debug.exit_code == 1
+    assert isinstance(debug.exception, RuntimeError)
+
+
 def test_postgres_password_file_is_safe_and_deprecated_flag_is_hidden(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

@@ -408,6 +408,27 @@ def test_format_default_does_not_suppress_unstructured_server_status(
     assert "Authentication: disabled" in result.stderr
 
 
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["rewrite", "SELECT status FROM orders"],
+        ["server", "api", "--no-ui"],
+    ],
+)
+def test_invalid_global_format_fails_before_unstructured_commands(
+    project: Path,
+    arguments: list[str],
+):
+    result = runner.invoke(
+        app,
+        [*arguments, "--project", str(project), "--format", "xml"],
+    )
+
+    assert result.exit_code == 2
+    assert result.stdout == ""
+    assert "--format must be one of: table, csv, json, jsonl" in result.stderr
+
+
 @pytest.mark.parametrize("command", ["info", "validate"])
 @pytest.mark.parametrize("output_format", ["table", "csv", "json", "jsonl"])
 def test_structured_inspection_commands_support_formats(

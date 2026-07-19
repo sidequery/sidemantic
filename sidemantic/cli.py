@@ -11,6 +11,7 @@ import typer
 from sidemantic import __version__
 from sidemantic.cli_contract import (
     HELP_REQUESTED_META_KEY,
+    OUTPUT_FORMATS,
     ContractGroup,
     InvocationError,
     cli_state,
@@ -307,6 +308,11 @@ def main(
     CLI arguments override config file values.
     """
     global _loaded_config, _project_context
+
+    if output_format is not None:
+        output_format = output_format.lower()
+        if output_format not in OUTPUT_FORMATS:
+            raise InvocationError(f"--format must be one of: {', '.join(OUTPUT_FORMATS)}")
 
     format_explicit = ctx.get_parameter_source("output_format") is click.core.ParameterSource.COMMANDLINE
     plain_explicit = ctx.get_parameter_source("plain") is click.core.ParameterSource.COMMANDLINE

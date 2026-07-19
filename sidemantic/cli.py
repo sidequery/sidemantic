@@ -17,6 +17,7 @@ from sidemantic.cli_contract import (
     InvocationError,
     cli_state,
     color_enabled,
+    configure_click_color,
     credential_file_from_env,
     emit_diagnostic,
     emit_error,
@@ -399,7 +400,7 @@ def main(
         color=selected_color,
         pager=pager,
     )
-    ctx.color = selected_color
+    configure_click_color(ctx, enabled=selected_color)
 
 
 @dashboard_app.callback()

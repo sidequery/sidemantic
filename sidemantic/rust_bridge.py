@@ -267,6 +267,8 @@ def _graph_from_loaded_payload(payload: dict) -> SemanticGraph:
     for model_data in payload.get("models") or []:
         normalized_model = dict(model_data)
         _restore_composite_keys(normalized_model)
+        if normalized_model.get("primary_key_columns") == [] and not normalized_model.get("primary_key"):
+            normalized_model["primary_key"] = None
         original_metric_names = set(original_model_metrics.get(normalized_model.get("name"), []))
         normalized_metrics = []
         for metric_data in normalized_model.get("metrics") or []:

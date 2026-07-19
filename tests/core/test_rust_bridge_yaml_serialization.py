@@ -8,7 +8,7 @@ from sidemantic.core.model import Model
 from sidemantic.core.pre_aggregation import Index, PreAggregation, RefreshKey
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
-from sidemantic.rust_bridge import graph_to_rust_yaml, models_to_rust_yaml
+from sidemantic.rust_bridge import _graph_from_loaded_payload, graph_to_rust_yaml, models_to_rust_yaml
 
 
 def test_models_to_rust_yaml_preserves_extended_core_metadata():
@@ -116,6 +116,30 @@ def test_models_to_rust_yaml_does_not_invent_table_for_source_uri_model():
 
     assert model_payload["source_uri"] == "s3://warehouse/events.parquet"
     assert model_payload["table"] is None
+
+
+def test_models_to_rust_yaml_preserves_explicit_keyless_model():
+    payload = yaml.safe_load(models_to_rust_yaml([Model(name="events", table="events")]))
+
+    assert payload["models"][0]["primary_key"] is None
+    assert payload["models"][0]["primary_key_columns"] == []
+
+
+def test_rust_payload_restores_explicit_keyless_model_as_none():
+    graph = _graph_from_loaded_payload(
+        {
+            "models": [
+                {
+                    "name": "events",
+                    "table": "events",
+                    "primary_key": "",
+                    "primary_key_columns": [],
+                }
+            ]
+        }
+    )
+
+    assert graph.get_model("events").primary_key is None
 
 
 def test_graph_to_rust_yaml_assigns_complex_metrics_by_entity_dimension():

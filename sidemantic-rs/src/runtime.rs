@@ -540,7 +540,7 @@ fn graph_model_primary_keys(model: &GraphPathModelPayload) -> Vec<String> {
     } else if let Some(primary_key) = model.primary_key.as_ref() {
         graph_path_key_to_columns(primary_key)
     } else {
-        vec!["id".to_string()]
+        Vec::new()
     }
 }
 
@@ -5663,10 +5663,7 @@ fn semantic_graph_from_graph_path_payload(
 
     for model_payload in &payload.models {
         let primary_key_columns = graph_model_primary_keys(model_payload);
-        let primary_key = primary_key_columns
-            .first()
-            .cloned()
-            .unwrap_or_else(|| "id".to_string());
+        let primary_key = primary_key_columns.first().cloned().unwrap_or_default();
 
         let mut model = Model::new(model_payload.name.clone(), primary_key)
             .with_primary_key_columns(primary_key_columns)

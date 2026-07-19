@@ -517,14 +517,7 @@ impl SemanticGraph {
                             continue;
                         }
 
-                        let source_pk = {
-                            let keys = model.primary_keys();
-                            if keys.is_empty() {
-                                vec!["id".to_string()]
-                            } else {
-                                keys
-                            }
-                        };
+                        let source_pk = model.primary_keys();
                         let target_pk =
                             if rel.primary_key.is_some() || rel.primary_key_columns.is_some() {
                                 rel.primary_key_columns()
@@ -532,13 +525,8 @@ impl SemanticGraph {
                                 self.models
                                     .get(&rel.name)
                                     .map(|target_model| target_model.primary_keys())
-                                    .unwrap_or_else(|| vec!["id".to_string()])
+                                    .unwrap_or_default()
                             };
-                        let target_pk = if target_pk.is_empty() {
-                            vec!["id".to_string()]
-                        } else {
-                            target_pk
-                        };
 
                         // source -> through (one_to_many)
                         self.adjacency.entry(model.name.clone()).or_default().push((
@@ -590,7 +578,7 @@ impl SemanticGraph {
                     self.models
                         .get(&rel.name)
                         .map(|target_model| target_model.primary_keys())
-                        .unwrap_or_else(|| vec!["id".to_string()])
+                        .unwrap_or_default()
                 };
 
                 let (from_keys, to_keys) = match rel.r#type {
@@ -650,7 +638,7 @@ impl SemanticGraph {
                     self.models
                         .get(&rel.name)
                         .map(|target_model| target_model.primary_keys())
-                        .unwrap_or_else(|| vec!["id".to_string()])
+                        .unwrap_or_default()
                 };
 
                 let (reverse_from_keys, reverse_to_keys) = match rel.r#type {

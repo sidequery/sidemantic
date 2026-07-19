@@ -48,8 +48,8 @@ pub struct ModelConfig {
     pub table: Option<String>,
     pub sql: Option<String>,
     pub source_uri: Option<String>,
-    #[serde(default = "default_primary_key_config")]
-    pub primary_key: KeyConfig,
+    #[serde(default)]
+    pub primary_key: Option<KeyConfig>,
     #[serde(default)]
     pub primary_key_columns: Option<Vec<String>>,
     #[serde(default)]
@@ -84,10 +84,6 @@ pub struct ModelConfig {
 
 fn default_primary_key() -> String {
     "id".to_string()
-}
-
-fn default_primary_key_config() -> KeyConfig {
-    KeyConfig::Single(default_primary_key())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -512,14 +508,17 @@ impl SidemanticConfig {
 impl ModelConfig {
     /// Convert to core Model type
     pub fn into_model(self) -> Model {
-        let primary_key_columns = self
-            .primary_key_columns
-            .filter(|columns| !columns.is_empty())
-            .unwrap_or_else(|| self.primary_key.into_columns());
-        let primary_key = primary_key_columns
-            .first()
-            .cloned()
-            .unwrap_or_else(default_primary_key);
+        // An explicitly empty columns list is the cross-runtime representation of
+        // a known-keyless model. When both fields are omitted, retain the legacy
+        // native-format `id` default for backward compatibility.
+        let primary_key_columns = match self.primary_key_columns {
+            Some(columns) => columns,
+            None => self
+                .primary_key
+                .map(KeyConfig::into_columns)
+                .unwrap_or_else(|| vec![default_primary_key()]),
+        };
+        let primary_key = primary_key_columns.first().cloned().unwrap_or_default();
 
         Model {
             name: self.name,
@@ -1178,6 +1177,44 @@ fn parse_comparison_calculation(s: &str) -> Option<ComparisonCalculation> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_explicit_empty_primary_key_columns_preserve_keyless_model() {
+        let yaml = r#"
+models:
+  - name: events
+    table: events
+    primary_key: null
+    primary_key_columns: []
+"#;
+
+        let mut models = serde_yaml::from_str::<SidemanticConfig>(yaml)
+            .unwrap()
+            .into_models()
+            .unwrap();
+        let model = models.remove(0);
+
+        assert_eq!(model.primary_key, "");
+        assert!(model.primary_keys().is_empty());
+    }
+
+    #[test]
+    fn test_omitted_primary_key_retains_legacy_id_default() {
+        let yaml = r#"
+models:
+  - name: events
+    table: events
+"#;
+
+        let mut models = serde_yaml::from_str::<SidemanticConfig>(yaml)
+            .unwrap()
+            .into_models()
+            .unwrap();
+        let model = models.remove(0);
+
+        assert_eq!(model.primary_key, "id");
+        assert_eq!(model.primary_keys(), vec!["id".to_string()]);
+    }
 
     #[test]
     fn test_parse_native_yaml() {

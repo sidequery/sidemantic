@@ -22,17 +22,10 @@ pub fn merge_model(child: &Model, parent: &Model) -> Model {
         .clone()
         .or_else(|| parent.source_uri.clone());
     let extends = child.extends.clone();
-    let child_primary_key_columns = if child.primary_key_columns.is_empty() {
-        vec![child.primary_key.clone()]
-    } else {
-        child.primary_key_columns.clone()
-    };
-    let parent_primary_key_columns = if parent.primary_key_columns.is_empty() {
-        vec![parent.primary_key.clone()]
-    } else {
-        parent.primary_key_columns.clone()
-    };
-    let child_overrides_primary_key = child_primary_key_columns.len() > 1
+    let child_primary_key_columns = child.primary_keys();
+    let parent_primary_key_columns = parent.primary_keys();
+    let child_overrides_primary_key = child_primary_key_columns.is_empty()
+        || child_primary_key_columns.len() > 1
         || child_primary_key_columns
             .first()
             .map(|value| value.as_str())
@@ -42,10 +35,7 @@ pub fn merge_model(child: &Model, parent: &Model) -> Model {
     } else {
         parent_primary_key_columns
     };
-    let primary_key = primary_key_columns
-        .first()
-        .cloned()
-        .unwrap_or_else(|| "id".to_string());
+    let primary_key = primary_key_columns.first().cloned().unwrap_or_default();
     let unique_keys = child
         .unique_keys
         .clone()

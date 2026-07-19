@@ -977,6 +977,8 @@ impl Model {
     pub fn with_primary_key_columns(mut self, primary_key_columns: Vec<String>) -> Self {
         if let Some(primary_key) = primary_key_columns.first() {
             self.primary_key = primary_key.clone();
+        } else {
+            self.primary_key.clear();
         }
         self.primary_key_columns = primary_key_columns;
         self
@@ -1024,7 +1026,11 @@ impl Model {
 
     pub fn primary_keys(&self) -> Vec<String> {
         if self.primary_key_columns.is_empty() {
-            vec![self.primary_key.clone()]
+            if self.primary_key.is_empty() {
+                Vec::new()
+            } else {
+                vec![self.primary_key.clone()]
+            }
         } else {
             self.primary_key_columns.clone()
         }

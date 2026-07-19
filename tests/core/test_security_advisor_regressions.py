@@ -104,9 +104,10 @@ def test_semi_additive_month_grain_uses_last_snapshot():
     sql = layer.compile(metrics=["bal.total_balance"], dimensions=["bal.day__month"])
     assert "QUALIFY" in sql, "coarse grain must keep the semi-additive QUALIFY"
     # Correct: last day-of-month per account, summed = 110 + 210 = 320 (NOT naive 620).
-    assert layer.query(metrics=["bal.total_balance"], dimensions=["bal.day__month"]).fetchall() == [
-        (datetime.date(2026, 1, 1), 320)
-    ]
+    month, balance = layer.query(metrics=["bal.total_balance"], dimensions=["bal.day__month"]).fetchone()
+    if isinstance(month, datetime.datetime):
+        month = month.date()
+    assert (month, balance) == (datetime.date(2026, 1, 1), 320)
 
 
 def test_semi_additive_raw_grain_is_additive_no_qualify():

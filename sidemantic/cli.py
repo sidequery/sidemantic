@@ -10,6 +10,7 @@ import typer
 
 from sidemantic import __version__
 from sidemantic.cli_contract import (
+    HELP_REQUESTED_META_KEY,
     ContractGroup,
     InvocationError,
     cli_state,
@@ -260,7 +261,7 @@ def main(
     # Help must remain available even when project configuration is malformed,
     # since it is a recovery path. Click has already resolved the subcommand by
     # the time the root callback runs, so skip project discovery for this path.
-    if ctx.invoked_subcommand == "help":
+    if ctx.meta.get(HELP_REQUESTED_META_KEY) or ctx.invoked_subcommand == "help":
         return
 
     try:

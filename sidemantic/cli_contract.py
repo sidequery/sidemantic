@@ -79,10 +79,15 @@ class InvocationError(CLIError):
     exit_code = ExitCode.INVALID_INVOCATION
 
 
+HELP_REQUESTED_META_KEY = "sidemantic_help_requested"
+
+
 class ContractGroup(TyperGroup):
     """Root Click group that enforces concise failures and the debug contract."""
 
     def invoke(self, ctx: click.Context) -> Any:
+        if self._is_help_request(ctx):
+            ctx.meta[HELP_REQUESTED_META_KEY] = True
         try:
             return super().invoke(ctx)
         except (click.ClickException, click.exceptions.Exit, click.Abort):
@@ -95,6 +100,30 @@ class ContractGroup(TyperGroup):
                 raise
             emit_error(str(exc) or exc.__class__.__name__)
             raise click.exceptions.Exit(int(ExitCode.OPERATIONAL_ERROR)) from exc
+
+    def _is_help_request(self, ctx: click.Context) -> bool:
+        """Recognize help flags and no-argument subgroup help before callbacks run."""
+
+        protected = list(getattr(ctx, "_protected_args", ()))
+        tokens = [*protected, *ctx.args]
+        option_tokens = tokens[: tokens.index("--")] if "--" in tokens else tokens
+        if any(token in {"-h", "--help"} for token in option_tokens):
+            return True
+        if tokens and tokens[0] == "help":
+            return True
+
+        command: click.Command = self
+        index = 0
+        while isinstance(command, click.Group) and index < len(tokens):
+            token = tokens[index]
+            if token.startswith("-"):
+                return False
+            child = command.get_command(ctx, token)
+            if child is None:
+                return False
+            command = child
+            index += 1
+        return index == len(tokens) and isinstance(command, click.Group) and bool(command.no_args_is_help)
 
 
 def sanitize(text: object) -> str:

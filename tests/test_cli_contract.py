@@ -84,15 +84,19 @@ def test_help_command_resolves_nested_paths(arguments: list[str], usage: str):
 
 
 @pytest.mark.parametrize(
-    ("arguments", "usage"),
+    ("arguments", "usage", "exit_code"),
     [
-        (["help"], "Usage: sidemantic"),
-        (["help", "migrate", "generate"], "Usage: sidemantic migrate generate"),
+        (["help"], "Usage: sidemantic", 0),
+        (["help", "migrate", "generate"], "Usage: sidemantic migrate generate", 0),
+        (["info", "--help"], "Usage: sidemantic info", 0),
+        (["migrate", "generate", "-h"], "Usage: sidemantic migrate generate", 0),
+        (["migrate"], "Usage: sidemantic migrate", 2),
     ],
 )
-def test_help_command_bypasses_malformed_project_config(
+def test_all_help_paths_bypass_malformed_project_config(
     arguments: list[str],
     usage: str,
+    exit_code: int,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ):
@@ -101,7 +105,7 @@ def test_help_command_bypasses_malformed_project_config(
 
     result = runner.invoke(app, arguments, prog_name="sidemantic")
 
-    assert result.exit_code == 0, result.output
+    assert result.exit_code == exit_code, result.output
     assert usage in result.stdout
     assert not result.stderr
 

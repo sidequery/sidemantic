@@ -12,6 +12,7 @@ from sidemantic.core.preagg_matcher import PreAggregationMatcher
 from sidemantic.core.semantic_graph import SemanticGraph, _relationship_local_key_columns
 from sidemantic.core.symmetric_aggregate import build_symmetric_aggregate_sql
 from sidemantic.sql.aggregation_detection import sql_has_aggregate
+from sidemantic.sql.fragment import _column_is_bound_in_select, parse_sql_fragment, rewrite_sql_column_spans
 from sidemantic.validation import QueryValidationError
 
 # Dialects whose SQL supports the QUALIFY clause natively. Semi-additive
@@ -2914,38 +2915,35 @@ class SQLGenerator:
 
     def _split_where_having_filters(self, filters: list[str], model_names: list[str]) -> tuple[list[str], list[str]]:
         """Split query-level filters into row filters and aggregate filters."""
-        import re
-
         where_filters = []
         having_filters = []
+        models = {name: self.graph.get_model(name) for name in model_names}
 
         for filter_expr in filters:
+            parsed = parse_sql_fragment(filter_expr, self.dialect)
+            if parsed is None:
+                # A filter we cannot classify must stay a row predicate. Moving it
+                # to HAVING based on textual guesses silently changes semantics.
+                where_filters.append(filter_expr)
+                continue
+
             references_metric = False
-
-            for model_name in model_names:
-                model_obj = self.graph.get_model(model_name)
-                pattern = f"{model_name}\\.([a-zA-Z_][a-zA-Z0-9_]*)"
-                matches = re.findall(pattern, filter_expr)
-                for field_name in matches:
-                    if model_obj.get_metric(field_name):
-                        references_metric = True
-                        break
-                if references_metric:
-                    break
-
             references_window_dim = False
-            if references_metric:
-                for model_name in model_names:
-                    model_obj = self.graph.get_model(model_name)
-                    if not model_obj:
-                        continue
-                    for field_name in re.findall(f"{model_name}\\.([a-zA-Z_][a-zA-Z0-9_]*)", filter_expr):
-                        dim = model_obj.get_dimension(field_name)
-                        if dim and getattr(dim, "window", None) is not None:
-                            references_window_dim = True
-                            break
-                    if references_window_dim:
-                        break
+            for column in parsed.find_all(exp.Column):
+                if _column_is_bound_in_select(column, self.dialect):
+                    continue
+                parts = list(column.parts)
+                if len(parts) != 2:
+                    continue
+                model_name, field_name = (part.name for part in parts)
+                model_obj = models.get(model_name)
+                if model_obj is None:
+                    continue
+                if model_obj.get_metric(field_name):
+                    references_metric = True
+                dimension = model_obj.get_dimension(field_name)
+                if dimension and getattr(dimension, "window", None) is not None:
+                    references_window_dim = True
 
             if references_metric and not references_window_dim:
                 having_filters.append(filter_expr)
@@ -2956,45 +2954,25 @@ class SQLGenerator:
 
     def _add_where_filters_to_query(self, query, where_filters: list[str], model_names: list[str]):
         """Add row-level filters with CTE-qualified field references."""
-        import re
+        models = {name: self.graph.get_model(name) for name in model_names}
 
         for filter_expr in where_filters:
-            parsed_filter = filter_expr
-            for model_name in model_names:
-                model_obj = self.graph.get_model(model_name)
 
-                parts = []
-                in_quotes = False
-                current = ""
+            def replace_field(column: exp.Column, _source: str) -> str | None:
+                parts = list(column.parts)
+                if len(parts) != 2:
+                    return None
+                model_name, field_name = (part.name for part in parts)
+                model_obj = models.get(model_name)
+                if model_obj is None:
+                    return None
+                if model_obj.get_metric(field_name):
+                    return self._cte_ref(model_name, f"{field_name}_raw")
+                return self._cte_ref(model_name, field_name)
 
-                for char in parsed_filter:
-                    if char == "'":
-                        if current:
-                            parts.append((current, in_quotes))
-                            current = ""
-                        in_quotes = not in_quotes
-                        parts.append(("'", False))
-                    else:
-                        current += char
-                if current:
-                    parts.append((current, in_quotes))
-
-                pattern = f"{model_name}\\.([a-zA-Z_][a-zA-Z0-9_]*)"
-
-                def replace_field(match):
-                    field_name = match.group(1)
-                    if model_obj.get_metric(field_name):
-                        return self._cte_ref(model_name, f"{field_name}_raw")
-                    return self._cte_ref(model_name, field_name)
-
-                result_parts = []
-                for part, is_quoted in parts:
-                    if is_quoted or part == "'":
-                        result_parts.append(part)
-                    else:
-                        result_parts.append(re.sub(pattern, replace_field, part))
-
-                parsed_filter = "".join(result_parts)
+            parsed_filter = rewrite_sql_column_spans(filter_expr, replace_field, dialect=self.dialect)
+            if parsed_filter is None:
+                parsed_filter = filter_expr
 
             query = query.where(parsed_filter)
 

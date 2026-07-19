@@ -1,9 +1,10 @@
 """Snowflake Cortex Semantic Model adapter for importing/exporting semantic models."""
 
-import re
 from pathlib import Path
 
+import sqlglot
 import yaml
+from sqlglot import exp
 
 from sidemantic.adapters.base import BaseAdapter
 from sidemantic.core.dimension import Dimension
@@ -12,37 +13,7 @@ from sidemantic.core.model import Model
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.segment import Segment
 from sidemantic.core.semantic_graph import SemanticGraph
-
-# Common SQL keywords to skip when qualifying column names
-_SQL_KEYWORDS = {
-    "AND",
-    "OR",
-    "NOT",
-    "IN",
-    "IS",
-    "NULL",
-    "TRUE",
-    "FALSE",
-    "LIKE",
-    "BETWEEN",
-    "CASE",
-    "WHEN",
-    "THEN",
-    "ELSE",
-    "END",
-    "AS",
-    "FROM",
-    "WHERE",
-    "SELECT",
-    "SUM",
-    "COUNT",
-    "AVG",
-    "MIN",
-    "MAX",
-    "MEDIAN",
-    "DISTINCT",
-    "NULLIF",
-}
+from sidemantic.sql.fragment import parse_sql_fragment, rewrite_sql_column_spans
 
 
 def _qualify_columns(sql_expr: str) -> str:
@@ -60,48 +31,47 @@ def _qualify_columns(sql_expr: str) -> str:
     if not sql_expr:
         return sql_expr
 
-    # Skip if already has {model} references
-    if "{model}" in sql_expr:
-        return sql_expr
+    def qualify(column: exp.Column, source: str) -> str | None:
+        return f"{{model}}.{source}" if len(column.parts) == 1 else None
 
-    # First, protect string literals by replacing them with numeric placeholders
-    # Numbers can't be identifiers so they won't be matched by the pattern
-    string_literals = []
+    rewritten = rewrite_sql_column_spans(sql_expr, qualify, dialect="snowflake", mask_kinds={"placeholder"})
+    return rewritten if rewritten is not None else sql_expr
 
-    def save_string(match):
-        idx = len(string_literals)
-        string_literals.append(match.group(0))
-        # Use 0x prefix to make it look like a number, won't be matched as identifier
-        return f"0x{idx:08x}"
 
-    # Match single-quoted strings (handling escaped quotes)
-    protected_expr = re.sub(r"'(?:[^'\\]|\\.)*'", save_string, sql_expr)
+_SIMPLE_AGGREGATES = {
+    exp.Sum: "sum",
+    exp.Count: "count",
+    exp.Avg: "avg",
+    exp.Min: "min",
+    exp.Max: "max",
+    exp.Median: "median",
+}
 
-    # Pattern to match potential column names
-    # Uses word boundaries \b to match complete identifiers only
-    # Negative lookbehind for dot prevents matching already-qualified names
-    # We check for function calls (followed by parenthesis) in the replace function
-    pattern = r"(?<![.\w])\b([a-zA-Z_][a-zA-Z0-9_]*)\b"
 
-    def replace_column(match):
-        col = match.group(1)
-        # Skip if it's a SQL keyword or function name
-        if col.upper() in _SQL_KEYWORDS:
-            return col
-        # Check if this is followed by a parenthesis (function call)
-        end_pos = match.end()
-        remaining = protected_expr[end_pos:].lstrip()
-        if remaining.startswith("("):
-            return col
-        return "{model}." + col
+def _simple_aggregate(sql_expr: str) -> tuple[str, str] | None:
+    """Return an outer aggregate and its source argument, if the whole expression is one."""
+    tree = parse_sql_fragment(sql_expr, "snowflake")
+    if tree is None:
+        return None
+    agg = next((name for node_type, name in _SIMPLE_AGGREGATES.items() if isinstance(tree, node_type)), None)
+    if agg is None:
+        return None
+    try:
+        tokens = sqlglot.tokenize(sql_expr, dialect="snowflake")
+    except Exception:
+        return None
+    if len(tokens) < 3 or tokens[1].token_type != sqlglot.tokens.TokenType.L_PAREN:
+        return None
+    if tokens[-1].token_type != sqlglot.tokens.TokenType.R_PAREN:
+        return None
 
-    result = re.sub(pattern, replace_column, protected_expr)
-
-    # Restore string literals
-    for i, literal in enumerate(string_literals):
-        result = result.replace(f"0x{i:08x}", literal)
-
-    return result
+    argument_start = tokens[2].start
+    if isinstance(tree, exp.Count) and isinstance(tree.this, exp.Distinct):
+        if len(tokens) < 4 or tokens[2].token_type != sqlglot.tokens.TokenType.DISTINCT:
+            return None
+        agg = "count_distinct"
+        argument_start = tokens[3].start
+    return agg, sql_expr[argument_start : tokens[-1].start].strip()
 
 
 class SnowflakeAdapter(BaseAdapter):
@@ -466,39 +436,18 @@ class SnowflakeAdapter(BaseAdapter):
 
         expr = metric_def.get("expr", "")
 
-        # Snowflake metrics contain full aggregate expressions like "SUM(amount)"
-        # Check if this is a simple aggregation or complex expression
-
-        # Count how many aggregate function calls are in the expression
-        agg_pattern = r"\b(SUM|COUNT|AVG|MIN|MAX|MEDIAN)\s*\("
-        agg_matches = re.findall(agg_pattern, expr, re.IGNORECASE)
-
-        if len(agg_matches) == 1:
-            # Single aggregation - try to parse it
-            # Simple pattern: just one aggregation wrapping the whole expression
-            simple_agg_pattern = r"^\s*(SUM|COUNT|AVG|MIN|MAX|MEDIAN)\s*\((.+)\)\s*$"
-            match = re.match(simple_agg_pattern, expr, re.IGNORECASE | re.DOTALL)
-
-            if match:
-                agg_func = match.group(1).lower()
-                inner_expr = match.group(2).strip()
-
-                # Handle COUNT(DISTINCT col)
-                if agg_func == "count":
-                    distinct_match = re.match(r"^\s*DISTINCT\s+(.+)$", inner_expr, re.IGNORECASE)
-                    if distinct_match:
-                        agg_func = "count_distinct"
-                        inner_expr = distinct_match.group(1).strip()
-
-                return Metric(
-                    name=name,
-                    agg=agg_func,
-                    sql=inner_expr,
-                    description=metric_def.get("description"),
-                    synonyms=metric_def.get("synonyms"),
-                    metadata=self._metric_metadata(metric_def),
-                    public=self._public_from_access_modifier(metric_def),
-                )
+        simple_aggregate = _simple_aggregate(expr)
+        if simple_aggregate is not None:
+            agg_func, inner_expr = simple_aggregate
+            return Metric(
+                name=name,
+                agg=agg_func,
+                sql=inner_expr,
+                description=metric_def.get("description"),
+                synonyms=metric_def.get("synonyms"),
+                metadata=self._metric_metadata(metric_def),
+                public=self._public_from_access_modifier(metric_def),
+            )
 
         # Complex expression (multiple aggregations or couldn't parse simple one)
         # Mark as derived. Table-scoped metrics qualify bare column references with

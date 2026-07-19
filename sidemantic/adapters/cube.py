@@ -15,6 +15,7 @@ from sidemantic.core.pre_aggregation import Index, PreAggregation, RefreshKey
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.security import SecurityPolicy
 from sidemantic.core.semantic_graph import SemanticGraph
+from sidemantic.sql.fragment import replace_outside_sql_protected, rewrite_sql_column_spans
 
 
 class CubeImportWarning(UserWarning):
@@ -84,20 +85,10 @@ _CUBE_MEMBER_RE = re.compile(r"\$?\{([^}]+)\}(?:\.(\w+))?")
 # literal therefore has group(1) is None.
 _CUBE_MEMBER_OR_STRING_RE = re.compile(r"'(?:[^']|'')*'|" + _CUBE_MEMBER_RE.pattern)
 
-# Matches a single-quoted string literal OR a literal ``{model}`` placeholder. Used on export
-# to translate ``{model}`` back to ``${CUBE}`` only outside quoted strings, so a ``{model}``
-# occurring inside a literal (e.g. ``label = '{model}'``) is preserved verbatim and survives an
-# import->export round-trip (import already skips quoted literals when normalizing).
-_MODEL_OR_STRING_RE = re.compile(r"'(?:[^']|'')*'|\{model\}")
-
 
 def _model_placeholder_to_cube(sql: str) -> str:
-    """Replace ``{model}`` with ``${CUBE}`` everywhere except inside single-quoted literals."""
-
-    def repl(match: re.Match) -> str:
-        return "${CUBE}" if match.group(0) == "{model}" else match.group(0)
-
-    return _MODEL_OR_STRING_RE.sub(repl, sql)
+    """Replace executable ``{model}`` placeholders without changing quoted text/comments."""
+    return replace_outside_sql_protected(sql, "{model}", "${CUBE}")
 
 
 def _split_cube_ref(inner: str, trailing: str | None) -> tuple[str, str | None]:
@@ -1481,20 +1472,13 @@ class CubeAdapter(BaseAdapter):
         """
         if sql is None:
             return None
-        out = _model_placeholder_to_cube(sql)
 
-        # Match a single-quoted string literal OR a qualified member token. Literals are
-        # returned verbatim (group(1) is None), so 'orders.total' inside a string is never
-        # rewritten; only real member tokens outside quotes are wrapped.
-        pattern = re.compile(r"'(?:[^']|'')*'|(?<![\w.${])([A-Za-z_]\w*\.[A-Za-z_]\w*)\b")
+        def _wrap(column, source: str) -> str | None:
+            canonical = ".".join(part.name for part in column.parts)
+            return f"${{{source}}}" if canonical in known_members else None
 
-        def _wrap(match: re.Match) -> str:
-            token = match.group(1)
-            if token is None:
-                return match.group(0)
-            return f"${{{token}}}" if token in known_members else match.group(0)
-
-        return pattern.sub(_wrap, out)
+        rewritten = rewrite_sql_column_spans(sql, _wrap, mask_protected=True)
+        return _model_placeholder_to_cube(rewritten if rewritten is not None else sql)
 
     def export(self, graph: SemanticGraph, output_path: str | Path) -> None:
         """Export semantic graph to Cube YAML format.

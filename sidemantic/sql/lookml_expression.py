@@ -249,6 +249,18 @@ def protect_lookml_sql(sql: str) -> ProtectedLookMLSQL:
             out.append(sql[i:end])
             i = end
             continue
+        if ch == "$" and not sql.startswith("${", i):
+            marker_end = sql.find("$", i + 1)
+            if marker_end >= 0:
+                marker = sql[i : marker_end + 1]
+                tag = marker[1:-1]
+                if not tag or (tag[0].isalpha() or tag[0] == "_") and all(c.isalnum() or c == "_" for c in tag):
+                    end_marker = sql.find(marker, marker_end + 1)
+                    if end_marker >= 0:
+                        end = end_marker + len(marker)
+                        out.append(sql[i:end])
+                        i = end
+                        continue
         if sql.startswith("{{", i) or sql.startswith("{%", i):
             close = "}}" if sql.startswith("{{", i) else "%}"
             end = sql.find(close, i + 2)
@@ -714,3 +726,35 @@ def restore_outer_aggregate_all(sql: str) -> str:
         restored = protected.text[: token.end + 1] + "ALL " + protected.text[token.end + 1 :]
         return protected.restore(restored)
     return sql
+
+
+def strip_aggregate_all(sql: str) -> str:
+    """Remove syntactic aggregate ``ALL`` modifiers while preserving comments."""
+    protected = protect_lookml_sql(sql)
+    try:
+        tokens = sqlglot.tokenize(protected.text)
+    except Exception:
+        return sql
+
+    remove: list[tuple[int, int]] = []
+    for index, token in enumerate(tokens):
+        if token.token_type != TokenType.ALL:
+            continue
+        is_leading = index == 0 and len(tokens) >= 2
+        is_function_modifier = (
+            index >= 2
+            and index + 1 < len(tokens)
+            and tokens[index - 1].token_type == TokenType.L_PAREN
+            and tokens[index + 1].token_type != TokenType.R_PAREN
+        )
+        if not (is_leading or is_function_modifier):
+            continue
+        end = token.end + 1
+        while end < len(protected.text) and protected.text[end].isspace():
+            end += 1
+        remove.append((token.start, end))
+
+    stripped = protected.text
+    for start, end in reversed(remove):
+        stripped = stripped[:start] + stripped[end:]
+    return protected.restore(stripped)

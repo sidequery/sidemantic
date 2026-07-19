@@ -9,6 +9,7 @@ Key design:
 - This matches Cube.dev's approach where metrics are queryable as columns
 """
 
+from sidemantic.core.governance import governance_dict
 from sidemantic.core.semantic_graph import SemanticGraph
 
 
@@ -103,17 +104,19 @@ def get_catalog_metadata(graph: SemanticGraph, schema: str = "public", enforce_v
     key_column_usage = []
 
     for model_name, model in graph.models.items():
+        if enforce_visibility and model.visibility != "public":
+            continue
         # Add table entry
-        tables.append(
-            {
-                "table_catalog": "sidemantic",
-                "table_schema": schema,
-                "table_name": model.name,
-                "table_type": "BASE TABLE",
-                "is_insertable_into": "NO",  # Read-only semantic layer
-                "is_typed": "NO",
-            }
-        )
+        table_meta = {
+            "table_catalog": "sidemantic",
+            "table_schema": schema,
+            "table_name": model.name,
+            "table_type": "BASE TABLE",
+            "is_insertable_into": "NO",  # Read-only semantic layer
+            "is_typed": "NO",
+        }
+        table_meta.update(governance_dict(model))
+        tables.append(table_meta)
 
         ordinal = 1
 
@@ -210,7 +213,7 @@ def get_catalog_metadata(graph: SemanticGraph, schema: str = "public", enforce_v
         # The semantic layer handles the aggregation behind the scenes
         for metric in model.metrics:
             # Omit non-public metrics when visibility enforcement is on.
-            if enforce_visibility and not metric.public:
+            if enforce_visibility and (not metric.public or metric.visibility != "public"):
                 continue
 
             data_type = get_postgres_type_for_metric(metric.agg)
@@ -238,6 +241,7 @@ def get_catalog_metadata(graph: SemanticGraph, schema: str = "public", enforce_v
                 col_meta["description"] = metric.description
             if metric.label:
                 col_meta["label"] = metric.label
+            col_meta.update(governance_dict(metric))
 
             columns.append(col_meta)
             ordinal += 1
@@ -289,9 +293,32 @@ def get_catalog_metadata(graph: SemanticGraph, schema: str = "public", enforce_v
                         col["is_foreign_key"] = True
                         break
 
+    explores = [
+        explore.model_dump(exclude_none=True, exclude_defaults=True, mode="json")
+        for explore in graph.explores.values()
+        if not enforce_visibility or explore.visibility == "public"
+    ]
+    saved_queries = [
+        saved_query.model_dump(exclude_none=True, exclude_defaults=True, mode="json")
+        for saved_query in graph.saved_queries.values()
+        if not enforce_visibility or saved_query.visibility == "public"
+    ]
+    graph_metrics = [
+        {
+            "name": metric.name,
+            "type": metric.type,
+            "description": metric.description,
+            **governance_dict(metric),
+        }
+        for metric in graph.metrics.values()
+        if not enforce_visibility or (metric.public and metric.visibility == "public")
+    ]
     return {
         "tables": tables,
         "columns": columns,
         "constraints": constraints,
         "key_column_usage": key_column_usage,
+        "semantic_metrics": graph_metrics,
+        "explores": explores,
+        "saved_queries": saved_queries,
     }

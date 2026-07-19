@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, is_dataclass
 from typing import Any
 
+from sidemantic.core.governance import governance_dict
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.relationship import Relationship
@@ -19,17 +20,32 @@ def describe_graph(
     models = [
         _describe_model(model, warnings, enforce_visibility)
         for model in graph.models.values()
-        if not requested or model.name in requested
+        if (not requested or model.name in requested) and not (enforce_visibility and model.visibility != "public")
     ]
     metrics = [
         _describe_metric(metric, warnings, model_name=None)
         for metric in graph.metrics.values()
-        if _include_graph_metric(metric, requested) and not (enforce_visibility and not getattr(metric, "public", True))
+        if _include_graph_metric(metric, requested)
+        and not (enforce_visibility and (not metric.public or metric.visibility != "public"))
+    ]
+
+    explores = [
+        explore.model_dump(exclude_none=True, exclude_defaults=True, mode="json")
+        for explore in graph.explores.values()
+        if not requested or explore.model in requested
+        if not enforce_visibility or explore.visibility == "public"
+    ]
+    saved_queries = [
+        saved.model_dump(exclude_none=True, exclude_defaults=True, mode="json")
+        for saved in graph.saved_queries.values()
+        if not enforce_visibility or saved.visibility == "public"
     ]
 
     return {
         "models": models,
         "metrics": metrics,
+        "explores": explores,
+        "saved_queries": saved_queries,
         "import_warnings": warnings,
     }
 
@@ -54,7 +70,9 @@ def _metric_owner_model(metric: Metric) -> str | None:
 def _describe_model(model: Model, warnings: list[dict[str, Any]], enforce_visibility: bool = False) -> dict[str, Any]:
     model_kind = _model_kind(model)
     dimensions = model.dimensions if not enforce_visibility else [d for d in model.dimensions if d.public]
-    metrics = model.metrics if not enforce_visibility else [m for m in model.metrics if m.public]
+    metrics = (
+        model.metrics if not enforce_visibility else [m for m in model.metrics if m.public and m.visibility == "public"]
+    )
     info: dict[str, Any] = {
         "name": model.name,
         "kind": model_kind,
@@ -79,6 +97,9 @@ def _describe_model(model: Model, warnings: list[dict[str, Any]], enforce_visibi
         info["default_grain"] = model.default_grain
     if model.meta:
         info["meta"] = model.meta
+    governance = governance_dict(model)
+    if governance:
+        info["governance"] = governance
     return _drop_none(info)
 
 
@@ -144,6 +165,9 @@ def _describe_metric(
         info["format"] = metric.format
     if metric.meta:
         info["meta"] = metric.meta
+    governance = governance_dict(metric)
+    if governance:
+        info["governance"] = governance
     result = _drop_none(info)
     # Current Sidequery Swift DTOs decode these as non-optional arrays. Keep
     # them present even when empty while Sidequery moves to richer metadata.

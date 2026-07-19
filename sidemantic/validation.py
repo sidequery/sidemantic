@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Literal, get_args, get_origin
 from sidemantic.sql.aggregation_detection import sql_has_aggregate
 
 if TYPE_CHECKING:
+    from sidemantic.core.consumption import Explore, SavedQuery
     from sidemantic.core.metric import Metric
     from sidemantic.core.model import Model
     from sidemantic.core.semantic_graph import SemanticGraph
@@ -33,6 +34,100 @@ class ModelValidationError(ValidationError):
     """Raised when model validation fails."""
 
     pass
+
+
+def validate_governance(value, label: str) -> tuple[list[str], list[str]]:
+    """Validate cross-field governance lifecycle metadata."""
+    errors: list[str] = []
+    warnings: list[str] = []
+    deprecation = getattr(value, "deprecation", None)
+    status = getattr(value, "status", None)
+    if status == "deprecated" and deprecation is None:
+        errors.append(f"{label} is deprecated but has no deprecation lifecycle/message")
+    if deprecation is not None:
+        if not deprecation.message:
+            warnings.append(f"{label} deprecation has no migration message")
+        if deprecation.deprecated_at and deprecation.sunset_at and deprecation.sunset_at < deprecation.deprecated_at:
+            errors.append(f"{label} deprecation sunset_at is before deprecated_at")
+    tags = getattr(value, "tags", []) or []
+    if len(tags) != len(set(tags)):
+        errors.append(f"{label} has duplicate governance tags")
+    return errors, warnings
+
+
+def _qualified_consumption_refs(references: list[str], base_model: str) -> list[str]:
+    return [ref if "." in ref or "(" in ref or " " in ref else f"{base_model}.{ref}" for ref in references]
+
+
+def _qualified_consumption_metrics(references: list[str], base_model: str, graph: "SemanticGraph") -> list[str]:
+    return [ref if ref in graph.metrics else _qualified_consumption_refs([ref], base_model)[0] for ref in references]
+
+
+def validate_explore(explore: "Explore", graph: "SemanticGraph") -> tuple[list[str], list[str]]:
+    """Validate a curated Explore/View contract against the physical graph."""
+    errors, warnings = validate_governance(explore, f"Explore '{explore.name}'")
+    if explore.model not in graph.models:
+        errors.append(f"Explore '{explore.name}' references model '{explore.model}' which doesn't exist")
+        return errors, warnings
+    dimensions = [*(explore.allowed_dimensions or []), *explore.default_dimensions]
+    metrics = [*(explore.allowed_metrics or []), *explore.default_metrics]
+    errors.extend(
+        validate_query(
+            _qualified_consumption_metrics(metrics, explore.model, graph),
+            _qualified_consumption_refs(dimensions, explore.model),
+            graph,
+        )
+    )
+    filter_fields = _qualified_consumption_refs(explore.allowed_filter_fields or [], explore.model)
+    errors.extend(validate_query([], filter_fields, graph))
+    for raw_reference in explore.allowed_order_by or []:
+        reference = (
+            raw_reference
+            if raw_reference in graph.metrics
+            else _qualified_consumption_refs([raw_reference], explore.model)[0]
+        )
+        if not validate_query([reference], [], graph) or not validate_query([], [reference], graph):
+            continue
+        errors.append(f"Explore '{explore.name}' ordering field '{reference}' is not a metric or dimension")
+    if not metrics and not dimensions:
+        warnings.append(f"Explore '{explore.name}' defines no allowed or default fields")
+    if any(not value.strip() for value in [*explore.filters, *explore.default_filters, *explore.default_order_by]):
+        errors.append(f"Explore '{explore.name}' contains an empty filter or ordering expression")
+    return errors, warnings
+
+
+def validate_saved_query(saved_query: "SavedQuery", graph: "SemanticGraph") -> tuple[list[str], list[str]]:
+    """Validate a SavedQuery against its Explore and physical graph."""
+    errors, warnings = validate_governance(saved_query, f"Saved query '{saved_query.name}'")
+    metricflow_metadata = (saved_query.metadata or {}).get("metricflow", {})
+    preserved_external_syntax = metricflow_metadata.get("executable") is False
+    if preserved_external_syntax:
+        warnings.append(
+            f"Saved query '{saved_query.name}' is preserved from MetricFlow but is not executable: "
+            f"{metricflow_metadata.get('compatibility_message', 'convert source expressions to Sidemantic references')}"
+        )
+    base_model = ""
+    if saved_query.explore:
+        explore = graph.explores.get(saved_query.explore)
+        if explore is None:
+            errors.append(
+                f"Saved query '{saved_query.name}' references explore '{saved_query.explore}' which doesn't exist"
+            )
+        else:
+            base_model = explore.model
+    metrics = (
+        _qualified_consumption_metrics(saved_query.metrics, base_model, graph) if base_model else saved_query.metrics
+    )
+    dimensions = (
+        _qualified_consumption_refs(saved_query.dimensions, base_model) if base_model else saved_query.dimensions
+    )
+    if not preserved_external_syntax:
+        errors.extend(validate_query(metrics, dimensions, graph))
+    if not saved_query.metrics and not saved_query.dimensions:
+        errors.append(f"Saved query '{saved_query.name}' must select at least one metric or dimension")
+    if any(not value.strip() for value in [*saved_query.filters, *saved_query.order_by]):
+        errors.append(f"Saved query '{saved_query.name}' contains an empty filter or ordering expression")
+    return errors, warnings
 
 
 def _extract_literal_strings(annotation) -> set[str]:

@@ -89,6 +89,32 @@ that already offered it. Use `--plain` for stable, undecorated, tab-separated,
 one-record-per-line output. Scripts should select `--plain` or an explicit
 machine format instead of parsing the default human presentation.
 
+## Curated explores and saved queries
+
+`info` lists physical models plus first-class explores and saved queries. `validate`
+checks their model/field references, allowlists, defaults, limits, and governance
+lifecycle. Use `query` without free-form SQL to execute them:
+
+```bash
+sidemantic info models/ --json
+sidemantic validate models/ --verbose
+
+# Use all Explore defaults.
+sidemantic query --models models/ --explore revenue_overview
+
+# Select an allowed subset. Repeat options for multiple fields.
+sidemantic query --models models/ --explore revenue_overview \
+  --metric revenue --dimension status --filter "orders.status = 'paid'" \
+  --order-by "orders.revenue DESC" --limit 20
+
+# Compile or execute an immutable SavedQuery.
+sidemantic query --models models/ --saved-query top_revenue_statuses --dry-run
+sidemantic query --models models/ --saved-query top_revenue_statuses --format json
+```
+
+Free-form SQL remains the default CLI workflow. SQL input cannot be combined with
+`--explore` or `--saved-query`; this keeps contract enforcement unambiguous.
+
 `--quiet`/`-q` suppresses non-essential status and progress without suppressing
 the requested result or errors. `--verbose`/`-v` enables detailed diagnostics;
 `--debug` implies verbose diagnostics and includes unexpected tracebacks.

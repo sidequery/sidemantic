@@ -8,6 +8,7 @@ from typing import Any, Literal
 
 from mcp.server.fastmcp import FastMCP
 
+from sidemantic.core.governance import governance_dict
 from sidemantic.core.semantic_layer import SemanticLayer
 from sidemantic.loaders import load_from_directory
 
@@ -705,6 +706,24 @@ def get_semantic_graph() -> dict[str, Any]:
             model_info["primary_key"] = model.primary_key
         if model.default_time_dimension:
             model_info["default_time_dimension"] = model.default_time_dimension
+        governance = model.model_dump(
+            include={
+                "owner",
+                "domain",
+                "category",
+                "tags",
+                "status",
+                "certification",
+                "deprecation",
+                "freshness",
+                "visibility",
+            },
+            exclude_none=True,
+            exclude_defaults=True,
+            mode="json",
+        )
+        if governance:
+            model_info["governance"] = governance
         models.append(model_info)
 
     # Graph-level metrics
@@ -727,6 +746,9 @@ def get_semantic_graph() -> dict[str, Any]:
             metric_info["numerator"] = metric.numerator
         if metric.denominator:
             metric_info["denominator"] = metric.denominator
+        governance = governance_dict(metric)
+        if governance:
+            metric_info["governance"] = governance
         graph_metrics.append(metric_info)
 
     # Discover joinable model pairs
@@ -752,6 +774,13 @@ def get_semantic_graph() -> dict[str, Any]:
     }
     if graph_metrics:
         result["graph_metrics"] = graph_metrics
+    result["explores"] = [
+        value.model_dump(exclude_none=True, exclude_defaults=True, mode="json") for value in graph.explores.values()
+    ]
+    result["saved_queries"] = [
+        value.model_dump(exclude_none=True, exclude_defaults=True, mode="json")
+        for value in graph.saved_queries.values()
+    ]
 
     return result
 

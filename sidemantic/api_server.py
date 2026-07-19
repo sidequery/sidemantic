@@ -12,7 +12,7 @@ try:
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import JSONResponse, Response
     from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-    from pydantic import BaseModel, ConfigDict, Field
+    from pydantic import BaseModel, ConfigDict, Field, model_validator
     from starlette.middleware.base import BaseHTTPMiddleware
 except ImportError as exc:
     raise ImportError("HTTP API support requires FastAPI. Install with: uv add 'sidemantic[api]'") from exc
@@ -50,12 +50,31 @@ class StructuredQueryRequest(BaseModel):
     parameters: dict[str, Any] | None = None
     use_preaggregations: bool | None = None
     timezone: str | None = None
+    explore: str | None = None
+    saved_query: str | None = None
 
     def resolved_filters(self) -> list[str]:
         filters = list(self.filters)
         if self.where:
             filters.append(self.where)
         return filters
+
+    @model_validator(mode="after")
+    def validate_saved_query_contract(self) -> StructuredQueryRequest:
+        if self.saved_query and (
+            self.dimensions
+            or self.metrics
+            or self.where is not None
+            or self.filters
+            or self.segments
+            or self.order_by
+            or self.limit is not None
+            or self.offset is not None
+            or self.ungrouped
+            or self.parameters is not None
+        ):
+            raise ValueError("saved_query cannot be combined with structured query overrides")
+        return self
 
 
 class SQLRequest(BaseModel):
@@ -313,7 +332,7 @@ def create_app(
 
     def _visible_metrics(layer, model) -> list:
         if getattr(layer, "enforce_visibility", False):
-            return [m for m in model.metrics if getattr(m, "public", True)]
+            return [m for m in model.metrics if getattr(m, "public", True) and m.visibility == "public"]
         return list(model.metrics)
 
     @app.get("/models", dependencies=[Depends(require_auth)])
@@ -323,6 +342,8 @@ def create_app(
         current_layer = app.state.layer
         models = []
         for model_name, model in current_layer.graph.models.items():
+            if current_layer.enforce_visibility and model.visibility != "public":
+                continue
             models.append(
                 {
                     "name": model_name,
@@ -330,6 +351,11 @@ def create_app(
                     "dimensions": [d.name for d in _visible_dimensions(current_layer, model)],
                     "metrics": [m.name for m in _visible_metrics(current_layer, model)],
                     "relationships": len(model.relationships),
+                    "owner": model.owner,
+                    "domain": model.domain,
+                    "status": model.status,
+                    "certification": model.certification,
+                    "visibility": model.visibility,
                 }
             )
         return models
@@ -342,6 +368,8 @@ def create_app(
 
         models = []
         for model_name, model in graph_obj.models.items():
+            if current_layer.enforce_visibility and model.visibility != "public":
+                continue
             model_info = {
                 "name": model_name,
                 "table": model.table,
@@ -355,7 +383,9 @@ def create_app(
 
         graph_metrics = []
         for metric_name, metric in graph_obj.metrics.items():
-            if getattr(current_layer, "enforce_visibility", False) and not getattr(metric, "public", True):
+            if getattr(current_layer, "enforce_visibility", False) and (
+                not getattr(metric, "public", True) or metric.visibility != "public"
+            ):
                 continue
             metric_info = {"name": metric_name}
             if metric.type:
@@ -379,7 +409,35 @@ def create_app(
         payload: dict[str, Any] = {"models": models, "joinable_pairs": joinable_pairs}
         if graph_metrics:
             payload["graph_metrics"] = graph_metrics
+        payload["explores"] = [
+            value.model_dump(exclude_none=True, exclude_defaults=True, mode="json")
+            for value in graph_obj.explores.values()
+            if not current_layer.enforce_visibility or value.visibility == "public"
+        ]
+        payload["saved_queries"] = [
+            value.model_dump(exclude_none=True, exclude_defaults=True, mode="json")
+            for value in graph_obj.saved_queries.values()
+            if not current_layer.enforce_visibility or value.visibility == "public"
+        ]
         return payload
+
+    @app.get("/explores", dependencies=[Depends(require_auth)])
+    def list_explores() -> list[dict[str, Any]]:
+        current_layer = app.state.layer
+        return [
+            value.model_dump(exclude_none=True, exclude_defaults=True, mode="json")
+            for value in current_layer.graph.explores.values()
+            if not current_layer.enforce_visibility or value.visibility == "public"
+        ]
+
+    @app.get("/saved-queries", dependencies=[Depends(require_auth)])
+    def list_saved_queries() -> list[dict[str, Any]]:
+        current_layer = app.state.layer
+        return [
+            value.model_dump(exclude_none=True, exclude_defaults=True, mode="json")
+            for value in current_layer.graph.saved_queries.values()
+            if not current_layer.enforce_visibility or value.visibility == "public"
+        ]
 
     @app.get("/describe", dependencies=[Depends(require_auth)])
     def describe() -> dict[str, Any]:
@@ -410,9 +468,9 @@ def create_app(
         for filter_str in filters:
             validate_filter_expression(filter_str, dialect=current_layer.dialect)
         sql = current_layer.compile(
-            dimensions=payload.dimensions,
-            metrics=payload.metrics,
-            filters=filters,
+            dimensions=payload.dimensions or None,
+            metrics=payload.metrics or None,
+            filters=filters or None,
             segments=payload.segments or None,
             order_by=payload.order_by or None,
             limit=payload.limit,
@@ -422,6 +480,8 @@ def create_app(
             use_preaggregations=payload.use_preaggregations,
             user_attributes=user_attributes,
             timezone=payload.timezone,
+            explore=payload.explore,
+            saved_query=payload.saved_query,
         )
         return {"sql": sql}
 
@@ -440,9 +500,9 @@ def create_app(
         for filter_str in filters:
             validate_filter_expression(filter_str, dialect=current_layer.dialect)
         sql = current_layer.compile(
-            dimensions=payload.dimensions,
-            metrics=payload.metrics,
-            filters=filters,
+            dimensions=payload.dimensions or None,
+            metrics=payload.metrics or None,
+            filters=filters or None,
             segments=payload.segments or None,
             order_by=payload.order_by or None,
             limit=payload.limit,
@@ -452,6 +512,8 @@ def create_app(
             use_preaggregations=payload.use_preaggregations,
             user_attributes=user_attributes,
             timezone=payload.timezone,
+            explore=payload.explore,
+            saved_query=payload.saved_query,
         )
         table = _query_table(app, current_layer, sql, user_attributes=user_attributes)
         return _build_query_response(request, current_layer, table, sql=sql, format_override=format)

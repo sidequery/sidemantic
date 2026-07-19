@@ -5,6 +5,7 @@ from pathlib import Path
 import yaml
 
 from sidemantic.adapters.base import BaseAdapter
+from sidemantic.core.consumption import Explore
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
@@ -65,9 +66,14 @@ class HexAdapter(BaseAdapter):
                 if not data or not isinstance(data, dict):
                     continue
 
+                is_view = data.get("type") == "view"
                 model = self._parse_resource(data)
                 if model:
                     graph.add_model(model)
+                if is_view:
+                    explore = self._parse_view_explore(data)
+                    if explore:
+                        graph.add_explore(explore)
 
     def _parse_resource(self, resource_def: dict) -> Model | None:
         """Dispatch a Hex resource to the correct parser based on ``type``.
@@ -151,6 +157,7 @@ class HexAdapter(BaseAdapter):
             metrics=measures,
             metadata=metadata,
             meta=meta or None,
+            visibility=model_def.get("visibility", "public"),
         )
 
     def _parse_view(self, view_def: dict) -> Model | None:
@@ -191,6 +198,34 @@ class HexAdapter(BaseAdapter):
             description=view_def.get("description"),
             metadata={"label": name} if name else None,
             meta=meta,
+        )
+
+    @staticmethod
+    def _parse_view_explore(view_def: dict) -> Explore | None:
+        """Map a Hex view losslessly into a first-class Explore contract."""
+        name = view_def.get("id")
+        model = view_def.get("base")
+        if not name or not model:
+            return None
+
+        dimensions: list[str] = []
+        metrics: list[str] = []
+        for group in view_def.get("contents") or []:
+            if not isinstance(group, dict):
+                continue
+            dimensions.extend(f"{model}.{value}" for value in group.get("dimensions") or [])
+            metrics.extend(f"{model}.{value}" for value in group.get("measures") or [])
+
+        visibility = view_def.get("visibility", "public")
+        return Explore(
+            name=name,
+            model=model,
+            label=view_def.get("name"),
+            description=view_def.get("description"),
+            allowed_dimensions=dimensions,
+            allowed_metrics=metrics,
+            visibility=visibility,
+            metadata={"hex": {"contents": view_def.get("contents") or []}},
         )
 
     def _parse_dimension(self, dim_def: dict) -> Dimension | None:

@@ -4,6 +4,7 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Any
 
+from sidemantic.core.consumption import Explore, SavedQuery
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.parameter import Parameter
@@ -70,6 +71,8 @@ class SemanticGraph:
         self.metrics: dict[str, Metric] = {}
         self.table_calculations: dict[str, TableCalculation] = {}
         self.parameters: dict[str, Parameter] = {}
+        self.explores: dict[str, Explore] = {}
+        self.saved_queries: dict[str, SavedQuery] = {}
         self.import_warnings: list[dict[str, object]] = []
         self.metadata: dict[str, Any] = {}
         self._version = 0
@@ -158,6 +161,32 @@ class SemanticGraph:
 
         self.parameters[param.name] = param
         self._mark_dirty()
+
+    def add_explore(self, explore: Explore) -> None:
+        """Add a curated Explore/View consumption contract."""
+        if explore.name in self.explores:
+            raise ValueError(f"Explore {explore.name} already exists")
+        self.explores[explore.name] = explore
+        self._mark_dirty()
+
+    def get_explore(self, name: str) -> Explore:
+        """Get an Explore/View contract by name."""
+        if name not in self.explores:
+            raise KeyError(f"Explore {name} not found")
+        return self.explores[name]
+
+    def add_saved_query(self, saved_query: SavedQuery) -> None:
+        """Add a named structured query contract."""
+        if saved_query.name in self.saved_queries:
+            raise ValueError(f"Saved query {saved_query.name} already exists")
+        self.saved_queries[saved_query.name] = saved_query
+        self._mark_dirty()
+
+    def get_saved_query(self, name: str) -> SavedQuery:
+        """Get a saved query by name."""
+        if name not in self.saved_queries:
+            raise KeyError(f"Saved query {name} not found")
+        return self.saved_queries[name]
 
     def get_parameter(self, name: str) -> Parameter:
         """Get a parameter by name.

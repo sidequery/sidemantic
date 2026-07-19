@@ -1351,6 +1351,22 @@ def _merge_graph_passthrough_metadata(target_graph: object, source_graph: object
             target_graph.metadata = target_metadata
         _deep_merge_metadata(target_metadata, source_metadata)
 
+    # Consumption contracts live outside the physical model graph but must merge
+    # across the same multi-file CLI loading workflow.
+    for attr, label in (("explores", "Explore"), ("saved_queries", "Saved query")):
+        source_items = getattr(source_graph, attr, None)
+        if not isinstance(source_items, dict):
+            continue
+        target_items = getattr(target_graph, attr, None)
+        if not isinstance(target_items, dict):
+            target_items = {}
+            setattr(target_graph, attr, target_items)
+        for name, value in source_items.items():
+            existing = target_items.get(name)
+            if existing is not None and existing.model_dump() != value.model_dump():
+                raise ValueError(f"{label} {name} is defined more than once with different values")
+            target_items[name] = value
+
     # Carry over Snowflake dynamic top-level attributes set by the adapter. Lists
     # (verified_queries) accumulate across files; scalars take the latest value.
     for attr in ("verified_queries", "custom_instructions", "module_custom_instructions"):

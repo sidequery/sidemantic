@@ -893,6 +893,8 @@ class SemanticLayer:
         segments: list[str] | None,
         order_by: list[str] | None,
         limit: int | None,
+        offset: int | None,
+        ungrouped: bool,
         parameters: dict | None,
     ) -> tuple:
         """Resolve defaults and enforce a named consumption contract."""
@@ -904,6 +906,8 @@ class SemanticLayer:
                 "segments": segments,
                 "order_by": order_by,
                 "limit": limit,
+                "offset": offset,
+                "ungrouped": True if ungrouped else None,
                 "parameters": parameters,
             }
             overridden = [name for name, value in supplied.items() if value is not None]
@@ -1050,6 +1054,8 @@ class SemanticLayer:
             segments=segments,
             order_by=order_by,
             limit=limit,
+            offset=offset,
+            ungrouped=ungrouped,
             parameters=parameters,
         )
         metrics = metrics or []

@@ -4459,9 +4459,13 @@ class LookMLAdapter(BaseAdapter):
 
         sql_always_where = explore_def.get("sql_always_where")
         if sql_always_where:
-            # Translate LookML ${view.field} references to {model}.field
+            # Segments resolve ``{model}`` when they are selected, while Explore
+            # filters flow through the normal semantic query compiler and therefore
+            # need real semantic model references. Keep separate translations so a
+            # LookML mandatory filter is executable in both paths.
+            consumption_filter = re.sub(r"\$\{(\w+)\.(\w+)\}", r"\1.\2", sql_always_where)
             sql_always_where = re.sub(r"\$\{(\w+)\.(\w+)\}", r"{model}.\2", sql_always_where)
-            consumption_filters.append(sql_always_where)
+            consumption_filters.append(consumption_filter)
             segment_name = f"_sql_always_where_{explore_name}"
             # Skip if this exact segment already exists
             existing_names = {s.name for s in base_model.segments}
@@ -4496,7 +4500,7 @@ class LookMLAdapter(BaseAdapter):
                     )
                     existing_names.add(segment_name)
                 if filter_sql:
-                    consumption_filters.append(filter_sql)
+                    consumption_filters.append(filter_sql.replace("{model}", base_model_name))
 
             for item in filter_items:
                 if isinstance(item, list):

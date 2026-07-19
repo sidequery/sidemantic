@@ -111,6 +111,10 @@ def test_saved_query_is_immutable_and_compiles_through_its_explore():
     assert "status <> 'deleted'" in sql
     with pytest.raises(ValueError, match="immutable"):
         layer.compile(saved_query="paid_revenue", metrics=["orders.order_count"])
+    with pytest.raises(ValueError, match="offset"):
+        layer.compile(saved_query="paid_revenue", offset=5)
+    with pytest.raises(ValueError, match="ungrouped"):
+        layer.compile(saved_query="paid_revenue", ungrouped=True)
 
 
 def test_native_yaml_roundtrip_preserves_contracts_and_governance(tmp_path: Path):
@@ -289,4 +293,10 @@ def test_lossless_adapter_bridges_create_typed_contracts():
     lookml_graph = LookMLAdapter().parse(Path("tests/fixtures/lookml/edge_cases_explores.lkml"))
     assert lookml_graph.explores["orders"].model == "fact_orders"
     assert lookml_graph.explores["orders"].category == "Sales"
-    assert lookml_graph.explores["completed_orders"].filters == ["{model}.status = 'completed'"]
+    assert lookml_graph.explores["completed_orders"].filters == ["fact_orders.status = 'completed'"]
+
+    lookml_layer = SemanticLayer(auto_register=False)
+    lookml_layer.graph = lookml_graph
+    sql = lookml_layer.compile(explore="completed_orders", dimensions=["fact_orders.status"])
+    assert "{'model': model}" not in sql
+    assert "status = 'completed'" in sql

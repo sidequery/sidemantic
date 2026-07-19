@@ -67,6 +67,26 @@ def _is_metric_or_dimension(reference: str, graph: "SemanticGraph") -> bool:
     return not validate_query([reference], [], graph) or not validate_query([], [reference], graph)
 
 
+def _validate_consumption_expressions(
+    label: str,
+    field_kind: str,
+    expressions: list[str],
+    base_model: str,
+    graph: "SemanticGraph",
+) -> list[str]:
+    from sidemantic.core.consumption import expression_field_references
+
+    try:
+        references = expression_field_references(expressions, base_model, graph_metrics=graph.metrics.keys())
+    except Exception as error:
+        return [f"{label} contains an invalid {field_kind} expression: {error}"]
+    return [
+        f"{label} {field_kind} field '{reference}' is not a metric or dimension"
+        for reference in sorted(references)
+        if not _is_metric_or_dimension(reference, graph)
+    ]
+
+
 def validate_explore(explore: "Explore", graph: "SemanticGraph") -> tuple[list[str], list[str]]:
     """Validate a curated Explore/View contract against the physical graph."""
     errors, warnings = validate_governance(explore, f"Explore '{explore.name}'")
@@ -89,6 +109,20 @@ def validate_explore(explore: "Explore", graph: "SemanticGraph") -> tuple[list[s
         for reference in _qualified_consumption_metrics(references, explore.model, graph):
             if not _is_metric_or_dimension(reference, graph):
                 errors.append(f"Explore '{explore.name}' {field_kind} field '{reference}' is not a metric or dimension")
+    errors.extend(
+        _validate_consumption_expressions(
+            f"Explore '{explore.name}'",
+            "filter",
+            [*explore.filters, *explore.default_filters],
+            explore.model,
+            graph,
+        )
+    )
+    errors.extend(
+        _validate_consumption_expressions(
+            f"Explore '{explore.name}'", "ordering", explore.default_order_by, explore.model, graph
+        )
+    )
     if not metrics and not dimensions:
         warnings.append(f"Explore '{explore.name}' defines no allowed or default fields")
     if any(not value.strip() for value in [*explore.filters, *explore.default_filters, *explore.default_order_by]):
@@ -124,6 +158,16 @@ def validate_saved_query(saved_query: "SavedQuery", graph: "SemanticGraph") -> t
     )
     if not preserved_external_syntax:
         errors.extend(validate_query(metrics, dimensions, graph))
+        errors.extend(
+            _validate_consumption_expressions(
+                f"Saved query '{saved_query.name}'", "filter", saved_query.filters, base_model, graph
+            )
+        )
+        errors.extend(
+            _validate_consumption_expressions(
+                f"Saved query '{saved_query.name}'", "ordering", saved_query.order_by, base_model, graph
+            )
+        )
         for raw_segment in saved_query.segments:
             segment_ref = raw_segment
             if "." not in segment_ref and base_model:

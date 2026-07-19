@@ -269,6 +269,25 @@ def test_validation_preflights_saved_query_segments():
     ]
 
 
+def test_validation_preflights_consumption_filter_and_order_fields():
+    layer = _layer()
+    explore = layer.graph.explores["revenue_overview"].model_copy(
+        update={"name": "invalid_defaults", "default_order_by": ["orders.missing DESC"]}
+    )
+    errors, _warnings = validate_explore(explore, layer.graph)
+    assert "Explore 'invalid_defaults' ordering field 'orders.missing' is not a metric or dimension" in errors
+
+    saved_query = SavedQuery(
+        name="invalid_expressions",
+        metrics=["orders.revenue"],
+        filters=["orders.missing > 0"],
+        order_by=["orders.unknown DESC"],
+    )
+    errors, _warnings = validate_saved_query(saved_query, layer.graph)
+    assert "Saved query 'invalid_expressions' filter field 'orders.missing' is not a metric or dimension" in errors
+    assert "Saved query 'invalid_expressions' ordering field 'orders.unknown' is not a metric or dimension" in errors
+
+
 def test_visibility_enforcement_covers_models_metrics_and_explores():
     layer = _layer()
     layer.enforce_visibility = True

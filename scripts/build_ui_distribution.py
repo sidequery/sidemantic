@@ -7,6 +7,7 @@ import argparse
 import filecmp
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -16,6 +17,7 @@ STATIC_ENTRY = ROOT / "webapp" / "src" / "static-api.tsx"
 DEST = ROOT / "plugins" / "sidemantic" / "skills" / "webapp-builder" / "assets" / "ui-dist"
 WASM_DEST = ROOT / "examples" / "sidemantic_wasm_demo" / "src" / "components" / "sidemantic"
 WASM_FILES = ("sidemantic-ui-static.js", "sidemantic-ui.css")
+WIDGET_BUILD = ROOT / "scripts" / "build_widget.py"
 
 
 def build(target: Path) -> None:
@@ -86,6 +88,13 @@ def sync_wasm(source: Path) -> None:
         shutil.copyfile(source / name, WASM_DEST / name)
 
 
+def build_widget(*, check: bool) -> None:
+    command = [sys.executable, str(WIDGET_BUILD)]
+    if check:
+        command.append("--check")
+    subprocess.run(command, cwd=ROOT, check=True)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true")
@@ -97,12 +106,14 @@ def main() -> int:
             if not DEST.exists() or not matches(candidate, DEST) or not wasm_matches(candidate):
                 print("UI distribution is out of sync")
                 return 1
+        build_widget(check=True)
         print("UI distribution is in sync")
         return 0
     if DEST.exists():
         shutil.rmtree(DEST)
     build(DEST)
     sync_wasm(DEST)
+    build_widget(check=False)
     print(f"Built canonical UI distribution -> {DEST}")
     return 0
 

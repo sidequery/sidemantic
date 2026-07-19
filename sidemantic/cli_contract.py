@@ -46,6 +46,7 @@ class CLIState:
     requested_format: str | None = None
     format_explicit: bool = False
     plain: bool = False
+    plain_explicit: bool = False
     color: bool | None = None
     redactions: set[str] = field(default_factory=set, repr=False)
 
@@ -58,6 +59,7 @@ class CLIState:
         requested_format: str | None = None,
         format_explicit: bool = False,
         plain: bool = False,
+        plain_explicit: bool = False,
         color: bool | None = None,
     ) -> None:
         """Reset state at the start of each root invocation."""
@@ -69,6 +71,7 @@ class CLIState:
         self.requested_format = requested_format
         self.format_explicit = format_explicit
         self.plain = plain
+        self.plain_explicit = plain_explicit
         self.color = color
         self.redactions.clear()
 
@@ -279,11 +282,17 @@ def resolve_output_format(*, default: str = "table", json_output: bool = False) 
         requested = requested.lower()
         if requested not in OUTPUT_FORMATS:
             raise InvocationError(f"--format must be one of: {', '.join(OUTPUT_FORMATS)}")
-    if json_output and requested not in {None, "json"} and state.format_explicit:
-        raise InvocationError("--json cannot be combined with a non-JSON --format")
-    selected = "json" if json_output else (requested or default)
+    if json_output:
+        if requested not in {None, "json"} and state.format_explicit:
+            raise InvocationError("--json cannot be combined with a non-JSON --format")
+        if state.plain and state.plain_explicit:
+            raise InvocationError("--plain cannot be combined with --json")
+        state.plain = False
+        selected = "json"
+    else:
+        selected = requested or default
     if state.plain:
-        if json_output or requested not in {None, "table"}:
+        if requested not in {None, "table"}:
             raise InvocationError("--plain cannot be combined with --format csv, json, or jsonl")
         selected = "table"
     state.machine_output = selected in {"csv", "json", "jsonl"}
@@ -406,7 +415,7 @@ def emit_records(
 
     selected = output_format or resolve_output_format()
     rendered = render_records(records, columns=columns, output_format=selected, json_value=json_value)
-    emit_result(rendered)
+    emit_result(rendered, nl=not (selected == "jsonl" and not rendered))
 
 
 def color_enabled(*, no_color: bool = False, is_tty: bool | None = None) -> bool:

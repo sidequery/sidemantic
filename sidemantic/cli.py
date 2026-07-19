@@ -308,13 +308,17 @@ def main(
     """
     global _loaded_config, _project_context
 
+    format_explicit = ctx.get_parameter_source("output_format") is click.core.ParameterSource.COMMANDLINE
+    plain_explicit = ctx.get_parameter_source("plain") is click.core.ParameterSource.COMMANDLINE
+
     cli_state().reset(
         debug=bool(debug),
         quiet=bool(quiet),
         verbose=bool(verbose),
         requested_format=output_format,
-        format_explicit=ctx.get_parameter_source("output_format") is click.core.ParameterSource.COMMANDLINE,
+        format_explicit=format_explicit,
         plain=bool(plain),
+        plain_explicit=plain_explicit,
         color=color_enabled(no_color=bool(no_color)),
     )
 
@@ -331,15 +335,37 @@ def main(
         raise typer.BadParameter(str(exc), param_hint="--config") from exc
 
     configured = _loaded_config.cli if _loaded_config else None
+    configured_format = configured.format if configured else None
+    configured_plain = bool(configured and configured.plain)
+    selected_format = output_format if output_format is not None else configured_format
+    selected_plain = bool(plain) if plain is not None else configured_plain
+
+    def source_priority(name: str, configured_value: object) -> int:
+        source = ctx.get_parameter_source(name)
+        if source is click.core.ParameterSource.COMMANDLINE:
+            return 3
+        if source is click.core.ParameterSource.ENVIRONMENT:
+            return 2
+        return 1 if configured_value else 0
+
+    format_priority = source_priority("output_format", configured_format)
+    plain_priority = source_priority("plain", configured_plain)
+    if selected_plain and selected_format not in {None, "table"}:
+        if format_priority > plain_priority:
+            selected_plain = False
+        elif plain_priority > format_priority:
+            selected_format = None
+
     selected_no_color = bool(no_color) if no_color is not None else bool(configured and configured.no_color)
     selected_color = color_enabled(no_color=selected_no_color)
     cli_state().reset(
         debug=bool(debug),
         quiet=bool(quiet) if quiet is not None else bool(configured and configured.quiet),
         verbose=bool(verbose) if verbose is not None else bool(configured and configured.verbose),
-        requested_format=output_format if output_format is not None else (configured.format if configured else None),
-        format_explicit=ctx.get_parameter_source("output_format") is click.core.ParameterSource.COMMANDLINE,
-        plain=bool(plain) if plain is not None else bool(configured and configured.plain),
+        requested_format=selected_format,
+        format_explicit=format_explicit,
+        plain=selected_plain,
+        plain_explicit=plain_explicit,
         color=selected_color,
     )
     ctx.color = selected_color
@@ -1842,19 +1868,23 @@ def validate(
             if engine == "rust" or not fallback:
                 if cli_state().debug:
                     raise
-                if output_format == "json":
-                    emit_json(
-                        {
+                message = f"Rust validation failed: {e}"
+                if structured:
+                    emit_records(
+                        [{"level": "error", "message": message}],
+                        columns=("level", "message"),
+                        output_format=output_format,
+                        json_value={
                             "valid": False,
                             "path": str(directory),
                             "engine": engine,
-                            "errors": [f"Rust validation failed: {e}"],
+                            "errors": [message],
                             "warnings": [],
                             "info": [],
-                        }
+                        },
                     )
                 else:
-                    emit_error(f"Rust validation failed: {e}")
+                    emit_error(message)
                 raise typer.Exit(1)
 
     # Canonical semantic checks are always Python-backed; Rust validation above

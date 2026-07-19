@@ -31,6 +31,13 @@ def _reset_cli_state(monkeypatch: pytest.MonkeyPatch):
         "SIDEMANTIC_VERBOSE",
         "SIDEMANTIC_DEBUG",
         "SIDEMANTIC_NO_COLOR",
+        "SIDEMANTIC_ENGINE",
+        "SIDEMANTIC_ENGINE_FALLBACK",
+        "SIDEMANTIC_RS_SQL_GENERATOR",
+        "SIDEMANTIC_RS_QUERY_VALIDATION",
+        "SIDEMANTIC_RS_REWRITER",
+        "SIDEMANTIC_RS_SQL_GENERATOR_VERIFY",
+        "SIDEMANTIC_RS_NO_FALLBACK",
         "SIDEMANTIC_PG_PASSWORD_FILE",
         "SIDEMANTIC_API_AUTH_TOKEN_FILE",
         "NO_COLOR",
@@ -271,6 +278,54 @@ def test_plain_rejects_machine_format(project: Path):
     assert "plain" in result.stderr.lower()
 
 
+@pytest.mark.parametrize("default_source", ["environment", "config"])
+def test_explicit_plain_overrides_machine_format_defaults(project: Path, default_source: str):
+    environment = {}
+    if default_source == "environment":
+        environment["SIDEMANTIC_FORMAT"] = "json"
+    else:
+        config = project / "sidemantic.yaml"
+        config.write_text(f"{config.read_text()}cli:\n  format: json\n")
+
+    result = runner.invoke(app, ["info", "--project", str(project), "--plain"], env=environment)
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout.splitlines()[0].split("\t") == [
+        "name",
+        "table",
+        "dimensions",
+        "metrics",
+        "relationships",
+        "connected_to",
+    ]
+
+
+@pytest.mark.parametrize("default_source", ["environment", "config"])
+def test_explicit_json_overrides_plain_defaults(project: Path, default_source: str):
+    environment = {}
+    if default_source == "environment":
+        environment["SIDEMANTIC_PLAIN"] = "1"
+    else:
+        config = project / "sidemantic.yaml"
+        config.write_text(f"{config.read_text()}cli:\n  plain: true\n")
+
+    result = runner.invoke(app, ["info", "--project", str(project), "--json"], env=environment)
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["models"][0]["name"] == "orders"
+
+
+def test_explicit_format_overrides_plain_environment_default(project: Path):
+    result = runner.invoke(
+        app,
+        ["info", "--project", str(project), "--format", "json"],
+        env={"SIDEMANTIC_PLAIN": "1"},
+    )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["models"][0]["name"] == "orders"
+
+
 def test_long_global_options_work_after_subcommand(project: Path):
     before = runner.invoke(app, ["--project", str(project), "--format", "json", "info"])
     after = runner.invoke(app, ["info", "--project", str(project), "--format", "json"])
@@ -373,6 +428,55 @@ def test_validate_parse_failures_preserve_requested_format(project: Path, output
         assert rows[0]["level"] == "error"
     else:
         assert "error" in result.stdout.lower()
+
+
+@pytest.mark.parametrize("output_mode", ["table", "csv", "json", "jsonl", "plain"])
+def test_validate_rust_failures_preserve_requested_output(
+    project: Path,
+    output_mode: str,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    def fail_to_load(_directory: Path):
+        raise RuntimeError("bridge unavailable")
+
+    monkeypatch.setattr("sidemantic.rust_bridge.load_graph_from_directory_with_rust", fail_to_load)
+    arguments = ["validate", "--project", str(project), "--engine", "rust"]
+    arguments.extend(["--plain"] if output_mode == "plain" else ["--format", output_mode])
+
+    result = runner.invoke(app, arguments)
+
+    assert result.exit_code == 1, result.output
+    if output_mode == "json":
+        payload = json.loads(result.stdout)
+        assert payload["valid"] is False
+        assert payload["errors"] == ["Rust validation failed: bridge unavailable"]
+    elif output_mode == "jsonl":
+        assert json.loads(result.stdout) == {
+            "level": "error",
+            "message": "Rust validation failed: bridge unavailable",
+        }
+    elif output_mode == "csv":
+        assert list(csv.reader(io.StringIO(result.stdout))) == [
+            ["level", "message"],
+            ["error", "Rust validation failed: bridge unavailable"],
+        ]
+    else:
+        assert "Rust validation failed: bridge unavailable" in result.stdout
+
+
+def test_empty_jsonl_result_emits_no_blank_record(tmp_path: Path):
+    queries = tmp_path / "queries.sql"
+    queries.write_text(
+        "SELECT revenue FROM orders\n-- sidemantic: models=orders metrics=orders.revenue dimensions=orders.status;\n"
+    )
+
+    result = runner.invoke(
+        app,
+        ["preagg", "recommend", "--queries", str(queries), "--format", "jsonl"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout == ""
 
 
 def test_root_and_complex_help_include_examples_docs_and_support():

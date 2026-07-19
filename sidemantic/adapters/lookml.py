@@ -588,14 +588,41 @@ class LookMLAdapter(BaseAdapter):
 
         # Looker allows a view to extend SEVERAL parents (`extends: [a, b]`, and additive
         # refinement extends). Model.extends is single, so core resolution above followed only the
-        # FIRST parent; merge the fields of any EXTRA in-scope parents so none are silently lost.
-        # Fields already present (the child's own and its first-parent chain) win; extra parents
-        # only fill gaps -- exact left-to-right override precedence on CONFLICTING field names is
-        # not modeled, but the common case of parents contributing disjoint fields is correct.
+        # FIRST parent; merge the fields of any EXTRA in-scope parents. Looker gives a LATER-listed
+        # parent priority for a conflicting field, so an extra parent OVERRIDES the value already
+        # present from an earlier parent -- but the child's OWN fields always win.
+        def _override_list(existing, incoming, protected_names):
+            by_name: dict = {}
+            order: list = []
+            for item in existing:
+                if item.name not in by_name:
+                    order.append(item.name)
+                by_name[item.name] = item
+            for item in incoming:
+                if item.name in protected_names:
+                    continue  # the child's own definition wins over any parent
+                if item.name not in by_name:
+                    order.append(item.name)
+                by_name[item.name] = item.model_copy(deep=True)  # later parent overrides earlier
+            return [by_name[n] for n in order]
+
         for name, model in graph.models.items():
             raw = raw_view_defs.get(name)
             if raw is None:
                 continue
+            # The child's OWN field names, so an extra parent never overrides them. Dimensions come
+            # from raw `dimensions` and the timeframe fields a raw `dimension_group` generates
+            # (matched by the `<group>_` prefix); metrics from `measures`; segments from `filters`.
+            _own_dims = {d.get("name") for d in (raw.get("dimensions") or []) if isinstance(d, dict) and d.get("name")}
+            _own_group_prefixes = tuple(
+                g["name"] + "_" for g in (raw.get("dimension_groups") or []) if isinstance(g, dict) and g.get("name")
+            )
+            _own_metrics = {m.get("name") for m in (raw.get("measures") or []) if isinstance(m, dict) and m.get("name")}
+            _own_segments = {s.get("name") for s in (raw.get("filters") or []) if isinstance(s, dict) and s.get("name")}
+
+            def _protected_dim(dname, _own_dims=_own_dims, _own_group_prefixes=_own_group_prefixes):
+                return dname in _own_dims or dname.startswith(_own_group_prefixes)
+
             for parent_name in self._all_extends_parents(raw)[1:]:
                 parent = graph.models.get(parent_name)
                 if parent is None or not _parent_in_scope(name, parent_name):
@@ -605,14 +632,11 @@ class LookMLAdapter(BaseAdapter):
                     # fields would leave the child querying a column from a table that never gets
                     # registered. The first-parent chain already skips these -- do the same here.
                     continue
-                have_dims = {d.name for d in model.dimensions}
-                model.dimensions.extend(d.model_copy(deep=True) for d in parent.dimensions if d.name not in have_dims)
-                have_metrics = {mm.name for mm in model.metrics}
-                model.metrics.extend(mm.model_copy(deep=True) for mm in parent.metrics if mm.name not in have_metrics)
-                # Also copy the parent's segments (LookML `filter:` fields); otherwise a base
-                # contributing only segments would have them silently dropped from the child.
-                have_segments = {s.name for s in model.segments}
-                model.segments.extend(s.model_copy(deep=True) for s in parent.segments if s.name not in have_segments)
+                model.dimensions = _override_list(
+                    model.dimensions, parent.dimensions, {d.name for d in model.dimensions if _protected_dim(d.name)}
+                )
+                model.metrics = _override_list(model.metrics, parent.metrics, _own_metrics)
+                model.segments = _override_list(model.segments, parent.segments, _own_segments)
 
         def _extends_chain_has(name: str, flagset: set[str]) -> bool:
             """True if name or any of its extends-ancestors is in flagset."""
@@ -5014,13 +5038,14 @@ class LookMLAdapter(BaseAdapter):
         """
         view = {"name": model.name}
 
-        # Re-emit `extension: required` for an abstract (tableless) base so a round-trip keeps
-        # it non-queryable; otherwise it re-imports as an ordinary tableless view and the
-        # implicit-table default assigns it a physical table named after the view. Only for a
-        # genuinely TABLELESS view: a concrete child INHERITS `extension_required` in meta via
-        # inheritance but has its own table, so emitting the marker would wrongly make the
-        # usable child abstract on round-trip.
-        if (model.meta or {}).get("extension_required") and not model.table and not model.sql:
+        # Re-emit `extension: required` for an abstract base so a round-trip keeps it non-queryable.
+        # Key off the PARSER-OWNED `lookml_template` marker, not `not model.table`: an
+        # extension: required base may declare a sql_table_name (valid for a reusable base), and that
+        # table is re-emitted below -- but it must still round-trip the abstract marker. A concrete
+        # child only INHERITS `extension_required` in meta (no `lookml_template` marker), so it is
+        # not made abstract on round-trip.
+        _meta = model.meta or {}
+        if _meta.get("lookml_template") and _meta.get("extension_required"):
             view["extension"] = "required"
 
         if model.sql:

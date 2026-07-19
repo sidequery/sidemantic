@@ -6050,6 +6050,75 @@ view: orders {
     assert "b_total" in {m.name for m in model.metrics}
 
 
+def test_lookml_multi_parent_extends_later_parent_overrides_earlier():
+    """For a conflicting field, a LATER-listed extends parent wins (Looker precedence).
+
+    child extends: [base_a, base_b] with `amount` in both -> base_b's amount. The child's OWN
+    definition still wins over any parent.
+    """
+    graph = _parse_lkml(
+        """
+view: base_a { sql_table_name: base_a ;; dimension: amount { type: number  sql: ${TABLE}.a_amount ;; } }
+view: base_b { sql_table_name: base_b ;; dimension: amount { type: number  sql: ${TABLE}.b_amount ;; } }
+view: child {
+  sql_table_name: child ;;
+  extends: [base_a, base_b]
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+}
+"""
+    )
+    assert "b_amount" in graph.get_model("child").get_dimension("amount").sql  # later parent wins
+
+    graph2 = _parse_lkml(
+        """
+view: base_a { sql_table_name: base_a ;; dimension: amount { type: number  sql: ${TABLE}.a_amount ;; } }
+view: base_b { sql_table_name: base_b ;; dimension: amount { type: number  sql: ${TABLE}.b_amount ;; } }
+view: child {
+  sql_table_name: child ;;
+  extends: [base_a, base_b]
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: amount { type: number  sql: ${TABLE}.child_amount ;; }
+}
+"""
+    )
+    assert "child_amount" in graph2.get_model("child").get_dimension("amount").sql  # child's own wins
+
+
+def test_lookml_export_table_backed_extension_required_reemits_marker():
+    """A table-backed `extension: required` base re-emits BOTH extension: required and its table.
+
+    Keying the export off `not model.table` dropped the abstract marker for a base with a
+    sql_table_name, so a round-trip registered it as a queryable view. Key off the parser-owned
+    lookml_template marker instead; re-import marks it a template again.
+    """
+    import tempfile
+
+    graph = _parse_lkml(
+        """
+view: base {
+  extension: required
+  sql_table_name: real_base ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+}
+view: child {
+  extends: [base]
+  sql_table_name: child_t ;;
+  dimension: cid { primary_key: yes  type: number  sql: ${TABLE}.cid ;; }
+}
+"""
+    )
+    out = tempfile.mktemp(suffix=".lkml")
+    LookMLAdapter().export(graph, out)
+    text = open(out).read()
+    base_block = text[text.index("view: base") :]
+    base_block = base_block[: base_block.index("view: child")] if "view: child" in base_block else base_block
+    assert "extension: required" in base_block  # abstract marker re-emitted
+    assert "sql_table_name: real_base" in base_block  # its table re-emitted too
+    # Re-import marks the base a template again.
+    reimported = LookMLAdapter().parse(Path(out)).get_model("base")
+    assert (reimported.meta or {}).get("lookml_template")
+
+
 def test_lookml_multi_parent_extends_copies_segments_and_seeds_refinements():
     """Extra extends parents contribute segments too, and a refinement of a non-first-parent field
     seeds from the real inherited definition (not a bare categorical re-parse)."""

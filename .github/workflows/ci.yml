@@ -66,8 +66,6 @@ jobs:
         run: uv run ruff format --check . --exclude docs/_extensions --exclude sidemantic-duckdb/extension-ci-tools --exclude sidemantic-duckdb/scripts --exclude sidemantic-duckdb/duckdb --exclude sidemantic/adapters/malloy_grammar --exclude sidemantic/adapters/holistics_grammar
 
       - name: Run tests
-        env:
-          FORCE_COLOR: ""
         run: uv run pytest -v
 
       - name: Run installed-wheel DAX smoke

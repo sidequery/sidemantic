@@ -198,9 +198,10 @@ def _resolve_engine_options(engine: str | None, fallback: bool | None) -> tuple[
     resolved_fallback = fallback
 
     if resolved_engine is None and _loaded_config and _loaded_config.runtime:
-        resolved_engine = _loaded_config.runtime.engine
+        runtime = _loaded_config.runtime
+        resolved_engine = runtime.engine
         if resolved_fallback is None:
-            resolved_fallback = _loaded_config.runtime.fallback
+            resolved_fallback = runtime.fallback if "fallback" in runtime.model_fields_set else None
 
     if resolved_fallback is None:
         resolved_fallback = resolved_engine == "auto"
@@ -220,13 +221,19 @@ def _load_query_layer(
     use_preaggregations: bool = False,
     engine: str | None = None,
     fallback: bool | None = None,
+    discover_connection: bool = True,
 ) -> SemanticLayer:
     """Load a semantic layer for CLI query/explain commands."""
     engine, resolved_fallback = _resolve_engine_options(engine, fallback)
     _configure_engine_environment(engine, resolved_fallback)
 
     models = _models_path(models)
-    resolved_connection = _resolve_connection(connection=connection, database=db, models=models)
+    resolved_connection = _resolve_connection(
+        connection=connection,
+        database=db,
+        models=models,
+        discover=discover_connection,
+    )
     connection_str = resolved_connection.connection if resolved_connection else None
     init_sql = resolved_connection.init_sql if resolved_connection else None
 
@@ -1024,6 +1031,7 @@ def rewrite(
             engine=engine,
             fallback=fallback,
             use_preaggregations=use_preaggregations,
+            discover_connection=False,
         )
 
         from sidemantic.sql.query_rewriter import QueryRewriter
@@ -1560,6 +1568,7 @@ def explain_sql_command(
             use_preaggregations=use_preaggregations,
             engine=engine,
             fallback=fallback,
+            discover_connection=False,
         )
         explanation = layer.explain_sql(sql, strict=strict)
         payload = explanation.to_dict()

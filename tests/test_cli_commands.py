@@ -295,6 +295,30 @@ runtime:
     assert captured == {"rewriter": "1", "no_fallback": "0"}
 
 
+@pytest.mark.parametrize(
+    ("fallback_config", "expected_no_fallback"),
+    [("", "0"), ("  fallback: false\n", "1")],
+)
+def test_auto_engine_config_defaults_to_fallback_unless_disabled(tmp_path, fallback_config, expected_no_fallback):
+    _write_min_model(tmp_path)
+    config_path = tmp_path / "sidemantic.yaml"
+    config_path.write_text(
+        f"""
+models_dir: {tmp_path}
+runtime:
+  engine: auto
+{fallback_config}"""
+    )
+    from sidemantic.config import load_config
+
+    cli_module._loaded_config = load_config(config_path)
+    engine, fallback = cli_module._resolve_engine_options(None, None)
+    cli_module._configure_engine_environment(engine, fallback)
+
+    assert engine == "auto"
+    assert os.environ["SIDEMANTIC_RS_NO_FALLBACK"] == expected_no_fallback
+
+
 def test_rewrite_engine_rust_sets_rewriter_env(monkeypatch, tmp_path):
     _write_min_model(tmp_path)
     captured = {}

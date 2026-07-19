@@ -190,6 +190,7 @@ class ProjectContext:
         database: str | Path | None = None,
         models: str | Path | None = None,
         required: bool = False,
+        discover: bool = True,
     ) -> ResolvedConnection | None:
         """Resolve a connection using CLI, config, then exactly one ``data`` DB."""
 
@@ -213,6 +214,9 @@ class ProjectContext:
                 init_sql=get_init_sql(self.config),
                 source="config",
             )
+
+        if not discover:
+            return None
 
         data_dirs = [self.root / "data"]
         if models is not None:

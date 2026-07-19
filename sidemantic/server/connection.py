@@ -147,6 +147,16 @@ class SemanticLayerConnection(riffq.BaseConnection):
                 self.send_reader(reader, callback)
                 return
 
+            # SHOW is a row-producing database command, but not a SELECT that can
+            # be wrapped in a derived table. Pass a single command through so
+            # startup probes and metadata clients receive the database result.
+            statement = sql.strip().removesuffix(";")
+            if statement.lower().startswith("show ") and ";" not in statement:
+                result = cursor.execute(statement)
+                reader = result.fetch_record_batch()
+                self.send_reader(reader, callback)
+                return
+
             # Try to handle PostgreSQL-specific system queries
             # Skip multi-statement queries to avoid response count mismatch
             if ";" not in sql:

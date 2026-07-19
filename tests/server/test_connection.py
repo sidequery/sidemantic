@@ -123,6 +123,35 @@ def test_dml_passthrough():
     assert "reader" in captured
 
 
+@pytest.mark.parametrize("statement", ["SHOW TABLES", "SHOW TABLES;"])
+def test_show_passthrough_is_not_wrapped_as_select(statement):
+    from tests.optional_dep_stubs import ensure_fake_riffq
+
+    ensure_fake_riffq()
+    pytest.importorskip("pyarrow")
+    from unittest.mock import MagicMock
+
+    from sidemantic.server.connection import SemanticLayerConnection
+
+    reader = MagicMock()
+    cursor = MagicMock()
+    cursor.execute.return_value.fetch_record_batch.return_value = reader
+    layer = MagicMock()
+    layer.adapter.cursor.return_value = cursor
+
+    conn = SemanticLayerConnection.__new__(SemanticLayerConnection)
+    conn.layer = layer
+    conn.user_attrs_map = {}
+    conn.session_user = None
+    conn.send_reader = MagicMock()
+    callback = MagicMock()
+
+    conn._handle_query(statement, callback)
+
+    cursor.execute.assert_called_once_with("SHOW TABLES")
+    conn.send_reader.assert_called_once_with(reader, callback)
+
+
 @pytest.mark.parametrize("statement", ["BEGIN", "BEGIN TRANSACTION;", "COMMIT", "ROLLBACK WORK"])
 def test_transaction_control_is_not_wrapped_as_select(statement):
     from tests.optional_dep_stubs import ensure_fake_riffq

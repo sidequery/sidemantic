@@ -17,6 +17,7 @@ import {
   decodeDashboardState,
   encodeDashboardState,
   rowsToCsv,
+  selectableDashboardCategory,
   selectableDashboardDimension,
   shouldUseExplorer,
 } from "./dashboardState";
@@ -428,6 +429,18 @@ describe("dashboard selections", () => {
         ["West", "Retail"],
       ),
     ).toEqual({ "orders.status": "Open", "orders.region": "West" });
+  });
+
+  test("enables grouped bar selection when only a series dimension is selectable", () => {
+    const chart: DashboardChart = {
+      id: "status",
+      query: { metrics: ["orders.order_count"], dimensions: ["orders.status", "orders.region"] },
+      interactions: { select: { fields: ["orders.region"] } },
+    };
+    expect(selectableDashboardCategory(chart, "orders.status", ["orders.region"])).toBe(true);
+    expect(dashboardCategorySelection(chart, "orders.status", "Open", ["orders.region"], ["West"])).toEqual({
+      "orders.region": "West",
+    });
   });
 
   test("keeps time-series dimension combinations separate and aligns their buckets", () => {

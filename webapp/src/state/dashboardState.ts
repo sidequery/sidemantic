@@ -93,6 +93,14 @@ export function dashboardCategorySelection(
   );
 }
 
+export function selectableDashboardCategory(
+  chart: DashboardChart,
+  xDimension: string,
+  seriesDimensions: string[],
+): boolean {
+  return [xDimension, ...seriesDimensions].some((dimension) => selectableDashboardDimension(chart, dimension));
+}
+
 const TIME_GRAINS = new Set(["second", "minute", "hour", "day", "week", "month", "quarter", "year"]);
 
 function timeGrain(dimension: string): { baseDimension: string; grain: string } | null {

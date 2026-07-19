@@ -30,7 +30,7 @@ import {
   encodeDashboardState,
   loadSavedDashboardViews,
   rowsToCsv,
-  selectableDashboardDimension,
+  selectableDashboardCategory,
   storeSavedDashboardViews,
   tabLabel,
   type DashboardViewState,
@@ -166,12 +166,12 @@ function DashboardChartPanel({
   const xColumn = dashboardResultColumn(xRef, columns);
   const scopedInteractions = dashboardScopedInteractions(document, chart, state);
   const chartType = dashboardChartType(chart, types);
-  const canSelect = selectableDashboardDimension(chart, xRef);
   const canBrush = brushableDashboardDimension(chart, xRef);
   const chartTitle = chart.title?.trim() || labelize(chart.id);
   const seriesRefs = [chart.encoding?.color, ...dimensions.filter((dimension) => dimension !== xRef)].filter(
     (dimension, index, refs): dimension is string => Boolean(dimension) && refs.indexOf(dimension) === index,
   );
+  const canSelect = selectableDashboardCategory(chart, xRef, seriesRefs);
   const seriesColumns = seriesRefs.map((dimension) => dashboardResultColumn(dimension, columns));
 
   let visualization: React.ReactNode;

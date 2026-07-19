@@ -1,5 +1,7 @@
 """Tests for metric auto-registration."""
 
+import asyncio
+
 import pytest
 
 from sidemantic import Dimension, Metric, Model, SemanticLayer
@@ -31,6 +33,24 @@ def test_nested_registration_context_restores_outer_layer():
             assert get_current_layer() is inner
         assert get_current_layer() is outer
 
+    assert get_current_layer() is None
+
+
+def test_auto_registered_layer_context_is_safe_in_copied_async_context():
+    layer = SemanticLayer(auto_register=True)
+
+    async def use_layer_in_child_context():
+        assert get_current_layer() is layer
+        with layer:
+            assert get_current_layer() is layer
+            await asyncio.sleep(0)
+        assert get_current_layer() is layer
+
+    asyncio.run(use_layer_in_child_context())
+
+    assert get_current_layer() is layer
+    with layer:
+        assert get_current_layer() is layer
     assert get_current_layer() is None
 
 

@@ -86,20 +86,29 @@ export function ExplorerView() {
     query ? { ...query, timezone: tz } : null;
 
   // Strip queries — one aggregate per shape, covering every metric at once.
-  const totals = useQueryResult(backend, stripMetricRefs.length ? withTz(metricTotals(stripMetricRefs, baseFilters)) : null);
+  const totals = useQueryResult(
+    backend,
+    stripMetricRefs.length ? withTz(metricTotals(stripMetricRefs, baseFilters, configured?.segments)) : null,
+  );
   const series = useQueryResult(
     backend,
-    stripMetricRefs.length && timeRef ? withTz(metricSeries(stripMetricRefs, timeRef, state.grain, baseFilters)) : null,
+    stripMetricRefs.length && timeRef
+      ? withTz(metricSeries(stripMetricRefs, timeRef, state.grain, baseFilters, configured?.segments))
+      : null,
   );
   const comparison = useQueryResult(
     backend,
-    stripMetricRefs.length && prevFilters ? withTz(metricTotals(stripMetricRefs, prevFilters)) : null,
+    stripMetricRefs.length && prevFilters
+      ? withTz(metricTotals(stripMetricRefs, prevFilters, configured?.segments))
+      : null,
   );
   // The single extra query the chart needs: the focused metric over the *previous* period (the
   // dashed overlay). Everything else is reused from the strip results above.
   const prevSeries = useQueryResult(
     backend,
-    rankMetric && timeRef && prevFilters ? withTz(metricSeries([rankMetric.ref], timeRef, state.grain, prevFilters)) : null,
+    rankMetric && timeRef && prevFilters
+      ? withTz(metricSeries([rankMetric.ref], timeRef, state.grain, prevFilters, configured?.segments))
+      : null,
   );
 
   // Surface a failure from any strip query (totals/series/comparison/prev), not just totals, so a
@@ -213,6 +222,7 @@ export function ExplorerView() {
                 metricTotal={Number.isFinite(chartTotal) ? chartTotal : undefined}
                 comparisonRange={prevRange ?? undefined}
                 baseFilters={configured?.filters}
+                baseSegments={configured?.segments}
                 expanded={expandedLeaderboard === dim.ref}
                 onExpandedChange={(expanded) => setExpandedLeaderboard(expanded ? dim.ref : null)}
               />

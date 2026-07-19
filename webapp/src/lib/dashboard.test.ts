@@ -70,4 +70,33 @@ describe("dashboardTabConfig", () => {
     expect(config?.selectedMetric).toBe("orders.order_count");
     expect(config?.dimensions.map((dimension) => dimension.ref)).toEqual(["orders.channel"]);
   });
+
+  test("preserves segments and honors the ordered y-metric encoding", () => {
+    const segmented: DashboardSpec = {
+      title: "Segmented orders",
+      tabs: [
+        {
+          id: "segmented",
+          charts: [
+            {
+              id: "orders",
+              query: {
+                metrics: ["orders.revenue", "orders.order_count"],
+                dimensions: ["orders.created_at__month"],
+                segments: ["orders.completed"],
+              },
+              encoding: {
+                x: "orders.created_at__month",
+                y: ["orders.order_count", "orders.revenue"],
+              },
+            },
+          ],
+        },
+      ],
+    };
+
+    const config = dashboardTabConfig(catalog, segmented);
+    expect(config?.segments).toEqual(["orders.completed"]);
+    expect(config?.selectedMetric).toBe("orders.order_count");
+  });
 });

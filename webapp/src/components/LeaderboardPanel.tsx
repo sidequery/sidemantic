@@ -18,6 +18,7 @@ const CONTEXT_OPTIONS: { key: ContextColumn; label: string; title: string }[] = 
   { key: "deltaPct", label: "Δ%", title: "Percent change vs comparison period" },
 ];
 const EMPTY_FILTERS: string[] = [];
+const EMPTY_SEGMENTS: string[] = [];
 
 /** A self-contained leaderboard: ranks one dimension by a metric, owning its own query so panels
  * load independently and crossfilter clicks toggle the dimension's filter. When a context column is
@@ -30,6 +31,7 @@ export function LeaderboardPanel({
   metricTotal,
   comparisonRange,
   baseFilters = EMPTY_FILTERS,
+  baseSegments = EMPTY_SEGMENTS,
   limit = 6,
   expanded = false,
   onExpandedChange,
@@ -44,6 +46,8 @@ export function LeaderboardPanel({
   comparisonRange?: DateRange;
   /** Filters declared by a dashboard spec; always applied in addition to interactive filters. */
   baseFilters?: string[];
+  /** Segments declared by a dashboard spec; always applied to current and comparison queries. */
+  baseSegments?: string[];
   limit?: number;
   expanded?: boolean;
   onExpandedChange?: (expanded: boolean) => void;
@@ -58,7 +62,7 @@ export function LeaderboardPanel({
   );
   const { result, loading, error } = useQueryResult(
     backend,
-    dimensionLeaderboard(rankMetric.ref, dim.ref, filters, limit),
+    dimensionLeaderboard(rankMetric.ref, dim.ref, filters, limit, baseSegments),
   );
 
   // Only an include-mode selection is a "checked" row; exclude/contains filters don't highlight
@@ -102,7 +106,10 @@ export function LeaderboardPanel({
         : null,
     [wantsDelta, comparisonRange, timeRef, state.filters, dim.ref, types, currentValueConstraint, baseFilters],
   );
-  const prev = useQueryResult(backend, prevFilters ? dimensionLeaderboard(rankMetric.ref, dim.ref, prevFilters, limit) : null);
+  const prev = useQueryResult(
+    backend,
+    prevFilters ? dimensionLeaderboard(rankMetric.ref, dim.ref, prevFilters, limit, baseSegments) : null,
+  );
   const metricAlias = aliasOf(rankMetric.ref);
   // While a slow reload is in flight, useQueryResult keeps the *previous* result visible. If the
   // ranking metric just changed, those kept rows carry the old metric's columns — reading the new

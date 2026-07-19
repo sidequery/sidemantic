@@ -129,8 +129,8 @@ export function composeFilters(
 }
 
 /** Aggregate totals for one or more metrics (no group-by). */
-export function metricTotals(metrics: FieldRef[], filters: string[]): StructuredQuery {
-  return { metrics, filters };
+export function metricTotals(metrics: FieldRef[], filters: string[], segments?: FieldRef[]): StructuredQuery {
+  return { metrics, filters, ...(segments?.length ? { segments } : {}) };
 }
 
 // Upper bound on buckets per grain — generous enough to cover any realistic range (so the series
@@ -145,9 +145,22 @@ const GRAIN_BUCKET_CAP: Record<Grain, number> = {
 };
 
 /** A metric time series bucketed by `grain` on `timeRef`, ordered ascending. */
-export function metricSeries(metrics: FieldRef[], timeRef: FieldRef, grain: Grain, filters: string[]): StructuredQuery {
+export function metricSeries(
+  metrics: FieldRef[],
+  timeRef: FieldRef,
+  grain: Grain,
+  filters: string[],
+  segments?: FieldRef[],
+): StructuredQuery {
   const timeDim = `${timeRef}__${grain}`;
-  return { metrics, dimensions: [timeDim], filters, orderBy: [`${timeDim} ASC`], limit: GRAIN_BUCKET_CAP[grain] ?? 2000 };
+  return {
+    metrics,
+    dimensions: [timeDim],
+    filters,
+    ...(segments?.length ? { segments } : {}),
+    orderBy: [`${timeDim} ASC`],
+    limit: GRAIN_BUCKET_CAP[grain] ?? 2000,
+  };
 }
 
 /** Top-N values of one dimension ranked by a metric (a leaderboard panel). */
@@ -156,8 +169,16 @@ export function dimensionLeaderboard(
   dimRef: FieldRef,
   filters: string[],
   limit = 6,
+  segments?: FieldRef[],
 ): StructuredQuery {
-  return { metrics: [metricRef], dimensions: [dimRef], filters, orderBy: [`${metricRef} DESC`], limit };
+  return {
+    metrics: [metricRef],
+    dimensions: [dimRef],
+    filters,
+    ...(segments?.length ? { segments } : {}),
+    orderBy: [`${metricRef} DESC`],
+    limit,
+  };
 }
 
 /**

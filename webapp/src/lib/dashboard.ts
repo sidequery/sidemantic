@@ -20,6 +20,7 @@ export type DashboardTabConfig = {
   selectedMetric: string;
   grain: Grain;
   filters: string[];
+  segments: string[];
 };
 
 function dimensionForRef(model: CatalogModel, ref: string): CatalogDimension | undefined {
@@ -58,9 +59,10 @@ export function dashboardTabConfig(
     .filter((dimension, index, all): dimension is CatalogDimension =>
       Boolean(dimension) && all.findIndex((candidate) => candidate?.ref === dimension?.ref) === index,
     );
-  const encodedMetric = chart.encoding?.y;
+  const encodedY = chart.encoding?.y;
+  const encodedMetrics = Array.isArray(encodedY) ? encodedY : encodedY ? [encodedY] : [];
   const selectedMetric =
-    (encodedMetric && metrics.some((metric) => metric.ref === encodedMetric) ? encodedMetric : undefined) ??
+    encodedMetrics.find((ref) => metrics.some((metric) => metric.ref === ref)) ??
     metrics[0]?.ref ??
     model.metrics[0]?.ref ??
     "";
@@ -80,5 +82,6 @@ export function dashboardTabConfig(
     selectedMetric,
     grain: timeRef ? grainForRef(timeRef, fallbackGrain) : fallbackGrain,
     filters: chart.query.filters ?? [],
+    segments: chart.query.segments ?? [],
   };
 }

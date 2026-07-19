@@ -1433,6 +1433,12 @@ def explain_sql_command(
       sidemantic explain-sql "SELECT revenue, status FROM orders" --use-preaggregations
     """
     try:
+        state = cli_state()
+        if state.plain:
+            raise InvocationError("explain does not support --plain; use --format json")
+        if state.requested_format not in {None, "json"}:
+            raise InvocationError("explain supports only --format json")
+
         sql = read_sql_input(sql)
         layer = _load_query_layer(
             models,

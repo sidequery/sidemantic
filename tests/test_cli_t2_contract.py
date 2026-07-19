@@ -300,6 +300,52 @@ def test_query_dry_run_defaults_to_raw_sql(project: Path):
     assert not result.stdout.startswith("sql\n")
 
 
+def test_explain_accepts_json_format(project: Path):
+    result = runner.invoke(
+        app,
+        [
+            "explain",
+            "SELECT status, order_count FROM orders",
+            "--project",
+            str(project),
+            "--format",
+            "json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "rewritten_sql" in json.loads(result.stdout)
+
+
+@pytest.mark.parametrize(
+    ("arguments", "message"),
+    [
+        (["--format", "csv"], "explain supports only --format json"),
+        (["--format", "jsonl"], "explain supports only --format json"),
+        (["--plain"], "explain does not support --plain; use --format json"),
+    ],
+)
+def test_explain_rejects_unsupported_output_modes(
+    project: Path,
+    arguments: list[str],
+    message: str,
+):
+    result = runner.invoke(
+        app,
+        [
+            "explain",
+            "SELECT status, order_count FROM orders",
+            "--project",
+            str(project),
+            *arguments,
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert result.stdout == ""
+    assert message in result.stderr
+
+
 def test_format_default_does_not_suppress_unstructured_server_status(
     project: Path,
     monkeypatch: pytest.MonkeyPatch,

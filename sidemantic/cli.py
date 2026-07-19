@@ -23,6 +23,7 @@ from sidemantic.cli_contract import (
     emit_error,
     emit_guidance,
     emit_json,
+    emit_pending_deprecation,
     emit_records,
     emit_result,
     emit_warning,
@@ -875,6 +876,7 @@ def mcp_serve(
       sidemantic server mcp --demo
       sidemantic server mcp --apps --http --port 4100
     """
+    emit_pending_deprecation("mcp-serve")
     from sidemantic.mcp_server import initialize_layer, mcp
 
     if demo:
@@ -1611,6 +1613,7 @@ def serve(
       sidemantic server postgres --demo
       sidemantic server postgres --username user --password-file .secrets/pg-password
     """
+    emit_pending_deprecation("serve")
     import logging
 
     try:
@@ -1798,6 +1801,7 @@ def api_serve(
       sidemantic server api --auth-token-file .secrets/api-token --cors-origin https://app.example.com
       sidemantic server api --demo
     """
+    emit_pending_deprecation("api-serve")
     try:
         from sidemantic.api_server import start_api_server, ui_static_dir
     except ImportError as e:

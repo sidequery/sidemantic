@@ -248,6 +248,26 @@ class ContractGroup(SuggestionGroup):
             emit_guidance(hint)
 
 
+def emit_pending_deprecation(command_name: str) -> None:
+    """Emit one queued legacy-command warning before a blocking callback."""
+
+    ctx = click.get_current_context(silent=True)
+    if ctx is None:
+        return
+    root = ctx.find_root()
+    pending = root.meta.get("deprecated_commands", [])
+    if command_name not in pending:
+        return
+    pending.remove(command_name)
+    if not pending:
+        root.meta.pop("deprecated_commands", None)
+    emit_deprecation(
+        command_name,
+        human_output=cli_state().human_extras,
+        emit_diagnostic=emit_warning,
+    )
+
+
 def sanitize(text: object) -> str:
     """Remove registered secret values from user-visible text."""
 

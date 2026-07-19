@@ -194,6 +194,23 @@ def test_singleflight_follower_can_cancel_without_waiting_for_leader():
     leader.join(timeout=1.0)
 
 
+def test_singleflight_leader_does_not_cache_result_after_cancellation():
+    cache = ResultCache(max_bytes=10 * 1024 * 1024)
+    cancelled = threading.Event()
+
+    def compute():
+        cancelled.set()
+        return _table()
+
+    with pytest.raises(ResultCacheWaitCancelledError, match="computation was cancelled"):
+        cache.get_or_compute_with_status("k", compute, cancelled=cancelled.is_set)
+
+    assert cache.stats()["entries"] == 0
+    table, cache_hit = cache.get_or_compute_with_status("k", _table)
+    assert table.num_rows == 1
+    assert cache_hit is False
+
+
 def test_singleflight_compute_raises_propagates_without_deadlock():
     cache = ResultCache(max_bytes=10 * 1024 * 1024)
 

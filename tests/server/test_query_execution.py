@@ -162,6 +162,19 @@ def test_limit_query_sql_hoists_order_from_tsql_set_queries(operator):
     )
 
 
+def test_limit_query_sql_hoists_tsql_set_query_offset_and_fetch():
+    bounded = limit_query_sql(
+        "SELECT 1 AS value UNION SELECT 2 AS value ORDER BY value OFFSET 10 ROWS FETCH NEXT 5 ROWS ONLY",
+        10,
+        "tsql",
+    )
+
+    assert bounded == (
+        "SELECT * FROM (SELECT 1 AS value UNION SELECT 2 AS value) AS _sidemantic_bounded "
+        "ORDER BY value OFFSET 10 ROWS FETCH NEXT 5 ROWS ONLY"
+    )
+
+
 @pytest.mark.parametrize("sql", ["EXPLAIN SELECT 1", "DESCRIBE facts", "PRAGMA version"])
 def test_limit_query_sql_passes_row_producing_commands_through(sql):
     assert limit_query_sql(sql, 10, "duckdb") == sql

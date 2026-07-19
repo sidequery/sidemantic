@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -606,6 +607,32 @@ class _WorkerTimeoutAdapter(_ArrowOnlyAdapter):
         return _WorkerTimeoutCursor()
 
 
+class _UncancellableSlowCursor:
+    def __init__(self, entered: threading.Event, release: threading.Event):
+        self.entered = entered
+        self.release = release
+
+    def execute(self, _sql: str):
+        self.entered.set()
+        assert self.release.wait(timeout=5)
+        return _ArrowOnlyResult()
+
+    def close(self):
+        return None
+
+
+class _UncancellableSlowAdapter(_ArrowOnlyAdapter):
+    def __init__(self):
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def cursor(self):
+        return _UncancellableSlowCursor(self.entered, self.release)
+
+    def cancel(self, _handle):
+        return CancellationOutcome(False, False, "test adapter cannot cancel; warehouse work may continue")
+
+
 def test_execution_timeout_cancels_and_records_diagnostic():
     adapter = _CancellableAdapter()
     layer = SemanticLayer(connection=adapter, auto_register=False)
@@ -628,6 +655,31 @@ def test_execution_timeout_cancels_and_records_diagnostic():
     assert event.timed_out is True
     assert event.cancelled is True
     assert event.error == "QueryExecutionTimeout"
+
+
+def test_timed_out_cache_leader_result_is_not_inserted():
+    adapter = _UncancellableSlowAdapter()
+    layer = SemanticLayer(connection=adapter, auto_register=False)
+    app = create_app(
+        layer,
+        execution_timeout_seconds=0.05,
+        max_concurrent_queries=1,
+        max_queued_queries=0,
+        result_cache_mb=1,
+    )
+    client = TestClient(app)
+
+    response = client.post("/raw", json={"query": "SELECT 1"})
+
+    assert response.status_code == 504
+    assert adapter.entered.is_set()
+    adapter.release.set()
+    deadline = time.monotonic() + 1
+    while app.state.query_admission.stats()["active"] and time.monotonic() < deadline:
+        time.sleep(0.001)
+
+    assert app.state.query_admission.stats()["active"] == 0
+    assert app.state.result_cache.stats()["entries"] == 0
 
 
 def test_worker_timeout_error_is_not_swallowed_as_poll_timeout():

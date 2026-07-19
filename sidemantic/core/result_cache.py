@@ -88,7 +88,7 @@ class _InFlight:
 
 
 class ResultCacheWaitCancelledError(RuntimeError):
-    """Raised when a singleflight follower stops waiting for its leader."""
+    """Raised when a singleflight caller is cancelled before receiving a result."""
 
 
 class ResultCache:
@@ -169,6 +169,8 @@ class ResultCache:
         # Leader path: run compute outside the lock so other keys are unblocked.
         try:
             table = compute()
+            if cancelled is not None and cancelled():
+                raise ResultCacheWaitCancelledError("result cache computation was cancelled")
         except BaseException as exc:  # noqa: BLE001 - propagate to all waiters
             inflight.error = exc
             with self._lock:

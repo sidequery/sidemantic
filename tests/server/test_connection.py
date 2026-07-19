@@ -301,6 +301,60 @@ def test_pg_wire_bounded_query_closes_cursor_once(monkeypatch):
     conn.send_reader.assert_called_once()
 
 
+def test_pg_wire_disconnect_cancels_query_waiting_for_admission(monkeypatch):
+    from tests.optional_dep_stubs import ensure_fake_riffq
+
+    ensure_fake_riffq()
+    pytest.importorskip("pyarrow")
+    from unittest.mock import MagicMock
+
+    from sidemantic.server.connection import SemanticLayerConnection
+    from sidemantic.server.query_execution import QueryAdmission, QueryLimits
+
+    monkeypatch.setattr("sidemantic.server.connection.QueryRewriter.rewrite", lambda *args, **kwargs: "SELECT 1")
+
+    cursor = MagicMock()
+    layer = MagicMock()
+    layer.adapter.cursor.return_value = cursor
+    layer.graph.models = {}
+    layer.dialect = "duckdb"
+
+    admission = QueryAdmission(1, 1)
+    assert admission.acquire(0.1) == "acquired"
+
+    conn = SemanticLayerConnection.__new__(SemanticLayerConnection)
+    conn.layer = layer
+    conn.user_attrs_map = {}
+    conn.session_user = None
+    conn.query_limits = QueryLimits(queue_timeout_seconds=1)
+    conn.query_admission = admission
+    conn._active_controls = set()
+    conn._active_controls_lock = threading.Lock()
+
+    errors = []
+
+    def run_query():
+        try:
+            conn._handle_query("SELECT 1", MagicMock())
+        except BaseException as exc:  # noqa: BLE001 - capture for assertion
+            errors.append(exc)
+
+    query = threading.Thread(target=run_query)
+    query.start()
+    deadline = time.monotonic() + 1
+    while admission.stats()["queued"] != 1 and time.monotonic() < deadline:
+        time.sleep(0.001)
+
+    conn.handle_disconnect("127.0.0.1", 5432, callback=lambda _ok: None)
+    admission.release()
+    query.join(timeout=1)
+
+    assert isinstance(errors[0], ConnectionAbortedError)
+    cursor.execute.assert_not_called()
+    assert admission.stats() == {"active": 0, "queued": 0}
+    assert not conn._active_controls
+
+
 def test_query_error_raises_exception():
     """_handle_query should raise on errors, not return error as data rows."""
     pytest.importorskip("riffq")
@@ -312,6 +366,7 @@ def test_query_error_raises_exception():
 
     mock_layer = MagicMock()
     # Query work now runs on a per-request cursor obtained from the adapter.
+    mock_layer.adapter.cursor.return_value.execute_stream = None
     mock_layer.adapter.cursor.return_value.execute.side_effect = Exception("test error")
     mock_layer.graph = SemanticGraph()
     mock_layer.dialect = "duckdb"

@@ -200,21 +200,44 @@ def limit_query_sql(sql: str, max_rows: int, dialect: str) -> str:
         if isinstance(existing_count, exp.Literal) and existing_count.is_int and int(existing_count.this) <= cap:
             return statement.sql(dialect=dialect)
         inner = statement.copy()
+        rightmost = inner
+        while isinstance(rightmost, (exp.Union, exp.Except, exp.Intersect)):
+            rightmost = rightmost.expression
         order = inner.args.get("order")
         if order is not None:
             inner.set("order", None)
         else:
             # SQLGlot represents a trailing TSQL ORDER BY on the rightmost
             # SELECT rather than on the set-operation node.
-            rightmost = inner
-            while isinstance(rightmost, (exp.Union, exp.Except, exp.Intersect)):
-                rightmost = rightmost.expression
             order = rightmost.args.get("order")
             rightmost.set("order", None)
-        inner.set("limit", None)
+
+        offset = inner.args.get("offset")
+        if offset is not None:
+            inner.set("offset", None)
+        else:
+            offset = rightmost.args.get("offset")
+            rightmost.set("offset", None)
+
+        # A trailing TSQL FETCH is attached to the rightmost SELECT while its
+        # OFFSET is attached to the set node. Treat that pair as the limit for
+        # the complete set expression, not as a right-branch limit.
+        trailing_limit = inner.args.get("limit")
+        if trailing_limit is not None:
+            inner.set("limit", None)
+        elif offset is not None:
+            trailing_limit = rightmost.args.get("limit")
+            rightmost.set("limit", None)
+
         bounded = exp.select("*").from_(inner.subquery("_sidemantic_bounded")).limit(cap)
         if order is not None:
             bounded.set("order", order.copy())
+        if offset is not None:
+            bounded.set("offset", offset.copy())
+        if trailing_limit is not None:
+            trailing_count = trailing_limit.args.get("expression") or trailing_limit.args.get("count")
+            if isinstance(trailing_count, exp.Literal) and trailing_count.is_int and int(trailing_count.this) <= cap:
+                bounded.set("limit", trailing_limit.copy())
         return bounded.sql(dialect=dialect)
     bounded = exp.select("*").from_(statement.subquery("_sidemantic_bounded")).limit(max_rows + 1)
     return bounded.sql(dialect=dialect)

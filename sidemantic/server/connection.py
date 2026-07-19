@@ -110,6 +110,10 @@ class SemanticLayerConnection(riffq.BaseConnection):
     def _handle_query(self, sql, callback, **kwargs):
         """Handle a SQL query."""
         cursor = None
+        control = None
+        query_admission = None
+        admission_acquired = False
+        worker_started = False
         try:
             sql_lower = sql.lower().strip()
 
@@ -185,33 +189,32 @@ class SemanticLayerConnection(riffq.BaseConnection):
                     query_limits.max_queued_queries,
                 )
                 self.query_admission = query_admission
-            admission_status = query_admission.acquire(query_limits.queue_timeout_seconds)
-            if admission_status == "full":
-                close = getattr(cursor, "close", None)
-                if callable(close):
-                    close()
-                raise RuntimeError(
-                    f"Sidemantic query queue is full (maximum {query_limits.max_queued_queries} waiting)"
-                )
-            if admission_status == "timeout":
-                close = getattr(cursor, "close", None)
-                if callable(close):
-                    close()
-                raise TimeoutError(
-                    f"Sidemantic query waited more than {query_limits.queue_timeout_seconds:g}s for an execution slot"
-                )
 
-            from sidemantic.core.query_telemetry import QueryEvent, sanitize_sql
-
-            query_id = uuid.uuid4().hex
-            started = time.monotonic()
             control = QueryExecutionControl()
-            timed_out = threading.Event()
             if not hasattr(self, "_active_controls_lock"):
                 self._active_controls_lock = threading.Lock()
                 self._active_controls = set()
             with self._active_controls_lock:
                 self._active_controls.add(control)
+
+            admission_status = query_admission.acquire(query_limits.queue_timeout_seconds)
+            if admission_status == "full":
+                raise RuntimeError(
+                    f"Sidemantic query queue is full (maximum {query_limits.max_queued_queries} waiting)"
+                )
+            if admission_status == "timeout":
+                raise TimeoutError(
+                    f"Sidemantic query waited more than {query_limits.queue_timeout_seconds:g}s for an execution slot"
+                )
+            admission_acquired = True
+            if control.cancel_requested:
+                raise ConnectionAbortedError("PostgreSQL client disconnected before query execution started")
+
+            from sidemantic.core.query_telemetry import QueryEvent, sanitize_sql
+
+            query_id = uuid.uuid4().hex
+            started = time.monotonic()
+            timed_out = threading.Event()
             result_queue = queue.Queue(maxsize=1)
             execution_cursor = cursor
 
@@ -279,6 +282,7 @@ class SemanticLayerConnection(riffq.BaseConnection):
 
             worker = threading.Thread(target=execute_in_worker, daemon=True)
             worker.start()
+            worker_started = True
             # The worker owns this cursor through execution and cleanup. Do not let
             # the outer finally close it when a local deadline returns first.
             cursor = None
@@ -301,6 +305,11 @@ class SemanticLayerConnection(riffq.BaseConnection):
             # Returning errors as data rows confuses BI tools that expect PG protocol errors.
             raise
         finally:
+            if control is not None and not worker_started:
+                with self._active_controls_lock:
+                    self._active_controls.discard(control)
+            if admission_acquired and not worker_started and query_admission is not None:
+                query_admission.release()
             # File-backed DuckDB returns an independent connection per query.
             # Close it for system-query and early-return paths too; the bounded
             # execution path may already have closed it, which drivers tolerate.

@@ -90,6 +90,39 @@ class _StreamingLimitAdapter(_ControlCommandAdapter):
         return Reader()
 
 
+class _CancellationProbe:
+    def __init__(self):
+        self.calls = 0
+
+    def cancel(self):
+        self.calls += 1
+
+
+class _BlockingFallbackAdapter(_StreamingLimitAdapter):
+    def __init__(self):
+        super().__init__()
+        self.query_started = threading.Event()
+        self.release_query = threading.Event()
+        self.execute_calls = 0
+        self.connection = _CancellationProbe()
+
+    @property
+    def raw_connection(self):
+        return self.connection
+
+    def execute(self, sql):
+        self.execute_calls += 1
+        if self.execute_calls == 1:
+            self.query_started.set()
+            assert self.release_query.wait(timeout=2)
+        return object()
+
+    def fetch_record_batch(self, result):
+        import pyarrow as pa
+
+        return pa.table({"value": [1]}).to_reader()
+
+
 def test_query_limits_validate_conservative_values():
     limits = QueryLimits()
 
@@ -164,3 +197,51 @@ def test_fallback_cursor_enforces_byte_limit_before_full_materialization():
         )
 
     assert adapter.statements == ["SELECT payload"]
+
+
+def test_queued_fallback_cancellation_does_not_cancel_connection_owner():
+    adapter = _BlockingFallbackAdapter()
+    layer = SimpleNamespace(adapter=adapter)
+    first_results = []
+    first_errors = []
+    second_errors = []
+    second_control = QueryExecutionControl()
+
+    def run_first():
+        try:
+            first_results.append(
+                execute_bounded(layer, "SELECT 1", limits=QueryLimits(), control=QueryExecutionControl())
+            )
+        except Exception as exc:
+            first_errors.append(exc)
+
+    def run_second():
+        try:
+            execute_bounded(layer, "SELECT 2", limits=QueryLimits(), control=second_control)
+        except Exception as exc:
+            second_errors.append(exc)
+
+    first = threading.Thread(target=run_first)
+    first.start()
+    assert adapter.query_started.wait(timeout=1)
+
+    second = threading.Thread(target=run_second)
+    second.start()
+    time.sleep(0.05)
+    outcome = second_control.cancel()
+
+    assert outcome.cancelled is False
+    assert adapter.connection.calls == 0
+
+    adapter.release_query.set()
+    first.join(timeout=1)
+    second.join(timeout=1)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert first_errors == []
+    assert first_results[0].row_count == 1
+    assert len(second_errors) == 1
+    assert "cancelled before acquiring" in str(second_errors[0])
+    assert adapter.execute_calls == 1
+    assert adapter.connection.calls == 0

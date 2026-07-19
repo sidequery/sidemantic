@@ -114,6 +114,15 @@ class QueryExecutionControl:
         if cancel_requested:
             self.cancel()
 
+    def register_if_active(self, adapter: Any, handle: Any) -> bool:
+        """Register an acquired handle unless cancellation was already requested."""
+        with self._lock:
+            if self._cancel_requested:
+                return False
+            self._adapter = adapter
+            self._handle = handle
+            return True
+
     def unregister(self, handle: Any) -> None:
         with self._lock:
             if self._handle is handle:
@@ -189,12 +198,24 @@ def execute_bounded(
 
     if cursor is None:
         cursor = layer.adapter.cursor()
-    control.register(layer.adapter, cursor)
+    execute_stream = getattr(cursor, "execute_stream", None)
+    defer_registration = bool(getattr(cursor, "defer_execution_registration", False))
+    if not defer_registration:
+        control.register(layer.adapter, cursor)
     try:
         control.timeout_diagnostic = layer.adapter.configure_statement_timeout(cursor, limits.execution_timeout_seconds)
-        execute_stream = getattr(cursor, "execute_stream", None)
         if callable(execute_stream):
-            with execute_stream(sql) as reader:
+            stream_kwargs = {}
+            if defer_registration:
+
+                def register_after_lock_acquired() -> None:
+                    if not control.register_if_active(layer.adapter, cursor):
+                        raise QueryExecutionError(
+                            "Query execution was cancelled before acquiring the shared database connection"
+                        )
+
+                stream_kwargs["on_acquired"] = register_after_lock_acquired
+            with execute_stream(sql, **stream_kwargs) as reader:
                 return consume(reader)
         result = cursor.execute(sql)
         return consume(result_to_record_batch_reader(result, layer.adapter))

@@ -3,6 +3,7 @@
 import re
 import threading
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
@@ -140,6 +141,8 @@ class _SerializedCursor:
     enforce result limits batch-by-batch before materializing a complete Arrow table.
     """
 
+    defer_execution_registration = True
+
     def __init__(self, adapter: "BaseDatabaseAdapter", lock: threading.Lock):
         self._adapter = adapter
         self._lock = lock
@@ -156,9 +159,11 @@ class _SerializedCursor:
         return _MaterializedResult(table)
 
     @contextmanager
-    def execute_stream(self, sql: str):
+    def execute_stream(self, sql: str, *, on_acquired: Callable[[], None] | None = None):
         """Yield a reader while retaining exclusive access to the shared connection."""
         with self._lock:
+            if on_acquired is not None:
+                on_acquired()
             result = self._adapter.execute(sql)
             reader = self._adapter.fetch_record_batch(result)
             try:

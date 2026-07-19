@@ -527,6 +527,13 @@ impl SemanticGraph {
                                     .map(|target_model| target_model.primary_keys())
                                     .unwrap_or_default()
                             };
+                        if source_pk.is_empty()
+                            || target_pk.is_empty()
+                            || source_pk.len() != source_fks.len()
+                            || target_pk.len() != target_fks.len()
+                        {
+                            continue;
+                        }
 
                         // source -> through (one_to_many)
                         self.adjacency.entry(model.name.clone()).or_default().push((
@@ -590,6 +597,14 @@ impl SemanticGraph {
                     }
                 };
 
+                if rel.sql.is_none()
+                    && (from_keys.is_empty()
+                        || to_keys.is_empty()
+                        || from_keys.len() != to_keys.len())
+                {
+                    continue;
+                }
+
                 self.adjacency.entry(model.name.clone()).or_default().push((
                     rel.name.clone(),
                     from_keys.clone(),
@@ -649,6 +664,14 @@ impl SemanticGraph {
                         (fk_keys.clone(), pk_keys.clone())
                     }
                 };
+
+                if rel.sql.is_none()
+                    && (reverse_from_keys.is_empty()
+                        || reverse_to_keys.is_empty()
+                        || reverse_from_keys.len() != reverse_to_keys.len())
+                {
+                    continue;
+                }
 
                 self.adjacency.entry(rel.name.clone()).or_default().push((
                     model.name.clone(),
@@ -980,6 +1003,22 @@ mod tests {
         assert_eq!(path.steps.len(), 1);
         assert_eq!(path.steps[0].from_keys, vec!["customers_id".to_string()]);
         assert_eq!(path.steps[0].to_keys, vec!["customer_uid".to_string()]);
+    }
+
+    #[test]
+    fn test_keyless_target_does_not_create_incomplete_join_edge() {
+        let mut graph = SemanticGraph::new();
+
+        let orders = Model::new("orders", "order_id")
+            .with_table("orders")
+            .with_relationship(Relationship::many_to_one("customers"));
+        let customers = Model::new("customers", "").with_table("customers");
+
+        graph.add_model(orders).unwrap();
+        graph.add_model(customers).unwrap();
+
+        assert!(graph.find_join_path("orders", "customers").is_err());
+        assert!(graph.find_join_path("customers", "orders").is_err());
     }
 
     #[test]

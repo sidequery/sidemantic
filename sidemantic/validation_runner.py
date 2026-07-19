@@ -257,6 +257,15 @@ def _required_columns(model: "Model", graph: "SemanticGraph") -> dict[str, str |
         if column:
             columns[column] = "numeric" if metric.agg in numeric_aggs else None
 
+    for segment in model.segments:
+        try:
+            parsed = sqlglot.parse_one(segment.sql.replace("{model}", model.name))
+        except Exception:
+            continue
+        for column in parsed.find_all(exp.Column):
+            if not column.table or column.table == model.name:
+                columns[column.name] = None
+
     return columns
 
 

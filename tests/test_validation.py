@@ -504,6 +504,33 @@ def test_warehouse_validation_reports_missing_columns_and_type_mismatches(tmp_pa
     assert "column 'amount' is declared numeric" in errors
 
 
+def test_warehouse_validation_checks_columns_used_only_by_segments(tmp_path):
+    import duckdb
+
+    (tmp_path / "models.yml").write_text(
+        """
+models:
+  - name: orders
+    table: orders
+    segments:
+      - name: paid
+        sql: "{model}.status = 'paid'"
+"""
+    )
+    database = tmp_path / "warehouse.duckdb"
+    connection = duckdb.connect(str(database))
+    connection.execute("CREATE TABLE orders (order_id INTEGER)")
+    connection.close()
+
+    report = validate_directory(
+        tmp_path,
+        connection=f"duckdb:///{database}",
+        check_queries=False,
+    )
+
+    assert "Model 'orders' references missing column 'status'" in "\n".join(report.warehouse_errors)
+
+
 def test_warehouse_validation_reports_incompatible_join_key_types(tmp_path):
     import duckdb
 

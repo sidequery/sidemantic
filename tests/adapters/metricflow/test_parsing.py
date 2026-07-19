@@ -1057,6 +1057,7 @@ def test_metricflow_inline_counts_support_keyless_models():
               - name: bare_count
                 type: simple
                 agg: count
+                filter: status = 'active'
     """)
     with tempfile.NamedTemporaryFile("w", suffix=".yml", delete=False) as f:
         f.write(yml)
@@ -1074,7 +1075,11 @@ def test_metricflow_inline_counts_support_keyless_models():
 
             sql = generator.generate(metrics=[metric_name])
             assert "events" in sql.lower()
-            assert "count(*)" in sql.lower()
+            if metric_name == "bare_count":
+                assert "status as status" in sql.lower()
+                assert "events_cte.status = 'active'" in sql.lower()
+            else:
+                assert "count(*)" in sql.lower()
             assert ".none" not in sql.lower()
     finally:
         path.unlink(missing_ok=True)

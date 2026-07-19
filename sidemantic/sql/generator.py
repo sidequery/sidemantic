@@ -1772,7 +1772,7 @@ class SQLGenerator:
             """Recursively extract filter columns from a metric and its dependencies."""
             # Extract from the metric's own filters
             if metric.filters:
-                filter_model_name = None
+                filter_model_name = self.graph.metric_owners.get(metric.name)
                 deps = metric.get_dependencies(self.graph)
                 for dep in deps:
                     try:
@@ -3536,6 +3536,9 @@ class SQLGenerator:
         """
         if model_context and model_context in self.graph.models:
             return model_context
+        owning_model = self.graph.metric_owners.get(metric.name)
+        if owning_model:
+            return owning_model
         if metric.sql:
             try:
                 parsed = _parse_fragment(metric.sql, self.dialect)

@@ -9,8 +9,24 @@ import uuid
 import riffq
 
 from sidemantic.core.semantic_layer import SemanticLayer
-from sidemantic.server.query_execution import QueryAdmission, QueryExecutionControl, QueryLimits, execute_bounded
+from sidemantic.server.query_execution import (
+    QueryAdmission,
+    QueryExecutionControl,
+    QueryLimits,
+    execute_bounded,
+    limit_query_sql,
+)
 from sidemantic.sql.query_rewriter import QueryRewriter
+
+_TRANSACTION_CONTROL = re.compile(
+    r"^\s*(?:begin(?:\s+(?:work|transaction))?|start\s+transaction|commit(?:\s+work)?|rollback(?:\s+work)?)\s*;?\s*$",
+    re.IGNORECASE,
+)
+
+
+def _is_transaction_control(sql: str) -> bool:
+    """Return whether SQL is one standalone transaction-control statement."""
+    return _TRANSACTION_CONTROL.fullmatch(sql) is not None
 
 
 class SemanticLayerConnection(riffq.BaseConnection):
@@ -111,6 +127,14 @@ class SemanticLayerConnection(riffq.BaseConnection):
             # to a lock-guarded wrapper preserving today's behavior.
             cursor = self.layer.adapter.cursor()
 
+            # Transaction control must remain pass-through. Wrapping BEGIN / COMMIT /
+            # ROLLBACK as a bounded SELECT produces invalid SQL for PG-wire clients.
+            if _is_transaction_control(sql):
+                result = cursor.execute(sql.strip().removesuffix(";"))
+                reader = result.fetch_record_batch()
+                self.send_reader(reader, callback)
+                return
+
             # Check for DML commands first (before multi-statement check)
             # These are often PostgreSQL session config and should just succeed
             if sql_lower.startswith(("set ", "update ", "insert ", "delete ")):
@@ -186,9 +210,7 @@ class SemanticLayerConnection(riffq.BaseConnection):
                 self._active_controls.add(control)
             timer.start()
             try:
-                bounded_sql = (
-                    f"SELECT * FROM ({rendered_sql}\n) AS _sidemantic_bounded LIMIT {query_limits.max_rows + 1}"
-                )
+                bounded_sql = limit_query_sql(rendered_sql, query_limits.max_rows, self.layer.dialect)
                 bounded = execute_bounded(
                     self.layer,
                     bounded_sql,

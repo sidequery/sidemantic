@@ -13,6 +13,7 @@ from sidemantic.server.query_execution import (
     QueryLimits,
     QueryResponseTooLargeError,
     execute_bounded,
+    limit_query_sql,
 )
 
 
@@ -131,6 +132,13 @@ def test_query_limits_validate_conservative_values():
     assert limits.execution_timeout_seconds == 30.0
     assert limits.max_concurrent_queries == 4
     assert limits.max_queued_queries == 16
+
+
+def test_limit_query_sql_uses_target_dialect_syntax():
+    bounded = limit_query_sql("SELECT value FROM facts", 10, "tsql")
+
+    assert bounded == "SELECT TOP 11 * FROM (SELECT value AS value FROM facts) AS _sidemantic_bounded"
+    assert " LIMIT " not in bounded
 
 
 def test_admission_rejects_when_bounded_queue_is_full():

@@ -35,6 +35,7 @@ from sidemantic.server.query_execution import (
     QueryResponseTooLargeError,
     QueryRowLimitExceededError,
     execute_bounded,
+    limit_query_sql,
 )
 from sidemantic.sql.query_rewriter import QueryRewriter
 
@@ -498,7 +499,7 @@ def create_app(
         )
         # Preserve the layer's default/max-limit policy for omitted limits, then
         # apply the server ceiling outside the compiled semantic query.
-        sql = _limit_query_sql(sql, limits.max_rows)
+        sql = limit_query_sql(sql, limits.max_rows, current_layer.dialect)
         return await _execute_http_query(
             app,
             request,
@@ -529,7 +530,7 @@ def create_app(
         deny_free_sql_if_secured()
         query = _normalize_sql_query(payload.query)
         rewritten_sql = QueryRewriter(current_layer.graph, dialect=current_layer.dialect).rewrite(query)
-        limited_sql = _limit_query_sql(rewritten_sql, app.state.query_limits.max_rows)
+        limited_sql = limit_query_sql(rewritten_sql, app.state.query_limits.max_rows, current_layer.dialect)
         return await _execute_http_query(
             app,
             request,
@@ -555,7 +556,7 @@ def create_app(
         deny_free_sql_if_secured()
         query = _normalize_sql_query(payload.query)
         _require_select_statement(query)
-        limited_sql = _limit_query_sql(query, app.state.query_limits.max_rows)
+        limited_sql = limit_query_sql(query, app.state.query_limits.max_rows, current_layer.dialect)
         return await _execute_http_query(
             app,
             request,
@@ -847,13 +848,6 @@ def _consume_background_task(task: asyncio.Task) -> None:
         task.exception()
     except (asyncio.CancelledError, Exception):
         pass
-
-
-def _limit_query_sql(sql: str, max_rows: int) -> str:
-    """Apply an outer ``LIMIT max_rows + 1`` so overflow is detectable."""
-    # The rewriter's instrumentation is a trailing ``--`` comment, so the
-    # closing parenthesis must begin on a fresh line rather than be commented.
-    return f"SELECT * FROM ({sql}\n) AS _sidemantic_bounded LIMIT {max_rows + 1}"
 
 
 def _normalize_sql_query(query: str) -> str:

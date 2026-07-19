@@ -158,6 +158,16 @@ class BoundedQueryResult:
     row_count: int
 
 
+def limit_query_sql(sql: str, max_rows: int, dialect: str) -> str:
+    """Apply a dialect-aware outer row limit with one overflow sentinel row."""
+    import sqlglot
+    from sqlglot import exp
+
+    statement = sqlglot.parse_one(sql, read=dialect)
+    bounded = exp.select("*").from_(statement.subquery("_sidemantic_bounded")).limit(max_rows + 1)
+    return bounded.sql(dialect=dialect)
+
+
 def execute_bounded(
     layer: Any,
     sql: str,

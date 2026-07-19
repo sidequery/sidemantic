@@ -120,6 +120,33 @@ def test_dml_passthrough():
     assert "reader" in captured
 
 
+@pytest.mark.parametrize("statement", ["BEGIN", "BEGIN TRANSACTION;", "COMMIT", "ROLLBACK WORK"])
+def test_transaction_control_is_not_wrapped_as_select(statement):
+    pytest.importorskip("riffq")
+    pytest.importorskip("pyarrow")
+    from unittest.mock import MagicMock
+
+    from sidemantic.server.connection import SemanticLayerConnection
+
+    cursor = MagicMock()
+    reader = object()
+    cursor.execute.return_value.fetch_record_batch.return_value = reader
+    layer = MagicMock()
+    layer.adapter.cursor.return_value = cursor
+
+    conn = SemanticLayerConnection.__new__(SemanticLayerConnection)
+    conn.layer = layer
+    conn.user_attrs_map = {}
+    conn.session_user = None
+    conn.send_reader = MagicMock()
+    callback = MagicMock()
+
+    conn._handle_query(statement, callback)
+
+    cursor.execute.assert_called_once_with(statement.strip().removesuffix(";"))
+    conn.send_reader.assert_called_once_with(reader, callback)
+
+
 def test_query_error_raises_exception():
     """_handle_query should raise on errors, not return error as data rows."""
     pytest.importorskip("riffq")

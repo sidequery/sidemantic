@@ -142,6 +142,22 @@ def test_rust_payload_restores_explicit_keyless_model_as_none():
     assert graph.get_model("events").primary_key is None
 
 
+def test_models_to_rust_yaml_uses_source_key_for_reverse_relationship():
+    users = Model(
+        name="users",
+        table="users",
+        primary_key="user_id",
+        relationships=[Relationship(name="profiles", type="one_to_many", foreign_key="user_id")],
+    )
+    profiles = Model(name="profiles", table="profiles", primary_key="profile_id")
+
+    payload = yaml.safe_load(models_to_rust_yaml([users, profiles]))
+    relationship = payload["models"][0]["relationships"][0]
+
+    assert relationship["primary_key"] == "user_id"
+    assert relationship["primary_key_columns"] == ["user_id"]
+
+
 def test_graph_to_rust_yaml_assigns_complex_metrics_by_entity_dimension():
     graph = SemanticGraph()
     graph.add_model(

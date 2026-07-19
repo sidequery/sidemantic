@@ -517,8 +517,14 @@ def _validate_warehouse(
                     )
                     continue
                 try:
-                    inspection_name = table_ref.qualified_name if table_ref.catalog else table_ref.name
-                    inspection_schema = None if table_ref.catalog else table_ref.schema
+                    if table_ref.catalog and layer.dialect == "bigquery":
+                        # BigQueryAdapter addresses tables as dataset + table; the
+                        # project is already selected by the connection/client.
+                        inspection_name = table_ref.name
+                        inspection_schema = table_ref.schema
+                    else:
+                        inspection_name = table_ref.qualified_name if table_ref.catalog else table_ref.name
+                        inspection_schema = None if table_ref.catalog else table_ref.schema
                     warehouse_columns = layer.adapter.get_columns(inspection_name, schema=inspection_schema)
                 except Exception as exc:
                     report.warehouse_errors.append(

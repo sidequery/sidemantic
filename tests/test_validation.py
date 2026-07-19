@@ -726,5 +726,49 @@ models:
     assert inspected == [("analytics.public.orders", None)]
 
 
+def test_warehouse_validation_splits_catalog_qualified_bigquery_table(monkeypatch, tmp_path):
+    (tmp_path / "models.yml").write_text(
+        """
+models:
+  - name: orders
+    table: analytics.sales.orders
+    primary_key: order_id
+"""
+    )
+
+    inspected = []
+
+    class FakeBigQueryAdapter:
+        def get_tables(self):
+            return []
+
+        def get_columns(self, table_name, schema=None):
+            inspected.append((table_name, schema))
+            return [{"column_name": "order_id", "data_type": "INT64"}]
+
+        def close(self):
+            pass
+
+    from sidemantic.validation_runner import SemanticLayer as RealSemanticLayer
+
+    def semantic_layer(*args, **kwargs):
+        layer = RealSemanticLayer(auto_register=False)
+        if kwargs.get("connection") is not None:
+            layer.adapter = FakeBigQueryAdapter()
+            layer.dialect = "bigquery"
+        return layer
+
+    monkeypatch.setattr("sidemantic.validation_runner.SemanticLayer", semantic_layer)
+
+    report = validate_directory(
+        tmp_path,
+        connection="bigquery://analytics",
+        check_queries=False,
+    )
+
+    assert report.passed, report.all_errors
+    assert inspected == [("orders", "sales")]
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

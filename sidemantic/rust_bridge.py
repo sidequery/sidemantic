@@ -1607,7 +1607,9 @@ def _serialize_relationship(relationship, source_model, target_model) -> dict | 
 
     if relationship.primary_key is not None:
         primary_keys = _as_list(relationship.primary_key)
-    elif target_model:
+    elif relationship.type in {"one_to_many", "one_to_one"}:
+        primary_keys = source_model.primary_key_columns
+    elif target_model and (relationship.type == "many_to_one" or relationship.through):
         primary_keys = target_model.primary_key_columns
     else:
         primary_keys = []

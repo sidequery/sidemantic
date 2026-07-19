@@ -166,6 +166,22 @@ def _resolve_connection(**kwargs):
         raise typer.BadParameter(str(exc)) from exc
 
 
+def _with_duckdb_access_mode(connection: str | None, read_only: bool | None = None) -> str | None:
+    """Apply the safe CLI DuckDB access mode without overriding explicit config."""
+    if connection is None or not connection.startswith("duckdb://") or connection.startswith("duckdb://md:"):
+        return connection
+    from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
+    parsed = urlsplit(connection)
+    if parsed.path in {"", "/", "/:memory:", ":memory:"}:
+        return connection
+    params = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    if read_only is None and "read_only" in params:
+        return connection
+    params["read_only"] = "true" if read_only is not False else "false"
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode(params), parsed.fragment))
+
+
 def _normalize_engine(engine: str | None) -> str | None:
     if engine is None:
         return None
@@ -220,6 +236,7 @@ def _load_query_layer(
     use_preaggregations: bool = False,
     engine: str | None = None,
     fallback: bool | None = None,
+    read_only: bool | None = None,
 ) -> SemanticLayer:
     """Load a semantic layer for CLI query/explain commands."""
     engine, resolved_fallback = _resolve_engine_options(engine, fallback)
@@ -228,6 +245,7 @@ def _load_query_layer(
     models = _models_path(models)
     resolved_connection = _resolve_connection(connection=connection, database=db, models=models)
     connection_str = resolved_connection.connection if resolved_connection else None
+    connection_str = _with_duckdb_access_mode(connection_str, read_only)
     init_sql = resolved_connection.init_sql if resolved_connection else None
 
     preagg_db = _loaded_config.preagg_database if _loaded_config else None
@@ -1212,6 +1230,11 @@ def query(
     use_preaggregations: bool = typer.Option(
         False, "--use-preaggregations", help="Enable automatic pre-aggregation routing"
     ),
+    read_only: bool | None = typer.Option(
+        None,
+        "--read-only/--read-write",
+        help="DuckDB access mode (file databases default to read-only for queries)",
+    ),
 ):
     """
     Execute a SQL query and output results as CSV.
@@ -1235,6 +1258,7 @@ def query(
             use_preaggregations=use_preaggregations,
             engine=engine,
             fallback=fallback,
+            read_only=read_only,
         )
 
         # Dry run: show generated SQL without executing
@@ -1363,6 +1387,11 @@ def dashboard_serve(
     use_preaggregations: bool = typer.Option(
         False, "--use-preaggregations", help="Enable automatic pre-aggregation routing"
     ),
+    read_only: bool | None = typer.Option(
+        None,
+        "--read-only/--read-write",
+        help="DuckDB access mode (file databases default to read-only while serving)",
+    ),
     output_dir: Path = typer.Option(None, "--output-dir", hidden=True),
     warm_interaction_preaggregations: bool = typer.Option(False, "--warm-interaction-preaggregations", hidden=True),
 ):
@@ -1390,6 +1419,7 @@ def dashboard_serve(
                 connection=connection,
                 db=db,
                 use_preaggregations=use_preaggregations,
+                read_only=read_only,
             )
             document = DashboardDocument.from_file(spec)
             errors = document.validate(layer, execute_sql=True)
@@ -1425,6 +1455,13 @@ def dashboard_serve(
             max_request_body_bytes=api_config.max_request_body_bytes if api_config else 1024 * 1024,
             result_cache_mb=api_config.result_cache_mb if api_config else 0,
             result_cache_ttl=api_config.result_cache_ttl if api_config else 60.0,
+            max_rows=api_config.max_rows if api_config else 10_000,
+            max_response_bytes=api_config.max_response_bytes if api_config else 16 * 1024 * 1024,
+            execution_timeout_seconds=api_config.execution_timeout_seconds if api_config else 30.0,
+            max_concurrent_queries=api_config.max_concurrent_queries if api_config else 4,
+            max_queued_queries=api_config.max_queued_queries if api_config else 16,
+            queue_timeout_seconds=api_config.queue_timeout_seconds if api_config else 5.0,
+            query_history_size=api_config.query_history_size if api_config else 1000,
         )
     except typer.Exit:
         raise
@@ -1600,6 +1637,11 @@ def serve(
         "--user-attrs-file",
         help="Path to a JSON file mapping usernames -> user-attribute dicts for row/access security",
     ),
+    read_only: bool | None = typer.Option(
+        None,
+        "--read-only/--read-write",
+        help="DuckDB access mode (file databases default to read-only while serving)",
+    ),
 ):
     """
     Start a PostgreSQL-compatible server for the semantic layer.
@@ -1650,6 +1692,7 @@ def serve(
     # Build connection string from args or config
     resolved_connection = _resolve_connection(connection=connection, database=db, models=directory)
     connection_str = resolved_connection.connection if resolved_connection else None
+    connection_str = _with_duckdb_access_mode(connection_str, read_only)
 
     # Resolve host, port, username, password from args or config
     host_resolved = host or (_loaded_config.pg_server.host if _loaded_config else "127.0.0.1")
@@ -1742,6 +1785,12 @@ def serve(
         username=username_resolved,
         password=password_resolved,
         user_attrs_map=user_attrs_map,
+        max_rows=_loaded_config.pg_server.max_rows if _loaded_config else 10_000,
+        max_response_bytes=_loaded_config.pg_server.max_response_bytes if _loaded_config else 16 * 1024 * 1024,
+        execution_timeout_seconds=(_loaded_config.pg_server.execution_timeout_seconds if _loaded_config else 30.0),
+        max_concurrent_queries=_loaded_config.pg_server.max_concurrent_queries if _loaded_config else 4,
+        max_queued_queries=_loaded_config.pg_server.max_queued_queries if _loaded_config else 16,
+        queue_timeout_seconds=_loaded_config.pg_server.queue_timeout_seconds if _loaded_config else 5.0,
     )
 
 
@@ -1773,6 +1822,30 @@ def api_serve(
     ),
     result_cache_ttl: float = typer.Option(
         None, "--result-cache-ttl", help="Result cache entry TTL in seconds (default 60)"
+    ),
+    max_rows: int = typer.Option(None, "--max-rows", help="Maximum rows returned per query (default 10000)"),
+    max_response_bytes: int = typer.Option(
+        None, "--max-response-bytes", help="Maximum JSON or Arrow response bytes (default 16777216)"
+    ),
+    execution_timeout_seconds: float = typer.Option(
+        None, "--execution-timeout-seconds", help="Query execution deadline (default 30)"
+    ),
+    max_concurrent_queries: int = typer.Option(
+        None, "--max-concurrent-queries", help="Maximum simultaneously executing queries (default 4)"
+    ),
+    max_queued_queries: int = typer.Option(
+        None, "--max-queued-queries", help="Maximum queries waiting for execution (default 16)"
+    ),
+    queue_timeout_seconds: float = typer.Option(
+        None, "--queue-timeout-seconds", help="Maximum queue wait in seconds (default 5)"
+    ),
+    query_history_size: int = typer.Option(
+        None, "--query-history-size", help="Sanitized process-local query events retained (default 1000)"
+    ),
+    read_only: bool | None = typer.Option(
+        None,
+        "--read-only/--read-write",
+        help="DuckDB access mode (file databases default to read-only while serving)",
     ),
     require_user_attrs: bool = typer.Option(
         False,
@@ -1828,6 +1901,7 @@ def api_serve(
 
     resolved_connection = _resolve_connection(connection=connection, database=db, models=directory)
     connection_str = resolved_connection.connection if resolved_connection else None
+    connection_str = _with_duckdb_access_mode(connection_str, read_only)
     init_sql = resolved_connection.init_sql if resolved_connection else None
 
     host_resolved = host or (_loaded_config.api_server.host if _loaded_config else "127.0.0.1")
@@ -1863,6 +1937,36 @@ def api_serve(
         result_cache_ttl
         if result_cache_ttl is not None
         else (_loaded_config.api_server.result_cache_ttl if _loaded_config else 60.0)
+    )
+    api_config = _loaded_config.api_server if _loaded_config else None
+    max_rows_resolved = max_rows if max_rows is not None else (api_config.max_rows if api_config else 10_000)
+    max_response_bytes_resolved = (
+        max_response_bytes
+        if max_response_bytes is not None
+        else (api_config.max_response_bytes if api_config else 16 * 1024 * 1024)
+    )
+    execution_timeout_resolved = (
+        execution_timeout_seconds
+        if execution_timeout_seconds is not None
+        else (api_config.execution_timeout_seconds if api_config else 30.0)
+    )
+    max_concurrent_resolved = (
+        max_concurrent_queries
+        if max_concurrent_queries is not None
+        else (api_config.max_concurrent_queries if api_config else 4)
+    )
+    max_queued_resolved = (
+        max_queued_queries if max_queued_queries is not None else (api_config.max_queued_queries if api_config else 16)
+    )
+    queue_timeout_resolved = (
+        queue_timeout_seconds
+        if queue_timeout_seconds is not None
+        else (api_config.queue_timeout_seconds if api_config else 5.0)
+    )
+    query_history_size_resolved = (
+        query_history_size
+        if query_history_size is not None
+        else (api_config.query_history_size if api_config else 1000)
     )
 
     preagg_db = _loaded_config.preagg_database if _loaded_config else None
@@ -1934,6 +2038,13 @@ def api_serve(
         serve_ui=serve_ui,
         result_cache_mb=result_cache_mb_resolved,
         result_cache_ttl=result_cache_ttl_resolved,
+        max_rows=max_rows_resolved,
+        max_response_bytes=max_response_bytes_resolved,
+        execution_timeout_seconds=execution_timeout_resolved,
+        max_concurrent_queries=max_concurrent_resolved,
+        max_queued_queries=max_queued_resolved,
+        queue_timeout_seconds=queue_timeout_resolved,
+        query_history_size=query_history_size_resolved,
         require_user_attrs=require_user_attrs,
         enforce_visibility=enforce_visibility,
         user_header=user_header,
@@ -2472,10 +2583,16 @@ def refresh(
 
         # Connect to database
         if connection_str.startswith("duckdb://"):
-            import duckdb
+            from sidemantic.db.duckdb import DuckDBAdapter
 
-            db_path = connection_str.replace("duckdb:///", "")
-            conn = duckdb.connect(db_path)
+            writable_connection = _with_duckdb_access_mode(connection_str, read_only=False)
+            assert writable_connection is not None
+            write_adapter = DuckDBAdapter.from_url(
+                writable_connection,
+                init_sql=resolved_connection.init_sql,
+            )
+            conn = write_adapter.raw_connection
+            emit_diagnostic("DuckDB pre-aggregation refresh opened explicit write mode")
 
             # Create schema if it doesn't exist (DuckDB only)
             if preagg_sch:

@@ -2,10 +2,14 @@
 
 import logging
 import re
+import threading
+import time
+import uuid
 
 import riffq
 
 from sidemantic.core.semantic_layer import SemanticLayer
+from sidemantic.server.query_execution import QueryAdmission, QueryExecutionControl, QueryLimits, execute_bounded
 from sidemantic.sql.query_rewriter import QueryRewriter
 
 
@@ -20,6 +24,8 @@ class SemanticLayerConnection(riffq.BaseConnection):
         username: str | None = None,
         password: str | None = None,
         user_attrs_map: dict[str, dict] | None = None,
+        query_limits: QueryLimits | None = None,
+        query_admission: QueryAdmission | None = None,
     ):
         super().__init__(connection_id, executor)
         self.layer = layer
@@ -32,6 +38,13 @@ class SemanticLayerConnection(riffq.BaseConnection):
         # connecting username is captured in handle_auth and looked up here.
         self.user_attrs_map = user_attrs_map or {}
         self.session_user: str | None = None
+        self.query_limits = query_limits or QueryLimits()
+        self.query_admission = query_admission or QueryAdmission(
+            self.query_limits.max_concurrent_queries,
+            self.query_limits.max_queued_queries,
+        )
+        self._active_controls: set[QueryExecutionControl] = set()
+        self._active_controls_lock = threading.Lock()
 
     def _user_attributes(self) -> dict | None:
         """Resolve security user attributes for the current session.
@@ -66,10 +79,20 @@ class SemanticLayerConnection(riffq.BaseConnection):
 
     def handle_disconnect(self, ip, port, callback=callable):
         """Handle disconnection."""
+        controls_lock = getattr(self, "_active_controls_lock", None)
+        if controls_lock is None:
+            controls = ()
+        else:
+            with controls_lock:
+                controls = tuple(self._active_controls)
+        for control in controls:
+            outcome = control.cancel()
+            logging.info("Cancelled disconnected PostgreSQL query: %s", outcome.diagnostic)
         callback(True)
 
     def _handle_query(self, sql, callback, **kwargs):
         """Handle a SQL query."""
+        cursor = None
         try:
             sql_lower = sql.lower().strip()
 
@@ -116,18 +139,113 @@ class SemanticLayerConnection(riffq.BaseConnection):
             # Use non-strict mode to pass through system queries (SHOW, SET, etc.)
             rendered_sql = rewriter.rewrite(sql, strict=False, user_attributes=user_attributes)
 
-            # Execute the query
-            result = cursor.execute(rendered_sql)
+            query_limits = getattr(self, "query_limits", None) or QueryLimits()
+            query_admission = getattr(self, "query_admission", None)
+            if query_admission is None:
+                query_admission = QueryAdmission(
+                    query_limits.max_concurrent_queries,
+                    query_limits.max_queued_queries,
+                )
+                self.query_admission = query_admission
+            admission_status = query_admission.acquire(query_limits.queue_timeout_seconds)
+            if admission_status == "full":
+                close = getattr(cursor, "close", None)
+                if callable(close):
+                    close()
+                raise RuntimeError(
+                    f"Sidemantic query queue is full (maximum {query_limits.max_queued_queries} waiting)"
+                )
+            if admission_status == "timeout":
+                close = getattr(cursor, "close", None)
+                if callable(close):
+                    close()
+                raise TimeoutError(
+                    f"Sidemantic query waited more than {query_limits.queue_timeout_seconds:g}s for an execution slot"
+                )
 
-            # Convert to Arrow record batch
-            reader = result.fetch_record_batch()
-            self.send_reader(reader, callback)
+            from sidemantic.core.query_telemetry import QueryEvent, sanitize_sql
+
+            query_id = uuid.uuid4().hex
+            started = time.monotonic()
+            control = QueryExecutionControl()
+            timed_out = threading.Event()
+            error: Exception | None = None
+            row_count: int | None = None
+            response_bytes: int | None = None
+
+            def cancel_at_deadline() -> None:
+                timed_out.set()
+                control.cancel()
+
+            timer = threading.Timer(query_limits.execution_timeout_seconds, cancel_at_deadline)
+            timer.daemon = True
+            if not hasattr(self, "_active_controls_lock"):
+                self._active_controls_lock = threading.Lock()
+                self._active_controls = set()
+            with self._active_controls_lock:
+                self._active_controls.add(control)
+            timer.start()
+            try:
+                bounded_sql = (
+                    f"SELECT * FROM ({rendered_sql}\n) AS _sidemantic_bounded LIMIT {query_limits.max_rows + 1}"
+                )
+                bounded = execute_bounded(
+                    self.layer,
+                    bounded_sql,
+                    limits=query_limits,
+                    control=control,
+                    cursor=cursor,
+                )
+                row_count = bounded.row_count
+                response_bytes = int(bounded.table.nbytes)
+                if timed_out.is_set():
+                    outcome = control.cancellation_outcome
+                    diagnostic = outcome.diagnostic if outcome else "cancellation was unavailable"
+                    raise TimeoutError(
+                        f"Query exceeded the {query_limits.execution_timeout_seconds:g}s deadline. {diagnostic}"
+                    )
+                self.send_reader(bounded.table.to_reader(), callback)
+            except Exception as exc:
+                error = exc
+                raise
+            finally:
+                timer.cancel()
+                with self._active_controls_lock:
+                    self._active_controls.discard(control)
+                query_admission.release()
+                sanitized_sql, fingerprint = sanitize_sql(rendered_sql, self.layer.dialect)
+                outcome = control.cancellation_outcome
+                self.layer.query_telemetry.record(
+                    QueryEvent(
+                        query_id=query_id,
+                        request_id=str(getattr(self, "connection_id", "unknown")),
+                        duration_ms=(time.monotonic() - started) * 1000,
+                        dialect=self.layer.dialect,
+                        row_count=row_count,
+                        response_bytes=response_bytes,
+                        used_preaggregation="used_preagg=true" in rendered_sql,
+                        cancelled=bool(outcome and outcome.cancelled),
+                        timed_out=timed_out.is_set(),
+                        error=type(error).__name__ if error is not None else None,
+                        sql=sanitized_sql,
+                        sql_fingerprint=fingerprint,
+                        plan_metadata={"source": "postgres_wire", "timeout": control.timeout_diagnostic},
+                        cancellation_diagnostic=outcome.diagnostic if outcome else None,
+                    )
+                )
 
         except Exception:
             logging.exception("Error executing query")
             # Raise to let riffq send a proper PG ErrorResponse to the client.
             # Returning errors as data rows confuses BI tools that expect PG protocol errors.
             raise
+        finally:
+            # File-backed DuckDB returns an independent connection per query.
+            # Close it for system-query and early-return paths too; the bounded
+            # execution path may already have closed it, which drivers tolerate.
+            close = getattr(cursor, "close", None)
+            if callable(close):
+                close()
 
     def _enforce_pg_access(self, rendered_sql: str, user_attributes: dict | None) -> None:
         """Enforce model access gates for the PG wire path.

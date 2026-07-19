@@ -404,6 +404,7 @@ models:
     layer = SemanticLayer(connection=f"duckdb:///{db_path}", auto_register=False)
     layer.adapter.execute("CREATE TABLE orders (id INTEGER, status VARCHAR)")
     layer.adapter.execute("INSERT INTO orders VALUES (1, 'completed'), (2, 'pending')")
+    layer.adapter.close()
 
     spec_path = tmp_path / "dashboard.yml"
     spec_path.write_text(

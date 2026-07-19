@@ -11,6 +11,10 @@ class DuckDBConnection(BaseModel):
 
     type: Literal["duckdb"] = "duckdb"
     path: str = Field(..., description="Path to DuckDB database file or :memory:")
+    read_only: bool | None = Field(
+        default=None,
+        description="Open DuckDB read-only; serving/query commands default file databases to true when omitted",
+    )
     init_sql: list[str] | None = Field(
         default=None,
         description="SQL statements to run after connecting (e.g., loading extensions, attaching catalogs)",
@@ -113,6 +117,12 @@ class PostgresServerConfig(BaseModel):
     username: str | None = Field(default=None, description="Username for authentication (optional)")
     password_file: str | None = Field(default=None, description="Credential file containing the password")
     password: str | None = Field(default=None, description="Inline password (prefer password_file in shared config)")
+    max_rows: int = Field(default=10_000, gt=0, description="Maximum rows returned by one query")
+    max_response_bytes: int = Field(default=16 * 1024 * 1024, gt=0, description="Maximum buffered result bytes")
+    execution_timeout_seconds: float = Field(default=30.0, gt=0, description="Query execution deadline")
+    max_concurrent_queries: int = Field(default=4, gt=0, description="Maximum simultaneously executing queries")
+    max_queued_queries: int = Field(default=16, ge=0, description="Maximum queries waiting for execution")
+    queue_timeout_seconds: float = Field(default=5.0, gt=0, description="Maximum query queue wait")
 
 
 class APIServerConfig(BaseModel):
@@ -126,6 +136,17 @@ class APIServerConfig(BaseModel):
     )
     cors_origins: list[str] = Field(default_factory=list, description="Allowed CORS origins")
     max_request_body_bytes: int = Field(default=1024 * 1024, description="Maximum request body size in bytes")
+    max_rows: int = Field(default=10_000, gt=0, description="Maximum rows returned by one query")
+    max_response_bytes: int = Field(
+        default=16 * 1024 * 1024, gt=0, description="Maximum serialized JSON or Arrow response size"
+    )
+    execution_timeout_seconds: float = Field(
+        default=30.0, gt=0, description="Query execution deadline and requested warehouse statement timeout"
+    )
+    max_concurrent_queries: int = Field(default=4, gt=0, description="Maximum simultaneously executing queries")
+    max_queued_queries: int = Field(default=16, ge=0, description="Maximum queries waiting for an execution slot")
+    queue_timeout_seconds: float = Field(default=5.0, gt=0, description="Maximum time a query may wait in the queue")
+    query_history_size: int = Field(default=1000, ge=0, description="Process-local sanitized query events retained")
     result_cache_mb: int = Field(default=0, description="Result cache size in megabytes (0 disables the result cache)")
     result_cache_ttl: float = Field(default=60.0, description="Result cache entry TTL in seconds")
 
@@ -235,7 +256,12 @@ class SidemanticConfig(BaseModel):
             db_p = Path(connection.path)
             if not db_p.is_absolute():
                 db_p = (base / db_p).resolve()
-            connection = DuckDBConnection(type="duckdb", path=str(db_p), init_sql=connection.init_sql)
+            connection = DuckDBConnection(
+                type="duckdb",
+                path=str(db_p),
+                read_only=connection.read_only,
+                init_sql=connection.init_sql,
+            )
 
         pg_server = self.pg_server.model_copy()
         if pg_server.password_file:
@@ -356,7 +382,10 @@ def build_connection_string(config: SidemanticConfig) -> str:
         return "duckdb:///:memory:"
 
     if isinstance(config.connection, DuckDBConnection):
-        return f"duckdb:///{config.connection.path}"
+        connection = f"duckdb:///{config.connection.path}"
+        if config.connection.read_only is not None:
+            connection += f"?read_only={'true' if config.connection.read_only else 'false'}"
+        return connection
     elif isinstance(config.connection, PostgreSQLConnection):
         password_part = f":{config.connection.password}" if config.connection.password else ""
         return (

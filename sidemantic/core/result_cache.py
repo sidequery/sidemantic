@@ -123,11 +123,16 @@ class ResultCache:
 
     def get_or_compute(self, key: str, compute: Callable[[], pa.Table]) -> pa.Table:
         """Return the cached table for ``key`` or compute (once) and cache it."""
+        table, _cache_hit = self.get_or_compute_with_status(key, compute)
+        return table
+
+    def get_or_compute_with_status(self, key: str, compute: Callable[[], pa.Table]) -> tuple[pa.Table, bool]:
+        """Return ``(table, cache_hit)`` while preserving singleflight behavior."""
         with self._lock:
             entry = self._get_live_entry_locked(key)
             if entry is not None:
                 self._hits += 1
-                return entry.table
+                return entry.table, True
 
             # Miss. Either join an in-flight compute or become the leader.
             inflight = self._inflight.get(key)
@@ -145,7 +150,7 @@ class ResultCache:
             inflight.event.wait()
             if inflight.error is not None:
                 raise inflight.error
-            return inflight.result
+            return inflight.result, False
 
         # Leader path: run compute outside the lock so other keys are unblocked.
         try:
@@ -165,7 +170,7 @@ class ResultCache:
             if self._inflight.get(key) is inflight:
                 del self._inflight[key]
         inflight.event.set()
-        return table
+        return table, False
 
     def invalidate_all(self) -> None:
         """Drop every cached entry (does not disturb in-flight computations)."""

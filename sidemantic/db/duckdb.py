@@ -30,6 +30,12 @@ class DuckDBAdapter(BaseDatabaseAdapter):
             init_sql: SQL statements to run immediately after connecting
                 (e.g., loading extensions, attaching catalogs, creating secrets)
         """
+        if read_only and path == ":memory:":
+            raise ValueError("DuckDB :memory: databases cannot be opened read-only")
+        self.path = path
+        self.read_only = read_only
+        self.config = dict(config) if config else None
+        self.init_sql = list(init_sql) if init_sql else None
         if not read_only and config is None:
             self.conn = duckdb.connect(path)
         elif config is None:
@@ -42,16 +48,23 @@ class DuckDBAdapter(BaseDatabaseAdapter):
                 self.conn.execute(stmt)
 
     def cursor(self) -> Any:
-        """Return an independent DuckDB cursor for concurrent reads.
+        """Return an execution handle safe for the database kind.
 
-        In duckdb-python, ``conn.cursor()`` creates a new connection that shares
-        the same underlying database. This is the sanctioned pattern for
-        multithreaded reads: each thread gets its own handle, so concurrent
-        ``execute`` calls do not serialize on a single connection. The returned
-        cursor exposes ``execute`` returning a relation with ``fetch_record_batch``
-        and ``fetchone``, matching the result API used across the codebase.
+        File-backed databases get an independently opened connection so query
+        threads never share DuckDB cursor state. In-memory databases cannot be
+        reopened onto the same data, so they use the base class's serialized
+        cursor wrapper.
         """
-        return self.conn.cursor()
+        if self.path == ":memory:":
+            return super().cursor()
+        if self.config is None:
+            cursor = duckdb.connect(self.path, read_only=self.read_only)
+        else:
+            cursor = duckdb.connect(self.path, read_only=self.read_only, config=self.config)
+        if self.init_sql:
+            for stmt in self.init_sql:
+                cursor.execute(stmt)
+        return cursor
 
     def execute(self, sql: str) -> Any:
         """Execute SQL and return DuckDB relation."""
@@ -165,7 +178,10 @@ class DuckDBAdapter(BaseDatabaseAdapter):
                 continue
             value = values[-1]
             if key == "read_only":
-                read_only = bool(parse_value(value))
+                normalized = value.strip().lower()
+                if normalized not in {"true", "false", "1", "0"}:
+                    raise ValueError("DuckDB read_only must be true, false, 1, or 0")
+                read_only = normalized in {"true", "1"}
             else:
                 config[key] = parse_value(value)
 

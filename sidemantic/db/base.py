@@ -3,6 +3,7 @@
 import re
 import threading
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import Any
 
 # Pattern for valid SQL identifiers: starts with letter or underscore,
@@ -13,6 +14,15 @@ _IDENTIFIER_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9
 # Guards lazy creation of each adapter's shared-connection lock so two threads
 # calling cursor() concurrently cannot end up with two different locks.
 _SHARED_LOCK_INIT_GUARD = threading.Lock()
+
+
+@dataclass(frozen=True, slots=True)
+class CancellationOutcome:
+    """Best-effort database cancellation result."""
+
+    supported: bool
+    cancelled: bool
+    diagnostic: str
 
 
 def validate_identifier(value: str, name: str = "identifier") -> str:
@@ -144,6 +154,15 @@ class _SerializedCursor:
             table = reader.read_all()
         return _MaterializedResult(table)
 
+    def execute_control(self, sql: str) -> None:
+        """Execute a session control command without trying to fetch rows."""
+        with self._lock:
+            result = self._adapter.execute(sql)
+            result_cursor = getattr(result, "cursor", None)
+            close = getattr(result_cursor or result, "close", None)
+            if callable(close):
+                close()
+
     def fetch_record_batch(self, result: Any) -> Any:
         """Return a RecordBatchReader; results from ``execute`` are already materialized."""
         if isinstance(result, _MaterializedResult):
@@ -191,6 +210,64 @@ class BaseDatabaseAdapter(ABC):
                     # Store so all fallback cursors for this adapter share one lock.
                     self._shared_connection_lock = lock
         return _SerializedCursor(self, lock)
+
+    def configure_statement_timeout(self, cursor: Any, timeout_seconds: float) -> str | None:
+        """Apply a warehouse-side statement timeout when this dialect supports one.
+
+        Returns ``None`` when applied, otherwise a diagnostic explaining that
+        Sidemantic's local deadline/cancellation is the only available guard.
+        """
+        if timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be positive")
+        execute_control = getattr(cursor, "execute_control", cursor.execute)
+        if self.dialect == "postgres":
+            execute_control(f"SET statement_timeout = {max(1, int(timeout_seconds * 1000))}")
+            return None
+        if self.dialect == "snowflake":
+            import math
+
+            execute_control(f"ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS = {max(1, math.ceil(timeout_seconds))}")
+            return None
+        if self.dialect == "clickhouse":
+            execute_control(f"SET max_execution_time = {timeout_seconds:g}")
+            return None
+        return (
+            f"{self.dialect} adapter does not expose a portable warehouse statement timeout; "
+            "the local execution deadline will request best-effort cancellation"
+        )
+
+    def cancel(self, handle: Any) -> CancellationOutcome:
+        """Best-effort cancellation for an executing cursor/connection."""
+        candidates = [handle, getattr(handle, "cursor", None)]
+        try:
+            candidates.append(self.raw_connection)
+        except Exception:
+            pass
+        for candidate in candidates:
+            if candidate is None:
+                continue
+            for method_name in ("cancel_safe", "cancel", "interrupt", "adbc_cancel"):
+                method = getattr(candidate, method_name, None)
+                if not callable(method):
+                    continue
+                try:
+                    method()
+                except Exception as exc:
+                    return CancellationOutcome(
+                        supported=True,
+                        cancelled=False,
+                        diagnostic=f"{self.dialect} cancellation request failed: {type(exc).__name__}: {exc}",
+                    )
+                return CancellationOutcome(
+                    supported=True,
+                    cancelled=True,
+                    diagnostic=f"{self.dialect} cancellation requested via {method_name}()",
+                )
+        return CancellationOutcome(
+            supported=False,
+            cancelled=False,
+            diagnostic=f"{self.dialect} adapter cannot cancel an in-flight query; warehouse work may continue",
+        )
 
     @abstractmethod
     def execute(self, sql: str) -> Any:

@@ -83,6 +83,29 @@ def test_help_command_resolves_nested_paths(arguments: list[str], usage: str):
     assert not result.stderr
 
 
+@pytest.mark.parametrize(
+    ("arguments", "usage"),
+    [
+        (["help"], "Usage: sidemantic"),
+        (["help", "migrate", "generate"], "Usage: sidemantic migrate generate"),
+    ],
+)
+def test_help_command_bypasses_malformed_project_config(
+    arguments: list[str],
+    usage: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    (tmp_path / "sidemantic.yaml").write_text("models_dir: [\n")
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(app, arguments, prog_name="sidemantic")
+
+    assert result.exit_code == 0, result.output
+    assert usage in result.stdout
+    assert not result.stderr
+
+
 def test_exit_codes_and_stream_separation(tmp_path: Path):
     models = tmp_path / "models"
     _write_model(models)

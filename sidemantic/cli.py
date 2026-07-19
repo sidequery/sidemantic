@@ -240,6 +240,7 @@ def _load_graph_layer(
 
 @app.callback()
 def main(
+    ctx: typer.Context,
     version: bool = typer.Option(
         None, "--version", "-v", callback=version_callback, is_eager=True, help="Show version"
     ),
@@ -255,6 +256,12 @@ def main(
     global _loaded_config, _project_context
 
     cli_state().reset(debug=debug)
+
+    # Help must remain available even when project configuration is malformed,
+    # since it is a recovery path. Click has already resolved the subcommand by
+    # the time the root callback runs, so skip project discovery for this path.
+    if ctx.invoked_subcommand == "help":
+        return
 
     try:
         _project_context = ProjectContext.discover(start_dir=project, config_path=config)

@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import csv
 import dataclasses
+import io
 import json
+import os
 import sys
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import IntEnum
 from pathlib import Path
@@ -41,17 +46,32 @@ class CLIState:
     color: bool | None = None
     redactions: set[str] = field(default_factory=set, repr=False)
 
-    def reset(self, *, debug: bool = False) -> None:
+    def reset(
+        self,
+        *,
+        debug: bool = False,
+        quiet: bool = False,
+        verbose: bool = False,
+        requested_format: str | None = None,
+        plain: bool = False,
+        color: bool | None = None,
+    ) -> None:
         """Reset state at the start of each root invocation."""
 
         self.debug = debug
-        self.quiet = False
-        self.verbose = False
+        self.quiet = quiet
+        self.verbose = verbose or debug
         self.machine_output = False
-        self.requested_format = None
-        self.plain = False
-        self.color = None
+        self.requested_format = requested_format
+        self.plain = plain
+        self.color = color
         self.redactions.clear()
+
+    @property
+    def human_extras(self) -> bool:
+        """Whether hints, decorations, paging, and similar extras are safe."""
+
+        return not (self.quiet or self.machine_output or self.plain)
 
 
 _state = CLIState()
@@ -84,6 +104,58 @@ HELP_REQUESTED_META_KEY = "sidemantic_help_requested"
 
 class ContractGroup(TyperGroup):
     """Root Click group that enforces concise failures and the debug contract."""
+
+    _global_value_options = {"--project", "--config", "--format"}
+    _global_flag_options = {"--plain", "--quiet", "--verbose", "--debug", "--no-color"}
+
+    def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
+        """Accept unambiguous long global options after a subcommand.
+
+        Click normally stops parsing root options after selecting a command.
+        Long Sidemantic presentation/configuration options have no conflicting
+        command-local meaning, so move only those options to the root parser.
+        Short options keep Click's normal position-sensitive behavior because
+        ``-q`` is already the pre-aggregation query-source option.
+        """
+
+        if ctx.parent is None:
+            args = self._hoist_global_options(args)
+            explicit_no_color = "--no-color" in args
+            ctx.color = color_enabled(no_color=explicit_no_color, is_tty=is_terminal(sys.stdout))
+        return super().parse_args(ctx, args)
+
+    @classmethod
+    def _hoist_global_options(cls, args: list[str]) -> list[str]:
+        global_args: list[str] = []
+        remaining: list[str] = []
+        index = 0
+        after_separator = False
+        while index < len(args):
+            token = args[index]
+            if token == "--":
+                after_separator = True
+                remaining.append(token)
+                index += 1
+                continue
+            if not after_separator and token in cls._global_flag_options:
+                global_args.append(token)
+                index += 1
+                continue
+            matching_value_option = next(
+                (option for option in cls._global_value_options if token == option or token.startswith(f"{option}=")),
+                None,
+            )
+            if not after_separator and matching_value_option is not None:
+                global_args.append(token)
+                if token == matching_value_option and index + 1 < len(args):
+                    global_args.append(args[index + 1])
+                    index += 2
+                else:
+                    index += 1
+                continue
+            remaining.append(token)
+            index += 1
+        return [*global_args, *remaining]
 
     def invoke(self, ctx: click.Context) -> Any:
         if self._is_help_request(ctx):
@@ -184,6 +256,153 @@ def _json_default(value: object) -> Any:
     if hasattr(value, "to_dict"):
         return value.to_dict()
     raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+
+OUTPUT_FORMATS = ("table", "csv", "json", "jsonl")
+
+
+def resolve_output_format(*, default: str = "table", json_output: bool = False) -> str:
+    """Resolve the current output format and enforce compatible aliases."""
+
+    state = cli_state()
+    requested = state.requested_format
+    if requested is not None:
+        requested = requested.lower()
+        if requested not in OUTPUT_FORMATS:
+            raise InvocationError(f"--format must be one of: {', '.join(OUTPUT_FORMATS)}")
+    if json_output and requested not in {None, "json"}:
+        raise InvocationError("--json cannot be combined with a non-JSON --format")
+    selected = "json" if json_output else (requested or default)
+    if state.plain:
+        if json_output or requested not in {None, "table"}:
+            raise InvocationError("--plain cannot be combined with --format csv, json, or jsonl")
+        selected = "table"
+    state.machine_output = selected in {"csv", "json", "jsonl"}
+    return selected
+
+
+def _record_value(value: object) -> object:
+    if value is None:
+        return ""
+    if isinstance(value, (str, int, float, bool)):
+        return value
+    return json.dumps(value, sort_keys=True, default=_json_default)
+
+
+def render_records(
+    records: Sequence[dict[str, object]],
+    *,
+    columns: Sequence[str] | None = None,
+    output_format: str,
+    json_value: object | None = None,
+) -> str:
+    """Render a record collection under the standard table/CSV/JSON/JSONL contract."""
+
+    selected_columns = list(columns or (records[0].keys() if records else []))
+    if output_format == "json":
+        return json.dumps(
+            json_value if json_value is not None else list(records), indent=2, sort_keys=True, default=_json_default
+        )
+    if output_format == "jsonl":
+        return "\n".join(json.dumps(record, sort_keys=True, default=_json_default) for record in records)
+
+    buffer = io.StringIO()
+    if output_format == "csv":
+        writer = csv.DictWriter(buffer, fieldnames=selected_columns, extrasaction="ignore", lineterminator="\n")
+        writer.writeheader()
+        for record in records:
+            writer.writerow({column: _record_value(record.get(column)) for column in selected_columns})
+        return buffer.getvalue().rstrip("\n")
+
+    rows = [[str(_record_value(record.get(column))) for column in selected_columns] for record in records]
+    if cli_state().plain:
+        writer = csv.writer(buffer, dialect="excel-tab", lineterminator="\n")
+        if selected_columns:
+            writer.writerow(selected_columns)
+        writer.writerows(rows)
+        return buffer.getvalue().rstrip("\n")
+    if not selected_columns:
+        return ""
+    widths = [
+        max(len(column), *(len(row[index]) for row in rows)) if rows else len(column)
+        for index, column in enumerate(selected_columns)
+    ]
+    header = "  ".join(column.ljust(widths[index]) for index, column in enumerate(selected_columns)).rstrip()
+    separator = "  ".join("-" * width for width in widths).rstrip()
+    body = ["  ".join(value.ljust(widths[index]) for index, value in enumerate(row)).rstrip() for row in rows]
+    return "\n".join([header, separator, *body])
+
+
+def emit_records(
+    records: Sequence[dict[str, object]],
+    *,
+    columns: Sequence[str] | None = None,
+    output_format: str | None = None,
+    json_value: object | None = None,
+) -> None:
+    """Write standard structured records to stdout."""
+
+    selected = output_format or resolve_output_format()
+    rendered = render_records(records, columns=columns, output_format=selected, json_value=json_value)
+    emit_result(rendered)
+
+
+def color_enabled(*, no_color: bool = False, is_tty: bool | None = None) -> bool:
+    """Resolve standard terminal color controls with explicit disable winning."""
+
+    if no_color or _env_truthy("SIDEMANTIC_NO_COLOR") or os.environ.get("NO_COLOR", ""):
+        return False
+    if os.environ.get("FORCE_COLOR", ""):
+        return True
+    if os.environ.get("TERM", "").lower() == "dumb":
+        return False
+    return is_terminal(sys.stdout) if is_tty is None else is_tty
+
+
+def _env_truthy(name: str) -> bool:
+    value = os.environ.get(name)
+    return value is not None and value.strip().lower() not in {"", "0", "false", "no", "off"}
+
+
+def is_terminal(stream: TextIO) -> bool:
+    """Return whether a text stream is attached to an interactive terminal."""
+
+    isatty = getattr(stream, "isatty", None)
+    return bool(isatty and isatty())
+
+
+def progress_enabled(*, is_tty: bool | None = None) -> bool:
+    """Return whether animated progress is safe for the current invocation."""
+
+    state = cli_state()
+    terminal = is_terminal(sys.stderr) if is_tty is None else is_tty
+    return terminal and state.human_extras and not _env_truthy("CI")
+
+
+@contextmanager
+def progress(message: str) -> Iterator[None]:
+    """Show a transient TTY-only spinner around a potentially slow operation."""
+
+    if not progress_enabled():
+        yield
+        return
+    from rich.console import Console
+
+    console = Console(stderr=True, force_terminal=cli_state().color)
+    with console.status(message):
+        yield
+
+
+def credential_file_from_env(name: str) -> Path | None:
+    """Resolve a public credential-file environment variable from cwd."""
+
+    value = os.environ.get(name)
+    if not value:
+        return None
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    return path.resolve()
 
 
 def emit_json(value: object) -> None:

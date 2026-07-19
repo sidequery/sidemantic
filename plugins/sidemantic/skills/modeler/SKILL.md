@@ -40,10 +40,13 @@ uv run sidemantic validate models/ --verbose
 uv run sidemantic info models/
 uv run sidemantic query \
   "SELECT revenue, status FROM orders ORDER BY revenue DESC LIMIT 5" \
-  --models models/ --connection duckdb:///data.duckdb
+  --models models/ --connection duckdb:///data.duckdb --format json
 ```
 
 Assumes an `orders` table already exists in `data.duckdb` with `status` and `order_amount` columns.
+Use `--format json` or `--format jsonl` when consuming CLI results in automation;
+use `--plain` for stable tab-separated text. Primary data is stdout and status is
+stderr, so do not merge the streams before parsing.
 
 ### YAML (preferred for file-based models)
 

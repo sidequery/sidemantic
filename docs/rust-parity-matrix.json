@@ -1,8 +1,10 @@
 {
   "version": 1,
   "description": "Strict-mode source of truth for Python surfaces that can require Rust-backed execution.",
+  "runtime_contract": "docs/runtime-conformance.yml",
+  "runtime_lifecycle": "experimental",
   "status_legend": {
-    "rust_backed": "The subsystem is backed by sidemantic-rs and may be required by strict mode.",
+    "rust_backed": "The subsystem is backed by the experimental sidemantic-rs runtime and may be required by strict mode.",
     "rust_backed_opt_in": "A Rust path exists but is not complete enough for strict all-subsystem enforcement.",
     "python_only": "The subsystem is intentionally Python-only."
   },

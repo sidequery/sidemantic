@@ -3,6 +3,7 @@
 Parses user SQL and rewrites it to use the semantic layer.
 """
 
+import logging
 import os
 import re
 from dataclasses import dataclass
@@ -10,15 +11,24 @@ from typing import Any
 
 import sqlglot
 from sqlglot import exp
+from sqlglot.errors import SqlglotError
 from sqlglot.tokens import TokenType
 
 from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.rust_bridge import get_rust_module, graph_to_rust_yaml
 from sidemantic.sql.aggregation_detection import sql_has_aggregate
 from sidemantic.sql.generator import SQLGenerator
+from sidemantic.sql.parsing import parse_fragment
 from sidemantic.sql.planner import CandidatePlan, RewriteExplanation, SemanticQueryPlan
 
 _YARDSTICK_SYNTAX_HINT_RE = re.compile(r"\b(?:SEMANTIC|AGGREGATE|AT)\b|\{", re.IGNORECASE)
+
+# Expected failures for speculative optimizer paths. These paths may reject a
+# query shape, but must not hide programming errors such as AttributeError.
+_EXPECTED_REWRITE_FAILURES = (KeyError, ValueError, SqlglotError)
+
+# PyO3/import/version failures that make the optional Rust backend unavailable.
+_RUST_BACKEND_FAILURES = (ImportError, OSError, RuntimeError, TypeError, ValueError)
 
 
 @dataclass
@@ -131,14 +141,17 @@ class QueryRewriter:
         self._rust_no_fallback = os.getenv("SIDEMANTIC_RS_NO_FALLBACK", "0") == "1"
         self._rust_module = None
         self._rust_models_yaml: str | None = None
+        self.rust_fallback_reason: str | None = None
 
         if self._use_rust_rewriter:
             try:
                 self._rust_module = get_rust_module()
                 self._rust_models_yaml = graph_to_rust_yaml(self.graph)
-            except Exception:
+            except _RUST_BACKEND_FAILURES as exc:
                 if self._rust_no_fallback:
                     raise
+                self.rust_fallback_reason = f"{type(exc).__name__}: {exc}"
+                logging.debug("Rust rewriter initialization failed; using Python", exc_info=True)
 
     def rewrite(self, sql: str, strict: bool = True, user_attributes: dict | None = None) -> str:
         """Rewrite user SQL to use semantic layer.
@@ -186,7 +199,7 @@ class QueryRewriter:
         if self._looks_like_yardstick_query(sql):
             try:
                 return cache_result(self._rewrite_yardstick_query(sql, strict=strict))
-            except Exception:
+            except _EXPECTED_REWRITE_FAILURES:
                 if strict:
                     raise
                 # Keep non-strict passthrough behavior when Yardstick rewrite cannot be applied safely.
@@ -198,7 +211,7 @@ class QueryRewriter:
         if ";" in sql:
             try:
                 statements = sqlglot.parse(sql, dialect=self.dialect)
-            except Exception:
+            except SqlglotError:
                 if strict:
                     raise
                 # In non-strict mode, pass through unparseable SQL
@@ -211,10 +224,10 @@ class QueryRewriter:
 
         # Parse SQL
         try:
-            parsed = sqlglot.parse_one(sql, dialect=self.dialect)
-        except Exception as e:
+            parsed = parse_fragment(sql, self.dialect)
+        except SqlglotError as e:
             if strict:
-                raise ValueError(f"Failed to parse SQL: {e}")
+                raise ValueError(f"Failed to parse SQL: {e}") from e
             # In non-strict mode, pass through unparseable SQL (e.g., SHOW, SET commands)
             return cache_result(sql)
 
@@ -233,7 +246,7 @@ class QueryRewriter:
         if self._graph_has_yardstick_models() and self._contains_implicit_yardstick_measure_query(parsed):
             try:
                 return cache_result(self._rewrite_yardstick_query(sql, strict=strict, allow_plain_measures=True))
-            except Exception:
+            except _EXPECTED_REWRITE_FAILURES:
                 if strict:
                     raise
                 return cache_result(sql)
@@ -313,7 +326,7 @@ class QueryRewriter:
         if self._looks_like_yardstick_query(sql):
             try:
                 rewritten_sql = self._rewrite_yardstick_query(sql, strict=strict)
-            except Exception as e:
+            except _EXPECTED_REWRITE_FAILURES as e:
                 if strict:
                     raise
                 return self._passthrough_explanation(
@@ -345,7 +358,7 @@ class QueryRewriter:
         if ";" in sql:
             try:
                 statements = sqlglot.parse(sql, dialect=self.dialect)
-            except Exception as e:
+            except SqlglotError as e:
                 if strict:
                     raise
                 return self._passthrough_explanation(
@@ -359,10 +372,10 @@ class QueryRewriter:
                 return self._passthrough_explanation(sql, reason="multiple_statements")
 
         try:
-            parsed = sqlglot.parse_one(sql, dialect=self.dialect)
-        except Exception as e:
+            parsed = parse_fragment(sql, self.dialect)
+        except SqlglotError as e:
             if strict:
-                raise ValueError(f"Failed to parse SQL: {e}")
+                raise ValueError(f"Failed to parse SQL: {e}") from e
             return self._passthrough_explanation(
                 sql,
                 reason="parse_failed",
@@ -383,7 +396,7 @@ class QueryRewriter:
         if self._graph_has_yardstick_models() and self._contains_implicit_yardstick_measure_query(parsed):
             try:
                 rewritten_sql = self._rewrite_yardstick_query(sql, strict=strict, allow_plain_measures=True)
-            except Exception as e:
+            except _EXPECTED_REWRITE_FAILURES as e:
                 if strict:
                     raise
                 return self._passthrough_explanation(
@@ -597,7 +610,7 @@ class QueryRewriter:
 
         try:
             plan = self._plan_simple_query(source.inner_select.copy())
-        except Exception as e:
+        except _EXPECTED_REWRITE_FAILURES as e:
             rejected_rules["wrapped_semantic_optimizer"] = f"inner semantic query cannot be planned: {e}"
             return None, rejected_rules
 
@@ -921,7 +934,7 @@ class QueryRewriter:
 
         try:
             plan = self._plan_simple_query(base_cte.this.copy())
-        except Exception as e:
+        except _EXPECTED_REWRITE_FAILURES as e:
             rejected_rules["linear_cte_chain_flattening"] = f"base semantic CTE cannot be planned: {e}"
             return None
 
@@ -1180,7 +1193,7 @@ class QueryRewriter:
 
         try:
             plan = self._plan_simple_query(source.inner_select.copy())
-        except Exception as e:
+        except _EXPECTED_REWRITE_FAILURES as e:
             rejected_rules[rule_name] = f"ranked semantic source cannot be planned: {e}"
             return None
 
@@ -1347,7 +1360,7 @@ class QueryRewriter:
 
         try:
             plan = self._plan_simple_query(source.inner_select.copy())
-        except Exception as e:
+        except _EXPECTED_REWRITE_FAILURES as e:
             rejected_rules[rule_name] = f"QUALIFY semantic source cannot be planned: {e}"
             return None
 
@@ -2378,7 +2391,7 @@ class QueryRewriter:
                     continue
                 try:
                     scopes.append(self._plan_simple_query(nested_select.copy()))
-                except Exception as e:
+                except _EXPECTED_REWRITE_FAILURES as e:
                     warnings.append(f"Could not plan semantic scope {nested_select.sql(dialect=self.dialect)}: {e}")
         finally:
             if had_inferred_table:
@@ -2773,7 +2786,7 @@ class QueryRewriter:
     def _single_model_preaggregation_eligibility(self, plan: SemanticQueryPlan) -> dict[str, object]:
         try:
             model_names = self.generator._find_required_models(plan.metrics, plan.dimensions, plan.filters)
-        except Exception as e:
+        except _EXPECTED_REWRITE_FAILURES as e:
             return {
                 "eligible": False,
                 "reason": "model_resolution_failed",
@@ -2830,7 +2843,7 @@ class QueryRewriter:
                 offset=plan.offset,
                 aliases=plan.aliases,
             )
-        except Exception as e:
+        except _EXPECTED_REWRITE_FAILURES as e:
             return {
                 "eligible": False,
                 "reason": "preaggregation_check_failed",
@@ -2950,7 +2963,7 @@ class QueryRewriter:
 
         try:
             tokens = sqlglot.tokenize(sql, read=self.dialect)
-        except Exception:
+        except SqlglotError:
             return False
 
         if not tokens:
@@ -3125,8 +3138,8 @@ class QueryRewriter:
             return self.rewrite(transformed_sql, strict=strict)
 
         try:
-            parsed = sqlglot.parse_one(transformed_sql, dialect=self.dialect)
-        except Exception as e:
+            parsed = parse_fragment(transformed_sql, self.dialect)
+        except SqlglotError as e:
             raise ValueError(f"Failed to parse Yardstick SQL: {e}") from e
 
         select_scopes = list(parsed.find_all(exp.Select))
@@ -3300,9 +3313,7 @@ class QueryRewriter:
                 single_model_scope=single_model_scope,
             )
 
-        replacement_expr_cache = {
-            key: sqlglot.parse_one(value, dialect=self.dialect) for key, value in replacement_sql.items()
-        }
+        replacement_expr_cache = {key: parse_fragment(value, self.dialect) for key, value in replacement_sql.items()}
 
         def replace_placeholder(node: exp.Expression) -> exp.Expression:
             if isinstance(node, exp.Column) and not node.table and node.name in replacement_expr_cache:
@@ -3695,8 +3706,8 @@ class QueryRewriter:
 
     def _is_yardstick_aggregate_argument(self, argument_sql: str) -> bool:
         try:
-            argument = sqlglot.parse_one(argument_sql, dialect=self.dialect)
-        except Exception:
+            argument = parse_fragment(argument_sql, self.dialect)
+        except SqlglotError:
             return False
         return isinstance(argument, exp.Column)
 
@@ -3730,7 +3741,7 @@ class QueryRewriter:
         return len(select.args.get("joins") or []) == 0
 
     def _parse_relation_factor(self, relation_sql: str) -> exp.Expression:
-        probe = sqlglot.parse_one(f"SELECT 1 FROM {relation_sql}", dialect=self.dialect)
+        probe = parse_fragment(f"SELECT 1 FROM {relation_sql}", self.dialect)
         from_clause = probe.args.get("from_")
         if not from_clause:
             raise ValueError(f"Failed to parse relation: {relation_sql}")
@@ -3994,7 +4005,7 @@ class QueryRewriter:
         if dimension_sql.lower() == f"{table_alias}.{column.name}".lower():
             return None
 
-        expr = sqlglot.parse_one(dimension_sql, dialect=self.dialect)
+        expr = parse_fragment(dimension_sql, self.dialect)
         expr = self._rewrite_tables(
             expr,
             table_mapping={model_name: table_alias},
@@ -4070,8 +4081,8 @@ class QueryRewriter:
     def _resolve_yardstick_measure_call(self, argument_sql: str, source_models: dict[str, str]) -> tuple[str, str, str]:
         """Resolve AGGREGATE(argument) to (model_alias, model_name, measure_name)."""
         try:
-            arg_expr = sqlglot.parse_one(argument_sql, dialect=self.dialect)
-        except Exception as e:
+            arg_expr = parse_fragment(argument_sql, self.dialect)
+        except SqlglotError as e:
             raise ValueError(f"Invalid AGGREGATE argument '{argument_sql}': {e}") from e
 
         if not isinstance(arg_expr, exp.Column):
@@ -4170,7 +4181,7 @@ class QueryRewriter:
             visiting.add(visit_key)
             # Replace {model} placeholder (used by LookML adapter) with model alias
             _formula_sql = measure.sql.replace("{model}", model_alias)
-            formula_expr = sqlglot.parse_one(_formula_sql, dialect=self.dialect)
+            formula_expr = parse_fragment(_formula_sql, self.dialect)
 
             def replace_measure_refs(node: exp.Expression) -> exp.Expression:
                 if not isinstance(node, exp.Column):
@@ -4196,7 +4207,7 @@ class QueryRewriter:
                     single_model_scope=single_model_scope,
                     visiting=visiting.copy(),
                 )
-                return sqlglot.parse_one(dep_sql, dialect=self.dialect)
+                return parse_fragment(dep_sql, self.dialect)
 
             rewritten_formula = formula_expr.transform(replace_measure_refs)
             return f"({rewritten_formula.sql(dialect=self.dialect)})"
@@ -4257,7 +4268,7 @@ class QueryRewriter:
         for measure_filter in measure.filters or []:
             # Replace {model} placeholder (used by LookML adapter) with inner alias
             _filter_sql = measure_filter.replace("{model}", "_inner")
-            filter_expr = sqlglot.parse_one(_filter_sql, dialect=self.dialect)
+            filter_expr = parse_fragment(_filter_sql, self.dialect)
             if default_alias and single_model_scope:
                 filter_expr = self._qualify_unaliased_columns(filter_expr, default_alias)
             filter_expr = self._rewrite_tables(
@@ -4333,7 +4344,7 @@ class QueryRewriter:
     ) -> str:
         # Replace {model} placeholder (used by LookML adapter) with target alias
         sql_expr = sql_expr.replace("{model}", target_alias)
-        parsed = sqlglot.parse_one(sql_expr, dialect=self.dialect)
+        parsed = parse_fragment(sql_expr, self.dialect)
         parsed = self._rewrite_tables(
             parsed,
             table_mapping={
@@ -4347,7 +4358,7 @@ class QueryRewriter:
 
     def _is_window_measure_expression(self, sql_expr: str) -> bool:
         # Strip {model} placeholder to avoid parse errors
-        parsed = sqlglot.parse_one(sql_expr.replace("{model}", "__model"), dialect=self.dialect)
+        parsed = parse_fragment(sql_expr.replace("{model}", "__model"), self.dialect)
         return any(isinstance(node, exp.Window) for node in parsed.walk())
 
     def _build_yardstick_context_dimensions(
@@ -4404,10 +4415,10 @@ class QueryRewriter:
                 for dimension in model.dimensions:
                     dim_expr = dimension.sql_expr
                     try:
-                        parsed_dim = sqlglot.parse_one(dim_expr, dialect=self.dialect)
+                        parsed_dim = parse_fragment(dim_expr, self.dialect)
                         if isinstance(parsed_dim, exp.Column) and parsed_dim.name.lower() == dimension.name.lower():
                             unsafe_aliases.add(dimension.name.lower())
-                    except Exception:
+                    except SqlglotError:
                         if dim_expr.strip().lower() == dimension.name.lower():
                             unsafe_aliases.add(dimension.name.lower())
 
@@ -4656,11 +4667,11 @@ class QueryRewriter:
 
             replacement = "NULL"
             try:
-                target_expr = sqlglot.parse_one(target_sql, dialect=self.dialect)
+                target_expr = parse_fragment(target_sql, self.dialect)
                 signature = self._expr_signature_without_tables(target_expr)
                 if signature in context_signatures:
                     replacement = target_sql
-            except Exception:
+            except SqlglotError:
                 replacement = "NULL"
 
             parts.append(replacement)
@@ -4724,7 +4735,7 @@ class QueryRewriter:
                     continue
 
                 for target_sql in self._split_all_modifier_targets(modifier):
-                    target_expr = sqlglot.parse_one(target_sql, dialect=self.dialect)
+                    target_expr = parse_fragment(target_sql, self.dialect)
                     if default_alias and single_model:
                         target_expr = self._qualify_unaliased_columns(target_expr, default_alias)
                     target_signature = self._expr_signature_without_tables(target_expr)
@@ -4737,7 +4748,7 @@ class QueryRewriter:
                 if has_all_global:
                     continue
                 where_sql = modifier[tokens[0].end + 1 :].strip()
-                where_expr = sqlglot.parse_one(where_sql, dialect=self.dialect)
+                where_expr = parse_fragment(where_sql, self.dialect)
                 # In AT(WHERE ...), unqualified columns belong to the inner evaluation context.
                 # Keep explicitly-qualified outer aliases untouched so predicates can correlate
                 # (e.g. `prod_name = o.prod_name` from paper listing-style queries).
@@ -4761,7 +4772,7 @@ class QueryRewriter:
                     # Support Yardstick predicate-style SET forms like:
                     # AT (SET region IN ('North', 'South'))
                     set_predicate_sql = modifier[tokens[0].end + 1 :].strip()
-                    set_predicate_expr = sqlglot.parse_one(set_predicate_sql, dialect=self.dialect)
+                    set_predicate_expr = parse_fragment(set_predicate_sql, self.dialect)
 
                     if default_alias and single_model:
                         set_predicate_expr = self._qualify_unaliased_columns(set_predicate_expr, default_alias)
@@ -4787,14 +4798,14 @@ class QueryRewriter:
                     where_predicates.append(set_inner_predicate.sql(dialect=self.dialect))
                     continue
 
-                left_expr = sqlglot.parse_one(left_sql, dialect=self.dialect)
-                right_expr = sqlglot.parse_one(
+                left_expr = parse_fragment(left_sql, self.dialect)
+                right_expr = parse_fragment(
                     self._rewrite_current_keyword(
                         right_sql,
                         context_dimensions,
                         fixed_context_signatures=fixed_context_signatures,
                     ),
-                    dialect=self.dialect,
+                    self.dialect,
                 )
 
                 if default_alias and single_model:
@@ -4875,7 +4886,7 @@ class QueryRewriter:
                 # Merge user CTEs into the generated SQL so references
                 # from filters/expressions (e.g. IN (SELECT ... FROM cte))
                 # remain valid.
-                rewritten = sqlglot.parse_one(rewritten_sql, dialect=self.dialect)
+                rewritten = parse_fragment(rewritten_sql, self.dialect)
                 gen_with = rewritten.args.get("with_")
                 if gen_with:
                     # Check for CTE name collisions between user and generated CTEs
@@ -4963,7 +4974,7 @@ class QueryRewriter:
             return {
                 self.generator._cte_name(model_name) for model_name in model_names if model_name in self.graph.models
             }
-        except Exception:
+        except _EXPECTED_REWRITE_FAILURES:
             return set()
         finally:
             if had_inferred_table:
@@ -4988,9 +4999,11 @@ class QueryRewriter:
                 models_yaml = graph_to_rust_yaml(self.graph)
                 self._rust_models_yaml = models_yaml
             return self._rust_module.rewrite_with_yaml(models_yaml, sql)
-        except Exception as e:
+        except _RUST_BACKEND_FAILURES as e:
             if self._rust_no_fallback:
                 raise ValueError(f"Rust rewriter failed: {e}") from e
+            self.rust_fallback_reason = f"{type(e).__name__}: {e}"
+            logging.debug("Rust rewrite failed; using Python", exc_info=True)
             return None
 
     def _prepare_sql_for_rust(self, parsed: exp.Select, original_sql: str) -> str:
@@ -5009,8 +5022,8 @@ class QueryRewriter:
                 graph_metric = self.graph.metrics[node.name]
                 if graph_metric.sql:
                     try:
-                        metric_expr = sqlglot.parse_one(graph_metric.sql, dialect=self.dialect)
-                    except Exception:
+                        metric_expr = parse_fragment(graph_metric.sql, self.dialect)
+                    except SqlglotError:
                         return original_sql
                     rewritten_projections.append(exp.alias_(metric_expr, alias_name or node.name, copy=False))
                     changed = True
@@ -5362,7 +5375,7 @@ class QueryRewriter:
 
         try:
             plan = self._plan_simple_query(select.copy())
-        except Exception as e:
+        except _EXPECTED_REWRITE_FAILURES as e:
             rejected_rules["semantic_island_optimization"] = f"semantic island cannot be planned: {e}"
             return None, None, rejected_rules
 
@@ -5388,12 +5401,12 @@ class QueryRewriter:
 
     def _parse_island_replacement(self, rewritten_sql: str, name: str, *, as_set_branch: bool) -> exp.Expression:
         if not as_set_branch:
-            return sqlglot.parse_one(rewritten_sql, dialect=self.dialect)
+            return parse_fragment(rewritten_sql, self.dialect)
 
         alias = self._safe_internal_alias(f"{name}_semantic")
-        return sqlglot.parse_one(
+        return parse_fragment(
             f"SELECT * FROM (\n{rewritten_sql}\n) AS {alias}",
-            dialect=self.dialect,
+            self.dialect,
         )
 
     def _safe_internal_alias(self, name: str) -> str:
@@ -5989,8 +6002,8 @@ class QueryRewriter:
             return False
 
         try:
-            parsed = sqlglot.parse_one(filter_expr, dialect=self.dialect)
-        except Exception:
+            parsed = parse_fragment(filter_expr, self.dialect)
+        except SqlglotError:
             return False
 
         for column in parsed.find_all(exp.Column):

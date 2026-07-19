@@ -43,6 +43,8 @@ def test_repo_matrix_declares_rust_backed_strict_subsystems():
     matrix = rust_parity._load_parity_matrix()
     subsystems = matrix["subsystems"]
 
+    assert matrix["runtime_contract"] == "docs/runtime-conformance.yml"
+    assert matrix["runtime_lifecycle"] == "experimental"
     assert subsystems["sql_generator_entrypoint"]["status"] == "rust_backed"
     assert subsystems["semantic_core_query_validation"]["status"] == "rust_backed"
     assert subsystems["semantic_sql_rewriter"]["status"] == "rust_backed_opt_in"
@@ -110,7 +112,7 @@ def test_missing_matrix_falls_back_to_python_only(monkeypatch, tmp_path):
         rust_parity.require_rust_subsystem("sql_generator_entrypoint", "compile")
 
 
-def test_invalid_matrix_falls_back_to_python_only(monkeypatch, tmp_path):
+def test_invalid_matrix_fails_with_source_context(monkeypatch, tmp_path):
     docs = tmp_path / "docs"
     docs.mkdir()
     (docs / "rust-parity-matrix.json").write_text("{")
@@ -118,5 +120,7 @@ def test_invalid_matrix_falls_back_to_python_only(monkeypatch, tmp_path):
     monkeypatch.setenv("SIDEMANTIC_RS_STRICT_SUBSYSTEMS", "sql_generator_entrypoint")
     rust_parity.strict_targets.cache_clear()
 
-    with pytest.raises(RuntimeError, match="python_only"):
+    with pytest.raises(rust_parity.ParityMatrixError, match="rust-parity-matrix.json") as error:
         rust_parity.require_rust_subsystem("sql_generator_entrypoint", "compile")
+
+    assert isinstance(error.value.__cause__, json.JSONDecodeError)

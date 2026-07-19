@@ -1,7 +1,9 @@
 """Global registry for auto-registration of models and measures."""
 
-from contextvars import ContextVar
+from contextvars import ContextVar, Token
 from typing import TYPE_CHECKING
+
+from sidemantic.validation import MetricValidationError
 
 if TYPE_CHECKING:
     from .semantic_layer import SemanticLayer
@@ -15,9 +17,14 @@ def get_current_layer() -> "SemanticLayer | None":
     return _current_layer.get()
 
 
-def set_current_layer(layer: "SemanticLayer | None"):
+def set_current_layer(layer: "SemanticLayer | None") -> Token:
     """Set the current semantic layer context."""
-    _current_layer.set(layer)
+    return _current_layer.set(layer)
+
+
+def reset_current_layer(token: Token) -> None:
+    """Restore the layer that was active before ``set_current_layer``."""
+    _current_layer.reset(token)
 
 
 def auto_register_model(model):
@@ -48,7 +55,7 @@ def auto_register_metric(metric):
         if not metric.agg or metric.type in ("derived", "ratio"):
             try:
                 layer.add_metric(metric)
-            except Exception:
+            except (ValueError, MetricValidationError):
                 # Best-effort: metric might already exist or validation might fail during init
                 import logging
 

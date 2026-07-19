@@ -188,10 +188,11 @@ class MetricFlowAdapter(BaseAdapter):
         """
         import sqlglot
         from sqlglot import exp
+        from sqlglot.errors import SqlglotError
 
         try:
             parsed = sqlglot.parse_one(sql)
-        except Exception:
+        except SqlglotError:
             return sql
 
         for column in parsed.find_all(exp.Column):
@@ -210,10 +211,11 @@ class MetricFlowAdapter(BaseAdapter):
         """
         import sqlglot
         from sqlglot import exp
+        from sqlglot.errors import SqlglotError
 
         try:
             parsed = sqlglot.parse_one(sql)
-        except Exception:
+        except SqlglotError:
             return False
 
         for column in parsed.find_all(exp.Column):

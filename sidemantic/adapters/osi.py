@@ -636,7 +636,7 @@ class OSIAdapter(BaseAdapter):
                     try:
                         transpiled = sqlglot.transpile(sql_expr, read="duckdb", write=target)[0]
                         result.append({"dialect": dialect, "expression": transpiled})
-                    except Exception:
+                    except sqlglot.errors.SqlglotError:
                         # Fallback to original expression if transpilation fails
                         result.append({"dialect": dialect, "expression": sql_expr})
                 else:

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { DashboardChart, DashboardDocument } from "../data/dashboardTypes";
-import { NULL_TOKEN } from "../data/types";
+import { NULL_TOKEN, type Catalog } from "../data/types";
 import {
   brushableDashboardDimension,
   dashboardCategorySeries,
@@ -203,6 +203,12 @@ describe("dashboard selections", () => {
     expect(
       dashboardRangeFilter("orders.created_at__day", { from: "2026-03-01", to: "2026-03-02" }),
     ).toBe("orders.created_at >= '2026-03-01' AND orders.created_at < '2026-03-03'");
+    expect(
+      dashboardRangeFilter("orders.created_at__month", {
+        from: "2026-01-01T00:00:00",
+        to: "2026-01-01T00:00:00",
+      }),
+    ).toBe("orders.created_at >= '2026-01-01T00:00:00' AND orders.created_at < '2026-02-01T00:00:00.000Z'");
   });
 
   test("expands selected time buckets against their base dimension", () => {
@@ -297,6 +303,31 @@ describe("dashboard selections", () => {
     );
     expect(url.searchParams.get("from")).toBe("2026-01-01");
     expect(url.searchParams.get("to")).toBe("2026-03-31");
+  });
+
+  test("uses a graph metric's owner model in explorer links", () => {
+    const chart: DashboardChart = { id: "revenue", query: { metrics: ["total_revenue"] } };
+    const catalog: Catalog = {
+      models: [],
+      graphMetrics: [{
+        ref: "total_revenue",
+        name: "total_revenue",
+        label: "Total revenue",
+        ownerModel: "orders",
+      }],
+    };
+    const url = new URL(
+      dashboardExploreUrl(
+        document,
+        chart,
+        { tab: "overview", filters: {}, ranges: {}, filterSources: {}, rangeSources: {} },
+        {},
+        catalog,
+      ),
+      "https://example.test",
+    );
+    expect(url.searchParams.get("model")).toBe("orders");
+    expect(url.searchParams.get("metric")).toBe("total_revenue");
   });
 
   test("keeps tab-scoped interaction state out of charts on other tabs", () => {

@@ -272,7 +272,7 @@ function DashboardChartPanel({
           >
             {detailsOpen ? "Hide details" : "Drill details"}
           </button>
-          <a href={dashboardExploreUrl(document, chart, state, types)} className="border border-line px-2 py-1 text-2xs text-muted hover:border-faint hover:text-ink">
+          <a href={dashboardExploreUrl(document, chart, state, types, catalog)} className="border border-line px-2 py-1 text-2xs text-muted hover:border-faint hover:text-ink">
             Explore from here
           </a>
           <CsvDownload chart={chart} columns={columns} rows={rows} />

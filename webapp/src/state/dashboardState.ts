@@ -1,5 +1,5 @@
 import type { DashboardChart, DashboardDocument, DashboardTab } from "../data/dashboardTypes";
-import { aliasOf, NULL_TOKEN, type ResultRow, type StructuredQuery } from "../data/types";
+import { aliasOf, NULL_TOKEN, type Catalog, type ResultRow, type StructuredQuery } from "../data/types";
 import { displayDimValue, sqlLiteral } from "../lib/format";
 import { filterExprs, type DimTypes } from "../lib/queries";
 
@@ -120,7 +120,8 @@ export function dashboardChartType(chart: DashboardChart, types: DimTypes): "bar
 }
 
 function nextBucketStart(value: string, grain: string): string | null {
-  const date = new Date(value);
+  const timezoneSafeValue = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/.test(value) ? `${value}Z` : value;
+  const date = new Date(timezoneSafeValue);
   if (!Number.isFinite(date.getTime())) return null;
   if (grain === "second") date.setUTCSeconds(date.getUTCSeconds() + 1);
   else if (grain === "minute") date.setUTCMinutes(date.getUTCMinutes() + 1);
@@ -250,11 +251,15 @@ export function dashboardExploreUrl(
   chart: DashboardChart,
   state: DashboardViewState,
   types: DimTypes = {},
+  catalog?: Catalog,
 ): string {
   const encoded = chart.encoding?.y;
   const metric = (Array.isArray(encoded) ? encoded[0] : encoded) ?? chart.query.metrics[0] ?? "";
   const dimensions = chart.query.dimensions ?? [];
-  const model = metric.includes(".") ? metric.split(".")[0] : dimensions[0]?.split(".")[0] ?? "";
+  const graphMetric = catalog?.graphMetrics.find((candidate) => candidate.ref === metric);
+  const model = metric.includes(".")
+    ? metric.split(".")[0]
+    : dimensions[0]?.split(".")[0] ?? graphMetric?.ownerModel ?? graphMetric?.model ?? "";
   const scoped = dashboardScopedInteractions(document, chart, state);
   const grainedSelections = Object.entries(scoped.filters).flatMap(([dimension, value]) => {
     const grained = timeGrain(dimension);

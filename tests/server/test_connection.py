@@ -165,6 +165,29 @@ def test_secure_pg_class_uses_semantic_table_catalog():
     assert captured["reader"].read_all().to_pylist() == [{"relname": "orders", "relnamespace": "semantic_layer"}]
 
 
+def test_obj_description_does_not_short_circuit_mixed_user_sql():
+    pytest.importorskip("riffq")
+    pytest.importorskip("pyarrow")
+    from sidemantic.core.semantic_layer import SecurityError
+    from sidemantic.server.connection import SemanticLayerConnection
+
+    layer = SemanticLayer(connection="duckdb:///:memory:", enforce_visibility=True)
+    layer.add_model(
+        Model(
+            name="orders",
+            table="orders",
+            dimensions=[Dimension(name="secret_note", type="categorical", public=False)],
+        )
+    )
+    conn = SemanticLayerConnection(connection_id=1, executor=None, layer=layer)
+    cursor = layer.adapter.cursor()
+    mixed = "SELECT secret_note, obj_description(oid, 'pg_namespace') FROM orders"
+
+    assert conn._try_handle_system_query(mixed, mixed.lower(), lambda *_: None, cursor) is False
+    with pytest.raises(SecurityError, match="not public"):
+        conn._rewrite_query(mixed, None)
+
+
 def test_session_set_is_acknowledged_but_dml_is_denied():
     pytest.importorskip("riffq")
     pytest.importorskip("pyarrow")

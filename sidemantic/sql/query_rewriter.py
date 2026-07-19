@@ -118,6 +118,7 @@ class QueryRewriter:
         dialect: str = "duckdb",
         use_preaggregations: bool = False,
         enforce_visibility: bool = False,
+        use_rust_rewriter: bool | None = None,
     ):
         """Initialize query rewriter.
 
@@ -126,6 +127,7 @@ class QueryRewriter:
             dialect: SQL dialect for parsing/generation
             use_preaggregations: Enable single-model pre-aggregation routing
             enforce_visibility: Reject semantic references to fields declared ``public: false``
+            use_rust_rewriter: Override the environment-controlled Rust rewrite path
         """
         self.graph = graph
         self.dialect = dialect
@@ -135,7 +137,9 @@ class QueryRewriter:
         self._dialect_instance = self.generator._dialect_instance
         self._rewrite_cache: dict[tuple[object, ...], str] = {}
         self._rewrite_cache_limit = 256
-        self._use_rust_rewriter = os.getenv("SIDEMANTIC_RS_REWRITER", "0") == "1"
+        self._use_rust_rewriter = (
+            os.getenv("SIDEMANTIC_RS_REWRITER", "0") == "1" if use_rust_rewriter is None else use_rust_rewriter
+        )
         self._rust_no_fallback = os.getenv("SIDEMANTIC_RS_NO_FALLBACK", "0") == "1"
         self._rust_module = None
         self._rust_models_yaml: str | None = None

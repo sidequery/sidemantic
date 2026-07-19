@@ -278,6 +278,21 @@ class SemanticLayerConnection(riffq.BaseConnection):
 
         # obj_description() - not supported, return NULL
         if "obj_description" in sql_lower:
+            import sqlglot
+            from sqlglot import exp
+
+            try:
+                parsed = sqlglot.parse_one(sql, dialect=self.layer.dialect)
+            except Exception:
+                return False
+            referenced_tables = list(parsed.find_all(exp.Table))
+            if any(
+                table.db.lower() not in {"", "pg_catalog"} or not table.name.lower().startswith("pg_")
+                for table in referenced_tables
+            ):
+                # Mixed user/catalog statements must pass through the shared
+                # semantic rewrite and its fail-closed policy checks.
+                return False
             rendered_sql = sql.replace("obj_description(oid, 'pg_namespace')", "NULL")
             result = cursor.execute(rendered_sql)
             reader = result.fetch_record_batch()

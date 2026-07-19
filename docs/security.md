@@ -95,6 +95,9 @@ available. True raw database execution is never considered policy-aware.
 Predicate subqueries are rejected while controls are active because nested reads
 cannot yet be proven to receive the same policy rewrite; use structured filters or a
 modeled semantic join instead.
+The optional Rust semantic rewriter is also disabled for secured SQL transports until
+it can accept caller attributes and prove the same policy and visibility checks as the
+Python planner.
 
 ### HTTP (`sidemantic server api`)
 
@@ -159,7 +162,9 @@ that same semantic catalog, preserves ordinary projection/filter/order probes, a
 omits non-public fields when visibility enforcement is enabled. Catalog queries mixed
 with other table sources are not treated as compatibility probes and pass through the
 normal fail-closed transport gate. `pg_catalog.pg_class` likewise lists semantic
-tables only while controls are active.
+tables only while controls are active. Compatibility function handling is restricted
+to catalog-only probes; mixed catalog and semantic-table statements go through the
+normal policy-aware rewrite.
 
 ### MCP server
 

@@ -293,6 +293,31 @@ def test_predicate_subqueries_fail_closed_across_sql_transports(tmp_path):
         _pg_rewrite(_layer(enforce_visibility=True), query, attrs)
 
 
+def test_rust_rewriter_is_disabled_across_secured_sql_transports(tmp_path, monkeypatch):
+    from sidemantic.sql.query_rewriter import QueryRewriter
+
+    attrs = {"role": "analyst", "tenant_id": 2}
+    query = "SELECT tenant_id, total_amount FROM orders"
+    monkeypatch.setenv("SIDEMANTIC_RS_REWRITER", "1")
+
+    def insecure_rust_rewrite(*_args, **_kwargs):
+        return "SELECT tenant_id, SUM(amount) AS total_amount FROM orders GROUP BY tenant_id"
+
+    monkeypatch.setattr(QueryRewriter, "_rewrite_with_rust", insecure_rust_rewrite)
+
+    client = TestClient(create_app(_layer(), auth_token="secret"))
+    response = client.post("/sql", json={"query": query}, headers=_headers(attrs))
+    assert response.status_code == 200
+    assert response.json()["rows"] == [{"tenant_id": 2, "total_amount": 12.0}]
+
+    _mcp_layer(tmp_path / "mcp-rust-disabled", attrs)
+    assert mcp_run_sql(query)["rows"] == [{"tenant_id": 2, "total_amount": 12.0}]
+
+    pg_layer = _layer()
+    rendered = _pg_rewrite(pg_layer, query, attrs)
+    assert pg_layer.adapter.execute(rendered).fetchall() == [(2, 12.0)]
+
+
 def test_sql_rewrite_cache_isolated_by_visibility_state():
     layer = SemanticLayer()
     layer.adapter.execute("create table records (id integer, secret_note varchar)")

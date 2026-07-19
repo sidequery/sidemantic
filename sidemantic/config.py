@@ -111,7 +111,8 @@ class PostgresServerConfig(BaseModel):
     host: str = Field(default="127.0.0.1", description="Host/IP to bind to (use 0.0.0.0 for Docker)")
     port: int = Field(default=5433, description="Port to listen on")
     username: str | None = Field(default=None, description="Username for authentication (optional)")
-    password: str | None = Field(default=None, description="Password for authentication (optional)")
+    password_file: str | None = Field(default=None, description="Credential file containing the password")
+    password: str | None = Field(default=None, description="Inline password (prefer password_file in shared config)")
 
 
 class APIServerConfig(BaseModel):
@@ -119,7 +120,10 @@ class APIServerConfig(BaseModel):
 
     host: str = Field(default="127.0.0.1", description="Host/IP to bind to")
     port: int = Field(default=4400, description="Port to listen on")
-    auth_token: str | None = Field(default=None, description="Bearer token for API authentication (optional)")
+    auth_token_file: str | None = Field(default=None, description="Credential file containing the bearer token")
+    auth_token: str | None = Field(
+        default=None, description="Inline bearer token (prefer auth_token_file in shared config)"
+    )
     cors_origins: list[str] = Field(default_factory=list, description="Allowed CORS origins")
     max_request_body_bytes: int = Field(default=1024 * 1024, description="Maximum request body size in bytes")
     result_cache_mb: int = Field(default=0, description="Result cache size in megabytes (0 disables the result cache)")
@@ -159,10 +163,10 @@ class SidemanticConfig(BaseModel):
         pg_server:
           port: 5433
           username: admin
-          password: secret
+          password_file: .secrets/pg-password
         api_server:
           port: 4400
-          auth_token: secret-token
+          auth_token_file: .secrets/api-token
 
     Example JSON:
         {
@@ -176,11 +180,11 @@ class SidemanticConfig(BaseModel):
           "pg_server": {
             "port": 5433,
             "username": "admin",
-            "password": "secret"
+            "password_file": ".secrets/pg-password"
           },
           "api_server": {
             "port": 4400,
-            "auth_token": "secret-token"
+            "auth_token_file": ".secrets/api-token"
           }
         }
     """
@@ -220,14 +224,28 @@ class SidemanticConfig(BaseModel):
                 db_p = (base / db_p).resolve()
             connection = DuckDBConnection(type="duckdb", path=str(db_p), init_sql=connection.init_sql)
 
+        pg_server = self.pg_server.model_copy()
+        if pg_server.password_file:
+            password_file = Path(pg_server.password_file)
+            if not password_file.is_absolute():
+                password_file = (base / password_file).resolve()
+            pg_server.password_file = str(password_file)
+
+        api_server = self.api_server.model_copy()
+        if api_server.auth_token_file:
+            auth_token_file = Path(api_server.auth_token_file)
+            if not auth_token_file.is_absolute():
+                auth_token_file = (base / auth_token_file).resolve()
+            api_server.auth_token_file = str(auth_token_file)
+
         return SidemanticConfig(
             models_dir=str(models_path),
             connection=connection,
             preagg_database=self.preagg_database,
             preagg_schema=self.preagg_schema,
             runtime=self.runtime,
-            pg_server=self.pg_server,
-            api_server=self.api_server,
+            pg_server=pg_server,
+            api_server=api_server,
         )
 
 

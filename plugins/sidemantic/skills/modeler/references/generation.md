@@ -15,8 +15,8 @@ When `connection` is provided, the Migrator queries `information_schema` for pri
 CLI-first for normal usage:
 
 ```bash
-sidemantic migrator --queries queries/ --generate-models output/
-sidemantic migrator models/ --queries queries/ --verbose
+sidemantic migrate generate queries/ --output output/
+sidemantic migrate check queries/ --models models/ --verbose
 ```
 
 ### Core Methods
@@ -116,7 +116,7 @@ Console coverage report: total/parseable/rewritable counts, missing models/dimen
 ### Bootstrap: generate models from queries
 
 ```bash
-sidemantic migrator --queries queries/ --generate-models output/
+sidemantic migrate generate queries/ --output output/
 ```
 
 Creates `output/models/` (YAML per model) and `output/rewritten_queries/` (semantic SQL).
@@ -124,7 +124,7 @@ Creates `output/models/` (YAML per model) and `output/rewritten_queries/` (seman
 ### Coverage analysis: check existing models against queries
 
 ```bash
-sidemantic migrator models/ --queries queries/ --verbose
+sidemantic migrate check queries/ --models models/ --verbose
 ```
 
 Reports which queries can be rewritten, which cannot, and what's missing.
@@ -133,10 +133,11 @@ Reports which queries can be rewritten, which cannot, and what's missing.
 
 | Flag | Type | Description |
 |------|------|-------------|
-| `directory` | Path | Semantic layer files (default: `.`) |
-| `--queries / -q` | Path | Required. SQL file or directory |
+| `queries` | Path | SQL file, directory, or `-` for stdin |
+| `--models / -m` | Path | Semantic layer files for `migrate check` |
 | `--verbose / -v` | bool | Per-query analysis details |
-| `--generate-models / -g` | Path | Output directory for generated models |
+| `--output / -o` | Path | Output project root for `migrate generate` |
+| `--json` | bool | Machine-readable generation or coverage report |
 
 ## Database Schema Introspection
 

@@ -82,7 +82,7 @@ layer.compile(metrics=["orders.revenue"], filters=["orders.margin > 100"])  # Se
 
 ## Server enforcement
 
-### HTTP (`sidemantic api-serve`)
+### HTTP (`sidemantic server api`)
 
 User attributes come from a trusted header (default `X-Sidemantic-User`, a JSON object).
 The value is passed into every structured `/query` and `/compile` request, and the

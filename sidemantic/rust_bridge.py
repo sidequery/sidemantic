@@ -1616,7 +1616,14 @@ def _serialize_relationship(relationship, source_model, target_model) -> dict | 
 
     sql = None
     if len(foreign_keys) > 1 and len(foreign_keys) == len(primary_keys):
-        sql = " AND ".join(f"{{from}}.{fk} = {{to}}.{pk}" for fk, pk in zip(foreign_keys, primary_keys, strict=False))
+        if relationship.type in {"one_to_many", "one_to_one"}:
+            sql = " AND ".join(
+                f"{{from}}.{pk} = {{to}}.{fk}" for fk, pk in zip(foreign_keys, primary_keys, strict=False)
+            )
+        else:
+            sql = " AND ".join(
+                f"{{from}}.{fk} = {{to}}.{pk}" for fk, pk in zip(foreign_keys, primary_keys, strict=False)
+            )
     if getattr(relationship, "sql", None):
         sql = relationship.sql
 

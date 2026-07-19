@@ -758,6 +758,59 @@ models:
     assert inspected == [("analytics.public.orders", None)]
 
 
+def test_snowflake_key_checks_use_inspected_column_casing(monkeypatch, tmp_path):
+    (tmp_path / "models.yml").write_text(
+        """
+models:
+  - name: orders
+    table: public.orders
+    primary_key: order_id
+"""
+    )
+
+    executed = []
+
+    class FakeSnowflakeAdapter:
+        def get_tables(self):
+            return [{"schema": "PUBLIC", "table_name": "ORDERS"}]
+
+        def get_columns(self, table_name, schema=None):
+            return [{"column_name": "ORDER_ID", "data_type": "NUMBER"}]
+
+        def execute(self, sql):
+            executed.append(sql)
+            return sql
+
+        def fetchone(self, result):
+            return None
+
+        def close(self):
+            pass
+
+    from sidemantic.validation_runner import SemanticLayer as RealSemanticLayer
+
+    def semantic_layer(*args, **kwargs):
+        layer = RealSemanticLayer(auto_register=False)
+        if kwargs.get("connection") is not None:
+            layer.adapter = FakeSnowflakeAdapter()
+            layer.dialect = "snowflake"
+        return layer
+
+    monkeypatch.setattr("sidemantic.validation_runner.SemanticLayer", semantic_layer)
+
+    report = validate_directory(
+        tmp_path,
+        connection="snowflake://unused",
+        check_keys=True,
+        check_queries=False,
+    )
+
+    assert report.passed, report.all_errors
+    assert executed
+    assert all('"ORDER_ID"' in sql for sql in executed)
+    assert all('"order_id"' not in sql for sql in executed)
+
+
 def test_warehouse_validation_splits_catalog_qualified_bigquery_table(monkeypatch, tmp_path):
     (tmp_path / "models.yml").write_text(
         """

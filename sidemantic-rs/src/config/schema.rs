@@ -2,6 +2,8 @@
 //!
 //! Supports both native Sidemantic format and Cube.js format.
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
@@ -483,8 +485,9 @@ impl SidemanticConfig {
     }
 
     /// Convert to core models, top-level metrics, and top-level parameters.
-    pub fn into_parts(self) -> crate::error::Result<(Vec<Model>, Vec<Metric>, Vec<Parameter>)> {
+    pub fn into_parts(mut self) -> crate::error::Result<(Vec<Model>, Vec<Metric>, Vec<Parameter>)> {
         self.validate_contract()?;
+        inherit_omitted_primary_keys(&mut self.models);
         let models = self.models.into_iter().map(|m| m.into_model()).collect();
         let metrics = self.metrics.into_iter().map(|m| m.into_metric()).collect();
         let parameters = self
@@ -498,6 +501,41 @@ impl SidemanticConfig {
     /// Convert to list of core Model types
     pub fn into_models(self) -> crate::error::Result<Vec<Model>> {
         Ok(self.into_parts()?.0)
+    }
+}
+
+fn inherit_omitted_primary_keys(models: &mut [ModelConfig]) {
+    let mut effective_keys: HashMap<String, Vec<String>> = models
+        .iter()
+        .filter_map(|model| {
+            model
+                .primary_key_columns
+                .clone()
+                .or_else(|| model.primary_key.clone().map(KeyConfig::into_columns))
+                .map(|columns| (model.name.clone(), columns))
+        })
+        .collect();
+
+    for _ in 0..models.len() {
+        let updates: Vec<_> = models
+            .iter()
+            .enumerate()
+            .filter(|(_, model)| model.primary_key.is_none() && model.primary_key_columns.is_none())
+            .filter_map(|(index, model)| {
+                let parent = model.extends.as_ref()?;
+                effective_keys
+                    .get(parent)
+                    .cloned()
+                    .map(|columns| (index, model.name.clone(), columns))
+            })
+            .collect();
+        if updates.is_empty() {
+            break;
+        }
+        for (index, name, columns) in updates {
+            models[index].primary_key_columns = Some(columns.clone());
+            effective_keys.insert(name, columns);
+        }
     }
 }
 
@@ -1209,6 +1247,29 @@ models:
 
         assert_eq!(model.primary_key, "");
         assert!(model.primary_keys().is_empty());
+    }
+
+    #[test]
+    fn test_omitted_child_primary_key_inherits_parent_key() {
+        let yaml = r#"
+models:
+  - name: base_events
+    table: events
+    primary_key: event_id
+  - name: recent_events
+    extends: base_events
+"#;
+
+        let models = serde_yaml::from_str::<SidemanticConfig>(yaml)
+            .unwrap()
+            .into_models()
+            .unwrap();
+        let child = models
+            .iter()
+            .find(|model| model.name == "recent_events")
+            .unwrap();
+
+        assert_eq!(child.primary_keys(), vec!["event_id".to_string()]);
     }
 
     #[test]

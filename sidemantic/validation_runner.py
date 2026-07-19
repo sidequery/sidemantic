@@ -185,10 +185,15 @@ def _warehouse_table_exists(
 
 
 def _warehouse_column_type(actual: dict[str, str], column: str, dialect: str) -> str | None:
+    actual_name = _warehouse_column_name(actual, column, dialect)
+    return actual.get(actual_name) if actual_name is not None else None
+
+
+def _warehouse_column_name(actual: dict[str, str], column: str, dialect: str) -> str | None:
     if column in actual:
-        return actual[column]
-    if dialect == "snowflake":
-        return actual.get(column.upper())
+        return column
+    if dialect == "snowflake" and column.upper() in actual:
+        return column.upper()
     return None
 
 
@@ -292,6 +297,7 @@ def _check_key_columns(
     columns: list[str],
     require_non_null: bool = True,
     require_unique: bool = True,
+    actual_columns: dict[str, str] | None = None,
 ) -> None:
     if not columns:
         return
@@ -299,7 +305,7 @@ def _check_key_columns(
     adapter = layer.adapter
     dialect = layer.dialect
     source = _model_source_sql(model, dialect)
-    quoted = [_quote_identifier(column, dialect) for column in columns]
+    quoted = [_quote_identifier((actual_columns or {}).get(column, column), dialect) for column in columns]
 
     if require_non_null:
         null_predicate = " OR ".join(f"{column} IS NULL" for column in quoted)
@@ -327,7 +333,12 @@ def _check_key_columns(
             report.warehouse_errors.append(f"Model '{model.name}' {label} uniqueness check failed: {exc}")
 
 
-def _check_declared_keys(layer, model: "Model", report: ValidationReport) -> None:
+def _check_declared_keys(
+    layer,
+    model: "Model",
+    report: ValidationReport,
+    actual_columns: dict[str, str] | None = None,
+) -> None:
     if model.primary_key_columns:
         _check_key_columns(
             layer,
@@ -335,13 +346,26 @@ def _check_declared_keys(layer, model: "Model", report: ValidationReport) -> Non
             report,
             label="primary_key",
             columns=model.primary_key_columns,
+            actual_columns=actual_columns,
         )
     for columns in model.unique_keys or []:
         if columns:
-            _check_key_columns(layer, model, report, label="unique_key", columns=columns)
+            _check_key_columns(
+                layer,
+                model,
+                report,
+                label="unique_key",
+                columns=columns,
+                actual_columns=actual_columns,
+            )
 
 
-def _check_relationship_cardinality(layer, graph: "SemanticGraph", report: ValidationReport) -> None:
+def _check_relationship_cardinality(
+    layer,
+    graph: "SemanticGraph",
+    report: ValidationReport,
+    warehouse_column_names: dict[str, dict[str, str]],
+) -> None:
     """Check data assumptions introduced by relationship-scoped keys/cardinality."""
     for source in graph.models.values():
         for relationship in source.relationships:
@@ -359,6 +383,7 @@ def _check_relationship_cardinality(layer, graph: "SemanticGraph", report: Valid
                     report,
                     label=f"relationship '{source.name}.{target.name}' primary_key",
                     columns=relationship.primary_key_columns,
+                    actual_columns=warehouse_column_names.get(key_model.name),
                 )
 
             # one_to_one additionally asserts that the target-side foreign key has at most one
@@ -371,6 +396,7 @@ def _check_relationship_cardinality(layer, graph: "SemanticGraph", report: Valid
                     label=f"relationship '{source.name}.{target.name}' foreign_key",
                     columns=relationship.foreign_key_columns,
                     require_non_null=False,
+                    actual_columns=warehouse_column_names.get(target.name),
                 )
 
 
@@ -496,6 +522,7 @@ def _validate_warehouse(
         for table in available_tables
     }
     warehouse_types: dict[str, dict[str, str]] = {}
+    warehouse_column_names: dict[str, dict[str, str]] = {}
 
     if not report.connection_errors:
         for model in layer.graph.models.values():
@@ -539,14 +566,17 @@ def _validate_warehouse(
                     str(column.get("column_name")): str(column.get("data_type") or "") for column in warehouse_columns
                 }
                 warehouse_types[model.name] = {}
+                warehouse_column_names[model.name] = {}
                 for column, expected_type in _required_columns(model, layer.graph).items():
-                    actual_type = _warehouse_column_type(actual, column, layer.dialect)
-                    if actual_type is None:
+                    actual_name = _warehouse_column_name(actual, column, layer.dialect)
+                    if actual_name is None:
                         report.warehouse_errors.append(
                             f"Model '{model.name}' references missing column '{column}' in table '{model.table}'"
                         )
                         continue
+                    actual_type = actual[actual_name]
                     warehouse_types[model.name][column] = actual_type
+                    warehouse_column_names[model.name][column] = actual_name
                     if expected_type in {"numeric", "time", "boolean"}:
                         actual_family = _warehouse_type_family(actual_type)
                         if actual_family is not None and actual_family != expected_type:
@@ -556,10 +586,10 @@ def _validate_warehouse(
                             )
 
             if check_keys and (model.table or model.sql):
-                _check_declared_keys(layer, model, report)
+                _check_declared_keys(layer, model, report, warehouse_column_names.get(model.name))
 
         if check_keys:
-            _check_relationship_cardinality(layer, layer.graph, report)
+            _check_relationship_cardinality(layer, layer.graph, report, warehouse_column_names)
 
         _check_join_key_types(layer.graph, warehouse_types, report)
 

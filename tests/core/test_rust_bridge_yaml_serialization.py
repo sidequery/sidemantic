@@ -158,6 +158,27 @@ def test_models_to_rust_yaml_uses_source_key_for_reverse_relationship():
     assert relationship["primary_key_columns"] == ["user_id"]
 
 
+def test_models_to_rust_yaml_orients_composite_reverse_relationship_sql():
+    accounts = Model(
+        name="accounts",
+        table="accounts",
+        primary_key=["account_id", "tenant_id"],
+        relationships=[
+            Relationship(
+                name="profiles",
+                type="one_to_many",
+                foreign_key=["owner_account_id", "tenant_id"],
+            )
+        ],
+    )
+    profiles = Model(name="profiles", table="profiles", primary_key="profile_id")
+
+    payload = yaml.safe_load(models_to_rust_yaml([accounts, profiles]))
+    relationship = payload["models"][0]["relationships"][0]
+
+    assert relationship["sql"] == ("{from}.account_id = {to}.owner_account_id AND {from}.tenant_id = {to}.tenant_id")
+
+
 def test_graph_to_rust_yaml_assigns_complex_metrics_by_entity_dimension():
     graph = SemanticGraph()
     graph.add_model(

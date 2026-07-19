@@ -380,17 +380,26 @@ def create_app(
         # Read-only metadata over the in-memory graph.
         current_layer = app.state.layer
         graph_obj = current_layer.graph
+        visible_model_names = {
+            model_name
+            for model_name, model in graph_obj.models.items()
+            if not current_layer.enforce_visibility or model.visibility == "public"
+        }
 
         models = []
         for model_name, model in graph_obj.models.items():
-            if current_layer.enforce_visibility and model.visibility != "public":
+            if model_name not in visible_model_names:
                 continue
             model_info = {
                 "name": model_name,
                 "table": model.table,
                 "dimensions": [d.name for d in _visible_dimensions(current_layer, model)],
                 "metrics": [m.name for m in _visible_metrics(current_layer, model)],
-                "relationships": [{"name": rel.name, "type": rel.type} for rel in model.relationships],
+                "relationships": [
+                    {"name": rel.name, "type": rel.type}
+                    for rel in model.relationships
+                    if rel.name in visible_model_names
+                ],
             }
             if model.segments:
                 model_info["segments"] = [segment.name for segment in model.segments]
@@ -412,7 +421,7 @@ def create_app(
             graph_metrics.append(metric_info)
 
         joinable_pairs = []
-        model_names = list(graph_obj.models.keys())
+        model_names = [model_name for model_name in graph_obj.models if model_name in visible_model_names]
         for index, left_name in enumerate(model_names):
             for right_name in model_names[index + 1 :]:
                 try:

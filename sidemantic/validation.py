@@ -124,6 +124,28 @@ def validate_saved_query(saved_query: "SavedQuery", graph: "SemanticGraph") -> t
     )
     if not preserved_external_syntax:
         errors.extend(validate_query(metrics, dimensions, graph))
+        for raw_segment in saved_query.segments:
+            segment_ref = raw_segment
+            if "." not in segment_ref and base_model:
+                segment_ref = f"{base_model}.{segment_ref}"
+            if "." not in segment_ref:
+                errors.append(
+                    f"Saved query '{saved_query.name}' segment reference must be in format 'model.segment': "
+                    f"{raw_segment}"
+                )
+                continue
+            model_name, segment_name = segment_ref.split(".", 1)
+            model = graph.models.get(model_name)
+            if model is None:
+                errors.append(
+                    f"Saved query '{saved_query.name}' segment '{raw_segment}' references model "
+                    f"'{model_name}' which doesn't exist"
+                )
+            elif model.get_segment(segment_name) is None:
+                errors.append(
+                    f"Saved query '{saved_query.name}' references segment '{segment_name}' which doesn't exist "
+                    f"on model '{model_name}'"
+                )
         if explore is not None:
             if explore.allowed_metrics is not None:
                 allowed_metrics = set(_qualified_consumption_metrics(explore.allowed_metrics, base_model, graph))

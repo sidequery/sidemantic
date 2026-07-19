@@ -7,7 +7,19 @@ import yaml
 from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
-from sidemantic import Deprecation, Dimension, Explore, Metric, Model, SavedQuery, SecurityError, SemanticLayer, View
+from sidemantic import (
+    Deprecation,
+    Dimension,
+    Explore,
+    Metric,
+    Model,
+    Relationship,
+    SavedQuery,
+    SecurityError,
+    Segment,
+    SemanticLayer,
+    View,
+)
 from sidemantic.adapters.hex import HexAdapter
 from sidemantic.adapters.lookml import LookMLAdapter
 from sidemantic.adapters.metricflow import MetricFlowAdapter
@@ -146,6 +158,7 @@ models:
         agg: sum
         sql: amount
         owner: finance
+        visibility: internal
         freshness:
           watermark: updated_at
           ttl_seconds: 3600
@@ -183,6 +196,10 @@ saved_queries:
     exported = yaml.safe_load(output.read_text())
     assert exported["models"][0]["owner"] == "analytics"
     assert exported["models"][0]["deprecation"]["replaced_by"] == "completed_orders"
+    exported_metric = exported["models"][0]["metrics"][0]
+    assert exported_metric["owner"] == "finance"
+    assert exported_metric["visibility"] == "internal"
+    assert exported_metric["freshness"] == {"watermark": "updated_at", "ttl_seconds": 3600}
     assert exported["explores"][0]["allowed_metrics"] == ["revenue"]
     assert exported["explores"][0]["allowed_filter_fields"] == ["status"]
     assert exported["saved_queries"][0]["name"] == "revenue_by_status"
@@ -231,6 +248,26 @@ def test_validation_accepts_metric_filters_and_preflights_saved_query_explore_co
     assert any("exceeds Explore" in error for error in errors)
 
 
+def test_validation_preflights_saved_query_segments():
+    layer = _layer()
+    layer.graph.models["orders"].segments.append(Segment(name="paid", sql="{model}.status = 'paid'"))
+
+    valid = SavedQuery(
+        name="valid_segment",
+        explore="revenue_overview",
+        metrics=["revenue"],
+        segments=["paid"],
+    )
+    errors, _warnings = validate_saved_query(valid, layer.graph)
+    assert errors == []
+
+    invalid = valid.model_copy(update={"name": "invalid_segment", "segments": ["orders.missing"]})
+    errors, _warnings = validate_saved_query(invalid, layer.graph)
+    assert errors == [
+        "Saved query 'invalid_segment' references segment 'missing' which doesn't exist on model 'orders'"
+    ]
+
+
 def test_visibility_enforcement_covers_models_metrics_and_explores():
     layer = _layer()
     layer.enforce_visibility = True
@@ -272,6 +309,28 @@ def test_meta_api_exposes_consumption_contracts():
     assert "SUM(" not in explicit_sql
     assert "status = 'paid'" not in explicit_sql
     assert "status <> 'deleted'" in explicit_sql
+
+
+def test_meta_api_does_not_leak_private_relationship_targets():
+    layer = _layer()
+    layer.enforce_visibility = True
+    layer.graph.models["orders"].relationships.append(
+        Relationship(name="private_customers", type="many_to_one", foreign_key="customer_id")
+    )
+    layer.add_model(
+        Model(
+            name="private_customers",
+            table="private_customers",
+            primary_key="customer_id",
+            visibility="private",
+            dimensions=[Dimension(name="customer_id", type="numeric")],
+        )
+    )
+
+    graph = TestClient(create_app(layer)).get("/graph").json()
+    assert [model["name"] for model in graph["models"]] == ["orders"]
+    assert graph["models"][0]["relationships"] == []
+    assert graph["joinable_pairs"] == []
 
 
 def test_schema_and_cli_expose_contracts(tmp_path: Path):
@@ -343,6 +402,42 @@ def test_lossless_adapter_bridges_create_typed_contracts():
     sql = lookml_layer.compile(explore="completed_orders", dimensions=["fact_orders.status"])
     assert "{'model': model}" not in sql
     assert "status = 'completed'" in sql
+
+
+def test_lookml_joined_always_filter_preserves_join_target(tmp_path: Path):
+    source = tmp_path / "joined_filter.lkml"
+    source.write_text(
+        """
+view: orders {
+  sql_table_name: orders ;;
+  dimension: id { primary_key: yes sql: ${TABLE}.id ;; }
+  dimension: customer_id { sql: ${TABLE}.customer_id ;; }
+  measure: count { type: count }
+}
+view: customers {
+  sql_table_name: customers ;;
+  dimension: id { primary_key: yes sql: ${TABLE}.id ;; }
+  dimension: region { sql: ${TABLE}.region ;; }
+}
+explore: orders {
+  always_filter: { filters: [customers.region: "West"] }
+  join: customers {
+    relationship: many_to_one
+    sql_on: ${orders.customer_id} = ${customers.id} ;;
+  }
+}
+""".strip()
+    )
+
+    graph = LookMLAdapter().parse(source)
+    assert graph.explores["orders"].filters == ["customers.region = 'West'"]
+
+    layer = SemanticLayer(auto_register=False)
+    layer.graph = graph
+    sql = layer.compile(explore="orders", metrics=["orders.count"])
+    assert "FROM customers" in sql
+    assert "WHERE region = 'West'" in sql
+    assert "orders_cte.customer_id = customers_cte.id" in sql
 
 
 def test_metricflow_metric_ordering_is_preserved_but_not_executable(tmp_path: Path):

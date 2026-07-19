@@ -1092,6 +1092,7 @@ class SidemanticAdapter(BaseAdapter):
                     "name": measure.name,
                     "agg": measure.agg,
                 }
+                measure_def.update(governance_dict(measure))
                 measure_dax = _dax_text(measure)
                 if measure_dax:
                     measure_def["dax"] = measure_dax

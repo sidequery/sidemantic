@@ -4488,6 +4488,21 @@ class LookMLAdapter(BaseAdapter):
                 # Strip view qualifier (e.g. "fact_orders.created_date" -> "created_date")
                 # so _convert_lookml_filter_to_sql doesn't produce {model}.view.col
                 bare_field = field.rsplit(".", 1)[-1] if "." in field else field
+                field_model_name = base_model_name
+                if "." in field:
+                    field_qualifier = field.rsplit(".", 1)[0]
+                    if field_qualifier not in {explore_name, base_model_name}:
+                        matching_join = next(
+                            (
+                                join_def
+                                for join_def in explore_def.get("joins") or []
+                                if join_def.get("name") == field_qualifier
+                            ),
+                            None,
+                        )
+                        field_model_name = (
+                            matching_join.get("from", field_qualifier) if matching_join else field_qualifier
+                        )
                 filter_sql = self._convert_lookml_filter_to_sql(bare_field, str(value))
                 segment_name = f"_always_filter_{explore_name}_{field}"
                 if filter_sql and segment_name not in existing_names:
@@ -4500,7 +4515,7 @@ class LookMLAdapter(BaseAdapter):
                     )
                     existing_names.add(segment_name)
                 if filter_sql:
-                    consumption_filters.append(filter_sql.replace("{model}", base_model_name))
+                    consumption_filters.append(filter_sql.replace("{model}", field_model_name))
 
             for item in filter_items:
                 if isinstance(item, list):

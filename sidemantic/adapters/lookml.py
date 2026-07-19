@@ -2373,6 +2373,17 @@ class LookMLAdapter(BaseAdapter):
                 )
                 for f in filters
             ]
+            # A filter field that is a local alias for a DROPPED cross-view dimension expands to its
+            # leaked ${other_view.field} SQL above, which the generator would emit into the model
+            # CTE. The measure.sql leak check does not see filters, so reject the measure here.
+            if any(self._leaks_cross_view_ref(f) for f in filters):
+                logger.warning(
+                    "LookML measure %r has a filter that expands to a cross-view reference, which "
+                    "sidemantic cannot represent; dropping the measure instead of importing "
+                    "unqueryable SQL.",
+                    name,
+                )
+                return None
             # The generator filters a complete-SQL measure by nulling the raw columns its SQL
             # references; that drops the filter for a zero-column aggregate (COUNT(*)) and
             # corrupts a NULL-test predicate (status IS NULL). Fold into the aggregate instead.

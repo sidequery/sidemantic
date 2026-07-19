@@ -2513,6 +2513,30 @@ view: customers { sql_table_name: customers ;; dimension: active { type: yesno  
     assert model.get_metric("self_filtered").filters == ["{model}.status = 'done'"]
 
 
+def test_lookml_complete_measure_filter_alias_for_cross_view_dimension_dropped():
+    """A complete measure filtered by a LOCAL dimension that is a dropped cross-view alias is dropped.
+
+    filters: [customer_active: "yes"] where customer_active { sql: ${customers.active} } expands to
+    the leaked ${customers.active} in the filter; the measure.sql leak check doesn't see filters, so
+    the measure must be rejected after the filter rewrite. An unfiltered measure is kept.
+    """
+    graph = _parse_lkml(
+        """
+view: orders {
+  sql_table_name: orders ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: customer_active { type: yesno  sql: ${customers.active} ;; }
+  measure: n { type: number  sql: COUNT(${TABLE}.id) ;; filters: [customer_active: "yes"] }
+  measure: plain { type: number  sql: COUNT(${TABLE}.id) ;; }
+}
+view: customers { sql_table_name: customers ;; dimension: active { type: yesno  sql: ${TABLE}.active ;; } }
+"""
+    )
+    names = {m.name for m in graph.get_model("orders").metrics}
+    assert "n" not in names  # filter expands to a cross-view ref -> dropped
+    assert "plain" in names
+
+
 def test_lookml_number_measure_row_level_dimension_expr_skipped():
     """A type: number measure that is a ROW-LEVEL dimension expression (no aggregate) is skipped.
 

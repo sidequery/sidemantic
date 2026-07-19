@@ -125,6 +125,16 @@ def test_dashboard_document_honors_encoding_y_as_primary_metric():
     assert spec["fields"]["metrics"][0] == "order_count"
 
 
+def test_dashboard_document_validates_interaction_scope():
+    layer = _build_layer()
+    payload = _dashboard_payload()
+    payload["defaults"]["interactions"] = {"scope": "workspace"}
+
+    assert DashboardDocument.from_dict(payload).validate(layer) == [
+        "defaults.interactions.scope must be one of: chart, dashboard, tab"
+    ]
+
+
 def test_dashboard_chart_interaction_preagg_setting_overrides_default():
     layer = _build_layer()
     payload = _dashboard_payload()

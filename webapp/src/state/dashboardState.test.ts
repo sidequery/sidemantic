@@ -201,6 +201,46 @@ describe("dashboard selections", () => {
     expect(JSON.parse(url.searchParams.get("filters") ?? "{}")).toEqual({ "orders.region": ["West"] });
   });
 
+  test("keeps tab-scoped interaction state out of charts on other tabs", () => {
+    const scopedDocument: DashboardDocument = {
+      ...document,
+      defaults: { interactions: { scope: "tab" } },
+      tabs: [
+        {
+          id: "small",
+          charts: [
+            { id: "small-revenue", query: { metrics: ["orders.revenue"], dimensions: ["orders.region"] } },
+          ],
+        },
+        {
+          id: "large",
+          charts: [
+            {
+              id: "large-revenue",
+              query: { metrics: ["orders_200k.revenue"], dimensions: ["orders_200k.region"] },
+            },
+          ],
+        },
+      ],
+    };
+    const largeChart = scopedDocument.tabs[1].charts[0];
+    const query = dashboardStructuredQuery(
+      scopedDocument,
+      largeChart,
+      { "orders.region": "West", "orders_200k.region": "East" },
+      {},
+      {
+        "orders.created_at__month": { from: "2026-01-01", to: "2026-02-01" },
+        "orders_200k.region": { from: "A", to: "Z" },
+      },
+    );
+    expect(query.filters).toContain("orders_200k.region = 'East'");
+    expect(query.filters).toContain("orders_200k.region >= 'A' AND orders_200k.region <= 'Z'");
+    expect(query.filters?.some((filter) => filter.includes("orders.region") || filter.includes("orders.created_at"))).toBe(
+      false,
+    );
+  });
+
   test("separates categorical series before plotting bars", () => {
     const series = dashboardCategorySeries(
       [

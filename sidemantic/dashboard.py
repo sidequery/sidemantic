@@ -100,10 +100,21 @@ class DashboardDocument:
         defaults = self.payload.get("defaults") or {}
         if defaults and not isinstance(defaults, Mapping):
             errors.append("defaults must be a mapping")
-        elif isinstance(defaults, Mapping) and "renderer" in defaults:
-            default_renderer = _normalize_renderer(str(defaults.get("renderer")))
-            if default_renderer not in VALID_RENDERERS:
-                errors.append(f"defaults.renderer must be one of: {', '.join(sorted(VALID_RENDERERS))}")
+        elif isinstance(defaults, Mapping):
+            if "renderer" in defaults:
+                default_renderer = _normalize_renderer(str(defaults.get("renderer")))
+                if default_renderer not in VALID_RENDERERS:
+                    errors.append(f"defaults.renderer must be one of: {', '.join(sorted(VALID_RENDERERS))}")
+            interactions = defaults.get("interactions") or {}
+            if interactions and not isinstance(interactions, Mapping):
+                errors.append("defaults.interactions must be a mapping")
+            elif isinstance(interactions, Mapping) and interactions.get("scope") not in (
+                None,
+                "chart",
+                "tab",
+                "dashboard",
+            ):
+                errors.append("defaults.interactions.scope must be one of: chart, dashboard, tab")
 
         tabs = self.payload.get("tabs")
         if not isinstance(tabs, list) or not tabs:

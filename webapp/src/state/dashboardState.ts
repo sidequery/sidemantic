@@ -115,6 +115,16 @@ function dashboardSelectionFilter(dimension: string, value: string, types: DimTy
   return filterExprs({ [dimension]: { mode: "include", values: [value] } }, { types });
 }
 
+function scopedInteractionDimensions(document: DashboardDocument, chart: DashboardChart): Set<string> | null {
+  const scope = document.defaults?.interactions?.scope ?? "dashboard";
+  if (scope === "dashboard") return null;
+  const charts =
+    scope === "chart"
+      ? [chart]
+      : (document.tabs.find((tab) => tab.charts.includes(chart))?.charts ?? [chart]);
+  return new Set(charts.flatMap((candidate) => candidate.query.dimensions ?? []));
+}
+
 export function dashboardStructuredQuery(
   document: DashboardDocument,
   chart: DashboardChart,
@@ -122,13 +132,20 @@ export function dashboardStructuredQuery(
   types: DimTypes,
   ranges: DashboardViewState["ranges"] = {},
 ): StructuredQuery {
+  const scopedDimensions = scopedInteractionDimensions(document, chart);
+  const scopedFilters = Object.entries(filters).filter(
+    ([dimension]) => !scopedDimensions || scopedDimensions.has(dimension),
+  );
+  const scopedRanges = Object.entries(ranges).filter(
+    ([dimension]) => !scopedDimensions || scopedDimensions.has(dimension),
+  );
   const request: StructuredQuery = {
     metrics: chart.query.metrics,
     dimensions: chart.query.dimensions,
     filters: [
       ...(chart.query.filters ?? []),
-      ...Object.entries(filters).flatMap(([dimension, value]) => dashboardSelectionFilter(dimension, value, types)),
-      ...Object.entries(ranges).map(([dimension, range]) => dashboardRangeFilter(dimension, range)),
+      ...scopedFilters.flatMap(([dimension, value]) => dashboardSelectionFilter(dimension, value, types)),
+      ...scopedRanges.map(([dimension, range]) => dashboardRangeFilter(dimension, range)),
     ],
     segments: chart.query.segments,
     orderBy: chart.query.order_by ?? chart.query.orderBy,

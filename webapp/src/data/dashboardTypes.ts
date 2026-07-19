@@ -10,6 +10,9 @@ export type DashboardDocument = {
       use_preaggregations?: boolean;
       usePreaggregations?: boolean;
     };
+    interactions?: {
+      scope?: "chart" | "tab" | "dashboard";
+    };
   };
   tabs: DashboardTab[];
 };

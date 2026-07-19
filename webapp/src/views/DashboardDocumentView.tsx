@@ -455,7 +455,15 @@ export function DashboardDocumentView({
               role="tab"
               aria-selected={tab.id === activeTab?.id}
               data-tab-id={tab.id}
-              onClick={() => setState((current) => ({ ...current, tab: tab.id }))}
+              onClick={() =>
+                setState((current) => {
+                  if (current.tab === tab.id) return current;
+                  if ((document.defaults?.interactions?.scope ?? "dashboard") === "dashboard") {
+                    return { ...current, tab: tab.id };
+                  }
+                  return { ...current, tab: tab.id, filters: {}, ranges: {} };
+                })
+              }
               className="border border-b-0 border-line px-3 py-2 text-xs text-muted aria-selected:border-accent aria-selected:bg-bg aria-selected:text-ink"
             >
               {tabLabel(tab)}

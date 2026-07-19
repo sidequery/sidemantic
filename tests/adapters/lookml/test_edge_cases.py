@@ -2970,6 +2970,47 @@ view: orders {
     assert con.execute(layer.compile(metrics=["orders.n_amounts"])).fetchall() == [(3,)]
 
 
+def test_lookml_number_measure_zero_column_aggregate_compiles():
+    """A complete-SQL measure whose SQL references no columns (bare COUNT(*)) must still compile.
+
+    ``has_inline_agg`` marks ``type: number  sql: COUNT(*)`` as complete, but the complete-SQL CTE
+    only projects columns from _complete_sql_columns(), which is empty for COUNT(*). Without a
+    fallback the CTE becomes ``SELECT <nothing> FROM orders``, which every engine rejects. The
+    generator must emit a constant projection so the outer COUNT(*) still counts source rows.
+    """
+    import duckdb
+
+    from sidemantic import SemanticLayer
+
+    graph = _parse_lkml(
+        """
+view: orders {
+  sql_table_name: orders ;;
+  dimension: id { primary_key: yes  type: number  sql: ${TABLE}.id ;; }
+  dimension: status { type: string  sql: ${TABLE}.status ;; }
+  measure: cnt { type: number  sql: COUNT(*) ;; }
+  measure: cnt_const { type: number  sql: COUNT(DISTINCT 1) ;; }
+}
+"""
+    )
+    model = graph.get_model("orders")
+    assert model.get_metric("cnt") is not None
+    layer = SemanticLayer(auto_register=False)
+    layer.add_model(model)
+    con = duckdb.connect()
+    con.execute("create table orders(id int, status text)")
+    con.execute("insert into orders values (1,'a'),(2,'b'),(3,'a')")
+    # Ungrouped COUNT(*) over the CTE must equal the source row count, not raise a syntax error.
+    assert con.execute(layer.compile(metrics=["orders.cnt"])).fetchall() == [(3,)]
+    # Grouped by a real dimension it still counts per group.
+    assert sorted(con.execute(layer.compile(metrics=["orders.cnt"], dimensions=["orders.status"])).fetchall()) == [
+        ("a", 2),
+        ("b", 1),
+    ]
+    # A zero-column DISTINCT constant is also valid.
+    assert con.execute(layer.compile(metrics=["orders.cnt_const"])).fetchall() == [(1,)]
+
+
 def test_lookml_number_measure_constant_dimension_is_aggregate_safe():
     """A CONSTANT-valued dimension in a mixed number measure must not read as a raw column.
 
@@ -4885,6 +4926,45 @@ def test_lookml_export_folded_filter_date_part_guard_is_position_aware():
     )
     assert conds(["DATE_TRUNC(\"month\", date) = DATE '2024-01-01'"], model) == (
         "(DATE_TRUNC(\"month\", (${TABLE}.order_date)) = DATE '2024-01-01')"
+    )
+
+
+def test_lookml_export_folded_filter_trunc_date_expression_protects_part():
+    """A TRUNC over a date EXPRESSION (not a bare dimension) is still the date overload.
+
+    TRUNC is numeric-overloaded (TRUNC(number, scale)), so its part slot is only guarded when the
+    value is date-typed. The old guard only accepted a value that was EXACTLY a time dimension name,
+    so TRUNC(CAST({model}.created_at AS DATE), month) on a model that also has a `month` dimension
+    left `month` looking like a plain column: it got rewritten to the dimension SQL, corrupting the
+    exported unit. A value that references a time dimension, or is wrapped in an explicit date cast,
+    must be recognised as the date overload -- while a genuinely numeric TRUNC(amount, month) still
+    resolves `month` to its column.
+    """
+    from sidemantic import Dimension, Model
+
+    model = Model(
+        name="orders",
+        table="raw_orders",
+        primary_key="id",
+        dimensions=[
+            Dimension(name="created_at", type="time", granularity="day", sql="created_at"),
+            Dimension(name="month", type="time", granularity="month", sql="order_month"),
+            Dimension(name="amount", type="numeric", sql="amount"),
+        ],
+    )
+    conds = LookMLAdapter._fold_filter_conds
+    # CAST(... AS DATE) value: `month` stays the PART; the cast's `created_at` still resolves.
+    assert conds(["TRUNC(CAST({model}.created_at AS DATE), month) = DATE '2024-01-01'"], model) == (
+        "(TRUNC(CAST((${TABLE}.created_at) AS DATE), month) = DATE '2024-01-01')"
+    )
+    # Postgres `::date` shorthand is recognised the same way.
+    assert conds(["TRUNC({model}.created_at::date, month) = DATE '2024-01-01'"], model) == (
+        "(TRUNC((${TABLE}.created_at)::date, month) = DATE '2024-01-01')"
+    )
+    # A genuinely numeric TRUNC (value is a numeric dimension, no date cast) is untouched: `month`
+    # is a scale COLUMN and must resolve to its dimension SQL, not be protected as a part.
+    assert conds(["TRUNC({model}.amount, month) > 5"], model) == (
+        "(TRUNC((${TABLE}.amount), (${TABLE}.order_month)) > 5)"
     )
 
 

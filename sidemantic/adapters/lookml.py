@@ -696,6 +696,14 @@ class LookMLAdapter(BaseAdapter):
     # TRUNC(number, scale). Only guard their part slot with evidence the value argument is date/time.
     _DATE_PART_NUMERIC_OVERLOAD = frozenset({"trunc", "truncate"})
 
+    # An explicit date/time cast around a value marks the date overload of a numeric-overloaded
+    # function (a numeric scale value is never cast to a date type). Covers CAST(x AS DATE) and the
+    # `x::date` shorthand for DATE / DATETIME / TIMESTAMP(TZ) / TIME family types.
+    _DATE_VALUE_CAST_RE = re.compile(
+        r"(?i)\bCAST\s*\(.*\bAS\s+(?:DATE|DATETIME|SMALLDATETIME|TIMESTAMP\w*|TIME)\b"
+        r"|::\s*(?:DATE|DATETIME|SMALLDATETIME|TIMESTAMP\w*|TIME)\b"
+    )
+
     @classmethod
     def _is_date_part_argument(cls, pre: str, suf: str, token: str, time_dim_names: set | None = None) -> bool:
         """True if ``token`` occupies the date-PART argument slot of a date/time call.
@@ -807,14 +815,24 @@ class LookMLAdapter(BaseAdapter):
             return False
         if func.lower() in cls._DATE_PART_NUMERIC_OVERLOAD:
             # TRUNC/TRUNCATE is also numeric (TRUNC(number, scale)). Only treat the part slot as a
-            # date part when the VALUE argument is a known time dimension; otherwise a scale column
-            # named like a unit (TRUNC(amount, month)) must still resolve to its dimension SQL.
+            # date part when the VALUE argument is date/time-typed; otherwise a scale column named
+            # like a unit (TRUNC(amount, month)) must still resolve to its dimension SQL.
             _args = cls._enclosing_call_arg_texts(pre, suf, token)
+            _value_raw = _args[0].strip() if _args else ""
             # The value is normally qualified in a folded filter ({model}.created_at); strip the
             # model placeholder / a bare table qualifier and any quotes so it matches a time dim name.
-            _value = _args[0].strip() if _args else ""
-            _value = re.sub(r"^(?:\{model\}|\$\{TABLE\}|\w+)\.", "", _value).strip("`\"[]'")
-            if not (time_dim_names and _value in time_dim_names):
+            _value = re.sub(r"^(?:\{model\}|\$\{TABLE\}|\w+)\.", "", _value_raw).strip("`\"[]'")
+            _is_date_value = bool(time_dim_names and _value in time_dim_names)
+            if not _is_date_value:
+                # A date EXPRESSION over a time dimension -- e.g. TRUNC(CAST({model}.created_at AS
+                # DATE), month) -- is still the date overload even though the value is not a bare
+                # dimension name. Recognize it when the value references a known time dimension as a
+                # whole word, or is wrapped in an explicit date/time cast (never a numeric scale).
+                _refs_time_dim = bool(time_dim_names) and any(
+                    re.search(rf"(?<!\w){re.escape(_dim)}\b", _value_raw) for _dim in time_dim_names
+                )
+                _is_date_value = _refs_time_dim or cls._DATE_VALUE_CAST_RE.search(_value_raw) is not None
+            if not _is_date_value:
                 return False
         if want >= 0:
             return arg_index == want

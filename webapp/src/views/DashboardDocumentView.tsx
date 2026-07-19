@@ -16,6 +16,7 @@ import {
   brushableDashboardDimension,
   decodeDashboardState,
   dashboardCategorySeries,
+  dashboardChartScopeKey,
   dashboardDrillDimension,
   dashboardExploreUrl,
   dashboardFilterValue,
@@ -149,8 +150,8 @@ function DashboardChartPanel({
   const [detailsOpen, setDetailsOpen] = useState(false);
   const types = useMemo(() => dimensionTypes(catalog), [catalog]);
   const request = useMemo(
-    () => dashboardStructuredQuery(document, chart, state.filters, types, state.ranges),
-    [chart, document, state.filters, state.ranges, types],
+    () => dashboardStructuredQuery(document, chart, state.filters, types, state.ranges, state),
+    [chart, document, state, types],
   );
   const query = useQueryResult(backend, request);
   const rows = query.result?.rows ?? [];
@@ -264,7 +265,7 @@ function DashboardChartPanel({
           >
             {detailsOpen ? "Hide details" : "Drill details"}
           </button>
-          <a href={dashboardExploreUrl(chart, state)} className="border border-line px-2 py-1 text-2xs text-muted hover:border-faint hover:text-ink">
+          <a href={dashboardExploreUrl(document, chart, state)} className="border border-line px-2 py-1 text-2xs text-muted hover:border-faint hover:text-ink">
             Explore from here
           </a>
           <CsvDownload chart={chart} columns={columns} rows={rows} />
@@ -382,16 +383,28 @@ export function DashboardDocumentView({
     window.history.replaceState(null, "", `${window.location.pathname}${query ? `?${query}` : ""}`);
   }, [document, state]);
 
-  function setFilter(dimension: string, value: string) {
-    setState((current) => ({ ...current, filters: { ...current.filters, [dimension]: value } }));
+  function setFilter(chart: DashboardChart, dimension: string, value: string) {
+    const source = dashboardChartScopeKey(document, chart);
+    setState((current) => ({
+      ...current,
+      filters: { ...current.filters, [dimension]: value },
+      filterSources: { ...current.filterSources, [dimension]: source },
+    }));
   }
 
-  function setRange(dimension: string, range: { from: string; to: string } | null) {
+  function setRange(chart: DashboardChart, dimension: string, range: { from: string; to: string } | null) {
+    const source = dashboardChartScopeKey(document, chart);
     setState((current) => {
       const ranges = { ...current.ranges };
-      if (range) ranges[dimension] = range;
-      else delete ranges[dimension];
-      return { ...current, ranges };
+      const rangeSources = { ...current.rangeSources };
+      if (range) {
+        ranges[dimension] = range;
+        rangeSources[dimension] = source;
+      } else {
+        delete ranges[dimension];
+        delete rangeSources[dimension];
+      }
+      return { ...current, ranges, rangeSources };
     });
   }
 
@@ -413,8 +426,10 @@ export function DashboardDocumentView({
           aria-label={`Remove filter ${labelize(dimension)} ${value}`}
           onClick={() => setState((current) => {
             const next = { ...current.filters };
+            const filterSources = { ...current.filterSources };
             delete next[dimension];
-            return { ...current, filters: next };
+            delete filterSources[dimension];
+            return { ...current, filters: next, filterSources };
           })}
           className="border border-line bg-surface px-2 py-1 text-2xs text-muted hover:border-danger"
         >
@@ -426,13 +441,21 @@ export function DashboardDocumentView({
           key={`range-${dimension}`}
           type="button"
           aria-label={`Remove range ${labelize(dimension)} ${range.from} to ${range.to}`}
-          onClick={() => setRange(dimension, null)}
+          onClick={() =>
+            setState((current) => {
+              const ranges = { ...current.ranges };
+              const rangeSources = { ...current.rangeSources };
+              delete ranges[dimension];
+              delete rangeSources[dimension];
+              return { ...current, ranges, rangeSources };
+            })
+          }
           className="border border-line bg-surface px-2 py-1 text-2xs text-muted hover:border-danger"
         >
           {labelize(dimension)}: {range.from}–{range.to} ×
         </button>
       ))}
-      <button type="button" onClick={() => setState((current) => ({ ...current, filters: {}, ranges: {} }))} className="text-2xs text-muted hover:text-ink">
+      <button type="button" onClick={() => setState((current) => ({ ...current, filters: {}, ranges: {}, filterSources: {}, rangeSources: {} }))} className="text-2xs text-muted hover:text-ink">
         Clear all
       </button>
     </>
@@ -461,7 +484,7 @@ export function DashboardDocumentView({
                   if ((document.defaults?.interactions?.scope ?? "dashboard") === "dashboard") {
                     return { ...current, tab: tab.id };
                   }
-                  return { ...current, tab: tab.id, filters: {}, ranges: {} };
+                  return { ...current, tab: tab.id, filters: {}, ranges: {}, filterSources: {}, rangeSources: {} };
                 })
               }
               className="border border-b-0 border-line px-3 py-2 text-xs text-muted aria-selected:border-accent aria-selected:bg-bg aria-selected:text-ink"
@@ -480,8 +503,8 @@ export function DashboardDocumentView({
                 catalog={catalog}
                 backend={backend}
                 state={state}
-                setFilter={setFilter}
-                setRange={setRange}
+                setFilter={(dimension, value) => setFilter(chart, dimension, value)}
+                setRange={(dimension, range) => setRange(chart, dimension, range)}
               />
             ))}
           </section>

@@ -41,6 +41,8 @@ describe("dashboard URL state", () => {
         tab: "customers",
         filters: { "orders.region": "North", "customers.tier": "Gold" },
         ranges: { "orders.region": { from: "A", to: "Z" } },
+        filterSources: { "customers.tier": "customers:tiers" },
+        rangeSources: { "orders.region": "overview:trend" },
       },
       document,
     );
@@ -48,6 +50,8 @@ describe("dashboard URL state", () => {
       tab: "customers",
       filters: { "orders.region": "North", "customers.tier": "Gold" },
       ranges: { "orders.region": { from: "A", to: "Z" } },
+      filterSources: { "customers.tier": "customers:tiers" },
+      rangeSources: { "orders.region": "overview:trend" },
     });
   });
 
@@ -57,6 +61,8 @@ describe("dashboard URL state", () => {
       tab: "overview",
       filters: { "orders.region": "North" },
       ranges: {},
+      filterSources: {},
+      rangeSources: {},
     });
   });
 });
@@ -189,10 +195,12 @@ describe("dashboard selections", () => {
       encoding: { x: "orders.created_at__month" },
     };
     const url = new URL(
-      dashboardExploreUrl(chart, {
+      dashboardExploreUrl(document, chart, {
         tab: "overview",
         filters: { "orders.region": "West" },
         ranges: { "orders.created_at__month": { from: "2026-01-01", to: "2026-03-01" } },
+        filterSources: {},
+        rangeSources: {},
       }),
       "https://example.test",
     );
@@ -237,6 +245,40 @@ describe("dashboard selections", () => {
     expect(query.filters).toContain("orders_200k.region = 'East'");
     expect(query.filters).toContain("orders_200k.region >= 'A' AND orders_200k.region <= 'Z'");
     expect(query.filters?.some((filter) => filter.includes("orders.region") || filter.includes("orders.created_at"))).toBe(
+      false,
+    );
+  });
+
+  test("keeps chart-scoped interactions with their source chart and explorer", () => {
+    const first: DashboardChart = {
+      id: "first",
+      query: { metrics: ["orders.revenue"], dimensions: ["orders.region"] },
+    };
+    const second: DashboardChart = {
+      id: "second",
+      query: { metrics: ["orders.order_count"], dimensions: ["orders.region"] },
+    };
+    const scopedDocument: DashboardDocument = {
+      ...document,
+      defaults: { interactions: { scope: "chart" } },
+      tabs: [{ id: "overview", charts: [first, second] }],
+    };
+    const state = {
+      tab: "overview",
+      filters: { "orders.region": "West" },
+      ranges: {},
+      filterSources: { "orders.region": "overview:first" },
+      rangeSources: {},
+    };
+
+    expect(dashboardStructuredQuery(scopedDocument, first, state.filters, {}, state.ranges, state).filters).toContain(
+      "orders.region = 'West'",
+    );
+    expect(dashboardStructuredQuery(scopedDocument, second, state.filters, {}, state.ranges, state).filters).toEqual([]);
+    expect(new URL(dashboardExploreUrl(scopedDocument, first, state), "https://example.test").searchParams.has("filters")).toBe(
+      true,
+    );
+    expect(new URL(dashboardExploreUrl(scopedDocument, second, state), "https://example.test").searchParams.has("filters")).toBe(
       false,
     );
   });

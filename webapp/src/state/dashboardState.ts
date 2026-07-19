@@ -9,6 +9,8 @@ export type DashboardViewState = {
   tab: string;
   filters: Record<string, string>;
   ranges: Record<string, DashboardRange>;
+  filterSources: Record<string, string>;
+  rangeSources: Record<string, string>;
 };
 
 export type SavedDashboardView = {
@@ -18,6 +20,8 @@ export type SavedDashboardView = {
 
 const FILTER_PARAM = "dashboard_filters";
 const RANGE_PARAM = "dashboard_ranges";
+const FILTER_SOURCE_PARAM = "dashboard_filter_sources";
+const RANGE_SOURCE_PARAM = "dashboard_range_sources";
 
 export function shouldUseExplorer(pathname: string, search: string): boolean {
   if (pathname === "/explore") return true;
@@ -115,14 +119,35 @@ function dashboardSelectionFilter(dimension: string, value: string, types: DimTy
   return filterExprs({ [dimension]: { mode: "include", values: [value] } }, { types });
 }
 
-function scopedInteractionDimensions(document: DashboardDocument, chart: DashboardChart): Set<string> | null {
+export function dashboardChartScopeKey(document: DashboardDocument, chart: DashboardChart): string {
+  const tab = document.tabs.find((candidate) => candidate.charts.includes(chart));
+  return `${tab?.id ?? "dashboard"}:${chart.id}`;
+}
+
+function scopedDashboardInteractions(
+  document: DashboardDocument,
+  chart: DashboardChart,
+  state: Pick<DashboardViewState, "filters" | "ranges" | "filterSources" | "rangeSources">,
+): Pick<DashboardViewState, "filters" | "ranges"> {
   const scope = document.defaults?.interactions?.scope ?? "dashboard";
-  if (scope === "dashboard") return null;
-  const charts =
-    scope === "chart"
-      ? [chart]
-      : (document.tabs.find((tab) => tab.charts.includes(chart))?.charts ?? [chart]);
-  return new Set(charts.flatMap((candidate) => candidate.query.dimensions ?? []));
+  if (scope === "dashboard") return state;
+  if (scope === "chart") {
+    const source = dashboardChartScopeKey(document, chart);
+    return {
+      filters: Object.fromEntries(
+        Object.entries(state.filters).filter(([dimension]) => state.filterSources[dimension] === source),
+      ),
+      ranges: Object.fromEntries(
+        Object.entries(state.ranges).filter(([dimension]) => state.rangeSources[dimension] === source),
+      ),
+    };
+  }
+  const charts = document.tabs.find((tab) => tab.charts.includes(chart))?.charts ?? [chart];
+  const dimensions = new Set(charts.flatMap((candidate) => candidate.query.dimensions ?? []));
+  return {
+    filters: Object.fromEntries(Object.entries(state.filters).filter(([dimension]) => dimensions.has(dimension))),
+    ranges: Object.fromEntries(Object.entries(state.ranges).filter(([dimension]) => dimensions.has(dimension))),
+  };
 }
 
 export function dashboardStructuredQuery(
@@ -131,21 +156,18 @@ export function dashboardStructuredQuery(
   filters: DashboardViewState["filters"],
   types: DimTypes,
   ranges: DashboardViewState["ranges"] = {},
+  sources: Pick<DashboardViewState, "filterSources" | "rangeSources"> = { filterSources: {}, rangeSources: {} },
 ): StructuredQuery {
-  const scopedDimensions = scopedInteractionDimensions(document, chart);
-  const scopedFilters = Object.entries(filters).filter(
-    ([dimension]) => !scopedDimensions || scopedDimensions.has(dimension),
-  );
-  const scopedRanges = Object.entries(ranges).filter(
-    ([dimension]) => !scopedDimensions || scopedDimensions.has(dimension),
-  );
+  const scoped = scopedDashboardInteractions(document, chart, { filters, ranges, ...sources });
   const request: StructuredQuery = {
     metrics: chart.query.metrics,
     dimensions: chart.query.dimensions,
     filters: [
       ...(chart.query.filters ?? []),
-      ...scopedFilters.flatMap(([dimension, value]) => dashboardSelectionFilter(dimension, value, types)),
-      ...scopedRanges.map(([dimension, range]) => dashboardRangeFilter(dimension, range)),
+      ...Object.entries(scoped.filters).flatMap(([dimension, value]) =>
+        dashboardSelectionFilter(dimension, value, types),
+      ),
+      ...Object.entries(scoped.ranges).map(([dimension, range]) => dashboardRangeFilter(dimension, range)),
     ],
     segments: chart.query.segments,
     orderBy: chart.query.order_by ?? chart.query.orderBy,
@@ -180,19 +202,18 @@ function explorerRange(dimension: string, range: DashboardRange): DashboardRange
   return { from, to: inclusiveEnd.toISOString().slice(0, 10) };
 }
 
-export function dashboardExploreUrl(chart: DashboardChart, state: DashboardViewState): string {
+export function dashboardExploreUrl(document: DashboardDocument, chart: DashboardChart, state: DashboardViewState): string {
   const encoded = chart.encoding?.y;
   const metric = (Array.isArray(encoded) ? encoded[0] : encoded) ?? chart.query.metrics[0] ?? "";
   const dimensions = chart.query.dimensions ?? [];
   const model = metric.includes(".") ? metric.split(".")[0] : dimensions[0]?.split(".")[0] ?? "";
-  const explorerFilters = Object.fromEntries(
-    Object.entries(state.filters).map(([dimension, value]) => [dimension, [value]]),
-  );
+  const scoped = scopedDashboardInteractions(document, chart, state);
+  const explorerFilters = Object.fromEntries(Object.entries(scoped.filters).map(([dimension, value]) => [dimension, [value]]));
   const params = new URLSearchParams({ view: "explore", model, metric });
   if (Object.keys(explorerFilters).length) params.set("filters", JSON.stringify(explorerFilters));
 
   const xDimension = chart.encoding?.x ?? dimensions[0];
-  const range = xDimension ? state.ranges[xDimension] : undefined;
+  const range = xDimension ? scoped.ranges[xDimension] : undefined;
   const dateRange = xDimension && range ? explorerRange(xDimension, range) : null;
   if (dateRange) {
     params.set("from", dateRange.from);
@@ -287,6 +308,15 @@ function validRanges(value: unknown, allowedDimensions: Set<string>): Record<str
   return ranges;
 }
 
+function validSources(value: unknown, allowedDimensions: Set<string>): Record<string, string> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return {};
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).filter(
+      (entry): entry is [string, string] => allowedDimensions.has(entry[0]) && typeof entry[1] === "string",
+    ),
+  );
+}
+
 export function dashboardDimensions(document: DashboardDocument): Set<string> {
   return new Set(document.tabs.flatMap((tab) => tab.charts.flatMap((chart) => chart.query.dimensions ?? [])));
 }
@@ -298,6 +328,8 @@ export function decodeDashboardState(search: string, document: DashboardDocument
   const tab = document.tabs.some((candidate) => candidate.id === requestedTab) ? requestedTab ?? fallbackTab : fallbackTab;
   let parsedFilters: unknown;
   let parsedRanges: unknown;
+  let parsedFilterSources: unknown;
+  let parsedRangeSources: unknown;
   try {
     parsedFilters = JSON.parse(params.get(FILTER_PARAM) ?? "{}");
   } catch {
@@ -308,11 +340,23 @@ export function decodeDashboardState(search: string, document: DashboardDocument
   } catch {
     parsedRanges = {};
   }
+  try {
+    parsedFilterSources = JSON.parse(params.get(FILTER_SOURCE_PARAM) ?? "{}");
+  } catch {
+    parsedFilterSources = {};
+  }
+  try {
+    parsedRangeSources = JSON.parse(params.get(RANGE_SOURCE_PARAM) ?? "{}");
+  } catch {
+    parsedRangeSources = {};
+  }
   const dimensions = dashboardDimensions(document);
   return {
     tab,
     filters: validFilters(parsedFilters, dimensions),
     ranges: validRanges(parsedRanges, dimensions),
+    filterSources: validSources(parsedFilterSources, dimensions),
+    rangeSources: validSources(parsedRangeSources, dimensions),
   };
 }
 
@@ -321,6 +365,14 @@ export function encodeDashboardState(state: DashboardViewState, document: Dashbo
   if (state.tab && state.tab !== document.tabs[0]?.id) params.set("tab", state.tab);
   if (Object.keys(state.filters).length) params.set(FILTER_PARAM, JSON.stringify(state.filters));
   if (Object.keys(state.ranges).length) params.set(RANGE_PARAM, JSON.stringify(state.ranges));
+  const filterSources = Object.fromEntries(
+    Object.entries(state.filterSources).filter(([dimension]) => dimension in state.filters),
+  );
+  const rangeSources = Object.fromEntries(
+    Object.entries(state.rangeSources).filter(([dimension]) => dimension in state.ranges),
+  );
+  if (Object.keys(filterSources).length) params.set(FILTER_SOURCE_PARAM, JSON.stringify(filterSources));
+  if (Object.keys(rangeSources).length) params.set(RANGE_SOURCE_PARAM, JSON.stringify(rangeSources));
   return params.toString();
 }
 
@@ -339,7 +391,13 @@ export function loadSavedDashboardViews(document: DashboardDocument): SavedDashb
       const candidate = item as { name?: unknown; state?: unknown };
       if (typeof candidate.name !== "string" || !candidate.name.trim()) return [];
       if (typeof candidate.state !== "object" || candidate.state === null || Array.isArray(candidate.state)) return [];
-      const rawState = candidate.state as { tab?: unknown; filters?: unknown };
+      const rawState = candidate.state as {
+        tab?: unknown;
+        filters?: unknown;
+        ranges?: unknown;
+        filterSources?: unknown;
+        rangeSources?: unknown;
+      };
       const tab = document.tabs.some((entry) => entry.id === rawState.tab)
         ? String(rawState.tab)
         : document.tabs[0]?.id ?? "";
@@ -348,7 +406,9 @@ export function loadSavedDashboardViews(document: DashboardDocument): SavedDashb
         state: {
           tab,
           filters: validFilters(rawState.filters, dimensions),
-          ranges: validRanges((rawState as { ranges?: unknown }).ranges, dimensions),
+          ranges: validRanges(rawState.ranges, dimensions),
+          filterSources: validSources(rawState.filterSources, dimensions),
+          rangeSources: validSources(rawState.rangeSources, dimensions),
         },
       }];
     });

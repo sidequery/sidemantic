@@ -96,7 +96,7 @@ test("drill, explore, local saved views, CSV, and share URL behavior are explici
   await expect(statusChart.getByRole("link", { name: "Export CSV" })).toHaveAttribute("download", "orders_by_status.csv");
   await expect(page.getByRole("button", { name: "Copy share URL" })).toHaveAttribute(
     "title",
-    /active tab and filters.*saved views are not shared/i,
+    /active tab.*filters.*saved views are not shared/i,
   );
 
   await page.getByText("Saved views", { exact: true }).click();

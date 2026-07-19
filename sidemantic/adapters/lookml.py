@@ -4416,6 +4416,16 @@ class LookMLAdapter(BaseAdapter):
 
         base_model = graph.models[base_model_name]
         consumption_filters: list[str] = []
+        join_aliases = {
+            join_def.get("name"): join_def.get("from", join_def.get("name"))
+            for join_def in explore_def.get("joins") or []
+            if join_def.get("name")
+        }
+
+        def _semantic_model_name(lookml_qualifier: str) -> str:
+            if lookml_qualifier in {explore_name, base_model_name}:
+                return base_model_name
+            return join_aliases.get(lookml_qualifier, lookml_qualifier)
 
         # Set description from explore if model doesn't already have one
         explore_desc = explore_def.get("description")
@@ -4464,7 +4474,11 @@ class LookMLAdapter(BaseAdapter):
             # need real semantic model references. Keep separate translations so a
             # LookML mandatory filter is executable in both paths.
             consumption_filter = sql_always_where.replace("${TABLE}", base_model_name)
-            consumption_filter = re.sub(r"\$\{(\w+)\.(\w+)\}", r"\1.\2", consumption_filter)
+            consumption_filter = re.sub(
+                r"\$\{(\w+)\.(\w+)\}",
+                lambda match: f"{_semantic_model_name(match.group(1))}.{match.group(2)}",
+                consumption_filter,
+            )
             sql_always_where = sql_always_where.replace("${TABLE}", "{model}")
             sql_always_where = re.sub(r"\$\{(\w+)\.(\w+)\}", r"{model}.\2", sql_always_where)
             consumption_filters.append(consumption_filter)
@@ -4493,18 +4507,7 @@ class LookMLAdapter(BaseAdapter):
                 field_model_name = base_model_name
                 if "." in field:
                     field_qualifier = field.rsplit(".", 1)[0]
-                    if field_qualifier not in {explore_name, base_model_name}:
-                        matching_join = next(
-                            (
-                                join_def
-                                for join_def in explore_def.get("joins") or []
-                                if join_def.get("name") == field_qualifier
-                            ),
-                            None,
-                        )
-                        field_model_name = (
-                            matching_join.get("from", field_qualifier) if matching_join else field_qualifier
-                        )
+                    field_model_name = _semantic_model_name(field_qualifier)
                 filter_sql = self._convert_lookml_filter_to_sql(bare_field, str(value))
                 segment_name = f"_always_filter_{explore_name}_{field}"
                 if filter_sql and segment_name not in existing_names:
@@ -4591,6 +4594,7 @@ class LookMLAdapter(BaseAdapter):
                     break
                 if "." in raw_field:
                     model_name, field_name = raw_field.split(".", 1)
+                    model_name = _semantic_model_name(model_name)
                 else:
                     model_name, field_name = base_model_name, raw_field
                 field_model = graph.models.get(model_name)

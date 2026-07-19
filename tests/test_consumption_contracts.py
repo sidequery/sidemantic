@@ -482,23 +482,29 @@ view: customers {
   dimension: id { primary_key: yes sql: ${TABLE}.id ;; }
   dimension: region { sql: ${TABLE}.region ;; }
 }
-explore: orders {
-  sql_always_where: ${TABLE}.id > 0 ;;
-  always_filter: { filters: [customers.region: "West"] }
-  join: customers {
+explore: sales {
+  from: orders
+  fields: [orders.count, buyer.region]
+  sql_always_where: ${sales.id} > 0 AND ${TABLE}.id > 0 ;;
+  always_filter: { filters: [buyer.region: "West"] }
+  join: buyer {
+    from: customers
     relationship: many_to_one
-    sql_on: ${orders.customer_id} = ${customers.id} ;;
+    sql_on: ${sales.customer_id} = ${buyer.id} ;;
   }
 }
 """.strip()
     )
 
     graph = LookMLAdapter().parse(source)
-    assert graph.explores["orders"].filters == ["orders.id > 0", "customers.region = 'West'"]
+    explore = graph.explores["sales"]
+    assert explore.filters == ["orders.id > 0 AND orders.id > 0", "customers.region = 'West'"]
+    assert explore.allowed_metrics == ["orders.count"]
+    assert explore.allowed_dimensions == ["customers.region"]
 
     layer = SemanticLayer(auto_register=False)
     layer.graph = graph
-    sql = layer.compile(explore="orders", metrics=["orders.count"])
+    sql = layer.compile(explore="sales", metrics=["orders.count"])
     assert "FROM customers" in sql
     assert "WHERE region = 'West'" in sql
     assert "WHERE id > 0" in sql

@@ -903,6 +903,9 @@ function addDays(value, days) {
   return isoDate(date);
 }
 function timeFilters(ref, range) {
+  if (range.from.includes("T") || range.to.includes("T")) {
+    return [`${ref} >= cast('${range.from}' as timestamp)`, `${ref} < cast('${range.to}' as timestamp)`];
+  }
   return [`${ref} >= cast('${range.from}' as date)`, `${ref} < cast('${addDays(range.to, 1)}' as date)`];
 }
 

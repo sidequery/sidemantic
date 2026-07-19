@@ -94,6 +94,12 @@ describe("decodeState", () => {
     });
   });
 
+  test("round-trips fine-grain timestamp ranges", () => {
+    const range = { from: "2024-01-01T00:05:00", to: "2024-01-01T00:06:00" };
+    const encoded = encodeState({ ...base, dateRange: range });
+    expect(decodeState(encoded, base).dateRange).toEqual(range);
+  });
+
   test("rejects a reversed or non-ISO date range", () => {
     expect(decodeState("from=2024-02-01&to=2024-01-01", base).dateRange).toBeUndefined();
     expect(decodeState("from=2024-1-1&to=2024-01-31", base).dateRange).toBeUndefined();

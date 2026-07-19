@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { addDays, bucketOffset, endOfBucket, formatBucketLabel, grainOptions, previousRange, previousYearRange } from "./time";
+import { addDays, bucketOffset, endOfBucket, formatBucketLabel, grainOptions, previousRange, previousYearRange, timeFilters } from "./time";
 
 describe("bucketOffset", () => {
   test("counts second and minute timestamp buckets", () => {
@@ -32,6 +32,13 @@ describe("previousRange", () => {
       to: "2024-01-07",
     });
   });
+
+  test("preserves a half-open timestamp window", () => {
+    expect(previousRange({ from: "2024-01-01T00:05:00", to: "2024-01-01T00:06:00" })).toEqual({
+      from: "2024-01-01T00:04:00",
+      to: "2024-01-01T00:05:00",
+    });
+  });
 });
 
 describe("previousYearRange", () => {
@@ -53,6 +60,13 @@ describe("previousYearRange", () => {
     expect(previousYearRange({ from: "2025-02-01", to: "2025-02-28" })).toEqual({
       from: "2024-02-01",
       to: "2024-02-28",
+    });
+  });
+
+  test("preserves timestamp precision", () => {
+    expect(previousYearRange({ from: "2024-01-01T00:05:00", to: "2024-01-01T00:06:00" })).toEqual({
+      from: "2023-01-01T00:05:00",
+      to: "2023-01-01T00:06:00",
     });
   });
 
@@ -83,6 +97,18 @@ describe("endOfBucket", () => {
     expect(endOfBucket("2024-01-01", "quarter")).toBe("2024-03-31");
     expect(endOfBucket("2024-01-01", "year")).toBe("2024-12-31");
   });
+
+  test("returns an exclusive timestamp boundary for sub-day buckets", () => {
+    expect(endOfBucket("2024-01-01T00:00:05", "second")).toBe("2024-01-01T00:00:06");
+    expect(endOfBucket("2024-01-01T00:05:00", "minute")).toBe("2024-01-01T00:06:00");
+  });
+});
+
+test("timeFilters preserves half-open timestamp bounds", () => {
+  expect(timeFilters("orders.created_at", { from: "2024-01-01T00:05:00", to: "2024-01-01T00:06:00" })).toEqual([
+    "orders.created_at >= cast('2024-01-01T00:05:00' as timestamp)",
+    "orders.created_at < cast('2024-01-01T00:06:00' as timestamp)",
+  ]);
 });
 
 describe("addDays", () => {

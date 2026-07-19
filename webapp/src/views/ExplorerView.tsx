@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { aliasOf, type CatalogMetric } from "../data/types";
+import { aliasOf, type CatalogMetric, type Grain, type StructuredQuery } from "../data/types";
 import { LeaderboardPanel } from "../components/LeaderboardPanel";
 import { MetricCard } from "../components/MetricCard";
 import { MetricTimeSeries } from "../components/MetricTimeSeries";
@@ -10,7 +10,6 @@ import { formatDelta, formatValue } from "../lib/format";
 import { graphMetricsForModel } from "../lib/catalog";
 import { dashboardTabConfig } from "../lib/dashboard";
 import { catalogDimTypes, composeFilters, metricSeries, metricTotals } from "../lib/queries";
-import type { StructuredQuery } from "../data/types";
 import {
   bucketOffset,
   dateOnly,
@@ -36,6 +35,14 @@ export function resolveExpandedLeaderboard(
 
 export function chronologicalSeriesRows<T extends Record<string, unknown>>(rows: T[], timeAlias: string): T[] {
   return [...rows].sort((left, right) => String(left[timeAlias] ?? "").localeCompare(String(right[timeAlias] ?? "")));
+}
+
+export function brushDateRange(range: BrushRange, grain: Grain): DateRange {
+  const fineGrain = grain === "second" || grain === "minute" || grain === "hour";
+  return {
+    from: fineGrain ? range.from.replace(" ", "T") : dateOnly(range.from),
+    to: endOfBucket(range.to, grain),
+  };
 }
 
 export function ExplorerView() {
@@ -192,8 +199,7 @@ export function ExplorerView() {
 
   function onBrush(range: BrushRange | null) {
     if (!range) dispatch({ type: "setDateRange", range: undefined });
-    // Bucket labels can be timestamps (hour grain); store a clean date-only range.
-    else dispatch({ type: "setDateRange", range: { from: dateOnly(range.from), to: endOfBucket(range.to, state.grain) } });
+    else dispatch({ type: "setDateRange", range: brushDateRange(range, state.grain) });
   }
 
   return (

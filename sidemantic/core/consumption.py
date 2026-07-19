@@ -117,12 +117,27 @@ class SavedQuery(GovernedObject):
     metadata: dict[str, Any] | None = Field(None, description="Source-adapter metadata for lossless round-tripping")
 
 
+def graph_metric_is_public(metric: Any, graph: Any) -> bool:
+    """Return whether a graph metric and every source model it queries are public."""
+    if not metric.public or metric.visibility != "public":
+        return False
+
+    # Use the same dependency/source resolution as SQL generation so derived and
+    # ratio metrics cannot hide a private model behind a public graph-level name.
+    from sidemantic.sql.generator import SQLGenerator
+
+    source_models = SQLGenerator(graph)._find_required_models([metric.name], [], metric.filters)
+    return all(
+        (model := graph.models.get(model_name)) is not None and model.visibility == "public"
+        for model_name in source_models
+    )
+
+
 def _semantic_reference_is_public(
     reference: str, base_model: str, graph: Any, *, prefer_graph_metric: bool = False
 ) -> bool:
     if prefer_graph_metric and reference in graph.metrics:
-        metric = graph.metrics[reference]
-        return metric.public and metric.visibility == "public"
+        return graph_metric_is_public(graph.metrics[reference], graph)
     if "." not in reference:
         if not base_model:
             return False

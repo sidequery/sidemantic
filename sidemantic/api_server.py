@@ -378,7 +378,7 @@ def create_app(
     @app.get("/graph", dependencies=[Depends(require_auth)])
     def graph() -> dict[str, Any]:
         # Read-only metadata over the in-memory graph.
-        from sidemantic.core.consumption import serialize_consumption_contract
+        from sidemantic.core.consumption import graph_metric_is_public, serialize_consumption_contract
 
         current_layer = app.state.layer
         graph_obj = current_layer.graph
@@ -409,9 +409,7 @@ def create_app(
 
         graph_metrics = []
         for metric_name, metric in graph_obj.metrics.items():
-            if getattr(current_layer, "enforce_visibility", False) and (
-                not getattr(metric, "public", True) or metric.visibility != "public"
-            ):
+            if current_layer.enforce_visibility and not graph_metric_is_public(metric, graph_obj):
                 continue
             metric_info = {"name": metric_name}
             if metric.type:

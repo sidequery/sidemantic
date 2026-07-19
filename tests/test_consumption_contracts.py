@@ -310,6 +310,27 @@ def test_visibility_enforcement_covers_models_metrics_and_explores():
         layer.compile(explore="revenue_overview")
 
 
+def test_visibility_enforcement_rejects_graph_metrics_sourced_from_private_models():
+    layer = _layer()
+    layer.add_model(
+        Model(
+            name="secret_orders",
+            table="secret_orders",
+            visibility="private",
+            dimensions=[Dimension(name="amount", type="numeric")],
+        )
+    )
+    layer.add_metric(Metric(name="secret_revenue", agg="sum", sql="secret_orders.amount"))
+    layer.enforce_visibility = True
+
+    with pytest.raises(SecurityError, match="secret_revenue.*not public"):
+        layer.compile(metrics=["secret_revenue"])
+
+    assert layer.describe_models()["metrics"] == []
+    assert layer.get_catalog_metadata()["semantic_metrics"] == []
+    assert "graph_metrics" not in TestClient(create_app(layer)).get("/graph").json()
+
+
 def test_meta_api_exposes_consumption_contracts():
     client = TestClient(create_app(_layer()))
 

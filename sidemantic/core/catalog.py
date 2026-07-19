@@ -9,7 +9,7 @@ Key design:
 - This matches Cube.dev's approach where metrics are queryable as columns
 """
 
-from sidemantic.core.consumption import serialize_consumption_contract
+from sidemantic.core.consumption import graph_metric_is_public, serialize_consumption_contract
 from sidemantic.core.governance import governance_dict
 from sidemantic.core.semantic_graph import SemanticGraph
 
@@ -321,7 +321,7 @@ def get_catalog_metadata(graph: SemanticGraph, schema: str = "public", enforce_v
             **governance_dict(metric),
         }
         for metric in graph.metrics.values()
-        if not enforce_visibility or (metric.public and metric.visibility == "public")
+        if not enforce_visibility or graph_metric_is_public(metric, graph)
     ]
     return {
         "tables": tables,

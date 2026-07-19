@@ -8,7 +8,7 @@ from pathlib import Path
 
 import yaml
 
-from sidemantic.core.consumption import Explore, SavedQuery, expression_field_references
+from sidemantic.core.consumption import Explore, SavedQuery, expression_field_references, graph_metric_is_public
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.semantic_graph import SemanticGraph
@@ -1327,9 +1327,7 @@ class SemanticLayer:
             if "." not in metric:
                 # Graph-level metric reference.
                 graph_metric = self.graph.metrics.get(metric)
-                if graph_metric is not None and (
-                    not getattr(graph_metric, "public", True) or graph_metric.visibility != "public"
-                ):
+                if graph_metric is not None and not graph_metric_is_public(graph_metric, self.graph):
                     raise SecurityError(f"Field '{metric}' is not public")
                 continue
             model_name, field_name = metric.split(".", 1)

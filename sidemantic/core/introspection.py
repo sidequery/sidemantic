@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, is_dataclass
 from typing import Any
 
-from sidemantic.core.consumption import serialize_consumption_contract
+from sidemantic.core.consumption import graph_metric_is_public, serialize_consumption_contract
 from sidemantic.core.governance import governance_dict
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
@@ -30,7 +30,7 @@ def describe_graph(
         _describe_metric(metric, warnings, model_name=None)
         for metric in graph.metrics.values()
         if _include_graph_metric(metric, requested)
-        and not (enforce_visibility and (not metric.public or metric.visibility != "public"))
+        and not (enforce_visibility and not graph_metric_is_public(metric, graph))
     ]
 
     explores = [

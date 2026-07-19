@@ -284,11 +284,21 @@ def create_app(
             and secrets.compare_digest(credentials.credentials, expected)
         )
 
+    def _header_session(request: Request) -> str | None:
+        scheme, separator, credential = request.headers.get("Authorization", "").partition(" ")
+        if separator and scheme.lower() == "sidemantic-session" and credential:
+            return credential
+        return None
+
     def require_auth(
         request: Request,
         credentials: HTTPAuthorizationCredentials | None = Security(security),
     ) -> None:
-        if not _valid_bearer(credentials) and not app.state.browser_sessions.valid(request.cookies.get(SESSION_COOKIE)):
+        if (
+            not _valid_bearer(credentials)
+            and not app.state.browser_sessions.valid(request.cookies.get(SESSION_COOKIE))
+            and not app.state.browser_sessions.valid(_header_session(request))
+        ):
             raise HTTPException(
                 status_code=401,
                 detail="Invalid or missing bearer token",
@@ -353,22 +363,30 @@ def create_app(
                 headers={"WWW-Authenticate": "Bearer"},
             )
         session = app.state.browser_sessions.issue()
-        response = JSONResponse({"expires_in": SESSION_TTL_SECONDS})
-        response.set_cookie(
-            SESSION_COOKIE,
-            session,
-            max_age=SESSION_TTL_SECONDS,
-            httponly=True,
-            secure=request.url.scheme == "https",
-            samesite="strict",
-            path="/",
-        )
+        header_session = request.headers.get("X-Sidemantic-Session-Mode", "").lower() == "header"
+        payload = {"expires_in": SESSION_TTL_SECONDS}
+        if header_session:
+            # Cross-origin frontends cannot reliably use an HttpOnly cookie. Return
+            # only the short-lived exchange credential for in-memory header use.
+            payload["session_token"] = session
+        response = JSONResponse(payload)
+        if not header_session:
+            response.set_cookie(
+                SESSION_COOKIE,
+                session,
+                max_age=SESSION_TTL_SECONDS,
+                httponly=True,
+                secure=request.url.scheme == "https",
+                samesite="strict",
+                path="/",
+            )
         response.headers["Cache-Control"] = "no-store"
         return response
 
     @app.delete("/auth/session", include_in_schema=False)
     def delete_browser_session(request: Request):
         app.state.browser_sessions.revoke(request.cookies.get(SESSION_COOKIE))
+        app.state.browser_sessions.revoke(_header_session(request))
         response = Response(status_code=204)
         response.delete_cookie(SESSION_COOKIE, path="/", httponly=True, samesite="strict")
         response.headers["Cache-Control"] = "no-store"

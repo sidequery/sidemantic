@@ -160,6 +160,22 @@ def test_bearer_exchange_rejects_invalid_token(tmp_path):
     assert SESSION_COOKIE not in response.cookies
 
 
+def test_bearer_exchange_issues_short_lived_header_session(tmp_path):
+    client = _build_test_client(tmp_path)
+
+    exchange = client.post(
+        "/auth/session",
+        headers={**_auth_headers(), "X-Sidemantic-Session-Mode": "header"},
+    )
+    assert exchange.status_code == 200, exchange.text
+    session = exchange.json()["session_token"]
+    assert session != "secret"
+    assert SESSION_COOKIE not in exchange.cookies
+
+    response = client.get("/health", headers={"Authorization": f"Sidemantic-Session {session}"})
+    assert response.status_code == 200
+
+
 def test_browser_session_store_expires_credentials():
     store = _BrowserSessionStore(ttl_seconds=-1)
     credential = store.issue()

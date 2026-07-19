@@ -1,6 +1,7 @@
 """PostgreSQL wire protocol connection handler for semantic layer."""
 
 import logging
+import re
 
 import riffq
 
@@ -165,6 +166,30 @@ class SemanticLayerConnection(riffq.BaseConnection):
             self.send_reader(reader, callback)
             return True
 
+        if "information_schema.columns" in sql_lower:
+            import sqlglot
+            from sqlglot import exp
+
+            parsed = sqlglot.parse_one(sql, dialect=self.layer.dialect)
+            referenced_tables = list(parsed.find_all(exp.Table))
+            if not referenced_tables or any(
+                table.name.lower() != "columns" or table.db.lower() != "information_schema"
+                for table in referenced_tables
+            ):
+                return False
+
+            source_sql = self._information_schema_columns_source()
+            rendered_sql = re.sub(
+                r"\binformation_schema\.columns\b",
+                lambda _match: f"({source_sql})",
+                sql,
+                flags=re.IGNORECASE,
+            )
+            result = cursor.execute(rendered_sql)
+            reader = result.fetch_record_batch()
+            self.send_reader(reader, callback)
+            return True
+
         # information_schema queries - include semantic layer tables
         if "information_schema.tables" in sql_lower:
             from sidemantic.core.transport_security import controls_are_active
@@ -244,6 +269,106 @@ class SemanticLayerConnection(riffq.BaseConnection):
             return True
 
         return False
+
+    def _information_schema_columns_source(self) -> str:
+        """Return a visibility-aware relation for PostgreSQL column discovery."""
+        from sidemantic.core.catalog import get_postgres_type_for_dimension, get_postgres_type_for_metric
+        from sidemantic.core.transport_security import controls_are_active
+
+        def literal(value: str) -> str:
+            return "'" + value.replace("'", "''") + "'"
+
+        rows: list[str] = []
+
+        def add_column(table_name: str, column_name: str, ordinal: int, data_type: str) -> None:
+            char_length = "255" if data_type == "VARCHAR" else "NULL::INTEGER"
+            numeric_precision = "38" if data_type == "NUMERIC" else "NULL::INTEGER"
+            numeric_scale = "10" if data_type == "NUMERIC" else "NULL::INTEGER"
+            rows.append(
+                "("
+                + ", ".join(
+                    [
+                        "'sidemantic'",
+                        "'semantic_layer'",
+                        literal(table_name),
+                        literal(column_name),
+                        str(ordinal),
+                        "NULL::VARCHAR",
+                        "'YES'",
+                        literal(data_type),
+                        char_length,
+                        numeric_precision,
+                        numeric_scale,
+                    ]
+                )
+                + ")"
+            )
+
+        for model in self.layer.graph.models.values():
+            ordinal = 1
+            for dimension in model.dimensions:
+                if self.layer.enforce_visibility and not getattr(dimension, "public", True):
+                    continue
+                add_column(
+                    model.name,
+                    dimension.name,
+                    ordinal,
+                    get_postgres_type_for_dimension(dimension.type, dimension.granularity),
+                )
+                ordinal += 1
+            for metric in model.metrics:
+                if self.layer.enforce_visibility and not getattr(metric, "public", True):
+                    continue
+                add_column(model.name, metric.name, ordinal, get_postgres_type_for_metric(metric.agg))
+                ordinal += 1
+
+        if self.layer.graph.metrics:
+            ordinal = 1
+            for metric in self.layer.graph.metrics.values():
+                if self.layer.enforce_visibility and not getattr(metric, "public", True):
+                    continue
+                add_column("metrics", metric.name, ordinal, get_postgres_type_for_metric(metric.agg))
+                ordinal += 1
+            seen_dimensions: set[str] = set()
+            for model in self.layer.graph.models.values():
+                for dimension in model.dimensions:
+                    if dimension.name in seen_dimensions:
+                        continue
+                    if self.layer.enforce_visibility and not getattr(dimension, "public", True):
+                        continue
+                    seen_dimensions.add(dimension.name)
+                    add_column(
+                        "metrics",
+                        dimension.name,
+                        ordinal,
+                        get_postgres_type_for_dimension(dimension.type, dimension.granularity),
+                    )
+                    ordinal += 1
+
+        column_names = (
+            "table_catalog, table_schema, table_name, column_name, ordinal_position, "
+            "column_default, is_nullable, data_type, character_maximum_length, "
+            "numeric_precision, numeric_scale"
+        )
+        if rows:
+            semantic_sql = f"SELECT * FROM (VALUES {', '.join(rows)}) AS semantic_columns({column_names})"
+        else:
+            semantic_sql = (
+                "SELECT NULL::VARCHAR AS table_catalog, NULL::VARCHAR AS table_schema, "
+                "NULL::VARCHAR AS table_name, NULL::VARCHAR AS column_name, "
+                "NULL::INTEGER AS ordinal_position, NULL::VARCHAR AS column_default, "
+                "NULL::VARCHAR AS is_nullable, NULL::VARCHAR AS data_type, "
+                "NULL::INTEGER AS character_maximum_length, NULL::INTEGER AS numeric_precision, "
+                "NULL::INTEGER AS numeric_scale WHERE FALSE"
+            )
+
+        if controls_are_active(self.layer):
+            return semantic_sql
+        return (
+            f"SELECT {column_names} FROM information_schema.columns "
+            "WHERE table_schema NOT IN ('pg_catalog', 'information_schema') UNION ALL "
+            f"{semantic_sql}"
+        )
 
     def handle_query(self, sql, callback=callable, **kwargs):
         """Handle query in executor thread pool."""

@@ -99,6 +99,48 @@ def test_handle_system_queries():
     assert isinstance(captured["reader"], pa.RecordBatchReader)
 
 
+def test_secure_information_schema_columns_uses_visible_semantic_catalog():
+    pytest.importorskip("riffq")
+    pytest.importorskip("pyarrow")
+    from sidemantic.server.connection import SemanticLayerConnection
+
+    layer = SemanticLayer(connection="duckdb:///:memory:", enforce_visibility=True)
+    layer.add_model(
+        Model(
+            name="orders",
+            table="orders",
+            dimensions=[
+                Dimension(name="status", sql="status", type="categorical"),
+                Dimension(name="secret_note", sql="secret_note", type="categorical", public=False),
+            ],
+            metrics=[Metric(name="order_count", agg="count")],
+        )
+    )
+    captured = {}
+
+    def send_reader(reader, callback):
+        captured["reader"] = reader
+        callback(True)
+
+    conn = SemanticLayerConnection(connection_id=1, executor=None, layer=layer)
+    conn.send_reader = send_reader
+    cursor = layer.adapter.cursor()
+    sql = (
+        "SELECT table_schema, table_name, column_name, data_type "
+        "FROM information_schema.columns "
+        "WHERE table_schema = 'semantic_layer' AND table_name = 'orders' "
+        "ORDER BY ordinal_position"
+    )
+
+    assert conn._try_handle_system_query(sql, sql.lower(), lambda *_: None, cursor) is True
+    rows = captured["reader"].read_all().to_pylist()
+    assert [row["column_name"] for row in rows] == ["status", "order_count"]
+    assert all(row["table_schema"] == "semantic_layer" for row in rows)
+
+    mixed = "SELECT * FROM information_schema.columns JOIN orders ON true"
+    assert conn._try_handle_system_query(mixed, mixed.lower(), lambda *_: None, cursor) is False
+
+
 def test_session_set_is_acknowledged_but_dml_is_denied():
     pytest.importorskip("riffq")
     pytest.importorskip("pyarrow")

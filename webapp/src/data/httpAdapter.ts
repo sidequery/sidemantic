@@ -63,6 +63,7 @@ function toRequestBody(query: StructuredQuery): Record<string, unknown> {
 export class HttpBackend implements SidemanticBackend {
   private readonly baseUrl: string;
   private token?: string;
+  private sessionToken?: string;
   private readonly transport: "json" | "arrow";
   private readonly usePreaggregations: boolean;
   private readonly gate: Semaphore;
@@ -84,8 +85,14 @@ export class HttpBackend implements SidemanticBackend {
 
   private headers(extra?: Record<string, string>): Record<string, string> {
     const headers: Record<string, string> = { ...extra };
-    if (this.token) headers.Authorization = `Bearer ${this.token}`;
+    if (this.sessionToken) headers.Authorization = `Sidemantic-Session ${this.sessionToken}`;
+    else if (this.token) headers.Authorization = `Bearer ${this.token}`;
     return headers;
+  }
+
+  private isCrossOrigin(): boolean {
+    if (!this.baseUrl || typeof globalThis.location === "undefined") return false;
+    return new URL(this.baseUrl, globalThis.location.href).origin !== globalThis.location.origin;
   }
 
   private url(path: string): string {
@@ -93,7 +100,7 @@ export class HttpBackend implements SidemanticBackend {
   }
 
   private async getJson<T>(path: string): Promise<T> {
-    const res = await fetch(this.url(path), { headers: this.headers(), credentials: "same-origin" });
+    const res = await fetch(this.url(path), { headers: this.headers(), credentials: "include" });
     if (!res.ok) throw new Error(await this.errorText(res, path));
     return (await res.json()) as T;
   }
@@ -112,7 +119,7 @@ export class HttpBackend implements SidemanticBackend {
 
   async health(): Promise<boolean> {
     try {
-      const res = await fetch(this.url("/health"), { headers: this.headers(), credentials: "same-origin" });
+      const res = await fetch(this.url("/health"), { headers: this.headers(), credentials: "include" });
       return res.ok;
     } catch {
       return false;
@@ -125,7 +132,7 @@ export class HttpBackend implements SidemanticBackend {
     try {
       const res = await fetch(this.url("/describe"), {
         headers: this.headers(),
-        credentials: "same-origin",
+        credentials: "include",
       });
       if (res.ok) {
         const catalog = buildCatalogFromDescribe(await res.json());
@@ -146,7 +153,7 @@ export class HttpBackend implements SidemanticBackend {
     const res = await fetch(this.url("/compile"), {
       method: "POST",
       headers: this.headers({ "Content-Type": "application/json" }),
-      credentials: "same-origin",
+      credentials: "include",
       body: JSON.stringify(this.body(query)),
     });
     if (!res.ok) throw new Error(await this.errorText(res, "/compile"));
@@ -162,7 +169,7 @@ export class HttpBackend implements SidemanticBackend {
     const res = await fetch(this.url("/query"), {
       method: "POST",
       headers: this.headers({ "Content-Type": "application/json" }),
-      credentials: "same-origin",
+      credentials: "include",
       body: JSON.stringify(this.body(query)),
     });
     if (!res.ok) throw new Error(await this.errorText(res, "/query"));
@@ -176,7 +183,7 @@ export class HttpBackend implements SidemanticBackend {
     const res = await fetch(this.url("/query?format=arrow"), {
       method: "POST",
       headers: this.headers({ "Content-Type": "application/json", Accept: ARROW_MEDIA_TYPE }),
-      credentials: "same-origin",
+      credentials: "include",
       body: JSON.stringify(this.body(query)),
     });
     if (!res.ok) throw new Error(await this.errorText(res, "/query"));
@@ -186,12 +193,16 @@ export class HttpBackend implements SidemanticBackend {
     return { columns, rows, rowCount: rows.length, sql };
   }
 
-  /** Exchange a long-lived API bearer for a short-lived, HttpOnly same-origin session. */
+  /** Exchange a long-lived bearer for a short-lived cookie or in-memory cross-origin session. */
   async createBrowserSession(token: string): Promise<void> {
+    const crossOrigin = this.isCrossOrigin();
     const res = await fetch(this.url("/auth/session"), {
       method: "POST",
-      headers: { Authorization: `Bearer ${token}` },
-      credentials: "same-origin",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        ...(crossOrigin ? { "X-Sidemantic-Session-Mode": "header" } : {}),
+      },
+      credentials: "include",
     });
     if (res.status === 404 || (res.ok && !res.headers.get("content-type")?.includes("application/json"))) {
       // Backends without the exchange endpoint (currently the Rust server) keep
@@ -200,5 +211,11 @@ export class HttpBackend implements SidemanticBackend {
       return;
     }
     if (!res.ok) throw new Error(await this.errorText(res, "/auth/session"));
+    if (crossOrigin) {
+      const payload = (await res.json()) as { session_token?: string };
+      if (!payload.session_token) throw new Error("/auth/session did not return a cross-origin session token");
+      this.sessionToken = payload.session_token;
+    }
+    this.token = undefined;
   }
 }

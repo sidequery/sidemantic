@@ -121,10 +121,16 @@ or `/sql` in that configuration.
 The bundled web UI never accepts `?token=`, never writes an API bearer to
 `localStorage`/`sessionStorage`, and never puts it in a shareable URL. On a 401 it
 prompts for the bearer once and exchanges it through `POST /auth/session` for an
-opaque 10-minute session cookie. The cookie is `HttpOnly`, `SameSite=Strict`, scoped
-to `/`, stored only in server memory as a SHA-256 digest, and marked `Secure` when
-served over HTTPS. Session responses are `Cache-Control: no-store`; the UI keeps the
-long-lived bearer only in the password input until the exchange completes.
+opaque 10-minute session. Same-origin deployments use an `HttpOnly`,
+`SameSite=Strict` cookie scoped to `/` and marked `Secure` over HTTPS. For an
+explicit cross-origin backend, where that cookie cannot be relied upon, the exchange
+returns a short-lived credential that the adapter keeps only in memory and sends with
+the `Sidemantic-Session` authorization scheme. The server stores only a SHA-256 digest
+of either credential. Session responses are `Cache-Control: no-store`; the UI keeps
+the long-lived bearer only in the password input until the exchange completes.
+
+Cross-origin deployments must list the UI origin in `--cors-origin`; credentialed
+requests use CORS rather than placing either credential in a URL or browser storage.
 
 API clients may continue to send the bearer in the `Authorization` header. The
 session exchange is a library-local browser safety mechanism, not an identity or
@@ -145,7 +151,11 @@ reads an unrecognized/non-semantic source fails closed instead of passing throug
 The compatibility surface is read-only: mutations, DDL, commands, and
 multi-statement SQL are rejected. PostgreSQL session and catalog compatibility queries remain available;
 when controls are active, catalog responses expose semantic models without
-enumerating physical source tables.
+enumerating physical source tables. `information_schema.columns` is synthesized from
+that same semantic catalog, preserves ordinary projection/filter/order probes, and
+omits non-public fields when visibility enforcement is enabled. Catalog queries mixed
+with other table sources are not treated as compatibility probes and pass through the
+normal fail-closed transport gate.
 
 ### MCP server
 

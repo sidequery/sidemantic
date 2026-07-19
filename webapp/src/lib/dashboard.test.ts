@@ -163,7 +163,7 @@ describe("dashboardTabConfig", () => {
     expect(config?.selectedMetric).toBe("gross_margin_rate");
   });
 
-  test("keeps metrics from a model related to the dashboard dimension model", () => {
+  test("keeps metrics and dimensions from related models", () => {
     const crossModelCatalog: Catalog = {
       models: [
         {
@@ -193,8 +193,11 @@ describe("dashboardTabConfig", () => {
           charts: [
             {
               id: "revenue",
-              query: { metrics: ["orders.revenue"], dimensions: ["customers.country"] },
-              encoding: { x: "customers.country", y: "orders.revenue" },
+              query: {
+                metrics: ["orders.revenue"],
+                dimensions: ["orders.created_at__month", "customers.country"],
+              },
+              encoding: { x: "orders.created_at__month", y: "orders.revenue" },
             },
           ],
         },
@@ -202,8 +205,12 @@ describe("dashboardTabConfig", () => {
     };
 
     const config = dashboardTabConfig(crossModelCatalog, crossModelDashboard);
-    expect(config?.model.name).toBe("customers");
+    expect(config?.model.name).toBe("orders");
     expect(config?.metrics.map((metric) => metric.ref)).toEqual(["orders.revenue"]);
+    expect(config?.dimensions.map((dimension) => dimension.ref)).toEqual([
+      "orders.created_at",
+      "customers.country",
+    ]);
     expect(config?.selectedMetric).toBe("orders.revenue");
   });
 });

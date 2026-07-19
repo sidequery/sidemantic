@@ -24,8 +24,10 @@ export type DashboardTabConfig = {
   usePreaggregations?: boolean;
 };
 
-function dimensionForRef(model: CatalogModel, ref: string): CatalogDimension | undefined {
-  return model.dimensions.find((dimension) => ref === dimension.ref || ref.startsWith(`${dimension.ref}__`));
+function dimensionForRef(catalog: Catalog, ref: string): CatalogDimension | undefined {
+  return catalog.models
+    .flatMap((model) => model.dimensions)
+    .find((dimension) => ref === dimension.ref || ref.startsWith(`${dimension.ref}__`));
 }
 
 function grainForRef(ref: string, fallback: Grain): Grain {
@@ -63,7 +65,7 @@ export function dashboardTabConfig(
     .map((ref) => availableMetrics.find((metric) => metric.ref === ref))
     .filter((metric): metric is CatalogMetric => Boolean(metric));
   const dimensions = dimensionRefs
-    .map((ref) => dimensionForRef(model, ref))
+    .map((ref) => dimensionForRef(catalog, ref))
     .filter((dimension, index, all): dimension is CatalogDimension =>
       Boolean(dimension) && all.findIndex((candidate) => candidate?.ref === dimension?.ref) === index,
     );
@@ -76,8 +78,8 @@ export function dashboardTabConfig(
     "";
   const encodedTime = chart.encoding?.x;
   const timeRef =
-    (encodedTime && dimensionForRef(model, encodedTime)?.type === "time" ? encodedTime : undefined) ??
-    dimensionRefs.find((ref) => dimensionForRef(model, ref)?.type === "time");
+    (encodedTime && dimensionForRef(catalog, encodedTime)?.type === "time" ? encodedTime : undefined) ??
+    dimensionRefs.find((ref) => dimensionForRef(catalog, ref)?.type === "time");
   const fallbackGrain = (model.defaultGrain as Grain | undefined) ?? "month";
 
   return {

@@ -382,6 +382,31 @@ def test_rust_rewriter_is_disabled_across_secured_sql_transports(tmp_path, monke
     assert pg_layer.adapter.execute(rendered).fetchall() == [(2, 12.0)]
 
 
+def test_secure_pg_catalog_accepts_terminators_and_preserves_schema_name():
+    connection = SemanticLayerConnection.__new__(SemanticLayerConnection)
+    connection.layer = _layer(enforce_visibility=True)
+    captured = {}
+
+    def send_reader(reader, callback):
+        captured["table"] = reader.read_all()
+        callback(True)
+
+    connection.send_reader = send_reader
+
+    connection._handle_query("SELECT * FROM information_schema.tables;", lambda *_: None)
+    assert captured["table"].column_names == ["table_schema", "table_name", "table_type"]
+    assert captured["table"].to_pylist() == [
+        {"table_schema": "semantic_layer", "table_name": "orders", "table_type": "BASE TABLE"}
+    ]
+
+    connection._handle_query(
+        "SELECT table_schema, table_name, column_name FROM information_schema.columns "
+        "WHERE table_schema = 'semantic_layer' AND table_name = 'orders' ORDER BY ordinal_position;",
+        lambda *_: None,
+    )
+    assert [row["column_name"] for row in captured["table"].to_pylist()] == ["tenant_id", "total_amount"]
+
+
 def test_sql_rewrite_cache_isolated_by_visibility_state():
     layer = SemanticLayer()
     layer.adapter.execute("create table records (id integer, secret_note varchar)")

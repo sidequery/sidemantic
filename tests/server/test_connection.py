@@ -137,8 +137,36 @@ def test_secure_information_schema_columns_uses_visible_semantic_catalog():
     assert [row["column_name"] for row in rows] == ["status", "order_count"]
     assert all(row["table_schema"] == "semantic_layer" for row in rows)
 
+    captured.clear()
+    conn._handle_query(sql + ";", lambda *_: None)
+    assert [row["column_name"] for row in captured["reader"].read_all().to_pylist()] == ["status", "order_count"]
+
     mixed = "SELECT * FROM information_schema.columns JOIN orders ON true"
     assert conn._try_handle_system_query(mixed, mixed.lower(), lambda *_: None, cursor) is False
+
+
+def test_secure_information_schema_tables_preserves_postgres_column_names():
+    pytest.importorskip("riffq")
+    pytest.importorskip("pyarrow")
+    from sidemantic.server.connection import SemanticLayerConnection
+
+    layer = SemanticLayer(connection="duckdb:///:memory:", enforce_visibility=True)
+    layer.add_model(Model(name="orders", table="orders", dimensions=[Dimension(name="id", type="numeric")]))
+    captured = {}
+
+    def send_reader(reader, callback):
+        captured["reader"] = reader
+        callback(True)
+
+    conn = SemanticLayerConnection(connection_id=1, executor=None, layer=layer)
+    conn.send_reader = send_reader
+    cursor = layer.adapter.cursor()
+    sql = "SELECT * FROM information_schema.tables"
+
+    assert conn._try_handle_system_query(sql, sql.lower(), lambda *_: None, cursor) is True
+    table = captured["reader"].read_all()
+    assert table.column_names == ["table_schema", "table_name", "table_type"]
+    assert table.to_pylist() == [{"table_schema": "semantic_layer", "table_name": "orders", "table_type": "BASE TABLE"}]
 
 
 def test_secure_pg_class_uses_semantic_table_catalog():

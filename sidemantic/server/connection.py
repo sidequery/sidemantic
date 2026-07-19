@@ -112,12 +112,13 @@ class SemanticLayerConnection(riffq.BaseConnection):
                     "PostgreSQL wire queries are read-only; mutating, DDL, and command statements are not supported."
                 )
 
-            # Try to handle PostgreSQL-specific system queries
-            # Skip multi-statement queries to avoid response count mismatch
-            if ";" not in sql:
-                handled = self._try_handle_system_query(sql, sql_lower, callback, cursor)
-                if handled:
-                    return
+            # The parser above already proved this is exactly one statement.
+            # Strip its optional terminator so ordinary psql/BI catalog probes
+            # still use the safe compatibility handlers.
+            system_sql = sql.rstrip().removesuffix(";").rstrip()
+            handled = self._try_handle_system_query(system_sql, system_sql.lower(), callback, cursor)
+            if handled:
+                return
 
             # Rewrite through the same policy-aware generator used by structured
             # transports. Under active controls, an unrecognized source read is
@@ -202,7 +203,7 @@ class SemanticLayerConnection(riffq.BaseConnection):
                 schemas_tables.append("('semantic_layer', 'metrics')")
 
             semantic_catalog_sql = (
-                "SELECT schema, table_name, 'BASE TABLE' as table_type "
+                "SELECT schema AS table_schema, table_name, 'BASE TABLE' as table_type "
                 f"FROM (VALUES {', '.join(schemas_tables)}) AS t(schema, table_name)"
             )
             if controls_are_active(self.layer):

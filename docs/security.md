@@ -168,7 +168,8 @@ with other table sources are not treated as compatibility probes and pass throug
 normal fail-closed transport gate. `pg_catalog.pg_class` likewise lists semantic
 tables only while controls are active. Compatibility function handling is restricted
 to catalog-only probes; mixed catalog and semantic-table statements go through the
-normal policy-aware rewrite.
+normal policy-aware rewrite. Single catalog statements may include the usual trailing
+semicolon, and synthesized catalogs retain PostgreSQL-compatible column names.
 
 ### MCP server
 

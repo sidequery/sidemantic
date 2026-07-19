@@ -43,6 +43,38 @@ def test_placeholder_conversion_and_qualifier_stripping_are_lexical():
     )
 
 
+def test_subquery_detection_ignores_postgres_dollar_quoted_literals():
+    detect = LookMLAdapter._has_subquery
+
+    assert not detect("SUM(IFF(note = $$select$$, amount, 0))")
+    assert not detect("SUM(IFF(note = $tag$select$tag$, amount, 0))")
+    assert detect("SUM(amount) / NULLIF((SELECT SUM(amount) FROM orders), 0)")
+
+
+def test_subquery_detection_fails_closed_for_unparseable_liquid_sql():
+    detect = LookMLAdapter._has_subquery
+
+    assert detect(
+        "SUM(amount) / (SELECT SUM(amount) FROM orders WHERE {% condition status %} status {% endcondition %})"
+    )
+    assert not detect("SUM({% condition select %} amount {% endcondition %})")
+    assert not detect("SUM(amount) /* SELECT {% condition status %} */")
+
+
+def test_all_modifier_stripping_uses_syntax_tokens():
+    strip = LookMLAdapter._strip_all_modifier
+
+    assert strip("COUNT(ALL amount)") == "COUNT(amount)"
+    assert strip("ALL {model}.amount") == "{model}.amount"
+    assert strip("COUNT(note = $$ALL amount$$)") == "COUNT(note = $$ALL amount$$)"
+    assert strip("COUNT(note /* (ALL amount) */)") == "COUNT(note /* (ALL amount) */)"
+    assert strip("COUNT(ALL /* why */ amount)") == "COUNT(/* why */ amount)"
+    assert strip("ALL /* why */ {model}.amount") == "/* why */ {model}.amount"
+    assert strip("ROUND(SUM(ALL amount), 2)") == "ROUND(SUM(amount), 2)"
+    assert strip("SUM(amount) + COUNT(ALL id)") == "SUM(amount) + COUNT(id)"
+    assert strip("CASE WHEN x THEN SUM(ALL amount) END") == "CASE WHEN x THEN SUM(amount) END"
+
+
 def test_column_rewrite_preserves_templates_literals_and_foreign_qualifiers():
     sql = "{model}.status = {{ status }} AND customers.status != 'status'"
 

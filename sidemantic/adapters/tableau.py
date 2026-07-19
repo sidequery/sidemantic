@@ -147,6 +147,74 @@ def _has_lod_or_table_calc(formula: str) -> bool:
     return False
 
 
+def _protect_tableau_literals_and_strip_comments(formula: str) -> tuple[str, list[tuple[str, str, bool]]]:
+    """Protect Tableau strings/field tokens and remove ``//`` comments."""
+    out: list[str] = []
+    replacements: list[tuple[str, str, bool]] = []
+    used_sentinels: set[str] = set()
+    i = 0
+    while i < len(formula):
+        if formula.startswith("//", i):
+            end = formula.find("\n", i + 2)
+            if end < 0:
+                break
+            out.append("\n")
+            i = end + 1
+            continue
+        if formula[i] == "[":
+            end = formula.find("]", i + 1)
+            if end >= 0:
+                field_name = formula[i + 1 : end]
+                if end + 2 < len(formula) and formula[end + 1 : end + 3] == ".[":
+                    qualified_end = formula.find("]", end + 3)
+                    if qualified_end >= 0:
+                        field_name = formula[end + 3 : qualified_end]
+                        end = qualified_end
+                nonce = len(replacements)
+                sentinel = f'"__sidemantic_tableau_field_{nonce}__"'
+                while sentinel in formula or sentinel in used_sentinels:
+                    nonce += 1
+                    sentinel = f'"__sidemantic_tableau_field_{nonce}__"'
+                used_sentinels.add(sentinel)
+                replacements.append((sentinel, _quote_identifier_if_needed(_normalize_column_name(field_name)), False))
+                out.append(sentinel)
+                i = end + 1
+                continue
+        quote = formula[i]
+        if quote not in ("'", '"'):
+            out.append(quote)
+            i += 1
+            continue
+
+        end = i + 1
+        value: list[str] = []
+        while end < len(formula):
+            if formula[end] == quote:
+                if end + 1 < len(formula) and formula[end + 1] == quote:
+                    value.append(quote)
+                    end += 2
+                    continue
+                end += 1
+                break
+            value.append(formula[end])
+            end += 1
+
+        if quote == "'":
+            normalized = formula[i:end]
+        else:
+            normalized = "'" + "".join(value).replace("'", "''") + "'"
+        nonce = len(replacements)
+        sentinel = f"'__sidemantic_tableau_literal_{nonce}__'"
+        while sentinel in formula or sentinel[1:-1] in formula or sentinel in used_sentinels:
+            nonce += 1
+            sentinel = f"'__sidemantic_tableau_literal_{nonce}__'"
+        used_sentinels.add(sentinel)
+        replacements.append((sentinel, normalized, True))
+        out.append(sentinel)
+        i = end
+    return "".join(out), replacements
+
+
 def _find_matching_paren(s: str, open_pos: int) -> int:
     """Find the position of the matching closing paren, handling nesting.
 
@@ -446,16 +514,14 @@ def _translate_formula(formula: str | None) -> tuple[str | None, bool]:
     if formula is None:
         return (None, True)
 
-    # Check for untranslatable constructs
-    if _has_lod_or_table_calc(formula):
+    protected, protected_replacements = _protect_tableau_literals_and_strip_comments(formula)
+
+    # All syntax decisions share the same lexical boundary. Unsupported-looking
+    # text inside a literal or comment is never visible to the checks below.
+    if _has_lod_or_table_calc(protected):
         return (formula, False)
 
-    # Strip // comments before translation (they can contain IF/THEN keywords)
-    # Must be string-aware to preserve '://' inside string literals
-    result = _strip_comments(formula).strip()
-
-    # Convert Tableau double-quoted string literals to SQL single quotes
-    result = _convert_double_quotes(result)
+    result = protected.strip()
 
     # Replace [Field] references with quoted column names (string-literal-aware)
     result = _replace_field_refs(result)
@@ -507,6 +573,12 @@ def _translate_formula(formula: str | None) -> tuple[str | None, bool]:
     # Convert + to || when adjacent to a string literal ('...')
     result = _convert_string_concat(result)
 
+    for sentinel, replacement, may_be_unquoted in protected_replacements:
+        result = result.replace(sentinel, replacement)
+        # DATEADD consumes quotes around its date-part argument. Preserve that
+        # intentional behavior when the argument was protected by a sentinel.
+        if may_be_unquoted:
+            result = result.replace(sentinel[1:-1], replacement[1:-1])
     return (result, True)
 
 

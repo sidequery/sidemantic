@@ -208,6 +208,23 @@ def test_username_not_translated():
     assert not ok
 
 
+def test_function_looking_text_inside_literals_is_not_transformed_or_rejected():
+    assert _translate_formula("'COUNTD([x])'") == ("'COUNTD([x])'", True)
+    assert _translate_formula("'LEN([name])'") == ("'LEN([name])'", True)
+    assert _translate_formula("'USERNAME()'") == ("'USERNAME()'", True)
+
+
+def test_comments_cannot_trigger_unsupported_function_detection():
+    sql, ok = _translate_formula("// USERNAME() and RUNNING_SUM([x])\nLEN([name])")
+    assert ok
+    assert sql == "LENGTH(name)"
+
+
+def test_function_looking_bracketed_fields_are_lexically_protected():
+    for field in ("USERNAME()", "RUNNING_SUM(x)", "COUNTD(x)", "LEN(name)"):
+        assert _translate_formula(f"[{field}]") == (f'"{field}"', True)
+
+
 def test_isnull():
     """ISNULL(x) -> (x IS NULL)."""
     sql, ok = _translate_formula("ISNULL([has_extract])")

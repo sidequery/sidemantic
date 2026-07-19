@@ -7,7 +7,7 @@ through MalloyAdapter end-to-end so the assertions exercise the real visitor.
 import tempfile
 from pathlib import Path
 
-from sidemantic.adapters.malloy import MalloyAdapter
+from sidemantic.adapters.malloy import MalloyAdapter, MalloyModelVisitor
 
 
 def _parse(src: str):
@@ -249,6 +249,45 @@ def test_and_tree_preserves_string_literal():
 def test_and_tree_still_expands_top_level():
     sql = _dim_sql("source: o is duckdb.table('o') extend {\n  dimension: r is value < 2031 & > -8000\n}\n", "r")
     assert sql == "value < 2031 AND value > -8000"
+
+
+def test_and_tree_ignores_question_mark_inside_literal():
+    assert MalloyModelVisitor()._transform_malloy_expr("status != 'Cancelled?' & 'Returned'") == (
+        "status != 'Cancelled?' AND status != 'Returned'"
+    )
+
+
+def test_or_tree_ignores_pick_keyword_inside_literal():
+    assert MalloyModelVisitor()._transform_malloy_expr("note ? 'pick me' | 'other'") == "note IN ('pick me', 'other')"
+
+
+def test_tree_operators_do_not_require_surrounding_whitespace():
+    transform = MalloyModelVisitor()._transform_malloy_expr
+    assert transform("note?'a'|'b'") == "note IN ('a', 'b')"
+    assert transform("status!='x'&'y'") == "status!='x' AND status != 'y'"
+
+
+def test_type_assertion_spacing_is_normalized_only_in_syntax():
+    transform = MalloyModelVisitor()._transform_malloy_expr
+    assert transform("timestamp_seconds ! timestamp (x)") == "timestamp_seconds(x)"
+    assert transform("timestamp_seconds!timestamp (x)") == "timestamp_seconds(x)"
+    assert transform("'timestamp_seconds ! timestamp (x)'") == "'timestamp_seconds ! timestamp (x)'"
+
+
+def test_post_parse_rewrites_ignore_hidden_comment_tokens():
+    transform = MalloyModelVisitor()._transform_malloy_expr
+    assert transform("amount + 1 /* name ~ r'x' @2024-01-01 */") == "amount + 1 /* name ~ r'x' @2024-01-01 */"
+    assert transform("amount -- name ~ r'x'\n + tax") == "amount -- name ~ r'x'\n + tax"
+    assert transform("amount // timestamp_seconds!timestamp(x)\n + tax") == (
+        "amount // timestamp_seconds!timestamp(x)\n + tax"
+    )
+
+
+def test_dimension_type_inference_ignores_syntax_looking_literal_contents():
+    infer = MalloyModelVisitor()._infer_dimension_type
+    assert infer("'a+b'", "label") == "categorical"
+    assert infer("'x=y'", "label") == "categorical"
+    assert infer("'date_trunc'", "label") == "categorical"
 
 
 # --- regex ~ must consume only its own field operand ---

@@ -62,6 +62,104 @@ def _sub_outside_quotes(s: str, pattern: str, repl, quotes: tuple[str, ...] = ("
     return "".join(out)
 
 
+def _outside_quotes(s: str, position: int, quotes: tuple[str, ...] = ("'", '"', "`")) -> bool:
+    quote: str | None = None
+    i = 0
+    while i < position:
+        char = s[i]
+        if quote is not None:
+            if char == "\\":
+                i += 2
+                continue
+            if char == quote:
+                quote = None
+        elif char in quotes:
+            quote = char
+        i += 1
+    return quote is None
+
+
+def _mask_malloy_quoted_text(expr: str) -> str:
+    """Hide literal/quoted-identifier contents while preserving token boundaries."""
+    chars = list(expr)
+    i = 0
+    while i < len(expr):
+        marker = next((quote for quote in ("'''", '"""', "'", '"', "`") if expr.startswith(quote, i)), None)
+        if marker is None:
+            i += 1
+            continue
+        end = i + len(marker)
+        while end < len(expr):
+            if expr.startswith(marker, end):
+                end += len(marker)
+                break
+            if expr[end] == "\\" and len(marker) == 1:
+                end += 2
+            else:
+                end += 1
+        content_start = i + len(marker)
+        content_end = max(content_start, end - len(marker))
+        chars[content_start:content_end] = " " * (content_end - content_start)
+        i = end
+    return "".join(chars)
+
+
+def _protect_malloy_comments(expr: str) -> tuple[str, list[tuple[str, str]]]:
+    """Replace hidden-channel Malloy comments with inert quoted sentinels."""
+    out: list[str] = []
+    replacements: list[tuple[str, str]] = []
+    i = 0
+    quote: str | None = None
+    while i < len(expr):
+        char = expr[i]
+        if quote is not None:
+            out.append(char)
+            if char == "\\" and i + 1 < len(expr):
+                out.append(expr[i + 1])
+                i += 2
+                continue
+            if char == quote:
+                quote = None
+            i += 1
+            continue
+        if char in ("'", '"', "`"):
+            quote = char
+            out.append(char)
+            i += 1
+            continue
+
+        end = None
+        if expr.startswith("/*", i):
+            depth = 1
+            cursor = i + 2
+            while cursor < len(expr) and depth:
+                if expr.startswith("/*", cursor):
+                    depth += 1
+                    cursor += 2
+                elif expr.startswith("*/", cursor):
+                    depth -= 1
+                    cursor += 2
+                else:
+                    cursor += 1
+            end = cursor
+        elif expr.startswith("--", i) or expr.startswith("//", i):
+            newline = expr.find("\n", i + 2)
+            end = len(expr) if newline < 0 else newline
+
+        if end is None:
+            out.append(char)
+            i += 1
+            continue
+        original = expr[i:end]
+        sentinel = f"'__sidemantic_malloy_comment_{len(replacements)}__'"
+        while sentinel in expr:
+            sentinel = f"'__sidemantic_malloy_comment_{len(replacements)}_{len(sentinel)}__'"
+        replacements.append((sentinel, original))
+        out.append(sentinel)
+        i = end
+    return "".join(out), replacements
+
+
 def _normalize_count_calls(s: str) -> str:
     """Rewrite Malloy count syntax to SQL with quote- and paren-aware scanning.
 
@@ -494,7 +592,9 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
 
     def _infer_dimension_type(self, sql: str, name: str) -> str:
         """Infer dimension type from SQL expression and name."""
-        sql_lower = sql.lower() if sql else ""
+        comment_protected, _ = _protect_malloy_comments(sql or "")
+        syntax_sql = _mask_malloy_quoted_text(comment_protected)
+        sql_lower = syntax_sql.lower()
         name_lower = name.lower()
 
         # Time dimension detection
@@ -519,7 +619,7 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
             return "time"
 
         # Boolean detection - comparison that yields true/false
-        if re.search(r"[<>=!]+\s*\S", sql):
+        if re.search(r"[<>=!]+\s*\S", syntax_sql):
             # Check if it's a simple comparison (boolean result)
             # But not if it's part of a CASE/pick statement
             if "pick" not in sql_lower and "case" not in sql_lower:
@@ -537,7 +637,7 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
             return "time"
 
         # Numeric detection
-        if re.search(r"[+\-*/]", sql) and "||" not in sql:
+        if re.search(r"[+\-*/]", syntax_sql) and "||" not in syntax_sql:
             return "numeric"
 
         # Name-based time heuristic. Applied last (weakest signal) so an explicit
@@ -705,6 +805,8 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         if not expr:
             return expr
 
+        expr, comment_replacements = _protect_malloy_comments(expr)
+
         # ?? null coalescing -> COALESCE
         if "??" in expr:
             expr = self._transform_null_coalesce(expr)
@@ -712,7 +814,12 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         # ! type assertion: func!type(args) -> func(args)
         # Matches: timestamp_seconds!timestamp(x), left!(s,1), md5!(x), to_base64!(x)
         # Pattern: identifier!identifier( -> identifier(
-        expr = re.sub(r"(\w+)!\w+\(", r"\1(", expr)
+        expr = _sub_outside_quotes(
+            expr,
+            r"(\w+)\s*!\s*(?:\w+\s*)?\(",
+            r"\1(",
+            quotes=("'", '"', "`"),
+        )
 
         # ~ / !~ regex match: field ~ r'pattern' -> REGEXP_MATCHES(field, 'pattern')
         expr = self._transform_regex_match(expr)
@@ -735,14 +842,15 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
                 parts.append("00")
             return f"TIMESTAMP '{m.group(1)} {':'.join(parts)}'"
 
-        expr = re.sub(
+        expr = _sub_outside_quotes(
+            expr,
             r"@(\d{4}-\d{2}-\d{2})[ T](\d{2}(?::\d{2}(?::\d{2}(?:[.,]\d+)?)?)?)(?:\[[^\]]+\])?",
             _timestamp_literal,
-            expr,
+            quotes=("'", '"', "`"),
         )
-        expr = re.sub(r"@(\d{4}-\d{2}-\d{2})", r"DATE '\1'", expr)
-        expr = re.sub(r"@(\d{4}-\d{2})(?!\d)", r"DATE '\1-01'", expr)
-        expr = re.sub(r"@(\d{4})(?![-\d])", r"DATE '\1-01-01'", expr)
+        expr = _sub_outside_quotes(expr, r"@(\d{4}-\d{2}-\d{2})", r"DATE '\1'", quotes=("'", '"', "`"))
+        expr = _sub_outside_quotes(expr, r"@(\d{4}-\d{2})(?!\d)", r"DATE '\1-01'", quotes=("'", '"', "`"))
+        expr = _sub_outside_quotes(expr, r"@(\d{4})(?![-\d])", r"DATE '\1-01-01'", quotes=("'", '"', "`"))
 
         # now -> CURRENT_TIMESTAMP (only when it's the entire expression or clearly standalone)
         if expr.strip() == "now":
@@ -751,15 +859,21 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         # & (and-tree): expands partial conditions with the base field
         # e.g., "field < 2031 & > -8000" -> "field < 2031 AND field > -8000"
         # e.g., "status != 'Cancelled' & 'Returned'" -> "status != 'Cancelled' AND status != 'Returned'"
-        if " & " in expr and "?" not in expr:
+        and_parts = self._split_top_level_operator(expr, "&")
+        apply_parts = self._split_top_level_operator(expr, "?")
+        if len(and_parts) > 1 and len(apply_parts) == 1:
             expr = self._transform_and_tree(expr)
 
         # | (or-tree / alternatives): used with ? apply operator
         # e.g., "field ? 'a' | 'b'" -> "field IN ('a', 'b')"
         # Only transform the simple value-matching pattern, not general uses of |
-        if " ? " in expr and " | " in expr and "pick" not in expr.lower():
+        value_parts = self._split_top_level_operator(apply_parts[1], "|") if len(apply_parts) == 2 else []
+        has_pick_syntax = any(keyword == "pick" for _, _, keyword in self._scan_keywords(expr, ("pick",)))
+        if len(apply_parts) == 2 and len(value_parts) > 1 and not has_pick_syntax:
             expr = self._transform_or_tree(expr)
 
+        for sentinel, comment in comment_replacements:
+            expr = expr.replace(sentinel, comment)
         return expr
 
     @staticmethod
@@ -853,19 +967,36 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         (``lower(name) ~ r'x'``) are preserved. Matches are rewritten
         right-to-left so earlier offsets stay valid.
         """
-        pattern = re.compile(r"(!?~)\s+r(['\"])(.*?)\2")
-        for m in reversed(list(pattern.finditer(expr))):
-            end = m.start()
+        prefix_pattern = re.compile(r"(!?~)\s+r(?=['\"])")
+        matches: list[tuple[re.Match, int, str]] = []
+        for match in prefix_pattern.finditer(expr):
+            if not _outside_quotes(expr, match.start()):
+                continue
+            quote_pos = match.end()
+            quote = expr[quote_pos]
+            close = quote_pos + 1
+            while close < len(expr):
+                if expr[close] == "\\":
+                    close += 2
+                    continue
+                if expr[close] == quote:
+                    matches.append((match, close + 1, expr[quote_pos + 1 : close]))
+                    break
+                close += 1
+
+        for match, match_end, raw_pattern in reversed(matches):
+            end = match.start()
             while end > 0 and expr[end - 1] == " ":
                 end -= 1
             operand_start = self._left_operand_start(expr, end)
             if operand_start is None:
                 continue
             operand = expr[operand_start:end]
-            replacement = f"REGEXP_MATCHES({operand}, '{m.group(3)}')"
-            if m.group(1) == "!~":
+            sql_pattern = raw_pattern.replace("'", "''")
+            replacement = f"REGEXP_MATCHES({operand}, '{sql_pattern}')"
+            if match.group(1) == "!~":
                 replacement = f"NOT {replacement}"
-            expr = expr[:operand_start] + replacement + expr[m.end() :]
+            expr = expr[:operand_start] + replacement + expr[match_end:]
         return expr
 
     def _transform_null_coalesce(self, expr: str) -> str:
@@ -962,6 +1093,42 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         parts.append("".join(buf))
         return parts
 
+    @classmethod
+    def _split_top_level_operator(cls, expr: str, operator: str) -> list[str]:
+        """Split on a single Malloy operator token regardless of whitespace."""
+        parts: list[str] = []
+        start = 0
+        quote: str | None = None
+        depth = 0
+        i = 0
+        while i < len(expr):
+            char = expr[i]
+            if quote is not None:
+                if char == "\\" and i + 1 < len(expr):
+                    i += 2
+                    continue
+                if char == quote:
+                    quote = None
+                i += 1
+                continue
+            if char in ("'", '"', "`"):
+                quote = char
+            elif char in "([{":
+                depth += 1
+            elif char in ")]}":
+                depth -= 1
+            elif (
+                depth == 0
+                and char == operator
+                and (i == 0 or expr[i - 1] != operator)
+                and (i + 1 == len(expr) or expr[i + 1] != operator)
+            ):
+                parts.append(expr[start:i])
+                start = i + 1
+            i += 1
+        parts.append(expr[start:])
+        return parts
+
     def _transform_and_tree(self, expr: str) -> str:
         """Transform Malloy & (and-tree) to SQL AND with expanded base field.
 
@@ -972,7 +1139,7 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         Only splits on a top-level `&` (not one inside a string literal such as
         "label = 'A & B'").
         """
-        parts = [p.strip() for p in self._split_top_level(expr, " & ")]
+        parts = [p.strip() for p in self._split_top_level_operator(expr, "&")]
         if len(parts) < 2:
             return expr
 
@@ -1005,16 +1172,15 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
 
         Only handles the value-matching pattern: field ? value1 | value2 | ...
         """
-        # Match: field ? value1 | value2 | ...
-        match = re.match(r"^(.+?)\s*\?\s*(.+)$", expr)
-        if not match:
+        apply_parts = self._split_top_level_operator(expr, "?")
+        if len(apply_parts) != 2:
             return expr
 
-        base_field = match.group(1).strip()
-        values_str = match.group(2).strip()
+        base_field = apply_parts[0].strip()
+        values_str = apply_parts[1].strip()
 
         # Split on | and collect values
-        values = [v.strip() for v in values_str.split("|")]
+        values = [value.strip() for value in self._split_top_level_operator(values_str, "|")]
         if len(values) < 2:
             return expr
 

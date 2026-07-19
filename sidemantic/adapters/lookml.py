@@ -11,7 +11,12 @@ from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
-from sidemantic.sql.lookml_expression import replace_lookml_placeholders, strip_lookml_model_qualifiers
+from sidemantic.sql.lookml_expression import (
+    lookml_expression_has_subquery,
+    replace_lookml_placeholders,
+    strip_aggregate_all,
+    strip_lookml_model_qualifiers,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1333,48 +1338,13 @@ class LookMLAdapter(BaseAdapter):
 
     @staticmethod
     def _has_subquery(sql: str) -> bool:
-        """True if ``sql`` contains a SELECT outside any quoted token.
-
-        A raw ``\\bselect\\b`` scan also matches the word inside a VALUE
-        (``SUM(CASE WHEN status = 'select' THEN amount END)``) or inside a quoted IDENTIFIER for a
-        column named after a reserved word (``SUM(${TABLE}."select")``, ``SUM(`select`)``), inside a
-        SQL COMMENT (``/* select paid rows */ SUM(amount)``), or inside a LookML ``${...}`` field
-        reference to a column named ``select`` (``SUM(${select})``) -- none is a subquery, and all
-        are valid inline aggregates. This runs on the RAW SQL before refs are resolved, so blank out
-        every quoted form, every comment, AND every ``${...}`` placeholder first -- in one left-to-
-        right pass so a comment inside a string (or a quote inside a comment) is consumed by
-        whichever opens first, leaving only real SQL keywords.
-        """
-        stripped = re.sub(
-            r"""'(?:[^']|'')*'|"(?:[^"]|"")*"|`[^`]*`|\[[^\]]*\]|--[^\n]*|/\*[\s\S]*?\*/|\$\{[^}]*\}""",
-            " ",
-            sql or "",
-        )
-        return bool(re.search(r"(?is)\bselect\b", stripped))
+        """True only when parsed executable SQL contains an actual SELECT node."""
+        return lookml_expression_has_subquery(sql or "")
 
     @staticmethod
     def _strip_all_modifier(sql: str) -> str:
-        """Drop an explicit ``ALL`` aggregate modifier (``COUNT(ALL x)`` -> ``COUNT(x)``) OUTSIDE
-        string literals and quoted identifiers.
-
-        ``ALL`` is the default modifier and changes nothing, but sqlglot cannot parse it, so
-        normalizing it away keeps exported SQL round-trippable and the column check accurate. A
-        string literal like ``'(ALL users)'`` is DATA, not a modifier, so the substitution runs only
-        on the segments outside any quoted token (``(`` must precede ``ALL`` regardless, so
-        ``= ALL (SELECT ...)`` and a column named ``all`` are already untouched).
-
-        A LEADING ``ALL`` is also dropped: a metric SQL that IS the bare aggregate argument
-        (``Metric(agg="stddev", sql="ALL {model}.amount")``) has no ``(`` yet, and wrapping it as
-        ``STDDEV(ALL amount)`` is likewise unparseable, so the exported measure would not round-trip.
-        """
-        parts = re.split(r"""('(?:[^']|'')*'|"(?:[^"]|"")*"|`[^`]*`|\[[^\]]*\])""", sql or "")
-        for i in range(0, len(parts), 2):  # even indices are outside any quoted token
-            parts[i] = re.sub(r"(?i)\(\s*ALL\s+", "(", parts[i])
-        # Only the first outside-quotes segment can hold the string's start; a `\s+` after ALL keeps
-        # a column named `all` (or an `all(` function) untouched.
-        if parts:
-            parts[0] = re.sub(r"(?i)^\s*ALL\s+", "", parts[0])
-        return "".join(parts)
+        """Drop a syntactic aggregate ``ALL`` modifier through the shared token boundary."""
+        return strip_aggregate_all(sql or "")
 
     @classmethod
     def _mixed_is_aggregate_safe(cls, sql: str, is_dim_ref, dim_sql_lookup: dict[str, str] | None = None) -> bool:

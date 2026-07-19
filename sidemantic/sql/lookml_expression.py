@@ -16,6 +16,7 @@ from sqlglot import exp
 from sqlglot.tokens import TokenType
 
 from sidemantic.sql.aggregation_detection import _ANONYMOUS_AGGREGATE_FUNCTIONS
+from sidemantic.sql.fragment import mask_sql_literals_comments_and_quoted_identifiers
 
 _PROTECTED_PREFIX = "__sidemantic_lookml_fragment_"
 
@@ -249,6 +250,18 @@ def protect_lookml_sql(sql: str) -> ProtectedLookMLSQL:
             out.append(sql[i:end])
             i = end
             continue
+        if ch == "$" and not sql.startswith("${", i):
+            marker_end = sql.find("$", i + 1)
+            if marker_end >= 0:
+                marker = sql[i : marker_end + 1]
+                tag = marker[1:-1]
+                if not tag or (tag[0].isalpha() or tag[0] == "_") and all(c.isalnum() or c == "_" for c in tag):
+                    end_marker = sql.find(marker, marker_end + 1)
+                    if end_marker >= 0:
+                        end = end_marker + len(marker)
+                        out.append(sql[i:end])
+                        i = end
+                        continue
         if sql.startswith("{{", i) or sql.startswith("{%", i):
             close = "}}" if sql.startswith("{{", i) else "%}"
             end = sql.find(close, i + 2)
@@ -417,6 +430,29 @@ def parse_lookml_expression(
     if best is None:
         return None
     return ParsedLookMLSQL(protected, best[1], best[2])
+
+
+def lookml_expression_has_subquery(sql: str) -> bool:
+    """Whether executable LookML SQL contains a real ``SELECT``.
+
+    Prefer the parsed AST.  Some otherwise valid SQL fragments cannot be parsed
+    after Liquid control tags are replaced by identifier sentinels, however.  In
+    that case SQLGlot's tokenizer provides the conservative syntax boundary after
+    strings, quoted identifiers, comments, dollar literals, and LookML fragments
+    have been hidden.  This fails closed for genuine subqueries without reviving
+    the old false positives from literal or template contents.
+    """
+    parsed = parse_lookml_expression(sql)
+    if parsed is not None:
+        return parsed.tree.find(exp.Select) is not None
+
+    protected = protect_lookml_sql(sql)
+    masked = mask_sql_literals_comments_and_quoted_identifiers(protected.text)
+    try:
+        tokens = sqlglot.Tokenizer().tokenize(masked)
+    except Exception:
+        return False
+    return any(token.token_type is TokenType.SELECT for token in tokens)
 
 
 ColumnResolver = Callable[[str, tuple[str, ...], bool], str | None]
@@ -843,3 +879,35 @@ def restore_outer_aggregate_all(sql: str) -> str:
         restored = protected.text[: token.end + 1] + "ALL " + protected.text[token.end + 1 :]
         return protected.restore(restored)
     return sql
+
+
+def strip_aggregate_all(sql: str) -> str:
+    """Remove syntactic aggregate ``ALL`` modifiers while preserving comments."""
+    protected = protect_lookml_sql(sql)
+    try:
+        tokens = sqlglot.tokenize(protected.text)
+    except Exception:
+        return sql
+
+    remove: list[tuple[int, int]] = []
+    for index, token in enumerate(tokens):
+        if token.token_type != TokenType.ALL:
+            continue
+        is_leading = index == 0 and len(tokens) >= 2
+        is_function_modifier = (
+            index >= 2
+            and index + 1 < len(tokens)
+            and tokens[index - 1].token_type == TokenType.L_PAREN
+            and tokens[index + 1].token_type != TokenType.R_PAREN
+        )
+        if not (is_leading or is_function_modifier):
+            continue
+        end = token.end + 1
+        while end < len(protected.text) and protected.text[end].isspace():
+            end += 1
+        remove.append((token.start, end))
+
+    stripped = protected.text
+    for start, end in reversed(remove):
+        stripped = stripped[:start] + stripped[end:]
+    return protected.restore(stripped)

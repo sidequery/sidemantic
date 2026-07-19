@@ -853,7 +853,7 @@ function dashboardTabConfig(catalog, dashboard, tabId) {
   const dimensionRefs = asList(chart.query.dimensions);
   const metricRefs = asList(chart.query.metrics);
   const graphMetricOwner = metricRefs.map((ref) => catalog.graphMetrics.find((metric) => metric.ref === ref)?.ownerModel).find((owner) => Boolean(owner));
-  const modelName = dimensionRefs.find((ref) => ref.includes("."))?.split(".")[0] ?? metricRefs.find((ref) => ref.includes("."))?.split(".")[0] ?? graphMetricOwner;
+  const modelName = metricRefs.find((ref) => ref.includes("."))?.split(".")[0] ?? graphMetricOwner ?? dimensionRefs.find((ref) => ref.includes("."))?.split(".")[0];
   const model = catalog.models.find((candidate) => candidate.name === modelName) ?? catalog.models[0];
   if (!model)
     return null;

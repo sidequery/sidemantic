@@ -353,4 +353,58 @@ describe("dashboardTabConfig", () => {
     ]);
     expect(config?.selectedMetric).toBe("orders.revenue");
   });
+
+  test("uses the metric model's time defaults for a related-model-only grouping", () => {
+    const customerTime = {
+      ref: "customers.created_at",
+      name: "created_at",
+      model: "customers",
+      label: "Customer created",
+      type: "time",
+    };
+    const crossModelCatalog: Catalog = {
+      models: [
+        {
+          name: "customers",
+          label: "Customers",
+          metrics: [],
+          dimensions: [
+            customerTime,
+            {
+              ref: "customers.country",
+              name: "country",
+              model: "customers",
+              label: "Country",
+              type: "categorical",
+            },
+          ],
+          timeDimension: customerTime,
+          defaultGrain: "year",
+        },
+        catalog.models[0],
+      ],
+      graphMetrics: [],
+      joinablePairs: [{ from: "customers", to: "orders" }],
+    };
+    const crossModelDashboard: DashboardSpec = {
+      title: "Revenue by customer country",
+      tabs: [
+        {
+          id: "country",
+          charts: [
+            {
+              id: "revenue",
+              query: { metrics: "orders.revenue", dimensions: "customers.country" },
+              encoding: { y: "orders.revenue" },
+            },
+          ],
+        },
+      ],
+    };
+
+    const config = dashboardTabConfig(crossModelCatalog, crossModelDashboard);
+    expect(config?.model.name).toBe("orders");
+    expect(config?.timeDimension?.ref).toBe("orders.created_at");
+    expect(config?.grain).toBe("day");
+  });
 });

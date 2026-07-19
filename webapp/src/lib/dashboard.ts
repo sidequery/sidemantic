@@ -81,9 +81,9 @@ export function dashboardTabConfig(
     .map((ref) => catalog.graphMetrics.find((metric) => metric.ref === ref)?.ownerModel)
     .find((owner): owner is string => Boolean(owner));
   const modelName =
-    dimensionRefs.find((ref) => ref.includes("."))?.split(".")[0] ??
     metricRefs.find((ref) => ref.includes("."))?.split(".")[0] ??
-    graphMetricOwner;
+    graphMetricOwner ??
+    dimensionRefs.find((ref) => ref.includes("."))?.split(".")[0];
   const model = catalog.models.find((candidate) => candidate.name === modelName) ?? catalog.models[0];
   if (!model) return null;
 

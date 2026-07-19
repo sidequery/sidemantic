@@ -121,6 +121,24 @@ def test_database_discovery_accepts_db_and_duckdb_and_rejects_ambiguity(tmp_path
         project.resolve_connection(required=True)
 
 
+def test_connection_models_path_is_relative_to_invocation_dir(tmp_path, monkeypatch):
+    invocation_dir = tmp_path / "invocation"
+    models_dir = invocation_dir / "local-models"
+    data_dir = models_dir / "data"
+    data_dir.mkdir(parents=True)
+    database = data_dir / "analytics.duckdb"
+    database.touch()
+    unrelated_cwd = tmp_path / "elsewhere"
+    unrelated_cwd.mkdir()
+    project = ProjectContext.discover(invocation_dir)
+
+    monkeypatch.chdir(unrelated_cwd)
+    resolved = project.resolve_connection(models="local-models", required=True)
+
+    assert resolved is not None
+    assert resolved.database == database
+
+
 def test_explicit_connection_and_database_are_mutually_exclusive(tmp_path):
     with pytest.raises(ProjectResolutionError, match="--connection and --db are mutually exclusive"):
         ProjectContext.discover(tmp_path).resolve_connection(connection="duckdb:///:memory:", database="data.db")

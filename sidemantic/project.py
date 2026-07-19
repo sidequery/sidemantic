@@ -216,7 +216,7 @@ class ProjectContext:
 
         data_dirs = [self.root / "data"]
         if models is not None:
-            models_path = Path(models).resolve()
+            models_path = _resolve_cli_path(models, self.start_dir)
             if models_path.is_dir():
                 data_dirs.append(models_path / "data")
                 if models_path.name == "models":

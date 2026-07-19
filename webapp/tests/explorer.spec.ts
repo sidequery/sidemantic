@@ -33,6 +33,7 @@ test("the mobile catalog is a focus-managed drawer and leaves data in the first 
   const catalog = page.getByRole("dialog", { name: "Data catalog" });
   await expect(catalog).toBeVisible();
   await expect(catalog.getByRole("button", { name: "Close catalog" })).toBeFocused();
+  await expect(catalog.getByTestId("catalog-drawer-header")).toHaveCSS("background-color", "rgb(255, 255, 255)");
 
   await page.keyboard.press("Escape");
   await expect(catalog).toHaveCount(0);

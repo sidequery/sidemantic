@@ -130,7 +130,10 @@ export function AppShell({ brand, toolbar, filters, rail, children, drawer, show
               className="fixed inset-y-0 left-0 z-50 min-h-0 w-[min(88vw,320px)] overflow-y-auto rounded-r-2xl bg-surface shadow-floating md:static md:z-auto md:w-auto md:rounded-none md:border-r md:border-line/80 md:shadow-none"
             >
               {mobile ? (
-                <div className="sticky top-0 z-10 flex items-center justify-between border-b border-line/80 bg-surface/95 px-4 py-3 backdrop-blur">
+                <div
+                  data-testid="catalog-drawer-header"
+                  className="sticky top-0 z-10 flex items-center justify-between border-b border-line/80 bg-surface px-4 py-3"
+                >
                   <div>
                     <p className="text-sm font-semibold text-ink">Catalog</p>
                     <p className="text-xs text-muted">Choose a model and fields</p>

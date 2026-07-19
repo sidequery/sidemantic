@@ -916,6 +916,8 @@ class SemanticLayer:
                     f"Saved query '{saved_query_name}' is immutable; remove overrides for: {', '.join(overridden)}"
                 )
             definition = self.graph.get_saved_query(saved_query_name)
+            if definition.visibility != "public" and self.enforce_visibility:
+                raise ValueError(f"Saved query '{saved_query_name}' is not public")
             metricflow_metadata = (definition.metadata or {}).get("metricflow", {})
             if metricflow_metadata.get("executable") is False:
                 message = metricflow_metadata.get("compatibility_message") or "source syntax is not executable"

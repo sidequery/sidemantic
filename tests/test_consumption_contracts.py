@@ -207,9 +207,37 @@ def test_validation_catalog_and_description_include_consumption_contracts():
     assert errors == ["Metric 'legacy' is deprecated but has no deprecation lifecycle/message"]
 
 
+def test_validation_accepts_metric_filters_and_preflights_saved_query_explore_constraints():
+    layer = _layer()
+    layer.graph.models["orders"].metrics.append(Metric(name="cost", agg="sum", sql="cost"))
+    explore = layer.graph.explores["revenue_overview"]
+    explore.allowed_filter_fields = ["status", "revenue"]
+    errors, _warnings = validate_explore(explore, layer.graph)
+    assert errors == []
+
+    invalid = SavedQuery(
+        name="invalid_contract",
+        explore="revenue_overview",
+        metrics=["cost"],
+        dimensions=["created_at__month"],
+        filters=["orders.created_at > '2026-01-01'"],
+        order_by=["orders.status"],
+        limit=101,
+    )
+    errors, _warnings = validate_saved_query(invalid, layer.graph)
+    assert any("metric(s) not allowed" in error for error in errors)
+    assert any("filters on field(s) not allowed" in error for error in errors)
+    assert any("orders by field(s) not allowed" in error for error in errors)
+    assert any("exceeds Explore" in error for error in errors)
+
+
 def test_visibility_enforcement_covers_models_metrics_and_explores():
     layer = _layer()
     layer.enforce_visibility = True
+    layer.graph.saved_queries["paid_revenue"].visibility = "private"
+    with pytest.raises(ValueError, match="Saved query 'paid_revenue' is not public"):
+        layer.compile(saved_query="paid_revenue")
+    layer.graph.saved_queries["paid_revenue"].visibility = "public"
     layer.graph.models["orders"].visibility = "internal"
     with pytest.raises(SecurityError, match="not public"):
         layer.compile(explore="revenue_overview")

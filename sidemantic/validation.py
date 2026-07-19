@@ -63,6 +63,10 @@ def _qualified_consumption_metrics(references: list[str], base_model: str, graph
     return [ref if ref in graph.metrics else _qualified_consumption_refs([ref], base_model)[0] for ref in references]
 
 
+def _is_metric_or_dimension(reference: str, graph: "SemanticGraph") -> bool:
+    return not validate_query([reference], [], graph) or not validate_query([], [reference], graph)
+
+
 def validate_explore(explore: "Explore", graph: "SemanticGraph") -> tuple[list[str], list[str]]:
     """Validate a curated Explore/View contract against the physical graph."""
     errors, warnings = validate_governance(explore, f"Explore '{explore.name}'")
@@ -78,17 +82,13 @@ def validate_explore(explore: "Explore", graph: "SemanticGraph") -> tuple[list[s
             graph,
         )
     )
-    filter_fields = _qualified_consumption_refs(explore.allowed_filter_fields or [], explore.model)
-    errors.extend(validate_query([], filter_fields, graph))
-    for raw_reference in explore.allowed_order_by or []:
-        reference = (
-            raw_reference
-            if raw_reference in graph.metrics
-            else _qualified_consumption_refs([raw_reference], explore.model)[0]
-        )
-        if not validate_query([reference], [], graph) or not validate_query([], [reference], graph):
-            continue
-        errors.append(f"Explore '{explore.name}' ordering field '{reference}' is not a metric or dimension")
+    for field_kind, references in (
+        ("filter", explore.allowed_filter_fields or []),
+        ("ordering", explore.allowed_order_by or []),
+    ):
+        for reference in _qualified_consumption_metrics(references, explore.model, graph):
+            if not _is_metric_or_dimension(reference, graph):
+                errors.append(f"Explore '{explore.name}' {field_kind} field '{reference}' is not a metric or dimension")
     if not metrics and not dimensions:
         warnings.append(f"Explore '{explore.name}' defines no allowed or default fields")
     if any(not value.strip() for value in [*explore.filters, *explore.default_filters, *explore.default_order_by]):
@@ -107,6 +107,7 @@ def validate_saved_query(saved_query: "SavedQuery", graph: "SemanticGraph") -> t
             f"{metricflow_metadata.get('compatibility_message', 'convert source expressions to Sidemantic references')}"
         )
     base_model = ""
+    explore = None
     if saved_query.explore:
         explore = graph.explores.get(saved_query.explore)
         if explore is None:
@@ -123,6 +124,58 @@ def validate_saved_query(saved_query: "SavedQuery", graph: "SemanticGraph") -> t
     )
     if not preserved_external_syntax:
         errors.extend(validate_query(metrics, dimensions, graph))
+        if explore is not None:
+            if explore.allowed_metrics is not None:
+                allowed_metrics = set(_qualified_consumption_metrics(explore.allowed_metrics, base_model, graph))
+                denied_metrics = sorted(set(metrics) - allowed_metrics)
+                if denied_metrics:
+                    errors.append(
+                        f"Saved query '{saved_query.name}' selects metric(s) not allowed by Explore "
+                        f"'{explore.name}': {', '.join(denied_metrics)}"
+                    )
+            if explore.allowed_dimensions is not None:
+                allowed_dimensions = set(_qualified_consumption_refs(explore.allowed_dimensions, base_model))
+                denied_dimensions = sorted(set(dimensions) - allowed_dimensions)
+                if denied_dimensions:
+                    errors.append(
+                        f"Saved query '{saved_query.name}' selects dimension(s) not allowed by Explore "
+                        f"'{explore.name}': {', '.join(denied_dimensions)}"
+                    )
+
+            from sidemantic.core.consumption import expression_field_references
+
+            graph_metrics = graph.metrics.keys()
+            if explore.allowed_filter_fields is not None:
+                allowed_filters = set(_qualified_consumption_metrics(explore.allowed_filter_fields, base_model, graph))
+                denied_filters = sorted(
+                    expression_field_references(saved_query.filters, base_model, graph_metrics=graph_metrics)
+                    - allowed_filters
+                )
+                if denied_filters:
+                    errors.append(
+                        f"Saved query '{saved_query.name}' filters on field(s) not allowed by Explore "
+                        f"'{explore.name}': {', '.join(denied_filters)}"
+                    )
+            if explore.allowed_order_by is not None:
+                allowed_ordering = set(_qualified_consumption_metrics(explore.allowed_order_by, base_model, graph))
+                denied_ordering = sorted(
+                    expression_field_references(saved_query.order_by, base_model, graph_metrics=graph_metrics)
+                    - allowed_ordering
+                )
+                if denied_ordering:
+                    errors.append(
+                        f"Saved query '{saved_query.name}' orders by field(s) not allowed by Explore "
+                        f"'{explore.name}': {', '.join(denied_ordering)}"
+                    )
+            if (
+                explore.max_limit is not None
+                and saved_query.limit is not None
+                and saved_query.limit > explore.max_limit
+            ):
+                errors.append(
+                    f"Saved query '{saved_query.name}' limit {saved_query.limit} exceeds Explore "
+                    f"'{explore.name}' max_limit {explore.max_limit}"
+                )
     if not saved_query.metrics and not saved_query.dimensions:
         errors.append(f"Saved query '{saved_query.name}' must select at least one metric or dimension")
     if any(not value.strip() for value in [*saved_query.filters, *saved_query.order_by]):

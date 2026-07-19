@@ -3,6 +3,7 @@ import type { DashboardChart, DashboardDocument } from "../data/dashboardTypes";
 import { NULL_TOKEN } from "../data/types";
 import {
   dashboardFilterValue,
+  dashboardResultColumn,
   decodeDashboardState,
   encodeDashboardState,
   rowsToCsv,
@@ -80,5 +81,12 @@ describe("dashboard selections", () => {
     expect(dashboardFilterValue(null)).toBe(NULL_TOKEN);
     expect(dashboardFilterValue(undefined)).toBe(NULL_TOKEN);
     expect(dashboardFilterValue("—")).toBe("—");
+  });
+
+  test("resolves exact qualified aliases before ambiguous suffixes", () => {
+    const columns = ["orders_status", "customers_status", "revenue"];
+    expect(dashboardResultColumn("customers.status", columns)).toBe("customers_status");
+    expect(dashboardResultColumn("orders.status", columns)).toBe("orders_status");
+    expect(dashboardResultColumn("orders.revenue", columns)).toBe("revenue");
   });
 });

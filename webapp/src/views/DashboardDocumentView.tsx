@@ -9,12 +9,13 @@ import { ThemeToggle } from "../components/ThemeToggle";
 import { TimeSeriesChart } from "../components/TimeSeriesChart";
 import type { SidemanticBackend } from "../data/backend";
 import type { DashboardChart, DashboardDocument } from "../data/dashboardTypes";
-import { aliasOf, type Catalog, type ResultRow, type StructuredQuery } from "../data/types";
+import type { Catalog, ResultRow, StructuredQuery } from "../data/types";
 import { displayDimValue, formatValue, labelize } from "../lib/format";
 import { dimTypes, filterExprs, type FilterState } from "../lib/queries";
 import {
   decodeDashboardState,
   dashboardFilterValue,
+  dashboardResultColumn,
   encodeDashboardState,
   loadSavedDashboardViews,
   rowsToCsv,
@@ -75,11 +76,6 @@ function firstY(chart: DashboardChart): string {
   return (Array.isArray(encoded) ? encoded[0] : encoded) ?? chart.query.metrics[0] ?? "";
 }
 
-function resultColumn(ref: string, columns: string[]): string {
-  const alias = aliasOf(ref);
-  return columns.includes(alias) ? alias : columns.find((column) => column.endsWith(alias)) ?? alias;
-}
-
 function exploreUrl(chart: DashboardChart, filters: DashboardViewState["filters"]): string {
   const metric = firstY(chart);
   const model = metric.includes(".") ? metric.split(".")[0] : chart.query.dimensions?.[0]?.split(".")[0] ?? "";
@@ -116,20 +112,20 @@ function ChartDetails({
   onDrill: (dimension: string, value: string) => void;
 }) {
   const dimensions = chart.query.dimensions ?? [];
-  const dimensionByAlias = new Map(dimensions.map((dimension) => [aliasOf(dimension), dimension]));
   const tableColumns: Column[] = columns.map((column) => ({
     key: column,
     label: labelize(column),
-    numeric: chart.query.metrics.some((metric) => aliasOf(metric) === column),
+    numeric: chart.query.metrics.some((metric) => dashboardResultColumn(metric, columns) === column),
   }));
   const firstDrillDimension = dimensions[0];
-  const firstDrillColumn = firstDrillDimension ? resultColumn(firstDrillDimension, columns) : undefined;
+  const firstDrillColumn = firstDrillDimension ? dashboardResultColumn(firstDrillDimension, columns) : undefined;
+  const canDrill = firstDrillDimension ? selectableDashboardDimension(chart, firstDrillDimension) : false;
 
   return (
     <div className="border-t border-line bg-surface-soft p-3" data-testid={`chart-details-${chart.id}`}>
       <div className="mb-2 flex items-center justify-between gap-2">
         <span className="text-2xs font-semibold uppercase tracking-wide text-faint">Drill details</span>
-        {firstDrillDimension && firstDrillColumn ? (
+        {canDrill && firstDrillDimension && firstDrillColumn ? (
           <span className="text-2xs text-faint">Choose a {labelize(firstDrillDimension)} value to filter every chart.</span>
         ) : null}
       </div>
@@ -140,19 +136,18 @@ function ChartDetails({
         pageSize={20}
         renderCell={(_column, value) => String(value ?? "—")}
       />
-      {firstDrillDimension && firstDrillColumn && rows.length ? (
+      {canDrill && firstDrillDimension && firstDrillColumn && rows.length ? (
         <div className="mt-2 flex flex-wrap gap-1" aria-label={`Drill by ${labelize(firstDrillDimension)}`}>
           {rows.slice(0, 12).map((row, index) => {
-            const value = row[firstDrillColumn];
-            if (value == null) return null;
+            const value = dashboardFilterValue(row[firstDrillColumn]);
             return (
               <button
                 key={`${String(value)}-${index}`}
                 type="button"
-                onClick={() => onDrill(dimensionByAlias.get(firstDrillColumn) ?? firstDrillDimension, String(value))}
+                onClick={() => onDrill(firstDrillDimension, value)}
                 className="border border-line bg-surface px-2 py-1 text-2xs text-muted hover:border-accent hover:text-ink"
               >
-                Filter to {String(value)}
+                Filter to {displayDimValue(value)}
               </button>
             );
           })}
@@ -186,8 +181,8 @@ function DashboardChartPanel({
   const dimensions = chart.query.dimensions ?? [];
   const xRef = chart.encoding?.x ?? dimensions[0] ?? "";
   const yRef = firstY(chart);
-  const xColumn = resultColumn(xRef, columns);
-  const yColumn = resultColumn(yRef, columns);
+  const xColumn = dashboardResultColumn(xRef, columns);
+  const yColumn = dashboardResultColumn(yRef, columns);
   const chartType = chart.type === "auto" || !chart.type ? (xRef.includes("__") ? "line" : "bar") : chart.type;
   const canSelect = selectableDashboardDimension(chart, xRef);
   const chartTitle = chart.title?.trim() || labelize(chart.id);
@@ -209,7 +204,7 @@ function DashboardChartPanel({
             key={metric}
             metric={metric}
             label={labelize(metric)}
-            value={total[resultColumn(metric, columns)]}
+            value={total[dashboardResultColumn(metric, columns)]}
             format={metricFormat(catalog, metric)}
           />
         ))}

@@ -1,5 +1,5 @@
 import type { DashboardChart, DashboardDocument, DashboardTab } from "../data/dashboardTypes";
-import { NULL_TOKEN, type ResultRow } from "../data/types";
+import { aliasOf, NULL_TOKEN, type ResultRow } from "../data/types";
 
 export type DashboardViewState = {
   tab: string;
@@ -29,6 +29,20 @@ export function selectableDashboardDimension(chart: DashboardChart, dimension: s
 
 export function dashboardFilterValue(value: unknown): string {
   return value == null ? NULL_TOKEN : String(value);
+}
+
+function safeResultAlias(value: string): string {
+  let alias = value.trim().replaceAll(/[^A-Za-z0-9_]/g, "_").replaceAll(/^_+|_+$/g, "") || "field";
+  if (/^\d/.test(alias)) alias = `field_${alias}`;
+  return alias;
+}
+
+export function dashboardResultColumn(ref: string, columns: string[]): string {
+  const leafAlias = aliasOf(ref);
+  const qualifiedAlias = safeResultAlias(ref);
+  if (qualifiedAlias !== leafAlias && columns.includes(qualifiedAlias)) return qualifiedAlias;
+  if (columns.includes(leafAlias)) return leafAlias;
+  return columns.find((column) => column.endsWith(leafAlias)) ?? leafAlias;
 }
 
 function validFilters(value: unknown, allowedDimensions: Set<string>): Record<string, string> {

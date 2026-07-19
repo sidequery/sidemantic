@@ -106,6 +106,97 @@ def test_fold_preserves_original_predicate_bytes():
     )
 
 
+def test_fold_preserves_balanced_block_templated_predicate():
+    predicate = "{% if include_pending %}status = 'completed'{% else %}1=1{% endif %}"
+
+    assert fold_lookml_aggregate_filters("COUNT(*)", [predicate], force=True) == (
+        f"COUNT(CASE WHEN {predicate} THEN 1 END)"
+    )
+
+    model = Model(
+        name="orders",
+        table="orders",
+        primary_key="id",
+        dimensions=[Dimension(name="status", type="categorical", sql="status")],
+    )
+    model_predicate = predicate.replace("status", "{model}.status", 1)
+    assert LookMLAdapter._fold_filters_into_aggregate("SUM({model}.amount)", [model_predicate], model) == (
+        "SUM(CASE WHEN ({% if include_pending %}${TABLE}.status = 'completed'"
+        "{% else %}1=1{% endif %}) THEN ${TABLE}.amount END)"
+    )
+
+
+def test_fold_rejects_unbalanced_or_statement_breaking_block_templates():
+    assert fold_lookml_aggregate_filters("COUNT(*)", ["{% if active %}status = 'active'"], force=True) is None
+    assert (
+        fold_lookml_aggregate_filters(
+            "COUNT(*)",
+            ["{% if active %}status = 'active'; DROP TABLE users{% endif %}"],
+            force=True,
+        )
+        is None
+    )
+    assert (
+        fold_lookml_aggregate_filters(
+            "COUNT(*)",
+            ["{% if active %}status = 'active' # trailing{% else %}1=1{% endif %}"],
+            force=True,
+        )
+        is None
+    )
+    assert (
+        fold_lookml_aggregate_filters(
+            "COUNT(*)",
+            ["{% if active %}status = 'active' #trailing{% else %}1=1{% endif %}"],
+            force=True,
+        )
+        is None
+    )
+
+
+def test_fold_supports_lookml_condition_and_jinja_control_edge_cases():
+    condition = "{% condition orders.status %}${status}{% endcondition %}"
+    assert fold_lookml_aggregate_filters("COUNT(*)", [condition], force=True) == (
+        f"COUNT(CASE WHEN {condition} THEN 1 END)"
+    )
+
+    liquid_comment = "{% comment %}{% if ignored %}not SQL{% endcomment %}x = 1"
+    assert fold_lookml_aggregate_filters("COUNT(*)", [liquid_comment], force=True) == (
+        f"COUNT(CASE WHEN {liquid_comment} THEN 1 END)"
+    )
+
+    inline_set = "{% set threshold = 10 %}x > threshold"
+    assert fold_lookml_aggregate_filters("COUNT(*)", [inline_set], force=True) == (
+        f"COUNT(CASE WHEN {inline_set} THEN 1 END)"
+    )
+
+    capture_set = "{% set value | replace('=', ':') %}x{% endset %}value = 'x'"
+    assert fold_lookml_aggregate_filters("COUNT(*)", [capture_set], force=True) == (
+        f"COUNT(CASE WHEN {capture_set} THEN 1 END)"
+    )
+
+
+def test_fold_does_not_treat_postgres_json_operators_as_comments():
+    for predicate in (
+        "payload #>> '{status}' = 'active'",
+        "payload #> '{a,b}' IS NOT NULL",
+        "(payload #- '{a,b}') IS NOT NULL",
+    ):
+        assert fold_lookml_aggregate_filters("COUNT(*)", [predicate], force=True) == (
+            f"COUNT(CASE WHEN {predicate} THEN 1 END)"
+        )
+
+    temp_table_predicate = "EXISTS (SELECT 1 FROM #allowed WHERE #allowed.id = orders.id)"
+    assert fold_lookml_aggregate_filters("COUNT(*)", [temp_table_predicate], force=True) == (
+        f"COUNT(CASE WHEN {temp_table_predicate} THEN 1 END)"
+    )
+
+    comma_join_predicate = "EXISTS (SELECT 1 FROM #a, #b WHERE #a.id = #b.id)"
+    assert fold_lookml_aggregate_filters("COUNT(*)", [comma_join_predicate], force=True) == (
+        f"COUNT(CASE WHEN {comma_join_predicate} THEN 1 END)"
+    )
+
+
 def test_force_fold_rejects_dialect_aggregate_renames():
     assert fold_lookml_aggregate_filters("APPROX_COUNT_DISTINCT(x)", ["x > 0"], force=True) is None
 

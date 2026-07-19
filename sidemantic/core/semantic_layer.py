@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable
+from contextvars import ContextVar, Token
 from pathlib import Path
 
 import yaml
@@ -269,24 +270,46 @@ class SemanticLayer:
         else:
             raise TypeError(f"connection must be a string URL or BaseDatabaseAdapter instance, got {type(connection)}")
 
-        # Set as current layer for auto-registration
+        self._registration_token = None
+        self._context_registration_tokens: ContextVar[tuple[Token, ...]] = ContextVar(
+            f"semantic_layer_registration_tokens_{id(self)}", default=()
+        )
         if auto_register:
             from .registry import set_current_layer
 
-            set_current_layer(self)
+            self._registration_token = set_current_layer(self)
 
     def __enter__(self):
         """Context manager entry - set as current layer."""
         from .registry import set_current_layer
 
-        set_current_layer(self)
+        token = set_current_layer(self)
+        tokens = self._context_registration_tokens.get()
+        self._context_registration_tokens.set((*tokens, token))
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        """Context manager exit - clear current layer and close adapter."""
-        from .registry import set_current_layer
+        """Context manager exit - restore the prior layer and close adapter."""
+        from .registry import get_current_layer, reset_current_layer
 
-        set_current_layer(None)
+        tokens = self._context_registration_tokens.get()
+        if tokens:
+            token = tokens[-1]
+            remaining_tokens = tokens[:-1]
+            self._context_registration_tokens.set(remaining_tokens)
+            reset_current_layer(token)
+
+            # An inline ``with SemanticLayer(auto_register=True)`` should still
+            # restore the layer that preceded construction. A copied async
+            # context cannot reset the constructor's token, so leave that token
+            # for its owning context instead of raising from ``__exit__``.
+            if not remaining_tokens and self._registration_token is not None and get_current_layer() is self:
+                try:
+                    reset_current_layer(self._registration_token)
+                except ValueError:
+                    pass
+                else:
+                    self._registration_token = None
         if hasattr(self.adapter, "close"):
             self.adapter.close()
 

@@ -817,7 +817,10 @@ def _looks_like_native_sidemantic_yaml(data: dict) -> bool:
         and set(data) <= ROOT_FIELDS
     ):
         return True
-    if not any(_yaml_has_top_level_key(data, key) for key in ("metrics", "parameters", "sql_metrics", "sql_segments")):
+    if not any(
+        _yaml_has_top_level_key(data, key)
+        for key in ("metrics", "parameters", "sql_metrics", "sql_segments", "explores", "views", "saved_queries")
+    ):
         return False
     if data.get("version") == NATIVE_FORMAT_VERSION:
         return True

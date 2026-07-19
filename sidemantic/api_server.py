@@ -378,6 +378,8 @@ def create_app(
     @app.get("/graph", dependencies=[Depends(require_auth)])
     def graph() -> dict[str, Any]:
         # Read-only metadata over the in-memory graph.
+        from sidemantic.core.consumption import serialize_consumption_contract
+
         current_layer = app.state.layer
         graph_obj = current_layer.graph
         visible_model_names = {
@@ -434,33 +436,57 @@ def create_app(
         if graph_metrics:
             payload["graph_metrics"] = graph_metrics
         payload["explores"] = [
-            value.model_dump(exclude_none=True, exclude_defaults=True, mode="json")
+            serialized
             for value in graph_obj.explores.values()
-            if not current_layer.enforce_visibility or value.visibility == "public"
+            if (
+                serialized := serialize_consumption_contract(
+                    value, graph_obj, enforce_visibility=current_layer.enforce_visibility
+                )
+            )
+            is not None
         ]
         payload["saved_queries"] = [
-            value.model_dump(exclude_none=True, exclude_defaults=True, mode="json")
+            serialized
             for value in graph_obj.saved_queries.values()
-            if not current_layer.enforce_visibility or value.visibility == "public"
+            if (
+                serialized := serialize_consumption_contract(
+                    value, graph_obj, enforce_visibility=current_layer.enforce_visibility
+                )
+            )
+            is not None
         ]
         return payload
 
     @app.get("/explores", dependencies=[Depends(require_auth)])
     def list_explores() -> list[dict[str, Any]]:
+        from sidemantic.core.consumption import serialize_consumption_contract
+
         current_layer = app.state.layer
         return [
-            value.model_dump(exclude_none=True, exclude_defaults=True, mode="json")
+            serialized
             for value in current_layer.graph.explores.values()
-            if not current_layer.enforce_visibility or value.visibility == "public"
+            if (
+                serialized := serialize_consumption_contract(
+                    value, current_layer.graph, enforce_visibility=current_layer.enforce_visibility
+                )
+            )
+            is not None
         ]
 
     @app.get("/saved-queries", dependencies=[Depends(require_auth)])
     def list_saved_queries() -> list[dict[str, Any]]:
+        from sidemantic.core.consumption import serialize_consumption_contract
+
         current_layer = app.state.layer
         return [
-            value.model_dump(exclude_none=True, exclude_defaults=True, mode="json")
+            serialized
             for value in current_layer.graph.saved_queries.values()
-            if not current_layer.enforce_visibility or value.visibility == "public"
+            if (
+                serialized := serialize_consumption_contract(
+                    value, current_layer.graph, enforce_visibility=current_layer.enforce_visibility
+                )
+            )
+            is not None
         ]
 
     @app.get("/describe", dependencies=[Depends(require_auth)])

@@ -115,3 +115,107 @@ class SavedQuery(GovernedObject):
     limit: int | None = Field(None, ge=0)
     parameters: dict[str, Any] | None = None
     metadata: dict[str, Any] | None = Field(None, description="Source-adapter metadata for lossless round-tripping")
+
+
+def _semantic_reference_is_public(
+    reference: str, base_model: str, graph: Any, *, prefer_graph_metric: bool = False
+) -> bool:
+    if prefer_graph_metric and reference in graph.metrics:
+        metric = graph.metrics[reference]
+        return metric.public and metric.visibility == "public"
+    if "." not in reference:
+        if not base_model:
+            return False
+        reference = f"{base_model}.{reference}"
+    model_name, field_name = reference.split(".", 1)
+    field_name = field_name.rsplit("__", 1)[0]
+    model = graph.models.get(model_name)
+    if model is None or model.visibility != "public":
+        return False
+    dimension = model.get_dimension(field_name)
+    if dimension is not None:
+        return dimension.public
+    metric = model.get_metric(field_name)
+    if metric is not None:
+        return metric.public and metric.visibility == "public"
+    return False
+
+
+def _expressions_are_public(expressions: Collection[str], base_model: str, graph: Any) -> bool:
+    try:
+        references = expression_field_references(expressions, base_model, graph_metrics=graph.metrics.keys())
+    except Exception:
+        return False
+    return all(
+        _semantic_reference_is_public(reference, base_model, graph, prefer_graph_metric=True)
+        for reference in references
+    )
+
+
+def consumption_contract_is_public(value: Explore | SavedQuery, graph: Any) -> bool:
+    """Return whether a contract can be safely discovered with visibility enforcement."""
+    if value.visibility != "public":
+        return False
+    if isinstance(value, Explore):
+        model = graph.models.get(value.model)
+        if model is None or model.visibility != "public":
+            return False
+        dimension_references = [*(value.allowed_dimensions or []), *value.default_dimensions]
+        metric_references = [*(value.allowed_metrics or []), *value.default_metrics]
+        flexible_references = [*(value.allowed_filter_fields or []), *(value.allowed_order_by or [])]
+        return (
+            all(_semantic_reference_is_public(reference, value.model, graph) for reference in dimension_references)
+            and all(
+                _semantic_reference_is_public(reference, value.model, graph, prefer_graph_metric=True)
+                for reference in metric_references
+            )
+            and all(
+                _semantic_reference_is_public(reference, value.model, graph, prefer_graph_metric=True)
+                for reference in flexible_references
+            )
+            and _expressions_are_public(
+                [*value.filters, *value.default_filters, *value.default_order_by], value.model, graph
+            )
+        )
+
+    base_model = ""
+    if value.explore:
+        explore = graph.explores.get(value.explore)
+        if explore is None or not consumption_contract_is_public(explore, graph):
+            return False
+        base_model = explore.model
+    if not all(_semantic_reference_is_public(reference, base_model, graph) for reference in value.dimensions):
+        return False
+    if not all(
+        _semantic_reference_is_public(reference, base_model, graph, prefer_graph_metric=True)
+        for reference in value.metrics
+    ):
+        return False
+    if not _expressions_are_public([*value.filters, *value.order_by], base_model, graph):
+        return False
+    for raw_segment in value.segments:
+        segment_ref = (
+            raw_segment if "." in raw_segment else f"{base_model}.{raw_segment}" if base_model else raw_segment
+        )
+        if "." not in segment_ref:
+            return False
+        model_name, segment_name = segment_ref.split(".", 1)
+        model = graph.models.get(model_name)
+        segment = model.get_segment(segment_name) if model is not None and model.visibility == "public" else None
+        if segment is None or not segment.public:
+            return False
+    return True
+
+
+def serialize_consumption_contract(
+    value: Explore | SavedQuery, graph: Any, *, enforce_visibility: bool = False
+) -> dict[str, Any] | None:
+    """Serialize a contract, omitting unsafe contracts and adapter metadata when visibility is enforced."""
+    if enforce_visibility and not consumption_contract_is_public(value, graph):
+        return None
+    return value.model_dump(
+        exclude={"metadata"} if enforce_visibility else None,
+        exclude_none=True,
+        exclude_defaults=True,
+        mode="json",
+    )

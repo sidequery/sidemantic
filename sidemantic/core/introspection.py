@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, is_dataclass
 from typing import Any
 
+from sidemantic.core.consumption import serialize_consumption_contract
 from sidemantic.core.governance import governance_dict
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
@@ -33,15 +34,17 @@ def describe_graph(
     ]
 
     explores = [
-        explore.model_dump(exclude_none=True, exclude_defaults=True, mode="json")
+        serialized
         for explore in graph.explores.values()
         if not requested or explore.model in requested
-        if not enforce_visibility or explore.visibility == "public"
+        if (serialized := serialize_consumption_contract(explore, graph, enforce_visibility=enforce_visibility))
+        is not None
     ]
     saved_queries = [
-        saved.model_dump(exclude_none=True, exclude_defaults=True, mode="json")
+        serialized
         for saved in graph.saved_queries.values()
-        if not enforce_visibility or saved.visibility == "public"
+        if (serialized := serialize_consumption_contract(saved, graph, enforce_visibility=enforce_visibility))
+        is not None
     ]
 
     return {

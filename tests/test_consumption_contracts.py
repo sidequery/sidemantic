@@ -19,6 +19,7 @@ from sidemantic import (
     Segment,
     SemanticLayer,
     View,
+    load_from_directory,
 )
 from sidemantic.adapters.hex import HexAdapter
 from sidemantic.adapters.lookml import LookMLAdapter
@@ -339,6 +340,31 @@ def test_meta_api_does_not_leak_private_relationship_targets():
     assert not description["models"][0].get("relationships")
 
 
+def test_visibility_enforcement_hides_contracts_that_expose_private_fields():
+    layer = _layer()
+    layer.enforce_visibility = True
+    layer.graph.models["orders"].metrics.append(
+        Metric(name="secret_margin", agg="sum", sql="margin", visibility="private")
+    )
+    layer.graph.add_explore(
+        Explore(
+            name="leaky_explore",
+            model="orders",
+            allowed_metrics=["secret_margin"],
+            default_metrics=["secret_margin"],
+            metadata={"source_fields": ["secret_margin"]},
+        )
+    )
+    layer.graph.add_saved_query(SavedQuery(name="leaky_query", explore="leaky_explore", metrics=["secret_margin"]))
+
+    client = TestClient(create_app(layer))
+    assert {value["name"] for value in client.get("/explores").json()} == {"revenue_overview"}
+    assert {value["name"] for value in client.get("/saved-queries").json()} == {"paid_revenue"}
+    assert {value["name"] for value in client.get("/graph").json()["explores"]} == {"revenue_overview"}
+    assert {value["name"] for value in layer.get_catalog_metadata()["explores"]} == {"revenue_overview"}
+    assert {value["name"] for value in layer.describe_models()["explores"]} == {"revenue_overview"}
+
+
 def test_schema_and_cli_expose_contracts(tmp_path: Path):
     schema = generate_yaml_schema()
     assert "explores" in schema["properties"]
@@ -381,6 +407,37 @@ saved_queries:
     )
     assert dry_run.exit_code == 0, dry_run.output
     assert "SUM" in dry_run.output
+
+
+def test_directory_loader_recognizes_contract_only_native_yaml(tmp_path: Path):
+    (tmp_path / "models.yml").write_text(
+        """
+models:
+  - name: orders
+    table: orders
+    dimensions: [{name: status}]
+    metrics: [{name: revenue, agg: sum, sql: amount}]
+""".strip()
+    )
+    (tmp_path / "contracts.yml").write_text(
+        """
+version: 1
+explores:
+  - name: revenue_overview
+    model: orders
+    default_metrics: [revenue]
+saved_queries:
+  - name: revenue_by_status
+    explore: revenue_overview
+    dimensions: [status]
+    metrics: [revenue]
+""".strip()
+    )
+
+    layer = SemanticLayer(auto_register=False)
+    load_from_directory(layer, tmp_path)
+    assert set(layer.graph.explores) == {"revenue_overview"}
+    assert set(layer.graph.saved_queries) == {"revenue_by_status"}
 
 
 def test_lossless_adapter_bridges_create_typed_contracts():

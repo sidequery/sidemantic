@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { HttpBackend } from "./data/httpAdapter";
-import type { Catalog } from "./data/types";
+import type { Catalog, DashboardSpec } from "./data/types";
 import { AppShell } from "./components/AppShell";
 import { AddFilter } from "./components/AddFilter";
 import { Catalog as CatalogRail } from "./components/Catalog";
@@ -17,6 +17,7 @@ import { grainOptions } from "./lib/time";
 import { ExplorerProvider, useExplorer } from "./state/ExplorerContext";
 import { useQueryActive } from "./state/queryActivity";
 import { ExploreIndexView } from "./views/ExploreIndexView";
+import { DashboardView } from "./views/DashboardView";
 import { ExplorerView } from "./views/ExplorerView";
 import { PivotView } from "./views/PivotView";
 
@@ -192,13 +193,18 @@ function Shell() {
 export function App() {
   const backend = useMemo(() => new HttpBackend({ transport: "json", token: API_TOKEN }), []);
   const [catalog, setCatalog] = useState<Catalog | null>(null);
+  // undefined means the dashboard request is still in flight; null selects the generic explorer.
+  const [dashboard, setDashboard] = useState<DashboardSpec | null | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let alive = true;
-    backend
-      .getCatalog()
-      .then((value) => alive && setCatalog(value))
+    Promise.all([backend.getCatalog(), backend.getDashboard()])
+      .then(([nextCatalog, nextDashboard]) => {
+        if (!alive) return;
+        setCatalog(nextCatalog);
+        setDashboard(nextDashboard);
+      })
       .catch((err: unknown) => alive && setError(err instanceof Error ? err.message : String(err)));
     return () => {
       alive = false;
@@ -206,9 +212,11 @@ export function App() {
   }, [backend]);
 
   if (error) return <FullScreen><ErrorState title="Could not load semantic layer" message={error} /></FullScreen>;
-  if (!catalog) return <FullScreen><LoadingState title="Loading semantic layer" message="Reading models and metrics…" /></FullScreen>;
+  if (!catalog || dashboard === undefined)
+    return <FullScreen><LoadingState title="Loading semantic layer" message="Reading models, metrics, and dashboard…" /></FullScreen>;
   if (!catalog.models.length)
     return <FullScreen><EmptyState title="Empty semantic layer" message="No models were found." /></FullScreen>;
+  if (dashboard) return <DashboardView dashboard={dashboard} catalog={catalog} backend={backend} />;
 
   return (
     <ExplorerProvider catalog={catalog} backend={backend}>

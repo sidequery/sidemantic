@@ -15,7 +15,7 @@ from sidemantic import (
     load_from_directory,
 )
 from sidemantic.cli import app
-from sidemantic.dashboard import generate_dashboard_typescript
+from sidemantic.dashboard import DashboardSpecError, generate_dashboard_typescript
 from sidemantic.viz import CrossfilterDashboard, CrossfilterTab
 
 runner = CliRunner()
@@ -238,6 +238,47 @@ def test_dashboard_document_rejects_unknown_fields():
     assert "unknown metric 'orders.revneue'" in errors[0]
 
 
+def test_dashboard_document_accepts_multiple_charts_per_tab_for_canonical_ui():
+    layer = _build_layer()
+    payload = _dashboard_payload()
+    payload["tabs"][0]["charts"].append(
+        {
+            "id": "revenue_kpi",
+            "title": "Revenue",
+            "type": "kpi",
+            "query": {"metrics": ["orders.revenue"]},
+            "layout": {"colSpan": 1},
+        }
+    )
+
+    document = DashboardDocument.from_dict(payload)
+
+    assert document.validate(layer) == []
+    assert len(document.to_dict()["tabs"][0]["charts"]) == 2
+
+    with pytest.raises(DashboardSpecError, match="dashboard serve"):
+        document.to_crossfilter_dashboard(layer)
+
+
+def test_dashboard_document_requires_unique_nonempty_chart_ids():
+    layer = _build_layer()
+    payload = _dashboard_payload()
+    duplicate = dict(payload["tabs"][0]["charts"][0])
+    duplicate["query"] = dict(duplicate["query"])
+    payload["tabs"][0]["charts"].append(duplicate)
+    payload["tabs"].append(
+        {
+            "id": "missing-chart-id",
+            "charts": [{"type": "table", "query": {"metrics": ["orders.order_count"]}}],
+        }
+    )
+
+    errors = DashboardDocument.from_dict(payload).validate(layer)
+
+    assert any("id duplicates 'revenue_trend'" in error for error in errors)
+    assert any("tabs[1].charts[0].id is required" in error for error in errors)
+
+
 def test_dashboard_document_rejects_unknown_order_by_fields():
     layer = _build_layer()
     payload = _dashboard_payload()
@@ -381,6 +422,8 @@ def test_dashboard_typescript_is_generated_from_semantic_layer():
     assert "export function defineDashboard" in ts
     assert '"orders.region": string;' in ts
     assert '"orders.created_at__month": string | Date;' in ts
+    assert '"leaderboard" | "table" | "scatter"' in ts
+    assert "layout?:" in ts
 
 
 def test_dashboard_cli_validate_and_types(monkeypatch, tmp_path):

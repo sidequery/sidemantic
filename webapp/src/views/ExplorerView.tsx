@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { aliasOf, type CatalogMetric, type Grain, type StructuredQuery } from "../data/types";
+import { queryAlias, type CatalogMetric, type Grain, type StructuredQuery } from "../data/types";
 import { LeaderboardPanel } from "../components/LeaderboardPanel";
 import { MetricCard } from "../components/MetricCard";
 import { MetricTimeSeries } from "../components/MetricTimeSeries";
@@ -167,30 +167,45 @@ export function ExplorerView() {
 
   // A kept result from a previous model has different metric columns. Ignore it until the fresh one
   // lands (cards/chart keep showing their skeleton) rather than reading missing columns as zeros.
-  const shapeAlias = metrics[0] ? aliasOf(metrics[0].ref) : rankMetric ? aliasOf(rankMetric.ref) : null;
+  const seriesTimeRef = timeRef ? `${timeRef}__${state.grain}` : "";
+  const seriesFields = seriesTimeRef ? [...stripMetricRefs, seriesTimeRef] : stripMetricRefs;
+  const prevSeriesFields = rankMetric && seriesTimeRef ? [rankMetric.ref, seriesTimeRef] : [];
+  const shapeAlias = metrics[0]
+    ? queryAlias(metrics[0].ref, stripMetricRefs)
+    : rankMetric
+      ? queryAlias(rankMetric.ref, stripMetricRefs)
+      : null;
   const fresh = (r?: { columns: string[] }) => !r || !shapeAlias || r.columns.includes(shapeAlias);
   const totalsRow = fresh(totals.result) ? totals.result?.rows[0] : undefined;
   const prevRow = fresh(comparison.result) ? comparison.result?.rows[0] : undefined;
   const rawSeriesRows = fresh(series.result) ? (series.result?.rows ?? []) : [];
 
   // Chart data derived from the strip aggregates (no duplicate total/series queries).
-  const mAlias = rankMetric ? aliasOf(rankMetric.ref) : "";
-  const tAlias = timeRef ? aliasOf(`${timeRef}__${state.grain}`) : "";
+  const mAlias = rankMetric ? queryAlias(rankMetric.ref, stripMetricRefs) : "";
+  const seriesMetricAlias = rankMetric ? queryAlias(rankMetric.ref, seriesFields) : "";
+  const prevSeriesMetricAlias = rankMetric ? queryAlias(rankMetric.ref, prevSeriesFields) : "";
+  const tAlias = seriesTimeRef ? queryAlias(seriesTimeRef, seriesFields) : "";
+  const prevTimeAlias = seriesTimeRef ? queryAlias(seriesTimeRef, prevSeriesFields) : "";
   const seriesRows = tAlias ? chronologicalSeriesRows(rawSeriesRows, tAlias) : rawSeriesRows;
   const chartTotal = totalsRow && mAlias ? Number(totalsRow[mAlias]) : NaN;
   const chartPrevTotal = prevRow && mAlias ? Number(prevRow[mAlias]) : undefined;
-  const chartPoints = mAlias ? seriesRows.map((row) => ({ x: String(row[tAlias] ?? ""), y: Number(row[mAlias]) })) : [];
+  const chartPoints = seriesMetricAlias
+    ? seriesRows.map((row) => ({ x: String(row[tAlias] ?? ""), y: Number(row[seriesMetricAlias]) }))
+    : [];
   // Align the previous-period series to the current buckets by position (bucketOffset), so a missing
   // bucket in either period doesn't shift the dashed overlay or hover delta onto the wrong bucket.
-  const prevRows = tAlias ? chronologicalSeriesRows(prevSeries.result?.rows ?? [], tAlias) : [];
+  const prevRows = prevTimeAlias ? chronologicalSeriesRows(prevSeries.result?.rows ?? [], prevTimeAlias) : [];
   const chartComparison =
-    mAlias && chartPoints.length > 0 && prevRows.length > 0
+    prevSeriesMetricAlias && chartPoints.length > 0 && prevRows.length > 0
       ? (() => {
-          const prevFirst = String(prevRows[0][tAlias] ?? "");
+          const prevFirst = String(prevRows[0][prevTimeAlias] ?? "");
           const curFirst = chartPoints[0].x;
           const prevByOffset = new Map<number, number>();
           for (const row of prevRows) {
-            prevByOffset.set(bucketOffset(prevFirst, String(row[tAlias] ?? ""), state.grain), Number(row[mAlias]));
+            prevByOffset.set(
+              bucketOffset(prevFirst, String(row[prevTimeAlias] ?? ""), state.grain),
+              Number(row[prevSeriesMetricAlias]),
+            );
           }
           return chartPoints.map((point) => ({
             x: point.x,
@@ -214,10 +229,11 @@ export function ExplorerView() {
           <div className="col-span-full"><EmptyState message="This model has no metrics." /></div>
         ) : (
           metrics.map((metric) => {
-            const alias = aliasOf(metric.ref);
-            const value = totalsRow ? Number(totalsRow[alias]) : NaN;
-            const prev = prevRow ? Number(prevRow[alias]) : undefined;
-            const sparkValues = seriesRows.map((row) => Number(row[alias])).filter(Number.isFinite);
+            const totalsAlias = queryAlias(metric.ref, stripMetricRefs);
+            const seriesAlias = queryAlias(metric.ref, seriesFields);
+            const value = totalsRow ? Number(totalsRow[totalsAlias]) : NaN;
+            const prev = prevRow ? Number(prevRow[totalsAlias]) : undefined;
+            const sparkValues = seriesRows.map((row) => Number(row[seriesAlias])).filter(Number.isFinite);
             return (
               <MetricCard
                 key={metric.ref}

@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { aliasOf, NULL_TOKEN, type CatalogDimension, type CatalogMetric, type CatalogModel } from "../data/types";
+import { NULL_TOKEN, queryAlias, type CatalogDimension, type CatalogMetric, type CatalogModel } from "../data/types";
 import { formatCompact, formatDeltaAbs, formatDeltaPct, formatPercentOfTotal, sqlLiteral, type Tone } from "../lib/format";
 import { catalogDimTypes, composeFilters, dimensionLeaderboard } from "../lib/queries";
 import type { DateRange } from "../lib/time";
@@ -75,7 +75,8 @@ export function LeaderboardPanel({
   const own = state.filters[dim.ref];
   const selectedValues = own?.mode === "include" ? own.values : undefined;
 
-  const dimAlias = aliasOf(dim.ref);
+  const queryFields = [rankMetric.ref, dim.ref];
+  const dimAlias = queryAlias(dim.ref, queryFields);
   const wantsDelta = contextColumn === "delta" || contextColumn === "deltaPct";
   // Constrain the comparison-period query to EXACTLY the current leaderboard's dimension values.
   // Ranking the prior period independently (top N) would miss any current row that wasn't also in
@@ -117,7 +118,7 @@ export function LeaderboardPanel({
       ? dimensionLeaderboard(rankMetric.ref, dim.ref, prevFilters, limit, baseSegments, usePreaggregations)
       : null,
   );
-  const metricAlias = aliasOf(rankMetric.ref);
+  const metricAlias = queryAlias(rankMetric.ref, queryFields);
   // While a slow reload is in flight, useQueryResult keeps the *previous* result visible. If the
   // ranking metric just changed, those kept rows carry the old metric's columns — reading the new
   // metric's column off them yields all-zeros. Treat that as still-loading and show the skeleton.

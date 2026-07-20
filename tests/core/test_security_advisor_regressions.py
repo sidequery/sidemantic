@@ -102,7 +102,10 @@ def _balance_layer():
 def test_semi_additive_month_grain_uses_last_snapshot():
     layer = _balance_layer()
     sql = layer.compile(metrics=["bal.total_balance"], dimensions=["bal.day__month"])
-    assert "QUALIFY" in sql, "coarse grain must keep the semi-additive QUALIFY"
+    # Coarse grain must keep semi-additive snapshot selection. The entity-isolation
+    # path expresses it as a last-snapshot window (CASE + MAX() OVER) instead of the
+    # old QUALIFY clause, which also lifts the QUALIFY-dialect restriction.
+    assert "__sidemantic_snapshot_field_0 = MAX(" in sql, "coarse grain must keep the semi-additive snapshot window"
     # Correct: last day-of-month per account, summed = 110 + 210 = 320 (NOT naive 620).
     assert layer.query(metrics=["bal.total_balance"], dimensions=["bal.day__month"]).fetchall() == [
         (datetime.date(2026, 1, 1), 320)
@@ -120,6 +123,24 @@ def test_semi_additive_by_entity_last_value():
     layer = _balance_layer()
     rows = dict(layer.query(metrics=["bal.total_balance"], dimensions=["bal.account"]).fetchall())
     assert rows == {"A": 110, "B": 210}
+
+
+def test_mixed_additive_and_semi_additive_metrics_from_one_model():
+    """The semi-additive snapshot window must not filter sibling additive metrics.
+
+    The old QUALIFY-based rewrite filtered the model's whole CTE to last-snapshot
+    rows, silently dropping non-snapshot rows from every other metric on the model.
+    The entity-isolation path applies the snapshot window per-measure instead.
+    """
+    layer = _balance_layer()
+    con = layer.adapter.conn
+    con.execute("ALTER TABLE bal ADD COLUMN fee INTEGER")
+    con.execute("UPDATE bal SET fee = 1")
+    model = layer.graph.get_model("bal")
+    model.metrics.append(Metric(name="total_fees", agg="sum", sql="fee"))
+    rows = layer.query(metrics=["bal.total_balance", "bal.total_fees"], dimensions=["bal.day__month"]).fetchall()
+    # balance: last snapshot only (110 + 210); fees: ALL four rows.
+    assert rows == [(datetime.date(2026, 1, 1), 320, 4)]
 
 
 # --- P1-1: enforce_visibility covers filters and order_by ------------------------------

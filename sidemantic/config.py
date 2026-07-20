@@ -5,6 +5,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from sidemantic.yaml_compat import safe_load as _yaml_safe_load
+
 
 class DuckDBConnection(BaseModel):
     """DuckDB connection configuration."""
@@ -284,10 +286,8 @@ def load_config(config_path: Path) -> SidemanticConfig:
     suffix = config_path.suffix.lower()
 
     if suffix in {".yaml", ".yml"}:
-        import yaml
-
         with open(config_path) as f:
-            data = yaml.safe_load(f)
+            data = _yaml_safe_load(f)
     elif suffix == ".json":
         with open(config_path) as f:
             data = json.load(f)

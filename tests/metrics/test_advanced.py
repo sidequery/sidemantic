@@ -169,6 +169,38 @@ def test_fill_nulls_with_string():
     assert gadget[1] is None
 
 
+def test_cumulative_fill_nulls_applies_after_window():
+    sales = Model(
+        name="sales",
+        sql="""
+            SELECT DATE '2024-01-01' AS day, NULL::INTEGER AS amount
+            UNION ALL SELECT DATE '2024-01-02', 5
+        """,
+        primary_key="day",
+        dimensions=[Dimension(name="day", sql="day", type="time", granularity="day")],
+        metrics=[Metric(name="amount", agg="sum", sql="amount")],
+    )
+    running_amount = Metric(
+        name="running_amount",
+        type="cumulative",
+        sql="sales.amount",
+        fill_nulls_with=0,
+    )
+    graph = SemanticGraph()
+    graph.add_model(sales)
+    graph.add_metric(running_amount)
+
+    sql = SQLGenerator(graph).generate(
+        metrics=["running_amount"],
+        dimensions=["sales.day"],
+        order_by=["sales.day"],
+    )
+    rows = df_rows(duckdb.connect(":memory:").execute(sql))
+
+    assert "COALESCE(SUM(base.amount) OVER" in sql
+    assert [row[2] for row in rows] == [0, 5]
+
+
 def test_offset_ratio_metric():
     """Test ratio metric with time offset (current / previous period)."""
     sales = Model(
@@ -222,6 +254,37 @@ def test_offset_ratio_metric():
     assert abs(rows[1][2] - 1.5) < 0.01  # Feb
     assert abs(rows[2][2] - 1.333) < 0.01  # Mar
     assert abs(rows[3][2] - 0.9) < 0.01  # Apr
+
+
+def test_offset_ratio_fill_nulls_applies_to_missing_prior_period():
+    sales = Model(
+        name="sales",
+        sql="""
+            SELECT DATE '2024-01-01' AS month, 100 AS revenue
+            UNION ALL SELECT DATE '2024-02-01', 150
+        """,
+        primary_key="month",
+        dimensions=[Dimension(name="month", sql="month", type="time", granularity="month")],
+        metrics=[Metric(name="revenue", agg="sum", sql="revenue")],
+    )
+    growth = Metric(
+        name="growth",
+        type="ratio",
+        numerator="sales.revenue",
+        denominator="sales.revenue",
+        offset_window="1 month",
+        fill_nulls_with=0,
+    )
+    graph = SemanticGraph()
+    graph.add_model(sales)
+    graph.add_metric(growth)
+
+    sql = SQLGenerator(graph).generate(metrics=["growth"], dimensions=["sales.month"])
+    rows = df_rows(duckdb.connect(":memory:").execute(sql))
+
+    assert "COALESCE(" in sql
+    assert rows[0][2] == 0
+    assert abs(rows[1][2] - 1.5) < 0.01
 
 
 def test_offset_ratio_metric_multi_period():
@@ -311,8 +374,7 @@ def test_offset_ratio_metric_uses_base_granularity():
     # Query the base time dimension WITHOUT an explicit __day suffix.
     sql = generator.generate(metrics=["growth"], dimensions=["sales.day"])
 
-    # "7 days" on the dimension's day grain maps to a 7-row LAG, not a 1-row month fallback.
-    assert "LAG(base.revenue, 7)" in sql
+    assert "RANGE BETWEEN INTERVAL '7 day' PRECEDING AND INTERVAL '7 day' PRECEDING" in sql
 
     conn = duckdb.connect(":memory:")
     rows = df_rows(conn.execute(sql))
@@ -542,6 +604,104 @@ def test_mom_difference():
     assert rows[1][2] == 50  # Feb
     assert rows[2][2] == -30  # Mar
     assert rows[3][2] == 60  # Apr
+
+
+def test_time_comparison_fill_nulls_applies_to_missing_prior_period():
+    sales = Model(
+        name="sales",
+        sql="""
+            SELECT DATE '2024-01-01' AS month, 100 AS revenue
+            UNION ALL SELECT DATE '2024-02-01', 150
+        """,
+        primary_key="month",
+        dimensions=[Dimension(name="month", sql="month", type="time", granularity="month")],
+        metrics=[Metric(name="revenue", agg="sum", sql="revenue")],
+    )
+    change = Metric(
+        name="change",
+        type="time_comparison",
+        base_metric="sales.revenue",
+        comparison_type="mom",
+        calculation="difference",
+        fill_nulls_with=0,
+    )
+    graph = SemanticGraph()
+    graph.add_model(sales)
+    graph.add_metric(change)
+
+    sql = SQLGenerator(graph).generate(metrics=["change"], dimensions=["sales.month"])
+    rows = df_rows(duckdb.connect(":memory:").execute(sql))
+
+    assert "COALESCE((revenue - change_prev_value), 0)" in sql
+    assert [row[2] for row in rows] == [0, 50]
+
+
+def test_time_filter_is_applied_after_comparison_history():
+    sales = Model(
+        name="sales",
+        sql="""
+            SELECT '2023-12-01'::DATE AS sale_date, 100 AS revenue
+            UNION ALL SELECT '2024-01-01'::DATE, 150
+            UNION ALL SELECT '2024-02-01'::DATE, 210
+        """,
+        primary_key="sale_date",
+        dimensions=[Dimension(name="sale_date", sql="sale_date", type="time")],
+        metrics=[Metric(name="revenue", agg="sum", sql="revenue")],
+    )
+    comparison = Metric(
+        name="revenue_mom",
+        type="time_comparison",
+        base_metric="sales.revenue",
+        comparison_type="mom",
+        calculation="difference",
+    )
+    graph = SemanticGraph()
+    graph.add_model(sales)
+    graph.add_metric(comparison)
+
+    sql = SQLGenerator(graph).generate(
+        metrics=["revenue_mom"],
+        dimensions=["sales.sale_date__month"],
+        filters=["sales.sale_date__month = DATE '2024-02-01'"],
+    )
+    rows = df_rows(duckdb.connect(":memory:").execute(sql))
+
+    assert len(rows) == 1
+    assert rows[0][0].isoformat() == "2024-02-01"
+    assert rows[0][1:] == (210, 60)
+
+
+def test_month_comparison_does_not_use_previous_available_sparse_row():
+    sales = Model(
+        name="sales",
+        sql="""
+            SELECT DATE '2024-01-01' AS sale_date, 100 AS revenue
+            UNION ALL SELECT DATE '2024-03-01', 180
+        """,
+        primary_key="sale_date",
+        dimensions=[Dimension(name="sale_date", sql="sale_date", type="time")],
+        metrics=[Metric(name="revenue", agg="sum", sql="revenue")],
+    )
+    comparison = Metric(
+        name="revenue_mom",
+        type="time_comparison",
+        base_metric="sales.revenue",
+        comparison_type="mom",
+        calculation="difference",
+    )
+    graph = SemanticGraph()
+    graph.add_model(sales)
+    graph.add_metric(comparison)
+
+    sql = SQLGenerator(graph).generate(
+        metrics=["revenue_mom"],
+        dimensions=["sales.sale_date__month"],
+    )
+    rows = df_rows(duckdb.connect(":memory:").execute(sql))
+
+    assert "RANGE BETWEEN INTERVAL '1 month' PRECEDING AND INTERVAL '1 month' PRECEDING" in sql
+    assert rows[1][0].isoformat() == "2024-03-01"
+    assert rows[1][2] is None
 
 
 def test_dotted_metric_name_alias():

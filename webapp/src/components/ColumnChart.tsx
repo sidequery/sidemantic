@@ -11,6 +11,8 @@ type ColumnChartProps = {
   data: ColumnChartDatum[];
   height?: number;
   ariaLabel?: string;
+  selectedLabels?: string[];
+  onToggle?: (label: string) => void;
 };
 
 const MARGIN = { top: 12, right: 14, bottom: 26, left: 44 };
@@ -24,7 +26,7 @@ function axisTicks(min: number, max: number, count = 4) {
 // Categorical bars with a zero baseline, responsive width (no aspect distortion), y-axis gridlines +
 // compact labels, per-bar x labels and hover tooltips, and an a11y summary. Negatives draw below the
 // baseline in red.
-export function ColumnChart({ data, height = 200, ariaLabel }: ColumnChartProps) {
+export function ColumnChart({ data, height = 200, ariaLabel, selectedLabels = [], onToggle }: ColumnChartProps) {
   const ref = useRef<SVGSVGElement>(null);
   const [width, setWidth] = useState(640);
   const { tip, handlers } = useChartTooltip();
@@ -51,6 +53,7 @@ export function ColumnChart({ data, height = 200, ariaLabel }: ColumnChartProps)
   const barWidth = Math.max(8, Math.min(48, slot * 0.62));
   const ticks = axisTicks(min, max, 4);
   const summary = ariaLabel || `Bar chart, ${data.length} categories, up to ${formatCompact(max)}`;
+  const selected = new Set(selectedLabels);
 
   return (
     <>
@@ -74,7 +77,21 @@ export function ColumnChart({ data, height = 200, ariaLabel }: ColumnChartProps)
           const x = MARGIN.left + slot * index + (slot - barWidth) / 2;
           const y = Math.min(valueY, baselineY);
           return (
-            <g key={item.label}>
+            <g
+              key={item.label}
+              role={onToggle ? "button" : undefined}
+              tabIndex={onToggle ? 0 : undefined}
+              aria-pressed={onToggle ? selected.has(item.label) : undefined}
+              data-selected={selected.has(item.label) || undefined}
+              className={onToggle ? "cursor-pointer outline-none" : undefined}
+              onClick={() => onToggle?.(item.label)}
+              onKeyDown={(event) => {
+                if (onToggle && (event.key === "Enter" || event.key === " ")) {
+                  event.preventDefault();
+                  onToggle(item.label);
+                }
+              }}
+            >
               <rect
                 x={x}
                 y={y}
@@ -84,7 +101,13 @@ export function ColumnChart({ data, height = 200, ariaLabel }: ColumnChartProps)
                 data-label={item.label}
                 data-value={value}
                 data-tone={value < 0 ? "negative" : "positive"}
-                className={value < 0 ? "fill-danger" : "fill-chart-primary"}
+                className={
+                  selected.has(item.label)
+                    ? "fill-accent"
+                    : value < 0
+                      ? "fill-danger"
+                      : "fill-chart-primary"
+                }
                 {...handlers(`${item.label}: ${formatValue(value)}`)}
               />
               <text x={x + barWidth / 2} y={height - 8} textAnchor="middle" className="fill-muted text-[10px]">

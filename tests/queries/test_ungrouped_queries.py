@@ -374,3 +374,27 @@ def test_with_totals_unsupported_window_path_raises(layer):
 
     with pytest.raises(NotImplementedError, match="with_totals is not yet supported"):
         layer.compile(metrics=["cumulative_revenue"], dimensions=["orders.order_date"], with_totals=True)
+
+
+def test_query_post_process_preserves_with_totals(layer):
+    """Wrapping a query must not silently drop its requested grand-total row."""
+    layer.conn.execute(
+        "CREATE TABLE orders (order_id INTEGER, status VARCHAR, region VARCHAR, amount INTEGER, customer_id INTEGER)"
+    )
+    layer.conn.execute(
+        "INSERT INTO orders VALUES (1,'completed','US',10,1),(2,'completed','US',15,2),(3,'pending','EU',10,1)"
+    )
+    layer.add_model(_totals_orders_model())
+
+    rows = fetch_dicts(
+        layer.query(
+            metrics=["orders.revenue"],
+            dimensions=["orders.status"],
+            with_totals=True,
+            post_process="SELECT * FROM ({inner}) AS wrapped_totals",
+        )
+    )
+
+    totals = [row for row in rows if row["_is_total"] == 1]
+    assert len(totals) == 1
+    assert totals[0]["revenue"] == 35

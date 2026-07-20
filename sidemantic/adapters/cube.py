@@ -15,6 +15,7 @@ from sidemantic.core.pre_aggregation import Index, PreAggregation, RefreshKey
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.security import SecurityPolicy
 from sidemantic.core.semantic_graph import SemanticGraph
+from sidemantic.yaml_compat import safe_load as _yaml_safe_load
 
 
 class CubeImportWarning(UserWarning):
@@ -413,7 +414,7 @@ class CubeAdapter(BaseAdapter):
             pending_extends: Dict to track extends relationships (child -> parent)
         """
         with open(file_path) as f:
-            data = yaml.safe_load(f)
+            data = _yaml_safe_load(f)
 
         if not data:
             return

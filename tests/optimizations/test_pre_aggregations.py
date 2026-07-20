@@ -783,14 +783,14 @@ def test_refresh_incremental_with_lookback():
         lookback="5 days",
     )
 
-    # With append mode, we'll have duplicates
+    # Lookback refresh replaces the overlapping range instead of appending duplicates.
     total_revenue = conn.execute("""
         SELECT SUM(total_revenue)
         FROM orders_preagg_daily
         WHERE order_date = DATE '2024-01-05'
     """).fetchone()[0]
 
-    assert total_revenue == 1208  # 104 + 1104 from lookback
+    assert total_revenue == 1104
 
 
 def test_refresh_incremental_uses_update_window_as_default_lookback():
@@ -844,7 +844,7 @@ def test_refresh_incremental_uses_update_window_as_default_lookback():
         WHERE order_date = DATE '2024-01-05'
     """).fetchone()[0]
 
-    assert total_revenue == 1208  # late-arriving 1104 reprocessed because update_window covered it
+    assert total_revenue == 1104  # late-arriving value replaced because update_window covered it
 
 
 def test_explicit_lookback_overrides_update_window():
@@ -1100,6 +1100,61 @@ def test_generate_materialization_sql_no_time_dimension():
     assert "SUM(price) as avg_price_raw" in sql
 
 
+def test_total_rollup_materializes_filtered_metrics_without_empty_group_by():
+    conn = duckdb.connect(":memory:")
+    conn.execute(
+        "CREATE TABLE orders AS SELECT * FROM (VALUES "
+        "(1, 'completed', 100), (2, 'pending', 50), (3, 'completed', 25)) "
+        "t(id, status, amount)"
+    )
+    model = Model(
+        name="orders",
+        table="orders",
+        primary_key="id",
+        metrics=[
+            Metric(
+                name="completed_revenue",
+                agg="sum",
+                sql="amount",
+                filters=["{model}.status = 'completed'"],
+            ),
+            Metric(
+                name="completed_count",
+                agg="count",
+                filters=["{model}.status = 'completed'"],
+            ),
+        ],
+    )
+    preagg = PreAggregation(
+        name="totals",
+        measures=["completed_revenue", "completed_count"],
+        dimensions=[],
+    )
+
+    sql = preagg.generate_materialization_sql(model)
+
+    assert "GROUP BY" not in sql
+    assert "SUM(CASE WHEN status = 'completed' THEN amount ELSE NULL END)" in sql
+    assert "COUNT(CASE WHEN status = 'completed' THEN 1 ELSE NULL END)" in sql
+    assert conn.execute(sql).fetchall() == [(125, 2)]
+
+
+def test_non_decomposable_preaggregation_requires_exact_grain():
+    metric = Metric(name="median_price", agg="median", sql="price")
+    preagg = PreAggregation(name="by_category", measures=["median_price"], dimensions=["category"])
+    model = Model(
+        name="products",
+        table="products",
+        dimensions=[Dimension(name="category", type="categorical")],
+        metrics=[metric],
+        pre_aggregations=[preagg],
+    )
+    matcher = PreAggregationMatcher(model)
+
+    assert matcher.can_satisfy_query(preagg, ["median_price"], ["category"])
+    assert not matcher.can_satisfy_query(preagg, ["median_price"], [])
+
+
 def test_avg_preaggregation_rolls_up_with_sum_count_state(layer):
     layer.use_preaggregations = True
     layer.conn.execute("""
@@ -1157,7 +1212,7 @@ def test_avg_preaggregation_rolls_up_with_sum_count_state(layer):
     preagg_rows = layer.adapter.execute(preagg_sql).fetchall()
 
     assert "products_preagg_by_category" in preagg_sql
-    assert "SUM(avg_price_raw) / NULLIF(SUM(count_raw), 0)" in preagg_sql
+    assert "(SUM(avg_price_raw)) / NULLIF(SUM(count_raw), 0)" in preagg_sql
     assert preagg_rows == baseline_rows
 
 
@@ -1245,7 +1300,7 @@ def test_ratio_metric_preaggregation_rebuilds_from_additive_leaves(layer):
     preagg_rows = layer.adapter.execute(preagg_sql).fetchall()
 
     assert "orders_preagg_by_status" in preagg_sql
-    assert "SUM(revenue_raw) / NULLIF(SUM(count_raw), 0)" in preagg_sql
+    assert "(SUM(revenue_raw)) / NULLIF(SUM(count_raw), 0)" in preagg_sql
     assert preagg_rows == baseline_rows
 
 
@@ -2603,10 +2658,13 @@ def test_query_with_post_process_falls_back_to_raw_when_rollup_missing():
     result = layer.query(
         metrics=["orders.revenue"],
         dimensions=["orders.status"],
+        order_by=["orders.status"],
+        offset=1,
         post_process="SELECT * FROM ({inner})",
     )
 
-    assert set(result.fetchall()) == {(0, 120), (1, 90)}  # correct totals from raw fallback
+    # Offset survives both the post-process recompile and the raw-table fallback.
+    assert result.fetchall() == [(1, 90)]
 
 
 def test_is_missing_relation_error_recognizes_bigquery_not_found():
@@ -2699,3 +2757,83 @@ def test_lambda_union_does_not_double_count_boundary_bucket():
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+def _multi_fact_layer():
+    """orders (hub) with one_to_many line_items: metrics from both models fan out."""
+    from sidemantic import Relationship, SemanticLayer
+
+    layer = SemanticLayer()
+    con = layer.adapter.conn
+    con.execute("CREATE TABLE orders (id INTEGER, region VARCHAR, status VARCHAR, amount DOUBLE)")
+    con.execute("INSERT INTO orders VALUES (1,'US','completed',100),(2,'EU','completed',200)")
+    con.execute("CREATE TABLE line_items (id INTEGER, order_id INTEGER, qty INTEGER)")
+    con.execute("INSERT INTO line_items VALUES (1,1,5),(2,2,7)")
+    layer.add_model(
+        Model(
+            name="orders",
+            table="orders",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="status", type="categorical"),
+                Dimension(name="region", type="categorical"),
+            ],
+            metrics=[Metric(name="revenue", agg="sum", sql="amount")],
+            relationships=[Relationship(name="line_items", type="one_to_many", foreign_key="order_id")],
+        )
+    )
+    layer.add_model(
+        Model(
+            name="line_items",
+            table="line_items",
+            primary_key="id",
+            dimensions=[Dimension(name="qty_d", sql="qty", type="numeric")],
+            metrics=[Metric(name="total_qty", agg="sum", sql="qty")],
+            relationships=[Relationship(name="orders", type="many_to_one", foreign_key="order_id")],
+        )
+    )
+    return layer
+
+
+def test_fanout_preagg_applies_query_filters_to_every_child():
+    """A query-level filter must scope EVERY metric model, not just its owner.
+
+    Regression: filters were partitioned by owning model, so orders.region='US'
+    filtered the orders child while the line_items child aggregated all regions --
+    one result row mixing two different populations.
+    """
+    layer = _multi_fact_layer()
+
+    rows = layer.query(
+        metrics=["orders.revenue", "line_items.total_qty"],
+        dimensions=["orders.status"],
+        filters=["orders.region = 'US'"],
+    ).fetchall()
+    # revenue AND total_qty both restricted to US orders (order 1: qty 5).
+    assert rows == [("completed", 100.0, 5)]
+
+    # Unfiltered sanity: both metrics cover the full population.
+    rows = layer.query(
+        metrics=["orders.revenue", "line_items.total_qty"],
+        dimensions=["orders.status"],
+    ).fetchall()
+    assert rows == [("completed", 300.0, 12)]
+
+
+def test_fanout_preagg_metric_filter_stays_on_outer_query():
+    """Metric-referencing filters filter the joined result, not the child inputs."""
+    layer = _multi_fact_layer()
+
+    rows = layer.query(
+        metrics=["orders.revenue", "line_items.total_qty"],
+        dimensions=["orders.status"],
+        filters=["orders.revenue > 50"],
+    ).fetchall()
+    assert rows == [("completed", 300.0, 12)]
+
+    rows = layer.query(
+        metrics=["orders.revenue", "line_items.total_qty"],
+        dimensions=["orders.status"],
+        filters=["orders.revenue > 500"],
+    ).fetchall()
+    assert rows == []

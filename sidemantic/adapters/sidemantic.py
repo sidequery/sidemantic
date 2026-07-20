@@ -21,6 +21,7 @@ from sidemantic.core.sql_definitions import (
     parse_sql_graph_definitions,
     parse_sql_models,
 )
+from sidemantic.yaml_compat import safe_load as _yaml_safe_load
 
 NATIVE_FORMAT_VERSION = 1
 ROOT_FIELDS = {
@@ -405,7 +406,7 @@ class SidemanticAdapter(BaseAdapter):
         # Substitute environment variables
         content = substitute_env_vars(content)
 
-        data = yaml.safe_load(content)
+        data = _yaml_safe_load(content)
 
         if not data:
             return graph

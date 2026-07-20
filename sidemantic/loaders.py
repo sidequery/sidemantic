@@ -7,7 +7,8 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import yaml
+from sidemantic.yaml_compat import safe_load as _yaml_safe_load
+from sidemantic.yaml_compat import safe_load_all as _yaml_safe_load_all
 
 if TYPE_CHECKING:
     from sidemantic.core.semantic_layer import SemanticLayer
@@ -116,6 +117,48 @@ def _drop_non_registerable_models(
     return kept
 
 
+# Directory names that never contain user semantic-model sources. One pruned
+# os.walk over a real workspace is ~100x cheaper than rglob("*"): a measured
+# project tree held 18,765 files of which 17,140 lived under .venv alone.
+_PRUNED_DIR_NAMES = frozenset(
+    {
+        ".git",
+        ".hg",
+        ".svn",
+        ".venv",
+        "venv",
+        "node_modules",
+        "__pycache__",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".mypy_cache",
+        ".tox",
+        ".direnv",
+        ".claude",
+        ".idea",
+        ".vscode",
+    }
+)
+
+
+def _scan_project_files(directory: Path) -> list[Path]:
+    """One pruned walk of the project tree, reused by every format probe.
+
+    Replaces repeated ``Path.rglob`` traversals (six per load) that descended
+    into dependency/VCS directories. Results are sorted for deterministic
+    load order, matching rglob's lexicographic traversal.
+    """
+    import os
+
+    files: list[Path] = []
+    for root, dirnames, filenames in os.walk(directory):
+        dirnames[:] = sorted(d for d in dirnames if d not in _PRUNED_DIR_NAMES)
+        root_path = Path(root)
+        for filename in sorted(filenames):
+            files.append(root_path / filename)
+    return files
+
+
 def load_from_directory(
     layer: "SemanticLayer",
     directory: str | Path,
@@ -177,19 +220,24 @@ def load_from_directory(
     # relationship targeting a template survives being OVERWRITTEN by a later same-name real model.
     template_target_names: set[str] = set()
 
+    # One pruned traversal shared by every format probe below (SML, TMDL,
+    # LookML, Graphene, and the main per-file scan).
+    project_files: list[Path] = [] if only_file is not None else _scan_project_files(directory)
+
     # Project-level formats (SML/TMDL/Graphene) are directory-based; in single-file
     # mode (only_file set) skip their whole-directory scans and parse just that file.
-    if only_file is None and _try_load_sml(layer, directory, all_models):
+    if only_file is None and _try_load_sml(layer, directory, all_models, project_files):
         return
 
     # TMDL projects are folder-based. Parse a project root once instead of
     # treating each .tmdl file as an independent model.
     tmdl_root = None
     if only_file is None:
+        tmdl_files = [f for f in project_files if f.suffix == ".tmdl"]
         definition_dir = directory / "definition"
-        if definition_dir.is_dir() and list(definition_dir.rglob("*.tmdl")):
+        if definition_dir.is_dir() and any(definition_dir in f.parents for f in tmdl_files):
             tmdl_root = definition_dir
-        elif list(directory.rglob("*.tmdl")):
+        elif tmdl_files:
             tmdl_root = directory
 
     if tmdl_root:
@@ -222,7 +270,7 @@ def load_from_directory(
     # to a physical table, and be registered as queryable -- CLI validate/queries would silently
     # target a fabricated table. Parse the whole tree once instead (mirrors the TMDL handling).
     lookml_root = None
-    if only_file is None and any(directory.rglob("*.lkml")):
+    if only_file is None and any(f.suffix == ".lkml" for f in project_files):
         lookml_root = directory
 
     if lookml_root:
@@ -265,10 +313,10 @@ def load_from_directory(
             lookml_root = None
 
     if only_file is None:
-        _load_graphene_project(directory, all_models, all_metrics, all_parameters, strict=strict)
+        _load_graphene_project(directory, all_models, all_metrics, all_parameters, project_files, strict=strict)
 
     # Find and parse all files (just the requested one in single-file mode).
-    scan_files = [only_file] if only_file is not None else directory.rglob("*")
+    scan_files = [only_file] if only_file is not None else project_files
     for file_path in scan_files:
         if not file_path.is_file():
             continue
@@ -546,13 +594,14 @@ def _load_graphene_project(
     all_models: dict,
     all_metrics: dict,
     all_parameters: dict,
+    project_files: list[Path],
     *,
     strict: bool,
 ) -> None:
     """Parse Graphene `.gsql` files together so project-level links resolve."""
     from sidemantic.adapters.graphene import GrapheneAdapter
 
-    if not any(directory.rglob("*.gsql")):
+    if not any(f.suffix == ".gsql" for f in project_files):
         return
 
     adapter = GrapheneAdapter()
@@ -648,7 +697,7 @@ def _looks_like_python_semantic_definition(file_path: Path) -> bool:
 
 def _load_yaml_mapping(content: str) -> dict:
     """Parse YAML content and return a mapping, or an empty mapping for scalar/list YAML."""
-    data = yaml.safe_load(content)
+    data = _yaml_safe_load(content)
     return data if isinstance(data, dict) else {}
 
 
@@ -774,7 +823,7 @@ def _looks_like_hex_yaml(content: str) -> bool:
     uses ``safe_load_all`` and returns True when any document is a Hex resource.
     """
     try:
-        documents = list(yaml.safe_load_all(content))
+        documents = list(_yaml_safe_load_all(content))
     except Exception:
         return False
     return any(_is_hex_resource_mapping(doc) for doc in documents)
@@ -1216,7 +1265,7 @@ def _try_load_python_file(
     return True
 
 
-def _try_load_sml(layer: "SemanticLayer", directory: Path, all_models: dict) -> bool:
+def _try_load_sml(layer: "SemanticLayer", directory: Path, all_models: dict, project_files: list[Path]) -> bool:
     """Detect and load an AtScale SML repository. Returns True if SML was found."""
     for catalog_name in ("catalog.yml", "catalog.yaml", "atscale.yml", "atscale.yaml"):
         candidate = directory / catalog_name
@@ -1226,7 +1275,7 @@ def _try_load_sml(layer: "SemanticLayer", directory: Path, all_models: dict) -> 
                 _load_sml_directory(layer, directory, all_models)
                 return True
 
-    for sml_file in list(directory.rglob("*.yml")) + list(directory.rglob("*.yaml")):
+    for sml_file in (f for f in project_files if f.suffix in (".yml", ".yaml")):
         try:
             content = sml_file.read_text()
         except Exception:
@@ -1409,9 +1458,14 @@ def _infer_relationships(models: dict) -> None:
             # Find if any of these tables exist
             for target in potential_targets:
                 if target in models and target != model_name and not _unincluded(models[target]):
-                    # Check if this relationship already exists
+                    # Check if this relationship already exists on either side. A declared
+                    # relationship on the target (e.g. accounts one_to_many invoices ON a
+                    # non-primary key) is the authoritative join contract; inferring a
+                    # convention-based edge here would assume the target's PRIMARY key and
+                    # register a second, conflicting join path for the same model pair.
                     existing = [r for r in model.relationships if r.name == target]
-                    if not existing:
+                    declared_reverse = [r for r in models[target].relationships if r.name == model_name]
+                    if not existing and not declared_reverse:
                         # Add many_to_one relationship
                         model.relationships.append(
                             Relationship(name=target, type="many_to_one", foreign_key=dimension.name)

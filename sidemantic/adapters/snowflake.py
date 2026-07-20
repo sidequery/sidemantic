@@ -12,6 +12,7 @@ from sidemantic.core.model import Model
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.segment import Segment
 from sidemantic.core.semantic_graph import SemanticGraph
+from sidemantic.yaml_compat import safe_load as _yaml_safe_load
 
 # Common SQL keywords to skip when qualifying column names
 _SQL_KEYWORDS = {
@@ -243,7 +244,7 @@ class SnowflakeAdapter(BaseAdapter):
                 definitions, applied after every file's tables are loaded.
         """
         with open(file_path) as f:
-            data = yaml.safe_load(f)
+            data = _yaml_safe_load(f)
 
         if not data:
             return

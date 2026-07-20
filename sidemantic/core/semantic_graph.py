@@ -1,5 +1,6 @@
 """Semantic graph for managing models and relationships."""
 
+import re
 from collections import deque
 from dataclasses import dataclass
 from typing import Any
@@ -35,6 +36,29 @@ def _custom_join_condition(sql: str | None) -> str | None:
     return None
 
 
+def _normalized_join_condition(sql: str | None) -> str | None:
+    """Canonicalize simple equality conjunctions for path de-duplication.
+
+    Reciprocal relationship declarations generate the same custom join once as
+    ``from.x = to.x`` and once as ``to.x = from.x``. Equality and AND are
+    commutative, so normalize those shapes while leaving opaque predicates
+    distinct. This prevents a declared reciprocal edge from looking like a
+    second semantic path without hiding genuinely different join predicates.
+    """
+    if sql is None:
+        return None
+    conjuncts = re.split(r"\s+AND\s+", sql.strip(), flags=re.IGNORECASE)
+    normalized: list[str] = []
+    for conjunct in conjuncts:
+        comparison = re.fullmatch(r"\s*(.+?)\s*=\s*(.+?)\s*", conjunct)
+        if comparison and not any(operator in conjunct for operator in ("!=", "<=", ">=", "<>")):
+            sides = sorted(re.sub(r"\s+", "", side) for side in comparison.groups())
+            normalized.append("=".join(sides))
+        else:
+            normalized.append(re.sub(r"\s+", " ", conjunct.strip()))
+    return " AND ".join(sorted(normalized))
+
+
 @dataclass
 class JoinPath:
     """Represents a join between two models."""
@@ -58,6 +82,10 @@ class JoinPath:
         return self.to_columns[0] if self.to_columns else ""
 
 
+class AmbiguousJoinPathError(ValueError):
+    """Raised when two models have more than one equally short semantic join path."""
+
+
 class SemanticGraph:
     """Semantic graph managing models, metrics, and join relationships.
 
@@ -75,10 +103,15 @@ class SemanticGraph:
         self._version = 0
         self._adjacency_dirty = True
         self._adjacency: dict[str, list[tuple[str, list[str], list[str], str, str | None]]] = {}
+        # Relationship discovery sits on several planner hot paths. Cache successful
+        # paths and misses until the graph changes; ambiguity errors are cached as text
+        # so repeat compiles remain deterministic and cheap.
+        self._relationship_path_cache: dict[tuple[str, str], tuple[JoinPath, ...] | str] = {}
 
     def _mark_dirty(self) -> None:
         self._version += 1
         self._adjacency_dirty = True
+        self._relationship_path_cache.clear()
 
     def add_model(self, model: Model) -> None:
         """Add a model to the graph.
@@ -252,6 +285,10 @@ class SemanticGraph:
         if not hasattr(self, "_adjacency"):
             self._adjacency = {}
         self._adjacency.clear()
+        self._relationship_path_cache.clear()
+        # This build satisfies the current graph state: clear the dirty flag so
+        # the first find_relationship_path call does not rebuild it all again.
+        self._adjacency_dirty = False
 
         def add_edge(
             from_model: str,
@@ -362,18 +399,25 @@ class SemanticGraph:
                     _reverse_custom_join_condition(custom_condition),
                 )
 
-    def find_relationship_path(self, from_model: str, to_model: str) -> list[JoinPath]:
-        """Find join path between two models using BFS.
+    def find_relationship_path(
+        self, from_model: str, to_model: str, query_models: set[str] | frozenset[str] | None = None
+    ) -> list[JoinPath]:
+        """Find the unique shortest join path between two models.
 
         Args:
             from_model: Source model name
             to_model: Target model name
+            query_models: Optional set of models the surrounding query already
+                references. When several equally short paths exist, the path whose
+                intermediate hops stay inside this set wins (those joins are needed
+                anyway), and ambiguity is only raised on a genuine tie.
 
         Returns:
             List of JoinPath objects representing the join sequence
 
         Raises:
             ValueError: If no join path exists
+            AmbiguousJoinPathError: If multiple equally short paths exist
         """
         if from_model == to_model:
             return []
@@ -387,23 +431,56 @@ class SemanticGraph:
         if to_model not in self.models:
             raise KeyError(f"Model {to_model} not found")
 
-        # BFS to find shortest path
-        queue = deque([(from_model, [])])
-        visited = {from_model}
+        context = frozenset(query_models) if query_models else None
+        cache_key = (from_model, to_model, context)
+        cached = self._relationship_path_cache.get(cache_key)
+        if isinstance(cached, str):
+            if cached.startswith("Ambiguous join paths"):
+                raise AmbiguousJoinPathError(cached)
+            raise ValueError(cached)
+        if cached is not None:
+            return list(cached)
+
+        # Enumerate every shortest simple path instead of returning the first BFS
+        # hit. A first-hit path makes answers depend on model registration order in
+        # a diamond graph; failing with both routes is safer and lets a future view
+        # contract pin a path explicitly.
+        queue = deque([(from_model, tuple(), frozenset({from_model}))])
+        shortest_length: int | None = None
+        candidates: dict[tuple[object, ...], tuple[JoinPath, ...]] = {}
+
+        def edge_sort_key(edge):
+            next_model, from_keys, to_keys, relationship_type, custom_condition = edge
+            return next_model, tuple(from_keys), tuple(to_keys), relationship_type, custom_condition or ""
+
+        def path_signature(path: tuple[JoinPath, ...]) -> tuple[object, ...]:
+            return tuple(
+                (
+                    hop.from_model,
+                    hop.to_model,
+                    # A custom predicate is the authoritative join contract. Reciprocal
+                    # declarations can infer different fallback key metadata even though
+                    # they describe the same physical edge, so do not let those unused
+                    # columns manufacture a second semantic path.
+                    tuple(hop.from_columns) if hop.custom_condition is None else (),
+                    tuple(hop.to_columns) if hop.custom_condition is None else (),
+                    hop.relationship,
+                    _normalized_join_condition(hop.custom_condition),
+                )
+                for hop in path
+            )
 
         while queue:
-            current, path = queue.popleft()
-
-            if current not in self._adjacency:
+            current, path, visited = queue.popleft()
+            if shortest_length is not None and len(path) >= shortest_length:
                 continue
 
-            for next_model, from_keys, to_keys, relationship_type, custom_condition in self._adjacency[current]:
+            for next_model, from_keys, to_keys, relationship_type, custom_condition in sorted(
+                self._adjacency.get(current, []), key=edge_sort_key
+            ):
                 if next_model in visited:
                     continue
-
-                visited.add(next_model)
-
-                new_path = path + [
+                new_path = path + (
                     JoinPath(
                         from_model=current,
                         to_model=next_model,
@@ -411,15 +488,48 @@ class SemanticGraph:
                         to_columns=to_keys,
                         relationship=relationship_type,
                         custom_condition=custom_condition,
-                    )
-                ]
-
+                    ),
+                )
                 if next_model == to_model:
-                    return new_path
+                    shortest_length = len(new_path)
+                    candidates[path_signature(new_path)] = new_path
+                elif shortest_length is None or len(new_path) < shortest_length:
+                    queue.append((next_model, new_path, visited | {next_model}))
 
-                queue.append((next_model, new_path))
+        if not candidates:
+            message = f"No join path found between {from_model} and {to_model}"
+            self._relationship_path_cache[cache_key] = message
+            raise ValueError(message)
 
-        raise ValueError(f"No join path found between {from_model} and {to_model}")
+        ordered_candidates = [candidates[key] for key in sorted(candidates, key=repr)]
+        if len(ordered_candidates) > 1 and context is not None:
+            # Tie-break equally short routes by query context: a path whose intermediate
+            # models are already part of the query reuses joins the query must build
+            # anyway, so it is the route the user actually described. Only a genuine
+            # tie (or all-outside routes) stays ambiguous.
+            def _out_of_query_hops(path: tuple[JoinPath, ...]) -> int:
+                return sum(1 for hop in path[:-1] if hop.to_model not in context)
+
+            best_score = min(_out_of_query_hops(path) for path in ordered_candidates)
+            preferred = [path for path in ordered_candidates if _out_of_query_hops(path) == best_score]
+            if len(preferred) == 1:
+                selected = preferred[0]
+                self._relationship_path_cache[cache_key] = selected
+                return list(selected)
+            ordered_candidates = preferred
+        if len(ordered_candidates) > 1:
+            routes = [" -> ".join([from_model, *(hop.to_model for hop in path)]) for path in ordered_candidates]
+            message = (
+                f"Ambiguous join paths between {from_model} and {to_model}: "
+                + "; ".join(routes)
+                + ". Define a unique relationship route before querying these models."
+            )
+            self._relationship_path_cache[cache_key] = message
+            raise AmbiguousJoinPathError(message)
+
+        selected = ordered_candidates[0]
+        self._relationship_path_cache[cache_key] = selected
+        return list(selected)
 
     def find_all_models_for_query(self, dimensions: list[str], measures: list[str]) -> set[str]:
         """Find all models needed for a query.

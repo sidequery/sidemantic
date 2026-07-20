@@ -9,6 +9,7 @@ from pathlib import Path
 import yaml
 
 from sidemantic.core.semantic_graph import SemanticGraph
+from sidemantic.yaml_compat import safe_load as _yaml_safe_load
 
 # Lambda-only PreAggregation fields absent from the sidemantic-rs YAML schema
 # (which uses deny_unknown_fields). Exclude them when dumping a model so Rust
@@ -580,7 +581,7 @@ def validate_models_payload_with_rust(
 def validate_model_payload_with_rust(model_obj) -> bool:
     """Validate model payload shape via sidemantic-rs."""
     rust_module = get_rust_module()
-    payload = yaml.safe_load(models_to_rust_yaml([model_obj], include_extends=False)) or {}
+    payload = _yaml_safe_load(models_to_rust_yaml([model_obj], include_extends=False)) or {}
     model_payload = (payload.get("models") or [{}])[0]
     model_yaml = yaml.safe_dump(model_payload, sort_keys=False)
     return bool(rust_module.validate_model_payload(model_yaml))
@@ -643,7 +644,7 @@ def resolve_model_inheritance_with_rust(models: dict[str, object]) -> dict[str, 
         return dict(models)
 
     resolved_yaml = rust_module.resolve_model_inheritance(models_yaml)
-    resolved_payload = yaml.safe_load(resolved_yaml) or []
+    resolved_payload = _yaml_safe_load(resolved_yaml) or []
     resolved_models = {}
     for model_data in resolved_payload:
         normalized_data = dict(model_data)
@@ -691,7 +692,7 @@ def resolve_metric_inheritance_with_rust(metrics: dict[str, object]) -> dict[str
         return dict(metrics)
 
     resolved_yaml = rust_module.resolve_metric_inheritance(metrics_yaml)
-    resolved_payload = yaml.safe_load(resolved_yaml) or []
+    resolved_payload = _yaml_safe_load(resolved_yaml) or []
     resolved_metrics = {}
     for metric_data in resolved_payload:
         normalized_data = dict(metric_data)

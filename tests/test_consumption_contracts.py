@@ -575,6 +575,47 @@ def test_validation_requires_order_fields_in_default_or_saved_selection():
     )
 
 
+def test_explore_order_override_requires_selected_field():
+    layer = _layer()
+    layer.graph.add_explore(
+        Explore(
+            name="order_override",
+            model="orders",
+            allowed_metrics=["revenue"],
+            allowed_order_by=["status"],
+            default_metrics=["revenue"],
+        )
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Explore 'order_override' ordering field\\(s\\) must be selected by the query: orders.status",
+    ):
+        layer.compile(explore="order_override", order_by=["status"])
+
+
+def test_describe_models_scopes_saved_queries_to_requested_models():
+    layer = _layer()
+    layer.add_model(
+        Model(
+            name="customers",
+            table="customers",
+            dimensions=[Dimension(name="region", type="categorical")],
+            metrics=[Metric(name="customer_count", agg="count")],
+        )
+    )
+    layer.graph.add_explore(Explore(name="customer_overview", model="customers"))
+    layer.graph.add_saved_query(
+        SavedQuery(name="customers_by_region", explore="customer_overview", dimensions=["region"])
+    )
+
+    orders = layer.describe_models(["orders"])
+    customers = layer.describe_models(["customers"])
+
+    assert {saved["name"] for saved in orders["saved_queries"]} == {"paid_revenue"}
+    assert {saved["name"] for saved in customers["saved_queries"]} == {"customers_by_region"}
+
+
 def test_visibility_enforcement_covers_models_metrics_and_explores():
     layer = _layer()
     layer.enforce_visibility = True

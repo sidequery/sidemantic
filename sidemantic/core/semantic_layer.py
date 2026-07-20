@@ -906,6 +906,7 @@ class SemanticLayer:
         timezone: str | None,
     ) -> tuple:
         """Resolve defaults and enforce a named consumption contract."""
+        caller_supplied_order_by = order_by is not None
         if saved_query_name:
             supplied = {
                 "explore": explore_name,
@@ -1008,17 +1009,28 @@ class SemanticLayer:
             order_by = list(contract.default_order_by)
         if contract.allowed_order_by is not None:
             allowed = {self._consumption_metric_reference(ref, contract.model) for ref in contract.allowed_order_by}
-            denied = sorted(
-                expression_field_references(
-                    order_by,
-                    contract.model,
-                    graph_metrics=graph_metrics,
-                    graph_models=self.graph.models.keys(),
-                )
-                - allowed
+            order_references = expression_field_references(
+                order_by,
+                contract.model,
+                graph_metrics=graph_metrics,
+                graph_models=self.graph.models.keys(),
             )
+            denied = sorted(order_references - allowed)
             if denied:
                 raise ValueError(f"Explore '{explore_name}' does not allow ordering by: {', '.join(denied)}")
+        else:
+            order_references = expression_field_references(
+                order_by,
+                contract.model,
+                graph_metrics=graph_metrics,
+                graph_models=self.graph.models.keys(),
+            )
+        unselected_order_fields = sorted(order_references - {*metrics, *dimensions})
+        if caller_supplied_order_by and unselected_order_fields:
+            raise ValueError(
+                f"Explore '{explore_name}' ordering field(s) must be selected by the query: "
+                f"{', '.join(unselected_order_fields)}"
+            )
         order_by = qualify_order_by_fields(order_by, contract.model, graph_metrics=graph_metrics)
         if limit is None:
             limit = contract.default_limit

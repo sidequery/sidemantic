@@ -5,7 +5,11 @@ from __future__ import annotations
 from dataclasses import asdict, is_dataclass
 from typing import Any
 
-from sidemantic.core.consumption import graph_metric_is_public, serialize_consumption_contract
+from sidemantic.core.consumption import (
+    expression_field_references,
+    graph_metric_is_public,
+    serialize_consumption_contract,
+)
 from sidemantic.core.governance import governance_dict
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
@@ -43,6 +47,7 @@ def describe_graph(
     saved_queries = [
         serialized
         for saved in graph.saved_queries.values()
+        if _include_saved_query(saved, graph, requested)
         if (serialized := serialize_consumption_contract(saved, graph, enforce_visibility=enforce_visibility))
         is not None
     ]
@@ -63,6 +68,42 @@ def _include_graph_metric(metric: Metric, requested_models: set[str]) -> bool:
     if owner_model and owner_model in requested_models:
         return True
     return owner_model is None
+
+
+def _include_saved_query(saved: Any, graph: SemanticGraph, requested_models: set[str]) -> bool:
+    """Scope a saved query to its Explore base or explicitly referenced models."""
+    if not requested_models:
+        return True
+
+    base_model = ""
+    if saved.explore and (explore := graph.explores.get(saved.explore)) is not None:
+        base_model = explore.model
+        if base_model in requested_models:
+            return True
+
+    references = [*saved.dimensions, *saved.metrics, *saved.segments]
+    try:
+        references.extend(
+            expression_field_references(
+                [*saved.filters, *saved.order_by],
+                base_model,
+                graph_metrics=graph.metrics.keys(),
+                graph_models=graph.models.keys(),
+            )
+        )
+    except Exception:
+        pass
+
+    for reference in references:
+        if "." in reference and reference.split(".", 1)[0] in requested_models:
+            return True
+        if reference in graph.metrics:
+            from sidemantic.sql.generator import SQLGenerator
+
+            source_models = SQLGenerator(graph)._find_required_models([reference], [], [])
+            if requested_models.intersection(source_models):
+                return True
+    return False
 
 
 def _metric_owner_model(metric: Metric) -> str | None:

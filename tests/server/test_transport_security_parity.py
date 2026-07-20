@@ -306,6 +306,23 @@ def test_normalized_passthrough_fails_closed_across_sql_transports(tmp_path):
         _pg_rewrite(_layer(enforce_visibility=True), query, attrs)
 
 
+def test_unplanned_semantic_subqueries_fail_closed_across_sql_transports(tmp_path):
+    attrs = {"role": "analyst", "tenant_id": 1}
+    query = "SELECT * FROM (SELECT amount FROM orders) AS scoped"
+    client = TestClient(create_app(_layer(), auth_token="secret"))
+
+    response = client.post("/sql", json={"query": query}, headers=_headers(attrs))
+    assert response.status_code == 403
+    assert "semantic subquery" in response.json()["error"]
+
+    _mcp_layer(tmp_path / "mcp-unplanned-subquery", attrs)
+    with pytest.raises(SecurityError, match="semantic subquery"):
+        mcp_run_sql(query)
+
+    with pytest.raises(SecurityError, match="semantic subquery"):
+        _pg_rewrite(_layer(), query, attrs)
+
+
 def test_predicate_subqueries_fail_closed_across_sql_transports(tmp_path):
     attrs = {"role": "analyst", "tenant_id": 1}
     query = "SELECT total_amount FROM orders WHERE EXISTS (SELECT 1 FROM orders WHERE secret_note = 'secret')"

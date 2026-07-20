@@ -144,10 +144,9 @@ def enforce_field_visibility(
         except Exception:
             continue
         for column in parsed.find_all(exp.Column):
-            if column.table:
-                continue
             field_name = column.name.rsplit("__", 1)[0] if "__" in column.name else column.name
-            for model_name in candidate_models:
+            model_names = [column.table] if column.table in graph.models else candidate_models
+            for model_name in model_names:
                 if not field_is_public(model_name, field_name):
                     raise SecurityError(f"Field '{model_name}.{field_name}' is not public")
 

@@ -157,6 +157,12 @@ def test_visibility_blocks_bare_hidden_field_in_filter():
         layer.compile(metrics=["orders.cnt"], filters=["margin > 100"])
 
 
+def test_visibility_blocks_quoted_hidden_field_in_filter():
+    layer = _visibility_layer()
+    with pytest.raises(SecurityError, match="orders.margin"):
+        layer.compile(metrics=["orders.cnt"], filters=['"orders"."margin" > 100'])
+
+
 def test_visibility_blocks_hidden_field_in_order_by():
     layer = _visibility_layer()
     with pytest.raises(SecurityError, match="margin"):

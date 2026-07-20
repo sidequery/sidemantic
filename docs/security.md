@@ -95,8 +95,11 @@ with an actionable `SecurityError`; `SELECT 1`-style source-free statements rema
 available. True raw database execution is never considered policy-aware.
 Subqueries used as expressions (including predicates, projections, and ordering) are
 rejected while controls are active because their nested reads cannot yet be proven to
-receive the same policy rewrite. CTE bodies and derived-table sources remain supported;
-use structured filters or a modeled semantic join for rejected expressions.
+receive the same policy rewrite. CTE bodies and derived-table sources remain supported
+only when every semantic island can be planned and regenerated; an unsupported field or
+other unplanned island rejects the whole statement instead of leaving that nested SQL
+unchanged. Use declared semantic fields, structured filters, or a modeled semantic join
+for rejected expressions.
 CTE sources are resolved according to their lexical SQL scope, so a nested alias cannot
 mask an out-of-scope physical table read.
 The optional Rust semantic rewriter is also disabled for secured SQL transports until

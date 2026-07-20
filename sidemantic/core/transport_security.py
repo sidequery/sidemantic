@@ -168,6 +168,13 @@ def rewrite_transport_sql(
                 "security controls are active. Query semantic model fields, or use a structured "
                 "query transport so access gates, row filters, and column restrictions are enforced."
             )
+        island_rejection = explanation.rejected_rules.get("semantic_island_optimization")
+        if island_rejection and _reads_from_source(query, layer.dialect):
+            raise SecurityError(
+                f"{transport} refused a semantic subquery that could not be secured ({island_rejection}). "
+                "Rewrite the nested query using declared semantic fields, or use a structured query "
+                "transport so access gates, row filters, and column restrictions are enforced."
+            )
         rewritten = explanation.rewritten_sql
     else:
         rewritten = rewriter.rewrite(query, strict=strict, user_attributes=user_attributes)

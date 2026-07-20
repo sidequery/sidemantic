@@ -485,6 +485,8 @@ def _representative_query_specs(graph: "SemanticGraph") -> list[tuple[str, list[
 
     for source in graph.models.values():
         for relationship in source.relationships:
+            if not relationship.active:
+                continue
             target = graph.models.get(relationship.name)
             if target is None or relationship.type == "cross":
                 continue

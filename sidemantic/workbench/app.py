@@ -579,17 +579,33 @@ class SidequeryWorkbench(App):
             if not sql:
                 return
 
-            # Execute query and get rendered SQL
+            # Execute query and get rendered SQL. Honor the layer's configured
+            # rollup routing and execute with the same missing-rollup fallback and
+            # rollup-only (strict) semantics as the Python API, CLI, and HTTP server.
             from sidemantic.sql.query_rewriter import QueryRewriter
 
-            rewriter = QueryRewriter(self.layer.graph, dialect=self.layer.dialect)
+            rewriter = QueryRewriter(
+                self.layer.graph,
+                dialect=self.layer.dialect,
+                use_preaggregations=self.layer.use_preaggregations,
+            )
             rendered_sql = rewriter.rewrite(sql)
 
             # Store rendered SQL
             self.last_rendered_sql = rendered_sql
 
-            # Execute the query
-            result = self.layer.adapter.execute(rendered_sql)
+            def recompile_raw():
+                return QueryRewriter(self.layer.graph, dialect=self.layer.dialect, use_preaggregations=False).rewrite(
+                    sql
+                )
+
+            result = self.layer._execute_with_preagg_fallback(
+                rendered_sql,
+                recompile_raw,
+                use_preaggs=self.layer.use_preaggregations,
+                strict=self.layer.preagg_strict,
+                used_preagg="used_preagg=true" in rendered_sql,
+            )
 
             # Get column names and rows
             columns = [desc[0] for desc in result.description]

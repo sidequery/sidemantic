@@ -179,7 +179,12 @@ def test_dashboard_endpoint_is_optional_and_authenticated(tmp_path):
                                 "dimensions": ["orders.created_at__day", "orders.status"],
                             },
                             "encoding": {"x": "orders.created_at__day", "y": "orders.order_count"},
-                        }
+                        },
+                        {
+                            "id": "orders_kpi",
+                            "type": "kpi",
+                            "query": {"metrics": ["orders.order_count"]},
+                        },
                     ],
                 }
             ],
@@ -192,6 +197,7 @@ def test_dashboard_endpoint_is_optional_and_authenticated(tmp_path):
     response = configured.get("/dashboard", headers=_auth_headers())
     assert response.status_code == 200
     assert response.json()["title"] == "Orders overview"
+    assert [chart["id"] for chart in response.json()["tabs"][0]["charts"]] == ["orders", "orders_kpi"]
     assert unconfigured.get("/dashboard").status_code == 404
 
 
@@ -596,3 +602,85 @@ def test_json_responses_use_arrow_reader_for_generic_adapters():
 
     assert response.status_code == 200
     assert response.json()["rows"] == [{"order_count": 7}]
+
+
+def _build_unbuilt_rollup_client(tmp_path: Path, preagg_strict: bool = False) -> TestClient:
+    """Client whose layer routes to a pre-aggregation that was never materialized."""
+    from sidemantic.core.pre_aggregation import PreAggregation
+
+    db_path = tmp_path / "preagg-warehouse.duckdb"
+    conn = duckdb.connect(str(db_path))
+    conn.execute("create table orders (id integer, status varchar, amount double)")
+    conn.executemany(
+        "insert into orders values (?, ?, ?)",
+        [(1, "completed", 10.0), (2, "completed", 20.0), (3, "pending", 5.0)],
+    )
+    conn.close()
+
+    layer = SemanticLayer(
+        connection=f"duckdb:///{db_path}",
+        auto_register=False,
+        use_preaggregations=True,
+        preagg_strict=preagg_strict,
+    )
+    layer.add_model(
+        Model(
+            name="orders",
+            table="orders",
+            primary_key="id",
+            dimensions=[Dimension(name="status", sql="status", type="categorical")],
+            metrics=[Metric(name="revenue", agg="sum", sql="amount")],
+            pre_aggregations=[PreAggregation(name="by_status", measures=["revenue"], dimensions=["status"])],
+        )
+    )
+    return TestClient(create_app(layer))
+
+
+def test_query_falls_back_to_raw_when_rollup_missing(tmp_path):
+    """HTTP /query matches the Python API: a routed-but-unbuilt rollup falls back to raw tables."""
+    client = _build_unbuilt_rollup_client(tmp_path)
+
+    response = client.post("/query", json={"metrics": ["orders.revenue"], "dimensions": ["orders.status"]})
+
+    assert response.status_code == 200
+    payload = response.json()
+    rows = sorted((row["status"], row["revenue"]) for row in payload["rows"])
+    assert rows == [("completed", 30.0), ("pending", 5.0)]
+    # The response reports the SQL that actually produced the rows (the raw fallback).
+    assert "used_preagg=true" not in payload["sql"]
+
+
+def test_query_strict_mode_returns_409_when_rollup_missing(tmp_path):
+    """Rollup-only mode over HTTP maps PreaggregationStrictError to 409, not a 500."""
+    client = _build_unbuilt_rollup_client(tmp_path, preagg_strict=True)
+
+    response = client.post("/query", json={"metrics": ["orders.revenue"], "dimensions": ["orders.status"]})
+
+    assert response.status_code == 409
+    assert "not built" in response.json()["error"]
+
+
+def test_query_strict_override_via_payload(tmp_path):
+    """preagg_strict can be requested per-query even when the layer default is lenient."""
+    client = _build_unbuilt_rollup_client(tmp_path)
+
+    response = client.post(
+        "/query",
+        json={"metrics": ["orders.revenue"], "dimensions": ["orders.status"], "preagg_strict": True},
+    )
+
+    assert response.status_code == 409
+
+
+def test_sql_endpoint_falls_back_to_raw_when_rollup_missing(tmp_path):
+    """HTTP /sql honors configured rollup routing and falls back when the rollup is unbuilt."""
+    client = _build_unbuilt_rollup_client(tmp_path)
+
+    response = client.post(
+        "/sql",
+        json={"query": "SELECT orders.revenue, orders.status FROM orders"},
+    )
+
+    assert response.status_code == 200
+    rows = sorted((row["status"], row["revenue"]) for row in response.json()["rows"])
+    assert rows == [("completed", 30.0), ("pending", 5.0)]

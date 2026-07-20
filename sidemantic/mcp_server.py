@@ -423,8 +423,30 @@ def run_query(
     if dry_run:
         return {"sql": sql}
 
-    # Execute query via adapter (works with all database backends)
-    result = layer.adapter.execute(sql)
+    # Execute with the same missing-rollup fallback and rollup-only (strict)
+    # semantics as the Python API, CLI, and HTTP server, instead of executing
+    # the compiled SQL directly.
+    def recompile_raw():
+        return layer.compile(
+            dimensions=dimensions or [],
+            metrics=metrics or [],
+            filters=[where] if where else None,
+            segments=segments,
+            order_by=order_by,
+            limit=limit or None,
+            offset=offset or None,
+            ungrouped=ungrouped,
+            use_preaggregations=False,
+            user_attributes=get_user_attributes(),
+        )
+
+    result = layer._execute_with_preagg_fallback(
+        sql,
+        recompile_raw,
+        use_preaggs=layer.use_preaggregations,
+        strict=layer.preagg_strict,
+        used_preagg="used_preagg=true" in sql,
+    )
 
     # Convert to list of dicts with JSON-compatible values
     rows = result.fetchall()

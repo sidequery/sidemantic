@@ -135,6 +135,9 @@ def test_explore_filter_qualification_skips_subquery_columns():
     ]
     assert expression_field_references([expression], "orders") == {"orders.status"}
 
+    correlated = "EXISTS (SELECT 1 FROM allowed_statuses AS allowed WHERE allowed.status = orders.status)"
+    assert expression_field_references([correlated], "orders", graph_models={"orders"}) == {"orders.status"}
+
 
 def test_explore_queries_remain_anchored_to_the_base_model():
     layer = _layer()
@@ -170,10 +173,20 @@ def test_explore_enforces_allowlists_and_max_limit():
         layer.compile(explore="revenue_overview", dimensions=["orders.order_id"])
     with pytest.raises(ValueError, match="does not allow filter field"):
         layer.compile(explore="revenue_overview", filters=["orders.created_at > '2026-01-01'"])
+    with pytest.raises(ValueError, match="does not allow filter field"):
+        layer.compile(
+            explore="revenue_overview",
+            filters=["EXISTS (SELECT 1 WHERE orders.created_at > '2026-01-01')"],
+        )
     with pytest.raises(ValueError, match="does not allow ordering"):
         layer.compile(explore="revenue_overview", order_by=["orders.status"])
     with pytest.raises(ValueError, match="exceeds max_limit"):
         layer.compile(explore="revenue_overview", limit=101)
+
+    layer.graph.add_explore(Explore(name="choose_revenue", model="orders", allowed_metrics=["revenue"]))
+    with pytest.raises(ValueError, match="must select at least one metric or dimension"):
+        layer.compile(explore="choose_revenue")
+    assert "SUM" in layer.compile(explore="choose_revenue", metrics=["revenue"])
 
 
 def test_saved_query_is_immutable_and_compiles_through_its_explore():
@@ -569,9 +582,39 @@ def test_visibility_enforcement_covers_models_metrics_and_explores():
     with pytest.raises(ValueError, match="Saved query 'paid_revenue' is not public"):
         layer.compile(saved_query="paid_revenue")
     layer.graph.saved_queries["paid_revenue"].visibility = "public"
+    layer.graph.add_explore(
+        Explore(
+            name="fieldless_private_base",
+            model="orders",
+            allowed_dimensions=[],
+            allowed_metrics=[],
+        )
+    )
+    layer.add_model(
+        Model(
+            name="customers",
+            table="customers",
+            primary_key="customer_id",
+            dimensions=[Dimension(name="region", type="categorical")],
+        )
+    )
+    layer.graph.models["orders"].relationships.append(
+        Relationship(name="customers", type="many_to_one", foreign_key="customer_id")
+    )
+    layer.graph.add_explore(
+        Explore(
+            name="private_base_public_join",
+            model="orders",
+            allowed_dimensions=["customers.region"],
+        )
+    )
     layer.graph.models["orders"].visibility = "internal"
     with pytest.raises(SecurityError, match="not public"):
         layer.compile(explore="revenue_overview")
+    with pytest.raises(SecurityError, match="base model 'orders' is not public"):
+        layer.compile(explore="fieldless_private_base")
+    with pytest.raises(SecurityError, match="base model 'orders' is not public"):
+        layer.compile(explore="private_base_public_join", dimensions=["customers.region"])
     layer.graph.models["orders"].visibility = "public"
     layer.graph.models["orders"].metrics[0].visibility = "internal"
     with pytest.raises(SecurityError, match="not public"):

@@ -947,11 +947,20 @@ class SemanticLayer:
         contract = self.graph.get_explore(explore_name)
         if contract.visibility != "public" and self.enforce_visibility:
             raise ValueError(f"Explore '{explore_name}' is not public")
+        base_model = self.graph.models.get(contract.model)
+        if self.enforce_visibility and (base_model is None or base_model.visibility != "public"):
+            raise SecurityError(f"Explore '{explore_name}' base model '{contract.model}' is not public")
 
         if metrics is None:
             metrics = list(contract.default_metrics)
         if dimensions is None:
             dimensions = list(contract.default_dimensions)
+        if (
+            not metrics
+            and not dimensions
+            and (contract.allowed_metrics is not None or contract.allowed_dimensions is not None)
+        ):
+            raise ValueError(f"Explore '{explore_name}' must select at least one metric or dimension")
         metrics = [self._consumption_metric_reference(ref, contract.model) for ref in metrics]
         dimensions = [self._consumption_reference(ref, contract.model) for ref in dimensions]
         if segments is not None:
@@ -980,7 +989,13 @@ class SemanticLayer:
                 self._consumption_metric_reference(ref, contract.model) for ref in contract.allowed_filter_fields
             }
             denied = sorted(
-                expression_field_references(selected_filters, contract.model, graph_metrics=graph_metrics) - allowed
+                expression_field_references(
+                    selected_filters,
+                    contract.model,
+                    graph_metrics=graph_metrics,
+                    graph_models=self.graph.models.keys(),
+                )
+                - allowed
             )
             if denied:
                 raise ValueError(f"Explore '{explore_name}' does not allow filter field(s): {', '.join(denied)}")
@@ -994,7 +1009,13 @@ class SemanticLayer:
         if contract.allowed_order_by is not None:
             allowed = {self._consumption_metric_reference(ref, contract.model) for ref in contract.allowed_order_by}
             denied = sorted(
-                expression_field_references(order_by, contract.model, graph_metrics=graph_metrics) - allowed
+                expression_field_references(
+                    order_by,
+                    contract.model,
+                    graph_metrics=graph_metrics,
+                    graph_models=self.graph.models.keys(),
+                )
+                - allowed
             )
             if denied:
                 raise ValueError(f"Explore '{explore_name}' does not allow ordering by: {', '.join(denied)}")

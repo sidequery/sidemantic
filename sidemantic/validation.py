@@ -80,7 +80,12 @@ def _validate_consumption_expressions(
     from sidemantic.core.consumption import expression_field_references
 
     try:
-        references = expression_field_references(expressions, base_model, graph_metrics=graph.metrics.keys())
+        references = expression_field_references(
+            expressions,
+            base_model,
+            graph_metrics=graph.metrics.keys(),
+            graph_models=graph.models.keys(),
+        )
     except Exception as error:
         return [f"{label} contains an invalid {field_kind} expression: {error}"]
     errors = [
@@ -120,7 +125,12 @@ def _validate_order_fields_selected(
     from sidemantic.core.consumption import expression_field_references
 
     try:
-        references = expression_field_references(expressions, base_model, graph_metrics=graph.metrics.keys())
+        references = expression_field_references(
+            expressions,
+            base_model,
+            graph_metrics=graph.metrics.keys(),
+            graph_models=graph.models.keys(),
+        )
     except Exception:
         return []
     selected = {*selected_metrics, *selected_dimensions}
@@ -369,7 +379,12 @@ def validate_saved_query(saved_query: "SavedQuery", graph: "SemanticGraph") -> t
             if explore.allowed_filter_fields is not None:
                 allowed_filters = set(_qualified_consumption_metrics(explore.allowed_filter_fields, base_model, graph))
                 denied_filters = sorted(
-                    expression_field_references(validated_filters, base_model, graph_metrics=graph_metrics)
+                    expression_field_references(
+                        validated_filters,
+                        base_model,
+                        graph_metrics=graph_metrics,
+                        graph_models=graph.models.keys(),
+                    )
                     - allowed_filters
                 )
                 if denied_filters:
@@ -380,7 +395,12 @@ def validate_saved_query(saved_query: "SavedQuery", graph: "SemanticGraph") -> t
             if explore.allowed_order_by is not None:
                 allowed_ordering = set(_qualified_consumption_metrics(explore.allowed_order_by, base_model, graph))
                 denied_ordering = sorted(
-                    expression_field_references(saved_query.order_by, base_model, graph_metrics=graph_metrics)
+                    expression_field_references(
+                        saved_query.order_by,
+                        base_model,
+                        graph_metrics=graph_metrics,
+                        graph_models=graph.models.keys(),
+                    )
                     - allowed_ordering
                 )
                 if denied_ordering:

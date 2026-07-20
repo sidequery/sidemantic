@@ -13,16 +13,27 @@ def expression_field_references(
     base_model: str,
     *,
     graph_metrics: Collection[str] = (),
+    graph_models: Collection[str] = (),
 ) -> set[str]:
     """Extract and qualify semantic field references from SQL-like expressions."""
     from sqlglot import exp, parse_one
 
     references: set[str] = set()
+    semantic_tables = {base_model, *graph_models}
     for expression in expressions:
         parsed = parse_one(expression)
         for column in parsed.find_all(exp.Column):
-            if column.find_ancestor(exp.Select, exp.Subquery) is not None:
-                continue
+            select = column.find_ancestor(exp.Select)
+            if select is not None and column.table not in semantic_tables:
+                if not column.table:
+                    continue
+                local_tables: set[str] = set()
+                for table in select.find_all(exp.Table):
+                    if table.find_ancestor(exp.Select) is select:
+                        local_tables.add(table.name)
+                        local_tables.add(table.alias_or_name)
+                if column.table in local_tables:
+                    continue
             if column.table:
                 references.add(f"{column.table}.{column.name}")
             elif column.name in graph_metrics:
@@ -214,7 +225,12 @@ def _semantic_reference_is_public(
 
 def _expressions_are_public(expressions: Collection[str], base_model: str, graph: Any) -> bool:
     try:
-        references = expression_field_references(expressions, base_model, graph_metrics=graph.metrics.keys())
+        references = expression_field_references(
+            expressions,
+            base_model,
+            graph_metrics=graph.metrics.keys(),
+            graph_models=graph.models.keys(),
+        )
     except Exception:
         return False
     return all(

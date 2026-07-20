@@ -257,6 +257,8 @@ def test_query_error_raises_exception():
     mock_layer.adapter.cursor.return_value.execute.side_effect = Exception("test error")
     mock_layer.graph = SemanticGraph()
     mock_layer.dialect = "duckdb"
+    mock_layer.enforce_visibility = False
+    mock_layer.use_preaggregations = False
 
     conn = SemanticLayerConnection.__new__(SemanticLayerConnection)
     conn.layer = mock_layer

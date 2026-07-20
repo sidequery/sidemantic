@@ -1407,7 +1407,11 @@ cubes:
     layer.graph = graph
     compiled = layer.compile(metrics=["line_items.derived_x"])
     assert "${orders}" not in compiled and "{'orders'" not in compiled
-    assert "SUM(orders_cte.amount_raw)" in compiled
+    # line_items belongsTo orders fans out orders rows, so the measure is summed
+    # over PK-deduplicated entity rows instead of the naive (inflating) join.
+    assert "SUM(__sidemantic_dedup.__sidemantic_metric_0)" in compiled
+    assert "orders_cte.amount_raw AS __sidemantic_metric_0" in compiled
+    assert "* 2" in compiled
 
 
 def test_rollup_with_only_unmaterializable_measures_is_rejected():

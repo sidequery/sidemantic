@@ -3,10 +3,9 @@
 A measure with ``non_additive_dimension`` must be aggregated over only the rows at
 the last (or first) value of that time dimension per group -- e.g. an account-balance
 snapshot summed across accounts but NOT double-counted across days. The generator
-implements this by injecting a ``QUALIFY`` into the owning model's CTE for QUALIFY
-dialects (DuckDB, Snowflake, BigQuery, ...). It raises ``UnsupportedMetricError`` only
-for cases it does not implement: a dialect without QUALIFY, or the combination of
-semi-additive handling with fan-out symmetric aggregation on the same model.
+uses per-metric window markers after joined rows are deduplicated at the owning
+model's typed primary-key grain, so snapshot metrics and ordinary additive metrics
+can share a query without filtering each other's source rows.
 
 ``allow_non_additive_unsafe=True`` skips the rewrite entirely and aggregates naively
 (over ALL snapshots, i.e. the old, incorrect behavior).
@@ -94,7 +93,8 @@ def test_semi_additive_value_is_last_snapshot():
     # Semi-additive: sum of the last snapshot per account (global last-date window
     # collapses to the single latest snapshot when no other grouping is requested).
     sql = layer.compile(metrics=["accounts.balance"])
-    assert "QUALIFY" in sql
+    assert "__sidemantic_snapshot_field" in sql
+    assert "OVER (" in sql
 
     # Grouped by account: last balance per account, summed -> 150 + 70 + 33 = 253.
     rows = layer.query(
@@ -150,9 +150,9 @@ def test_grouping_by_non_additive_dimension_is_additive():
     layer.add_model(_model(non_additive=True))
     _seed(layer)
 
-    # No QUALIFY should be emitted -- each snapshot_date bucket stands on its own.
+    # No snapshot window should be emitted -- each snapshot_date bucket stands on its own.
     sql = layer.compile(metrics=["accounts.balance"], dimensions=["accounts.snapshot_date"])
-    assert "QUALIFY" not in sql
+    assert "__sidemantic_snapshot_field" not in sql
 
     rows = layer.query(
         metrics=["accounts.balance"], dimensions=["accounts.snapshot_date"], order_by=["accounts.snapshot_date"]
@@ -168,8 +168,8 @@ def test_escape_hatch_reverts_to_naive():
     _seed(layer)
 
     sql = layer.compile(metrics=["accounts.balance"], dimensions=["accounts.account_id"])
-    # No QUALIFY -> aggregates naively over all snapshots (over-counted, unsafe).
-    assert "QUALIFY" not in sql
+    # No snapshot marker -> aggregates naively over all snapshots (over-counted, unsafe).
+    assert "__sidemantic_snapshot_field" not in sql
     rows = layer.query(
         metrics=["accounts.balance"], dimensions=["accounts.account_id"], order_by=["accounts.account_id"]
     ).fetchall()
@@ -182,7 +182,7 @@ def test_query_without_non_additive_metric_unaffected():
     # revenue has no non_additive_dimension, so querying it alone must not raise.
     sql = layer.compile(metrics=["accounts.revenue"], dimensions=["accounts.region"])
     assert "accounts" in sql.lower()
-    assert "QUALIFY" not in sql
+    assert "__sidemantic_snapshot_field" not in sql
 
 
 def test_model_without_non_additive_metric_unaffected():
@@ -190,20 +190,18 @@ def test_model_without_non_additive_metric_unaffected():
     layer.add_model(_model(non_additive=False))
     sql = layer.compile(metrics=["accounts.balance"], dimensions=["accounts.region"])
     assert "accounts" in sql.lower()
-    assert "QUALIFY" not in sql
+    assert "__sidemantic_snapshot_field" not in sql
 
 
-def test_non_qualify_dialect_raises_cleanly():
-    """A dialect without QUALIFY (e.g. postgres) is rejected, not served wrong SQL."""
+def test_semi_additive_compiles_without_qualify_on_postgres():
+    """The portable nested-window shape works on dialects without QUALIFY."""
     layer = SemanticLayer()
     layer.add_model(_model(non_additive=True))
     gen = SQLGenerator(layer.graph, dialect="postgres")
-    with pytest.raises(UnsupportedMetricError) as exc:
-        gen.generate(metrics=["accounts.balance"], dimensions=["accounts.region"])
-    msg = str(exc.value)
-    assert "postgres" in msg
-    assert "QUALIFY" in msg
-    assert "allow_non_additive_unsafe" in msg
+    sql = gen.generate(metrics=["accounts.balance"], dimensions=["accounts.region"])
+
+    assert "OVER (PARTITION BY" in sql
+    assert "QUALIFY" not in sql
 
 
 def test_semi_additive_plus_fanout_symmetric_aggregate_raises():
@@ -248,8 +246,7 @@ def test_semi_additive_plus_fanout_symmetric_aggregate_raises():
     with pytest.raises(UnsupportedMetricError) as exc:
         layer.compile(metrics=["accounts.balance", "transactions.amount"], dimensions=["accounts.region"])
     msg = str(exc.value).lower()
-    assert "symmetric" in msg or "fan-out" in msg
-    assert "compose" in msg
+    assert "multiple metric models" in msg
 
 
 def test_adapter_round_trips_non_additive_dimension():
@@ -308,9 +305,8 @@ def test_semi_additive_window_groupings_partition(monkeypatch):
     assert rows == {"east": 110, "west": 210}
 
 
-def test_conflicting_semi_additive_metrics_raise():
+def test_opening_and_closing_snapshot_metrics_compose():
     from sidemantic import Dimension, Metric, Model, SemanticLayer
-    from sidemantic.core.semantic_layer import UnsupportedMetricError
 
     layer = SemanticLayer()
     con = layer.adapter.conn
@@ -332,12 +328,16 @@ def test_conflicting_semi_additive_metrics_raise():
             ],
         )
     )
-    with pytest.raises(UnsupportedMetricError, match="conflicting"):
-        layer.compile(metrics=["bal.closing", "bal.opening"])
+    sql = layer.compile(metrics=["bal.closing", "bal.opening"])
+    rows = layer.query(metrics=["bal.closing", "bal.opening"]).fetchall()
+
+    assert "MAX(" in sql
+    assert "MIN(" in sql
+    assert rows == [(110, 100)]
 
 
 def test_graph_metric_wrapping_semi_additive_measure_is_planned():
-    """PR review: a graph metric wrapping a non_additive measure must still emit the QUALIFY."""
+    """A graph metric wrapping a non-additive measure retains its snapshot plan."""
     from sidemantic import Dimension, Metric, Model, SemanticLayer
 
     layer = SemanticLayer()
@@ -362,5 +362,62 @@ def test_graph_metric_wrapping_semi_additive_measure_is_planned():
     )
     layer.add_metric(Metric(name="wrapped_balance", sql="bal.total_balance"))
     sql = layer.compile(metrics=["wrapped_balance"], dimensions=["bal.account"])
-    assert "QUALIFY" in sql
+    assert "__sidemantic_snapshot_field" in sql
     assert dict(layer.query(metrics=["wrapped_balance"], dimensions=["bal.account"]).fetchall()) == {"A": 110, "B": 210}
+
+
+def test_semi_additive_and_additive_metrics_keep_independent_row_sets():
+    """A snapshot metric must not remove rows from additive sibling metrics."""
+    layer = SemanticLayer()
+    layer.add_model(_model(non_additive=True))
+    _seed(layer)
+
+    rows = layer.query(
+        metrics=["accounts.balance", "accounts.revenue"],
+        dimensions=["accounts.account_id"],
+        order_by=["accounts.account_id"],
+    ).fetchall()
+
+    assert rows == [("A", 150.0, 2.0), ("B", 70.0, 2.0), ("C", 33.0, 2.0)]
+
+
+def test_semi_additive_partition_can_use_a_related_dimension():
+    """Joined dimensions participate in the snapshot window at the requested grain."""
+    layer = SemanticLayer()
+    layer.adapter.execute("CREATE TABLE balances (id INT, customer_id INT, day DATE, balance INT, activity INT)")
+    layer.adapter.execute(
+        """INSERT INTO balances VALUES
+        (1, 1, DATE '2026-01-01', 100, 1), (2, 1, DATE '2026-01-02', 110, 1),
+        (3, 2, DATE '2026-01-01', 200, 1), (4, 2, DATE '2026-01-03', 230, 1)"""
+    )
+    layer.adapter.execute("CREATE TABLE customers (id INT, region VARCHAR)")
+    layer.adapter.execute("INSERT INTO customers VALUES (1, 'east'), (2, 'west')")
+    layer.add_model(
+        Model(
+            name="balances",
+            table="balances",
+            primary_key="id",
+            relationships=[Relationship(name="customers", type="many_to_one", foreign_key="customer_id")],
+            dimensions=[Dimension(name="day", type="time", granularity="day")],
+            metrics=[
+                Metric(name="ending_balance", agg="sum", sql="balance", non_additive_dimension="day"),
+                Metric(name="activity", agg="sum", sql="activity"),
+            ],
+        )
+    )
+    layer.add_model(
+        Model(
+            name="customers",
+            table="customers",
+            primary_key="id",
+            dimensions=[Dimension(name="region", type="categorical")],
+        )
+    )
+
+    rows = layer.query(
+        metrics=["balances.ending_balance", "balances.activity"],
+        dimensions=["customers.region"],
+        order_by=["customers.region"],
+    ).fetchall()
+
+    assert rows == [("east", 110, 2), ("west", 230, 2)]

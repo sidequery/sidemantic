@@ -111,6 +111,27 @@ PRE_RUN_XFAILS = {
 
 
 EXPECTED_GAPS = {
+    "tests.metrics.test_filters::test_query_level_metric_filters_use_having": (
+        "Rust generator still filters HAVING through the select alias; Python now "
+        "materializes the aggregate expression inside HAVING"
+    ),
+    "tests.metrics.test_filters::test_mixed_filters_separate_where_and_having": (
+        "Rust generator still filters HAVING through the select alias; Python now "
+        "materializes the aggregate expression inside HAVING"
+    ),
+    "tests.metrics.test_filters::test_postgres_having_repeats_aggregate_instead_of_select_alias": (
+        "Rust generator still filters HAVING through the select alias; Python now "
+        "materializes the aggregate expression inside HAVING"
+    ),
+    "tests.metrics.test_cumulative::test_cumulative_partitions_by_requested_non_time_dimensions": (
+        "Rust generator does not yet partition cumulative windows by requested non-time dimensions"
+    ),
+    "tests.metrics.test_derived::test_postgres_ratio_casts_integer_numerator_before_division": (
+        "Rust generator does not yet cast integer ratio numerators before division on postgres"
+    ),
+    "tests.queries.test_ungrouped_queries::test_query_post_process_preserves_with_totals": (
+        "Rust adapter does not yet support the with_totals (GROUPING SETS grand-total) compile kwarg"
+    ),
     "tests.queries.test_ungrouped_queries::test_with_totals_single_dimension": (
         "Rust adapter does not yet support the with_totals (GROUPING SETS grand-total) compile kwarg"
     ),

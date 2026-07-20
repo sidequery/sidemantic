@@ -342,45 +342,78 @@ def validate_metric(measure: "Metric", graph: "SemanticGraph") -> list[str]:
     return errors
 
 
+# Per-graph memo of derived metrics already proven acyclic, keyed by graph
+# version. Validating each metric in a long derived chain used to re-walk the
+# whole downstream chain with per-edge set/list copies (400-metric chain:
+# ~18.7s); with the memo each chain is verified once per graph version.
+_ACYCLIC_MEMO = None  # weakref.WeakKeyDictionary, initialized lazily below
+
+
+def _acyclic_safe_set(graph: "SemanticGraph") -> set[str]:
+    global _ACYCLIC_MEMO
+    import weakref
+
+    if _ACYCLIC_MEMO is None:
+        _ACYCLIC_MEMO = weakref.WeakKeyDictionary()
+    version = getattr(graph, "_version", 0)
+    entry = _ACYCLIC_MEMO.get(graph)
+    if entry is None or entry[0] != version:
+        entry = (version, set())
+        _ACYCLIC_MEMO[graph] = entry
+    return entry[1]
+
+
 def _check_circular_dependencies(
-    measure: "Metric", graph: "SemanticGraph", visited: set[str], path: list[str] | None = None
+    measure: "Metric", graph: "SemanticGraph", visited: set[str] | None = None, path: list[str] | None = None
 ) -> list[str] | None:
     """Check for circular dependencies in derived measures.
 
-    Args:
-        measure: Metric to check
-        graph: Semantic graph
-        visited: Set of visited measure names
-        path: Current dependency path
+    Iterative three-color DFS with a per-graph-version memo of proven-acyclic
+    metrics, so validating every metric of an N-deep derived chain is O(N)
+    total instead of O(N^2) with per-edge copies. ``visited``/``path`` are
+    accepted for backward compatibility and ignored.
 
     Returns:
-        List of measure names in circular path, or None if no cycle
+        List of measure names in the circular path, or None if no cycle
     """
-    if path is None:
-        path = []
-
-    if measure.name in visited:
-        # Found a cycle
-        cycle_start = path.index(measure.name)
-        return path[cycle_start:] + [measure.name]
-
     if measure.type != "derived":
         return None
 
-    visited.add(measure.name)
-    path.append(measure.name)
+    safe = _acyclic_safe_set(graph)
+    if measure.name in safe:
+        return None
 
-    dependencies = measure.get_dependencies(graph)
-    for dep_name in dependencies:
+    def resolve(name: str):
         try:
-            dep_measure = graph.get_metric(dep_name)
-            if dep_measure:
-                cycle = _check_circular_dependencies(dep_measure, graph, visited.copy(), path.copy())
-                if cycle:
-                    return cycle
+            return graph.get_metric(name)
         except KeyError:
-            # Dependency doesn't exist yet, skip circular check
-            pass
+            return None
+
+    on_stack: set[str] = {measure.name}
+    order: list[str] = [measure.name]
+    frames: list[tuple[Metric, object]] = [(measure, iter(measure.get_dependencies(graph)))]
+
+    while frames:
+        current, dep_iter = frames[-1]
+        advanced = False
+        for dep_name in dep_iter:
+            dep = resolve(dep_name)
+            if dep is None or dep.type != "derived" or dep.name in safe:
+                continue
+            if dep.name in on_stack:
+                cycle_start = order.index(dep.name)
+                return order[cycle_start:] + [dep.name]
+            on_stack.add(dep.name)
+            order.append(dep.name)
+            frames.append((dep, iter(dep.get_dependencies(graph))))
+            advanced = True
+            break
+        if not advanced:
+            frames.pop()
+            on_stack.discard(current.name)
+            if order and order[-1] == current.name:
+                order.pop()
+            safe.add(current.name)
 
     return None
 
@@ -500,12 +533,19 @@ def validate_query(metrics: list[str], dimensions: list[str], graph: "SemanticGr
 
     # Check that all model pairs can be joined
     # Only check models that exist in the graph (errors for missing models already reported above)
+    from sidemantic.core.semantic_graph import AmbiguousJoinPathError
+
     valid_model_names = [m for m in model_names if m in graph.models]
     model_list = list(valid_model_names)
+    query_model_set = frozenset(model_list)
     for i, model_a in enumerate(model_list):
         for model_b in model_list[i + 1 :]:
             try:
-                graph.find_relationship_path(model_a, model_b)
+                graph.find_relationship_path(model_a, model_b, query_models=query_model_set)
+            except AmbiguousJoinPathError as exc:
+                # Ambiguity is a different failure than a missing path: relationships
+                # exist, but no unique route does. Surface the routes verbatim.
+                errors.append(str(exc))
             except (ValueError, KeyError):
                 # Catch both ValueError (no path) and KeyError (model doesn't exist)
                 errors.append(

@@ -1449,7 +1449,11 @@ facts:
                 skip_default_time_dimensions=True,
             )
             assert "CROSS JOIN facts_cte" in sql
-            assert "id AS id" not in sql
+            # A cross join has no join keys: the dimension-only side must not invent
+            # key columns (calendar has no id column). The metric model MAY project
+            # its declared primary key for fan-out entity isolation.
+            calendar_cte = sql.split("calendar_cte AS (")[1].split(")")[0]
+            assert "id" not in calendar_cte
 
             conn = duckdb.connect(":memory:")
             conn.execute("CREATE TABLE calendar(day DATE)")

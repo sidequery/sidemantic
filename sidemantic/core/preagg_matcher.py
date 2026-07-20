@@ -135,7 +135,15 @@ class PreAggregationMatcher:
             if not metric:
                 return False
 
-            if metric.agg in ("count_distinct", "approx_count_distinct"):
+            if metric.agg in {
+                "count_distinct",
+                "approx_count_distinct",
+                "median",
+                "stddev",
+                "stddev_pop",
+                "variance",
+                "variance_pop",
+            }:
                 if metric.name not in (preagg.measures or []):
                     return False
                 if not self._is_exact_grain(preagg, query_dimensions, query_granularity):
@@ -262,8 +270,11 @@ class PreAggregationMatcher:
             # plain integer, so it is not safely rollup-derivable either.
             return False
 
-        # Default: allow if present
-        return True
+        # Non-decomposable aggregates are guarded by an exact-grain check in
+        # can_satisfy_query. Unknown aggregation kinds are never assumed additive.
+        if agg_type in {"median", "stddev", "stddev_pop", "variance", "variance_pop"}:
+            return True
+        return False
 
     def _complex_metric_derivable(self, query_metric: Metric, preagg: PreAggregation) -> bool:
         preagg_measures = set(preagg.measures or [])

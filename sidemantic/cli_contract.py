@@ -537,15 +537,19 @@ def configure_click_color(ctx: click.Context, *, enabled: bool) -> None:
     """Apply color policy without overriding Click capture or redirection.
 
     Click may already disable color for captured or redirected output even when
-    its stream reports terminal-like capabilities. Preserve that decision in
-    automatic mode; only the explicit ``FORCE_COLOR`` convention may override
-    it.
+    its stream reports terminal-like capabilities. Typer separately snapshots
+    CI environment variables at import time, so reset its Rich terminal policy
+    for every invocation as well. Preserve Click's decision in automatic mode;
+    only the explicit ``FORCE_COLOR`` convention may override it.
     """
 
-    if not enabled:
-        ctx.color = False
-    elif os.environ.get("FORCE_COLOR", ""):
-        ctx.color = True
+    forced = bool(os.environ.get("FORCE_COLOR", ""))
+    resolved = enabled and (forced or is_terminal(sys.stdout))
+    ctx.color = resolved
+
+    import typer.rich_utils as typer_rich_utils
+
+    typer_rich_utils.FORCE_TERMINAL = resolved
 
 
 def _env_truthy(name: str) -> bool:

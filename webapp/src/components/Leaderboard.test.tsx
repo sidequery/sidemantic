@@ -25,7 +25,9 @@ describe("Leaderboard", () => {
     expect(html).toContain('data-action="leaderboard-expand"');
     expect(html).toContain('aria-expanded="false"');
     expect(html).toContain("Expand table (7)");
-    expect(html).toContain('<p class="sr-only">Ranked by Revenue</p>');
+    expect(html).toContain("Ranked by Revenue");
+    expect(html).toContain("flex flex-col border border-line bg-surface");
+    expect(html).not.toContain("min-h-60");
   });
 
   test("expanded mode renders every row and a back control", () => {

@@ -172,7 +172,7 @@ def test_missing_migrate_query_path_is_a_cli_parameter_error(
 
     assert result.exit_code != 0
     assert "Invalid value for QUERIES" in result.output
-    assert "queries/missing" in result.output
+    assert "queries/" in result.output
     assert ".sql" in result.output
     assert "Traceback" not in result.output
 
@@ -235,6 +235,24 @@ def test_database_discovery_rejects_ambiguous_candidates(
     assert "ambiguous" in result.output.lower() or "multiple" in result.output.lower()
     assert "alpha.db" in result.output
     assert "beta.duckdb" in result.output
+
+
+@pytest.mark.parametrize("command", ["rewrite", "explain"])
+def test_compile_only_commands_do_not_require_unambiguous_database_discovery(
+    monkeypatch: pytest.MonkeyPatch,
+    project: Path,
+    command: str,
+):
+    (project / "sidemantic.yaml").write_text("models_dir: models\n")
+    existing = project / "data" / "warehouse.duckdb"
+    existing.rename(project / "data" / "alpha.db")
+    (project / "data" / "beta.duckdb").touch()
+    monkeypatch.chdir(project)
+
+    result = runner.invoke(app, [command, "SELECT order_count FROM orders"])
+
+    assert result.exit_code == 0, result.output
+    assert "Multiple databases found" not in result.output
 
 
 def test_dashboard_serve_discovers_default_spec_and_project(

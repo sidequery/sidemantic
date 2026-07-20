@@ -5,6 +5,40 @@ families so it can be used interactively and safely composed in scripts.
 Online documentation: <https://sidemantic.com/sidemantic/cli>. Support and bug
 reports: <https://github.com/sidequery/sidemantic/issues>.
 
+## Project conventions
+
+Run commands from a project root and use path or connection options only to
+override discovery:
+
+```text
+analytics/
+├── sidemantic.yaml       # optional project configuration
+├── models/               # semantic definitions
+├── queries/              # SQL used by migration commands
+├── dashboard.yml         # declarative official-UI dashboard
+└── data/
+    └── warehouse.duckdb  # one .db or .duckdb file is discovered automatically
+```
+
+Sidemantic searches upward for `sidemantic.yaml`, `sidemantic.yml`, or
+`sidemantic.json`. Without a config file it discovers the nearest conventional
+project root. A project may use `dashboard.yaml` or `dashboard.json` instead of
+`dashboard.yml`. Discovery rejects ambiguous dashboard specs or multiple
+database files; resolve ambiguity with an explicit spec, `--db`, or
+`--connection`.
+
+```bash
+cd analytics
+sidemantic validate
+sidemantic info
+sidemantic dashboard validate
+sidemantic dashboard serve
+```
+
+`dashboard serve` loads the declarative spec into the official React
+application. The experimental cross-library renderers remain library examples;
+they are not a second CLI dashboard.
+
 ## Help
 
 Full help is available through every conventional entry point:

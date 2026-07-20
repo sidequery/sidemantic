@@ -1,7 +1,8 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { aliasOf, NULL_TOKEN, type CatalogDimension, type CatalogModel } from "../data/types";
 import { displayDimValue, sqlLiteral } from "../lib/format";
-import { composeFilters, distinctValues, likeEscape, type FilterMode } from "../lib/queries";
+import { dashboardTabConfig } from "../lib/dashboard";
+import { catalogDimTypes, composeFilters, distinctValues, likeEscape, type FilterMode } from "../lib/queries";
 import { useExplorer } from "../state/ExplorerContext";
 import { useQueryResult } from "../state/useQueryResult";
 
@@ -41,7 +42,11 @@ export function FilterEditor({
   model: CatalogModel;
   onClose: () => void;
 }) {
-  const { state, dispatch, backend } = useExplorer();
+  const { state, dispatch, backend, catalog, dashboard } = useExplorer();
+  const configured = useMemo(
+    () => dashboardTabConfig(catalog, dashboard, state.dashboardTab),
+    [catalog, dashboard, state.dashboardTab],
+  );
   const filter = state.filters[dim.ref];
   // Mode is editor-local: an empty exclude selection emits no SQL, so it can't live in committed
   // state, yet the user's mode choice must survive until they check a value. Seed from the committed
@@ -95,11 +100,15 @@ export function FilterEditor({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [debouncedPattern, mode, dim.ref, dispatch]);
 
-  const timeRef = model.timeDimension?.ref;
+  const timeRef = configured?.timeDimension?.ref ?? model.timeDimension?.ref;
+  const types = useMemo(() => catalogDimTypes(catalog), [catalog]);
   // Distinct values for this dimension, honoring the surrounding crossfilter (minus this dim's own
   // filter) and the active date range, then narrowed by the search text via a server-side ILIKE.
   const valueFilters = useMemo(() => {
-    const base = composeFilters(state.filters, { timeRef, range: state.dateRange, excludeDim: dim.ref });
+    const base = [
+      ...(configured?.filters ?? []),
+      ...composeFilters(state.filters, { timeRef, range: state.dateRange, excludeDim: dim.ref, types }),
+    ];
     if (debouncedSearch.trim()) {
       // Cast to text so the search works on numeric/boolean dimensions too: DuckDB and
       // Postgres reject ILIKE on non-text operands.
@@ -107,12 +116,14 @@ export function FilterEditor({
       base.push(`CAST(${dim.ref} AS VARCHAR) ILIKE ${pat} ESCAPE '\\'`);
     }
     return base;
-  }, [state.filters, timeRef, state.dateRange, dim.ref, debouncedSearch]);
+  }, [configured, state.filters, timeRef, state.dateRange, dim.ref, debouncedSearch, types]);
 
   const listMode = mode !== "contains";
   const { result, loading, error } = useQueryResult(
     backend,
-    listMode ? distinctValues(dim.ref, valueFilters, VALUE_LIMIT) : null,
+    listMode
+      ? distinctValues(dim.ref, valueFilters, VALUE_LIMIT, configured?.segments, configured?.usePreaggregations)
+      : null,
   );
 
   const dimAlias = aliasOf(dim.ref);

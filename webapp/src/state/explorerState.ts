@@ -1,5 +1,6 @@
-import type { Catalog, CatalogModel, Grain } from "../data/types";
+import type { Catalog, CatalogModel, DashboardSpec, Grain } from "../data/types";
 import { graphMetricsForModel } from "../lib/catalog";
+import { dashboardTabConfig, type DashboardTabConfig } from "../lib/dashboard";
 import { isEmptyFilter, type FilterMode, type FilterState } from "../lib/queries";
 import type { DateRange } from "../lib/time";
 
@@ -16,6 +17,7 @@ export type ComparisonMode = "off" | "previous" | "year" | "custom";
 
 export type ExplorerState = {
   view: ViewKind;
+  dashboardTab?: string;
   model: string; // primary fact model name
   selectedMetric: string; // metric ref ranking leaderboards / focused in detail
   filters: FilterState; // dimRef -> selected values
@@ -32,6 +34,7 @@ export type ExplorerState = {
 export type ExplorerAction =
   | { type: "hydrate"; state: ExplorerState }
   | { type: "setView"; view: ViewKind }
+  | { type: "setDashboardTab"; tab: string; model: string; metric: string; grain: Grain }
   | { type: "setModel"; model: string; metric: string; grain: Grain }
   | { type: "setMetric"; metric: string }
   // `mode` forces include/exclude when toggling from the editor; the leaderboard omits it (keeping
@@ -71,6 +74,19 @@ export function explorerReducer(state: ExplorerState, action: ExplorerAction): E
       return action.state;
     case "setView":
       return { ...state, view: action.view };
+    case "setDashboardTab":
+      return {
+        ...state,
+        view: "explore",
+        dashboardTab: action.tab,
+        model: action.model,
+        selectedMetric: action.metric,
+        grain: action.grain,
+        filters: {},
+        dateRange: undefined,
+        pivotDims: [],
+        pivotMetrics: [],
+      };
     case "setModel":
       // Switching the primary model invalidates metric/filter selections.
       return {
@@ -162,16 +178,22 @@ export function defaultMetric(model: CatalogModel | undefined, catalog: Catalog)
 }
 
 /** Derive a fresh initial state from the loaded catalog. */
-export function initialStateFromCatalog(catalog: Catalog): ExplorerState {
-  const model = primaryModel(catalog);
-  const metric = defaultMetric(model, catalog);
+export function initialStateFromCatalog(
+  catalog: Catalog,
+  dashboard?: DashboardSpec | null,
+  dashboardTab?: string,
+): ExplorerState {
+  const configured = dashboardTabConfig(catalog, dashboard, dashboardTab);
+  const model = configured?.model ?? primaryModel(catalog);
+  const metric = configured?.selectedMetric ?? defaultMetric(model, catalog);
   return {
-    // Land on the explore index (a card per model) so the app opens to "what can I explore?".
-    view: "home",
+    // A configured dashboard opens directly; otherwise land on the model index.
+    view: configured ? "explore" : "home",
+    dashboardTab: configured?.id,
     model: model?.name ?? "",
     selectedMetric: metric,
     filters: {},
-    grain: (model?.defaultGrain as Grain) ?? "month",
+    grain: configured?.grain ?? (model?.defaultGrain as Grain) ?? "month",
     timezone: "UTC",
     dateRange: undefined,
     contextColumn: "none",
@@ -181,5 +203,26 @@ export function initialStateFromCatalog(catalog: Catalog): ExplorerState {
     // Left empty so the pivot falls back to the active metric for whatever model is selected,
     // rather than pinning the primary model's first metric across model switches.
     pivotMetrics: [],
+  };
+}
+
+/** Apply the selected dashboard tab while retaining explicit, valid metric/grain URL selections. */
+export function applyDashboardConfig(
+  decoded: ExplorerState,
+  configured: DashboardTabConfig,
+  search: string,
+): ExplorerState {
+  const params = new URLSearchParams(search);
+  const metric = params.get("metric");
+  const grain = params.get("grain");
+  const keepMetric = metric === decoded.selectedMetric && configured.metrics.some((candidate) => candidate.ref === metric);
+  const keepGrain = grain === decoded.grain;
+  return {
+    ...decoded,
+    view: "explore",
+    dashboardTab: configured.id,
+    model: configured.model.name,
+    selectedMetric: keepMetric ? decoded.selectedMetric : configured.selectedMetric,
+    grain: keepGrain ? decoded.grain : configured.grain,
   };
 }

@@ -1007,24 +1007,13 @@ Every Python adapter should be able to answer:
 
 ### Migration Command
 
-Recommended CLI:
+Current normalized CLI:
 
 ```bash
-sidemantic migrator convert \
+sidemantic convert ./lookml_project \
   --from lookml \
-  --input ./lookml_project \
-  --output ./native_models \
-  --validate-with rust
-```
-
-Or:
-
-```bash
-sidemantic convert \
-  --from cube \
-  --input ./cube_models \
-  --output ./models \
-  --engine rust
+  --to sidemantic \
+  --output ./native_models.yml
 ```
 
 ### Adapter Compatibility Docs
@@ -1047,12 +1036,12 @@ Current Rust routing through environment variables is useful for internal testin
 
 ### CLI Modes
 
-Add explicit engine selection:
+Use explicit engine selection:
 
 ```bash
 sidemantic validate ./models --engine rust
-sidemantic query ./models --engine rust --metric orders.total_revenue
-sidemantic rewrite ./models --engine rust "select orders.total_revenue from metrics"
+sidemantic query "select orders.total_revenue from metrics" --models ./models --engine rust --dry-run
+sidemantic rewrite "select orders.total_revenue from metrics" --models ./models --engine rust
 ```
 
 ### Config Mode

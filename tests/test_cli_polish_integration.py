@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import click
 from click.testing import CliRunner
 from typer.main import get_command
 
@@ -38,13 +39,15 @@ def test_root_and_nested_help_suggest_reviewable_command_corrections() -> None:
 
     root = runner.invoke(_cli(), ["vlaidate"])
     nested = runner.invoke(_cli(), ["help", "migrate", "genrate"])
+    root_stderr = click.unstyle(root.stderr)
+    nested_stderr = click.unstyle(nested.stderr)
 
     assert root.exit_code == 2
-    assert "Did you mean 'validate'?" in root.stderr
-    assert "validate --help" in root.stderr
+    assert "Did you mean 'validate'?" in root_stderr
+    assert "validate --help" in root_stderr
     assert nested.exit_code == 2
-    assert "Did you mean 'migrate generate'?" in nested.stderr
-    assert "sidemantic help migrate generate" in nested.stderr
+    assert "Did you mean 'migrate generate'?" in nested_stderr
+    assert "sidemantic help migrate generate" in nested_stderr
 
 
 def test_machine_invocation_suppresses_command_recovery_hint() -> None:

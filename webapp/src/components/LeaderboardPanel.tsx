@@ -1,7 +1,7 @@
 import { useMemo } from "react";
-import { aliasOf, NULL_TOKEN, type CatalogDimension, type CatalogMetric, type CatalogModel } from "../data/types";
+import { NULL_TOKEN, queryAlias, type CatalogDimension, type CatalogMetric, type CatalogModel } from "../data/types";
 import { formatCompact, formatDeltaAbs, formatDeltaPct, formatPercentOfTotal, sqlLiteral, type Tone } from "../lib/format";
-import { composeFilters, dimTypes, dimensionLeaderboard } from "../lib/queries";
+import { catalogDimTypes, composeFilters, dimensionLeaderboard } from "../lib/queries";
 import type { DateRange } from "../lib/time";
 import type { ContextColumn } from "../state/explorerState";
 import { useExplorer } from "../state/ExplorerContext";
@@ -17,6 +17,8 @@ const CONTEXT_OPTIONS: { key: ContextColumn; label: string; title: string }[] = 
   { key: "delta", label: "Δ", title: "Absolute change vs comparison period" },
   { key: "deltaPct", label: "Δ%", title: "Percent change vs comparison period" },
 ];
+const EMPTY_FILTERS: string[] = [];
+const EMPTY_SEGMENTS: string[] = [];
 
 /** A self-contained leaderboard: ranks one dimension by a metric, owning its own query so panels
  * load independently and crossfilter clicks toggle the dimension's filter. When a context column is
@@ -24,37 +26,48 @@ const CONTEXT_OPTIONS: { key: ContextColumn; label: string; title: string }[] = 
 export function LeaderboardPanel({
   dim,
   model,
+  timeDimensionRef,
   rankMetric,
   contextColumn,
   metricTotal,
   comparisonRange,
+  baseFilters = EMPTY_FILTERS,
+  baseSegments = EMPTY_SEGMENTS,
+  usePreaggregations,
   limit = 6,
   expanded = false,
   onExpandedChange,
 }: {
   dim: CatalogDimension;
   model: CatalogModel;
+  timeDimensionRef?: string;
   rankMetric: CatalogMetric;
   contextColumn: ContextColumn;
   /** Focused-metric ungrouped total under the current filters (threaded from the scorecard strip). */
   metricTotal?: number;
   /** Resolved comparison window for the delta columns; undefined when comparison is off. */
   comparisonRange?: DateRange;
+  /** Filters declared by a dashboard spec; always applied in addition to interactive filters. */
+  baseFilters?: string[];
+  /** Segments declared by a dashboard spec; always applied to current and comparison queries. */
+  baseSegments?: string[];
+  /** Per-dashboard override for materialized pre-aggregation routing. */
+  usePreaggregations?: boolean;
   limit?: number;
   expanded?: boolean;
   onExpandedChange?: (expanded: boolean) => void;
 }) {
-  const { state, dispatch, backend } = useExplorer();
-  const timeRef = model.timeDimension?.ref;
-  const types = useMemo(() => dimTypes(model.dimensions), [model]);
+  const { state, dispatch, backend, catalog } = useExplorer();
+  const timeRef = timeDimensionRef ?? model.timeDimension?.ref;
+  const types = useMemo(() => catalogDimTypes(catalog), [catalog]);
   const filters = useMemo(
     // Exclude this dimension's own filter so its leaderboard keeps showing every value.
-    () => composeFilters(state.filters, { timeRef, range: state.dateRange, excludeDim: dim.ref, types }),
-    [state.filters, timeRef, state.dateRange, dim.ref, types],
+    () => [...baseFilters, ...composeFilters(state.filters, { timeRef, range: state.dateRange, excludeDim: dim.ref, types })],
+    [baseFilters, state.filters, timeRef, state.dateRange, dim.ref, types],
   );
   const { result, loading, error } = useQueryResult(
     backend,
-    dimensionLeaderboard(rankMetric.ref, dim.ref, filters, limit),
+    dimensionLeaderboard(rankMetric.ref, dim.ref, filters, limit, baseSegments, usePreaggregations),
   );
 
   // Only an include-mode selection is a "checked" row; exclude/contains filters don't highlight
@@ -62,7 +75,8 @@ export function LeaderboardPanel({
   const own = state.filters[dim.ref];
   const selectedValues = own?.mode === "include" ? own.values : undefined;
 
-  const dimAlias = aliasOf(dim.ref);
+  const queryFields = [rankMetric.ref, dim.ref];
+  const dimAlias = queryAlias(dim.ref, queryFields);
   const wantsDelta = contextColumn === "delta" || contextColumn === "deltaPct";
   // Constrain the comparison-period query to EXACTLY the current leaderboard's dimension values.
   // Ranking the prior period independently (top N) would miss any current row that wasn't also in
@@ -91,14 +105,20 @@ export function LeaderboardPanel({
     () =>
       wantsDelta && comparisonRange && timeRef && currentValueConstraint
         ? [
+            ...baseFilters,
             ...composeFilters(state.filters, { timeRef, range: comparisonRange, excludeDim: dim.ref, types }),
             currentValueConstraint,
           ]
         : null,
-    [wantsDelta, comparisonRange, timeRef, state.filters, dim.ref, types, currentValueConstraint],
+    [wantsDelta, comparisonRange, timeRef, state.filters, dim.ref, types, currentValueConstraint, baseFilters],
   );
-  const prev = useQueryResult(backend, prevFilters ? dimensionLeaderboard(rankMetric.ref, dim.ref, prevFilters, limit) : null);
-  const metricAlias = aliasOf(rankMetric.ref);
+  const prev = useQueryResult(
+    backend,
+    prevFilters
+      ? dimensionLeaderboard(rankMetric.ref, dim.ref, prevFilters, limit, baseSegments, usePreaggregations)
+      : null,
+  );
+  const metricAlias = queryAlias(rankMetric.ref, queryFields);
   // While a slow reload is in flight, useQueryResult keeps the *previous* result visible. If the
   // ranking metric just changed, those kept rows carry the old metric's columns — reading the new
   // metric's column off them yields all-zeros. Treat that as still-loading and show the skeleton.

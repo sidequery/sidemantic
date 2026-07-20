@@ -139,6 +139,12 @@ Reports which queries can be rewritten, which cannot, and what's missing.
 | `--output / -o` | Path | Output project root for `migrate generate` |
 | `--json` | bool | Machine-readable generation or coverage report |
 
+Both commands discover `queries/` from the project root when `QUERIES` is omitted.
+
+`--history` reads warehouse query history through the configured connection. A command-line
+`--connection` is an override for `--history`, not a replacement for the project database used by
+ordinary semantic queries.
+
 ## Database Schema Introspection
 
 All database adapters implement `get_tables()` and `get_columns()`:

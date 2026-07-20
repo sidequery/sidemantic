@@ -255,18 +255,18 @@ For `many_to_many`, specify `through` (junction model), `through_foreign_key`, a
 
 ```bash
 # Validate definitions (checks for errors and warnings)
-sidemantic validate models/ --verbose
+sidemantic validate --verbose
 
 # Quick summary of what's defined
-sidemantic info models/
+sidemantic info
 ```
 
 ### Step 7: Test with queries
 
 ```bash
 # Validate and inspect without writing code
-uv run sidemantic validate models/ --verbose
-uv run sidemantic info models/
+uv run sidemantic validate --verbose
+uv run sidemantic info
 
 # Execute semantic SQL through CLI
 uv run sidemantic query \
@@ -372,20 +372,25 @@ result = layer.query(metrics=["orders.revenue"], parameters={"region": "US"})
 
 ## CLI Reference
 
-All commands are run as `sidemantic <command>`. Use `--config path/to/sidemantic.yaml` to load a config file with connection and model path settings.
+Run commands from the project root. Sidemantic discovers `sidemantic.yaml`, `models/`, `queries/`,
+`dashboard.yml`, and a single database under `data/`. Explicit paths and connection flags override
+those conventions. When selecting a non-discovered config, place the global option before the
+command: `sidemantic --config path/to/sidemantic.yaml validate`.
 
 | Command | Purpose |
 |---------|---------|
-| `validate [DIR] --verbose` | Validate definitions, show errors and warnings |
-| `info [DIR]` | Summary of models, dimensions, metrics, relationships |
-| `query [DIR] -c CONNECTION SQL` | Execute SQL through the semantic layer (`--format table/json/csv`, `--limit N`) |
-| `migrator [DIR] --queries PATH` | Coverage analysis: check how well models handle SQL queries |
-| `migrator --queries PATH --generate-models OUT` | Bootstrap: generate model YAML from SQL queries |
-| `preagg recommend [DIR]` | Recommend pre-aggregation tables from query patterns |
-| `preagg apply [DIR]` | Apply pre-aggregation recommendations |
-| `serve [DIR] -c CONNECTION` | Start PostgreSQL wire-protocol server |
-| `mcp-serve [DIR] -c CONNECTION` | Start MCP server for AI tool integration |
-| `workbench [DIR] -c CONNECTION` | Interactive TUI with SQL editor and charting |
+| `validate [MODELS] --verbose` | Validate definitions, show errors and warnings |
+| `info [MODELS]` | Summary of models, dimensions, metrics, relationships |
+| `query SQL [--models PATH] [--db PATH]` | Execute semantic SQL and emit CSV |
+| `rewrite SQL [--models PATH]` | Compile semantic SQL without executing it |
+| `migrate generate [QUERIES] [--output DIR]` | Bootstrap model YAML from SQL or configured history |
+| `migrate check [QUERIES] [--models PATH]` | Check how well models cover existing SQL |
+| `convert [SOURCE] --to FORMAT --output PATH` | Convert semantic definitions through the shared format registry |
+| `dashboard serve [SPEC]` | Serve a declarative dashboard in the official React UI |
+| `generate client` / `generate sql` | Generate typed TypeScript clients and query bindings |
+| `preagg recommend` / `apply` / `refresh` | Manage pre-aggregations |
+| `server api` / `postgres` / `mcp` | Run the HTTP, PostgreSQL, or MCP server |
+| `workbench [MODELS]` | Interactive TUI with SQL editor and charting |
 | `lsp` | Start LSP server for Sidemantic SQL files |
 
 ## Connection Strings

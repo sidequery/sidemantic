@@ -295,6 +295,30 @@ runtime:
     assert captured == {"rewriter": "1", "no_fallback": "0"}
 
 
+@pytest.mark.parametrize(
+    ("fallback_config", "expected_no_fallback"),
+    [("", "0"), ("  fallback: false\n", "1")],
+)
+def test_auto_engine_config_defaults_to_fallback_unless_disabled(tmp_path, fallback_config, expected_no_fallback):
+    _write_min_model(tmp_path)
+    config_path = tmp_path / "sidemantic.yaml"
+    config_path.write_text(
+        f"""
+models_dir: {tmp_path}
+runtime:
+  engine: auto
+{fallback_config}"""
+    )
+    from sidemantic.config import load_config
+
+    cli_module._loaded_config = load_config(config_path)
+    engine, fallback = cli_module._resolve_engine_options(None, None)
+    cli_module._configure_engine_environment(engine, fallback)
+
+    assert engine == "auto"
+    assert os.environ["SIDEMANTIC_RS_NO_FALLBACK"] == expected_no_fallback
+
+
 def test_rewrite_engine_rust_sets_rewriter_env(monkeypatch, tmp_path):
     _write_min_model(tmp_path)
     captured = {}
@@ -763,6 +787,40 @@ def test_api_serve_legacy_warning_precedes_start_server(monkeypatch, tmp_path):
 
     assert result.exit_code == 0, result.output
     assert events == ["warning", "start"]
+
+
+def test_demo_servers_ignore_discovered_project_database(monkeypatch, tmp_path):
+    pytest.importorskip("fastapi")
+    ensure_fake_riffq()
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    project_db = data_dir / "warehouse.duckdb"
+    duckdb.connect(str(project_db)).close()
+    monkeypatch.chdir(tmp_path)
+
+    def unexpected_resolution(**_kwargs):
+        pytest.fail("demo mode must not resolve a project database without an explicit CLI option")
+
+    layers = []
+
+    def fake_start_api_server(layer, **_kwargs):
+        layers.append(layer)
+
+    def fake_start_server(layer, **_kwargs):
+        layers.append(layer)
+
+    monkeypatch.setattr(cli_module, "_resolve_connection", unexpected_resolution)
+    monkeypatch.setattr("sidemantic.api_server.start_api_server", fake_start_api_server)
+    monkeypatch.setattr("sidemantic.server.server.start_server", fake_start_server)
+
+    api_result = runner.invoke(app, ["server", "api", "--demo", "--no-ui"])
+    postgres_result = runner.invoke(app, ["server", "postgres", "--demo"])
+
+    assert api_result.exit_code == 0, api_result.output
+    assert postgres_result.exit_code == 0, postgres_result.output
+    assert len(layers) == 2
+    assert all(layer.connection_string == "duckdb:///:memory:" for layer in layers)
+    assert duckdb.connect(str(project_db)).execute("SHOW TABLES").fetchall() == []
 
 
 def test_normalized_command_families_are_visible_and_legacy_aliases_are_hidden():

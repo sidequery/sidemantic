@@ -799,8 +799,95 @@ import { useState as useState7 } from "react";
 // webapp/src/components/FilterEditor.tsx
 import { useEffect as useEffect6, useId, useMemo as useMemo2, useRef as useRef4, useState as useState6 } from "react";
 
+// webapp/src/lib/catalog.ts
+function graphMetricsForModel(catalog, modelName) {
+  const joinable = new Set;
+  for (const pair of catalog.joinablePairs ?? []) {
+    if (pair.from === modelName)
+      joinable.add(pair.to);
+    if (pair.to === modelName)
+      joinable.add(pair.from);
+  }
+  return catalog.graphMetrics.filter((metric) => {
+    if (!metric.ownerModel)
+      return true;
+    return metric.ownerModel === modelName || joinable.has(metric.ownerModel);
+  });
+}
+
+// webapp/src/lib/dashboard.ts
+var GRAINS = new Set(["second", "minute", "hour", "day", "week", "month", "quarter", "year"]);
+function asList(value) {
+  if (value === undefined)
+    return [];
+  return Array.isArray(value) ? value : [value];
+}
+function dimensionForRef(catalog, ref) {
+  return catalog.models.flatMap((model) => model.dimensions).find((dimension) => ref === dimension.ref || ref.startsWith(`${dimension.ref}__`));
+}
+function grainForRef(ref, fallback) {
+  const candidate = ref.split("__").at(-1);
+  return candidate && GRAINS.has(candidate) ? candidate : fallback;
+}
+function defaultPreaggregations(dashboard) {
+  const query = dashboard.defaults?.query;
+  if (!query || typeof query !== "object")
+    return;
+  const defaults = query;
+  const value = defaults.use_preaggregations ?? defaults.usePreaggregations;
+  return typeof value === "boolean" ? value : undefined;
+}
+function interactionPreaggregations(dashboard, chart) {
+  const defaults = dashboard.defaults?.query;
+  const defaultQuery = defaults && typeof defaults === "object" ? defaults : {};
+  const value = chart.query.interaction_preaggregations ?? chart.query.interactionPreaggregations ?? chart.interaction_preaggregations ?? chart.interactionPreaggregations ?? defaultQuery.interaction_preaggregations ?? defaultQuery.interactionPreaggregations;
+  return typeof value === "boolean" ? value : undefined;
+}
+function dashboardTabConfig(catalog, dashboard, tabId) {
+  if (!dashboard?.tabs.length)
+    return null;
+  const tab = dashboard.tabs.find((candidate) => candidate.id === tabId) ?? dashboard.tabs[0];
+  const chart = tab.charts[0];
+  if (!chart)
+    return null;
+  const dimensionRefs = asList(chart.query.dimensions);
+  const metricRefs = asList(chart.query.metrics);
+  const graphMetricOwner = metricRefs.map((ref) => catalog.graphMetrics.find((metric) => metric.ref === ref)?.ownerModel).find((owner) => Boolean(owner));
+  const modelName = metricRefs.find((ref) => ref.includes("."))?.split(".")[0] ?? graphMetricOwner ?? dimensionRefs.find((ref) => ref.includes("."))?.split(".")[0];
+  const model = catalog.models.find((candidate) => candidate.name === modelName) ?? catalog.models[0];
+  if (!model)
+    return null;
+  const availableMetrics = [
+    ...catalog.models.flatMap((candidate) => candidate.metrics),
+    ...graphMetricsForModel(catalog, model.name)
+  ];
+  const metrics = metricRefs.map((ref) => availableMetrics.find((metric) => metric.ref === ref)).filter((metric) => Boolean(metric));
+  const dimensions = dimensionRefs.map((ref) => dimensionForRef(catalog, ref)).filter((dimension, index, all) => Boolean(dimension) && all.findIndex((candidate) => candidate?.ref === dimension?.ref) === index);
+  const encodedY = chart.encoding?.y;
+  const encodedMetrics = Array.isArray(encodedY) ? encodedY : encodedY ? [encodedY] : [];
+  const selectedMetric = encodedMetrics.find((ref) => metrics.some((metric) => metric.ref === ref)) ?? metrics[0]?.ref ?? model.metrics[0]?.ref ?? "";
+  const encodedTime = chart.encoding?.x;
+  const timeRef = (encodedTime && dimensionForRef(catalog, encodedTime)?.type === "time" ? encodedTime : undefined) ?? dimensionRefs.find((ref) => dimensionForRef(catalog, ref)?.type === "time");
+  const fallbackGrain = model.defaultGrain ?? "month";
+  const timeDimension = timeRef ? dimensionForRef(catalog, timeRef) : model.timeDimension;
+  return {
+    id: tab.id,
+    label: tab.label ?? tab.id,
+    title: chart.title ?? dashboard.title,
+    model,
+    metrics: metrics.length ? metrics : model.metrics,
+    dimensions: dimensions.length ? dimensions : model.dimensions,
+    timeDimension,
+    selectedMetric,
+    grain: timeRef ? grainForRef(timeRef, fallbackGrain) : fallbackGrain,
+    filters: asList(chart.query.filters),
+    segments: asList(chart.query.segments),
+    usePreaggregations: interactionPreaggregations(dashboard, chart) ?? chart.query.use_preaggregations ?? chart.query.usePreaggregations ?? defaultPreaggregations(dashboard)
+  };
+}
+
 // webapp/src/lib/time.ts
-var ALL_GRAINS = ["hour", "day", "week", "month", "quarter", "year"];
+var ALL_GRAINS = ["second", "minute", "hour", "day", "week", "month", "quarter", "year"];
 function isoDate(date) {
   return date.toISOString().slice(0, 10);
 }
@@ -816,12 +903,21 @@ function addDays(value, days) {
   return isoDate(date);
 }
 function timeFilters(ref, range) {
+  if (range.from.includes("T") || range.to.includes("T")) {
+    return [`${ref} >= cast('${range.from}' as timestamp)`, `${ref} < cast('${range.to}' as timestamp)`];
+  }
   return [`${ref} >= cast('${range.from}' as date)`, `${ref} < cast('${addDays(range.to, 1)}' as date)`];
 }
 
 // webapp/src/lib/queries.ts
 function isEmptyFilter(filter) {
   return filter.mode === "contains" ? !filter.pattern : filter.values.length === 0;
+}
+function dimTypes(dimensions) {
+  return Object.fromEntries(dimensions.map((dim) => [dim.ref, dim.type]));
+}
+function catalogDimTypes(catalog) {
+  return dimTypes(catalog.models.flatMap((model) => model.dimensions));
 }
 function filterLiteral(value, type) {
   if ((type === "numeric" || type === "number") && value.trim() !== "" && Number.isFinite(Number(value))) {
@@ -892,15 +988,22 @@ function composeFilters(filters, opts = {}) {
     base.push(...timeFilters(opts.timeRef, opts.range));
   return base;
 }
-function distinctValues(dimRef, filters, limit = 50) {
-  return { dimensions: [dimRef], filters, orderBy: [`${dimRef} ASC`], limit };
+function distinctValues(dimRef, filters, limit = 50, segments, usePreaggregations) {
+  return {
+    dimensions: [dimRef],
+    filters,
+    ...segments?.length ? { segments } : {},
+    ...usePreaggregations != null ? { usePreaggregations } : {},
+    orderBy: [`${dimRef} ASC`],
+    limit
+  };
 }
 
 // webapp/src/state/ExplorerContext.tsx
 import { createContext, useContext, useEffect as useEffect4, useMemo, useReducer } from "react";
 
 // webapp/src/state/url.ts
-var GRAINS = new Set(ALL_GRAINS);
+var GRAINS2 = new Set(ALL_GRAINS);
 var CONTEXT_COLUMNS = new Set(["none", "pctTotal", "delta", "deltaPct"]);
 var COMPARISONS = new Set(["off", "previous", "year", "custom"]);
 var FILTER_MODES = new Set(["include", "exclude", "contains"]);
@@ -985,7 +1088,8 @@ function FilterEditor({
   model,
   onClose
 }) {
-  const { state, dispatch, backend } = useExplorer();
+  const { state, dispatch, backend, catalog, dashboard } = useExplorer();
+  const configured = useMemo2(() => dashboardTabConfig(catalog, dashboard, state.dashboardTab), [catalog, dashboard, state.dashboardTab]);
   const filter = state.filters[dim.ref];
   const [mode, setModeState] = useState6(filter?.mode ?? "include");
   const selected = useMemo2(() => new Set(filter?.mode !== "contains" ? filter?.values ?? [] : []), [filter]);
@@ -1027,17 +1131,21 @@ function FilterEditor({
       return;
     dispatch({ type: "setFilterPattern", dim: dim.ref, pattern: debouncedPattern });
   }, [debouncedPattern, mode, dim.ref, dispatch]);
-  const timeRef = model.timeDimension?.ref;
+  const timeRef = configured?.timeDimension?.ref ?? model.timeDimension?.ref;
+  const types = useMemo2(() => catalogDimTypes(catalog), [catalog]);
   const valueFilters = useMemo2(() => {
-    const base = composeFilters(state.filters, { timeRef, range: state.dateRange, excludeDim: dim.ref });
+    const base = [
+      ...configured?.filters ?? [],
+      ...composeFilters(state.filters, { timeRef, range: state.dateRange, excludeDim: dim.ref, types })
+    ];
     if (debouncedSearch.trim()) {
       const pat = sqlLiteral(`%${likeEscape(debouncedSearch.trim())}%`);
       base.push(`CAST(${dim.ref} AS VARCHAR) ILIKE ${pat} ESCAPE '\\'`);
     }
     return base;
-  }, [state.filters, timeRef, state.dateRange, dim.ref, debouncedSearch]);
+  }, [configured, state.filters, timeRef, state.dateRange, dim.ref, debouncedSearch, types]);
   const listMode = mode !== "contains";
-  const { result, loading, error } = useQueryResult(backend, listMode ? distinctValues(dim.ref, valueFilters, VALUE_LIMIT) : null);
+  const { result, loading, error } = useQueryResult(backend, listMode ? distinctValues(dim.ref, valueFilters, VALUE_LIMIT, configured?.segments, configured?.usePreaggregations) : null);
   const dimAlias = aliasOf(dim.ref);
   const values = useMemo2(() => {
     if (!result)
@@ -1295,20 +1403,20 @@ function Leaderboard({
     "data-dimension": dimension,
     "data-expanded": expanded || undefined,
     "aria-label": `${title}, ranked by ${metricLabel}`,
-    className: "flex min-h-60 flex-col border-b border-r border-line bg-surface data-[expanded=true]:col-span-full",
+    className: "flex flex-col border border-line bg-surface data-[expanded=true]:col-span-full",
     children: [
       /* @__PURE__ */ jsxs8("header", {
-        className: "flex items-center justify-between gap-3 px-3 pb-2 pt-2.5",
+        className: "flex items-center justify-between gap-3 border-b border-line px-3 py-2",
         children: [
           /* @__PURE__ */ jsxs8("div", {
             className: "flex min-w-0 items-baseline gap-2",
             children: [
               /* @__PURE__ */ jsx11("h3", {
-                className: "truncate text-sm font-semibold text-ink",
+                className: "truncate text-xs font-semibold text-ink",
                 children: title
               }),
               /* @__PURE__ */ jsxs8("p", {
-                className: "sr-only",
+                className: "hidden shrink-0 text-2xs text-faint sm:block",
                 children: [
                   "Ranked by ",
                   metricLabel
@@ -1356,11 +1464,11 @@ function Leaderboard({
             "data-tone": tone,
             onClick: () => onToggle?.(row.value),
             "aria-pressed": isSelected,
-            className: `leaderboard-row relative grid w-full ${rowGrid} items-center gap-3 overflow-hidden border-0 bg-transparent px-3 py-1 text-left text-xs text-ink data-[selected=true]:bg-chart-primary-selected`,
+            className: `leaderboard-row relative grid w-full ${rowGrid} items-center gap-3 overflow-hidden border-b border-line px-3 py-1.5 text-left text-xs last:border-b-0 hover:bg-surface-soft data-[selected=true]:bg-accent-soft`,
             children: [
               /* @__PURE__ */ jsx11("span", {
                 "aria-hidden": "true",
-                className: `absolute inset-y-0 left-0 ${tone === "negative" ? "bg-danger-soft" : "bg-chart-primary-soft"}`,
+                className: `absolute inset-y-0 left-0 ${tone === "negative" ? "bg-danger-soft" : "bg-accent-soft"}`,
                 style: { width }
               }),
               /* @__PURE__ */ jsx11("span", {
@@ -1368,7 +1476,7 @@ function Leaderboard({
                 children: displayDimValue(row.value)
               }),
               /* @__PURE__ */ jsx11("strong", {
-                className: "relative tnum font-semibold text-ink",
+                className: "relative font-mono tnum font-medium text-ink",
                 children: formatMetric(row.metric)
               }),
               showContext ? /* @__PURE__ */ jsx11("span", {
@@ -1386,7 +1494,7 @@ function Leaderboard({
         "data-action": expanded ? "leaderboard-back" : "leaderboard-expand",
         "aria-expanded": expanded,
         onClick: () => onExpandedChange?.(!expanded),
-        className: "leaderboard-expand mt-1 min-h-9 border-0 border-t border-line bg-transparent px-3 text-left text-xs font-normal text-faint hover:text-accent",
+        className: "leaderboard-expand border-0 border-t border-line bg-transparent px-3 py-2 text-left text-xs font-normal text-faint hover:text-accent",
         children: expanded ? "← All dimensions" : `Expand table (${rows.length})`
       }) : null
     ]

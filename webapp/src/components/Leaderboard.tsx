@@ -66,12 +66,12 @@ export function Leaderboard({
       data-dimension={dimension}
       data-expanded={expanded || undefined}
       aria-label={`${title}, ranked by ${metricLabel}`}
-      className="flex min-h-60 flex-col border-b border-r border-line bg-surface data-[expanded=true]:col-span-full"
+      className="flex flex-col border border-line bg-surface data-[expanded=true]:col-span-full"
     >
-      <header className="flex items-center justify-between gap-3 px-3 pb-2 pt-2.5">
+      <header className="flex items-center justify-between gap-3 border-b border-line px-3 py-2">
         <div className="flex min-w-0 items-baseline gap-2">
-          <h3 className="truncate text-sm font-semibold text-ink">{title}</h3>
-          <p className="sr-only">Ranked by {metricLabel}</p>
+          <h3 className="truncate text-xs font-semibold text-ink">{title}</h3>
+          <p className="hidden shrink-0 text-2xs text-faint sm:block">Ranked by {metricLabel}</p>
         </div>
         {contextOptions && onContextColumn ? (
           <div
@@ -121,15 +121,15 @@ export function Leaderboard({
                 data-tone={tone}
                 onClick={() => onToggle?.(row.value)}
                 aria-pressed={isSelected}
-                className={`leaderboard-row relative grid w-full ${rowGrid} items-center gap-3 overflow-hidden border-0 bg-transparent px-3 py-1 text-left text-xs text-ink data-[selected=true]:bg-chart-primary-selected`}
+                className={`leaderboard-row relative grid w-full ${rowGrid} items-center gap-3 overflow-hidden border-b border-line px-3 py-1.5 text-left text-xs last:border-b-0 hover:bg-surface-soft data-[selected=true]:bg-accent-soft`}
               >
                 <span
                   aria-hidden="true"
-                  className={`absolute inset-y-0 left-0 ${tone === "negative" ? "bg-danger-soft" : "bg-chart-primary-soft"}`}
+                  className={`absolute inset-y-0 left-0 ${tone === "negative" ? "bg-danger-soft" : "bg-accent-soft"}`}
                   style={{ width }}
                 />
                 <span className="relative min-w-0 truncate text-muted">{displayDimValue(row.value)}</span>
-                <strong className="relative tnum font-semibold text-ink">{formatMetric(row.metric)}</strong>
+                <strong className="relative font-mono tnum font-medium text-ink">{formatMetric(row.metric)}</strong>
                 {showContext ? (
                   <span
                     data-testid="leaderboard-context"
@@ -150,7 +150,7 @@ export function Leaderboard({
           data-action={expanded ? "leaderboard-back" : "leaderboard-expand"}
           aria-expanded={expanded}
           onClick={() => onExpandedChange?.(!expanded)}
-          className="leaderboard-expand mt-1 min-h-9 border-0 border-t border-line bg-transparent px-3 text-left text-xs font-normal text-faint hover:text-accent"
+          className="leaderboard-expand border-0 border-t border-line bg-transparent px-3 py-2 text-left text-xs font-normal text-faint hover:text-accent"
         >
           {expanded ? "← All dimensions" : `Expand table (${rows.length})`}
         </button>

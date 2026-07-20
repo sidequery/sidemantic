@@ -1,4 +1,11 @@
-import { NULL_TOKEN, type CatalogDimension, type FieldRef, type Grain, type StructuredQuery } from "../data/types";
+import {
+  NULL_TOKEN,
+  type Catalog,
+  type CatalogDimension,
+  type FieldRef,
+  type Grain,
+  type StructuredQuery,
+} from "../data/types";
 import { sqlLiteral } from "./format";
 import { timeFilters, type DateRange } from "./time";
 
@@ -30,6 +37,11 @@ export type DimTypes = Record<FieldRef, string>;
 
 export function dimTypes(dimensions: CatalogDimension[]): DimTypes {
   return Object.fromEntries(dimensions.map((dim) => [dim.ref, dim.type]));
+}
+
+/** Include dimensions from every model so cross-model dashboard filters retain their SQL types. */
+export function catalogDimTypes(catalog: Pick<Catalog, "models">): DimTypes {
+  return dimTypes(catalog.models.flatMap((model) => model.dimensions));
 }
 
 /** Render a single filter value as a SQL literal, honoring the dimension's type so numeric and
@@ -129,13 +141,26 @@ export function composeFilters(
 }
 
 /** Aggregate totals for one or more metrics (no group-by). */
-export function metricTotals(metrics: FieldRef[], filters: string[]): StructuredQuery {
-  return { metrics, filters };
+export function metricTotals(
+  metrics: FieldRef[],
+  filters: string[],
+  segments?: FieldRef[],
+  usePreaggregations?: boolean,
+): StructuredQuery {
+  return {
+    metrics,
+    filters,
+    ...(segments?.length ? { segments } : {}),
+    ...(usePreaggregations != null ? { usePreaggregations } : {}),
+  };
 }
 
-// Upper bound on buckets per grain — generous enough to cover any realistic range (so the series
-// is never truncated to its oldest 500 buckets) while still bounding the points sent to the chart.
+// Upper bound on buckets per grain. Fine-grain dashboards can open without a date range, so keep
+// their initial response small enough to render safely instead of returning a day of seconds or a
+// year of minutes before the user can narrow the query.
 const GRAIN_BUCKET_CAP: Record<Grain, number> = {
+  second: 2000,
+  minute: 2000,
   hour: 9600, // ~13 months hourly
   day: 4000, // ~11 years daily
   week: 800,
@@ -144,10 +169,33 @@ const GRAIN_BUCKET_CAP: Record<Grain, number> = {
   year: 60,
 };
 
-/** A metric time series bucketed by `grain` on `timeRef`, ordered ascending. */
-export function metricSeries(metrics: FieldRef[], timeRef: FieldRef, grain: Grain, filters: string[]): StructuredQuery {
+/** A metric time series bucketed by `grain` on `timeRef`.
+ *
+ * Unbounded fine-grain queries fetch the latest capped window; callers sort those rows
+ * chronologically for display. Explicitly bounded queries retain the whole requested interval so
+ * the chart cannot disagree with its totals and range label.
+ */
+export function metricSeries(
+  metrics: FieldRef[],
+  timeRef: FieldRef,
+  grain: Grain,
+  filters: string[],
+  segments?: FieldRef[],
+  usePreaggregations?: boolean,
+  boundedRange = false,
+): StructuredQuery {
   const timeDim = `${timeRef}__${grain}`;
-  return { metrics, dimensions: [timeDim], filters, orderBy: [`${timeDim} ASC`], limit: GRAIN_BUCKET_CAP[grain] ?? 2000 };
+  const fineGrain = grain === "second" || grain === "minute";
+  const cappedFineGrain = fineGrain && !boundedRange;
+  return {
+    metrics,
+    dimensions: [timeDim],
+    filters,
+    ...(segments?.length ? { segments } : {}),
+    ...(usePreaggregations != null ? { usePreaggregations } : {}),
+    orderBy: [`${timeDim} ${cappedFineGrain ? "DESC" : "ASC"}`],
+    ...(!fineGrain || cappedFineGrain ? { limit: GRAIN_BUCKET_CAP[grain] ?? 2000 } : {}),
+  };
 }
 
 /** Top-N values of one dimension ranked by a metric (a leaderboard panel). */
@@ -156,8 +204,18 @@ export function dimensionLeaderboard(
   dimRef: FieldRef,
   filters: string[],
   limit = 6,
+  segments?: FieldRef[],
+  usePreaggregations?: boolean,
 ): StructuredQuery {
-  return { metrics: [metricRef], dimensions: [dimRef], filters, orderBy: [`${metricRef} DESC`], limit };
+  return {
+    metrics: [metricRef],
+    dimensions: [dimRef],
+    filters,
+    ...(segments?.length ? { segments } : {}),
+    ...(usePreaggregations != null ? { usePreaggregations } : {}),
+    orderBy: [`${metricRef} DESC`],
+    limit,
+  };
 }
 
 /**
@@ -165,8 +223,21 @@ export function dimensionLeaderboard(
  * dimension with no metric yields `SELECT DISTINCT <dim> … GROUP BY <dim>` at the backend; the
  * `filters` already fold in the search text (an ILIKE) and the surrounding crossfilter context.
  */
-export function distinctValues(dimRef: FieldRef, filters: string[], limit = 50): StructuredQuery {
-  return { dimensions: [dimRef], filters, orderBy: [`${dimRef} ASC`], limit };
+export function distinctValues(
+  dimRef: FieldRef,
+  filters: string[],
+  limit = 50,
+  segments?: FieldRef[],
+  usePreaggregations?: boolean,
+): StructuredQuery {
+  return {
+    dimensions: [dimRef],
+    filters,
+    ...(segments?.length ? { segments } : {}),
+    ...(usePreaggregations != null ? { usePreaggregations } : {}),
+    orderBy: [`${dimRef} ASC`],
+    limit,
+  };
 }
 
 /** Grouped pivot table: N dimensions x M metrics. */
@@ -185,6 +256,16 @@ export function previewRows(
   fields: { dimensions: FieldRef[]; metrics: FieldRef[] },
   filters: string[],
   limit = 50,
+  segments?: FieldRef[],
+  usePreaggregations?: boolean,
 ): StructuredQuery {
-  return { dimensions: fields.dimensions, metrics: fields.metrics, filters, ungrouped: true, limit };
+  return {
+    dimensions: fields.dimensions,
+    metrics: fields.metrics,
+    filters,
+    ...(segments?.length ? { segments } : {}),
+    ...(usePreaggregations != null ? { usePreaggregations } : {}),
+    ungrouped: true,
+    limit,
+  };
 }

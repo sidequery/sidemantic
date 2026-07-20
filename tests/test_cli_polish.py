@@ -67,10 +67,11 @@ def _suggestion_cli() -> click.Group:
 
 def test_close_command_name_suggests_reviewable_correction() -> None:
     result = CliRunner().invoke(_suggestion_cli(), ["vlaidate"])
+    stderr = click.unstyle(result.stderr)
 
     assert result.exit_code == 2
-    assert "Did you mean 'validate'?" in result.stderr
-    assert "validate --help" in result.stderr
+    assert "Did you mean 'validate'?" in stderr
+    assert "validate --help" in stderr
 
 
 @pytest.mark.parametrize(

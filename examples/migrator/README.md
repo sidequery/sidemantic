@@ -33,7 +33,7 @@ uv run sidemantic migrate generate raw_queries/ --output output/
 
 This will create:
 - `output/models/` - YAML model definitions for each table
-- `output/rewritten_queries/` - Python code showing how to query using the semantic layer
+- `output/rewritten_queries/` - semantic SQL rewrites
 
 ### Analyze Coverage
 

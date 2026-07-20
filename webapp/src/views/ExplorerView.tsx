@@ -125,6 +125,7 @@ export function ExplorerView() {
             baseFilters,
             configured?.segments,
             configured?.usePreaggregations,
+            Boolean(state.dateRange),
           ),
         )
       : null,
@@ -148,6 +149,7 @@ export function ExplorerView() {
             prevFilters,
             configured?.segments,
             configured?.usePreaggregations,
+            true,
           ),
         )
       : null,

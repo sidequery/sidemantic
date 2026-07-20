@@ -187,6 +187,14 @@ describe("dashboard query configuration", () => {
     ]);
   });
 
+  test("does not truncate explicitly bounded fine-grain series", () => {
+    for (const grain of ["second", "minute"] as const) {
+      const query = metricSeries(["orders.revenue"], "orders.created_at", grain, [], undefined, undefined, true);
+      expect(query.limit).toBeUndefined();
+      expect(query.orderBy).toEqual([`orders.created_at__${grain} ASC`]);
+    }
+  });
+
   test("threads segments and pre-aggregation opt-outs through every Explore query", () => {
     const segments = ["orders.completed"];
     const queries = [

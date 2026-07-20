@@ -171,8 +171,9 @@ const GRAIN_BUCKET_CAP: Record<Grain, number> = {
 
 /** A metric time series bucketed by `grain` on `timeRef`.
  *
- * Fine-grain queries fetch the latest capped window; callers sort those rows chronologically for
- * display. Coarser queries retain ascending backend order.
+ * Unbounded fine-grain queries fetch the latest capped window; callers sort those rows
+ * chronologically for display. Explicitly bounded queries retain the whole requested interval so
+ * the chart cannot disagree with its totals and range label.
  */
 export function metricSeries(
   metrics: FieldRef[],
@@ -181,9 +182,11 @@ export function metricSeries(
   filters: string[],
   segments?: FieldRef[],
   usePreaggregations?: boolean,
+  boundedRange = false,
 ): StructuredQuery {
   const timeDim = `${timeRef}__${grain}`;
-  const cappedFineGrain = grain === "second" || grain === "minute";
+  const fineGrain = grain === "second" || grain === "minute";
+  const cappedFineGrain = fineGrain && !boundedRange;
   return {
     metrics,
     dimensions: [timeDim],
@@ -191,7 +194,7 @@ export function metricSeries(
     ...(segments?.length ? { segments } : {}),
     ...(usePreaggregations != null ? { usePreaggregations } : {}),
     orderBy: [`${timeDim} ${cappedFineGrain ? "DESC" : "ASC"}`],
-    limit: GRAIN_BUCKET_CAP[grain] ?? 2000,
+    ...(!fineGrain || cappedFineGrain ? { limit: GRAIN_BUCKET_CAP[grain] ?? 2000 } : {}),
   };
 }
 

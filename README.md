@@ -17,7 +17,26 @@ Contributors working on browser surfaces should read the [UI architecture and ca
 
 ## 60-second quickstart
 
-Create `models/orders.yml`:
+See it working before writing anything — one command creates a complete demo
+project (models, sample DuckDB data, golden tests) and runs a first query:
+
+```bash
+uvx sidemantic demo
+```
+
+Start from your own data — Sidemantic introspects it and generates models with
+inferred dimensions, metrics, and relationships:
+
+```bash
+uvx sidemantic init analytics --from data/*.csv     # also Parquet, JSON, DuckDB
+cd analytics
+sidemantic query "SELECT orders.record_count FROM orders"
+sidemantic test              # golden-query assertions
+sidemantic validate --live   # models vs. actual database schema
+sidemantic serve             # web UI + HTTP API + MCP on one port
+```
+
+Or write a model by hand. Create `models/orders.yml`:
 
 ```yaml
 models:
@@ -124,8 +143,24 @@ TMDLAdapter().export(layer.graph, "exported_tmdl/")
 ## CLI
 
 ```bash
+# Scaffold a project (optionally generating models from your data)
+sidemantic init
+sidemantic init --from data/orders.csv --from data/customers.parquet
+
+# Self-contained demo project with sample data
+sidemantic demo
+
 # Query as a human-readable table (also supports csv, json, and jsonl)
 sidemantic query "SELECT revenue FROM orders" --db data.duckdb --format table
+
+# Query raw files directly (CSV, Parquet, JSON become tables named by file stem)
+sidemantic query "SELECT orders.revenue FROM orders" --db data/orders.csv
+
+# Golden-query tests: pin expected metric values so definitions cannot drift
+sidemantic test
+
+# Serve teammates and tools on one port: web UI, HTTP API, and MCP
+uvx --from "sidemantic[api,mcp]" sidemantic serve models/ --db data.duckdb
 
 # Interactive workbench (TUI with SQL editor + charts)
 uvx --from "sidemantic[workbench]" sidemantic workbench models/ --db data.duckdb
@@ -136,8 +171,9 @@ uvx --from "sidemantic[serve]" sidemantic server postgres models/ --port 5433
 # HTTP API server (JSON or Arrow)
 uvx --from "sidemantic[api]" sidemantic server api models/ --port 4400 --auth-token-file .secrets/api-token
 
-# Validate definitions
+# Validate definitions (--live also checks tables/columns against the database)
 sidemantic validate models/
+sidemantic validate models/ --live --db data.duckdb
 
 # Model info
 sidemantic info models/

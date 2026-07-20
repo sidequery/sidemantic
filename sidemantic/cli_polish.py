@@ -108,7 +108,8 @@ DEPRECATIONS: tuple[Deprecation, ...] = (
     Deprecation("migrator", "migrate generate/check", "0.10.0", "0.12.0"),
     Deprecation("export-native", "convert --to sidemantic", "0.10.0", "0.12.0"),
     Deprecation("explain-sql", "explain", "0.10.0", "0.12.0"),
-    Deprecation("serve", "server postgres", "0.10.0", "0.12.0"),
+    # "serve" was briefly a deprecated alias for "server postgres"; it is now
+    # the unified UI+API+MCP command, so it must not be flagged as legacy.
     Deprecation("api-serve", "server api", "0.10.0", "0.12.0"),
     Deprecation("mcp-serve", "server mcp", "0.10.0", "0.12.0"),
     Deprecation("tree", "workbench", "0.10.0", "0.12.0"),
@@ -175,6 +176,11 @@ RECOVERY_HINTS: tuple[tuple[str, str], ...] = (
     ("must specify --queries or --connection", "Pass --queries PATH, or configure a database and pass --connection."),
     ("requires --history", "Add --history, or remove the warehouse connection option."),
     ("unknown semantic format", "Run 'sidemantic help convert' to list supported source and destination formats."),
+    (
+        "no golden tests found",
+        "Create tests/*.yml with a top-level 'tests:' list, or scaffold one with 'sidemantic init'.",
+    ),
+    ("no tables found to generate models from", "Check the --from source contains tables or supported data files."),
 )
 
 

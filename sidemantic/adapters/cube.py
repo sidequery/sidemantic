@@ -15,6 +15,7 @@ from sidemantic.core.pre_aggregation import Index, PreAggregation, RefreshKey
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.security import SecurityPolicy
 from sidemantic.core.semantic_graph import SemanticGraph
+from sidemantic.fidelity import record_import_note
 
 
 class CubeImportWarning(UserWarning):
@@ -717,6 +718,13 @@ class CubeAdapter(BaseAdapter):
         }
 
         sidemantic_type = type_mapping.get(dim_type, "categorical")
+        if dim_type not in type_mapping:
+            record_import_note(
+                "unsupported_dimension_type",
+                f"dimension '{cube_name}.{name}' has unsupported type '{dim_type}'; imported as categorical",
+                severity="approximated",
+                source="Cube",
+            )
 
         # For time dimensions, extract granularity
         granularity = None
@@ -918,6 +926,12 @@ class CubeAdapter(BaseAdapter):
             else:
                 # Truly unknown types fall back to count
                 agg_type = "count"
+                record_import_note(
+                    "unsupported_measure_type",
+                    f"measure '{cube_name}.{name}' has unsupported type '{measure_type}'; imported as COUNT",
+                    severity="approximated",
+                    source="Cube",
+                )
 
         # Parse filters and normalize ${CUBE}/{CUBE} references
         filters = []
@@ -1297,6 +1311,12 @@ class CubeAdapter(BaseAdapter):
             target_name = join_path.split(".")[-1] if join_path else None
             target = graph.models.get(target_name) if target_name else None
             if not target:
+                record_import_note(
+                    "view_member",
+                    f"view '{name}' references cube '{target_name}' (join_path '{join_path}') that was not found; its members are dropped",
+                    severity="dropped",
+                    source="Cube",
+                )
                 continue
 
             includes = cube_spec.get("includes", [])

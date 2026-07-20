@@ -68,6 +68,23 @@ def _load_config_values(config_path: Path) -> dict[str, Any]:
     return values if isinstance(values, dict) else {}
 
 
+def _data_file_views(path: Path) -> list[str] | None:
+    """Return DuckDB view statements when a path is (or contains) raw data files."""
+
+    from sidemantic.datafiles import build_file_views, discover_data_files, is_data_file
+
+    try:
+        if path.is_file() and is_data_file(path):
+            return build_file_views([path])
+        if path.is_dir():
+            data_files = discover_data_files(path)
+            if data_files:
+                return build_file_views(data_files)
+    except ValueError as exc:
+        raise ProjectResolutionError(str(exc)) from exc
+    return None
+
+
 def _find_conventional_root(start: Path) -> Path:
     current = start
     while True:
@@ -77,6 +94,10 @@ def _find_conventional_root(start: Path) -> Path:
         has_database = any(
             path.is_file() for pattern in ("*.db", "*.duckdb") for path in (current / "data").glob(pattern)
         )
+        if not has_database:
+            from sidemantic.datafiles import discover_data_files
+
+            has_database = bool(discover_data_files(current / "data"))
         if (current / "models").is_dir() or has_dashboard or has_database:
             return current
         if current.parent == current:
@@ -198,6 +219,14 @@ class ProjectContext:
             return ResolvedConnection(connection=connection, source="--connection")
         if database is not None:
             path = _require_path(_resolve_cli_path(database, self.start_dir), "Database")
+            file_views = _data_file_views(path)
+            if file_views is not None:
+                return ResolvedConnection(
+                    connection="duckdb:///:memory:",
+                    database=path,
+                    init_sql=file_views,
+                    source="--db",
+                )
             return ResolvedConnection(connection=f"duckdb:///{path}", database=path, source="--db")
 
         if self.config is not None and self.config.connection is not None:
@@ -237,6 +266,18 @@ class ProjectContext:
         if matches:
             path = matches[0]
             return ResolvedConnection(connection=f"duckdb:///{path}", database=path, source="project data")
+
+        # No database file: raw data files in data/ still make a queryable project.
+        from sidemantic.datafiles import discover_data_files
+
+        for data_dir in dict.fromkeys(data_dirs):
+            data_files = discover_data_files(data_dir)
+            if data_files:
+                return ResolvedConnection(
+                    connection="duckdb:///:memory:",
+                    init_sql=_data_file_views(data_dir),
+                    source="project data files",
+                )
         if required:
             locations = ", ".join(str(path) for path in dict.fromkeys(data_dirs))
             raise ProjectResolutionError(

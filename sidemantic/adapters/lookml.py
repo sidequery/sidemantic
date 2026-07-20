@@ -11,6 +11,7 @@ from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
+from sidemantic.fidelity import record_import_note
 
 logger = logging.getLogger(__name__)
 
@@ -3739,6 +3740,15 @@ class LookMLAdapter(BaseAdapter):
         }
 
         agg_type = type_mapping.get(measure_type)
+        if measure_type not in type_mapping:
+            # An unrecognized measure type (not one of the derived-mapped date/number/string/yesno)
+            # flows into the derived-SQL path rather than a real aggregation.
+            record_import_note(
+                "unsupported_measure_type",
+                f"measure '{view_name}.{name}' has unsupported type '{measure_type}'; imported as a derived expression",
+                severity="approximated",
+                source="LookML",
+            )
 
         # Looker's `approximate: yes` on a count_distinct -> approximate distinct count.
         if agg_type == "count_distinct" and measure_def.get("approximate") in ("yes", True):

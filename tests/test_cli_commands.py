@@ -591,13 +591,14 @@ def test_serve_calls_start_server(monkeypatch, tmp_path):
     monkeypatch.setattr("sidemantic.cli_contract.emit_warning", lambda _message: events.append("warning"))
 
     _write_min_model(tmp_path)
-    result = runner.invoke(app, ["serve", str(tmp_path), "--port", "5544", "--username", "u", "--password", "p"])
+    result = runner.invoke(
+        app, ["server", "postgres", str(tmp_path), "--port", "5544", "--username", "u", "--password", "p"]
+    )
 
     assert result.exit_code == 0
     assert called["port"] == 5544
     assert called["username"] == "u"
     assert called["password"] == "p"
-    assert events[0] == "warning"
     assert events[-1] == "start"
 
 
@@ -616,7 +617,7 @@ def test_serve_missing_extra_prints_install_hint(monkeypatch, tmp_path):
     monkeypatch.setattr(builtins, "__import__", blocked_server_import)
 
     _write_min_model(tmp_path)
-    result = runner.invoke(app, ["serve", str(tmp_path)])
+    result = runner.invoke(app, ["server", "postgres", str(tmp_path)])
 
     assert result.exit_code == 1
     assert "requires the optional serve dependencies" in result.output
@@ -632,7 +633,7 @@ def test_serve_rejects_partial_auth(monkeypatch, tmp_path):
     monkeypatch.setattr("sidemantic.server.server.start_server", fake_start_server)
 
     _write_min_model(tmp_path)
-    result = runner.invoke(app, ["serve", str(tmp_path), "--username", "u"])
+    result = runner.invoke(app, ["server", "postgres", str(tmp_path), "--username", "u"])
 
     assert result.exit_code == 2
     assert "both --username and --password" in result.output
@@ -704,6 +705,7 @@ def test_api_serve_calls_start_server(monkeypatch, tmp_path):
         enforce_visibility=False,
         user_header="X-Sidemantic-User",
         dashboard=None,
+        serve_mcp=False,
     ):
         called["layer"] = layer
         called["host"] = host
@@ -772,7 +774,7 @@ def test_normalized_command_families_are_visible_and_legacy_aliases_are_hidden()
     for family in ("server", "generate", "migrate", "convert"):
         assert family in root_help.output
 
-    for legacy in ("serve", "api-serve", "mcp-serve", "gen", "migrator", "export-native", "explain-sql"):
+    for legacy in ("api-serve", "mcp-serve", "gen", "migrator", "export-native", "explain-sql"):
         assert re.search(rf"│\s+{re.escape(legacy)}\s", root_help.output) is None
         alias_help = runner.invoke(app, [legacy, "--help"])
         assert alias_help.exit_code == 0, f"{legacy}: {alias_help.output}"

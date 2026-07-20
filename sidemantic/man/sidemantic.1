@@ -51,6 +51,74 @@ sidemantic help [[COMMAND]...]
 .SS DESCRIPTION
 .PP
 Show top\-level help or help for a command path.
+.SH "SIDEMANTIC INIT"
+.SS SYNOPSIS
+.B
+sidemantic init [OPTIONS] [[DIRECTORY]]
+.SS DESCRIPTION
+.PP
+Create a Sidemantic project: config, models, and golden tests.
+.PP
+Without \-\-from, scaffolds a starter project that queries immediately with zero database setup. With \-\-from, introspects your data and generates models with inferred dimensions, metrics, and relationships.
+.PP
+Examples: sidemantic init sidemantic init analytics \-\-from data/orders.csv \-\-from data/customers.parquet sidemantic init \-\-from data/warehouse.duckdb sidemantic init \-\-from\-connection "postgres://localhost:5432/analytics"
+.SS OPTIONS
+.TP
+\fB\-\-from PATH\fR
+Bootstrap models from data: CSV/Parquet/JSON files, directories of them, or a DuckDB database (repeatable)
+.TP
+\fB\-\-from\-connection TEXT\fR
+Bootstrap models by introspecting a database connection string
+.TP
+\fB\-\-force\fR
+Overwrite files a previous scaffold created
+.TP
+\fB\-\-json\fR
+Emit the scaffold report as JSON
+.SH "SIDEMANTIC DEMO"
+.SS SYNOPSIS
+.B
+sidemantic demo [OPTIONS] [[DIRECTORY]]
+.SS DESCRIPTION
+.PP
+Create and query a self\-contained demo project (models + DuckDB data).
+.PP
+Writes a complete example project you can inspect, query, test, and serve, then runs a first query so you see results immediately.
+.PP
+Examples: sidemantic demo uvx sidemantic demo
+.SS OPTIONS
+.TP
+\fB\-\-force\fR
+Overwrite files a previous demo created
+.TP
+\fB\-\-json\fR
+Emit the scaffold report as JSON
+.SH "SIDEMANTIC TEST"
+.SS SYNOPSIS
+.B
+sidemantic test [OPTIONS] [[PATHS]...]
+.SS DESCRIPTION
+.PP
+Run golden\-query tests against the semantic layer.
+.PP
+Test files declare queries with expected results, so metric definitions cannot silently drift:
+.PP
+tests: \- name: total revenue sql: SELECT orders.revenue FROM orders expect: {value: 250.0}
+.PP
+Examples: sidemantic test sidemantic test tests/revenue.yml \-\-db data/warehouse.duckdb
+.SS OPTIONS
+.TP
+\fB\-\-models, \-m PATH\fR
+Directory containing semantic layer files
+.TP
+\fB\-\-connection TEXT\fR
+Database connection string
+.TP
+\fB\-\-db PATH\fR
+Path to DuckDB database file or data file
+.TP
+\fB\-\-json\fR
+Emit the test report as JSON
 .SH "SIDEMANTIC INFO"
 .SS SYNOPSIS
 .B
@@ -180,6 +248,45 @@ Allow Rust engine fallback to Python
 .TP
 \fB\-\-strict, \-\-no\-strict\fR
 Fail on unsupported semantic SQL
+.SH "SIDEMANTIC SERVE"
+.SS SYNOPSIS
+.B
+sidemantic serve [OPTIONS] [[DIRECTORY]]
+.SS DESCRIPTION
+.PP
+Serve the semantic layer on one port: web UI, HTTP API, and MCP.
+.PP
+One command for teammates and tools: the browser UI at /, the JSON/Arrow API under /api paths, and the MCP endpoint for agents at /mcp.
+.PP
+Examples: sidemantic serve sidemantic serve \-\-demo sidemantic serve ./models \-\-db data/warehouse.duckdb \-\-port 4400
+.SS OPTIONS
+.TP
+\fB\-\-demo\fR
+Use demo data
+.TP
+\fB\-\-connection TEXT\fR
+Database connection string (e.g., postgres://host/db, bigquery://project/dataset)
+.TP
+\fB\-\-db PATH\fR
+Path to DuckDB database file (shorthand for duckdb:/// connection)
+.TP
+\fB\-\-host, \-H TEXT\fR
+Host/IP to bind to (overrides config, default 127.0.0.1)
+.TP
+\fB\-\-port, \-p INTEGER\fR
+Port to listen on (overrides config, default 4400)
+.TP
+\fB\-\-auth\-token\-file PATH\fR
+Read the API bearer token from a file, or \- for stdin
+.TP
+\fB\-\-cors\-origin TEXT\fR
+Allowed CORS origin (repeatable)
+.TP
+\fB\-\-ui, \-\-no\-ui\fR
+Serve the embedded web UI at the root path
+.TP
+\fB\-\-mcp, \-\-no\-mcp\fR
+Serve the MCP endpoint at /mcp when the mcp extra is installed
 .SH "SIDEMANTIC VALIDATE"
 .SS SYNOPSIS
 .B
@@ -188,9 +295,9 @@ sidemantic validate [OPTIONS] [[DIRECTORY]]
 .PP
 Validate semantic layer definitions.
 .PP
-Shows errors, warnings, and optionally detailed info.
+Shows errors, warnings, and optionally detailed info. With \-\-live, also probes the configured database so dropped or renamed tables and columns fail validation instead of failing at query time.
 .PP
-Examples: sidemantic validate sidemantic validate ./models \-\-verbose
+Examples: sidemantic validate sidemantic validate ./models \-\-verbose sidemantic validate \-\-live
 .SS OPTIONS
 .TP
 \fB\-\-verbose, \-v\fR
@@ -201,6 +308,15 @@ Runtime engine: python, rust, or auto
 .TP
 \fB\-\-fallback, \-\-no\-fallback\fR
 Allow Rust engine fallback to Python
+.TP
+\fB\-\-live\fR
+Also verify models against the live database schema (tables and columns exist)
+.TP
+\fB\-\-connection TEXT\fR
+Database connection string for \-\-live
+.TP
+\fB\-\-db PATH\fR
+DuckDB database or data file for \-\-live
 .TP
 \fB\-\-json\fR
 Emit the validation report as JSON
@@ -552,6 +668,9 @@ Trusted request header carrying JSON user attributes
 .TP
 \fB\-\-ui, \-\-no\-ui\fR
 Serve the embedded web UI at the root path
+.TP
+\fB\-\-mcp, \-\-no\-mcp\fR
+Serve the MCP endpoint at /mcp when the mcp extra is installed
 .SH "SIDEMANTIC PREAGG"
 .SS SYNOPSIS
 .B

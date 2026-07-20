@@ -14,6 +14,7 @@ from sidemantic.core.dimension import Dimension
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.semantic_graph import SemanticGraph
+from sidemantic.yaml_compat import safe_load as _yaml_safe_load
 
 
 class RillAdapter:
@@ -218,7 +219,7 @@ class RillAdapter:
             Model if the file is a metrics_view, None otherwise
         """
         with open(file_path) as f:
-            data = yaml.safe_load(f)
+            data = _yaml_safe_load(f)
 
         if not data or data.get("type") != "metrics_view":
             return None

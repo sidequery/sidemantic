@@ -10,6 +10,7 @@ from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
+from sidemantic.yaml_compat import safe_load as _yaml_safe_load
 
 
 class MetricFlowAdapter(BaseAdapter):
@@ -99,7 +100,7 @@ class MetricFlowAdapter(BaseAdapter):
             graph: Semantic graph to add models/metrics to
         """
         with open(file_path) as f:
-            data = yaml.safe_load(f)
+            data = _yaml_safe_load(f)
 
         if not data:
             return

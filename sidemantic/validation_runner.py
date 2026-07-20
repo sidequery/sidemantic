@@ -68,16 +68,20 @@ def validate_directory(directory: str | Path) -> ValidationReport:
         report.errors.extend(validate_metric(metric, layer.graph))
 
     if len(layer.graph.models) > 1:
-        orphaned = []
-        for model_name, model in layer.graph.models.items():
-            has_outgoing = bool(model.relationships)
-            has_incoming = any(
-                any(rel.name == model_name for rel in other.relationships)
-                for other_name, other in layer.graph.models.items()
-                if other_name != model_name
-            )
-            if not has_outgoing and not has_incoming:
-                orphaned.append(model_name)
+        # One O(V+E) pass: collect every relationship target, then a model is
+        # orphaned iff it has no outgoing relationships and is nobody's target.
+        # (The previous per-model rescan was O(V^2): 4k disconnected models took
+        # ~12.5s.)
+        incoming_targets: set[str] = set()
+        for other_name, other in layer.graph.models.items():
+            for rel in other.relationships:
+                if rel.name != other_name:
+                    incoming_targets.add(rel.name)
+        orphaned = [
+            model_name
+            for model_name, model in layer.graph.models.items()
+            if not model.relationships and model_name not in incoming_targets
+        ]
 
         if orphaned:
             report.warnings.append(f"Orphaned models (no relationships): {', '.join(orphaned)}")

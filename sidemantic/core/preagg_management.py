@@ -13,6 +13,7 @@ import yaml
 
 from sidemantic.core.pre_aggregation import PreAggregation
 from sidemantic.core.preagg_recommender import PreAggRecommendation, PreAggregationRecommender
+from sidemantic.yaml_compat import safe_load as _yaml_safe_load
 
 RefreshMode = Literal["full", "incremental", "merge", "engine"]
 
@@ -159,7 +160,7 @@ def _load_model_documents(
     locations: dict[str, list[ModelDefinitionLocation]] = {}
     yaml_files = sorted({*directory.rglob("*.yml"), *directory.rglob("*.yaml")})
     for path in yaml_files:
-        loaded = yaml.safe_load(path.read_text())
+        loaded = _yaml_safe_load(path.read_text())
         if loaded is None:
             continue
         if not isinstance(loaded, dict):

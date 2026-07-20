@@ -10,6 +10,7 @@ from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
+from sidemantic.yaml_compat import safe_load_all as _yaml_safe_load_all
 
 
 class HexAdapter(BaseAdapter):
@@ -59,7 +60,7 @@ class HexAdapter(BaseAdapter):
             graph: Semantic graph to add models to
         """
         with open(file_path) as f:
-            documents = yaml.safe_load_all(f)
+            documents = _yaml_safe_load_all(f)
 
             for data in documents:
                 if not data or not isinstance(data, dict):

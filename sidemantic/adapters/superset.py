@@ -11,6 +11,7 @@ from sidemantic.core.dimension import Dimension
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.semantic_graph import SemanticGraph
+from sidemantic.yaml_compat import safe_load as _yaml_safe_load
 
 
 class SupersetAdapter(BaseAdapter):
@@ -70,7 +71,7 @@ class SupersetAdapter(BaseAdapter):
             Model instance or None
         """
         with open(file_path) as f:
-            dataset = yaml.safe_load(f)
+            dataset = _yaml_safe_load(f)
 
         if not dataset:
             return None

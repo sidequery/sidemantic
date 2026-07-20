@@ -11,6 +11,7 @@ from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
+from sidemantic.yaml_compat import safe_load as _yaml_safe_load
 
 
 class OmniAdapter(BaseAdapter):
@@ -148,7 +149,7 @@ class OmniAdapter(BaseAdapter):
     def _load_relationships_list(relationships_file: Path) -> list[dict[str, Any]]:
         """Load a bare top-level list of joins from a relationships file."""
         with open(relationships_file) as f:
-            data = yaml.safe_load(f)
+            data = _yaml_safe_load(f)
 
         if data is None:
             return []
@@ -169,7 +170,7 @@ class OmniAdapter(BaseAdapter):
             Model instance or None
         """
         with open(file_path) as f:
-            view = yaml.safe_load(f)
+            view = _yaml_safe_load(f)
 
         if not view or not isinstance(view, dict):
             return None
@@ -556,7 +557,7 @@ class OmniAdapter(BaseAdapter):
             graph: Semantic graph to add relationships to
         """
         with open(model_file) as f:
-            model_def = yaml.safe_load(f)
+            model_def = _yaml_safe_load(f)
 
         if not model_def or not isinstance(model_def, dict):
             return
@@ -664,7 +665,7 @@ class OmniAdapter(BaseAdapter):
             graph: Semantic graph to add topic + relationships to
         """
         with open(topic_file) as f:
-            topic_def = yaml.safe_load(f)
+            topic_def = _yaml_safe_load(f)
 
         if not topic_def or not isinstance(topic_def, dict):
             return

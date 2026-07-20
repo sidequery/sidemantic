@@ -17,6 +17,7 @@ from sidemantic.core.model import Model
 from sidemantic.core.pre_aggregation import PreAggregation
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
+from sidemantic.yaml_compat import safe_load as _yaml_safe_load
 
 _TIME_UNIT_MAP = {
     "year": "year",
@@ -350,7 +351,7 @@ class AtScaleSMLAdapter(BaseAdapter):
 
         for file_path in files:
             with open(file_path) as f:
-                data = yaml.safe_load(f)
+                data = _yaml_safe_load(f)
 
             if not data:
                 continue

@@ -668,7 +668,9 @@ class Migrator:
     def _extract_relationships(self, parsed: exp.Expression, analysis: QueryAnalysis) -> None:
         """Extract relationships from JOIN ON conditions and WHERE clause equality conditions.
 
-        Uses information_schema data if available, falls back to pattern matching.
+        Uses information_schema constraints for cardinality when available. Without a constraint,
+        preserves the observed columns as a direct many-to-many relationship instead of guessing
+        which side is unique from names such as ``id`` or ``*_id``.
         """
 
         # Helper function to extract relationship from an equality condition
@@ -688,104 +690,23 @@ class Migrator:
             if left_table == right_table:
                 return
 
-            # Try information_schema first
-            fk_table = None
-            fk_column = None
-            pk_table = None
-            pk_column = None
-
-            # Check if left side is a known FK
             if (left_table, left.name) in self.foreign_keys:
                 pk_table, pk_column = self.foreign_keys[(left_table, left.name)]
-                fk_table = left_table
-                fk_column = left.name
-            # Check if right side is a known FK
+                analysis.relationships.append((left_table, pk_table, "many_to_one", left.name, pk_column))
             elif (right_table, right.name) in self.foreign_keys:
                 pk_table, pk_column = self.foreign_keys[(right_table, right.name)]
-                fk_table = right_table
-                fk_column = right.name
-
-            # Fall back to pattern matching if information_schema didn't help
-            if not fk_table:
-                # Determine which side has the foreign key by checking column names
-                # Foreign keys typically end with _id (e.g., customer_id, product_id)
-                left_is_fk = left.name.endswith("_id")
-                right_is_fk = right.name.endswith("_id")
-
-                if left_is_fk and not right_is_fk:
-                    # Left has the FK, right has the PK
-                    fk_table = left_table
-                    fk_column = left.name
-                    pk_table = right_table
-                    pk_column = right.name
-                elif right_is_fk and not left_is_fk:
-                    # Right has the FK, left has the PK
-                    fk_table = right_table
-                    fk_column = right.name
-                    pk_table = left_table
-                    pk_column = left.name
-                else:
-                    # Can't determine - use left as FK
-                    fk_table = left_table
-                    fk_column = left.name
-                    pk_table = right_table
-                    pk_column = right.name
-
-            # Infer primary key column if not from information_schema
-            if pk_column and not self.foreign_keys:
-                # If it ends with _id, the actual PK is probably "id"
-                pk_column = "id" if pk_column.endswith("_id") else pk_column
-
-            # Generate relationships for both directions
-            # FK table has many_to_one relationship to PK table
-            analysis.relationships.append((fk_table, pk_table, "many_to_one", fk_column, pk_column))
-
-            # PK table has one_to_many relationship to FK table
-            # For one_to_many, we don't store FK (it's on the other side)
-            analysis.relationships.append((pk_table, fk_table, "one_to_many", None, None))
+                analysis.relationships.append((right_table, pk_table, "many_to_one", right.name, pk_column))
+            else:
+                analysis.relationships.append((left_table, right_table, "many_to_many", left.name, right.name))
 
         # Extract from JOIN ON conditions
         for join in parsed.find_all(exp.Join):
             if not isinstance(join.this, exp.Table):
                 continue
 
-            to_table = join.this.name
-
             # Parse ON condition
             on_clause = join.args.get("on")
             if on_clause and isinstance(on_clause, exp.EQ):
-                # For ambiguous cases, pass context about which table is being joined TO
-                left = on_clause.left
-                right = on_clause.right
-
-                if isinstance(left, exp.Column) and isinstance(right, exp.Column):
-                    left_table = analysis.table_aliases.get(left.table, left.table) if left.table else ""
-                    right_table = analysis.table_aliases.get(right.table, right.table) if right.table else ""
-
-                    # If both columns end with _id, use join direction to determine FK
-                    if left.name.endswith("_id") and right.name.endswith("_id"):
-                        # The table being joined TO (to_table) usually has the FK
-                        if right_table == to_table:
-                            # Right table is being joined, so it has the FK
-                            fk_table = right_table
-                            fk_column = right.name
-                            pk_table = left_table
-                            pk_column = "id" if right.name.endswith("_id") else right.name
-
-                            analysis.relationships.append((fk_table, pk_table, "many_to_one", fk_column, pk_column))
-                            analysis.relationships.append((pk_table, fk_table, "one_to_many", None, None))
-                            continue
-                        elif left_table == to_table:
-                            # Left table is being joined, so it has the FK
-                            fk_table = left_table
-                            fk_column = left.name
-                            pk_table = right_table
-                            pk_column = "id" if left.name.endswith("_id") else left.name
-
-                            analysis.relationships.append((fk_table, pk_table, "many_to_one", fk_column, pk_column))
-                            analysis.relationships.append((pk_table, fk_table, "one_to_many", None, None))
-                            continue
-
                 extract_relationship_from_eq(on_clause)
 
         # Extract from WHERE clause (for implicit joins like FROM t1, t2 WHERE t1.id = t2.fk)
@@ -1555,12 +1476,12 @@ class Migrator:
                         "type": rel_type,
                     }
 
-                    # Add foreign_key for many_to_one relationships
-                    if rel_type == "many_to_one" and fk_col:
+                    # Preserve the observed source join column for constrained and direct joins.
+                    if rel_type in {"many_to_one", "many_to_many"} and fk_col:
                         rel_def["foreign_key"] = fk_col
 
-                    # Optionally add primary_key if it's not the default "id"
-                    if pk_col and pk_col != "id":
+                    # Relationship target keys are always explicit; there is no implicit ``id``.
+                    if pk_col:
                         rel_def["primary_key"] = pk_col
 
                     relationships.append(rel_def)

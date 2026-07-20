@@ -9,13 +9,13 @@ from sidemantic.validation import (
     ModelValidationError,
     QueryValidationError,
     validate_model_warnings,
+    validate_relationships,
 )
 from sidemantic.validation_runner import validate_directory
 
 
-def test_model_has_default_primary_key(layer):
-    """Test that models have a default primary key."""
-    # Model without explicit primary_key should default to "id"
+def test_model_without_primary_key_remains_explicitly_keyless(layer):
+    """Models must not manufacture an ``id`` key when none was declared."""
     model = Model(
         name="orders",
         table="orders",
@@ -25,7 +25,24 @@ def test_model_has_default_primary_key(layer):
     )
 
     layer.add_model(model)
-    assert model.primary_key == "id"
+    assert model.primary_key is None
+    assert model.primary_key_columns == []
+
+
+def test_inactive_relationships_are_ignored_by_structural_validation():
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="orders",
+            table="orders",
+            primary_key="order_id",
+            relationships=[Relationship(name="removed_model", type="many_to_one", active=False)],
+        )
+    )
+
+    assert validate_relationships(graph) == []
 
 
 def test_model_validation_no_table(layer):
@@ -227,6 +244,39 @@ def test_query_validation_no_join_path(layer):
     assert "'products'" in str(exc_info.value)
 
 
+def test_query_validation_ignores_unrelated_broken_relationship(layer):
+    layer.add_model(
+        Model(
+            name="orders",
+            table="orders",
+            primary_key="order_id",
+            relationships=[
+                Relationship(
+                    name="products",
+                    type="many_to_one",
+                    foreign_key="product_id",
+                    primary_key="product_id",
+                ),
+                Relationship(name="customers", type="many_to_one"),
+            ],
+            metrics=[Metric(name="revenue", agg="sum", sql="amount")],
+        )
+    )
+    layer.add_model(
+        Model(
+            name="products",
+            table="products",
+            primary_key="product_id",
+            dimensions=[Dimension(name="category", type="categorical")],
+        )
+    )
+    layer.add_model(Model(name="customers", table="customers", primary_key="customer_id"))
+
+    sql = layer.compile(metrics=["orders.revenue"], dimensions=["products.category"])
+
+    assert "products_cte" in sql
+
+
 def test_query_validation_invalid_granularity(layer):
     """Test that invalid time granularities are rejected."""
     layer.add_model(
@@ -425,6 +475,503 @@ models:
     joined = "\n".join(report.warnings)
     assert "type 'lambda' is parsed but not executed" in joined
     assert "partition_granularity" not in joined  # now functional via build_partitions(), no longer warned
+
+
+def _write_warehouse_validation_model(tmp_path, *, foreign_key: str = "customer_id"):
+    (tmp_path / "models.yml").write_text(
+        f"""
+models:
+  - name: orders
+    table: orders
+    primary_key: order_id
+    dimensions:
+      - name: created_at
+        type: time
+        granularity: day
+      - name: status
+        type: categorical
+    metrics:
+      - name: revenue
+        agg: sum
+        sql: amount
+    relationships:
+      - name: customers
+        type: many_to_one
+        foreign_key: {foreign_key}
+  - name: customers
+    table: customers
+    primary_key: customer_id
+    dimensions:
+      - name: region
+        type: categorical
+"""
+    )
+
+
+def test_warehouse_validation_checks_schema_types_joins_and_queries(tmp_path):
+    import duckdb
+
+    _write_warehouse_validation_model(tmp_path)
+    database = tmp_path / "warehouse.duckdb"
+    connection = duckdb.connect(str(database))
+    connection.execute(
+        "CREATE TABLE customers (customer_id INTEGER PRIMARY KEY, region VARCHAR); "
+        "CREATE TABLE orders (order_id INTEGER PRIMARY KEY, customer_id INTEGER, created_at TIMESTAMP, "
+        "status VARCHAR, amount DECIMAL(12, 2))"
+    )
+    connection.close()
+
+    report = validate_directory(tmp_path, connection=f"duckdb:///{database}")
+
+    assert report.passed, report.all_errors
+    assert report.connection_errors == []
+    assert report.warehouse_errors == []
+    assert any("Warehouse validation:" in item for item in report.info)
+
+
+def test_warehouse_validation_reports_missing_columns_and_type_mismatches(tmp_path):
+    import duckdb
+
+    _write_warehouse_validation_model(tmp_path, foreign_key="missing_customer_id")
+    database = tmp_path / "warehouse.duckdb"
+    connection = duckdb.connect(str(database))
+    connection.execute(
+        "CREATE TABLE customers (customer_id INTEGER, region VARCHAR); "
+        "CREATE TABLE orders (order_id INTEGER, created_at VARCHAR, status VARCHAR, amount VARCHAR)"
+    )
+    connection.close()
+
+    report = validate_directory(
+        tmp_path,
+        connection=f"duckdb:///{database}",
+        check_queries=False,
+    )
+
+    errors = "\n".join(report.warehouse_errors)
+    assert report.errors == []
+    assert "missing column 'missing_customer_id'" in errors
+    assert "column 'created_at' is declared time" in errors
+    assert "column 'amount' is declared numeric" in errors
+
+
+def test_warehouse_validation_checks_columns_used_only_by_segments(tmp_path):
+    import duckdb
+
+    (tmp_path / "models.yml").write_text(
+        """
+models:
+  - name: orders
+    table: orders
+    segments:
+      - name: paid
+        sql: "{model}.status = 'paid'"
+"""
+    )
+    database = tmp_path / "warehouse.duckdb"
+    connection = duckdb.connect(str(database))
+    connection.execute("CREATE TABLE orders (order_id INTEGER)")
+    connection.close()
+
+    report = validate_directory(
+        tmp_path,
+        connection=f"duckdb:///{database}",
+        check_queries=False,
+    )
+
+    assert "Model 'orders' references missing column 'status'" in "\n".join(report.warehouse_errors)
+
+
+def test_warehouse_validation_ignores_inactive_relationships(tmp_path):
+    import duckdb
+
+    (tmp_path / "models.yml").write_text(
+        """
+models:
+  - name: orders
+    table: orders
+    primary_key: order_id
+    metrics:
+      - name: revenue
+        agg: sum
+        sql: amount
+    relationships:
+      - name: removed_customers
+        type: many_to_one
+        foreign_key: old_customer_id
+        active: false
+  - name: removed_customers
+    table: removed_customers
+    primary_key: customer_id
+    dimensions:
+      - name: region
+        type: categorical
+"""
+    )
+    database = tmp_path / "warehouse.duckdb"
+    connection = duckdb.connect(str(database))
+    connection.execute(
+        "CREATE TABLE orders (order_id INTEGER PRIMARY KEY, amount DECIMAL(12, 2)); "
+        "CREATE TABLE removed_customers (customer_id INTEGER PRIMARY KEY, region VARCHAR)"
+    )
+    connection.close()
+
+    report = validate_directory(
+        tmp_path,
+        connection=f"duckdb:///{database}",
+    )
+
+    assert report.passed, report.all_errors
+
+
+def test_warehouse_validation_reports_incompatible_join_key_types(tmp_path):
+    import duckdb
+
+    _write_warehouse_validation_model(tmp_path)
+    database = tmp_path / "warehouse.duckdb"
+    connection = duckdb.connect(str(database))
+    connection.execute(
+        "CREATE TABLE customers (customer_id VARCHAR, region VARCHAR); "
+        "CREATE TABLE orders (order_id INTEGER, customer_id INTEGER, created_at TIMESTAMP, "
+        "status VARCHAR, amount DECIMAL(12, 2))"
+    )
+    connection.close()
+
+    report = validate_directory(tmp_path, connection=f"duckdb:///{database}", check_queries=False)
+
+    errors = "\n".join(report.warehouse_errors)
+    assert "Relationship 'orders.customers' joins incompatible warehouse types" in errors
+    assert "orders.customer_id is INTEGER" in errors
+    assert "customers.customer_id is VARCHAR" in errors
+
+
+def test_warehouse_key_checks_find_null_and_duplicate_primary_keys(tmp_path):
+    import duckdb
+
+    (tmp_path / "models.yml").write_text(
+        """
+models:
+  - name: events
+    table: events
+    primary_key: event_id
+    dimensions:
+      - name: category
+        type: categorical
+"""
+    )
+    database = tmp_path / "warehouse.duckdb"
+    connection = duckdb.connect(str(database))
+    connection.execute("CREATE TABLE events (event_id INTEGER, category VARCHAR)")
+    connection.execute("INSERT INTO events VALUES (1, 'a'), (1, 'b'), (NULL, 'c')")
+    connection.close()
+
+    report = validate_directory(
+        tmp_path,
+        connection=f"duckdb:///{database}",
+        check_keys=True,
+        check_queries=False,
+    )
+
+    errors = "\n".join(report.warehouse_errors)
+    assert "contains NULL values" in errors
+    assert "is not unique" in errors
+
+
+def test_warehouse_key_checks_verify_one_to_one_cardinality(tmp_path):
+    import duckdb
+
+    (tmp_path / "models.yml").write_text(
+        """
+models:
+  - name: customers
+    table: customers
+    primary_key: customer_id
+    dimensions:
+      - name: name
+        type: categorical
+    relationships:
+      - name: profiles
+        type: one_to_one
+        foreign_key: customer_id
+  - name: profiles
+    table: profiles
+    primary_key: profile_id
+    dimensions:
+      - name: plan
+        type: categorical
+"""
+    )
+    database = tmp_path / "warehouse.duckdb"
+    connection = duckdb.connect(str(database))
+    connection.execute("CREATE TABLE customers (customer_id INTEGER, name VARCHAR)")
+    connection.execute("CREATE TABLE profiles (profile_id INTEGER, customer_id INTEGER, plan VARCHAR)")
+    connection.execute("INSERT INTO profiles VALUES (1, 7, 'free'), (2, 7, 'paid')")
+    connection.close()
+
+    report = validate_directory(
+        tmp_path,
+        connection=f"duckdb:///{database}",
+        check_keys=True,
+        check_queries=False,
+    )
+
+    errors = "\n".join(report.warehouse_errors)
+    assert "relationship 'customers.profiles' foreign_key ['customer_id'] is not unique" in errors
+
+
+def test_warehouse_key_checks_allow_multiple_null_one_to_one_foreign_keys(tmp_path):
+    import duckdb
+
+    (tmp_path / "models.yml").write_text(
+        """
+models:
+  - name: customers
+    table: customers
+    primary_key: customer_id
+    relationships:
+      - name: profiles
+        type: one_to_one
+        foreign_key: customer_id
+  - name: profiles
+    table: profiles
+    primary_key: profile_id
+"""
+    )
+    database = tmp_path / "warehouse.duckdb"
+    connection = duckdb.connect(str(database))
+    connection.execute("CREATE TABLE customers (customer_id INTEGER)")
+    connection.execute("CREATE TABLE profiles (profile_id INTEGER, customer_id INTEGER)")
+    connection.execute("INSERT INTO profiles VALUES (1, NULL), (2, NULL), (3, 7)")
+    connection.close()
+
+    report = validate_directory(
+        tmp_path,
+        connection=f"duckdb:///{database}",
+        check_keys=True,
+        check_queries=False,
+    )
+
+    assert report.passed, report.all_errors
+
+
+def test_warehouse_key_checks_skip_custom_one_to_one_without_structured_keys(tmp_path):
+    import duckdb
+
+    (tmp_path / "models.yml").write_text(
+        """
+models:
+  - name: customers
+    table: customers
+    relationships:
+      - name: profiles
+        type: one_to_one
+        sql: "{from}.customer_id = {to}.customer_id"
+  - name: profiles
+    table: profiles
+"""
+    )
+    database = tmp_path / "warehouse.duckdb"
+    connection = duckdb.connect(str(database))
+    connection.execute("CREATE TABLE customers (customer_id INTEGER)")
+    connection.execute("CREATE TABLE profiles (customer_id INTEGER)")
+    connection.close()
+
+    report = validate_directory(
+        tmp_path,
+        connection=f"duckdb:///{database}",
+        check_keys=True,
+        check_queries=False,
+    )
+
+    assert report.passed, report.all_errors
+
+
+def test_warehouse_connection_failure_is_separate_from_structural_errors(monkeypatch, tmp_path):
+    (tmp_path / "models.yml").write_text(
+        """
+models:
+  - name: events
+    table: events
+"""
+    )
+
+    from sidemantic.validation_runner import SemanticLayer as RealSemanticLayer
+
+    def fail_to_connect(*args, **kwargs):
+        if kwargs.get("connection") is not None:
+            raise RuntimeError("warehouse unavailable")
+        return RealSemanticLayer(*args, **kwargs)
+
+    monkeypatch.setattr("sidemantic.validation_runner.SemanticLayer", fail_to_connect)
+
+    report = validate_directory(tmp_path, connection="duckdb:///unreachable.duckdb")
+
+    assert report.errors == []
+    assert report.warehouse_errors == []
+    assert report.connection_errors == ["Could not connect to warehouse: warehouse unavailable"]
+
+
+def test_snowflake_warehouse_identifiers_match_unquoted_metadata_case():
+    from sidemantic.validation_runner import _split_table_reference, _warehouse_column_type, _warehouse_table_exists
+
+    table_ref = _split_table_reference("public.orders", "snowflake")
+
+    assert table_ref is not None
+    assert _warehouse_table_exists(table_ref, {("PUBLIC", "ORDERS")}, "snowflake")
+    assert _warehouse_column_type({"ORDER_ID": "NUMBER"}, "order_id", "snowflake") == "NUMBER"
+
+
+def test_warehouse_table_reference_preserves_catalog_for_inspection():
+    from sidemantic.validation_runner import _split_table_reference
+
+    table_ref = _split_table_reference("analytics.public.orders", "snowflake")
+
+    assert table_ref is not None
+    assert table_ref.catalog == "analytics"
+    assert table_ref.schema == "public"
+    assert table_ref.name == "orders"
+    assert table_ref.qualified_name == "analytics.public.orders"
+
+
+def test_warehouse_validation_inspects_catalog_qualified_snowflake_table(monkeypatch, tmp_path):
+    (tmp_path / "models.yml").write_text(
+        """
+models:
+  - name: orders
+    table: analytics.public.orders
+    primary_key: order_id
+"""
+    )
+
+    inspected = []
+
+    class FakeSnowflakeAdapter:
+        def get_tables(self):
+            # Catalog-less metadata describes only the connection's current database.
+            return [{"schema": "PUBLIC", "table_name": "CURRENT_DATABASE_TABLE"}]
+
+        def get_columns(self, table_name, schema=None):
+            inspected.append((table_name, schema))
+            return [{"column_name": "ORDER_ID", "data_type": "NUMBER"}]
+
+        def close(self):
+            pass
+
+    from sidemantic.validation_runner import SemanticLayer as RealSemanticLayer
+
+    def semantic_layer(*args, **kwargs):
+        layer = RealSemanticLayer(auto_register=False)
+        if kwargs.get("connection") is not None:
+            layer.adapter = FakeSnowflakeAdapter()
+            layer.dialect = "snowflake"
+        return layer
+
+    monkeypatch.setattr("sidemantic.validation_runner.SemanticLayer", semantic_layer)
+
+    report = validate_directory(
+        tmp_path,
+        connection="snowflake://unused",
+        check_queries=False,
+    )
+
+    assert report.passed, report.all_errors
+    assert inspected == [("analytics.public.orders", None)]
+
+
+def test_snowflake_key_checks_use_inspected_column_casing(monkeypatch, tmp_path):
+    (tmp_path / "models.yml").write_text(
+        """
+models:
+  - name: orders
+    table: public.orders
+    primary_key: order_id
+"""
+    )
+
+    executed = []
+
+    class FakeSnowflakeAdapter:
+        def get_tables(self):
+            return [{"schema": "PUBLIC", "table_name": "ORDERS"}]
+
+        def get_columns(self, table_name, schema=None):
+            return [{"column_name": "ORDER_ID", "data_type": "NUMBER"}]
+
+        def execute(self, sql):
+            executed.append(sql)
+            return sql
+
+        def fetchone(self, result):
+            return None
+
+        def close(self):
+            pass
+
+    from sidemantic.validation_runner import SemanticLayer as RealSemanticLayer
+
+    def semantic_layer(*args, **kwargs):
+        layer = RealSemanticLayer(auto_register=False)
+        if kwargs.get("connection") is not None:
+            layer.adapter = FakeSnowflakeAdapter()
+            layer.dialect = "snowflake"
+        return layer
+
+    monkeypatch.setattr("sidemantic.validation_runner.SemanticLayer", semantic_layer)
+
+    report = validate_directory(
+        tmp_path,
+        connection="snowflake://unused",
+        check_keys=True,
+        check_queries=False,
+    )
+
+    assert report.passed, report.all_errors
+    assert executed
+    assert all('"ORDER_ID"' in sql for sql in executed)
+    assert all('"order_id"' not in sql for sql in executed)
+
+
+def test_warehouse_validation_splits_catalog_qualified_bigquery_table(monkeypatch, tmp_path):
+    (tmp_path / "models.yml").write_text(
+        """
+models:
+  - name: orders
+    table: analytics.sales.orders
+    primary_key: order_id
+"""
+    )
+
+    inspected = []
+
+    class FakeBigQueryAdapter:
+        def get_tables(self):
+            return []
+
+        def get_columns(self, table_name, schema=None):
+            inspected.append((table_name, schema))
+            return [{"column_name": "order_id", "data_type": "INT64"}]
+
+        def close(self):
+            pass
+
+    from sidemantic.validation_runner import SemanticLayer as RealSemanticLayer
+
+    def semantic_layer(*args, **kwargs):
+        layer = RealSemanticLayer(auto_register=False)
+        if kwargs.get("connection") is not None:
+            layer.adapter = FakeBigQueryAdapter()
+            layer.dialect = "bigquery"
+        return layer
+
+    monkeypatch.setattr("sidemantic.validation_runner.SemanticLayer", semantic_layer)
+
+    report = validate_directory(
+        tmp_path,
+        connection="bigquery://analytics",
+        check_queries=False,
+    )
+
+    assert report.passed, report.all_errors
+    assert inspected == [("orders", "sales")]
 
 
 if __name__ == "__main__":

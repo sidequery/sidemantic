@@ -517,14 +517,7 @@ impl SemanticGraph {
                             continue;
                         }
 
-                        let source_pk = {
-                            let keys = model.primary_keys();
-                            if keys.is_empty() {
-                                vec!["id".to_string()]
-                            } else {
-                                keys
-                            }
-                        };
+                        let source_pk = model.primary_keys();
                         let target_pk =
                             if rel.primary_key.is_some() || rel.primary_key_columns.is_some() {
                                 rel.primary_key_columns()
@@ -532,13 +525,15 @@ impl SemanticGraph {
                                 self.models
                                     .get(&rel.name)
                                     .map(|target_model| target_model.primary_keys())
-                                    .unwrap_or_else(|| vec!["id".to_string()])
+                                    .unwrap_or_default()
                             };
-                        let target_pk = if target_pk.is_empty() {
-                            vec!["id".to_string()]
-                        } else {
-                            target_pk
-                        };
+                        if source_pk.is_empty()
+                            || target_pk.is_empty()
+                            || source_pk.len() != source_fks.len()
+                            || target_pk.len() != target_fks.len()
+                        {
+                            continue;
+                        }
 
                         // source -> through (one_to_many)
                         self.adjacency.entry(model.name.clone()).or_default().push((
@@ -583,14 +578,14 @@ impl SemanticGraph {
                     }
                 }
 
-                let fk_keys = rel.foreign_key_columns();
+                let fk_keys = rel.declared_foreign_key_columns();
                 let pk_keys = if rel.primary_key.is_some() || rel.primary_key_columns.is_some() {
-                    rel.primary_key_columns()
+                    rel.declared_primary_key_columns()
                 } else {
                     self.models
                         .get(&rel.name)
                         .map(|target_model| target_model.primary_keys())
-                        .unwrap_or_else(|| vec!["id".to_string()])
+                        .unwrap_or_default()
                 };
 
                 let (from_keys, to_keys) = match rel.r#type {
@@ -601,6 +596,14 @@ impl SemanticGraph {
                         (pk_keys.clone(), fk_keys.clone())
                     }
                 };
+
+                if rel.sql.is_none()
+                    && (from_keys.is_empty()
+                        || to_keys.is_empty()
+                        || from_keys.len() != to_keys.len())
+                {
+                    continue;
+                }
 
                 self.adjacency.entry(model.name.clone()).or_default().push((
                     rel.name.clone(),
@@ -643,14 +646,14 @@ impl SemanticGraph {
                         .replace("__TEMP__", "{to}")
                 });
 
-                let fk_keys = rel.foreign_key_columns();
+                let fk_keys = rel.declared_foreign_key_columns();
                 let pk_keys = if rel.primary_key.is_some() || rel.primary_key_columns.is_some() {
-                    rel.primary_key_columns()
+                    rel.declared_primary_key_columns()
                 } else {
                     self.models
                         .get(&rel.name)
                         .map(|target_model| target_model.primary_keys())
-                        .unwrap_or_else(|| vec!["id".to_string()])
+                        .unwrap_or_default()
                 };
 
                 let (reverse_from_keys, reverse_to_keys) = match rel.r#type {
@@ -661,6 +664,14 @@ impl SemanticGraph {
                         (fk_keys.clone(), pk_keys.clone())
                     }
                 };
+
+                if rel.sql.is_none()
+                    && (reverse_from_keys.is_empty()
+                        || reverse_to_keys.is_empty()
+                        || reverse_from_keys.len() != reverse_to_keys.len())
+                {
+                    continue;
+                }
 
                 self.adjacency.entry(rel.name.clone()).or_default().push((
                     model.name.clone(),
@@ -781,7 +792,9 @@ mod tests {
             .with_dimension(Dimension::categorical("status"))
             .with_dimension(Dimension::time("order_date"))
             .with_metric(Metric::sum("revenue", "amount"))
-            .with_relationship(Relationship::many_to_one("customers"));
+            .with_relationship(
+                Relationship::many_to_one("customers").with_keys("customers_id", "id"),
+            );
 
         let customers = Model::new("customers", "id")
             .with_table("customers")
@@ -959,7 +972,7 @@ mod tests {
     }
 
     #[test]
-    fn test_one_to_many_omitted_key_defaults_to_id() {
+    fn test_one_to_many_omitted_key_does_not_create_join_edge() {
         let mut graph = SemanticGraph::new();
 
         let customers = Model::new("customers", "id")
@@ -970,14 +983,12 @@ mod tests {
         graph.add_model(customers).unwrap();
         graph.add_model(orders).unwrap();
 
-        let path = graph.find_join_path("customers", "orders").unwrap();
-        assert_eq!(path.steps.len(), 1);
-        assert_eq!(path.steps[0].from_keys, vec!["id".to_string()]);
-        assert_eq!(path.steps[0].to_keys, vec!["id".to_string()]);
+        assert!(graph.find_join_path("customers", "orders").is_err());
+        assert!(graph.find_join_path("orders", "customers").is_err());
     }
 
     #[test]
-    fn test_many_to_one_omitted_keys_use_name_id_and_target_primary_key() {
+    fn test_many_to_one_omitted_key_does_not_create_join_edge() {
         let mut graph = SemanticGraph::new();
 
         let orders = Model::new("orders", "order_id")
@@ -988,14 +999,28 @@ mod tests {
         graph.add_model(orders).unwrap();
         graph.add_model(customers).unwrap();
 
-        let path = graph.find_join_path("orders", "customers").unwrap();
-        assert_eq!(path.steps.len(), 1);
-        assert_eq!(path.steps[0].from_keys, vec!["customers_id".to_string()]);
-        assert_eq!(path.steps[0].to_keys, vec!["customer_uid".to_string()]);
+        assert!(graph.find_join_path("orders", "customers").is_err());
+        assert!(graph.find_join_path("customers", "orders").is_err());
     }
 
     #[test]
-    fn test_one_to_one_omitted_key_defaults_to_id() {
+    fn test_keyless_target_does_not_create_incomplete_join_edge() {
+        let mut graph = SemanticGraph::new();
+
+        let orders = Model::new("orders", "order_id")
+            .with_table("orders")
+            .with_relationship(Relationship::many_to_one("customers"));
+        let customers = Model::new("customers", "").with_table("customers");
+
+        graph.add_model(orders).unwrap();
+        graph.add_model(customers).unwrap();
+
+        assert!(graph.find_join_path("orders", "customers").is_err());
+        assert!(graph.find_join_path("customers", "orders").is_err());
+    }
+
+    #[test]
+    fn test_one_to_one_omitted_key_does_not_create_join_edge() {
         let mut graph = SemanticGraph::new();
 
         let mut relationship = Relationship::new("profiles");
@@ -1009,10 +1034,8 @@ mod tests {
         graph.add_model(users).unwrap();
         graph.add_model(profiles).unwrap();
 
-        let path = graph.find_join_path("users", "profiles").unwrap();
-        assert_eq!(path.steps.len(), 1);
-        assert_eq!(path.steps[0].from_keys, vec!["id".to_string()]);
-        assert_eq!(path.steps[0].to_keys, vec!["id".to_string()]);
+        assert!(graph.find_join_path("users", "profiles").is_err());
+        assert!(graph.find_join_path("profiles", "users").is_err());
     }
 
     #[test]

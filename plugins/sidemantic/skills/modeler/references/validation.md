@@ -7,7 +7,7 @@ Every validation rule, error message, and common pitfall in Sidemantic model def
 Verify before loading any model:
 
 1. Every model has `table` or `sql` (not neither)
-2. Every model has a `primary_key` (defaults to `"id"`)
+2. Every joinable entity has its real `primary_key`; keyless isolated models are allowed
 3. Every dimension has a valid `type`: `categorical`, `time`, `boolean`, `numeric`
 4. Every `time` dimension has `granularity` set
 5. Every simple metric has a valid `agg` or SQL containing an aggregation function
@@ -19,12 +19,15 @@ Verify before loading any model:
 
 ## Model Validation
 
-### primary_key is required
+### primary_key is explicit
 
-Default is `"id"`. Only fails if explicitly set to empty.
+An omitted `primary_key` means identity is unknown. That is valid for an isolated
+model, but joins and entity-sensitive operations must have enough explicit key
+metadata to be safe.
 
-**Error:** `Model 'orders' must have a primary_key defined`
-**Fix:** `primary_key: order_id`
+**Warning:** `Model 'orders' has no primary_key; identity-dependent joins require explicit keys`
+**Fix:** Add the real key, such as `primary_key: order_id`, or keep the model
+keyless and avoid relationships that rely on its identity.
 
 ### table or sql required
 
@@ -134,15 +137,22 @@ There is no `type: simple`. Simple aggregations omit `type` and use `agg`.
 
 Must be one of: `many_to_one`, `one_to_one`, `one_to_many`, `many_to_many`.
 
-### foreign_key defaults
+### relationship keys are explicit
 
-- `many_to_one`: defaults to `{name}_id` (e.g., relationship named `customers` defaults to `customers_id`)
-- `one_to_one` / `one_to_many`: defaults to `id`
-- `many_to_many`: specify `through`, `through_foreign_key`, `related_foreign_key`
+- `many_to_one`: declare the source `foreign_key`; the target key may come from
+  the target model's declared `primary_key`
+- `one_to_one` / `one_to_many`: declare the related model's `foreign_key`; the
+  local key may come from the source model's declared `primary_key`
+- alternate unique keys: declare relationship `primary_key` for a scoped contract,
+  or add the key to model `unique_keys`
+- `many_to_many`: specify `through`, `through_foreign_key`, and `related_foreign_key`
+
+Missing keys and composite-key arity mismatches are structural errors. They are
+not added to the join graph, preventing invalid SQL from being compiled.
 
 ### Related model must exist
 
-Relationships to missing models are silently skipped during adjacency building. Queries across unresolved relationships fail at query time:
+Relationships to missing models fail structural validation and are omitted from adjacency building:
 
 **Error:** `No join path found between orders and customers`
 **Fix:** Ensure both models are added and the relationship's `name` matches the target model's `name` exactly.
@@ -190,7 +200,8 @@ Model-level: both `metrics` and `measures` work. Graph-level (top-level): only `
 
 ### Type defaults
 
-Dimensions in YAML default to `type: categorical` when omitted. Primary key defaults to `"id"`.
+Dimensions in YAML default to `type: categorical` when omitted. Primary keys and
+relationship keys do not default to column names.
 
 ### Indentation
 
@@ -238,7 +249,7 @@ Bare `yes`, `no`, `true`, `false` are parsed as booleans. Quote them if used as 
 
 | Error | Fix |
 |-------|-----|
-| `must have a primary_key defined` | Set `primary_key: column_name` |
+| `has no primary_key` | Set the real `primary_key`, or leave the model keyless if no join needs identity |
 | `must have either 'table' or 'sql' defined` | Add `table` or `sql` |
 | `Model X already exists` | Use unique names |
 | `Measure X already exists` | Use unique metric names |

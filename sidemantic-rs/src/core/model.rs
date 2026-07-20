@@ -742,12 +742,30 @@ impl Relationship {
             })
     }
 
+    /// Returns only explicitly declared foreign-key columns, without compatibility defaults.
+    pub fn declared_foreign_key_columns(&self) -> Vec<String> {
+        self.foreign_key_columns
+            .clone()
+            .filter(|columns| !columns.is_empty())
+            .or_else(|| self.foreign_key.clone().map(|key| vec![key]))
+            .unwrap_or_default()
+    }
+
     pub fn primary_key_columns(&self) -> Vec<String> {
         self.primary_key_columns
             .clone()
             .filter(|columns| !columns.is_empty())
             .or_else(|| self.primary_key.clone().map(|key| vec![key]))
             .unwrap_or_else(|| vec!["id".to_string()])
+    }
+
+    /// Returns only explicitly declared relationship-side primary-key columns.
+    pub fn declared_primary_key_columns(&self) -> Vec<String> {
+        self.primary_key_columns
+            .clone()
+            .filter(|columns| !columns.is_empty())
+            .or_else(|| self.primary_key.clone().map(|key| vec![key]))
+            .unwrap_or_default()
     }
 
     /// Returns the custom SQL condition if set
@@ -977,6 +995,8 @@ impl Model {
     pub fn with_primary_key_columns(mut self, primary_key_columns: Vec<String>) -> Self {
         if let Some(primary_key) = primary_key_columns.first() {
             self.primary_key = primary_key.clone();
+        } else {
+            self.primary_key.clear();
         }
         self.primary_key_columns = primary_key_columns;
         self
@@ -1024,7 +1044,11 @@ impl Model {
 
     pub fn primary_keys(&self) -> Vec<String> {
         if self.primary_key_columns.is_empty() {
-            vec![self.primary_key.clone()]
+            if self.primary_key.is_empty() {
+                Vec::new()
+            } else {
+                vec![self.primary_key.clone()]
+            }
         } else {
             self.primary_key_columns.clone()
         }

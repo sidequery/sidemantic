@@ -140,6 +140,9 @@ def _assign_top_level_metrics_for_rust(graph: SemanticGraph) -> tuple[dict[str, 
 
         cache[metric.name] = None
         owners = model_metric_owners(metric.name)
+        explicit_owner = graph.metric_owners.get(metric.name)
+        if explicit_owner:
+            owners.add(explicit_owner)
 
         try:
             dependencies = metric.get_dependencies(graph)
@@ -267,6 +270,8 @@ def _graph_from_loaded_payload(payload: dict) -> SemanticGraph:
     for model_data in payload.get("models") or []:
         normalized_model = dict(model_data)
         _restore_composite_keys(normalized_model)
+        if normalized_model.get("primary_key_columns") == [] and not normalized_model.get("primary_key"):
+            normalized_model["primary_key"] = None
         original_metric_names = set(original_model_metrics.get(normalized_model.get("name"), []))
         normalized_metrics = []
         for metric_data in normalized_model.get("metrics") or []:
@@ -441,14 +446,14 @@ def models_to_rust_yaml(
     models_by_name = {m.name: m for m in models}
 
     for model in models:
-        primary_key_columns = model.primary_key if isinstance(model.primary_key, list) else [model.primary_key]
+        primary_key_columns = model.primary_key_columns
         model_data = {
             "name": model.name,
             "extends": model.extends if include_extends else None,
             "table": model.table,
             "sql": model.sql,
             "source_uri": model.source_uri,
-            "primary_key": primary_key_columns[0] if primary_key_columns else "id",
+            "primary_key": primary_key_columns[0] if primary_key_columns else None,
             "primary_key_columns": primary_key_columns,
             "unique_keys": model.unique_keys,
             "description": model.description,
@@ -1602,19 +1607,30 @@ def _normalize_filter_sql(filter_sql: str) -> str:
 
 def _serialize_relationship(relationship, source_model, target_model) -> dict | None:
     foreign_keys = _as_list(relationship.foreign_key)
-    if not foreign_keys:
-        foreign_keys = [f"{relationship.name}_id"] if relationship.type == "many_to_one" else ["id"]
 
     if relationship.primary_key is not None:
         primary_keys = _as_list(relationship.primary_key)
-    elif target_model:
+    elif relationship.type in {"one_to_many", "one_to_one"}:
+        primary_keys = source_model.primary_key_columns
+    elif target_model and (relationship.type == "many_to_one" or relationship.through):
         primary_keys = target_model.primary_key_columns
     else:
-        primary_keys = ["id"]
+        primary_keys = []
 
     sql = None
-    if len(foreign_keys) > 1 and len(foreign_keys) == len(primary_keys):
-        sql = " AND ".join(f"{{from}}.{fk} = {{to}}.{pk}" for fk, pk in zip(foreign_keys, primary_keys, strict=False))
+    if (
+        foreign_keys
+        and len(foreign_keys) == len(primary_keys)
+        and (len(foreign_keys) > 1 or relationship.type == "one_to_one")
+    ):
+        if relationship.type in {"one_to_many", "one_to_one"}:
+            sql = " AND ".join(
+                f"{{from}}.{pk} = {{to}}.{fk}" for fk, pk in zip(foreign_keys, primary_keys, strict=False)
+            )
+        else:
+            sql = " AND ".join(
+                f"{{from}}.{fk} = {{to}}.{pk}" for fk, pk in zip(foreign_keys, primary_keys, strict=False)
+            )
     if getattr(relationship, "sql", None):
         sql = relationship.sql
 

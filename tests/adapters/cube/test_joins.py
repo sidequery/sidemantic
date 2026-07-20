@@ -114,7 +114,7 @@ cubes:
     assert rel.sql == "{from}.id = {to}.id"
 
 
-def test_unparseable_join_warns_and_falls_back():
+def test_unparseable_join_warns_and_keeps_key_unknown():
     adapter = CubeAdapter()
     yaml_text = """
 cubes:
@@ -136,7 +136,7 @@ cubes:
     finally:
         path.unlink()
     rel = graph.get_model("x").relationships[0]
-    assert rel.foreign_key == "y_id"
+    assert rel.foreign_key is None
     assert rel.sql is None
 
 

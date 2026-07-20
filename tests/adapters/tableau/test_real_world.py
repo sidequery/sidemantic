@@ -278,16 +278,16 @@ def test_sf_trial_collection_builds_join_sql(adapter):
     assert "LEFT JOIN" in model.sql
 
 
-def test_sf_trial_primary_key_projected(adapter):
-    """thoughtspot_sf_trial.tds: inferred PK comes from projected collection SQL."""
+def test_sf_trial_primary_key_remains_unknown(adapter):
+    """thoughtspot_sf_trial.tds: collection fields do not establish uniqueness."""
     _skip_if_missing()
     graph = adapter.parse(REAL_WORLD / "thoughtspot_sf_trial.tds")
     model = graph.models.get("SF Trial")
     assert model is not None
 
-    assert model.primary_key == "__tableau_pk"
+    assert model.primary_key is None
     assert model.sql is not None
-    assert '"__tableau_pk"' in model.sql
+    assert '"__tableau_pk"' not in model.sql
 
 
 def test_sf_trial_all_labeled(adapter):
@@ -332,7 +332,7 @@ def test_sf_trial_joined_metric_uses_collection_sql(adapter):
         skip_default_time_dimensions=True,
     )
     assert "id AS id" not in sql
-    assert "__tableau_pk AS __tableau_pk" in sql
+    assert "__tableau_pk" not in sql
     assert '"LINEITEM"' in sql
 
 

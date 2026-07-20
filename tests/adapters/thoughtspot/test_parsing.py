@@ -23,7 +23,7 @@ def test_import_real_thoughtspot_examples():
 
     orders = graph.models["orders"]
     assert orders.table == "analytics.public.orders"
-    assert orders.primary_key == "id"
+    assert orders.primary_key is None
 
     order_date = orders.get_dimension("order_date")
     assert order_date is not None
@@ -1223,14 +1223,14 @@ def test_thoughtspot_one_to_one_join_keys_match_direction():
     assert rows == [("PACIFIC", 125.0)]
 
 
-def test_thoughtspot_non_id_primary_key_is_queryable():
-    """A joined model whose key is not literally `id` stays queryable.
+def test_thoughtspot_unknown_primary_key_is_queryable():
+    """A joined model without declared uniqueness stays queryable.
 
     Regression: `primary_key` defaulted to `id`, and the derived projection
     injected `orders.id AS id`. The SQL generator always selects the primary key
     from derived models, so even a basic aggregate failed with
-    `Table "orders" does not have a column named "id"`. The key must be inferred
-    from a real base-table column (here `order_key`).
+    `Table "orders" does not have a column named "id"`. Leaving identity unknown
+    avoids projecting any invented key.
     """
     import duckdb
 
@@ -1238,10 +1238,9 @@ def test_thoughtspot_non_id_primary_key_is_queryable():
     graph = adapter.parse("tests/fixtures/thoughtspot/model_non_id_key.model.tml")
     model = graph.models["orders_model"]
 
-    # The primary key is inferred from a real base-table column, not the default.
-    assert model.primary_key == "order_key"
+    assert model.primary_key is None
     assert model.sql is not None
-    assert "orders.order_key AS order_key" in model.sql
+    assert "orders.order_key AS orders__order_key" in model.sql
     assert "orders.id AS id" not in model.sql
 
     layer = SemanticLayer()
@@ -1381,10 +1380,9 @@ def test_thoughtspot_renamed_id_key_uses_backing_column():
     graph = adapter.parse("tests/fixtures/thoughtspot/model_renamed_id_key.model.tml")
     model = graph.models["orders_model"]
 
-    # The primary key resolves to the backing physical column, not the name `id`.
-    assert model.primary_key == "order_key"
+    assert model.primary_key is None
     assert model.sql is not None
-    assert "orders.order_key AS order_key" in model.sql
+    assert "orders.order_key AS orders__order_key" in model.sql
     assert "orders.id AS id" not in model.sql
 
     layer = SemanticLayer()
@@ -1415,10 +1413,9 @@ def test_thoughtspot_joined_id_dimension_is_not_used_as_primary_key():
     graph = adapter.parse("tests/fixtures/thoughtspot/model_joined_id_key.model.tml")
     model = graph.models["orders_model"]
 
-    # The joined-table id is skipped; the base-table column is used as the key.
-    assert model.primary_key == "order_key"
+    assert model.primary_key is None
     assert model.sql is not None
-    assert "orders.order_key AS order_key" in model.sql
+    assert "orders.order_key AS orders__order_key" in model.sql
     assert "orders.id AS id" not in model.sql
 
     layer = SemanticLayer()
@@ -1551,8 +1548,8 @@ def test_thoughtspot_join_target_by_id_resolves_to_alias():
     assert rows == [("US", 125.0)]
 
 
-def test_thoughtspot_measure_key_column_is_inferred_as_primary_key():
-    """A base-table key exported as a measure is still inferred as the primary key.
+def test_thoughtspot_measure_key_does_not_imply_uniqueness():
+    """A key-shaped base-table measure does not establish entity uniqueness.
 
     Regression: `_infer_model_primary_key` only scanned dimensions, but
     ThoughtSpot often exports key columns as measures. With `order_key` as a
@@ -1566,8 +1563,7 @@ def test_thoughtspot_measure_key_column_is_inferred_as_primary_key():
     graph = adapter.parse("tests/fixtures/thoughtspot/model_measure_key.model.tml")
     model = graph.models["orders_model"]
 
-    # The measure-backed base-table column is used as the key.
-    assert model.primary_key == "order_key"
+    assert model.primary_key is None
     assert model.sql is not None
     assert "orders.id AS id" not in model.sql
 

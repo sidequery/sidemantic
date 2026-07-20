@@ -70,6 +70,15 @@ def validate_model(model: "Model") -> list[str]:
     if model.primary_key is not None and not model.primary_key:
         errors.append(f"Model '{model.name}' must have a primary_key defined")
 
+    key_definitions = [(f"unique_keys[{index}]", columns) for index, columns in enumerate(model.unique_keys or [])]
+    if model.primary_key is not None:
+        key_definitions.insert(0, ("primary_key", model.primary_key_columns))
+    for key_name, key_columns in key_definitions:
+        if not key_columns:
+            errors.append(f"Model '{model.name}' {key_name} must contain at least one column")
+        elif len(key_columns) != len(set(key_columns)):
+            errors.append(f"Model '{model.name}' {key_name} contains duplicate columns")
+
     # Check for a physical, SQL, DAX, or externally sourced model definition.
     # Hex ``view`` resources are presentation layers over a base model and are
     # intentionally table-less, so they are exempt from this requirement.
@@ -218,6 +227,12 @@ def validate_model_warnings(model: "Model") -> list[str]:
     """
     warnings: list[str] = []
 
+    if model.primary_key is None:
+        warnings.append(
+            f"Model '{model.name}' has no primary_key declaration. This is valid for keyless models, "
+            "but the model cannot be used where a unique row identity or fan-out-safe aggregation is required."
+        )
+
     for preagg in model.pre_aggregations:
         prefix = f"Pre-aggregation '{model.name}.{preagg.name}'"
 
@@ -243,6 +258,148 @@ def validate_model_warnings(model: "Model") -> list[str]:
             )
 
     return warnings
+
+
+def _declared_unique_key(model: "Model", columns: list[str]) -> bool:
+    """Return whether columns are declared as a primary or alternate unique key."""
+    if not columns:
+        return False
+    candidate = tuple(columns)
+    declared = {tuple(model.primary_key_columns)} if model.primary_key_columns else set()
+    declared.update(tuple(key) for key in model.unique_keys or [] if key)
+    return candidate in declared
+
+
+def validate_relationships(graph: "SemanticGraph") -> list[str]:
+    """Validate relationship keys and the uniqueness implied by each cardinality.
+
+    This runs after all models have loaded because related-model keys cannot be resolved safely
+    while models are registered one at a time. Custom SQL relationships are exempt from column-key
+    requirements, but still require their target model and explicit cardinality.
+    """
+    errors: list[str] = []
+
+    def add_error(source_name: str, relationship, message: str) -> None:
+        errors.append(f"Relationship '{source_name}.{relationship.name}' ({relationship.type}): {message}")
+
+    def check_lengths(source_name: str, relationship, left: list[str], right: list[str]) -> None:
+        if left and right and len(left) != len(right):
+            add_error(
+                source_name,
+                relationship,
+                f"join key arity differs ({len(left)} source column(s), {len(right)} target column(s))",
+            )
+
+    for source_name, source in graph.models.items():
+        for relationship in source.relationships:
+            if not relationship.active:
+                continue
+            target = graph.models.get(relationship.name)
+            if target is None:
+                add_error(source_name, relationship, "target model does not exist")
+                continue
+
+            if relationship.type == "cross":
+                if any(
+                    (
+                        relationship.foreign_key,
+                        relationship.primary_key,
+                        relationship.through,
+                        relationship.through_foreign_key,
+                        relationship.related_foreign_key,
+                    )
+                ):
+                    add_error(source_name, relationship, "cross relationships must not declare join keys")
+                continue
+
+            if relationship.sql:
+                continue
+
+            if relationship.type == "many_to_one":
+                source_keys = relationship.foreign_key_columns
+                target_keys = relationship.primary_key_columns or target.primary_key_columns
+                if not source_keys:
+                    add_error(source_name, relationship, "foreign_key is required; no column name is inferred")
+                if not target_keys:
+                    add_error(
+                        source_name,
+                        relationship,
+                        f"target model '{target.name}' has no primary_key; declare relationship.primary_key "
+                        "for an alternate unique key or declare the model key",
+                    )
+                elif relationship.primary_key is None and not _declared_unique_key(target, target_keys):
+                    add_error(
+                        source_name,
+                        relationship,
+                        f"target columns {target_keys!r} are not declared as the primary_key or in unique_keys "
+                        f"on model '{target.name}'",
+                    )
+                check_lengths(source_name, relationship, source_keys, target_keys)
+                continue
+
+            if relationship.type in {"one_to_many", "one_to_one"}:
+                source_keys = relationship.primary_key_columns or source.primary_key_columns
+                target_keys = relationship.foreign_key_columns
+                if not source_keys:
+                    add_error(
+                        source_name,
+                        relationship,
+                        "the source model has no primary_key; declare relationship.primary_key for an alternate "
+                        "unique key or declare the model key",
+                    )
+                elif relationship.primary_key is None and not _declared_unique_key(source, source_keys):
+                    add_error(
+                        source_name,
+                        relationship,
+                        f"source columns {source_keys!r} are not declared as the primary_key or in unique_keys",
+                    )
+                if not target_keys:
+                    add_error(source_name, relationship, "foreign_key is required; no column name is inferred")
+                check_lengths(source_name, relationship, source_keys, target_keys)
+                continue
+
+            if relationship.type == "many_to_many":
+                if not relationship.through:
+                    # Some source formats represent a direct many-to-many predicate without a bridge.
+                    # Preserve it only when both sides are explicit; no conventional keys are invented.
+                    source_keys = relationship.foreign_key_columns
+                    target_keys = relationship.primary_key_columns
+                    if not source_keys or not target_keys:
+                        add_error(
+                            source_name,
+                            relationship,
+                            "through is required unless explicit foreign_key and primary_key columns describe "
+                            "a direct relationship",
+                        )
+                    check_lengths(source_name, relationship, source_keys, target_keys)
+                    continue
+
+                junction = graph.models.get(relationship.through)
+                if junction is None:
+                    add_error(source_name, relationship, f"junction model '{relationship.through}' does not exist")
+                    continue
+
+                source_keys = source.primary_key_columns
+                target_keys = relationship.primary_key_columns or target.primary_key_columns
+                junction_source_keys, junction_target_keys = relationship.junction_key_columns()
+                if not source_keys:
+                    add_error(source_name, relationship, "source model has no primary_key")
+                if not target_keys:
+                    add_error(source_name, relationship, f"target model '{target.name}' has no primary_key")
+                elif not _declared_unique_key(target, target_keys):
+                    add_error(
+                        source_name,
+                        relationship,
+                        f"target columns {target_keys!r} are not declared unique on model '{target.name}'",
+                    )
+                if not junction_source_keys:
+                    add_error(source_name, relationship, "through_foreign_key is required")
+                if not junction_target_keys:
+                    add_error(source_name, relationship, "related_foreign_key is required")
+                check_lengths(source_name, relationship, source_keys, junction_source_keys)
+                check_lengths(source_name, relationship, junction_target_keys, target_keys)
+
+    return errors
 
 
 def validate_metric(measure: "Metric", graph: "SemanticGraph") -> list[str]:
@@ -502,15 +659,26 @@ def validate_query(metrics: list[str], dimensions: list[str], graph: "SemanticGr
     # Only check models that exist in the graph (errors for missing models already reported above)
     valid_model_names = [m for m in model_names if m in graph.models]
     model_list = list(valid_model_names)
+    relationship_errors = []
+    if len(model_list) > 1:
+        selected = set(model_list)
+        for relationship_error in validate_relationships(graph):
+            relationship_ref = relationship_error.split("'", 2)[1]
+            source_name, _, target_name = relationship_ref.partition(".")
+            if source_name in selected and target_name in selected:
+                relationship_errors.append(relationship_error)
+        errors.extend(relationship_errors)
+
     for i, model_a in enumerate(model_list):
         for model_b in model_list[i + 1 :]:
             try:
                 graph.find_relationship_path(model_a, model_b)
             except (ValueError, KeyError):
                 # Catch both ValueError (no path) and KeyError (model doesn't exist)
-                errors.append(
-                    f"No join path found between models '{model_a}' and '{model_b}'. "
-                    f"Add relationships to enable joining these models."
-                )
+                if not relationship_errors:
+                    errors.append(
+                        f"No join path found between models '{model_a}' and '{model_b}'. "
+                        f"Add relationships to enable joining these models."
+                    )
 
     return errors

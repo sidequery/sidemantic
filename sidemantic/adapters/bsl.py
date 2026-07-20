@@ -122,7 +122,7 @@ class BSLAdapter(BaseAdapter):
         description = model_def.get("description")
         database = model_def.get("database")
 
-        # Primary key: explicit field > is_entity dimension > default "id"
+        # Primary key: explicit field > explicitly marked entity dimension.
         primary_key = model_def.get("primary_key")
 
         dimensions = []
@@ -135,9 +135,6 @@ class BSLAdapter(BaseAdapter):
                     primary_key = dim_name
                 for derived_dim in self._parse_derived_dimensions(dim_name, dim_def, dim):
                     dimensions.append(derived_dim)
-
-        if not primary_key:
-            primary_key = "id"
 
         # Model-level time dimension and grain
         default_time_dimension = None
@@ -587,7 +584,7 @@ class BSLAdapter(BaseAdapter):
         if model.metadata and "bsl_database" in model.metadata:
             model_def["database"] = model.metadata["bsl_database"]
 
-        if model.primary_key and model.primary_key != "id":
+        if model.primary_key:
             model_def["primary_key"] = model.primary_key
 
         if model.default_time_dimension:

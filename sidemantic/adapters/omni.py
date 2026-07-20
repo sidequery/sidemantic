@@ -218,7 +218,7 @@ class OmniAdapter(BaseAdapter):
 
         # Parse dimensions
         dimensions = []
-        primary_key = "id"  # default
+        primary_key = None
 
         for dim_name, dim_def in (view.get("dimensions") or {}).items():
             if dim_def is None:
@@ -956,12 +956,17 @@ class OmniAdapter(BaseAdapter):
                 # depends on cardinality (see Relationship): for many_to_one the
                 # from_view holds the FK; for one_to_many / one_to_one the to_view
                 # (related model) holds the FK and the from_view contributes its key.
+                related_model = models.get(rel.name)
                 if rel.type in ("one_to_many", "one_to_one"):
-                    from_key = rel.primary_key or "id"
-                    to_key = rel.foreign_key or f"{model.name}_id"
+                    from_key = rel.primary_key or model.primary_key
+                    to_key = rel.foreign_key
                 else:
-                    from_key = rel.foreign_key or f"{rel.name}_id"
-                    to_key = rel.primary_key or "id"
+                    from_key = rel.foreign_key
+                    to_key = rel.primary_key or (related_model.primary_key if related_model else None)
+                if not from_key or not to_key:
+                    raise ValueError(
+                        f"Cannot export relationship '{model.name}.{rel.name}' without explicit/resolvable join keys"
+                    )
                 rel_def["on_sql"] = f"${{{model.name}.{from_key}}} = ${{{rel.name}.{to_key}}}"
 
                 relationships.append(rel_def)

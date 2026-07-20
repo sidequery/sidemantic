@@ -270,7 +270,7 @@ def _parse_table_block_model_def(model_def: exp.Expression) -> Model:
     model_name = model_def.args["model_name"].name
     table = model_def.args.get("table")
     source_sql = model_def.args.get("source_sql")
-    primary_key: str | list[str] = "id"
+    primary_key: str | list[str] | None = None
     default_time_dimension: str | None = None
     default_grain: str | None = None
     relationships: list[Relationship] = []

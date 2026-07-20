@@ -601,9 +601,7 @@ class ThoughtSpotAdapter(BaseAdapter):
                 default_grain = dim.granularity
                 break
 
-        primary_key = "id"
-        if any(d.name.lower() == "id" for d in dimensions):
-            primary_key = next(d.name for d in dimensions if d.name.lower() == "id")
+        primary_key = None
 
         relationships = self._parse_table_relationships(table_def.get("joins_with") or [])
 
@@ -736,9 +734,7 @@ class ThoughtSpotAdapter(BaseAdapter):
                 default_grain = dim.granularity
                 break
 
-        primary_key = "id"
-        if any(d.name.lower() == "id" for d in dimensions):
-            primary_key = next(d.name for d in dimensions if d.name.lower() == "id")
+        primary_key = None
 
         model = Model(
             name=name,
@@ -949,12 +945,9 @@ class ThoughtSpotAdapter(BaseAdapter):
                 )
                 dimensions.append(dim)
 
-        # The SQL generator always selects `model.primary_key` from derived models
-        # as a bare column, so it must name a column that exists on the base
-        # table. Prefer a dimension named `id`; otherwise infer the key from a
-        # base-table column so a model whose key is not literally `id` (e.g.
-        # `order_key`) does not project a non-existent `id` column.
-        primary_key = self._infer_model_primary_key(dimensions, metrics, base_table)
+        # TML model columns do not declare uniqueness. Keeping identity unknown avoids selecting a
+        # fabricated ``id`` from derived SQL and avoids overstating an id-shaped field as unique.
+        primary_key = None
 
         # A joined model is exported as derived SQL (FROM (<sql>) AS t); rewrite
         # its `SELECT *` into explicit aliased columns and update the dimension/
@@ -1026,46 +1019,6 @@ class ThoughtSpotAdapter(BaseAdapter):
         setattr(model, "_source_tml_type", "model")
 
         return model
-
-    def _infer_model_primary_key(
-        self,
-        dimensions: list[Dimension],
-        metrics: list[Metric],
-        base_table: str | None,
-    ) -> str:
-        """Infer a queryable primary key column for a TML Model.
-
-        Prefer a field named ``id`` but resolve it to its backing physical column
-        (a column named ``id`` may map to a differently named DB column, e.g.
-        ``column_id: orders::order_key``). Only accept it when its SQL is
-        unqualified or belongs to the base table; a joined-table ``id`` (e.g.
-        ``customers::id``) is not the base model's key. Otherwise, if the base
-        table is known, keep ``id`` when a base-table column actually resolves to
-        ``id``; failing that, use the first base-table column so the key
-        references a real column. ThoughtSpot often exports numeric key columns as
-        measures, so dimensions are scanned first but metrics are considered too.
-        Fall back to ``id`` only when no better candidate exists.
-        """
-        fields: list[Dimension | Metric] = [*dimensions, *metrics]
-        for field in fields:
-            if field.name.lower() == "id":
-                table, column = _split_sql_identifier(field.sql)
-                if table is None or base_table is None or table == base_table:
-                    return column or field.name
-                break
-
-        if base_table:
-            base_columns: list[str] = []
-            for field in fields:
-                table, column = _split_sql_identifier(field.sql)
-                if column and (table is None or table == base_table):
-                    base_columns.append(column)
-            if "id" in base_columns:
-                return "id"
-            if base_columns:
-                return base_columns[0]
-
-        return "id"
 
     def _parse_model_relationships(
         self,
@@ -1290,6 +1243,10 @@ class ThoughtSpotAdapter(BaseAdapter):
             rel_type = "one_to_one" if join_def.get("is_one_to_one") else "many_to_one"
             if join_type in {"RIGHT_OUTER", "FULL_OUTER", "OUTER"}:
                 rel_type = "many_to_many"
+            elif rel_type == "one_to_one":
+                # Sidemantic's one_to_one key direction stores the local unique key in
+                # primary_key and the related-side key in foreign_key.
+                foreign_key, primary_key = primary_key, foreign_key
 
             relationships.append(
                 Relationship(
@@ -1327,6 +1284,8 @@ class ThoughtSpotAdapter(BaseAdapter):
                 rel_type = "one_to_one"
             if join_type in {"RIGHT_OUTER", "FULL_OUTER", "OUTER"}:
                 rel_type = "many_to_many"
+            elif rel_type == "one_to_one":
+                foreign_key, primary_key = primary_key, foreign_key
 
             relationships.append(
                 Relationship(
@@ -1500,12 +1459,17 @@ class ThoughtSpotAdapter(BaseAdapter):
                 left_table = rel.name
                 left_key = rel.sql_expr
                 right_table = base_table
-                right_key = model.primary_key
+                right_key = rel.related_key or model.primary_key
             else:
                 left_table = base_table
                 left_key = rel.sql_expr
                 right_table = rel.name
                 right_key = rel.related_key
+            if not left_key or not right_key:
+                raise ValueError(
+                    f"Cannot export relationship '{model.name}.{rel.name}' to ThoughtSpot without explicit "
+                    "foreign and primary keys"
+                )
             on_expr = f"[{left_table}::{left_key}] = [{right_table}::{right_key}]"
             joins.append(
                 {

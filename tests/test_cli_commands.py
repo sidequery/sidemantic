@@ -9,6 +9,7 @@ from pathlib import Path
 
 import duckdb
 import pytest
+from click.utils import strip_ansi
 from typer.testing import CliRunner
 
 import sidemantic.cli as cli_module
@@ -519,7 +520,7 @@ models:
     result = runner.invoke(app, ["validate", str(tmp_path), "--engine", "python"])
 
     assert result.exit_code == 1
-    assert "relationship to 'customers' which doesn't exist" in result.output
+    assert "Relationship 'orders.customers' (many_to_one): target model does not exist" in result.output
     assert "Validation Failed" in result.output
 
 
@@ -558,6 +559,48 @@ def test_validate_engine_rust_uses_rust_loader(monkeypatch, tmp_path):
     assert "canonical Python validation ran" in result.stdout
     assert "Validation Passed" in result.stdout
     assert "orders" in result.stdout
+
+
+def test_validate_warehouse_json_reports_separate_categories(tmp_path):
+    _write_min_model(tmp_path)
+    database = tmp_path / "warehouse.duckdb"
+    _write_orders_db(database)
+
+    result = runner.invoke(
+        app,
+        ["validate", str(tmp_path), "--warehouse", "--db", str(database), "--json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["valid"] is True
+    assert payload["structural_errors"] == []
+    assert payload["warehouse_errors"] == []
+    assert payload["connection_errors"] == []
+
+
+def test_validate_warehouse_cli_labels_warehouse_errors(tmp_path):
+    _write_min_model(tmp_path)
+    database = tmp_path / "warehouse.duckdb"
+    connection = duckdb.connect(str(database))
+    connection.execute("CREATE TABLE orders (id INTEGER)")
+    connection.close()
+
+    result = runner.invoke(app, ["validate", str(tmp_path), "--warehouse", "--db", str(database)])
+
+    assert result.exit_code == 1
+    assert "Warehouse Errors:" in result.output
+    assert "missing column 'status'" in result.output
+    assert "Structural Errors:" not in result.output
+
+
+def test_validate_check_keys_requires_warehouse(tmp_path):
+    _write_min_model(tmp_path)
+
+    result = runner.invoke(app, ["validate", str(tmp_path), "--check-keys"])
+
+    assert result.exit_code == 2
+    assert "--check-keys requires" in strip_ansi(result.output)
 
 
 def test_lsp_command_calls_main(monkeypatch):

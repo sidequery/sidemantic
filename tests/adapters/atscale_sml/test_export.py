@@ -34,7 +34,7 @@ class TestAtScaleSMLExport:
         customers = Model(
             name="customers",
             table="public.customers",
-            primary_key="id",
+            primary_key="customer_id",
             dimensions=[
                 Dimension(name="id", type="numeric", sql="id"),
                 Dimension(name="name", type="categorical", sql="name"),
@@ -302,7 +302,7 @@ class TestAtScaleSMLExport:
         customers = Model(
             name="customers",
             table="public.customers",
-            primary_key="id",
+            primary_key="customer_id",
             dimensions=[Dimension(name="customer_id", type="numeric", sql="customer_id")],
         )
 

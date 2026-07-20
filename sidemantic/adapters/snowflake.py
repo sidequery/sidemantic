@@ -297,7 +297,7 @@ class SnowflakeAdapter(BaseAdapter):
         # Parse primary key
         primary_key_def = table_def.get("primary_key", {})
         primary_key_columns = primary_key_def.get("columns") or []
-        primary_key = primary_key_columns[0] if primary_key_columns else "id"
+        primary_key = primary_key_columns[0] if primary_key_columns else None
 
         # Parse dimensions (categorical attributes)
         dimensions = []

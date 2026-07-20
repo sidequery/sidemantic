@@ -1451,16 +1451,23 @@ class SemanticLayer:
             pk_columns = set(model.primary_key_columns)
             for candidate in candidates:
                 preagg = next((p for p in model.pre_aggregations if p.name == candidate.name), None)
-                if candidate.selected and (preagg is None or not pk_columns.issubset(set(preagg.dimensions or []))):
+                if candidate.selected and (
+                    not pk_columns or preagg is None or not pk_columns.issubset(set(preagg.dimensions or []))
+                ):
                     candidate.selected = False
             if not any(c.selected for c in candidates):
+                reason = (
+                    "ungrouped query, model has no declared primary key for unique rows"
+                    if not pk_columns
+                    else "ungrouped query, no rollup carries the primary key for unique rows"
+                )
                 return QueryPlan(
                     sql=sql,
                     model=model_name,
                     metrics=bare_metrics,
                     dimensions=bare_dims,
                     used_preaggregation=False,
-                    routing_reason="ungrouped query, no rollup carries the primary key for unique rows",
+                    routing_reason=reason,
                     candidates=candidates,
                 )
 

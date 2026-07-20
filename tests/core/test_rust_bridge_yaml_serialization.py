@@ -8,7 +8,7 @@ from sidemantic.core.model import Model
 from sidemantic.core.pre_aggregation import Index, PreAggregation, RefreshKey
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
-from sidemantic.rust_bridge import graph_to_rust_yaml, models_to_rust_yaml
+from sidemantic.rust_bridge import _graph_from_loaded_payload, graph_to_rust_yaml, models_to_rust_yaml
 
 
 def test_models_to_rust_yaml_preserves_extended_core_metadata():
@@ -116,6 +116,96 @@ def test_models_to_rust_yaml_does_not_invent_table_for_source_uri_model():
 
     assert model_payload["source_uri"] == "s3://warehouse/events.parquet"
     assert model_payload["table"] is None
+
+
+def test_models_to_rust_yaml_preserves_explicit_keyless_model():
+    payload = yaml.safe_load(models_to_rust_yaml([Model(name="events", table="events")]))
+
+    assert payload["models"][0]["primary_key"] is None
+    assert payload["models"][0]["primary_key_columns"] == []
+
+
+def test_rust_payload_restores_explicit_keyless_model_as_none():
+    graph = _graph_from_loaded_payload(
+        {
+            "models": [
+                {
+                    "name": "events",
+                    "table": "events",
+                    "primary_key": "",
+                    "primary_key_columns": [],
+                }
+            ]
+        }
+    )
+
+    assert graph.get_model("events").primary_key is None
+
+
+def test_models_to_rust_yaml_uses_source_key_for_reverse_relationship():
+    users = Model(
+        name="users",
+        table="users",
+        primary_key="user_id",
+        relationships=[Relationship(name="profiles", type="one_to_many", foreign_key="user_id")],
+    )
+    profiles = Model(name="profiles", table="profiles", primary_key="profile_id")
+
+    payload = yaml.safe_load(models_to_rust_yaml([users, profiles]))
+    relationship = payload["models"][0]["relationships"][0]
+
+    assert relationship["primary_key"] == "user_id"
+    assert relationship["primary_key_columns"] == ["user_id"]
+
+
+def test_models_to_rust_yaml_orients_composite_reverse_relationship_sql():
+    accounts = Model(
+        name="accounts",
+        table="accounts",
+        primary_key=["account_id", "tenant_id"],
+        relationships=[
+            Relationship(
+                name="profiles",
+                type="one_to_many",
+                foreign_key=["owner_account_id", "tenant_id"],
+            )
+        ],
+    )
+    profiles = Model(name="profiles", table="profiles", primary_key="profile_id")
+
+    payload = yaml.safe_load(models_to_rust_yaml([accounts, profiles]))
+    relationship = payload["models"][0]["relationships"][0]
+
+    assert relationship["sql"] == ("{from}.account_id = {to}.owner_account_id AND {from}.tenant_id = {to}.tenant_id")
+
+
+def test_models_to_rust_yaml_orients_single_column_one_to_one_sql():
+    users = Model(
+        name="users",
+        table="users",
+        primary_key="id",
+        relationships=[Relationship(name="profiles", type="one_to_one", foreign_key="user_id")],
+    )
+    profiles = Model(name="profiles", table="profiles", primary_key="profile_id")
+
+    payload = yaml.safe_load(models_to_rust_yaml([users, profiles]))
+    relationship = payload["models"][0]["relationships"][0]
+
+    assert relationship["sql"] == "{from}.id = {to}.user_id"
+
+
+def test_graph_to_rust_yaml_preserves_explicit_keyless_metric_owner():
+    graph = SemanticGraph()
+    graph.add_model(Model(name="events", table="events"))
+    graph.add_model(Model(name="orders", table="orders", primary_key="order_id"))
+    metric = Metric(name="event_count", agg="count")
+    graph.add_metric(metric, model_name="events")
+
+    payload = yaml.safe_load(graph_to_rust_yaml(graph))
+    models = {model["name"]: model for model in payload["models"]}
+
+    assert [item["name"] for item in models["events"]["metrics"]] == ["event_count"]
+    assert payload.get("metrics") in (None, [])
 
 
 def test_graph_to_rust_yaml_assigns_complex_metrics_by_entity_dimension():

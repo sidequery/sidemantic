@@ -1971,6 +1971,23 @@ def validate(
     engine: str = typer.Option(None, "--engine", help="Runtime engine: python, rust, or auto"),
     fallback: bool | None = typer.Option(None, "--fallback/--no-fallback", help="Allow Rust engine fallback to Python"),
     json_output: bool = typer.Option(False, "--json", help="Emit the validation report as JSON"),
+    warehouse: bool = typer.Option(
+        False,
+        "--warehouse",
+        help="Validate tables, columns, types, joins, and representative queries against a warehouse",
+    ),
+    connection: str = typer.Option(None, "--connection", help="Warehouse connection string"),
+    db: Path = typer.Option(None, "--db", help="Path to a DuckDB database file"),
+    check_keys: bool = typer.Option(
+        False,
+        "--check-keys",
+        help="Query declared primary/unique keys for NULLs and duplicates (requires warehouse validation)",
+    ),
+    check_queries: bool = typer.Option(
+        True,
+        "--check-queries/--no-check-queries",
+        help="Compile and prepare representative semantic queries during warehouse validation",
+    ),
 ):
     """
     Validate semantic layer definitions.
@@ -1980,11 +1997,21 @@ def validate(
     Examples:
       sidemantic validate
       sidemantic validate ./models --verbose
+      sidemantic validate ./models --warehouse --db data/warehouse.duckdb
+      sidemantic validate ./models --warehouse --connection postgres://localhost/analytics --check-keys
     """
     output_format = resolve_output_format(json_output=json_output)
     structured = json_output or cli_state().requested_format is not None or cli_state().plain
     verbose = verbose or cli_state().verbose
     directory = _models_path(directory)
+
+    warehouse = warehouse or connection is not None or db is not None
+    if check_keys and not warehouse:
+        raise typer.BadParameter("--check-keys requires --warehouse, --connection, or --db")
+
+    resolved_connection = None
+    if warehouse:
+        resolved_connection = _resolve_connection(connection=connection, database=db, models=directory, required=True)
 
     engine, fallback = _resolve_engine_options(engine, fallback)
     _configure_engine_environment(engine, fallback)
@@ -2030,7 +2057,16 @@ def validate(
     try:
         from sidemantic.validation_runner import validate_directory
 
-        report = validate_directory(directory)
+        if resolved_connection is None:
+            report = validate_directory(directory)
+        else:
+            report = validate_directory(
+                directory,
+                connection=resolved_connection.connection,
+                init_sql=resolved_connection.init_sql,
+                check_keys=check_keys,
+                check_queries=check_queries,
+            )
     except Exception as e:
         if cli_state().debug:
             raise
@@ -2039,6 +2075,9 @@ def validate(
             "path": str(directory),
             "engine": engine or "python",
             "errors": [str(e)],
+            "structural_errors": [str(e)],
+            "warehouse_errors": [],
+            "connection_errors": [],
             "warnings": [],
             "info": [],
         }
@@ -2054,30 +2093,54 @@ def validate(
         raise typer.Exit(1)
 
     if structured:
+        warehouse_errors = list(getattr(report, "warehouse_errors", []))
+        connection_errors = list(getattr(report, "connection_errors", []))
+        all_errors = list(getattr(report, "all_errors", [*report.errors, *warehouse_errors, *connection_errors]))
+        passed = bool(getattr(report, "passed", not all_errors))
         payload = {
-            "valid": not report.errors,
+            "valid": passed,
             "path": str(directory),
             "engine": engine or "python",
             "rust_models": rust_models,
-            "errors": list(report.errors),
+            "errors": all_errors,
+            "structural_errors": list(report.errors),
+            "warehouse_errors": warehouse_errors,
+            "connection_errors": connection_errors,
             "warnings": list(report.warnings),
             "info": list(report.info),
         }
         records = [
-            *({"level": "error", "message": str(message)} for message in report.errors),
+            *({"level": "error", "category": "structural", "message": str(message)} for message in report.errors),
+            *({"level": "error", "category": "warehouse", "message": str(message)} for message in warehouse_errors),
+            *({"level": "error", "category": "connection", "message": str(message)} for message in connection_errors),
             *({"level": "warning", "message": str(message)} for message in report.warnings),
             *({"level": "info", "message": str(message)} for message in report.info),
         ]
         emit_records(records, columns=("level", "message"), output_format=output_format, json_value=payload)
-        if report.errors:
+        if not passed:
             raise typer.Exit(1)
         return
 
     lines = [f"Validation Results: {directory}"]
 
     if report.errors:
-        lines.append("Errors:")
+        lines.append("Structural Errors:")
         for error in report.errors:
+            lines.append(f"  - {error}")
+
+    warehouse_errors = list(getattr(report, "warehouse_errors", []))
+    connection_errors = list(getattr(report, "connection_errors", []))
+    all_errors = list(getattr(report, "all_errors", [*report.errors, *warehouse_errors, *connection_errors]))
+    passed = bool(getattr(report, "passed", not all_errors))
+
+    if warehouse_errors:
+        lines.append("Warehouse Errors:")
+        for error in warehouse_errors:
+            lines.append(f"  - {error}")
+
+    if connection_errors:
+        lines.append("Connection Errors:")
+        for error in connection_errors:
             lines.append(f"  - {error}")
 
     if report.warnings:
@@ -2085,14 +2148,14 @@ def validate(
         for warning in report.warnings:
             lines.append(f"  - {warning}")
 
-    if verbose or not (report.errors or report.warnings):
+    if verbose or not (all_errors or report.warnings):
         lines.append("Info:")
         for item in report.info:
             lines.append(f"  - {item}")
 
     _emit_long_report("\n".join(lines))
 
-    if report.errors:
+    if not passed:
         typer.echo("Validation Failed", err=True)
         raise typer.Exit(1)
 

@@ -91,17 +91,13 @@ class SupersetAdapter(BaseAdapter):
 
         # Parse columns
         dimensions = []
-        primary_key = "id"  # default
+        primary_key = None
         main_dttm_col = dataset.get("main_dttm_col")
 
         for col_def in dataset.get("columns") or []:
             dim = self._parse_column(col_def, main_dttm_col)
             if dim:
                 dimensions.append(dim)
-
-                # Check if this is the primary key
-                if col_def.get("column_name") == "id":
-                    primary_key = dim.name
 
         # Parse metrics
         metrics = []

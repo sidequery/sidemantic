@@ -2640,7 +2640,7 @@ class LookMLAdapter(BaseAdapter):
 
         # Parse dimensions with resolved SQL
         dimensions = []
-        primary_key = "id"  # default
+        primary_key = None
 
         for dim_def in dimension_defs:
             dim = self._parse_dimension(dim_def, resolved_dimension_sql)
@@ -2980,7 +2980,7 @@ class LookMLAdapter(BaseAdapter):
         # Build kwargs conditionally so that unset scalars don't appear in
         # model_fields_set. This matters for refinements: merge_model treats
         # every field in model_fields_set as an explicit child override, so
-        # passing table=None or primary_key="id" would erase the base view's
+        # passing table=None or an unknown primary key would erase the base view's
         # real values.
         model_kwargs: dict = {
             "name": name,
@@ -2997,7 +2997,7 @@ class LookMLAdapter(BaseAdapter):
             model_kwargs["description"] = desc
         if extends is not None:
             model_kwargs["extends"] = extends
-        if primary_key != "id":
+        if primary_key is not None:
             model_kwargs["primary_key"] = primary_key
         if model_meta:
             model_kwargs["meta"] = model_meta

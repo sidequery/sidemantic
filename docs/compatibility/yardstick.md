@@ -32,7 +32,7 @@ The adapter only processes `CREATE VIEW` statements that contain at least one `A
 | CTE-backed views (`WITH ... AS ... SELECT ...`) | Supported (CTEs included in `Model.sql`) |
 | `FROM` with table alias | Supported (base relation preserved) |
 | `SELECT *` (star projections) | Supported (star columns are silently skipped; only explicitly aliased columns become dimensions) |
-| Primary key inference | Supported (defaults to the first dimension's name; falls back to `"id"` if no dimensions) |
+| Primary key inference | Not performed; Yardstick has no explicit declaration, so identity remains unknown |
 
 The adapter stores the original view SQL in `Model.metadata["yardstick"]["view_sql"]` for reference. When a simple single-table source is detected, the table name is also stored in `metadata["yardstick"]["base_table"]`. For complex base relations, the reconstructed subquery SQL is stored in `metadata["yardstick"]["base_relation_sql"]`.
 
@@ -255,5 +255,5 @@ Unsupported. The Yardstick adapter is import-only. There is no export path back 
 | No dimension metadata | Yardstick SQL has no syntax for descriptions, labels, formats, or visibility on dimensions or measures |
 | No relationships/joins at model level | Joins are handled at query time via SEMANTIC queries, not stored as model-level Relationships |
 | No segments | Yardstick SQL has no concept of named filters at the model level |
-| Primary key is heuristic | First dimension is assumed to be the primary key; no explicit PK declaration syntax exists |
+| No primary-key declaration syntax | Imported model identity remains unknown; no dimension is assumed unique |
 | Type inference is heuristic | Dimension types are inferred from column names and expression structure, not from declared types |

@@ -35,10 +35,10 @@ class Model(BaseModel):
     # Relationships
     relationships: list[Relationship] = Field(default_factory=list, description="Relationships to other models")
 
-    # Primary key - single column or list for composite keys. None means "no known primary key"
-    # (e.g. a fact or disconnected table imported from a format that does not declare one); such a
-    # model contributes no key column to joins rather than a fabricated default.
-    primary_key: str | list[str] | None = Field(default="id", description="Primary key column(s)")
+    # Primary key - single column or list for composite keys. None means "no known primary key".
+    # Keys are never inferred here: callers and adapters must preserve the source model's actual
+    # declaration rather than manufacturing an ``id`` column that may not exist.
+    primary_key: str | list[str] | None = Field(default=None, description="Primary key column(s), if known")
 
     # Unique key constraints
     unique_keys: list[list[str]] | None = Field(None, description="Unique key constraints (each is a list of columns)")

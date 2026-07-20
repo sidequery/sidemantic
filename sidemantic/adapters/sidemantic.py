@@ -160,6 +160,7 @@ RELATIONSHIP_FIELDS = {
     "related_foreign_key_columns",
     "sql",
     "metadata",
+    "active",
 }
 SEGMENT_FIELDS = {
     "name",
@@ -774,7 +775,7 @@ class SidemanticAdapter(BaseAdapter):
                 model_kwargs["security"] = SecurityPolicy(**security_kwargs)
 
         if "primary_key_columns" in model_def:
-            model_kwargs["primary_key"] = model_def.get("primary_key_columns")
+            model_kwargs["primary_key"] = model_def.get("primary_key_columns") or None
         elif "primary_key" in model_def:
             model_kwargs["primary_key"] = model_def.get("primary_key")
 
@@ -961,8 +962,12 @@ class SidemanticAdapter(BaseAdapter):
             ]
 
         # Export primary key
-        if model.primary_key != "id":  # Only export if non-default
+        if model.primary_key is not None:
             result["primary_key"] = model.primary_key
+        else:
+            # Keep an explicit marker for compatibility with older Rust loaders
+            # that treated an omitted native key as `id`.
+            result["primary_key_columns"] = []
 
         # Export dimensions
         if model.dimensions:

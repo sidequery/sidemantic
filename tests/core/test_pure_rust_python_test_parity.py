@@ -228,6 +228,9 @@ EXPECTED_GAPS = {
     "tests.optimizations.test_pre_aggregations::test_ungrouped_rollup_without_pk_falls_to_raw": (
         "Rust adapter does not yet support Python pre-aggregation routing (ungrouped drill-to-detail)"
     ),
+    "tests.optimizations.test_pre_aggregations::test_ungrouped_keyless_model_falls_to_raw": (
+        "Rust adapter does not yet support Python pre-aggregation routing (ungrouped drill-to-detail)"
+    ),
     "tests.optimizations.test_pre_aggregations::test_lambda_preaggregation_unions_batch_rollup_with_fresh_source": (
         "Rust adapter does not yet support Python pre-aggregation routing (lambda union)"
     ),

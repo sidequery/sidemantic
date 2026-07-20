@@ -1,8 +1,11 @@
 """Test relationship property methods and edge cases."""
 
+import pytest
+
 from sidemantic.core.model import Model
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
+from sidemantic.validation import validate_relationships
 
 
 def test_relationship_sql_expr_with_explicit_foreign_key():
@@ -11,22 +14,19 @@ def test_relationship_sql_expr_with_explicit_foreign_key():
     assert rel.sql_expr == "cust_id"
 
 
-def test_relationship_sql_expr_default_many_to_one():
-    """Test sql_expr property defaults to {name}_id for many_to_one."""
+def test_relationship_sql_expr_does_not_invent_many_to_one_key():
     rel = Relationship(name="customers", type="many_to_one")
-    assert rel.sql_expr == "customers_id"
+    assert rel.sql_expr is None
 
 
-def test_relationship_sql_expr_default_one_to_many():
-    """Test sql_expr property defaults to 'id' for one_to_many."""
+def test_relationship_sql_expr_does_not_invent_one_to_many_key():
     rel = Relationship(name="orders", type="one_to_many")
-    assert rel.sql_expr == "id"
+    assert rel.sql_expr is None
 
 
-def test_relationship_sql_expr_default_one_to_one():
-    """Test sql_expr property defaults to 'id' for one_to_one."""
+def test_relationship_sql_expr_does_not_invent_one_to_one_key():
     rel = Relationship(name="profile", type="one_to_one")
-    assert rel.sql_expr == "id"
+    assert rel.sql_expr is None
 
 
 def test_relationship_related_key_with_explicit_primary_key():
@@ -35,10 +35,9 @@ def test_relationship_related_key_with_explicit_primary_key():
     assert rel.related_key == "customer_uid"
 
 
-def test_relationship_related_key_default():
-    """Test related_key property defaults to 'id'."""
+def test_relationship_related_key_is_unknown_when_omitted():
     rel = Relationship(name="customers", type="many_to_one")
-    assert rel.related_key == "id"
+    assert rel.related_key is None
 
 
 def test_relationship_many_to_many():
@@ -68,21 +67,21 @@ def test_relationship_all_fields():
     assert rel.related_key == "organization_id"
 
 
-def test_relationship_default_column_lists_match_native_contract():
+def test_relationship_omitted_column_lists_remain_unknown():
     many_to_one = Relationship(name="customers", type="many_to_one")
-    assert many_to_one.foreign_key_columns == ["customers_id"]
-    assert many_to_one.primary_key_columns == ["id"]
+    assert many_to_one.foreign_key_columns == []
+    assert many_to_one.primary_key_columns == []
 
     one_to_many = Relationship(name="orders", type="one_to_many")
-    assert one_to_many.foreign_key_columns == ["id"]
-    assert one_to_many.primary_key_columns == ["id"]
+    assert one_to_many.foreign_key_columns == []
+    assert one_to_many.primary_key_columns == []
 
     one_to_one = Relationship(name="profile", type="one_to_one")
-    assert one_to_one.foreign_key_columns == ["id"]
-    assert one_to_one.primary_key_columns == ["id"]
+    assert one_to_one.foreign_key_columns == []
+    assert one_to_one.primary_key_columns == []
 
 
-def test_graph_many_to_one_omitted_keys_use_name_id_and_target_primary_key():
+def test_graph_many_to_one_omitted_foreign_key_is_not_joinable():
     graph = SemanticGraph()
     graph.add_model(
         Model(
@@ -94,14 +93,12 @@ def test_graph_many_to_one_omitted_keys_use_name_id_and_target_primary_key():
     )
     graph.add_model(Model(name="customers", table="customers", primary_key="customer_uid"))
 
-    path = graph.find_relationship_path("orders", "customers")
-
-    assert [(step.from_columns, step.to_columns, step.relationship) for step in path] == [
-        (["customers_id"], ["customer_uid"], "many_to_one")
-    ]
+    with pytest.raises(ValueError, match="No join path"):
+        graph.find_relationship_path("orders", "customers")
+    assert "foreign_key is required" in "\n".join(validate_relationships(graph))
 
 
-def test_graph_one_to_many_omitted_keys_default_to_id_columns():
+def test_graph_one_to_many_omitted_foreign_key_is_not_joinable():
     graph = SemanticGraph()
     graph.add_model(
         Model(
@@ -113,14 +110,12 @@ def test_graph_one_to_many_omitted_keys_default_to_id_columns():
     )
     graph.add_model(Model(name="orders", table="orders", primary_key="id"))
 
-    path = graph.find_relationship_path("customers", "orders")
-
-    assert [(step.from_columns, step.to_columns, step.relationship) for step in path] == [
-        (["id"], ["id"], "one_to_many")
-    ]
+    with pytest.raises(ValueError, match="No join path"):
+        graph.find_relationship_path("customers", "orders")
+    assert "foreign_key is required" in "\n".join(validate_relationships(graph))
 
 
-def test_graph_one_to_one_omitted_keys_default_to_id_columns():
+def test_graph_one_to_one_requires_explicit_unique_target_key():
     graph = SemanticGraph()
     graph.add_model(
         Model(
@@ -132,11 +127,10 @@ def test_graph_one_to_one_omitted_keys_default_to_id_columns():
     )
     graph.add_model(Model(name="profiles", table="profiles", primary_key="id"))
 
-    path = graph.find_relationship_path("users", "profiles")
-
-    assert [(step.from_columns, step.to_columns, step.relationship) for step in path] == [
-        (["id"], ["id"], "one_to_one")
-    ]
+    with pytest.raises(ValueError, match="No join path"):
+        graph.find_relationship_path("users", "profiles")
+    errors = "\n".join(validate_relationships(graph))
+    assert "foreign_key is required" in errors
 
 
 def test_graph_explicit_foreign_key_omitted_primary_key_uses_target_primary_key():
@@ -162,3 +156,40 @@ def test_graph_explicit_foreign_key_omitted_primary_key_uses_target_primary_key(
     assert [(step.from_columns, step.to_columns, step.relationship) for step in path] == [
         (["vendor_ref"], ["vendor_uid"], "many_to_one")
     ]
+
+
+def test_many_to_one_explicit_alternate_target_key_is_relationship_scoped_key_declaration():
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="orders",
+            table="orders",
+            primary_key="order_id",
+            relationships=[
+                Relationship(
+                    name="customers",
+                    type="many_to_one",
+                    foreign_key="customer_external_id",
+                    primary_key="external_id",
+                )
+            ],
+        )
+    )
+    graph.add_model(Model(name="customers", table="customers", primary_key="customer_id"))
+
+    assert validate_relationships(graph) == []
+
+
+def test_one_to_one_cardinality_declares_target_foreign_key_unique():
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="users",
+            table="users",
+            primary_key="user_id",
+            relationships=[Relationship(name="profiles", type="one_to_one", foreign_key="user_id")],
+        )
+    )
+    graph.add_model(Model(name="profiles", table="profiles", primary_key="profile_id"))
+
+    assert validate_relationships(graph) == []

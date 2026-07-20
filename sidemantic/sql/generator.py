@@ -1512,6 +1512,9 @@ class SQLGenerator:
                 return
 
             # It's a graph-level metric, need to resolve its dependencies.
+            owning_model = self.graph.metric_owners.get(metric_ref)
+            if owning_model:
+                add_model(owning_model)
             if metric.type == "ratio":
                 if metric.numerator:
                     collect_models_from_metric(metric.numerator)
@@ -1769,7 +1772,7 @@ class SQLGenerator:
             """Recursively extract filter columns from a metric and its dependencies."""
             # Extract from the metric's own filters
             if metric.filters:
-                filter_model_name = None
+                filter_model_name = self.graph.metric_owners.get(metric.name)
                 deps = metric.get_dependencies(self.graph)
                 for dep in deps:
                     try:
@@ -3533,6 +3536,9 @@ class SQLGenerator:
         """
         if model_context and model_context in self.graph.models:
             return model_context
+        owning_model = self.graph.metric_owners.get(metric.name)
+        if owning_model:
+            return owning_model
         if metric.sql:
             try:
                 parsed = _parse_fragment(metric.sql, self.dialect)
@@ -6210,7 +6216,8 @@ LEFT JOIN {preagg_table} AS {rollup_alias}
             # dimensions; otherwise the stored rows are aggregated and must not
             # be served ungrouped. Fall through to raw tables.
             preagg_dims = set(preagg.dimensions or [])
-            if not set(model.primary_key_columns).issubset(preagg_dims):
+            primary_key_columns = set(model.primary_key_columns)
+            if not primary_key_columns or not primary_key_columns.issubset(preagg_dims):
                 return None
 
         # Generate SQL against pre-aggregation table

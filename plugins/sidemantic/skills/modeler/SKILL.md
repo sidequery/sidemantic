@@ -184,7 +184,7 @@ Inspect tables, columns, data types, and foreign key relationships. Identify whi
 For each table, create a Model with:
 - `name`: a short, snake_case identifier
 - `table`: schema-qualified table name (e.g., `public.orders`)
-- `primary_key`: the table's primary key column (default: `id`)
+- `primary_key`: the table's actual primary key column; omit it only when identity is genuinely unknown
 
 Use `sql` instead of `table` for derived/virtual tables built from a SQL expression.
 
@@ -247,7 +247,7 @@ Connect models with relationships so Sidemantic can auto-generate JOINs.
 | `one_to_many` | Other model has FK to this | customer -> orders |
 | `many_to_many` | Through junction table | students <-> courses |
 
-Declare relationships on the model that owns the foreign key. For `many_to_one`, `foreign_key` defaults to `{related_model}_id`.
+Declare relationships on the model that owns the foreign key. Always set the actual `foreign_key`; Sidemantic does not infer one from the related model name.
 
 For `many_to_many`, specify `through` (junction model), `through_foreign_key`, and `related_foreign_key`.
 
@@ -256,6 +256,12 @@ For `many_to_many`, specify `through` (junction model), `through_foreign_key`, a
 ```bash
 # Validate definitions (checks for errors and warnings)
 sidemantic validate models/ --verbose
+
+# Validate physical tables, columns, joins, and representative queries
+sidemantic validate models/ --warehouse
+
+# Also verify declared key uniqueness/nullability against data
+sidemantic validate models/ --warehouse --check-keys
 
 # Quick summary of what's defined
 sidemantic info models/
@@ -422,7 +428,7 @@ Load these when you need deeper detail:
 5. **Using `type: string` or `type: number` for dimensions.** The valid types are `categorical`, `time`, `boolean`, `numeric`.
 6. **Confusing model-level vs graph-level metrics.** Model-level metrics use `agg`. Graph-level metrics (ratio, derived, etc.) go in the top-level `metrics:` section.
 7. **Missing required fields on complex metrics.** ratio needs `numerator` + `denominator`. derived needs `sql`. time_comparison needs `base_metric`. conversion needs `entity`, `base_event`, `conversion_event`.
-8. **Plural relationship names create wrong FK defaults.** Relationship named `customers` defaults FK to `customers_id`, not `customer_id`. Always set `foreign_key` explicitly.
+8. **Relationship keys are omitted.** Sidemantic does not guess `customer_id`, `customers_id`, or `id`. Always set the real `foreign_key` and declare the one-side key.
 9. **SQL expressions with YAML special characters.** Quote SQL containing `:`, `#`, `{`, or `>`.
 10. **Duplicate model or metric names.** Names must be unique across the entire semantic layer.
 11. **Creating Models before SemanticLayer.** With auto-registration (default), Models must be created after the SemanticLayer, or they won't register.

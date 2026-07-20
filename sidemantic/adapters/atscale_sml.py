@@ -453,15 +453,11 @@ class AtScaleSMLAdapter(BaseAdapter):
             metrics=[],
         )
 
-    def _infer_primary_key(self, columns: list[dict[str, Any]]) -> str:
-        for column in columns:
-            name = column.get("name")
-            if not name:
-                continue
-            lowered = name.lower()
-            if lowered == "id" or lowered.endswith("_id") or lowered.endswith("key"):
-                return name
-        return "id"
+    def _infer_primary_key(self, columns: list[dict[str, Any]]) -> str | None:
+        # AtScale dataset columns do not declare relational uniqueness. Dimension-level
+        # ``key_columns`` are used when building explicit relationships, but guessing a model
+        # primary key from an ``id``-shaped column would overstate the source contract.
+        return None
 
     def _collect_dimension_attrs(
         self,
@@ -822,7 +818,7 @@ class AtScaleSMLAdapter(BaseAdapter):
                         metrics=[],
                     )
                 else:
-                    model = Model(name=model_name, table=None, primary_key="id")
+                    model = Model(name=model_name, table=None, primary_key=None)
                 graph.add_model(model)
 
             for attr in attrs:
@@ -867,7 +863,7 @@ class AtScaleSMLAdapter(BaseAdapter):
                         metrics=[],
                     )
                 else:
-                    model = Model(name=model_name, table=None, primary_key="id")
+                    model = Model(name=model_name, table=None, primary_key=None)
                 graph.add_model(model)
 
             for info in metrics:
@@ -1013,7 +1009,7 @@ class AtScaleSMLAdapter(BaseAdapter):
 
             model = graph.models.get(source_model_name)
             if not model:
-                model = Model(name=source_model_name, table=None, primary_key="id")
+                model = Model(name=source_model_name, table=None, primary_key=None)
                 graph.add_model(model)
 
             if not any(existing.name == rel.name for existing in model.relationships):
@@ -1052,7 +1048,7 @@ class AtScaleSMLAdapter(BaseAdapter):
                             )
                         )
                     else:
-                        graph.add_model(Model(name=source_model_name, table=None, primary_key="id"))
+                        graph.add_model(Model(name=source_model_name, table=None, primary_key=None))
 
                 model = graph.models[source_model_name]
                 if not any(existing.name == rel.name for existing in model.relationships):
@@ -1388,11 +1384,11 @@ class AtScaleSMLAdapter(BaseAdapter):
             "expression": metric.sql or metric.name,
         }
 
-    def _resolve_relationship_level(self, related_model: Model | None, rel: Relationship, join_column: str) -> str:
+    def _resolve_relationship_level(self, related_model: Model | None, rel: Relationship) -> str | None:
         if not related_model:
-            return rel.primary_key or "id"
+            return rel.primary_key
 
-        candidates = [rel.primary_key, related_model.primary_key, join_column]
+        candidates = [rel.primary_key, related_model.primary_key]
         for candidate in candidates:
             if not candidate:
                 continue
@@ -1402,10 +1398,7 @@ class AtScaleSMLAdapter(BaseAdapter):
                 if dimension.sql == candidate:
                     return dimension.name
 
-        if related_model.dimensions:
-            return related_model.dimensions[0].name
-
-        return rel.primary_key or related_model.primary_key or "id"
+        return None
 
     def _export_model(self, model: Model, models: dict[str, Model]) -> dict[str, Any]:
         model_def: dict[str, Any] = {
@@ -1417,9 +1410,17 @@ class AtScaleSMLAdapter(BaseAdapter):
         if model.relationships:
             relationships = []
             for rel in model.relationships:
-                join_column = rel.foreign_key or f"{rel.name}_id"
+                join_column = rel.foreign_key
+                if not isinstance(join_column, str):
+                    raise ValueError(
+                        f"Cannot export relationship '{model.name}.{rel.name}' to AtScale without a single foreign_key"
+                    )
                 related_model = models.get(rel.name)
-                related_level = self._resolve_relationship_level(related_model, rel, join_column)
+                related_level = self._resolve_relationship_level(related_model, rel)
+                if related_level is None:
+                    raise ValueError(
+                        f"Cannot export relationship '{model.name}.{rel.name}' to AtScale without a target key"
+                    )
 
                 relationships.append(
                     {

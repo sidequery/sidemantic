@@ -2,7 +2,9 @@
 //!
 //! Supports both native Sidemantic format and Cube.js format.
 
-use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::core::{
     Aggregation, CohortInnerMetric, ComparisonCalculation, ComparisonType, Dimension,
@@ -48,8 +50,8 @@ pub struct ModelConfig {
     pub table: Option<String>,
     pub sql: Option<String>,
     pub source_uri: Option<String>,
-    #[serde(default = "default_primary_key_config")]
-    pub primary_key: KeyConfig,
+    #[serde(default, deserialize_with = "deserialize_present_option")]
+    pub primary_key: Option<Option<KeyConfig>>,
     #[serde(default)]
     pub primary_key_columns: Option<Vec<String>>,
     #[serde(default)]
@@ -80,14 +82,6 @@ pub struct ModelConfig {
     pub sql_metrics: Option<String>,
     #[serde(default)]
     pub sql_segments: Option<String>,
-}
-
-fn default_primary_key() -> String {
-    "id".to_string()
-}
-
-fn default_primary_key_config() -> KeyConfig {
-    KeyConfig::Single(default_primary_key())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -221,6 +215,8 @@ pub struct RelationshipConfig {
     pub name: String,
     #[serde(default, rename = "type")]
     pub rel_type: Option<String>,
+    #[serde(default = "default_active")]
+    pub active: bool,
     pub foreign_key: Option<KeyConfig>,
     #[serde(default)]
     pub foreign_key_columns: Option<Vec<String>>,
@@ -307,6 +303,18 @@ pub struct IndexConfig {
 
 fn default_public() -> bool {
     true
+}
+
+fn default_active() -> bool {
+    true
+}
+
+fn deserialize_present_option<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
 }
 
 fn default_index_type() -> String {
@@ -491,8 +499,9 @@ impl SidemanticConfig {
     }
 
     /// Convert to core models, top-level metrics, and top-level parameters.
-    pub fn into_parts(self) -> crate::error::Result<(Vec<Model>, Vec<Metric>, Vec<Parameter>)> {
+    pub fn into_parts(mut self) -> crate::error::Result<(Vec<Model>, Vec<Metric>, Vec<Parameter>)> {
         self.validate_contract()?;
+        inherit_omitted_primary_keys(&mut self.models);
         let models = self.models.into_iter().map(|m| m.into_model()).collect();
         let metrics = self.metrics.into_iter().map(|m| m.into_metric()).collect();
         let parameters = self
@@ -509,17 +518,61 @@ impl SidemanticConfig {
     }
 }
 
+fn inherit_omitted_primary_keys(models: &mut [ModelConfig]) {
+    let mut effective_keys: HashMap<String, Vec<String>> = models
+        .iter()
+        .filter_map(|model| {
+            model
+                .primary_key_columns
+                .clone()
+                .or_else(|| {
+                    model
+                        .primary_key
+                        .clone()
+                        .flatten()
+                        .map(KeyConfig::into_columns)
+                })
+                .map(|columns| (model.name.clone(), columns))
+        })
+        .collect();
+
+    for _ in 0..models.len() {
+        let updates: Vec<_> = models
+            .iter()
+            .enumerate()
+            .filter(|(_, model)| model.primary_key.is_none() && model.primary_key_columns.is_none())
+            .filter_map(|(index, model)| {
+                let parent = model.extends.as_ref()?;
+                effective_keys
+                    .get(parent)
+                    .cloned()
+                    .map(|columns| (index, model.name.clone(), columns))
+            })
+            .collect();
+        if updates.is_empty() {
+            break;
+        }
+        for (index, name, columns) in updates {
+            models[index].primary_key_columns = Some(columns.clone());
+            effective_keys.insert(name, columns);
+        }
+    }
+}
+
 impl ModelConfig {
     /// Convert to core Model type
     pub fn into_model(self) -> Model {
-        let primary_key_columns = self
-            .primary_key_columns
-            .filter(|columns| !columns.is_empty())
-            .unwrap_or_else(|| self.primary_key.into_columns());
-        let primary_key = primary_key_columns
-            .first()
-            .cloned()
-            .unwrap_or_else(default_primary_key);
+        // Missing or explicitly empty key fields both represent a model whose
+        // primary key is unknown. Never manufacture an `id` column here.
+        let primary_key_columns = match self.primary_key_columns {
+            Some(columns) => columns,
+            None => self
+                .primary_key
+                .flatten()
+                .map(KeyConfig::into_columns)
+                .unwrap_or_default(),
+        };
+        let primary_key = primary_key_columns.first().cloned().unwrap_or_default();
 
         Model {
             name: self.name,
@@ -539,6 +592,7 @@ impl ModelConfig {
             relationships: self
                 .relationships
                 .into_iter()
+                .filter(|relationship| relationship.active)
                 .map(|r| r.into_relationship())
                 .collect(),
             segments: self
@@ -1178,6 +1232,117 @@ fn parse_comparison_calculation(s: &str) -> Option<ComparisonCalculation> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_explicit_empty_primary_key_columns_preserve_keyless_model() {
+        let yaml = r#"
+models:
+  - name: events
+    table: events
+    primary_key: null
+    primary_key_columns: []
+"#;
+
+        let mut models = serde_yaml::from_str::<SidemanticConfig>(yaml)
+            .unwrap()
+            .into_models()
+            .unwrap();
+        let model = models.remove(0);
+
+        assert_eq!(model.primary_key, "");
+        assert!(model.primary_keys().is_empty());
+    }
+
+    #[test]
+    fn test_omitted_primary_key_preserves_keyless_model() {
+        let yaml = r#"
+models:
+  - name: events
+    table: events
+"#;
+
+        let mut models = serde_yaml::from_str::<SidemanticConfig>(yaml)
+            .unwrap()
+            .into_models()
+            .unwrap();
+        let model = models.remove(0);
+
+        assert_eq!(model.primary_key, "");
+        assert!(model.primary_keys().is_empty());
+    }
+
+    #[test]
+    fn test_inactive_relationship_is_accepted_and_omitted_from_graph_model() {
+        let yaml = r#"
+models:
+  - name: orders
+    table: orders
+    primary_key: order_id
+    relationships:
+      - name: customers
+        type: many_to_one
+        foreign_key: customer_id
+        active: false
+  - name: customers
+    table: customers
+    primary_key: customer_id
+"#;
+
+        let models = serde_yaml::from_str::<SidemanticConfig>(yaml)
+            .unwrap()
+            .into_models()
+            .unwrap();
+
+        assert!(models[0].relationships.is_empty());
+    }
+
+    #[test]
+    fn test_omitted_child_primary_key_inherits_parent_key() {
+        let yaml = r#"
+models:
+  - name: base_events
+    table: events
+    primary_key: event_id
+  - name: recent_events
+    extends: base_events
+"#;
+
+        let models = serde_yaml::from_str::<SidemanticConfig>(yaml)
+            .unwrap()
+            .into_models()
+            .unwrap();
+        let child = models
+            .iter()
+            .find(|model| model.name == "recent_events")
+            .unwrap();
+
+        assert_eq!(child.primary_keys(), vec!["event_id".to_string()]);
+    }
+
+    #[test]
+    fn test_explicit_null_child_primary_key_clears_parent_key() {
+        let yaml = r#"
+models:
+  - name: events
+    table: events
+    primary_key: event_id
+  - name: event_rollup
+    table: event_rollup
+    extends: events
+    primary_key: null
+"#;
+
+        let models = serde_yaml::from_str::<SidemanticConfig>(yaml)
+            .unwrap()
+            .into_models()
+            .unwrap();
+        let child = models
+            .iter()
+            .find(|model| model.name == "event_rollup")
+            .unwrap();
+
+        assert!(child.primary_keys().is_empty());
+    }
 
     #[test]
     fn test_parse_native_yaml() {

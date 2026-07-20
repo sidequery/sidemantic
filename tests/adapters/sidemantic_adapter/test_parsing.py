@@ -7,6 +7,8 @@ import pytest
 import yaml
 
 from sidemantic.adapters.sidemantic import SidemanticAdapter
+from sidemantic.core.model import Model
+from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.core.semantic_layer import SemanticLayer
 
 
@@ -1012,6 +1014,19 @@ def test_export_native_yaml():
 
     finally:
         temp_path.unlink(missing_ok=True)
+
+
+def test_export_native_yaml_marks_keyless_models_explicitly(tmp_path):
+    adapter = SidemanticAdapter()
+    graph = SemanticGraph()
+    graph.add_model(Model(name="events", table="events"))
+    export_path = tmp_path / "keyless.yml"
+
+    adapter.export(graph, export_path)
+
+    exported = yaml.safe_load(export_path.read_text())
+    assert exported["models"][0]["primary_key_columns"] == []
+    assert adapter.parse(export_path).models["events"].primary_key is None
 
 
 def test_semantic_layer_from_yaml():

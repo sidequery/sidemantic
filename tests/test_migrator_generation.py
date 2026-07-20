@@ -749,24 +749,8 @@ def test_extract_relationships_from_joins():
     report = analyzer.analyze_queries(queries)
     analysis = report.query_analyses[0]
 
-    # Should extract relationships
-    assert len(analysis.relationships) == 2
-
-    # Check relationships
-    rels_by_table = {}
-    for from_model, to_model, rel_type, fk_col, pk_col in analysis.relationships:
-        rels_by_table[from_model] = (to_model, rel_type, fk_col, pk_col)
-
-    # orders has many_to_one to customers
-    assert "orders" in rels_by_table
-    assert rels_by_table["orders"][0] == "customers"  # to_model
-    assert rels_by_table["orders"][1] == "many_to_one"  # rel_type
-    assert rels_by_table["orders"][2] == "customer_id"  # fk_col
-
-    # customers has one_to_many to orders
-    assert "customers" in rels_by_table
-    assert rels_by_table["customers"][0] == "orders"  # to_model
-    assert rels_by_table["customers"][1] == "one_to_many"  # rel_type
+    # The equality establishes join columns, but not uniqueness/cardinality.
+    assert analysis.relationships == [("customers", "orders", "many_to_many", "customer_id", "customer_id")]
 
 
 def test_generate_models_with_relationships():
@@ -791,16 +775,13 @@ def test_generate_models_with_relationships():
     assert "relationships" in customers
     cust_rels = {r["name"]: r for r in customers["relationships"]}
     assert "orders" in cust_rels
-    assert cust_rels["orders"]["type"] == "one_to_many"
-    assert "foreign_key" not in cust_rels["orders"]  # FK is on orders side
-
-    # Check orders model
-    orders = models["orders"]
-    assert "relationships" in orders
-    orders_rels = {r["name"]: r for r in orders["relationships"]}
-    assert "customers" in orders_rels
-    assert orders_rels["customers"]["type"] == "many_to_one"
-    assert orders_rels["customers"]["foreign_key"] == "customer_id"
+    assert cust_rels["orders"] == {
+        "name": "orders",
+        "type": "many_to_many",
+        "foreign_key": "id",
+        "primary_key": "customer_id",
+    }
+    assert "relationships" not in models["orders"]
 
 
 def test_generate_models_with_multiple_joins():
@@ -821,18 +802,20 @@ def test_generate_models_with_multiple_joins():
     report = analyzer.analyze_queries(queries)
     models = analyzer.generate_models(report)
 
-    # orders should have relationships to both customers and products
+    # Each observed equality is preserved in its SQL orientation without guessing cardinality.
+    customers = models["customers"]
+    customers_rels = {r["name"]: r for r in customers["relationships"]}
+    assert customers_rels["orders"]["type"] == "many_to_many"
+    assert customers_rels["orders"]["foreign_key"] == "id"
+    assert customers_rels["orders"]["primary_key"] == "customer_id"
+
     orders = models["orders"]
     assert "relationships" in orders
     orders_rels = {r["name"]: r for r in orders["relationships"]}
-
-    assert "customers" in orders_rels
-    assert orders_rels["customers"]["type"] == "many_to_one"
-    assert orders_rels["customers"]["foreign_key"] == "customer_id"
-
     assert "products" in orders_rels
-    assert orders_rels["products"]["type"] == "many_to_one"
+    assert orders_rels["products"]["type"] == "many_to_many"
     assert orders_rels["products"]["foreign_key"] == "product_id"
+    assert orders_rels["products"]["primary_key"] == "id"
 
 
 def test_rewrite_query_with_derived_metrics():
@@ -912,7 +895,7 @@ def test_information_schema_relationship_detection():
     analysis = report.query_analyses[0]
 
     # Should extract relationships using information_schema
-    assert len(analysis.relationships) == 2
+    assert len(analysis.relationships) == 1
 
     # Verify correct FK/PK detection
     rels_by_table = {}

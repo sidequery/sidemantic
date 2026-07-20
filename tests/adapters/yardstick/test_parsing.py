@@ -30,7 +30,7 @@ FROM sales;
 
     assert model.table == "sales"
     assert [dim.name for dim in model.dimensions] == ["year", "region"]
-    assert model.primary_key == "year"
+    assert model.primary_key is None
 
     revenue = model.get_metric("revenue")
     assert revenue is not None

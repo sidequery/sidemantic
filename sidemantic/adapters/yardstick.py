@@ -210,10 +210,8 @@ class YardstickAdapter(BaseAdapter):
         if source_sql:
             yardstick_metadata["base_relation_sql"] = source_sql
 
-        primary_key = dimensions[0].name if dimensions else "id"
         model_kwargs: dict[str, object] = {
             "name": view_name,
-            "primary_key": primary_key,
             "dimensions": dimensions,
             "metrics": metrics,
             "metadata": {"yardstick": yardstick_metadata},

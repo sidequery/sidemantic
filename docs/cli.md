@@ -71,6 +71,42 @@ sidemantic explain "SELECT orders.revenue FROM orders"
 JSON is the only content written to stdout in these modes. Diagnostics remain
 on stderr.
 
+## Model validation
+
+Offline structural validation remains the default and needs no warehouse access:
+
+```bash
+sidemantic validate ./models
+sidemantic validate ./models --json
+```
+
+It checks model structure, relationship targets, explicit join keys, composite-key
+arity, and cardinality declarations. Unknown model identity is allowed for isolated
+models, but a relationship that needs an unknown key fails with an actionable
+structural error instead of compiling an inferred `id` join.
+
+Add `--warehouse` to inspect the configured project connection, or provide a
+connection explicitly:
+
+```bash
+sidemantic validate ./models --warehouse
+sidemantic validate ./models --db warehouse.duckdb
+sidemantic validate ./models --connection postgres://localhost/analytics
+sidemantic validate ./models --warehouse --check-keys
+```
+
+Warehouse validation checks physical table and column existence, basic semantic
+type compatibility, join columns, and prepares representative compiled queries.
+`--no-check-queries` skips the representative query checks. `--check-keys` also
+queries primary, unique, and relationship-cardinality keys for nulls or duplicates;
+it is opt-in because it can scan warehouse data.
+
+Human output separates `Structural Errors`, `Warehouse Errors`, and `Connection
+Errors`. JSON reports the same categories as `structural_errors`,
+`warehouse_errors`, and `connection_errors`, with their union retained in `errors`
+for compatibility. Structural failures skip warehouse checks, and connection
+failures do not get mislabeled as invalid model definitions.
+
 ## Standard output formats
 
 Structured inspection, reporting, and query commands share one format option:

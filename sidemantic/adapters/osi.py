@@ -294,7 +294,7 @@ class OSIAdapter(BaseAdapter):
         # Primary key - preserve full list for multi-column keys
         primary_key_list = dataset_def.get("primary_key") or []
         if len(primary_key_list) == 0:
-            primary_key: str | list[str] = "id"
+            primary_key: str | list[str] | None = None
         elif len(primary_key_list) == 1:
             primary_key = primary_key_list[0]
         else:
@@ -490,14 +490,14 @@ class OSIAdapter(BaseAdapter):
 
         # Normalize to appropriate type (str for single, list for multi)
         if len(from_columns) == 0:
-            foreign_key: str | list[str] = f"{to_model}_id"
+            foreign_key: str | list[str] | None = None
         elif len(from_columns) == 1:
             foreign_key = from_columns[0]
         else:
             foreign_key = from_columns
 
         if len(to_columns) == 0:
-            primary_key: str | list[str] = "id"
+            primary_key: str | list[str] | None = None
         elif len(to_columns) == 1:
             primary_key = to_columns[0]
         else:
@@ -803,7 +803,7 @@ class OSIAdapter(BaseAdapter):
         # Use the related model's actual primary key when rel.primary_key is unset
         if rel.primary_key is None:
             related_model = models.get(rel.name)
-            to_columns = related_model.primary_key_columns if related_model else ["id"]
+            to_columns = related_model.primary_key_columns if related_model else []
         else:
             to_columns = rel.primary_key_columns
 

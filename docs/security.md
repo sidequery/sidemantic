@@ -72,7 +72,8 @@ layer.query(metrics=["orders.revenue"], user_attributes={"tenant_id": 1}) # scop
 
 Build the layer with `enforce_visibility=True` to reject any query that references a
 `public: false` dimension or metric — whether it is projected, **filtered on, or ordered
-by** (so a hidden field cannot be used as an information-disclosure oracle):
+by**, or added implicitly as a model's default time dimension (so a hidden field cannot
+be used as an information-disclosure oracle):
 
 ```python
 layer = SemanticLayer(enforce_visibility=True)
@@ -82,11 +83,34 @@ layer.compile(metrics=["orders.revenue"], filters=["orders.margin > 100"])  # Se
 
 ## Server enforcement
 
+All query transports use the same Python security-aware SQL generator. Given the
+same `user_attributes`, structured HTTP, PostgreSQL semantic SQL, MCP structured
+tools, MCP `run_sql`, and `SemanticLayer.sql(..., user_attributes=...)` evaluate
+the same access gates and inject the same row filters.
+
+SQL transports also verify that a source-reading statement was actually rewritten
+through the semantic layer whenever a security or enforced visibility control is
+active. A statement that would pass through to an underlying table is rejected
+with an actionable `SecurityError`; `SELECT 1`-style source-free statements remain
+available. True raw database execution is never considered policy-aware.
+Subqueries used as expressions (including predicates, projections, and ordering) are
+rejected while controls are active because their nested reads cannot yet be proven to
+receive the same policy rewrite. CTE bodies and derived-table sources remain supported
+only when every semantic island can be planned and regenerated; an unsupported field or
+other unplanned island rejects the whole statement instead of leaving that nested SQL
+unchanged. Use declared semantic fields, structured filters, or a modeled semantic join
+for rejected expressions.
+CTE sources are resolved according to their lexical SQL scope, so a nested alias cannot
+mask an out-of-scope physical table read.
+The optional Rust semantic rewriter is also disabled for secured SQL transports until
+it can accept caller attributes and prove the same policy and visibility checks as the
+Python planner.
+
 ### HTTP (`sidemantic server api`)
 
-User attributes come from a trusted header (default `X-Sidemantic-User`, a JSON object).
-The value is passed into every structured `/query` and `/compile` request, and the
-result cache is keyed per user so cached rows never leak across users.
+User attributes come from a trusted header (default `X-Sidemantic-User`, a JSON
+object). The value is passed into `/query`, `/compile`, `/sql`, and `/sql/compile`;
+the result cache is keyed per user so cached rows never leak across users.
 
 | Flag | Effect |
 |------|--------|
@@ -97,24 +121,84 @@ result cache is keyed per user so cached rows never leak across users.
 A `SecurityError` (denied access gate, deny-by-default, undefined attribute) maps to
 **HTTP 403**.
 
-**The `/sql` and `/raw` endpoints are disabled (HTTP 403) whenever any model declares a
-security policy.** They rewrite/execute free-form SQL and cannot apply per-user row
-filters, so they refuse rather than return unscoped rows — use the structured `/query`
-endpoint, which enforces.
+`/sql` and `/sql/compile` accept semantic SQL and apply the same access gates, row
+filters, and field visibility as structured requests. When controls are active,
+SQL that does not resolve to semantic models is rejected instead of passed through.
+
+`/raw` bypasses semantic compilation, so it returns HTTP 403 whenever any model
+declares a security policy or enforced `public: false` fields exist. Use `/query`
+or `/sql` in that configuration.
+
+#### Browser bearer handling
+
+The bundled web UI never accepts `?token=`, never writes an API bearer to
+`localStorage`/`sessionStorage`, and never puts it in a shareable URL. On a 401 it
+prompts for the bearer once and exchanges it through `POST /auth/session` for an
+opaque 10-minute session. Same-origin deployments use an `HttpOnly`,
+`SameSite=Strict` cookie scoped to `/` and marked `Secure` over HTTPS. For an
+explicit cross-origin backend, where that cookie cannot be relied upon, the exchange
+returns a short-lived credential that the adapter keeps only in memory and sends with
+the `Sidemantic-Session` authorization scheme. The server stores only a SHA-256 digest
+of either credential. Session responses are `Cache-Control: no-store`; the UI keeps
+the long-lived bearer only in the password input until the exchange completes.
+
+Cross-origin deployments must list the UI origin in `--cors-origin`; credentialed
+requests use CORS rather than placing either credential in a URL or browser storage.
+
+API clients may continue to send the bearer in the `Authorization` header. The
+session exchange is a library-local browser safety mechanism, not an identity or
+SSO system.
 
 ### PostgreSQL wire server
 
-The connecting Postgres username is mapped to user attributes via a startup
-`--user-attrs-file` (JSON mapping usernames → attribute dicts). Because the PG path is
-SQL-first (it uses the query rewriter), it enforces the **access gate** for secured
-models but does **not** apply row-level filters. Treat the PG server as coarse-grained
-access control, not row security.
+The connecting Postgres username is mapped to user attributes via
+`--user-attrs-file` (a JSON mapping of usernames to attribute objects). A map is
+accepted only when password authentication is configured. When a map is present, its
+keys are the allowed startup usernames; `--username` enables authenticated mode and
+`--password-file` supplies one shared library-local password for those users. Unknown
+usernames and incorrect passwords are rejected. This is intentionally not a per-user
+credential store, SSO, or RBAC system.
+
+PostgreSQL semantic SQL is rewritten with that session's attributes and therefore
+applies access gates and row filters before execution. With
+`--enforce-visibility`, `public: false` fields are omitted from the registered
+semantic catalog and rejected if referenced. When controls are active, SQL that
+reads an unrecognized/non-semantic source fails closed instead of passing through.
+The compatibility surface is read-only: mutations, DDL, commands, and
+multi-statement SQL are rejected. PostgreSQL session and catalog compatibility queries remain available;
+when controls are active, catalog responses expose semantic models without
+enumerating physical source tables. `information_schema.columns` is synthesized from
+that same semantic catalog, preserves ordinary projection/filter/order probes, and
+omits non-public fields when visibility enforcement is enabled. Catalog queries mixed
+with other table sources are not treated as compatibility probes and pass through the
+normal fail-closed transport gate. `pg_catalog.pg_class` likewise lists semantic
+tables only while controls are active, and `pg_catalog.pg_namespace` exposes only the
+synthetic `semantic_layer` namespace. Compatibility function handling is restricted
+to catalog-only probes; mixed catalog and semantic-table statements go through the
+normal policy-aware rewrite. Single catalog statements may include the usual trailing
+semicolon, and synthesized catalogs retain the standard PostgreSQL-compatible columns
+used by BI introspection, including type and precision metadata.
 
 ### MCP server
 
-The MCP server applies static, process-wide user attributes supplied at startup. Its
-`run_sql` tool (free-form SQL) does not apply row filters, mirroring the HTTP `/sql`
-caveat.
+The MCP server has no per-session identity. Supply one process-wide attribute object
+with `--user-attrs-file`; it is applied to `run_query`, `create_chart`, and
+`run_sql`. `run_sql` uses the same policy-aware semantic rewrite as other transports
+and rejects unproven passthrough SQL. `--enforce-visibility` hides restricted fields
+from MCP model/graph/catalog discovery and rejects them in structured and SQL tools.
+Hidden default time dimensions and primary keys are omitted from model metadata as
+well as field lists.
+
+For example:
+
+```bash
+sidemantic server mcp models/ \
+  --user-attrs-file .secrets/mcp-user.json \
+  --enforce-visibility
+```
+
+The file contains the attribute object itself, for example
+`{"role":"analyst","tenant_id":1}`. It is not a user database.
 
 ## Importing policies from Cube / Rill
 
@@ -125,8 +209,14 @@ caveat.
 
 ## Limitations
 
-- Row-level filters are enforced on the structured/compile path (Python engine). Queries
-  touching a secured model are forced onto the Python generator even under `engine="rust"`.
-- The PG wire server and MCP `run_sql` enforce the access gate but not row filters (above).
+- Queries touching a secured model are forced onto the Python generator even under
+  `engine="rust"`; the Rust generator is not a security enforcement path.
 - Pre-aggregation routing is disabled for a query while row filters are active (a rollup
   is materialized without per-user filtering).
+- `public: false` is enforced only when visibility enforcement is enabled on the layer
+  or with the corresponding server `--enforce-visibility` flag.
+- HTTP trusts the configured user-attributes header, PostgreSQL trusts its authenticated
+  username-to-attributes mapping, and MCP uses one static process identity. Deployments
+  must ensure untrusted clients cannot forge those inputs.
+- SSO, identity lifecycle, RBAC administration, content permissions, and embedding are
+  intentionally out of scope for this library.

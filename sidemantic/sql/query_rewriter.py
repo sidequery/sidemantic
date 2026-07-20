@@ -112,22 +112,34 @@ class _SemanticIslandRewrite:
 class QueryRewriter:
     """Rewrites user SQL queries to use the semantic layer."""
 
-    def __init__(self, graph: SemanticGraph, dialect: str = "duckdb", use_preaggregations: bool = False):
+    def __init__(
+        self,
+        graph: SemanticGraph,
+        dialect: str = "duckdb",
+        use_preaggregations: bool = False,
+        enforce_visibility: bool = False,
+        use_rust_rewriter: bool | None = None,
+    ):
         """Initialize query rewriter.
 
         Args:
             graph: Semantic graph with models and metrics
             dialect: SQL dialect for parsing/generation
             use_preaggregations: Enable single-model pre-aggregation routing
+            enforce_visibility: Reject semantic references to fields declared ``public: false``
+            use_rust_rewriter: Override the environment-controlled Rust rewrite path
         """
         self.graph = graph
         self.dialect = dialect
         self.use_preaggregations = use_preaggregations
-        self.generator = SQLGenerator(graph, dialect=dialect)
+        self.generator = SQLGenerator(graph, dialect=dialect, enforce_visibility=enforce_visibility)
+        self.enforce_visibility = enforce_visibility
         self._dialect_instance = self.generator._dialect_instance
         self._rewrite_cache: dict[tuple[object, ...], str] = {}
         self._rewrite_cache_limit = 256
-        self._use_rust_rewriter = os.getenv("SIDEMANTIC_RS_REWRITER", "0") == "1"
+        self._use_rust_rewriter = (
+            os.getenv("SIDEMANTIC_RS_REWRITER", "0") == "1" if use_rust_rewriter is None else use_rust_rewriter
+        )
         self._rust_no_fallback = os.getenv("SIDEMANTIC_RS_NO_FALLBACK", "0") == "1"
         self._rust_module = None
         self._rust_models_yaml: str | None = None
@@ -153,9 +165,8 @@ class QueryRewriter:
             strict: If True, raise errors for invalid SQL or non-SELECT queries.
                    If False, pass through queries that can't be rewritten.
             user_attributes: Optional per-user security attributes threaded into the underlying
-                SQL generation so access gates / deny-by-default are evaluated against the caller.
-                The SQL-first path cannot inject row filters, so callers that require row-level
-                security must deny secured models with row filters before invoking the rewriter.
+                SQL generation so access gates, deny-by-default, and row filters are evaluated
+                against the caller.
 
         Returns:
             Rewritten SQL using semantic layer
@@ -302,13 +313,19 @@ class QueryRewriter:
                 column.set("table", exp.to_identifier(aliases[column.table]))
         return rewritten
 
-    def explain(self, sql: str, strict: bool = True) -> RewriteExplanation:
+    def explain(
+        self,
+        sql: str,
+        strict: bool = True,
+        user_attributes: dict | None = None,
+    ) -> RewriteExplanation:
         """Explain how a SQL query would be rewritten by the semantic layer.
 
         The explanation follows the same routing as rewrite() but returns
         structured planner state and candidate decisions instead of only SQL.
         """
         sql = sql.strip()
+        self._rewrite_user_attributes = user_attributes
 
         if self._looks_like_yardstick_query(sql):
             try:
@@ -444,6 +461,35 @@ class QueryRewriter:
 
         if has_ctes or has_subquery_in_from or has_subquery_in_joins:
             return self._explain_ctes_or_subqueries(sql, parsed)
+
+        explicit_join_filters = []
+        if parsed.args.get("joins"):
+            explicit_join_filters = self._validate_explicit_semantic_joins(parsed)
+
+        self.inferred_table = self._extract_from_table(parsed)
+        self.table_aliases = self._source_aliases(parsed)
+        if self._needs_expression_postprocess(parsed):
+            rewritten_sql = self._rewrite_expression_query(parsed, extra_filters=explicit_join_filters)
+            return RewriteExplanation(
+                input_sql=sql,
+                rewritten_sql=rewritten_sql,
+                chosen_plan="semantic_plus_postprocess",
+                source_kind=self._source_kind_for_table(self.inferred_table),
+                candidate_plans=[
+                    CandidatePlan(
+                        name="semantic_plus_postprocess",
+                        valid=True,
+                        reason="SQL expression is evaluated over semantically generated fields",
+                    ),
+                    CandidatePlan(
+                        name="passthrough_plain_sql",
+                        valid=False,
+                        reason="query references a semantic model",
+                    ),
+                ],
+                post_process=parsed.sql(dialect=self.dialect),
+                applied_rules=["semantic_expression_postprocess"],
+            )
 
         plan = self._plan_simple_query(parsed)
         rewritten_sql = self._generate_from_plan(plan)
@@ -2980,6 +3026,18 @@ class QueryRewriter:
                     return True
 
         return False
+
+    def would_use_yardstick_rewrite(self, sql: str) -> bool:
+        """Return whether SQL would take an explicit or implicit Yardstick rewrite path."""
+        if self._looks_like_yardstick_query(sql):
+            return True
+        if not self._graph_has_yardstick_models():
+            return False
+        try:
+            parsed = sqlglot.parse_one(sql, dialect=self.dialect)
+        except Exception:
+            return False
+        return isinstance(parsed, exp.Select) and self._contains_implicit_yardstick_measure_query(parsed)
 
     def _graph_has_yardstick_models(self) -> bool:
         return any(
@@ -5719,6 +5777,18 @@ class QueryRewriter:
         def add_adhoc_metric(node: exp.AggFunc) -> str:
             nonlocal adhoc_index
             model_name = ad_hoc_metric_model(node)
+
+            # The generated temporary metric name is always public, so the
+            # generator's normal visibility check cannot see fields referenced
+            # inside its SQL. Validate those original semantic references before
+            # replacing the aggregate with a temporary metric.
+            if self.enforce_visibility:
+                from sidemantic.core.security import enforce_field_visibility
+
+                referenced_fields = [
+                    ref for column in node.find_all(exp.Column) if (ref := self._resolve_column(column)) is not None
+                ]
+                enforce_field_visibility(self.graph, referenced_fields, None)
 
             metric_name = f"__adhoc_metric_{adhoc_index}"
             adhoc_index += 1

@@ -108,6 +108,7 @@ class SQLGenerator:
         preagg_schema: str | None = None,
         timezone: str | None = None,
         allow_non_additive_unsafe: bool = False,
+        enforce_visibility: bool = False,
     ):
         """Initialize SQL generator.
 
@@ -123,12 +124,14 @@ class SQLGenerator:
                 over ALL snapshots (over-aggregated, wrong results). By default the generator
                 implements semi-additive handling (QUALIFY last/first snapshot per group);
                 this flag opts back into the old, naive behavior explicitly (default: False)
+            enforce_visibility: Reject references to fields declared ``public: false``
         """
         self.graph = graph
         self.dialect = dialect
         self.preagg_database = preagg_database
         self.preagg_schema = preagg_schema
         self.allow_non_additive_unsafe = allow_non_additive_unsafe
+        self.enforce_visibility = enforce_visibility
         # The timezone is interpolated into SQL string literals (AT TIME ZONE '...', etc.),
         # so it must not contain quote/escape characters. Restrict to IANA-name characters
         # to prevent SQL injection from a request- or preference-supplied value; the database
@@ -993,6 +996,24 @@ class SQLGenerator:
         parameters = parameters or {}
         aliases = aliases or {}
 
+        # Auto-include default_time_dimension from metrics before visibility
+        # validation and cache lookup. An implicit dimension is still part of
+        # the caller-visible result and must obey the same column restrictions.
+        if not skip_default_time_dimensions:
+            dimensions = self._apply_default_time_dimensions(metrics, dimensions)
+
+        if self.enforce_visibility:
+            from sidemantic.core.security import enforce_field_visibility
+
+            enforce_field_visibility(
+                self.graph,
+                metrics,
+                dimensions,
+                filters,
+                order_by,
+                segments,
+            )
+
         # Semi-additive (non_additive_dimension) metrics are handled below by injecting
         # a QUALIFY into the owning model's CTE (see _plan_semi_additive / _build_model_cte).
         # The plan (and any UnsupportedMetricError for unimplemented dialects or the
@@ -1029,10 +1050,6 @@ class SQLGenerator:
 
         if with_totals and ungrouped:
             raise ValueError("with_totals cannot be combined with ungrouped")
-
-        # Auto-include default_time_dimension from metrics if not already present
-        if not skip_default_time_dimensions:
-            dimensions = self._apply_default_time_dimensions(metrics, dimensions)
 
         # Resolve segments to SQL filters
         segment_filters = self._resolve_segments(segments)

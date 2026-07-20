@@ -18,7 +18,7 @@ import duckdb
 from fastapi.testclient import TestClient
 
 from sidemantic import DashboardDocument, Dimension, Metric, Model, SemanticLayer, load_from_directory
-from sidemantic.api_server import create_app
+from sidemantic.api_server import SESSION_COOKIE, _BrowserSessionStore, create_app
 from sidemantic.db.base import BaseDatabaseAdapter
 from sidemantic.server.common import ARROW_STREAM_MEDIA_TYPE
 
@@ -131,6 +131,55 @@ def test_health_requires_auth(tmp_path):
     response = client.get("/health")
 
     assert response.status_code == 401
+
+
+def test_bearer_exchange_issues_short_lived_httponly_session(tmp_path):
+    client = _build_test_client(tmp_path)
+
+    exchange = client.post("/auth/session", headers=_auth_headers())
+    assert exchange.status_code == 200, exchange.text
+    assert exchange.headers["cache-control"] == "no-store"
+    cookie = exchange.headers["set-cookie"]
+    assert f"{SESSION_COOKIE}=" in cookie
+    assert "HttpOnly" in cookie
+    assert "SameSite=strict" in cookie
+    assert "secret" not in cookie
+
+    # TestClient retains the opaque cookie, so the browser no longer sends the bearer.
+    assert client.get("/health").status_code == 200
+
+    logout = client.delete("/auth/session")
+    assert logout.status_code == 204
+    assert client.get("/health").status_code == 401
+
+
+def test_bearer_exchange_rejects_invalid_token(tmp_path):
+    client = _build_test_client(tmp_path)
+    response = client.post("/auth/session", headers=_auth_headers("wrong"))
+    assert response.status_code == 401
+    assert SESSION_COOKIE not in response.cookies
+
+
+def test_bearer_exchange_issues_short_lived_header_session(tmp_path):
+    client = _build_test_client(tmp_path)
+
+    exchange = client.post(
+        "/auth/session",
+        headers={**_auth_headers(), "X-Sidemantic-Session-Mode": "header"},
+    )
+    assert exchange.status_code == 200, exchange.text
+    session = exchange.json()["session_token"]
+    assert session != "secret"
+    assert SESSION_COOKIE not in exchange.cookies
+
+    response = client.get("/health", headers={"Authorization": f"Sidemantic-Session {session}"})
+    assert response.status_code == 200
+
+
+def test_browser_session_store_expires_credentials():
+    store = _BrowserSessionStore(ttl_seconds=-1)
+    credential = store.issue()
+    assert not store.valid(credential)
 
 
 def test_readyz_is_public(tmp_path):

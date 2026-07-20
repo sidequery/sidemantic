@@ -462,6 +462,12 @@ Use HTTP transport instead of stdio
 .TP
 \fB\-\-port, \-p INTEGER\fR
 Port for HTTP server
+.TP
+\fB\-\-user\-attrs\-file PATH\fR
+Path to a JSON user\-attributes object applied to every MCP query
+.TP
+\fB\-\-enforce\-visibility\fR
+Hide and reject fields declared public: false
 .SH "SIDEMANTIC SERVER POSTGRES"
 .SS SYNOPSIS
 .B
@@ -498,6 +504,9 @@ Read the authentication password from a file, or \- for stdin
 .TP
 \fB\-\-user\-attrs\-file PATH\fR
 Path to a JSON file mapping usernames \-> user\-attribute dicts for row/access security
+.TP
+\fB\-\-enforce\-visibility\fR
+Hide and reject fields declared public: false
 .SH "SIDEMANTIC SERVER API"
 .SS SYNOPSIS
 .B

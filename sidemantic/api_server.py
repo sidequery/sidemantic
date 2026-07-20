@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import secrets
 import threading
+import time
 from pathlib import Path
 from typing import Any, Literal
 
@@ -27,10 +30,62 @@ from sidemantic.server.common import (
     table_to_json_rows,
     validate_filter_expression,
 )
-from sidemantic.sql.query_rewriter import QueryRewriter
 
 ARROW_FORMAT = "arrow"
 JSON_FORMAT = "json"
+SESSION_COOKIE = "sidemantic_session"
+SESSION_TTL_SECONDS = 10 * 60
+
+
+class _BrowserSessionStore:
+    """Bounded in-memory store for short-lived browser sessions.
+
+    Only a SHA-256 digest of each random session credential is retained, so the
+    server does not keep the replayable cookie value in memory.
+    """
+
+    def __init__(self, ttl_seconds: int = SESSION_TTL_SECONDS, max_sessions: int = 1024):
+        self.ttl_seconds = ttl_seconds
+        self.max_sessions = max_sessions
+        self._expires: dict[str, float] = {}
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def _digest(value: str) -> str:
+        return hashlib.sha256(value.encode()).hexdigest()
+
+    def issue(self) -> str:
+        credential = secrets.token_urlsafe(32)
+        now = time.monotonic()
+        with self._lock:
+            self._purge(now)
+            if len(self._expires) >= self.max_sessions:
+                oldest = min(self._expires, key=self._expires.__getitem__)
+                self._expires.pop(oldest, None)
+            self._expires[self._digest(credential)] = now + self.ttl_seconds
+        return credential
+
+    def valid(self, credential: str | None) -> bool:
+        if not credential:
+            return False
+        now = time.monotonic()
+        digest = self._digest(credential)
+        with self._lock:
+            expires = self._expires.get(digest)
+            if expires is None or expires <= now:
+                self._expires.pop(digest, None)
+                return False
+            return True
+
+    def revoke(self, credential: str | None) -> None:
+        if credential:
+            with self._lock:
+                self._expires.pop(self._digest(credential), None)
+
+    def _purge(self, now: float) -> None:
+        for digest, expires in list(self._expires.items()):
+            if expires <= now:
+                self._expires.pop(digest, None)
 
 
 class StructuredQueryRequest(BaseModel):
@@ -193,6 +248,7 @@ def create_app(
     # per-request adapter.cursor(), so HTTP reads run concurrently.
     app.state.lock = threading.RLock()
     app.state.auth_token = auth_token
+    app.state.browser_sessions = _BrowserSessionStore()
     app.state.dashboard = dashboard.to_dict() if hasattr(dashboard, "to_dict") else dashboard
 
     if result_cache_mb and result_cache_mb > 0:
@@ -218,11 +274,31 @@ def create_app(
 
     security = HTTPBearer(auto_error=False)
 
-    def require_auth(credentials: HTTPAuthorizationCredentials | None = Security(security)) -> None:
+    def _valid_bearer(credentials: HTTPAuthorizationCredentials | None) -> bool:
         expected = app.state.auth_token
         if not expected:
-            return
-        if credentials is None or credentials.scheme.lower() != "bearer" or credentials.credentials != expected:
+            return True
+        return (
+            credentials is not None
+            and credentials.scheme.lower() == "bearer"
+            and secrets.compare_digest(credentials.credentials, expected)
+        )
+
+    def _header_session(request: Request) -> str | None:
+        scheme, separator, credential = request.headers.get("Authorization", "").partition(" ")
+        if separator and scheme.lower() == "sidemantic-session" and credential:
+            return credential
+        return None
+
+    def require_auth(
+        request: Request,
+        credentials: HTTPAuthorizationCredentials | None = Security(security),
+    ) -> None:
+        if (
+            not _valid_bearer(credentials)
+            and not app.state.browser_sessions.valid(request.cookies.get(SESSION_COOKIE))
+            and not app.state.browser_sessions.valid(_header_session(request))
+        ):
             raise HTTPException(
                 status_code=401,
                 detail="Invalid or missing bearer token",
@@ -272,23 +348,49 @@ def create_app(
             )
         return parsed
 
-    def deny_free_sql_if_secured() -> None:
-        """Deny the free-form SQL endpoints when any model declares a security policy.
-
-        ``/sql`` (semantic rewrite) and ``/raw`` (direct passthrough) cannot apply
-        per-user row filters -- the rewriter/raw paths do not thread user attributes,
-        and ``/raw`` reads the underlying table directly, bypassing the model entirely.
-        Rather than silently return unscoped rows for a secured model, refuse these
-        endpoints outright when security is in play and point callers at ``/query``,
-        which enforces access gates and row filters.
-        """
-        layer = app.state.layer
-        if any(getattr(model, "security", None) is not None for model in layer.graph.models.values()):
-            raise SecurityError(
-                "The /sql and /raw endpoints cannot enforce row-level security and are "
-                "disabled because a model declares a security policy. Use the structured "
-                "/query endpoint, which applies access gates and row filters per user."
+    @app.post("/auth/session", include_in_schema=False)
+    def create_browser_session(
+        request: Request,
+        credentials: HTTPAuthorizationCredentials | None = Security(security),
+    ):
+        """Exchange the configured bearer for a short-lived HttpOnly browser session."""
+        if not app.state.auth_token:
+            raise HTTPException(status_code=404, detail="Bearer authentication is not configured")
+        if not _valid_bearer(credentials):
+            raise HTTPException(
+                status_code=401,
+                detail="Invalid or missing bearer token",
+                headers={"WWW-Authenticate": "Bearer"},
             )
+        session = app.state.browser_sessions.issue()
+        header_session = request.headers.get("X-Sidemantic-Session-Mode", "").lower() == "header"
+        payload = {"expires_in": SESSION_TTL_SECONDS}
+        if header_session:
+            # Cross-origin frontends cannot reliably use an HttpOnly cookie. Return
+            # only the short-lived exchange credential for in-memory header use.
+            payload["session_token"] = session
+        response = JSONResponse(payload)
+        if not header_session:
+            response.set_cookie(
+                SESSION_COOKIE,
+                session,
+                max_age=SESSION_TTL_SECONDS,
+                httponly=True,
+                secure=request.url.scheme == "https",
+                samesite="strict",
+                path="/",
+            )
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    @app.delete("/auth/session", include_in_schema=False)
+    def delete_browser_session(request: Request):
+        app.state.browser_sessions.revoke(request.cookies.get(SESSION_COOKIE))
+        app.state.browser_sessions.revoke(_header_session(request))
+        response = Response(status_code=204)
+        response.delete_cookie(SESSION_COOKIE, path="/", httponly=True, samesite="strict")
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
     @app.get("/readyz")
     def readyz() -> dict[str, str]:
@@ -457,11 +559,19 @@ def create_app(
         return _build_query_response(request, current_layer, table, sql=sql, format_override=format)
 
     @app.post("/sql/compile", dependencies=[Depends(require_auth)])
-    def compile_sql(payload: SQLRequest) -> dict[str, str]:
+    def compile_sql(payload: SQLRequest, request: Request) -> dict[str, str]:
         # Pure CPU: rewrites SQL from the in-memory graph, no DB access, no lock.
+        from sidemantic.core.transport_security import rewrite_transport_sql
+
         current_layer = app.state.layer
+        user_attributes = resolve_user_attributes(request)
         query = _normalize_sql_query(payload.query)
-        rewritten_sql = QueryRewriter(current_layer.graph, dialect=current_layer.dialect).rewrite(query)
+        rewritten_sql = rewrite_transport_sql(
+            current_layer,
+            query,
+            user_attributes=user_attributes,
+            transport="HTTP /sql/compile",
+        )
         return {"sql": rewritten_sql}
 
     @app.post("/sql", dependencies=[Depends(require_auth)])
@@ -472,11 +582,17 @@ def create_app(
     ):
         # Read-only query: rewrite (pure CPU) then execute on a fresh per-request
         # cursor, routed through _query_table for opt-in result caching.
+        from sidemantic.core.transport_security import rewrite_transport_sql
+
         current_layer = app.state.layer
         user_attributes = resolve_user_attributes(request)
-        deny_free_sql_if_secured()
         query = _normalize_sql_query(payload.query)
-        rewritten_sql = QueryRewriter(current_layer.graph, dialect=current_layer.dialect).rewrite(query)
+        rewritten_sql = rewrite_transport_sql(
+            current_layer,
+            query,
+            user_attributes=user_attributes,
+            transport="HTTP /sql",
+        )
         table = _query_table(app, current_layer, rewritten_sql, user_attributes=user_attributes)
         return _build_query_response(
             request,
@@ -496,9 +612,11 @@ def create_app(
         """Execute raw SQL directly on the underlying database, bypassing the semantic rewriter."""
         # Read-only query (SELECT enforced) on a fresh per-request cursor,
         # routed through _query_table for opt-in result caching.
+        from sidemantic.core.transport_security import deny_raw_sql
+
         current_layer = app.state.layer
         user_attributes = resolve_user_attributes(request)
-        deny_free_sql_if_secured()
+        deny_raw_sql(current_layer, transport="HTTP /raw")
         query = _normalize_sql_query(payload.query)
         _require_select_statement(query)
         table = _query_table(app, current_layer, query, user_attributes=user_attributes)

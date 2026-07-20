@@ -924,10 +924,12 @@ class SemanticLayer:
         if security_active:
             use_preaggs = False
 
-        # The Rust SQL generator does not enforce security policies, so any query touching a
-        # model with a security policy (row filters or an access gate) must use the Python path.
-        security_forces_python = user_attributes is not None or self._query_touches_secured_model(
-            metrics, dimensions, filters, segments
+        # The Rust SQL generator does not enforce security policies or column visibility,
+        # so any active control keeps compilation on the policy-aware Python path.
+        security_forces_python = (
+            self.enforce_visibility
+            or user_attributes is not None
+            or self._query_touches_secured_model(metrics, dimensions, filters, segments)
         )
 
         inner_sql = None
@@ -1036,6 +1038,7 @@ class SemanticLayer:
             preagg_schema=self.preagg_schema,
             timezone=timezone,
             allow_non_additive_unsafe=self.allow_non_additive_unsafe,
+            enforce_visibility=self.enforce_visibility,
         )
 
         return generator.generate(
@@ -1144,48 +1147,9 @@ class SemanticLayer:
         Raises:
             SecurityError: If a referenced field's owning definition has ``public=False``.
         """
-        for dim in dimensions or []:
-            ref = dim.rsplit("__", 1)[0] if "__" in dim else dim
-            if "." not in ref:
-                continue
-            model_name, field_name = ref.split(".", 1)
-            if not self._field_is_public(model_name, field_name):
-                raise SecurityError(f"Field '{model_name}.{field_name}' is not public")
+        from sidemantic.core.security import enforce_field_visibility
 
-        for metric in metrics or []:
-            if "." not in metric:
-                # Graph-level metric reference.
-                graph_metric = self.graph.metrics.get(metric)
-                if graph_metric is not None and not getattr(graph_metric, "public", True):
-                    raise SecurityError(f"Field '{metric}' is not public")
-                continue
-            model_name, field_name = metric.split(".", 1)
-            if not self._field_is_public(model_name, field_name):
-                raise SecurityError(f"Field '{model_name}.{field_name}' is not public")
-
-        # Segments are named filters that may themselves be non-public; a segment reference is
-        # `model.segment`, not a dimension/metric, so check them explicitly.
-        for segment_ref in segments or []:
-            if "." not in segment_ref:
-                continue
-            model_name, segment_name = segment_ref.split(".", 1)
-            model = self.graph.models.get(model_name)
-            if model is None:
-                continue
-            segment = model.get_segment(segment_name) if hasattr(model, "get_segment") else None
-            if segment is not None and not getattr(segment, "public", True):
-                raise SecurityError(f"Segment '{model_name}.{segment_name}' is not public")
-
-        # filters/order_by can smuggle a hidden field. Scan them for `model.field` tokens
-        # (stripping any granularity suffix / sort direction) and reject non-public ones.
-        import re as _re
-
-        ref_pattern = _re.compile(r"\b([A-Za-z_]\w*)\.([A-Za-z_]\w*)\b")
-        for raw in [*(filters or []), *(order_by or [])]:
-            for model_name, field_name in ref_pattern.findall(raw):
-                field_name = field_name.rsplit("__", 1)[0] if "__" in field_name else field_name
-                if not self._field_is_public(model_name, field_name):
-                    raise SecurityError(f"Field '{model_name}.{field_name}' is not public")
+        enforce_field_visibility(self.graph, metrics, dimensions, filters, order_by, segments)
 
     def _compile_with_rust(
         self,
@@ -1770,13 +1734,15 @@ class SemanticLayer:
                 "Supported: duckdb, postgres, bigquery, snowflake, clickhouse, databricks, spark, adbc"
             )
 
-    def sql(self, query: str):
+    def sql(self, query: str, *, user_attributes: dict | None = None):
         """Execute a SQL query against the semantic layer.
 
         Rewrites the SQL to use semantic layer metrics/dimensions and executes it.
 
         Args:
             query: SQL query like "SELECT revenue, status FROM orders WHERE status = 'completed'"
+            user_attributes: Per-request attributes used for model access gates and row filters.
+                A secured model is denied when this is omitted.
 
         Returns:
             DuckDB relation object (can convert to DataFrame with .df() or .to_df())
@@ -1787,37 +1753,38 @@ class SemanticLayer:
         Example:
             >>> layer.sql("SELECT orders.revenue, orders.status FROM orders WHERE orders.status = 'completed'")
         """
-        from sidemantic.sql.query_rewriter import QueryRewriter
-
-        # The SQL-first path rewrites and executes without user attributes, so it cannot
-        # apply per-user row filters or access gates. Rather than return unscoped rows for a
-        # secured model, refuse when any model declares a security policy (mirrors the HTTP
-        # /sql endpoint and MCP run_sql). The structured query()/compile() path enforces.
-        if any(getattr(model, "security", None) is not None for model in self.graph.models.values()):
-            raise SecurityError(
-                "SemanticLayer.sql() cannot enforce row-level security and is disabled because a "
-                "model declares a security policy. Use query()/compile() (structured), which "
-                "applies access gates and row filters per user."
-            )
+        from sidemantic.core.transport_security import rewrite_transport_sql
 
         cache_key = (
             getattr(self.graph, "_version", 0),
             self.dialect,
             self.use_preaggregations,
+            self.enforce_visibility,
             os.getenv("SIDEMANTIC_RS_REWRITER", "0"),
             os.getenv("SIDEMANTIC_RS_NO_FALLBACK", "0"),
             query,
         )
-        rewritten_sql = self._sql_rewrite_cache.get(cache_key)
+        rewritten_sql = self._sql_rewrite_cache.get(cache_key) if user_attributes is None else None
         if rewritten_sql is None:
-            rewriter = QueryRewriter(self.graph, dialect=self.dialect, use_preaggregations=self.use_preaggregations)
-            rewritten_sql = rewriter.rewrite(query)
-            if len(self._sql_rewrite_cache) >= self._sql_rewrite_cache_limit:
-                self._sql_rewrite_cache.pop(next(iter(self._sql_rewrite_cache)))
-            self._sql_rewrite_cache[cache_key] = rewritten_sql
+            rewritten_sql = rewrite_transport_sql(
+                self,
+                query,
+                user_attributes=user_attributes,
+                transport="SemanticLayer.sql()",
+            )
+            if user_attributes is None:
+                if len(self._sql_rewrite_cache) >= self._sql_rewrite_cache_limit:
+                    self._sql_rewrite_cache.pop(next(iter(self._sql_rewrite_cache)))
+                self._sql_rewrite_cache[cache_key] = rewritten_sql
 
         def recompile_raw():
-            return QueryRewriter(self.graph, dialect=self.dialect, use_preaggregations=False).rewrite(query)
+            return rewrite_transport_sql(
+                self,
+                query,
+                user_attributes=user_attributes,
+                transport="SemanticLayer.sql()",
+                use_preaggregations=False,
+            )
 
         return self._execute_with_preagg_fallback(
             rewritten_sql,
@@ -1840,7 +1807,12 @@ class SemanticLayer:
         """
         from sidemantic.sql.query_rewriter import QueryRewriter
 
-        rewriter = QueryRewriter(self.graph, dialect=self.dialect, use_preaggregations=self.use_preaggregations)
+        rewriter = QueryRewriter(
+            self.graph,
+            dialect=self.dialect,
+            use_preaggregations=self.use_preaggregations,
+            enforce_visibility=self.enforce_visibility,
+        )
         return rewriter.explain(query, strict=strict)
 
     def to_yaml(self, path: str | Path) -> None:

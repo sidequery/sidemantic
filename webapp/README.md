@@ -75,9 +75,13 @@ The built bundle is served by either backend from a single process:
 
 - **Python** — `sidemantic api-serve` serves the UI at `/` by default (`--no-ui` to disable). The
   bundle lives at `sidemantic/ui/static/` (force-included in the wheel); UI routes are public while
-  the data endpoints stay token-gated.
+  the data endpoints stay authenticated. The UI exchanges a bearer entered in its login prompt for
+  a short-lived HttpOnly session cookie; bearer tokens are never accepted from URLs or persisted in
+  browser storage.
 - **Rust** — `sidemantic-server` (built with the `runtime-server` feature) bakes the bundle into the
   binary via `rust-embed` and serves it from a router fallback registered after the auth layer.
+  Until that backend exposes the session exchange, the UI keeps a prompted bearer only in memory
+  for the lifetime of the page.
 
 Both copies are committed (synced by `scripts/build_webapp.py`), so neither backend build needs a JS
 toolchain. Both backends serve `/describe`, so the UI gets the rich (typed) catalog on either — it

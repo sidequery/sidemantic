@@ -49,3 +49,6 @@ package.json
 !js/package.json
 !js/bun.lock
 !webapp/package.json
+
+# Rust workspace build artifacts (dax local wheel builds)
+/target/

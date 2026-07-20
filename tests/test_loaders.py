@@ -566,3 +566,99 @@ def test_load_from_directory_hides_extension_required_view_with_table(tmp_path):
     child = layer.graph.models.get("child")
     assert child is not None
     assert child.get_dimension("shared") is not None  # child still inherited the base's fields
+
+
+def test_duplicate_model_name_records_fidelity_note_and_warns(tmp_path):
+    """Two files defining the same model name shadow one another: note + warning."""
+    import warnings
+
+    from sidemantic.fidelity import capture_import_report
+
+    (tmp_path / "a.yml").write_text(
+        """
+models:
+  - name: orders
+    table: orders_a
+    primary_key: id
+"""
+    )
+    (tmp_path / "b.yml").write_text(
+        """
+models:
+  - name: orders
+    table: orders_b
+    primary_key: id
+"""
+    )
+
+    layer = SemanticLayer()
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        with capture_import_report() as report:
+            load_from_directory(layer, tmp_path)
+
+    dup_notes = [n for n in report.notes if n.construct == "duplicate_model"]
+    assert len(dup_notes) == 1
+    note = dup_notes[0]
+    assert note.severity == "dropped"
+    # Detail names both the shadowed and the surviving file.
+    assert "a.yml" in note.detail and "b.yml" in note.detail
+
+    shadow_warnings = [w for w in caught if "shadowed" in str(w.message)]
+    assert shadow_warnings, "expected a stdlib warning about the shadowed model"
+
+
+def test_parse_error_formats_pydantic_validation_error_one_line(tmp_path):
+    """A bad pydantic field yields a compact ``loc: message`` line, not a raw dump."""
+    (tmp_path / "orders.yml").write_text(
+        """
+models:
+  - name: orders
+    table: orders
+    primary_key: id
+    metrics:
+      - name: total
+        agg: notavalidagg
+"""
+    )
+
+    layer = SemanticLayer()
+    with pytest.raises(ValueError) as exc_info:
+        load_from_directory(layer, tmp_path, strict=True)
+
+    message = str(exc_info.value)
+    # Existing "Could not parse <path>:" prefix is preserved.
+    assert "Could not parse" in message and "orders.yml" in message
+    # Dotted loc + message, not the multi-line pydantic banner.
+    assert "agg:" in message
+    assert "Input should be" in message
+    assert "validation error" not in message.lower()
+
+
+def test_unsupported_derived_table_records_fidelity_note(tmp_path):
+    """A LookML derived_table with no extractable SQL is dropped with a note."""
+    from sidemantic.fidelity import capture_import_report
+
+    (tmp_path / "pdt.view.lkml").write_text(
+        "view: pdt_summary {\n"
+        "  derived_table: {\n"
+        "    datagroup_trigger: my_datagroup\n"
+        "  }\n"
+        "  dimension: id {\n"
+        "    type: number\n"
+        "    primary_key: yes\n"
+        "    sql: ${TABLE}.id ;;\n"
+        "  }\n"
+        "}\n"
+    )
+
+    layer = SemanticLayer(auto_register=False)
+    with capture_import_report() as report:
+        load_from_directory(layer, tmp_path, strict=False)
+
+    notes = [n for n in report.notes if n.construct == "derived_table"]
+    assert len(notes) == 1
+    assert notes[0].severity == "dropped"
+    assert "pdt_summary" in notes[0].detail
+    # The unsupported derived table is not registered as a queryable model.
+    assert "pdt_summary" not in layer.graph.models

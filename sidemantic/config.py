@@ -17,6 +17,17 @@ class DuckDBConnection(BaseModel):
     )
 
 
+class FilesConnection(BaseModel):
+    """Raw data file connection (CSV/TSV/Parquet/JSON) served through DuckDB.
+
+    Each file becomes a view named after its stem (data/orders.csv -> orders).
+    Entries may be files or glob patterns, resolved relative to the config file.
+    """
+
+    type: Literal["files"] = "files"
+    paths: list[str] = Field(..., description="Data files or glob patterns (CSV, TSV, Parquet, JSON)")
+
+
 class PostgreSQLConnection(BaseModel):
     """PostgreSQL connection configuration."""
 
@@ -25,7 +36,8 @@ class PostgreSQLConnection(BaseModel):
     port: int = Field(default=5432, description="PostgreSQL port")
     database: str = Field(..., description="Database name")
     username: str = Field(..., description="Username")
-    password: str = Field(..., description="Password")
+    password: str | None = Field(default=None, description="Inline password (prefer password_file in shared config)")
+    password_file: str | None = Field(default=None, description="Credential file containing the password")
 
 
 class BigQueryConnection(BaseModel):
@@ -46,6 +58,7 @@ class ClickHouseConnection(BaseModel):
     database: str = Field(default="default", description="Database name")
     username: str = Field(default="default", description="Username")
     password: str | None = Field(default=None, description="Password (optional)")
+    password_file: str | None = Field(default=None, description="Credential file containing the password")
 
 
 class SnowflakeConnection(BaseModel):
@@ -56,7 +69,8 @@ class SnowflakeConnection(BaseModel):
     type: Literal["snowflake"] = "snowflake"
     account: str = Field(..., description="Snowflake account identifier")
     username: str = Field(..., description="Username")
-    password: str = Field(..., description="Password")
+    password: str | None = Field(default=None, description="Inline password (prefer password_file in shared config)")
+    password_file: str | None = Field(default=None, description="Credential file containing the password")
     database: str | None = Field(default=None, description="Database name (optional)")
     schema_name: str | None = Field(default=None, alias="schema", description="Schema name (optional)")
     warehouse: str | None = Field(default=None, description="Warehouse name (optional)")
@@ -72,6 +86,7 @@ class SparkConnection(BaseModel):
     database: str = Field(default="default", description="Database name")
     username: str | None = Field(default=None, description="Username (optional)")
     password: str | None = Field(default=None, description="Password (optional)")
+    password_file: str | None = Field(default=None, description="Credential file containing the password")
 
 
 class ADBCConnection(BaseModel):
@@ -151,6 +166,7 @@ class CLIConfig(BaseModel):
 
 Connection = (
     DuckDBConnection
+    | FilesConnection
     | PostgreSQLConnection
     | BigQueryConnection
     | ClickHouseConnection
@@ -158,6 +174,21 @@ Connection = (
     | SparkConnection
     | ADBCConnection
 )
+
+
+def _connection_password(connection: BaseModel) -> str | None:
+    """Resolve a connection password from its inline or file-based field."""
+
+    password = getattr(connection, "password", None)
+    password_file = getattr(connection, "password_file", None)
+    if password is not None and password_file is not None:
+        raise ValueError(f"{connection.type} connection sets both password and password_file; use exactly one")
+    if password_file is None:
+        return password
+    path = Path(password_file)
+    if not path.exists():
+        raise ValueError(f"{connection.type} connection password_file not found: {path}")
+    return path.read_text().strip()
 
 
 class SidemanticConfig(BaseModel):
@@ -236,6 +267,13 @@ class SidemanticConfig(BaseModel):
             if not db_p.is_absolute():
                 db_p = (base / db_p).resolve()
             connection = DuckDBConnection(type="duckdb", path=str(db_p), init_sql=connection.init_sql)
+        elif connection and isinstance(connection, FilesConnection):
+            connection = FilesConnection(type="files", paths=_expand_data_paths(connection.paths, base))
+        elif connection is not None and getattr(connection, "password_file", None):
+            credential_path = Path(connection.password_file)
+            if not credential_path.is_absolute():
+                credential_path = (base / credential_path).resolve()
+            connection = connection.model_copy(update={"password_file": str(credential_path)})
 
         pg_server = self.pg_server.model_copy()
         if pg_server.password_file:
@@ -340,7 +378,33 @@ def get_init_sql(config: SidemanticConfig) -> list[str] | None:
     """
     if config.connection and isinstance(config.connection, DuckDBConnection):
         return config.connection.init_sql
+    if config.connection and isinstance(config.connection, FilesConnection):
+        from sidemantic.datafiles import build_file_views
+
+        return build_file_views([Path(path) for path in config.connection.paths])
     return None
+
+
+def _expand_data_paths(entries: list[str], base: Path) -> list[str]:
+    """Expand files-connection entries (paths or globs) relative to a base dir."""
+
+    import glob as glob_module
+
+    resolved: list[str] = []
+    for entry in entries:
+        entry_path = Path(entry).expanduser()
+        if not entry_path.is_absolute():
+            entry_path = base / entry_path
+        if glob_module.has_magic(str(entry_path)):
+            matches = sorted(Path(match).resolve() for match in glob_module.glob(str(entry_path)))
+            if not matches:
+                raise ValueError(f"files connection pattern matched nothing: {entry}")
+            resolved.extend(str(match) for match in matches)
+        else:
+            if not entry_path.exists():
+                raise ValueError(f"files connection path not found: {entry_path}")
+            resolved.append(str(entry_path.resolve()))
+    return resolved
 
 
 def build_connection_string(config: SidemanticConfig) -> str:
@@ -357,8 +421,11 @@ def build_connection_string(config: SidemanticConfig) -> str:
 
     if isinstance(config.connection, DuckDBConnection):
         return f"duckdb:///{config.connection.path}"
+    elif isinstance(config.connection, FilesConnection):
+        return "duckdb:///:memory:"
     elif isinstance(config.connection, PostgreSQLConnection):
-        password_part = f":{config.connection.password}" if config.connection.password else ""
+        password = _connection_password(config.connection)
+        password_part = f":{password}" if password else ""
         return (
             f"postgres://{config.connection.username}{password_part}@"
             f"{config.connection.host}:{config.connection.port}/{config.connection.database}"
@@ -367,7 +434,8 @@ def build_connection_string(config: SidemanticConfig) -> str:
         dataset_part = f"/{config.connection.dataset_id}" if config.connection.dataset_id else ""
         return f"bigquery://{config.connection.project_id}{dataset_part}"
     elif isinstance(config.connection, ClickHouseConnection):
-        password_part = f":{config.connection.password}" if config.connection.password else ""
+        password = _connection_password(config.connection)
+        password_part = f":{password}" if password else ""
         return (
             f"clickhouse://{config.connection.username}{password_part}@"
             f"{config.connection.host}:{config.connection.port}/{config.connection.database}"
@@ -386,13 +454,14 @@ def build_connection_string(config: SidemanticConfig) -> str:
             params.append(f"role={config.connection.role}")
         query = f"?{'&'.join(params)}" if params else ""
 
-        return (
-            f"snowflake://{config.connection.username}:{config.connection.password}"
-            f"@{config.connection.account}{path}{query}"
-        )
+        password = _connection_password(config.connection)
+        if password is None:
+            raise ValueError("snowflake connection requires password or password_file")
+        return f"snowflake://{config.connection.username}:{password}@{config.connection.account}{path}{query}"
     elif isinstance(config.connection, SparkConnection):
         if config.connection.username:
-            password_part = f":{config.connection.password}" if config.connection.password else ""
+            password = _connection_password(config.connection)
+            password_part = f":{password}" if password else ""
             return (
                 f"spark://{config.connection.username}{password_part}@"
                 f"{config.connection.host}:{config.connection.port}/{config.connection.database}"

@@ -85,7 +85,7 @@ Documentation: {DOCS_URL}
 Support: {SUPPORT_URL}"""
 GROUP_EPILOG = f"Documentation: {DOCS_URL}\nSupport: {SUPPORT_URL}"
 FORMATTED_COMMANDS = frozenset(
-    {"dashboard", "explain", "explain-sql", "info", "migrate", "migrator", "preagg", "query", "validate"}
+    {"dashboard", "explain", "explain-sql", "info", "migrate", "migrator", "preagg", "query", "test", "validate"}
 )
 
 
@@ -455,6 +455,363 @@ def help_command(
         current = child
         context = click.Context(current, info_name=part, parent=context)
     emit_result(current.get_help(context))
+
+
+def _resolve_new_project_dir(directory: Path | None, default_name: str | None = None) -> Path:
+    """Resolve a scaffold target directory relative to the invocation cwd."""
+
+    if directory is None:
+        base = Path.cwd()
+        return (base / default_name).resolve() if default_name else base.resolve()
+    target = directory.expanduser()
+    if not target.is_absolute():
+        target = Path.cwd() / target
+    return target.resolve()
+
+
+def _relative_to_root(path: Path, root: Path) -> str:
+    try:
+        return str(path.relative_to(root))
+    except ValueError:
+        return str(path)
+
+
+def _scaffold_payload(root: Path, created: list[Path]) -> dict[str, object]:
+    return {"root": str(root), "created": [_relative_to_root(path, root) for path in sorted(created)]}
+
+
+@app.command(epilog=GROUP_EPILOG)
+def init(
+    directory: Path = typer.Argument(None, help="Project directory to create (defaults to the current directory)"),
+    from_sources: list[Path] = typer.Option(
+        None,
+        "--from",
+        help="Bootstrap models from data: CSV/Parquet/JSON files, directories of them, or a DuckDB database (repeatable)",
+        autocompletion=complete_path,
+    ),
+    from_connection: str = typer.Option(
+        None, "--from-connection", help="Bootstrap models by introspecting a database connection string"
+    ),
+    force: bool = typer.Option(False, "--force", help="Overwrite files a previous scaffold created"),
+    json_output: bool = typer.Option(False, "--json", help="Emit the scaffold report as JSON"),
+):
+    """
+    Create a Sidemantic project: config, models, and golden tests.
+
+    Without --from, scaffolds a starter project that queries immediately with
+    zero database setup. With --from, introspects your data and generates
+    models with inferred dimensions, metrics, and relationships.
+
+    Examples:
+      sidemantic init
+      sidemantic init analytics --from data/orders.csv --from data/customers.parquet
+      sidemantic init --from data/warehouse.duckdb
+      sidemantic init --from-connection "postgres://localhost:5432/analytics"
+    """
+    try:
+        import yaml as yaml_module
+
+        if from_sources and from_connection:
+            raise InvocationError("--from and --from-connection are mutually exclusive")
+
+        root = _resolve_new_project_dir(directory)
+        root.mkdir(parents=True, exist_ok=True)
+
+        if not from_sources and not from_connection:
+            from sidemantic.quickstart import scaffold_starter_project
+
+            result = scaffold_starter_project(root, force=force)
+            payload = _scaffold_payload(root, result.created)
+            if json_output:
+                emit_json(payload)
+                return
+            emit_diagnostic(f"Created project in {root}")
+            for path in sorted(result.created):
+                emit_diagnostic(f"  {_relative_to_root(path, root)}")
+            emit_guidance(
+                "Next:\n"
+                '  sidemantic query "SELECT orders.status, orders.revenue FROM orders"\n'
+                "  sidemantic test\n"
+                "  sidemantic init --from data/*.csv   # regenerate models from real data"
+            )
+            return
+
+        from sidemantic.bootstrap import bootstrap_models, write_model_files
+
+        connection_config: dict | None = None
+        if from_connection:
+            connection_str = from_connection
+            init_sql = None
+        else:
+            sources = []
+            for source in from_sources:
+                resolved = source.expanduser()
+                if not resolved.is_absolute():
+                    resolved = Path.cwd() / resolved
+                resolved = resolved.resolve()
+                if not resolved.exists():
+                    raise InvocationError(f"--from source not found: {resolved}")
+                sources.append(resolved)
+
+            from sidemantic.datafiles import build_file_views, discover_data_files, is_data_file
+
+            db_files = [source for source in sources if source.suffix.lower() in {".db", ".duckdb"}]
+            data_files: list[Path] = []
+            for source in sources:
+                if source in db_files:
+                    continue
+                if source.is_dir():
+                    found = discover_data_files(source)
+                    if not found:
+                        raise InvocationError(f"--from directory contains no supported data files: {source}")
+                    data_files.extend(found)
+                elif is_data_file(source):
+                    data_files.append(source)
+                else:
+                    raise InvocationError(f"--from source is not a supported data file or database: {source}")
+
+            if db_files and data_files:
+                raise InvocationError("--from accepts either one DuckDB database or data files, not both")
+            if len(db_files) > 1:
+                raise InvocationError("--from accepts at most one DuckDB database")
+
+            if db_files:
+                connection_str = f"duckdb:///{db_files[0]}"
+                init_sql = None
+                connection_config = {"type": "duckdb", "path": _relative_to_root(db_files[0], root)}
+            else:
+                connection_str = "duckdb:///:memory:"
+                init_sql = build_file_views(data_files)
+                connection_config = {
+                    "type": "files",
+                    "paths": [_relative_to_root(path, root) for path in data_files],
+                }
+
+        with progress("Introspecting data and generating models"):
+            bootstrap = bootstrap_models(connection_str, init_sql)
+        if not bootstrap.model_dicts:
+            fail("No tables found to generate models from")
+
+        created: list[Path] = []
+        created.extend(write_model_files(bootstrap, root / "models", force=force))
+
+        config_path = root / "sidemantic.yaml"
+        if config_path.exists() and not force:
+            emit_warning(f"Kept existing {config_path} (pass --force to regenerate)")
+        else:
+            config_data: dict = {"models_dir": "models"}
+            if connection_config:
+                config_data["connection"] = connection_config
+            header = "# Sidemantic project configuration.\n# Docs: https://sidemantic.com/sidemantic/cli\n"
+            if connection_config is None:
+                header += (
+                    "# Add a `connection:` block for your database (see docs), or pass --connection at query time.\n"
+                )
+            config_path.write_text(header + yaml_module.dump(config_data, sort_keys=False, default_flow_style=False))
+            created.append(config_path)
+
+        smoke_path = root / "tests" / "smoke.yml"
+        if not smoke_path.exists() or force:
+            smoke = {
+                "tests": [
+                    {
+                        "name": f"{name} loads",
+                        "sql": f"SELECT {name}.record_count FROM {name}",
+                        "expect": {"row_count": 1},
+                    }
+                    for name in sorted(bootstrap.model_dicts)
+                ]
+            }
+            smoke_path.parent.mkdir(parents=True, exist_ok=True)
+            smoke_path.write_text(
+                "# Golden-query assertions run by `sidemantic test`.\n"
+                + yaml_module.dump(smoke, sort_keys=False, default_flow_style=False)
+            )
+            created.append(smoke_path)
+
+        payload = _scaffold_payload(root, created)
+        payload["models"] = sorted(bootstrap.model_dicts)
+        payload["notes"] = bootstrap.notes
+        if json_output:
+            emit_json(payload)
+            return
+
+        emit_diagnostic(f"Created project in {root}")
+        for path in sorted(created):
+            emit_diagnostic(f"  {_relative_to_root(path, root)}")
+        emit_diagnostic("Generated models:")
+        for note in bootstrap.notes:
+            emit_diagnostic(f"  {note}")
+        first_model = sorted(bootstrap.model_dicts)[0]
+        emit_guidance(
+            "Generated models are a starting point; review and rename before sharing.\n"
+            "Next:\n"
+            f'  sidemantic query "SELECT {first_model}.record_count FROM {first_model}"\n'
+            "  sidemantic test\n"
+            "  sidemantic validate --live"
+        )
+    except typer.Exit:
+        raise
+    except Exception as e:
+        fail(e)
+
+
+@app.command(epilog=GROUP_EPILOG)
+def demo(
+    directory: Path = typer.Argument(None, help="Directory for the demo project (default: ./sidemantic-demo)"),
+    force: bool = typer.Option(False, "--force", help="Overwrite files a previous demo created"),
+    json_output: bool = typer.Option(False, "--json", help="Emit the scaffold report as JSON"),
+):
+    """
+    Create and query a self-contained demo project (models + DuckDB data).
+
+    Writes a complete example project you can inspect, query, test, and serve,
+    then runs a first query so you see results immediately.
+
+    Examples:
+      sidemantic demo
+      uvx sidemantic demo
+    """
+    try:
+        from sidemantic.quickstart import scaffold_demo_project
+
+        root = _resolve_new_project_dir(directory, default_name="sidemantic-demo")
+        root.mkdir(parents=True, exist_ok=True)
+        with progress("Creating demo project"):
+            result = scaffold_demo_project(root, force=force)
+
+        sample_sql = "SELECT orders.status, orders.revenue, orders.order_count FROM orders ORDER BY orders.status"
+        layer = SemanticLayer(connection=f"duckdb:///{root / 'data' / 'demo.duckdb'}")
+        load_from_directory(layer, str(root / "models"))
+        cursor = layer.sql(sample_sql)
+        columns = [description[0] for description in cursor.description]
+        rows = cursor.fetchall()
+
+        if json_output:
+            payload = _scaffold_payload(root, result.created)
+            payload["sample_query"] = sample_sql
+            payload["sample_rows"] = [list(row) for row in rows]
+            emit_json(payload)
+            return
+
+        emit_diagnostic(f"Created demo project in {root}")
+        for path in sorted(result.created):
+            emit_diagnostic(f"  {_relative_to_root(path, root)}")
+        emit_diagnostic(f'$ sidemantic query "{sample_sql}"')
+        emit_result(render_rows(rows, columns=columns, output_format="table"))
+        location = _relative_to_root(root, Path.cwd()) if root != Path.cwd() else "."
+        emit_guidance(
+            "Next:\n"
+            f"  cd {location}\n"
+            '  sidemantic query "SELECT orders.created_at__month, orders.revenue FROM orders"\n'
+            "  sidemantic test                 # golden-query assertions\n"
+            "  sidemantic serve                # web UI + API + MCP (needs the api extra)\n"
+            "  sidemantic workbench            # terminal UI (needs the workbench extra)"
+        )
+    except typer.Exit:
+        raise
+    except Exception as e:
+        fail(e)
+
+
+@app.command(epilog=GROUP_EPILOG)
+def test(
+    paths: list[Path] = typer.Argument(
+        None, help="Golden-test YAML files or directories (defaults to the project tests/ directory)"
+    ),
+    models: Path = typer.Option(None, "--models", "-m", help="Directory containing semantic layer files"),
+    connection: str = typer.Option(None, "--connection", help="Database connection string"),
+    db: Path = typer.Option(None, "--db", help="Path to DuckDB database file or data file"),
+    json_output: bool = typer.Option(False, "--json", help="Emit the test report as JSON"),
+):
+    """
+    Run golden-query tests against the semantic layer.
+
+    Test files declare queries with expected results, so metric definitions
+    cannot silently drift:
+
+      tests:
+        - name: total revenue
+          sql: SELECT orders.revenue FROM orders
+          expect: {value: 250.0}
+
+    Examples:
+      sidemantic test
+      sidemantic test tests/revenue.yml --db data/warehouse.duckdb
+    """
+    try:
+        output_format = resolve_output_format(json_output=json_output)
+        structured = json_output or cli_state().requested_format is not None or cli_state().plain
+        from sidemantic.testing import TEST_FILE_SUFFIXES, discover_test_files, load_test_cases, run_tests
+
+        files: list[Path] = []
+        if paths:
+            for raw in paths:
+                resolved = raw.expanduser()
+                if not resolved.is_absolute():
+                    resolved = Path.cwd() / resolved
+                if resolved.is_dir():
+                    files.extend(
+                        sorted(
+                            candidate
+                            for candidate in resolved.iterdir()
+                            if candidate.is_file() and candidate.suffix.lower() in TEST_FILE_SUFFIXES
+                        )
+                    )
+                elif resolved.is_file():
+                    files.append(resolved)
+                else:
+                    raise InvocationError(f"Test path not found: {resolved}")
+        else:
+            files = discover_test_files(_project().root)
+
+        if not files:
+            fail("No golden tests found")
+
+        cases = load_test_cases(files)
+        if not cases:
+            fail(f"No tests defined in: {', '.join(str(file) for file in files)}")
+
+        layer = _load_query_layer(models, connection=connection, db=db)
+        report = run_tests(layer, cases)
+
+        if structured:
+            records = [
+                {
+                    "status": "pass" if result.passed else "fail",
+                    "name": result.case.name,
+                    "source": str(result.case.source),
+                    "message": result.message,
+                }
+                for result in report.results
+            ]
+            emit_records(
+                records,
+                columns=("status", "name", "source", "message"),
+                output_format=output_format,
+                json_value=report.to_dict(),
+            )
+            if not report.passed:
+                raise typer.Exit(1)
+            return
+
+        lines = []
+        for result in report.results:
+            if result.passed:
+                lines.append(f"PASS  {result.case.name}")
+            else:
+                lines.append(f"FAIL  {result.case.name} — {result.message} ({result.case.source})")
+        _emit_long_report("\n".join(lines))
+        passed = len(report.results) - len(report.failures)
+        if report.passed:
+            typer.echo(f"{passed} test(s) passed")
+            return
+        typer.echo(f"{passed} passed, {len(report.failures)} failed", err=True)
+        raise typer.Exit(1)
+    except typer.Exit:
+        raise
+    except Exception as e:
+        fail(e)
 
 
 @app.command(hidden=True)
@@ -1105,17 +1462,32 @@ def convert(
                 target_spec = get_semantic_format(target_format, operation="export")
                 suffix = target_spec.extensions[0] if target_spec.extensions else ".txt"
                 converted_output = temp_root / f"stdout{suffix}"
+            from sidemantic.fidelity import capture_import_report
+
             with progress(f"Converting semantic definitions to {target_format}"):
-                graph = convert_semantic_source(
-                    source,
-                    converted_output,
-                    source_format=source_format,
-                    target_format=target_format,
-                )
+                with capture_import_report() as fidelity_report:
+                    graph = convert_semantic_source(
+                        source,
+                        converted_output,
+                        source_format=source_format,
+                        target_format=target_format,
+                    )
             if output_to_stdout:
                 write_text_output("-", converted_output.read_text())
             else:
                 emit_diagnostic(f"Converted {len(graph.models)} model(s) to {target_format}: {output}")
+            if fidelity_report.has_losses:
+                counts = fidelity_report.counts()
+                total = sum(counts.values())
+                emit_warning(
+                    f"Import fidelity: {total} construct(s) were not fully translated "
+                    f"({', '.join(f'{count} {severity}' for severity, count in sorted(counts.items()))}):"
+                )
+                for line in fidelity_report.summary_lines():
+                    emit_warning(f"  {line}")
+            elif not output_to_stdout:
+                # Streamed conversions promise a silent stderr on success.
+                emit_diagnostic("Import fidelity: all recognized constructs translated")
         emit_next_step(
             "convert",
             human_output=cli_state().human_extras and not output_to_stdout,
@@ -1578,8 +1950,7 @@ def explain_sql_command(
 app.command("explain")(explain_sql_command)
 
 
-@app.command(hidden=True)
-def serve(
+def pg_serve(
     directory: Path = typer.Argument(
         None, help="Directory containing semantic layer files (defaults to project models)"
     ),
@@ -1615,7 +1986,6 @@ def serve(
       sidemantic server postgres --demo
       sidemantic server postgres --username user --password-file .secrets/pg-password
     """
-    emit_pending_deprecation("serve")
     import logging
 
     try:
@@ -1745,7 +2115,7 @@ def serve(
     )
 
 
-server_app.command("postgres")(serve)
+server_app.command("postgres")(pg_serve)
 
 
 @app.command(hidden=True)
@@ -1790,6 +2160,9 @@ def api_serve(
         help="Trusted request header carrying JSON user attributes",
     ),
     ui: bool = typer.Option(True, "--ui/--no-ui", help="Serve the embedded web UI at the root path"),
+    mcp_endpoint: bool = typer.Option(
+        True, "--mcp/--no-mcp", help="Serve the MCP endpoint at /mcp when the mcp extra is installed"
+    ),
 ):
     """
     Start an HTTP API server for the semantic layer.
@@ -1806,8 +2179,12 @@ def api_serve(
     emit_pending_deprecation("api-serve")
     try:
         from sidemantic.api_server import start_api_server, ui_static_dir
-    except ImportError as e:
-        fail(e)
+    except ImportError:
+        fail(
+            "`sidemantic serve` requires the optional api dependencies. "
+            "Install with `pip install 'sidemantic[api]'` or run with "
+            "`uvx --from 'sidemantic[api]' sidemantic serve ...`."
+        )
 
     if demo:
         import sidemantic
@@ -1913,12 +2290,25 @@ def api_serve(
 
     serve_ui = ui and ui_static_dir().joinpath("index.html").exists()
 
+    serve_mcp = False
+    if mcp_endpoint:
+        try:
+            import mcp as _mcp_probe  # noqa: F401
+
+            serve_mcp = True
+        except ImportError:
+            serve_mcp = False
+
     emit_diagnostic(f"Starting HTTP API server for: {directory}")
     emit_diagnostic(f"Listening on http://{host_resolved}:{port_resolved}")
     if serve_ui:
         emit_diagnostic(f"Web UI: http://{host_resolved}:{port_resolved}/")
     elif ui:
         emit_diagnostic("Web UI: not built (run scripts/build_webapp.py)")
+    if serve_mcp:
+        emit_diagnostic(f"MCP endpoint: http://{host_resolved}:{port_resolved}/mcp")
+    elif mcp_endpoint:
+        emit_diagnostic("MCP endpoint: disabled (install 'sidemantic[mcp]' to enable /mcp)")
     if auth_token_resolved:
         emit_diagnostic("Authentication: bearer token required")
     else:
@@ -1937,10 +2327,64 @@ def api_serve(
         require_user_attrs=require_user_attrs,
         enforce_visibility=enforce_visibility,
         user_header=user_header,
+        serve_mcp=serve_mcp,
     )
 
 
 server_app.command("api")(api_serve)
+
+
+@app.command(epilog=GROUP_EPILOG)
+def serve(
+    directory: Path = typer.Argument(
+        None, help="Directory containing semantic layer files (defaults to project models)"
+    ),
+    demo: bool = typer.Option(False, "--demo", help="Use demo data"),
+    connection: str = typer.Option(
+        None, "--connection", help="Database connection string (e.g., postgres://host/db, bigquery://project/dataset)"
+    ),
+    db: Path = typer.Option(None, "--db", help="Path to DuckDB database file (shorthand for duckdb:/// connection)"),
+    host: str = typer.Option(None, "--host", "-H", help="Host/IP to bind to (overrides config, default 127.0.0.1)"),
+    port: int = typer.Option(None, "--port", "-p", help="Port to listen on (overrides config, default 4400)"),
+    auth_token_file: Path = typer.Option(
+        None, "--auth-token-file", help="Read the API bearer token from a file, or - for stdin"
+    ),
+    cors_origin: list[str] | None = typer.Option(None, "--cors-origin", help="Allowed CORS origin (repeatable)"),
+    ui: bool = typer.Option(True, "--ui/--no-ui", help="Serve the embedded web UI at the root path"),
+    mcp_endpoint: bool = typer.Option(
+        True, "--mcp/--no-mcp", help="Serve the MCP endpoint at /mcp when the mcp extra is installed"
+    ),
+):
+    """
+    Serve the semantic layer on one port: web UI, HTTP API, and MCP.
+
+    One command for teammates and tools: the browser UI at /, the JSON/Arrow
+    API under /api paths, and the MCP endpoint for agents at /mcp.
+
+    Examples:
+      sidemantic serve
+      sidemantic serve --demo
+      sidemantic serve ./models --db data/warehouse.duckdb --port 4400
+    """
+    api_serve(
+        directory=directory,
+        demo=demo,
+        connection=connection,
+        db=db,
+        host=host,
+        port=port,
+        auth_token_file=auth_token_file,
+        auth_token=None,
+        cors_origin=cors_origin,
+        max_request_body_bytes=None,
+        result_cache_mb=None,
+        result_cache_ttl=None,
+        require_user_attrs=False,
+        enforce_visibility=False,
+        user_header="X-Sidemantic-User",
+        ui=ui,
+        mcp_endpoint=mcp_endpoint,
+    )
 
 
 @app.command(hidden=True)
@@ -1970,17 +2414,27 @@ def validate(
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Show detailed validation results"),
     engine: str = typer.Option(None, "--engine", help="Runtime engine: python, rust, or auto"),
     fallback: bool | None = typer.Option(None, "--fallback/--no-fallback", help="Allow Rust engine fallback to Python"),
+    live: bool = typer.Option(
+        False, "--live", help="Also verify models against the live database schema (tables and columns exist)"
+    ),
+    connection: str = typer.Option(None, "--connection", help="Database connection string for --live"),
+    db: Path = typer.Option(None, "--db", help="DuckDB database or data file for --live"),
     json_output: bool = typer.Option(False, "--json", help="Emit the validation report as JSON"),
 ):
     """
     Validate semantic layer definitions.
 
-    Shows errors, warnings, and optionally detailed info.
+    Shows errors, warnings, and optionally detailed info. With --live, also
+    probes the configured database so dropped or renamed tables and columns
+    fail validation instead of failing at query time.
 
     Examples:
       sidemantic validate
       sidemantic validate ./models --verbose
+      sidemantic validate --live
     """
+    if (connection or db) and not live:
+        raise typer.BadParameter("--connection/--db require --live")
     output_format = resolve_output_format(json_output=json_output)
     structured = json_output or cli_state().requested_format is not None or cli_state().plain
     verbose = verbose or cli_state().verbose
@@ -2028,9 +2482,19 @@ def validate(
     # is an additional compatibility check, not a different definition of valid.
     _configure_engine_environment("python", False)
     try:
+        import warnings as warnings_module
+
+        from sidemantic.fidelity import capture_import_report
         from sidemantic.validation_runner import validate_directory
 
-        report = validate_directory(directory)
+        with warnings_module.catch_warnings():
+            # Duplicate-model shadowing surfaces as a structured fidelity note
+            # below; the stdlib warning would print a second, uglier copy.
+            warnings_module.simplefilter("ignore")
+            with capture_import_report() as fidelity_report:
+                report = validate_directory(directory)
+        for note in fidelity_report.notes:
+            report.warnings.append(f"Import fidelity ({note.severity}): {note.detail}")
     except Exception as e:
         if cli_state().debug:
             raise
@@ -2053,12 +2517,38 @@ def validate(
             emit_error(e)
         raise typer.Exit(1)
 
+    live_payload: dict[str, object] | None = None
+    if live:
+        try:
+            _resolve_connection(connection=connection, database=db, models=directory, required=True)
+            layer = _load_query_layer(directory, connection=connection, db=db)
+            from sidemantic.testing import check_schema_drift
+
+            with progress("Checking live database schema"):
+                drift = check_schema_drift(layer)
+            report.errors.extend(drift.errors)
+            report.warnings.extend(drift.warnings)
+            report.info.append(f"Live schema check: {drift.checked_models} model(s) probed against the database")
+            live_payload = {
+                "checked_models": drift.checked_models,
+                "errors": list(drift.errors),
+                "warnings": list(drift.warnings),
+            }
+        except typer.Exit:
+            raise
+        except Exception as e:
+            if cli_state().debug:
+                raise
+            report.errors.append(f"Live schema check failed: {e}")
+            live_payload = {"checked_models": 0, "errors": [str(e)], "warnings": []}
+
     if structured:
         payload = {
             "valid": not report.errors,
             "path": str(directory),
             "engine": engine or "python",
             "rust_models": rust_models,
+            "live": live_payload,
             "errors": list(report.errors),
             "warnings": list(report.warnings),
             "info": list(report.info),

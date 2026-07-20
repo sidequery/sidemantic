@@ -25,7 +25,6 @@ release.
 | `sidemantic migrator` | `sidemantic migrate generate` or `migrate check` | 0.10.0 | 0.12.0 |
 | `sidemantic export-native` | `sidemantic convert --to sidemantic` | 0.10.0 | 0.12.0 |
 | `sidemantic explain-sql` | `sidemantic explain` | 0.10.0 | 0.12.0 |
-| `sidemantic serve` | `sidemantic server postgres` | 0.10.0 | 0.12.0 |
 | `sidemantic api-serve` | `sidemantic server api` | 0.10.0 | 0.12.0 |
 | `sidemantic mcp-serve` | `sidemantic server mcp` | 0.10.0 | 0.12.0 |
 | `sidemantic tree` | `sidemantic workbench` | 0.10.0 | 0.12.0 |
@@ -33,6 +32,11 @@ release.
 | `server api --auth-token` | `server api --auth-token-file` | 0.10.2 | 1.0.0 |
 | `dashboard serve --output-dir` | Remove the ignored flag | 0.10.0 | 0.12.0 |
 | `dashboard serve --warm-interaction-preaggregations` | Remove the ignored flag | 0.10.0 | 0.12.0 |
+
+`sidemantic serve` was briefly (0.10.0-0.10.2) a hidden deprecated alias for
+`sidemantic server postgres`. As of 0.11.0 it is the unified serving command
+(web UI + HTTP API + MCP on one port); scripts that relied on the alias must
+use `sidemantic server postgres` explicitly.
 
 The registry in `sidemantic/cli_polish.py` is the executable source of truth.
 Tests require every entry to specify its replacement, introduction release, and

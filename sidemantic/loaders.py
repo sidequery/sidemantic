@@ -4,10 +4,13 @@ import copy
 import logging
 import runpy
 import sys
+import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import yaml
+
+from sidemantic.fidelity import record_import_note
 
 if TYPE_CHECKING:
     from sidemantic.core.semantic_layer import SemanticLayer
@@ -61,6 +64,18 @@ def _drop_non_registerable_models(
     """
     kept = {name: model for name, model in all_models.items() if _is_registerable_model(model)}
     dropped = set(all_models) - set(kept)
+    for name in dropped:
+        # An `extension: required` abstract base is consumed via `extends` and not a real loss;
+        # an unsupported derived table has no executable definition, so it is silently lost today.
+        meta = getattr(all_models[name], "meta", None) or {}
+        if meta.get("unsupported_derived_table"):
+            record_import_note(
+                "derived_table",
+                f"model '{name}' uses an unsupported derived_table and is not registered as queryable",
+                severity="dropped",
+                source=getattr(all_models[name], "_source_file", None)
+                or getattr(all_models[name], "_source_format", None),
+            )
     # A join to a name that WAS a template but got overwritten by a real model (so it is in `kept`,
     # not `dropped`) is stripped ONLY from LookML-sourced models: the explore join that created it
     # targeted the template. A native/other-format model's relationship to the same name was
@@ -202,7 +217,7 @@ def load_from_directory(
                     model._source_format = "TMDL"
                 if not hasattr(model, "_source_file"):
                     model._source_file = str(tmdl_root.relative_to(directory))
-            all_models.update(graph.models)
+            _merge_models(all_models, graph.models)
             all_metrics.update(graph.metrics)
             all_parameters.update(graph.parameters)
         except Exception as e:
@@ -246,7 +261,7 @@ def load_from_directory(
             # overwrite them, so their dangling join relationships are still stripped (see
             # _drop_non_registerable_models).
             template_target_names |= {n for n, m in graph.models.items() if not _is_registerable_model(m)}
-            all_models.update(graph.models)
+            _merge_models(all_models, graph.models)
             all_metrics.update(graph.metrics)
             all_parameters.update(graph.parameters)
         except Exception as e:
@@ -458,7 +473,7 @@ def load_from_directory(
                 # a later same-name file overwrites them, so their dangling join relationships can
                 # still be stripped even when the name is reused by a registerable model.
                 template_target_names |= {n for n, m in graph.models.items() if not _is_registerable_model(m)}
-                all_models.update(graph.models)
+                _merge_models(all_models, graph.models)
                 all_metrics.update(graph.metrics)
                 all_parameters.update(graph.parameters)
                 all_pending_table_metrics.extend(getattr(graph, "_pending_table_metrics", []))
@@ -500,7 +515,10 @@ def load_from_directory(
     # Infer cross-model relationships based on naming conventions
     _infer_relationships(all_models)
 
-    # Add all models to the layer (now with relationships).
+    # Add all models to the layer (now with relationships). Cross-file name
+    # collisions were already noted at merge time (_merge_models); a name already
+    # present here is a benign re-encounter (e.g. a format that auto-registers
+    # during parse), not a new shadow, so it is silently skipped.
     for model in all_models.values():
         if model.name not in layer.graph.models:
             layer.add_model(model)
@@ -1013,10 +1031,91 @@ def _extract_models_from_python_namespace(namespace: dict, fallback_models: dict
     return extracted
 
 
+def _merge_models(all_models: dict, new_models: dict) -> None:
+    """Merge parsed models into ``all_models``, noting any name collision.
+
+    Two files defining the same model name silently shadow one another today
+    (the dict keeps the last writer). Record + warn before overwriting so the
+    dropped definition is visible, then preserve existing last-writer-wins.
+    """
+    for name, model in new_models.items():
+        if name in all_models and all_models[name] is not model:
+            _record_duplicate_model(all_models[name], model)
+        all_models[name] = model
+
+
+def _record_duplicate_model(loser, winner) -> None:
+    """Note (and warn about) a model whose name is already registered.
+
+    ``winner`` is the definition that ends up registered; ``loser`` is the
+    same-named definition it shadows. Name both files when known so the loss is
+    actionable.
+    """
+    winner_src = getattr(winner, "_source_file", None) or getattr(winner, "_source_format", None)
+    loser_src = getattr(loser, "_source_file", None) or getattr(loser, "_source_format", None)
+    if winner_src and loser_src:
+        detail = (
+            f"model '{loser.name}' from {loser_src} is shadowed by an earlier model of the same name from {winner_src}"
+        )
+    elif loser_src:
+        detail = f"model '{loser.name}' from {loser_src} is shadowed by an earlier model of the same name"
+    else:
+        detail = f"duplicate model '{loser.name}' is shadowed by an earlier model of the same name"
+    record_import_note("duplicate_model", detail, severity="dropped", source=loser_src)
+    # Surface outside a capture too, so a plain load still signals the shadowing.
+    warnings.warn(detail, UserWarning, stacklevel=2)
+
+
+def _format_loc(loc) -> str:
+    """Render a pydantic error location tuple as ``metrics[2].agg``."""
+    parts: list[str] = []
+    for part in loc:
+        if isinstance(part, int):
+            parts.append(f"[{part}]")
+        elif parts:
+            parts.append(f".{part}")
+        else:
+            parts.append(str(part))
+    return "".join(parts)
+
+
+def _format_parse_error(file_path: Path, error: Exception) -> str:
+    """Render a parse error compactly instead of dumping raw pydantic/YAML text.
+
+    A pydantic ``ValidationError`` becomes one ``loc: message`` line per error
+    (dotted loc path), and a ``yaml.YAMLError`` keeps its mark (line/column)
+    info. Everything else falls back to ``str(error)``.
+    """
+    file_name = file_path.name
+
+    # pydantic ValidationError exposes structured errors via .errors(); detect it
+    # duck-typed so importing pydantic here is unnecessary.
+    errors = getattr(error, "errors", None)
+    if callable(errors):
+        try:
+            entries = errors()
+        except Exception:
+            entries = None
+        if entries:
+            lines = []
+            for entry in entries:
+                loc = _format_loc(entry.get("loc", ()))
+                message = entry.get("msg", "")
+                lines.append(f"{file_name}: {loc}: {message}" if loc else f"{file_name}: {message}")
+            return "\n".join(lines)
+
+    if isinstance(error, yaml.YAMLError):
+        # yaml.MarkedYAMLError already carries line/col in its str(); keep it.
+        return str(error)
+
+    return str(error)
+
+
 def _handle_parse_error(file_path: Path, error: Exception, *, strict: bool) -> None:
+    formatted = _format_parse_error(file_path, error)
     if strict:
-        raise ValueError(f"Could not parse {file_path}: {error}") from error
-    logging.warning("Could not parse %s: %s", file_path, error)
+        raise ValueError(f"Could not parse {file_path}: {formatted}") from error
+    logging.warning("Could not parse %s: %s", file_path, formatted)
 
 
 def _parse_adapter_without_auto_registration(adapter, file_path: Path):

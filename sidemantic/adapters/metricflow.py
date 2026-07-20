@@ -10,6 +10,7 @@ from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
+from sidemantic.fidelity import record_import_note
 
 
 class MetricFlowAdapter(BaseAdapter):
@@ -571,11 +572,18 @@ class MetricFlowAdapter(BaseAdapter):
         if not name:
             return None
 
-        sidemantic_agg = self._map_agg(measure_def.get("agg", "sum"))
+        raw_agg = measure_def.get("agg", "sum")
+        sidemantic_agg = self._map_agg(raw_agg)
         if sidemantic_agg is None:
             # Aggregation Sidemantic cannot represent (e.g. ``percentile``). Skip
             # rather than coerce to ``sum``, which would silently return a wrong
             # value for the measure.
+            record_import_note(
+                "unsupported_aggregation",
+                f"measure '{name}' uses aggregation '{raw_agg}' that sidemantic cannot represent; dropped",
+                severity="dropped",
+                source="MetricFlow",
+            )
             return None
 
         # Parse metadata and filters from meta
@@ -661,6 +669,12 @@ class MetricFlowAdapter(BaseAdapter):
         }
 
         if metric_type not in type_mapping:
+            record_import_note(
+                "unsupported_metric_type",
+                f"metric '{name}' has unsupported type '{metric_type}'; dropped",
+                severity="dropped",
+                source="MetricFlow",
+            )
             return None  # Skip genuinely unsupported metric types
         sidemantic_type = type_mapping[metric_type]
 

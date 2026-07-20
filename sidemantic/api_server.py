@@ -120,6 +120,7 @@ def start_api_server(
     enforce_visibility: bool = False,
     user_header: str = "X-Sidemantic-User",
     dashboard: Any | None = None,
+    serve_mcp: bool = False,
 ) -> None:
     """Start the HTTP API server."""
     try:
@@ -139,6 +140,7 @@ def start_api_server(
         enforce_visibility=enforce_visibility,
         user_header=user_header,
         dashboard=dashboard,
+        serve_mcp=serve_mcp,
     )
     uvicorn.run(app, host=host, port=port, log_level="info")
 
@@ -160,6 +162,7 @@ def create_app(
     enforce_visibility: bool = False,
     user_header: str = "X-Sidemantic-User",
     dashboard: Any | None = None,
+    serve_mcp: bool = False,
 ) -> FastAPI:
     """Create a FastAPI app for a loaded semantic layer.
 
@@ -178,7 +181,28 @@ def create_app(
     - ``enforce_visibility`` is applied to the layer so requesting a non-public
       field is rejected.
     """
-    app = FastAPI(title="Sidemantic API", version=__version__)
+    mcp_module = None
+    mcp_asgi = None
+    lifespan = None
+    if serve_mcp:
+        # Reuse the MCP server's tool surface on this process's layer so HTTP,
+        # UI, and agent traffic all read the same in-memory graph.
+        import sidemantic.mcp_server as mcp_module
+
+        mcp_module._layer = layer
+        mcp_module.mcp.settings.streamable_http_path = "/"
+        mcp_asgi = mcp_module.mcp.streamable_http_app()
+
+        from contextlib import asynccontextmanager
+
+        @asynccontextmanager
+        async def lifespan(_app):
+            async with mcp_module.mcp.session_manager.run():
+                yield
+
+    app = FastAPI(title="Sidemantic API", version=__version__, lifespan=lifespan)
+    if mcp_asgi is not None:
+        app.mount("/mcp", mcp_asgi, name="mcp")
     # enforce_visibility is a SemanticLayer.__init__ arg; the layer is passed in
     # pre-built here, so set it on the instance (least invasive) rather than
     # reconstructing the layer and re-loading its models.

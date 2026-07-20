@@ -58,7 +58,11 @@ Structured inspection and reporting commands accept `--json`, including:
 
 ```bash
 sidemantic info --json
+sidemantic init --json
+sidemantic demo --json
+sidemantic test --json
 sidemantic validate --json
+sidemantic validate --live --json
 sidemantic dashboard validate dashboard.yml --json
 sidemantic migrate check queries/ --json
 sidemantic migrate generate queries/ --output generated/ --json

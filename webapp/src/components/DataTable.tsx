@@ -81,7 +81,7 @@ export function DataTable({
             placeholder="Search…"
             value={search}
             onChange={(event) => setSearch(event.target.value)}
-            className="w-full max-w-64 border border-line bg-surface px-1.5 py-1 text-2xs text-ink placeholder:text-faint"
+            className="w-full max-w-64 rounded-full border border-line bg-surface px-2.5 py-1 text-2xs text-ink placeholder:text-faint"
           />
           {search ? (
             <span className="whitespace-nowrap text-2xs text-faint tnum">

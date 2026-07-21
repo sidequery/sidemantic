@@ -17,12 +17,12 @@ const VARIANT_CLASSES: Record<ButtonVariant, string> = {
 // Flat, hairline-bordered button in the data-tool idiom. Defaults to type="button" so toolbar
 // buttons inside forms never submit accidentally.
 export function Button({ variant = "secondary", size = "md", type = "button", className, ...rest }: ButtonProps) {
-  const sizing = size === "sm" ? "px-2 py-0.5 text-2xs" : "px-2.5 py-1 text-xs";
+  const sizing = size === "sm" ? "px-2.5 py-1 text-2xs" : "px-3 py-1.5 text-xs";
   return (
     <button
       type={type}
       data-variant={variant}
-      className={`rounded border ${sizing} ${VARIANT_CLASSES[variant]} disabled:pointer-events-none disabled:opacity-50 ${className ?? ""}`}
+      className={`rounded-full border ${sizing} ${VARIANT_CLASSES[variant]} disabled:pointer-events-none disabled:opacity-50 ${className ?? ""}`}
       {...rest}
     />
   );

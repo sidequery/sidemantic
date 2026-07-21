@@ -22,7 +22,7 @@ export function Select({ value, options, onChange, label, ariaLabel, placeholder
         value={value}
         disabled={disabled}
         onChange={(event) => onChange(event.target.value)}
-        className="rounded border border-line bg-surface px-1.5 py-1 text-2xs text-ink disabled:opacity-50"
+        className="rounded-full border border-line bg-surface px-2.5 py-1 text-2xs text-ink disabled:opacity-50"
       >
         {placeholder ? (
           <option value="" disabled>

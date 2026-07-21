@@ -49,7 +49,7 @@ export function MetricCard({
   const summary = (
     <>
       <div className="flex items-baseline justify-between gap-2">
-        <span className="truncate text-2xs font-medium uppercase tracking-[0.08em] text-faint">{label}</span>
+        <span className="truncate text-xs font-medium text-muted">{label}</span>
         {sparkHover?.label ? <span className="shrink-0 font-mono text-2xs text-faint">{sparkHover.label}</span> : null}
       </div>
       <div className="font-mono tnum text-[19px] font-semibold leading-tight tracking-tight text-ink">
@@ -76,7 +76,7 @@ export function MetricCard({
   );
 
   const className =
-    "group flex w-full flex-col gap-1.5 rounded-lg border border-line bg-surface px-3.5 py-3 text-left shadow-[var(--shadow-sm)] transition-colors hover:border-line-strong data-[selected=true]:border-accent";
+    "group flex w-full flex-col gap-1.5 rounded-xl border border-line bg-surface px-3.5 py-3 text-left shadow-[var(--shadow-sm)] transition-colors hover:border-line-strong data-[selected=true]:border-accent";
   const sparkline = (
     <Sparkline
       values={sparkValues}

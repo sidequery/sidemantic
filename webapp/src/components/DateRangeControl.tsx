@@ -53,7 +53,7 @@ export function DateRangeControl({
   return (
     <details ref={details} className="relative text-2xs">
       <summary
-        className={`flex cursor-pointer items-center gap-1.5 rounded border border-line bg-surface px-2 py-1 text-ink ${
+        className={`flex cursor-pointer items-center gap-1.5 rounded-full border border-line bg-surface px-3 py-1.5 text-ink ${
           disabled ? "pointer-events-none opacity-50" : ""
         }`}
       >
@@ -61,11 +61,11 @@ export function DateRangeControl({
         <span className="font-mono tnum">{summary}</span>
         <span aria-hidden="true" className="text-faint">▾</span>
       </summary>
-      <div className="absolute right-0 z-50 mt-1 w-64 rounded-md border border-line bg-surface p-2 shadow-[var(--shadow)]">
+      <div className="absolute right-0 z-50 mt-1 w-64 rounded-xl border border-line bg-surface p-2.5 shadow-[var(--shadow)]">
         <button
           type="button"
           onClick={() => apply(undefined)}
-          className="mb-2 w-full border border-line px-2 py-1 text-left text-2xs text-muted hover:bg-surface-soft"
+          className="mb-2 w-full rounded-lg border border-line px-2 py-1 text-left text-2xs text-muted hover:bg-surface-soft"
         >
           All time
         </button>
@@ -75,7 +75,7 @@ export function DateRangeControl({
               key={preset.key}
               type="button"
               onClick={() => apply(presetRange(preset.days))}
-              className="border border-line px-2 py-1 text-2xs text-muted hover:bg-surface-soft"
+              className="rounded-lg border border-line px-2 py-1 text-2xs text-muted hover:bg-surface-soft"
             >
               {preset.label}
             </button>
@@ -103,14 +103,14 @@ export function DateRangeControl({
             type="button"
             disabled={!from || !to}
             onClick={() => apply({ from, to })}
-            className="mt-2 w-full border border-accent bg-accent-soft px-2 py-1 text-2xs font-medium text-accent disabled:opacity-50"
+            className="mt-2 w-full rounded-lg border border-accent bg-accent-soft px-2 py-1 text-2xs font-medium text-accent disabled:opacity-50"
           >
             Apply custom range
           </button>
         </div>
 
         <div className="mt-2 border-t border-line pt-2" data-testid="comparison-picker">
-          <p className="mb-1 text-2xs font-semibold uppercase tracking-wide text-faint">Compare to</p>
+          <p className="mb-1 text-xs font-medium text-muted">Compare to</p>
           <div className={`grid grid-cols-2 gap-1 ${comparisonDisabled ? "pointer-events-none opacity-50" : ""}`}>
             {COMPARISON_OPTIONS.map((option) => (
               <button
@@ -119,7 +119,7 @@ export function DateRangeControl({
                 data-comparison={option.key}
                 data-active={comparison === option.key || undefined}
                 onClick={() => applyComparison(option.key)}
-                className="border border-line px-2 py-1 text-2xs text-muted hover:bg-surface-soft data-[active=true]:border-accent data-[active=true]:bg-accent-soft data-[active=true]:text-accent"
+                className="rounded-lg border border-line px-2 py-1 text-2xs text-muted hover:bg-surface-soft data-[active=true]:border-accent data-[active=true]:bg-accent-soft data-[active=true]:text-accent"
               >
                 {option.label}
               </button>
@@ -148,7 +148,7 @@ export function DateRangeControl({
                 type="button"
                 disabled={!cmpFrom || !cmpTo}
                 onClick={() => onComparisonChange("custom", { from: cmpFrom, to: cmpTo })}
-                className="mt-2 w-full border border-accent bg-accent-soft px-2 py-1 text-2xs font-medium text-accent disabled:opacity-50"
+                className="mt-2 w-full rounded-lg border border-accent bg-accent-soft px-2 py-1 text-2xs font-medium text-accent disabled:opacity-50"
               >
                 Apply comparison
               </button>

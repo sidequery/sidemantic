@@ -141,7 +141,7 @@ export function Combobox(props: ComboboxProps) {
           }}
           onFocus={() => setOpen(true)}
           onKeyDown={onKeyDown}
-          className="w-full rounded border border-line bg-surface px-1.5 py-1 text-ink placeholder:text-faint disabled:opacity-50"
+          className="w-full rounded-full border border-line bg-surface px-2.5 py-1 text-ink placeholder:text-faint disabled:opacity-50"
         />
         {selectedValues.length > 0 ? (
           <button
@@ -160,7 +160,7 @@ export function Combobox(props: ComboboxProps) {
           id={listId}
           role="listbox"
           aria-multiselectable={props.multiple || undefined}
-          className="absolute left-0 top-full z-50 mt-1 max-h-56 w-full min-w-40 overflow-y-auto rounded-md border border-line bg-surface p-1 shadow-[var(--shadow)]"
+          className="absolute left-0 top-full z-50 mt-1 max-h-56 w-full min-w-40 overflow-y-auto rounded-xl border border-line bg-surface p-1.5 shadow-[var(--shadow)]"
         >
           {matches.length === 0 ? <li className="px-1.5 py-1 text-faint">No matches</li> : null}
           {matches.map((option, index) => (
@@ -176,7 +176,7 @@ export function Combobox(props: ComboboxProps) {
                 event.preventDefault();
                 commit(option);
               }}
-              className="cursor-pointer truncate px-1.5 py-1 text-muted data-[active=true]:bg-surface-soft data-[active=true]:text-ink"
+              className="cursor-pointer truncate rounded-md px-2 py-1 text-muted data-[active=true]:bg-surface-soft data-[active=true]:text-ink"
             >
               {option.label ?? option.value}
               {selectedSet.has(option.value) ? <span className="float-right text-accent">✓</span> : null}

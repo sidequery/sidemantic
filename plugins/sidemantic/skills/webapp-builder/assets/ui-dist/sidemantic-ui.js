@@ -25,7 +25,7 @@ function ChartTooltip({
   return /* @__PURE__ */ jsx("div", {
     role: "tooltip",
     style: { position, left: tip.x + offset, top: tip.y + offset, pointerEvents: "none", zIndex: 50, ...style },
-    className: className || "rounded-md border border-line bg-surface px-2 py-1.5 text-xs text-ink shadow-[var(--shadow)]",
+    className: className || "rounded-lg border border-line bg-surface px-2.5 py-1.5 text-xs text-ink shadow-[var(--shadow)]",
     children: tip.content
   });
 }
@@ -540,7 +540,7 @@ function DataTable({
             placeholder: "Search…",
             value: search,
             onChange: (event) => setSearch(event.target.value),
-            className: "w-full max-w-64 border border-line bg-surface px-1.5 py-1 text-2xs text-ink placeholder:text-faint"
+            className: "w-full max-w-64 rounded-full border border-line bg-surface px-2.5 py-1 text-2xs text-ink placeholder:text-faint"
           }),
           search ? /* @__PURE__ */ jsxs4("span", {
             className: "whitespace-nowrap text-2xs text-faint tnum",
@@ -699,7 +699,7 @@ function DashboardShell({ title, eyebrow = "Sidemantic", status, toolbar, childr
           /* @__PURE__ */ jsxs5("div", {
             children: [
               /* @__PURE__ */ jsx5("p", {
-                className: "text-xs font-medium uppercase tracking-normal text-faint",
+                className: "text-xs font-medium text-faint",
                 children: eyebrow
               }),
               /* @__PURE__ */ jsx5("h1", {
@@ -2274,7 +2274,7 @@ function MetricCard({
         className: "flex items-baseline justify-between gap-2",
         children: [
           /* @__PURE__ */ jsx17("span", {
-            className: "truncate text-2xs font-medium uppercase tracking-[0.08em] text-faint",
+            className: "truncate text-xs font-medium text-muted",
             children: label
           }),
           sparkHover?.label ? /* @__PURE__ */ jsx17("span", {
@@ -2312,7 +2312,7 @@ function MetricCard({
       }) : null
     ]
   });
-  const className = "group flex w-full flex-col gap-1.5 rounded-lg border border-line bg-surface px-3.5 py-3 text-left shadow-[var(--shadow-sm)] transition-colors hover:border-line-strong data-[selected=true]:border-accent";
+  const className = "group flex w-full flex-col gap-1.5 rounded-xl border border-line bg-surface px-3.5 py-3 text-left shadow-[var(--shadow-sm)] transition-colors hover:border-line-strong data-[selected=true]:border-accent";
   const sparkline = /* @__PURE__ */ jsx17(Sparkline, {
     values: sparkValues,
     labels: sparkLabels,
@@ -2617,7 +2617,7 @@ ${sql}`).join(`
     className: "border border-line bg-surface",
     children: [
       /* @__PURE__ */ jsx19("summary", {
-        className: "cursor-pointer px-3 py-2 text-2xs font-semibold uppercase tracking-wide text-faint",
+        className: "cursor-pointer px-3 py-2 text-xs font-medium text-muted",
         children: "Generated SQL"
       }),
       Object.keys(inputs).length > 0 ? /* @__PURE__ */ jsx19("div", {
@@ -3168,11 +3168,11 @@ var VARIANT_CLASSES = {
   danger: "border-danger bg-danger-soft font-medium text-danger hover:bg-danger hover:text-surface"
 };
 function Button({ variant = "secondary", size = "md", type = "button", className, ...rest }) {
-  const sizing = size === "sm" ? "px-2 py-0.5 text-2xs" : "px-2.5 py-1 text-xs";
+  const sizing = size === "sm" ? "px-2.5 py-1 text-2xs" : "px-3 py-1.5 text-xs";
   return /* @__PURE__ */ jsx24("button", {
     type,
     "data-variant": variant,
-    className: `rounded border ${sizing} ${VARIANT_CLASSES[variant]} disabled:pointer-events-none disabled:opacity-50 ${className ?? ""}`,
+    className: `rounded-full border ${sizing} ${VARIANT_CLASSES[variant]} disabled:pointer-events-none disabled:opacity-50 ${className ?? ""}`,
     ...rest
   });
 }
@@ -3287,7 +3287,7 @@ function Combobox(props) {
             },
             onFocus: () => setOpen(true),
             onKeyDown,
-            className: "w-full rounded border border-line bg-surface px-1.5 py-1 text-ink placeholder:text-faint disabled:opacity-50"
+            className: "w-full rounded-full border border-line bg-surface px-2.5 py-1 text-ink placeholder:text-faint disabled:opacity-50"
           }),
           selectedValues.length > 0 ? /* @__PURE__ */ jsx25("button", {
             type: "button",
@@ -3303,7 +3303,7 @@ function Combobox(props) {
         id: listId,
         role: "listbox",
         "aria-multiselectable": props.multiple || undefined,
-        className: "absolute left-0 top-full z-50 mt-1 max-h-56 w-full min-w-40 overflow-y-auto rounded-md border border-line bg-surface p-1 shadow-[var(--shadow)]",
+        className: "absolute left-0 top-full z-50 mt-1 max-h-56 w-full min-w-40 overflow-y-auto rounded-xl border border-line bg-surface p-1.5 shadow-[var(--shadow)]",
         children: [
           matches.length === 0 ? /* @__PURE__ */ jsx25("li", {
             className: "px-1.5 py-1 text-faint",
@@ -3319,7 +3319,7 @@ function Combobox(props) {
               event.preventDefault();
               commit(option);
             },
-            className: "cursor-pointer truncate px-1.5 py-1 text-muted data-[active=true]:bg-surface-soft data-[active=true]:text-ink",
+            className: "cursor-pointer truncate rounded-md px-2 py-1 text-muted data-[active=true]:bg-surface-soft data-[active=true]:text-ink",
             children: [
               option.label ?? option.value,
               selectedSet.has(option.value) ? /* @__PURE__ */ jsx25("span", {
@@ -3410,7 +3410,7 @@ function DatePicker(props) {
   }
   const today = todayIso();
   const calendar = /* @__PURE__ */ jsxs23("div", {
-    className: "w-56 select-none rounded-md border border-line bg-surface p-2 text-2xs",
+    className: "w-56 select-none rounded-xl border border-line bg-surface p-2.5 text-2xs",
     "aria-label": ariaLabel ?? "Calendar",
     children: [
       /* @__PURE__ */ jsxs23("div", {
@@ -3475,7 +3475,7 @@ function DatePicker(props) {
       (isRange ? props.value : props.value) != null ? /* @__PURE__ */ jsx26("button", {
         type: "button",
         onClick: () => isRange ? props.onChange(null) : props.onChange(null),
-        className: "mt-1 w-full border border-line px-2 py-1 text-left text-muted hover:bg-surface-soft",
+        className: "mt-1 w-full rounded-lg border border-line px-2 py-1 text-left text-muted hover:bg-surface-soft",
         children: "Clear"
       }) : null
     ]
@@ -3488,7 +3488,7 @@ function DatePicker(props) {
     className: "relative inline-block text-2xs",
     children: [
       /* @__PURE__ */ jsxs23("summary", {
-        className: `flex cursor-pointer items-center gap-1.5 rounded border border-line bg-surface px-2 py-1 text-ink ${disabled ? "pointer-events-none opacity-50" : ""}`,
+        className: `flex cursor-pointer items-center gap-1.5 rounded-full border border-line bg-surface px-3 py-1.5 text-ink ${disabled ? "pointer-events-none opacity-50" : ""}`,
         children: [
           /* @__PURE__ */ jsx26("span", {
             className: "text-faint",
@@ -3555,7 +3555,7 @@ function DateRangeControl({
     className: "relative text-2xs",
     children: [
       /* @__PURE__ */ jsxs24("summary", {
-        className: `flex cursor-pointer items-center gap-1.5 rounded border border-line bg-surface px-2 py-1 text-ink ${disabled ? "pointer-events-none opacity-50" : ""}`,
+        className: `flex cursor-pointer items-center gap-1.5 rounded-full border border-line bg-surface px-3 py-1.5 text-ink ${disabled ? "pointer-events-none opacity-50" : ""}`,
         children: [
           /* @__PURE__ */ jsx27("span", {
             className: "text-faint",
@@ -3573,12 +3573,12 @@ function DateRangeControl({
         ]
       }),
       /* @__PURE__ */ jsxs24("div", {
-        className: "absolute right-0 z-50 mt-1 w-64 rounded-md border border-line bg-surface p-2 shadow-[var(--shadow)]",
+        className: "absolute right-0 z-50 mt-1 w-64 rounded-xl border border-line bg-surface p-2.5 shadow-[var(--shadow)]",
         children: [
           /* @__PURE__ */ jsx27("button", {
             type: "button",
             onClick: () => apply(undefined),
-            className: "mb-2 w-full border border-line px-2 py-1 text-left text-2xs text-muted hover:bg-surface-soft",
+            className: "mb-2 w-full rounded-lg border border-line px-2 py-1 text-left text-2xs text-muted hover:bg-surface-soft",
             children: "All time"
           }),
           /* @__PURE__ */ jsx27("div", {
@@ -3586,7 +3586,7 @@ function DateRangeControl({
             children: DATE_PRESETS.map((preset) => /* @__PURE__ */ jsx27("button", {
               type: "button",
               onClick: () => apply(presetRange(preset.days)),
-              className: "border border-line px-2 py-1 text-2xs text-muted hover:bg-surface-soft",
+              className: "rounded-lg border border-line px-2 py-1 text-2xs text-muted hover:bg-surface-soft",
               children: preset.label
             }, preset.key))
           }),
@@ -3620,7 +3620,7 @@ function DateRangeControl({
                 type: "button",
                 disabled: !from || !to,
                 onClick: () => apply({ from, to }),
-                className: "mt-2 w-full border border-accent bg-accent-soft px-2 py-1 text-2xs font-medium text-accent disabled:opacity-50",
+                className: "mt-2 w-full rounded-lg border border-accent bg-accent-soft px-2 py-1 text-2xs font-medium text-accent disabled:opacity-50",
                 children: "Apply custom range"
               })
             ]
@@ -3630,7 +3630,7 @@ function DateRangeControl({
             "data-testid": "comparison-picker",
             children: [
               /* @__PURE__ */ jsx27("p", {
-                className: "mb-1 text-2xs font-semibold uppercase tracking-wide text-faint",
+                className: "mb-1 text-xs font-medium text-muted",
                 children: "Compare to"
               }),
               /* @__PURE__ */ jsx27("div", {
@@ -3640,7 +3640,7 @@ function DateRangeControl({
                   "data-comparison": option.key,
                   "data-active": comparison === option.key || undefined,
                   onClick: () => applyComparison(option.key),
-                  className: "border border-line px-2 py-1 text-2xs text-muted hover:bg-surface-soft data-[active=true]:border-accent data-[active=true]:bg-accent-soft data-[active=true]:text-accent",
+                  className: "rounded-lg border border-line px-2 py-1 text-2xs text-muted hover:bg-surface-soft data-[active=true]:border-accent data-[active=true]:bg-accent-soft data-[active=true]:text-accent",
                   children: option.label
                 }, option.key))
               }),
@@ -3674,7 +3674,7 @@ function DateRangeControl({
                     type: "button",
                     disabled: !cmpFrom || !cmpTo,
                     onClick: () => onComparisonChange("custom", { from: cmpFrom, to: cmpTo }),
-                    className: "mt-2 w-full border border-accent bg-accent-soft px-2 py-1 text-2xs font-medium text-accent disabled:opacity-50",
+                    className: "mt-2 w-full rounded-lg border border-accent bg-accent-soft px-2 py-1 text-2xs font-medium text-accent disabled:opacity-50",
                     children: "Apply comparison"
                   })
                 ]
@@ -3701,7 +3701,7 @@ function GrainSelect({ grain, options, disabled, onChange }) {
         value: grain,
         disabled,
         onChange: (event) => onChange(event.target.value),
-        className: "rounded border border-line bg-surface px-1.5 py-1 text-2xs text-ink disabled:opacity-50",
+        className: "rounded-full border border-line bg-surface px-2.5 py-1 text-2xs text-ink disabled:opacity-50",
         children: options.map((option) => /* @__PURE__ */ jsx28("option", {
           value: option,
           children: labelize2(option)
@@ -3725,7 +3725,7 @@ function Select({ value, options, onChange, label, ariaLabel, placeholder, disab
         value,
         disabled,
         onChange: (event) => onChange(event.target.value),
-        className: "rounded border border-line bg-surface px-1.5 py-1 text-2xs text-ink disabled:opacity-50",
+        className: "rounded-full border border-line bg-surface px-2.5 py-1 text-2xs text-ink disabled:opacity-50",
         children: [
           placeholder ? /* @__PURE__ */ jsx29("option", {
             value: "",
@@ -3774,7 +3774,7 @@ function Tabs({ tabs, active, onChange, ariaLabel = "Tabs" }) {
   return /* @__PURE__ */ jsx31("div", {
     role: "tablist",
     "aria-label": ariaLabel,
-    className: "flex items-center overflow-hidden rounded border border-line bg-surface",
+    className: "inline-flex items-center gap-0.5 rounded-full border border-line bg-surface p-0.5",
     children: tabs.map((tab) => /* @__PURE__ */ jsx31("button", {
       role: "tab",
       type: "button",
@@ -3782,7 +3782,7 @@ function Tabs({ tabs, active, onChange, ariaLabel = "Tabs" }) {
       "data-tab": tab.key,
       "data-selected": active === tab.key || undefined,
       onClick: () => onChange(tab.key),
-      className: "border-r border-line px-2.5 py-1 text-2xs font-medium text-muted last:border-r-0 hover:bg-surface-soft data-[selected=true]:bg-accent-soft data-[selected=true]:text-accent",
+      className: "rounded-full px-2.5 py-1 text-2xs font-medium text-muted hover:bg-surface-soft hover:text-ink data-[selected=true]:bg-accent-soft data-[selected=true]:text-accent",
       children: tab.label
     }, tab.key))
   });
@@ -3899,7 +3899,7 @@ function TimezoneSelect({ timezone, disabled, onChange }) {
             setSearching(false);
             setText("");
           },
-          className: "w-36 rounded border border-line bg-surface px-1.5 py-1 text-2xs text-ink disabled:opacity-50"
+          className: "w-36 rounded-full border border-line bg-surface px-1.5 py-1 text-2xs text-ink disabled:opacity-50"
         }),
         /* @__PURE__ */ jsx32("datalist", {
           id: listId,
@@ -3928,7 +3928,7 @@ function TimezoneSelect({ timezone, disabled, onChange }) {
           else
             onChange(event.target.value);
         },
-        className: "max-w-[11rem] rounded border border-line bg-surface px-1.5 py-1 text-2xs text-ink disabled:opacity-50",
+        className: "max-w-[11rem] rounded-full border border-line bg-surface px-1.5 py-1 text-2xs text-ink disabled:opacity-50",
         children: [
           options.map((zone) => /* @__PURE__ */ jsxs28("option", {
             value: zone,
@@ -3973,7 +3973,7 @@ function ViewSwitcher({ view, onChange }) {
   return /* @__PURE__ */ jsx34("div", {
     role: "tablist",
     "aria-label": "View",
-    className: "flex items-center overflow-hidden rounded border border-line bg-surface",
+    className: "inline-flex items-center gap-0.5 rounded-full border border-line bg-surface p-0.5",
     children: SEGMENTS.map((segment) => /* @__PURE__ */ jsx34("button", {
       role: "tab",
       type: "button",
@@ -3981,7 +3981,7 @@ function ViewSwitcher({ view, onChange }) {
       "data-view": segment.key,
       "data-selected": view === segment.key || undefined,
       onClick: () => onChange(segment.key),
-      className: "border-r border-line px-2.5 py-1 text-2xs font-medium text-muted last:border-r-0 hover:bg-surface-soft data-[selected=true]:bg-accent-soft data-[selected=true]:text-accent",
+      className: "rounded-full px-2.5 py-1 text-2xs font-medium text-muted hover:bg-surface-soft hover:text-ink data-[selected=true]:bg-accent-soft data-[selected=true]:text-accent",
       children: segment.label
     }, segment.key))
   });

@@ -142,7 +142,7 @@ export function ComponentGallery() {
 
       <div className="space-y-8 p-4">
         <section>
-          <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-faint">Metric cards</h2>
+          <h2 className="mb-2 text-xs font-medium text-muted">Metric cards</h2>
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
             <MetricCard metric="orders.revenue" label="Revenue" value={288291} format={{ format: "currency" }} selected={selectedMetric === "orders.revenue"} sparkValues={[31, 42, 38, 55, 60, 74]} onSelect={setSelectedMetric} />
             <MetricCard metric="orders.count" label="Order Count" value={447} selected={selectedMetric === "orders.count"} sparkValues={[21, 34, 28, 41, 44, 51]} onSelect={setSelectedMetric} />
@@ -159,7 +159,7 @@ export function ComponentGallery() {
         </section>
 
         <section>
-          <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-faint">Leaderboard cards</h2>
+          <h2 className="mb-2 text-xs font-medium text-muted">Leaderboard cards</h2>
           <div className="grid grid-cols-[repeat(auto-fit,minmax(220px,1fr))] gap-0 border-l border-t border-line">
             {leaderboardSets
               .filter((item) => expanded === null || expanded === item.dimension)
@@ -184,8 +184,8 @@ export function ComponentGallery() {
         </section>
 
         <section>
-          <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-faint">Filters and controls</h2>
-          <div className="space-y-3 rounded-lg border border-line bg-surface p-3 shadow-[var(--shadow-sm)]">
+          <h2 className="mb-2 text-xs font-medium text-muted">Filters and controls</h2>
+          <div className="space-y-3 rounded-xl border border-line bg-surface p-4 shadow-[var(--shadow-sm)]">
             <div data-testid="gallery-filter-pills" className="flex min-h-8 flex-wrap items-center gap-2">
               {Object.entries(galleryFilters).flatMap(([dimension, values]) =>
                 values.map((value) => (
@@ -213,7 +213,7 @@ export function ComponentGallery() {
               <button
                 type="button"
                 onClick={() => setGalleryFilters({ "orders.region": ["East", "West"], "orders.status": ["completed"] })}
-                className="rounded border border-line px-2 py-1 text-2xs text-muted hover:bg-surface-soft"
+                className="rounded-full border border-line px-2.5 py-1 text-2xs text-muted hover:bg-surface-soft"
               >
                 Reset filters
               </button>
@@ -222,7 +222,7 @@ export function ComponentGallery() {
         </section>
 
         <section>
-          <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-faint">Charts</h2>
+          <h2 className="mb-2 text-xs font-medium text-muted">Charts</h2>
           <div className="grid gap-3 xl:grid-cols-2">
             <article className="min-w-0">
               <h3 className="mb-2 text-xs font-semibold">Sparkline</h3>
@@ -315,8 +315,8 @@ export function ComponentGallery() {
         </section>
 
         <section>
-          <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-faint">Inputs</h2>
-          <div className="space-y-3 rounded-lg border border-line bg-surface p-3 shadow-[var(--shadow-sm)]">
+          <h2 className="mb-2 text-xs font-medium text-muted">Inputs</h2>
+          <div className="space-y-3 rounded-xl border border-line bg-surface p-4 shadow-[var(--shadow-sm)]">
             <div className="flex flex-wrap items-center gap-3">
               <Button variant="primary">Primary</Button>
               <Button>Secondary</Button>
@@ -349,7 +349,7 @@ export function ComponentGallery() {
         </section>
 
         <section>
-          <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-faint">Analytical table</h2>
+          <h2 className="mb-2 text-xs font-medium text-muted">Analytical table</h2>
           <DataTable
             columns={tableColumns}
             rows={sortedRows}
@@ -368,7 +368,7 @@ export function ComponentGallery() {
         </section>
 
         <section>
-          <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-faint">Query inspection</h2>
+          <h2 className="mb-2 text-xs font-medium text-muted">Query inspection</h2>
           <QueryDebugPanel
             inputs={{ Revenue: { metrics: ["orders.revenue"], dimensions: ["orders.region"], filters: ["orders.status = 'completed'"] } }}
             queries={{ Revenue: "SELECT orders.region, SUM(orders.revenue) AS revenue\nFROM orders\nWHERE orders.status = 'completed'\nGROUP BY orders.region\nORDER BY revenue DESC" }}
@@ -376,7 +376,7 @@ export function ComponentGallery() {
         </section>
 
         <section>
-          <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-faint">States</h2>
+          <h2 className="mb-2 text-xs font-medium text-muted">States</h2>
           <div className="grid gap-2 lg:grid-cols-3">
             <LoadingState message="Loading metric results…" />
             <EmptyState message="No matching rows." />
@@ -385,7 +385,7 @@ export function ComponentGallery() {
         </section>
 
         <section>
-          <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-faint">Dashboard shell</h2>
+          <h2 className="mb-2 text-xs font-medium text-muted">Dashboard shell</h2>
           {/* No wrapper card: the shell composes cards itself, and nesting containers is off limits. */}
           <div>
             <DashboardShell

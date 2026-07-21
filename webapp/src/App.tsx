@@ -155,7 +155,7 @@ function Shell() {
 
   const filters = (
     <>
-      <span className="shrink-0 text-2xs font-semibold uppercase tracking-wide text-faint">Filters</span>
+      <span className="shrink-0 text-xs font-medium text-muted">Filters</span>
       {pills.length ? pills : <span className="text-2xs text-faint">None</span>}
       {model ? <AddFilter model={model} /> : null}
       {pills.length ? (

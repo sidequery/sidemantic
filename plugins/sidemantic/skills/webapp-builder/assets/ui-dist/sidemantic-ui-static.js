@@ -7797,7 +7797,7 @@ function DataTable({
             placeholder: "Search…",
             value: search,
             onChange: (event) => setSearch(event.target.value),
-            className: "w-full max-w-64 border border-line bg-surface px-1.5 py-1 text-2xs text-ink placeholder:text-faint"
+            className: "w-full max-w-64 rounded-full border border-line bg-surface px-2.5 py-1 text-2xs text-ink placeholder:text-faint"
           }),
           search ? /* @__PURE__ */ jsx_runtime.jsxs("span", {
             className: "whitespace-nowrap text-2xs text-faint tnum",
@@ -8598,7 +8598,7 @@ function ChartTooltip({
   return /* @__PURE__ */ jsx_runtime6.jsx("div", {
     role: "tooltip",
     style: { position, left: tip.x + offset, top: tip.y + offset, pointerEvents: "none", zIndex: 50, ...style },
-    className: className || "rounded-md border border-line bg-surface px-2 py-1.5 text-xs text-ink shadow-[var(--shadow)]",
+    className: className || "rounded-lg border border-line bg-surface px-2.5 py-1.5 text-xs text-ink shadow-[var(--shadow)]",
     children: tip.content
   });
 }
@@ -8829,7 +8829,7 @@ function MetricCard({
         className: "flex items-baseline justify-between gap-2",
         children: [
           /* @__PURE__ */ jsx_runtime8.jsx("span", {
-            className: "truncate text-2xs font-medium uppercase tracking-[0.08em] text-faint",
+            className: "truncate text-xs font-medium text-muted",
             children: label
           }),
           sparkHover?.label ? /* @__PURE__ */ jsx_runtime8.jsx("span", {
@@ -8867,7 +8867,7 @@ function MetricCard({
       }) : null
     ]
   });
-  const className = "group flex w-full flex-col gap-1.5 rounded-lg border border-line bg-surface px-3.5 py-3 text-left shadow-[var(--shadow-sm)] transition-colors hover:border-line-strong data-[selected=true]:border-accent";
+  const className = "group flex w-full flex-col gap-1.5 rounded-xl border border-line bg-surface px-3.5 py-3 text-left shadow-[var(--shadow-sm)] transition-colors hover:border-line-strong data-[selected=true]:border-accent";
   const sparkline = /* @__PURE__ */ jsx_runtime8.jsx(Sparkline, {
     values: sparkValues,
     labels: sparkLabels,
@@ -8981,7 +8981,7 @@ ${sql}`).join(`
     className: "border border-line bg-surface",
     children: [
       /* @__PURE__ */ jsx_runtime9.jsx("summary", {
-        className: "cursor-pointer px-3 py-2 text-2xs font-semibold uppercase tracking-wide text-faint",
+        className: "cursor-pointer px-3 py-2 text-xs font-medium text-muted",
         children: "Generated SQL"
       }),
       Object.keys(inputs).length > 0 ? /* @__PURE__ */ jsx_runtime9.jsx("div", {

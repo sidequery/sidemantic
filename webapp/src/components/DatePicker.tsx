@@ -112,7 +112,7 @@ export function DatePicker(props: DatePickerProps) {
 
   const today = todayIso();
   const calendar = (
-    <div className="w-56 select-none rounded-md border border-line bg-surface p-2 text-2xs" aria-label={ariaLabel ?? "Calendar"}>
+    <div className="w-56 select-none rounded-xl border border-line bg-surface p-2.5 text-2xs" aria-label={ariaLabel ?? "Calendar"}>
       <div className="mb-1 flex items-center justify-between">
         <button type="button" aria-label="Previous month" onClick={() => shiftMonth(-1)} className="px-1.5 py-0.5 text-muted hover:bg-surface-soft hover:text-ink">
           ‹
@@ -163,7 +163,7 @@ export function DatePicker(props: DatePickerProps) {
         <button
           type="button"
           onClick={() => (isRange ? props.onChange(null) : props.onChange(null))}
-          className="mt-1 w-full border border-line px-2 py-1 text-left text-muted hover:bg-surface-soft"
+          className="mt-1 w-full rounded-lg border border-line px-2 py-1 text-left text-muted hover:bg-surface-soft"
         >
           Clear
         </button>
@@ -182,7 +182,7 @@ export function DatePicker(props: DatePickerProps) {
   return (
     <details ref={details} className="relative inline-block text-2xs">
       <summary
-        className={`flex cursor-pointer items-center gap-1.5 rounded border border-line bg-surface px-2 py-1 text-ink ${
+        className={`flex cursor-pointer items-center gap-1.5 rounded-full border border-line bg-surface px-3 py-1.5 text-ink ${
           disabled ? "pointer-events-none opacity-50" : ""
         }`}
       >

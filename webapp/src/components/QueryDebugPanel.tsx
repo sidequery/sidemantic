@@ -69,7 +69,7 @@ export function QueryDebugPanel({ queries, inputs = {} }: QueryDebugPanelProps) 
 
   return (
     <details className="border border-line bg-surface">
-      <summary className="cursor-pointer px-3 py-2 text-2xs font-semibold uppercase tracking-wide text-faint">
+      <summary className="cursor-pointer px-3 py-2 text-xs font-medium text-muted">
         Generated SQL
       </summary>
       {Object.keys(inputs).length > 0 ? (

@@ -32,7 +32,7 @@ export function ChartTooltip({
     <div
       role="tooltip"
       style={{ position, left: tip.x + offset, top: tip.y + offset, pointerEvents: "none", zIndex: 50, ...style }}
-      className={className || "rounded-md border border-line bg-surface px-2 py-1.5 text-xs text-ink shadow-[var(--shadow)]"}
+      className={className || "rounded-lg border border-line bg-surface px-2.5 py-1.5 text-xs text-ink shadow-[var(--shadow)]"}
     >
       {tip.content}
     </div>

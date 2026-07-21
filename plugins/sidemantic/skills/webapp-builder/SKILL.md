@@ -265,6 +265,7 @@ Analytics webapps should feel work-focused:
 - Data marks are square. No rounded corners (`rx`) on bars or heatmap cells; rounding is for chrome (buttons, chips, cards), never for marks.
 - Use stable dimensions for cards, grids, sparklines, toolbar controls, and result panes to avoid layout shift during loading.
 - Keep text small and container-appropriate inside dashboards.
+- Control voice is soft, not tactical: controls (buttons, selects, comboboxes, date pickers, chips, tab groups) are pill-shaped with comfortable padding; popovers and cards use large radii and token shadows. Labels are normal case — never uppercase tracked micro-labels. Mono tabular numerals are reserved for data values so they stay the loudest voice.
 - Use existing app colors/components first. For net-new Sidemantic demos, use a restrained neutral UI with a single accent and clear positive/negative colors.
 
 ## Common Failures

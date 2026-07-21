@@ -82,10 +82,12 @@ test("brush-to-zoom on the chart sets a date range and shows the comparison over
   await page.mouse.up();
 
   await expect.poll(() => new URL(page.url()).searchParams.get("from")).not.toBeNull();
-  await expect(page.getByText("Prev period")).toBeVisible();
+  // Exact match: the metric delta caption ("+82% vs prev period") also contains this text.
+  await expect(page.getByText("Prev period", { exact: true })).toBeVisible();
   const resetZoom = page.getByRole("button", { name: "Reset zoom" });
   await expect(resetZoom).toBeVisible();
-  expect((await resetZoom.boundingBox())?.height).toBeLessThanOrEqual(26);
+  // The standard control height is 28px (h-7); guard against it regressing to a chunky button.
+  expect((await resetZoom.boundingBox())?.height).toBeLessThanOrEqual(28);
   await resetZoom.click();
   await expect.poll(() => new URL(page.url()).searchParams.get("from")).toBeNull();
   await expect(resetZoom).toHaveCount(0);

@@ -33,15 +33,45 @@ Use `--list` to inspect the distribution. Existing target files are never overwr
 
 Available React primitives:
 
+Analytics surfaces:
+
 - `DashboardShell`: dense analytics page frame with status and toolbar slots.
-- `MetricCard`: metric label, value, delta, loading, selected state.
+- `MetricCard`: metric label, value, inline delta with comparison caption, loading, selected state.
 - `Leaderboard`: ranked dimension rows with bars, selection, and stable data attributes.
 - `FilterPill`: active filter display and removal.
-- `Sparkline`: small SVG trend line.
-- `ColumnChart`: compact categorical bars for comparisons.
-- `QueryDebugPanel`: generated SQL/debug surface.
+- `QueryDebugPanel` (+ `tokenizeSql`): generated SQL/debug surface.
 - `DataPreviewTable`: stable sample row preview.
-- `LoadingState`, `EmptyState`, `ErrorState`: fixed-height status surfaces.
+- `DataTable` (+ `columnTotal`, `paginateRows`): sortable, paginated result table with optional client search, totals footer, and sticky header.
+- `LoadingState`, `EmptyState`, `ErrorState`, `StatusDot`, `ErrorBoundary`: status surfaces.
+
+Charts (hand-rolled SVG, theme-token driven, shared `ChartTooltip`/`useChartTooltip`):
+
+- `TimeSeriesChart`: full-size metric series with crosshair, comparison overlay, brush-to-zoom.
+- `LineChart`, `Sparkline`: compact trend lines.
+- `ColumnChart`: categorical bars with a zero baseline.
+- `BarLineCombo`: dual-axis bars + independently scaled line.
+- `StackedAreaChart`: composition over time using the categorical `--viz-N` palette.
+- `DonutChart` (+ `donutSegments`): part-of-whole with center total and legend.
+- `HistogramChart` (+ `binValues`): distribution of one numeric field.
+- `ScatterChart`: numeric x/y correlation, optional multi-series coloring.
+- `HeatmapChart`: category-by-category intensity grid.
+- `WaterfallChart` (+ `waterfallSteps`): contribution bridge with running totals.
+- `NetworkChart` (+ `layoutNetwork`): deterministic force-directed graph.
+
+Inputs and controls (dependency-free, accessible):
+
+- `Button`, `Select`, `Switch`, `Tabs`: base controls in the data-tool idiom.
+- `Combobox` (+ `filterOptions`): searchable listbox; single-select, or `multiple` with removable chips. Use `Combobox` for multi-select or long lists where typeahead beats scanning; `Select` for a short static single choice.
+- `DatePicker` (+ `monthGrid`): single or range calendar, inline or popover, ISO string values.
+- `DateRangeControl`: preset + custom date range with comparison-mode picker.
+- `GrainSelect`, `TimezoneSelect`, `ViewSwitcher`: dashboard toolbar controls.
+- `Tooltip`: hover tooltip for arbitrary triggers (header hints, truncated labels), on the same surface as chart tooltips.
+
+Standard conventions shared by the primitives:
+
+- Data passing: feed query-result rows straight into charts through the row adapters — `rowsToCategories`, `rowsToBarLine`, `rowsToPoints`, `rowsToSeries` (long-to-wide pivot), `rowsToCells`, `rowsToTimeSeries` — instead of hand-reshaping per call site. `parseTemporal` normalizes ISO strings, epoch seconds/milliseconds, and Date values.
+- Tooltips: charts compose `TooltipRows` (heading + aligned label/value rows + series swatches) inside `ChartTooltip`, so every hover reads the same. Custom charts should do the same rather than inventing new tooltip markup.
+- Palette: `vizColor(index)` / `VIZ_COLOR_COUNT` cycle the theme's `--viz-1..--viz-6` categorical colors; override them (and all other tokens) via `applyThemeTokens`.
 
 State primitives are conditional UI branches. Do not render loading, empty, and error examples as permanent app content unless the user explicitly asks for a component gallery.
 
@@ -200,15 +230,15 @@ The CLI `sidemantic query` auto-adds default time dimensions for metrics when a 
 ## Bundled Scripts
 
 - `scripts/inspect_layer.py`: inspect models, compile app query shapes, execute samples with `--execute`, or require execution with `--require-execute`.
-- `scripts/copy_components.py`: copy React + Tailwind or static component source from `assets/components/` into a project.
+- `scripts/copy_components.py`: copy the React + Tailwind or static component distribution from `assets/ui-dist/` into a project.
 - `scripts/scaffold_static_app.py`: create a small static dashboard from an executed app spec by copying templates and components. It writes `index.html`, `styles.css`, `sidemantic-components.js`, `app.js`, and `data/app-spec.json`.
 - `scripts/verify_static_app.py`: dependency-free fallback verifier for static dashboards. It checks files, executed result samples, true totals, non-id leaderboard dimensions, and expected DOM/data bindings.
 - `scripts/verify_static_interactions.mjs`: Playwright smoke test for standard static component contracts. It verifies real data changes for filter, leaderboard, metric, reset, and chart-bounds behavior.
 
 ## Bundled Assets
 
-- `assets/components/react-tailwind/`: copyable React source for analytics apps using Tailwind v3.
-- `assets/components/static/`: copyable plain JS/CSS components and helper utilities for generated demos and no-build static pages.
+- `assets/ui-dist/sidemantic-ui.js` + `sidemantic-ui.css`: the built React + Tailwind distribution copied by `copy_components.py --kind react-tailwind`.
+- `assets/ui-dist/sidemantic-ui-static.js`: the static mount-helper bundle copied by `copy_components.py --kind static`.
 - `assets/templates/static-dashboard/`: readable static app templates used by `scaffold_static_app.py`.
 
 After copying assets into a project, treat them as that project's code. Modify them to match local component APIs, naming, tests, and design system constraints.
@@ -230,9 +260,15 @@ Analytics webapps should feel work-focused:
 
 - Dense, scannable layouts beat marketing sections.
 - Do not add hero pages unless the requested artifact is a public landing page.
-- Avoid nested cards. Use full-width tool surfaces, tables, panels, and repeated item cards only where they represent actual data units.
+- NEVER nest containers. A bordered/surfaced box inside another bordered/surfaced box is off limits — one container owns the chrome, its contents are chromeless. Interactive controls (buttons, selects, chips) inside a panel are fine — the rule is about container chrome, not control chrome. Use full-width tool surfaces, tables, panels, and repeated item cards only where they represent actual data units.
+- Do NOT wrap charts in card chrome at all. A chart sits directly on the page or tool surface under a small heading — no border, no background box, no rounded container around it. Charts also never draw their own card. Reserve bordered surfaces for interactive panels (tables, editors, input groups) and true data-unit cards (metric cards).
+- Data marks are square. No rounded corners (`rx`) on bars or heatmap cells; rounding is for chrome (buttons, chips, cards), never for marks.
 - Use stable dimensions for cards, grids, sparklines, toolbar controls, and result panes to avoid layout shift during loading.
 - Keep text small and container-appropriate inside dashboards.
+- Control voice is soft, not tactical: controls (buttons, selects, comboboxes, date pickers, chips, tab groups) are pill-shaped with comfortable padding; popovers and cards use large radii and token shadows. Labels are normal case — never uppercase tracked micro-labels. Mono tabular numerals are reserved for data values so they stay the loudest voice.
+- One control metric: every toolbar control shares the same height (28px standard, 24px small) and 12px label text. Mixed control heights in one row are a defect.
+- Do not put a surface panel behind control groups. Toolbars, filter rows, and input clusters sit directly on the page, spaced with gaps — no bordered/filled box behind them and no divider rules between rows. The controls' own pill chrome is all the structure they need.
+- Table accessories float outside the table border: the search input sits chromeless above the table and the pager sits chromeless below it. Never wrap them in header/footer strips attached to the table container.
 - Use existing app colors/components first. For net-new Sidemantic demos, use a restrained neutral UI with a single accent and clear positive/negative colors.
 
 ## Common Failures
@@ -249,6 +285,8 @@ Analytics webapps should feel work-focused:
 - Calling a component gallery an app. A kitchen-sink example can show primitives, but if it has dashboard controls, they must drive real local or server-backed state.
 - Rendering loading, empty, and error states as persistent content in a dashboard. Show state components only for their actual branch, or label the surface as a component gallery.
 - Letting SVG charts paint outside cards. Use bounded `viewBox`, padding, and `overflow: hidden`; verify with screenshots.
+- Container-in-container chrome. Wrapping an already-bordered component in another bordered/surfaced box is a hard failure — flatten to one container.
+- Boxing charts. Putting a border/rounded card around a chart (or letting a chart draw its own) is a hard failure — charts render directly on the surface under a heading.
 - Pulling optional dependencies into core imports. Keep web/API/widget dependencies lazy and optional.
 - Using ports `3000` or `8000` in worktrees. Prefer `4100`, `4400`, `5174`, or another available 4xxx-5xxx port.
 - Opening static HTML with `file://` when it fetches JSON/CSV. Serve it locally instead, because browser file-scheme fetch behavior differs from a real app.

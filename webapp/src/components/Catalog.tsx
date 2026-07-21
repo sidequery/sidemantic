@@ -53,7 +53,7 @@ export function Catalog() {
   return (
     <nav className="flex flex-col gap-4 py-3 text-sm">
       <section className="px-3">
-        <h2 className="mb-1 text-2xs font-semibold uppercase tracking-wide text-faint">Model</h2>
+        <h2 className="mb-1 text-xs font-medium text-muted">Model</h2>
         <select
           aria-label="Model"
           value={state.model}
@@ -73,7 +73,7 @@ export function Catalog() {
       </section>
 
       <section>
-        <h2 className="mb-1 px-3 text-2xs font-semibold uppercase tracking-wide text-faint">Metrics</h2>
+        <h2 className="mb-1 px-3 text-xs font-medium text-muted">Metrics</h2>
         <div>
           {(model?.metrics ?? []).map((metric) => (
             <MetricRow
@@ -89,7 +89,7 @@ export function Catalog() {
         </div>
         {graphMetrics.length ? (
           <>
-            <h3 className="mb-1 mt-3 px-3 text-2xs font-semibold uppercase tracking-wide text-faint">Shared metrics</h3>
+            <h3 className="mb-1 mt-3 px-3 text-xs font-medium text-muted">Shared metrics</h3>
             <div>
               {graphMetrics.map((metric) => (
                 <MetricRow
@@ -108,7 +108,7 @@ export function Catalog() {
       </section>
 
       <section>
-        <h2 className="mb-1 px-3 text-2xs font-semibold uppercase tracking-wide text-faint">Dimensions</h2>
+        <h2 className="mb-1 px-3 text-xs font-medium text-muted">Dimensions</h2>
         {pivot ? (
           <div>
             {(model?.dimensions ?? []).map((dimension) => (

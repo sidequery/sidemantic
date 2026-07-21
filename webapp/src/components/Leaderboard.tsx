@@ -28,7 +28,7 @@ type LeaderboardProps = {
 };
 
 const CONTEXT_TONE: Record<Tone, string> = {
-  positive: "text-accent",
+  positive: "text-success",
   negative: "text-danger",
   neutral: "text-faint",
 };
@@ -66,7 +66,7 @@ export function Leaderboard({
       data-dimension={dimension}
       data-expanded={expanded || undefined}
       aria-label={`${title}, ranked by ${metricLabel}`}
-      className="flex min-h-60 flex-col border-b border-r border-line bg-surface data-[expanded=true]:col-span-full"
+      className="flex min-h-40 flex-col border-b border-r border-line bg-surface data-[expanded=true]:col-span-full"
     >
       <header className="flex items-center justify-between gap-3 px-3 pb-2 pt-2.5">
         <div className="flex min-w-0 items-baseline gap-2">
@@ -150,7 +150,7 @@ export function Leaderboard({
           data-action={expanded ? "leaderboard-back" : "leaderboard-expand"}
           aria-expanded={expanded}
           onClick={() => onExpandedChange?.(!expanded)}
-          className="leaderboard-expand mt-1 min-h-9 border-0 border-t border-line bg-transparent px-3 text-left text-xs font-normal text-faint hover:text-accent"
+          className="leaderboard-expand border-0 border-t border-line bg-transparent px-3 py-1 text-left text-xs font-normal text-faint hover:text-accent"
         >
           {expanded ? "← All dimensions" : `Expand table (${rows.length})`}
         </button>

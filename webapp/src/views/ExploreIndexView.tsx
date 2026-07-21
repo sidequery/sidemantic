@@ -32,7 +32,7 @@ export function ExploreIndexView() {
             data-testid="explore-card"
             data-model={model.name}
             onClick={() => open(model.name)}
-            className="flex min-h-32 flex-col gap-2 border border-line bg-surface p-4 text-left hover:border-faint hover:bg-surface-soft"
+            className="flex min-h-32 flex-col gap-2 rounded-xl border border-line bg-surface p-4 text-left shadow-[var(--shadow-sm)] transition-colors hover:border-line-strong"
           >
             <div className="flex items-baseline justify-between gap-2">
               <span className="truncate text-sm font-medium text-ink">{model.label}</span>
@@ -41,12 +41,12 @@ export function ExploreIndexView() {
             {model.description ? <p className="line-clamp-2 text-2xs text-muted">{model.description}</p> : null}
             <div className="mt-auto flex flex-wrap gap-1 pt-1">
               {model.metrics.slice(0, 3).map((metric) => (
-                <span key={metric.ref} className="border border-line px-1.5 py-0.5 text-2xs text-muted">
+                <span key={metric.ref} className="rounded-full bg-surface-soft px-2 py-0.5 text-2xs text-muted">
                   {metric.label}
                 </span>
               ))}
             </div>
-            <div className="text-2xs uppercase tracking-wide text-faint">
+            <div className="text-2xs text-faint">
               {plural(model.metrics.length, "metric")} · {plural(model.dimensions.length, "dimension")}
             </div>
           </button>

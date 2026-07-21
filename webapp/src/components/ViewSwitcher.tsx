@@ -7,7 +7,7 @@ const SEGMENTS: { key: ViewKind; label: string }[] = [
 
 export function ViewSwitcher({ view, onChange }: { view: ViewKind; onChange: (view: ViewKind) => void }) {
   return (
-    <div role="tablist" aria-label="View" className="flex items-center border border-line bg-surface">
+    <div role="tablist" aria-label="View" className="inline-flex items-center gap-0.5 rounded-full border border-line bg-surface p-px">
       {SEGMENTS.map((segment) => (
         <button
           key={segment.key}
@@ -17,7 +17,7 @@ export function ViewSwitcher({ view, onChange }: { view: ViewKind; onChange: (vi
           data-view={segment.key}
           data-selected={view === segment.key || undefined}
           onClick={() => onChange(segment.key)}
-          className="border-r border-line px-2.5 py-1 text-2xs font-medium text-muted last:border-r-0 hover:bg-surface-soft data-[selected=true]:bg-accent-soft data-[selected=true]:text-accent"
+          className="inline-flex h-6 items-center rounded-full px-2.5 text-xs font-medium text-muted hover:bg-surface-soft hover:text-ink data-[selected=true]:bg-accent-soft data-[selected=true]:text-accent"
         >
           {segment.label}
         </button>

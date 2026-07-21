@@ -40,6 +40,6 @@ export function ErrorState({ title = "Query failed", message }: StateBoxProps) {
 
 /** Status dot for the top bar: idle / ok / loading. */
 export function StatusDot({ status }: { status: "idle" | "ok" | "loading" }) {
-  const color = status === "ok" ? "bg-accent" : status === "loading" ? "bg-faint animate-pulse" : "bg-line";
+  const color = status === "ok" ? "bg-success" : status === "loading" ? "bg-faint animate-pulse" : "bg-line";
   return <span aria-hidden="true" className={`inline-block size-2 rounded-full ${color}`} />;
 }

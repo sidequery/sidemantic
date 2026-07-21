@@ -42,7 +42,7 @@ export function RowPreviewDrawer() {
         type="button"
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
-        className="flex h-8 w-full items-center justify-between px-3 text-left text-2xs font-semibold uppercase tracking-wide text-muted hover:bg-surface-soft hover:text-ink"
+        className="flex h-8 w-full items-center justify-between px-3 text-left text-xs font-medium text-muted hover:bg-surface-soft hover:text-ink"
       >
         <span>Rows preview</span>
         <span aria-hidden="true">{open ? "▼" : "▲"}</span>

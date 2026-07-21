@@ -2,7 +2,7 @@ import type { CatalogMetric } from "../data/types";
 import { formatCompact, formatDelta, formatValue } from "../lib/format";
 import { TimeSeriesChart, type BrushRange, type SeriesPoint } from "./TimeSeriesChart";
 
-const TONE = { positive: "text-accent", negative: "text-danger", neutral: "text-faint" } as const;
+const TONE = { positive: "text-success", negative: "text-danger", neutral: "text-faint" } as const;
 
 type MetricTimeSeriesProps = {
   metric: CatalogMetric;
@@ -47,7 +47,7 @@ export function MetricTimeSeries({
   return (
     <section className="flex flex-col gap-2">
       <header className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 px-0.5">
-        <h2 className="text-2xs font-semibold uppercase tracking-wide text-faint">{metric.label}</h2>
+        <h2 className="text-xs font-medium text-muted">{metric.label}</h2>
         <span className="font-mono tnum text-xl font-semibold text-ink">{formatValue(total, hint)}</span>
         {delta ? <span className={`text-xs ${TONE[delta.tone]}`}>{delta.label} vs {comparisonLabel.toLowerCase()}</span> : null}
         {!hasTime ? <span className="text-2xs text-faint">No time dimension</span> : null}
@@ -55,12 +55,13 @@ export function MetricTimeSeries({
           <button
             type="button"
             onClick={() => onBrush(null)}
-            className="ml-auto h-6 border border-line bg-surface px-2 text-2xs text-muted hover:border-faint hover:text-ink"
+            className="ml-auto inline-flex h-7 items-center rounded-full border border-line bg-surface px-3 text-xs text-muted hover:border-line-strong hover:text-ink"
           >
             Reset zoom
           </button>
         ) : null}
       </header>
+      {/* Charts get no card chrome — the plot sits directly on the page under its header. */}
       {!hasTime ? null : loading && points.length < 2 ? (
         <div className="skeleton h-[280px] w-full" />
       ) : (

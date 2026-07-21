@@ -7745,17 +7745,71 @@ function paginateRows(rows, page, pageSize) {
 
 // webapp/src/components/DataTable.tsx
 var jsx_runtime = __toESM(require_jsx_runtime(), 1);
-function DataTable({ columns, rows, loading, sortKey, sortDir, onSort, renderCell, pageSize = 50 }) {
+function columnTotal(rows, key, kind) {
+  if (kind === "count")
+    return rows.length;
+  const values = rows.map((row) => typeof row[key] === "number" ? row[key] : Number(row[key])).filter(Number.isFinite);
+  if (values.length === 0)
+    return Number.NaN;
+  if (kind === "min")
+    return Math.min(...values);
+  if (kind === "max")
+    return Math.max(...values);
+  const sum = values.reduce((total, value) => total + value, 0);
+  return kind === "avg" ? sum / values.length : sum;
+}
+var TOTAL_LABEL = { sum: "Σ", avg: "avg", min: "min", max: "max", count: "n" };
+function DataTable({
+  columns,
+  rows,
+  loading,
+  sortKey,
+  sortDir,
+  onSort,
+  renderCell,
+  pageSize = 50,
+  searchable,
+  totals,
+  stickyHeader = true
+}) {
   const [page, setPage] = import_react.useState(0);
-  const { paginate, pageCount, safePage, start, visibleRows } = paginateRows(rows, page, pageSize);
+  const [search, setSearch] = import_react.useState("");
+  const filteredRows = import_react.useMemo(() => {
+    const needle = search.trim().toLowerCase();
+    if (!searchable || !needle)
+      return rows;
+    return rows.filter((row) => columns.some((column) => String(row[column.key] ?? "").toLowerCase().includes(needle)));
+  }, [rows, columns, search, searchable]);
+  const { paginate, pageCount, safePage, start, visibleRows } = paginateRows(filteredRows, page, pageSize);
   import_react.useEffect(() => {
     setPage(0);
-  }, [rows, pageSize, sortKey, sortDir]);
+  }, [rows, pageSize, sortKey, sortDir, search]);
+  const hasTotals = totals && columns.some((column) => totals[column.key]);
   return /* @__PURE__ */ jsx_runtime.jsxs("div", {
-    className: "overflow-hidden border border-line bg-surface",
     children: [
+      searchable ? /* @__PURE__ */ jsx_runtime.jsxs("div", {
+        className: "mb-2 flex items-center justify-end gap-2",
+        children: [
+          search ? /* @__PURE__ */ jsx_runtime.jsxs("span", {
+            className: "whitespace-nowrap text-2xs text-faint tnum",
+            children: [
+              filteredRows.length.toLocaleString(),
+              " of ",
+              rows.length.toLocaleString()
+            ]
+          }) : null,
+          /* @__PURE__ */ jsx_runtime.jsx("input", {
+            type: "search",
+            "aria-label": "Search rows",
+            placeholder: "Search…",
+            value: search,
+            onChange: (event) => setSearch(event.target.value),
+            className: "h-7 w-full max-w-64 rounded-full border border-line bg-surface px-2.5 text-xs text-ink placeholder:text-faint"
+          })
+        ]
+      }) : null,
       /* @__PURE__ */ jsx_runtime.jsx("div", {
-        className: "overflow-auto",
+        className: "overflow-auto border border-line bg-surface",
         children: /* @__PURE__ */ jsx_runtime.jsxs("table", {
           className: "w-max min-w-full border-collapse text-xs",
           "data-testid": "pivot-table",
@@ -7766,12 +7820,12 @@ function DataTable({ columns, rows, loading, sortKey, sortDir, onSort, renderCel
                 children: columns.map((column) => {
                   const active = sortKey === column.key;
                   return /* @__PURE__ */ jsx_runtime.jsx("th", {
-                    className: `max-w-80 whitespace-nowrap border-b border-line px-3 py-1.5 font-semibold text-faint ${column.numeric ? "min-w-32 text-right" : "min-w-40 text-left"}`,
+                    className: `max-w-80 whitespace-nowrap border-b border-line bg-surface-soft px-3 py-1.5 font-semibold text-faint ${column.numeric ? "min-w-32 text-right" : "min-w-40 text-left"} ${stickyHeader ? "sticky top-0 z-10" : ""}`,
                     children: column.sortable && onSort ? /* @__PURE__ */ jsx_runtime.jsxs("button", {
                       type: "button",
                       onClick: () => onSort(column.key),
                       "aria-label": `Sort by ${column.label}${active ? `, currently ${sortDir === "asc" ? "ascending" : "descending"}` : ""}`,
-                      className: `inline-flex min-h-11 max-w-full items-center gap-1 whitespace-nowrap hover:text-ink ${active ? "text-ink" : ""}`,
+                      className: `table-sort inline-flex max-w-full items-center gap-1 whitespace-nowrap hover:text-ink ${active ? "text-ink" : ""}`,
                       children: [
                         /* @__PURE__ */ jsx_runtime.jsx("span", {
                           className: "truncate",
@@ -7793,17 +7847,17 @@ function DataTable({ columns, rows, loading, sortKey, sortDir, onSort, renderCel
               })
             }),
             /* @__PURE__ */ jsx_runtime.jsx("tbody", {
-              children: loading && rows.length === 0 ? /* @__PURE__ */ jsx_runtime.jsx("tr", {
+              children: loading && filteredRows.length === 0 ? /* @__PURE__ */ jsx_runtime.jsx("tr", {
                 children: /* @__PURE__ */ jsx_runtime.jsx("td", {
                   colSpan: columns.length,
                   className: "px-3 py-6 text-center text-faint",
                   children: "Loading…"
                 })
-              }) : rows.length === 0 ? /* @__PURE__ */ jsx_runtime.jsx("tr", {
+              }) : filteredRows.length === 0 ? /* @__PURE__ */ jsx_runtime.jsx("tr", {
                 children: /* @__PURE__ */ jsx_runtime.jsx("td", {
                   colSpan: columns.length,
                   className: "px-3 py-6 text-center text-faint",
-                  children: "No rows"
+                  children: search ? "No matching rows" : "No rows"
                 })
               }) : visibleRows.map((row, index) => /* @__PURE__ */ jsx_runtime.jsx("tr", {
                 className: "hover:bg-surface-soft",
@@ -7819,22 +7873,49 @@ function DataTable({ columns, rows, loading, sortKey, sortDir, onSort, renderCel
                   }, column.key);
                 })
               }, start + index))
-            })
+            }),
+            hasTotals && filteredRows.length > 0 ? /* @__PURE__ */ jsx_runtime.jsx("tfoot", {
+              children: /* @__PURE__ */ jsx_runtime.jsx("tr", {
+                className: "bg-surface-soft",
+                "data-testid": "table-totals",
+                children: columns.map((column) => {
+                  const kind = totals?.[column.key];
+                  if (!kind)
+                    return /* @__PURE__ */ jsx_runtime.jsx("td", {
+                      className: "border-t border-line px-3 py-1.5"
+                    }, column.key);
+                  const total = columnTotal(filteredRows, column.key, kind);
+                  const text = kind === "count" ? total.toLocaleString() : Number.isFinite(total) ? renderCell(column, total) : "—";
+                  return /* @__PURE__ */ jsx_runtime.jsxs("td", {
+                    "data-total": kind,
+                    className: `whitespace-nowrap border-t border-line px-3 py-1.5 font-mono tnum font-medium text-ink ${column.numeric ? "text-right" : "text-left"}`,
+                    children: [
+                      /* @__PURE__ */ jsx_runtime.jsx("span", {
+                        "aria-hidden": "true",
+                        className: "mr-1 text-2xs text-faint",
+                        children: TOTAL_LABEL[kind]
+                      }),
+                      text
+                    ]
+                  }, column.key);
+                })
+              })
+            }) : null
           ]
         })
       }),
       paginate ? /* @__PURE__ */ jsx_runtime.jsxs("div", {
         "data-testid": "pivot-table-pager",
-        className: "flex min-h-11 items-center justify-between gap-3 border-t border-line px-3 text-2xs text-faint",
+        className: "mt-1.5 flex items-center justify-between gap-3 text-2xs text-faint",
         children: [
           /* @__PURE__ */ jsx_runtime.jsxs("span", {
             className: "tnum",
             children: [
               start + 1,
               "–",
-              Math.min(start + pageSize, rows.length),
+              Math.min(start + pageSize, filteredRows.length),
               " of ",
-              rows.length.toLocaleString(),
+              filteredRows.length.toLocaleString(),
               loading ? " · Updating…" : ""
             ]
           }),
@@ -7845,14 +7926,14 @@ function DataTable({ columns, rows, loading, sortKey, sortDir, onSort, renderCel
                 type: "button",
                 disabled: safePage === 0,
                 onClick: () => setPage((value) => Math.max(0, value - 1)),
-                className: "min-h-11 min-w-11 px-2 text-muted hover:text-ink disabled:cursor-not-allowed disabled:opacity-40",
+                className: "table-pager-button px-2 py-1 text-muted hover:text-ink disabled:cursor-not-allowed disabled:opacity-40",
                 children: "Prev"
               }),
               /* @__PURE__ */ jsx_runtime.jsx("button", {
                 type: "button",
                 disabled: safePage >= pageCount - 1,
                 onClick: () => setPage((value) => Math.min(pageCount - 1, value + 1)),
-                className: "min-h-11 min-w-11 px-2 text-muted hover:text-ink disabled:cursor-not-allowed disabled:opacity-40",
+                className: "table-pager-button px-2 py-1 text-muted hover:text-ink disabled:cursor-not-allowed disabled:opacity-40",
                 children: "Next"
               })
             ]
@@ -8294,7 +8375,7 @@ function FilterPill(props) {
     return /* @__PURE__ */ jsx_runtime4.jsxs("span", {
       "data-dimension": props.dimension,
       "data-value": props.value,
-      className: "inline-flex max-w-full items-center gap-1.5 border border-line bg-surface px-2 py-0.5 text-2xs text-muted",
+      className: "inline-flex max-w-full items-center gap-1 rounded-full bg-surface-soft px-2 py-0.5 text-2xs leading-4 text-muted",
       children: [
         /* @__PURE__ */ jsx_runtime4.jsxs("span", {
           className: "truncate",
@@ -8314,7 +8395,7 @@ function FilterPill(props) {
           type: "button",
           "aria-label": `Remove filter ${props.value}`,
           onClick: props.onRemove,
-          className: "grid size-3.5 place-items-center rounded-full bg-surface-soft text-faint hover:bg-line hover:text-ink",
+          className: "-mr-0.5 px-0.5 text-faint hover:text-ink",
           children: "×"
         }) : null
       ]
@@ -8327,7 +8408,7 @@ function FilterPill(props) {
     "data-mode": filter.mode,
     children: [
       /* @__PURE__ */ jsx_runtime4.jsxs("span", {
-        className: "inline-flex max-w-full items-center gap-1.5 border border-line bg-surface px-2 py-0.5 text-2xs text-muted",
+        className: "inline-flex max-w-full items-center gap-1 rounded-full bg-surface-soft px-2 py-0.5 text-2xs leading-4 text-muted",
         children: [
           /* @__PURE__ */ jsx_runtime4.jsxs("button", {
             type: "button",
@@ -8366,7 +8447,7 @@ function FilterPill(props) {
 // webapp/src/components/Leaderboard.tsx
 var jsx_runtime5 = __toESM(require_jsx_runtime(), 1);
 var CONTEXT_TONE = {
-  positive: "text-accent",
+  positive: "text-success",
   negative: "text-danger",
   neutral: "text-faint"
 };
@@ -8397,7 +8478,7 @@ function Leaderboard({
     "data-dimension": dimension,
     "data-expanded": expanded || undefined,
     "aria-label": `${title}, ranked by ${metricLabel}`,
-    className: "flex min-h-60 flex-col border-b border-r border-line bg-surface data-[expanded=true]:col-span-full",
+    className: "flex min-h-40 flex-col border-b border-r border-line bg-surface data-[expanded=true]:col-span-full",
     children: [
       /* @__PURE__ */ jsx_runtime5.jsxs("header", {
         className: "flex items-center justify-between gap-3 px-3 pb-2 pt-2.5",
@@ -8488,7 +8569,7 @@ function Leaderboard({
         "data-action": expanded ? "leaderboard-back" : "leaderboard-expand",
         "aria-expanded": expanded,
         onClick: () => onExpandedChange?.(!expanded),
-        className: "leaderboard-expand mt-1 min-h-9 border-0 border-t border-line bg-transparent px-3 text-left text-xs font-normal text-faint hover:text-accent",
+        className: "leaderboard-expand border-0 border-t border-line bg-transparent px-3 py-1 text-left text-xs font-normal text-faint hover:text-accent",
         children: expanded ? "← All dimensions" : `Expand table (${rows.length})`
       }) : null
     ]
@@ -8516,7 +8597,7 @@ function ChartTooltip({
   return /* @__PURE__ */ jsx_runtime6.jsx("div", {
     role: "tooltip",
     style: { position, left: tip.x + offset, top: tip.y + offset, pointerEvents: "none", zIndex: 50, ...style },
-    className: className || "rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-white shadow",
+    className: className || "rounded-lg border border-line bg-surface px-2.5 py-1.5 text-xs text-ink shadow-[var(--shadow)]",
     children: tip.content
   });
 }
@@ -8533,6 +8614,7 @@ function Sparkline({
   onBrush
 }) {
   const containerRef = import_react8.useRef(null);
+  const gradientId = import_react8.useId();
   const svgRef = import_react8.useRef(null);
   const dragStart = import_react8.useRef(null);
   const [width, setWidth] = import_react8.useState(200);
@@ -8642,10 +8724,30 @@ function Sparkline({
         onPointerLeave: leave,
         onDoubleClick: () => onBrush?.(null),
         children: [
+          /* @__PURE__ */ jsx_runtime7.jsx("defs", {
+            children: /* @__PURE__ */ jsx_runtime7.jsxs("linearGradient", {
+              id: gradientId,
+              x1: "0",
+              y1: "0",
+              x2: "0",
+              y2: "1",
+              children: [
+                /* @__PURE__ */ jsx_runtime7.jsx("stop", {
+                  offset: "0%",
+                  stopColor: "currentColor",
+                  stopOpacity: 0.16
+                }),
+                /* @__PURE__ */ jsx_runtime7.jsx("stop", {
+                  offset: "100%",
+                  stopColor: "currentColor",
+                  stopOpacity: 0
+                })
+              ]
+            })
+          }),
           /* @__PURE__ */ jsx_runtime7.jsx("path", {
             d: area,
-            fill: "currentColor",
-            opacity: 0.1
+            fill: `url(#${gradientId})`
           }),
           /* @__PURE__ */ jsx_runtime7.jsx("path", {
             d: `M ${line}`,
@@ -8698,7 +8800,7 @@ function Sparkline({
 // webapp/src/components/MetricCard.tsx
 var jsx_runtime8 = __toESM(require_jsx_runtime(), 1);
 var TONE_CLASS = {
-  positive: "text-accent",
+  positive: "text-success",
   negative: "text-danger",
   neutral: "text-faint"
 };
@@ -8710,6 +8812,7 @@ function MetricCard({
   valueText,
   format,
   delta,
+  comparison,
   sparkValues = [],
   sparkLabels,
   selected,
@@ -8725,15 +8828,27 @@ function MetricCard({
         className: "flex items-baseline justify-between gap-2",
         children: [
           /* @__PURE__ */ jsx_runtime8.jsx("span", {
-            className: "truncate text-2xs font-semibold uppercase tracking-wide text-faint",
+            className: "truncate text-xs font-medium text-muted",
             children: label
           }),
           sparkHover?.label ? /* @__PURE__ */ jsx_runtime8.jsx("span", {
             className: "shrink-0 font-mono text-2xs text-faint",
             children: sparkHover.label
-          }) : delta ? /* @__PURE__ */ jsx_runtime8.jsxs("span", {
+          }) : null
+        ]
+      }),
+      /* @__PURE__ */ jsx_runtime8.jsx("div", {
+        className: "font-mono tnum text-[19px] font-semibold leading-tight tracking-tight text-ink",
+        children: loading ? /* @__PURE__ */ jsx_runtime8.jsx("span", {
+          className: "skeleton inline-block h-6 w-24 align-middle"
+        }) : sparkHover ? formatValue(sparkHover.value, format) : valueText ?? formatValue(value, format)
+      }),
+      delta || comparison ? /* @__PURE__ */ jsx_runtime8.jsxs("div", {
+        className: "flex items-baseline gap-1 text-2xs",
+        children: [
+          delta ? /* @__PURE__ */ jsx_runtime8.jsxs("span", {
             "data-tone": delta.tone,
-            className: `shrink-0 text-2xs font-medium ${TONE_CLASS[delta.tone]}`,
+            className: `font-mono tnum font-medium ${TONE_CLASS[delta.tone]}`,
             children: [
               /* @__PURE__ */ jsx_runtime8.jsx("span", {
                 "aria-hidden": "true",
@@ -8742,27 +8857,28 @@ function MetricCard({
               }),
               delta.label
             ]
+          }) : null,
+          comparison ? /* @__PURE__ */ jsx_runtime8.jsx("span", {
+            className: "truncate text-faint",
+            children: comparison
           }) : null
         ]
-      }),
-      /* @__PURE__ */ jsx_runtime8.jsx("div", {
-        className: "font-mono tnum text-base font-semibold text-ink",
-        children: loading ? /* @__PURE__ */ jsx_runtime8.jsx("span", {
-          className: "skeleton inline-block h-5 w-24 align-middle"
-        }) : sparkHover ? formatValue(sparkHover.value, format) : valueText ?? formatValue(value, format)
-      })
+      }) : null
     ]
   });
-  const className = "group flex w-full flex-col gap-1.5 border border-line bg-surface px-3 py-2.5 text-left data-[selected=true]:border-accent data-[selected=true]:ring-1 data-[selected=true]:ring-accent";
-  const sparkline = /* @__PURE__ */ jsx_runtime8.jsx(Sparkline, {
-    values: sparkValues,
-    labels: sparkLabels,
-    onHover: (point) => {
-      setSparkHover(point);
-      onSparkHover?.(point);
-    },
-    onBrush: onSparkBrush,
-    formatValue: (sparkValue) => formatValue(sparkValue, format)
+  const className = "group flex w-full flex-col gap-1.5 overflow-hidden rounded-xl border border-line bg-surface px-3.5 pt-3 text-left shadow-[var(--shadow-sm)] transition-colors hover:border-line-strong data-[selected=true]:border-accent";
+  const sparkline = /* @__PURE__ */ jsx_runtime8.jsx("div", {
+    className: "-mx-3.5 mt-auto",
+    children: /* @__PURE__ */ jsx_runtime8.jsx(Sparkline, {
+      values: sparkValues,
+      labels: sparkLabels,
+      onHover: (point) => {
+        setSparkHover(point);
+        onSparkHover?.(point);
+      },
+      onBrush: onSparkBrush,
+      formatValue: (sparkValue) => formatValue(sparkValue, format)
+    })
   });
   if (!onSelect) {
     return /* @__PURE__ */ jsx_runtime8.jsxs("article", {
@@ -8867,7 +8983,7 @@ ${sql}`).join(`
     className: "border border-line bg-surface",
     children: [
       /* @__PURE__ */ jsx_runtime9.jsx("summary", {
-        className: "cursor-pointer px-3 py-2 text-2xs font-semibold uppercase tracking-wide text-faint",
+        className: "cursor-pointer px-3 py-2 text-xs font-medium text-muted",
         children: "Generated SQL"
       }),
       Object.keys(inputs).length > 0 ? /* @__PURE__ */ jsx_runtime9.jsx("div", {
@@ -8979,7 +9095,16 @@ var TOKEN_PROPERTIES = {
   chartPrimarySoft: "--chart-primary-soft",
   chartPrimarySelected: "--chart-primary-selected",
   danger: "--danger",
-  dangerSoft: "--danger-soft"
+  dangerSoft: "--danger-soft",
+  success: "--success",
+  successSoft: "--success-soft",
+  viz1: "--viz-1",
+  viz2: "--viz-2",
+  viz3: "--viz-3",
+  viz4: "--viz-4",
+  viz5: "--viz-5",
+  viz6: "--viz-6",
+  viz7: "--viz-7"
 };
 var KEY = "sidemantic-theme";
 function getTheme() {

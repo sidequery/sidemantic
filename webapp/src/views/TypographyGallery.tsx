@@ -13,9 +13,15 @@ type FontOption = {
   label: string;
   /** Google Fonts css2 family query, e.g. "Inter:wght@400;500;600". Absent = system, no load. */
   gf?: string;
+  /** Full stylesheet URL for non-Google hosts (Fontshare). Wins over gf. */
+  url?: string;
   /** font-family value to apply. */
   stack: string;
 };
+
+function fontshare(slug: string): string {
+  return `https://api.fontshare.com/v2/css?f[]=${slug}&display=swap`;
+}
 
 const SANS_FONTS: FontOption[] = [
   { value: "system", label: "System (SF Pro)", stack: "system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" },
@@ -28,6 +34,18 @@ const SANS_FONTS: FontOption[] = [
   { value: "manrope", label: "Manrope", gf: "Manrope:wght@400;500;600", stack: "'Manrope', system-ui, sans-serif" },
   { value: "publicsans", label: "Public Sans", gf: "Public+Sans:wght@400;500;600", stack: "'Public Sans', system-ui, sans-serif" },
   { value: "spacegrotesk", label: "Space Grotesk", gf: "Space+Grotesk:wght@400;500;600", stack: "'Space Grotesk', system-ui, sans-serif" },
+  // ---- less-traveled picks ----
+  { value: "satoshi", label: "Satoshi ✦", url: fontshare("satoshi@400,500,700"), stack: "'Satoshi', system-ui, sans-serif" },
+  { value: "generalsans", label: "General Sans ✦", url: fontshare("general-sans@400,500,600"), stack: "'General Sans', system-ui, sans-serif" },
+  { value: "switzer", label: "Switzer ✦", url: fontshare("switzer@400,500,600"), stack: "'Switzer', system-ui, sans-serif" },
+  { value: "cabinet", label: "Cabinet Grotesk ✦", url: fontshare("cabinet-grotesk@400,500,700"), stack: "'Cabinet Grotesk', system-ui, sans-serif" },
+  { value: "bricolage", label: "Bricolage Grotesque ✦", gf: "Bricolage+Grotesque:wght@400;500;600", stack: "'Bricolage Grotesque', system-ui, sans-serif" },
+  { value: "familjen", label: "Familjen Grotesk ✦", gf: "Familjen+Grotesk:wght@400;500;600", stack: "'Familjen Grotesk', system-ui, sans-serif" },
+  { value: "hanken", label: "Hanken Grotesk ✦", gf: "Hanken+Grotesk:wght@400;500;600", stack: "'Hanken Grotesk', system-ui, sans-serif" },
+  { value: "reddit", label: "Reddit Sans ✦", gf: "Reddit+Sans:wght@400;500;600", stack: "'Reddit Sans', system-ui, sans-serif" },
+  { value: "chivo", label: "Chivo ✦", gf: "Chivo:wght@400;500;600", stack: "'Chivo', system-ui, sans-serif" },
+  { value: "hostgrotesk", label: "Host Grotesk ✦", gf: "Host+Grotesk:wght@400;500;600", stack: "'Host Grotesk', system-ui, sans-serif" },
+  { value: "sora", label: "Sora ✦", gf: "Sora:wght@400;500;600", stack: "'Sora', system-ui, sans-serif" },
 ];
 
 const MONO_FONTS: FontOption[] = [
@@ -38,6 +56,13 @@ const MONO_FONTS: FontOption[] = [
   { value: "firacode", label: "Fira Code", gf: "Fira+Code:wght@400;500", stack: "'Fira Code', ui-monospace, monospace" },
   { value: "splinemono", label: "Spline Sans Mono", gf: "Spline+Sans+Mono:wght@400;500", stack: "'Spline Sans Mono', ui-monospace, monospace" },
   { value: "dmmono", label: "DM Mono", gf: "DM+Mono:wght@400;500", stack: "'DM Mono', ui-monospace, monospace" },
+  // ---- less-traveled picks ----
+  { value: "martianmono", label: "Martian Mono ✦", gf: "Martian+Mono:wght@400;500", stack: "'Martian Mono', ui-monospace, monospace" },
+  { value: "fragment", label: "Fragment Mono ✦", gf: "Fragment+Mono", stack: "'Fragment Mono', ui-monospace, monospace" },
+  { value: "redhatmono", label: "Red Hat Mono ✦", gf: "Red+Hat+Mono:wght@400;500", stack: "'Red Hat Mono', ui-monospace, monospace" },
+  { value: "chivomono", label: "Chivo Mono ✦", gf: "Chivo+Mono:wght@400;500", stack: "'Chivo Mono', ui-monospace, monospace" },
+  { value: "azeret", label: "Azeret Mono ✦", gf: "Azeret+Mono:wght@400;500", stack: "'Azeret Mono', ui-monospace, monospace" },
+  { value: "spacemono", label: "Space Mono ✦", gf: "Space+Mono:wght@400;700", stack: "'Space Mono', ui-monospace, monospace" },
 ];
 
 const DISPLAY_FONTS: FontOption[] = [
@@ -47,6 +72,14 @@ const DISPLAY_FONTS: FontOption[] = [
   { value: "fraunces", label: "Fraunces", gf: "Fraunces:opsz,wght@9..144,400..700", stack: "'Fraunces', Georgia, serif" },
   { value: "instrumentserif", label: "Instrument Serif", gf: "Instrument+Serif", stack: "'Instrument Serif', Georgia, serif" },
   { value: "spacegrotesk", label: "Space Grotesk", gf: "Space+Grotesk:wght@400;500;600", stack: "'Space Grotesk', system-ui, sans-serif" },
+  // ---- less-traveled picks ----
+  { value: "clash", label: "Clash Display ✦", url: fontshare("clash-display@400,500,600"), stack: "'Clash Display', system-ui, sans-serif" },
+  { value: "cabinetdisplay", label: "Cabinet Grotesk ✦", url: fontshare("cabinet-grotesk@500,700,800"), stack: "'Cabinet Grotesk', system-ui, sans-serif" },
+  { value: "sentient", label: "Sentient (serif) ✦", url: fontshare("sentient@400,500,700"), stack: "'Sentient', Georgia, serif" },
+  { value: "gambetta", label: "Gambetta (serif) ✦", url: fontshare("gambetta@400,500,700"), stack: "'Gambetta', Georgia, serif" },
+  { value: "bricolagedisplay", label: "Bricolage Grotesque ✦", gf: "Bricolage+Grotesque:opsz,wght@12..96,400..700", stack: "'Bricolage Grotesque', system-ui, sans-serif" },
+  { value: "youngserif", label: "Young Serif ✦", gf: "Young+Serif", stack: "'Young Serif', Georgia, serif" },
+  { value: "unbounded", label: "Unbounded ✦", gf: "Unbounded:wght@400;500;600", stack: "'Unbounded', system-ui, sans-serif" },
 ];
 
 // One-click sans + mono (+ display) combinations worth judging as a set.
@@ -57,16 +90,23 @@ const PAIRINGS: Array<{ label: string; sans: string; mono: string; display: stri
   { label: "Instrument / Spline", sans: "instrument", mono: "splinemono", display: "sans" },
   { label: "Schibsted / Fira", sans: "schibsted", mono: "firacode", display: "sans" },
   { label: "Editorial: Geist + Newsreader", sans: "geist", mono: "geistmono", display: "newsreader" },
+  { label: "Satoshi / Martian ✦", sans: "satoshi", mono: "martianmono", display: "sans" },
+  { label: "General Sans / Fragment ✦", sans: "generalsans", mono: "fragment", display: "sans" },
+  { label: "Switzer + Clash headings ✦", sans: "switzer", mono: "redhatmono", display: "clash" },
+  { label: "Cabinet + Gambetta ✦", sans: "cabinet", mono: "chivomono", display: "gambetta" },
+  { label: "Bricolage all the way ✦", sans: "bricolage", mono: "spacemono", display: "bricolagedisplay" },
 ];
 
 const loadedFamilies = new Set<string>();
 
 function ensureFontLoaded(option: FontOption | undefined) {
-  if (!option?.gf || loadedFamilies.has(option.gf)) return;
-  loadedFamilies.add(option.gf);
+  if (!option) return;
+  const href = option.url ?? (option.gf ? `https://fonts.googleapis.com/css2?family=${option.gf}&display=swap` : undefined);
+  if (!href || loadedFamilies.has(href)) return;
+  loadedFamilies.add(href);
   const link = document.createElement("link");
   link.rel = "stylesheet";
-  link.href = `https://fonts.googleapis.com/css2?family=${option.gf}&display=swap`;
+  link.href = href;
   document.head.appendChild(link);
 }
 

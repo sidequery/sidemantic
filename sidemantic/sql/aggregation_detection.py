@@ -6,6 +6,7 @@ import re
 
 import sqlglot
 from sqlglot import exp
+from sqlglot.errors import SqlglotError
 
 # SQLGlot treats some engine-specific aggregate functions as Anonymous.
 # Keep this focused on known aggregate forms we need to support.
@@ -47,5 +48,5 @@ def sql_has_aggregate(sql_expr: str, dialect: str = "duckdb") -> bool:
     try:
         parsed = sqlglot.parse_one(sql_expr, read=dialect)
         return expression_has_aggregate(parsed)
-    except Exception:
+    except SqlglotError:
         return bool(_AGGREGATE_REGEX.search(sql_expr))

@@ -1387,7 +1387,7 @@ def _referenced_field_names(expression: str) -> set[str]:
 def _parse_expression(expression: str) -> exp.Expression | None:
     try:
         return sqlglot.parse_one(expression, read="duckdb")
-    except Exception:
+    except sqlglot.errors.SqlglotError:
         return None
 
 

@@ -36,10 +36,11 @@ def to_json_compatible(value: Any) -> Any:
 def validate_filter_expression(filter_str: str, dialect: str | None = None) -> None:
     """Validate a filter string to prevent SQL injection."""
     import sqlglot
+    from sqlglot.errors import SqlglotError
 
     try:
         parsed = sqlglot.parse_one(f"SELECT 1 WHERE {filter_str}", dialect=dialect)
-    except Exception as exc:
+    except SqlglotError as exc:
         raise ValueError(f"Invalid filter expression: {filter_str}") from exc
 
     # Check for multi-statement input after parsing succeeds. The raw ";"

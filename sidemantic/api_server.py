@@ -634,10 +634,11 @@ def _normalize_sql_query(query: str) -> str:
     # Use sqlglot to detect multiple statements so semicolons inside string
     # literals (e.g. SELECT ';') are not rejected.
     import sqlglot
+    from sqlglot.errors import SqlglotError
 
     try:
         statements = sqlglot.parse(normalized)
-    except Exception as exc:
+    except SqlglotError as exc:
         raise ValueError(f"Failed to parse SQL: {exc}") from exc
     if len(statements) > 1:
         raise ValueError("Multiple SQL statements are not supported")
@@ -665,10 +666,11 @@ def _require_select_statement(query: str) -> None:
     """
     import sqlglot
     from sqlglot import exp
+    from sqlglot.errors import SqlglotError
 
     try:
         parsed = sqlglot.parse_one(query)
-    except Exception:
+    except SqlglotError:
         # If parsing fails, let it through to get a proper DB error
         return
     query_types = (exp.Select, exp.Union, exp.Intersect, exp.Except, exp.Subquery)

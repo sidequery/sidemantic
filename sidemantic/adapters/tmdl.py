@@ -1041,7 +1041,7 @@ def _map_data_type(data_type: str | None) -> tuple[str, str | None]:
 def _parse_dax_expression(expression: str, node: TmdlNode, context: str) -> Any | None:
     try:
         from sidemantic_dax.ast import parse_expression as parse_dax_expression
-    except Exception as exc:
+    except (ImportError, OSError, RuntimeError) as exc:
         raise DaxRuntimeUnavailableError(
             "sidemantic_dax is required to parse embedded TMDL DAX. Install sidemantic[dax] and retry."
         ) from exc
@@ -1202,7 +1202,7 @@ def _extract_dax_agg_from_ast(
 ) -> tuple[str | None, str | None] | None:
     try:
         from sidemantic_dax import ast as dax_ast
-    except Exception:
+    except (ImportError, OSError, RuntimeError):
         return None
 
     def unwrap(value: Any) -> Any:

@@ -626,9 +626,10 @@ class RillAdapter:
         try:
             import sqlglot
             from sqlglot import expressions as exp
+            from sqlglot.errors import SqlglotError
 
             parsed = sqlglot.parse_one(expression, read="duckdb")
-        except Exception:
+        except SqlglotError:
             return False
 
         # The top-level node itself must be the aggregation. A wrapping operator

@@ -72,6 +72,29 @@ def test_simple_derived_metric(layer, orders_db):
     assert records[0]["revenue_per_order"] == 187.5
 
 
+def test_postgres_ratio_casts_integer_numerator_before_division(layer):
+    layer.add_model(
+        Model(
+            name="events",
+            table="events",
+            primary_key="id",
+            metrics=[
+                Metric(name="matched", agg="count", sql="matched_id"),
+                Metric(name="total", agg="count"),
+                Metric(name="match_rate", type="ratio", numerator="matched", denominator="total"),
+            ],
+        )
+    )
+
+    sql = layer.compile(metrics=["events.match_rate"], dialect="postgres")
+
+    assert "CAST(" in sql
+    assert "matched_raw" in sql
+    assert "AS DOUBLE PRECISION" in sql
+    assert "/ NULLIF(" in sql
+    assert "total_raw" in sql
+
+
 def test_derived_metric_by_dimension(layer, orders_db):
     """Test derived metric grouped by dimension."""
     layer.conn = orders_db

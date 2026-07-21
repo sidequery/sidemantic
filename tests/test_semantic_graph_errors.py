@@ -4,7 +4,7 @@ import pytest
 
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
-from sidemantic.core.semantic_graph import SemanticGraph
+from sidemantic.core.semantic_graph import AmbiguousJoinPathError, SemanticGraph
 from sidemantic.core.table_calculation import TableCalculation
 
 
@@ -117,6 +117,77 @@ def test_find_path_no_relationship():
 
     with pytest.raises(ValueError, match="No join path found"):
         graph.find_relationship_path("orders", "customers")
+
+
+def test_find_path_rejects_registration_order_independent_diamond_ambiguity():
+    """Two equally short routes must fail instead of selecting the first declared edge."""
+    from sidemantic.core.relationship import Relationship
+
+    def build_graph(reverse: bool) -> SemanticGraph:
+        first = Relationship(name="c", type="many_to_one", foreign_key="c_id")
+        second = Relationship(name="b", type="many_to_one", foreign_key="b_id")
+        relationships = [first, second] if reverse else [second, first]
+        graph = SemanticGraph()
+        graph.add_model(Model(name="a", table="a", primary_key="id", relationships=relationships))
+        graph.add_model(
+            Model(
+                name="b",
+                table="b",
+                primary_key="id",
+                relationships=[Relationship(name="d", type="many_to_one", foreign_key="d_id")],
+            )
+        )
+        graph.add_model(
+            Model(
+                name="c",
+                table="c",
+                primary_key="id",
+                relationships=[Relationship(name="d", type="many_to_one", foreign_key="d_id")],
+            )
+        )
+        graph.add_model(Model(name="d", table="d", primary_key="id"))
+        return graph
+
+    messages = []
+    for reverse in (False, True):
+        graph = build_graph(reverse)
+        with pytest.raises(AmbiguousJoinPathError) as exc:
+            graph.find_relationship_path("a", "d")
+        messages.append(str(exc.value))
+
+    assert messages[0] == messages[1]
+    assert "a -> b -> d" in messages[0]
+    assert "a -> c -> d" in messages[0]
+
+
+def test_find_path_prefers_a_unique_direct_route_over_longer_alternatives():
+    from sidemantic.core.relationship import Relationship
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="a",
+            table="a",
+            primary_key="id",
+            relationships=[
+                Relationship(name="b", type="many_to_one", foreign_key="b_id"),
+                Relationship(name="d", type="many_to_one", foreign_key="d_id"),
+            ],
+        )
+    )
+    graph.add_model(
+        Model(
+            name="b",
+            table="b",
+            primary_key="id",
+            relationships=[Relationship(name="d", type="many_to_one", foreign_key="d_id")],
+        )
+    )
+    graph.add_model(Model(name="d", table="d", primary_key="id"))
+
+    path = graph.find_relationship_path("a", "d")
+
+    assert [(hop.from_model, hop.to_model) for hop in path] == [("a", "d")]
 
 
 def test_auto_register_time_comparison_metric():

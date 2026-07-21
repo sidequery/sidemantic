@@ -286,7 +286,7 @@ def test_query_level_metric_filters_use_having(layer):
 
     # Should have HAVING clause, not WHERE clause with revenue_raw
     assert "HAVING" in sql
-    assert "revenue > 100" in sql
+    assert "SUM(orders_cte.revenue_raw) > 100" in sql
     # Should NOT filter on raw column before aggregation
     assert "revenue_raw > 100" not in sql
 
@@ -351,7 +351,87 @@ def test_mixed_filters_separate_where_and_having(layer):
     assert "WHERE" in sql
     assert "status = 'completed'" in sql
     assert "HAVING" in sql
-    assert "revenue > 100" in sql
+    assert "SUM(orders_cte.revenue_raw) > 100" in sql
+
+
+def test_postgres_having_repeats_aggregate_instead_of_select_alias(layer):
+    layer.add_model(
+        Model(
+            name="orders",
+            table="orders_table",
+            primary_key="order_id",
+            dimensions=[Dimension(name="region", type="categorical")],
+            metrics=[Metric(name="revenue", agg="sum", sql="amount")],
+        )
+    )
+
+    sql = layer.compile(
+        metrics=["orders.revenue"],
+        dimensions=["orders.region"],
+        filters=["orders.revenue > 100"],
+        dialect="postgres",
+    )
+
+    having_sql = sql.split("HAVING", 1)[1]
+    assert "SUM(orders_cte.revenue_raw) > 100" in having_sql
+    assert "HAVING revenue" not in sql
+
+
+def test_structured_filters_resolve_grained_and_computed_dimensions_before_where():
+    layer = SemanticLayer()
+    layer.add_model(
+        Model(
+            name="events",
+            table="events",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="created_at", type="time", sql="occurred_at", granularity="day"),
+                Dimension(name="gross", type="numeric", sql="unit_price * quantity"),
+                Dimension(name="category", type="categorical"),
+            ],
+            metrics=[Metric(name="revenue", agg="sum", sql="amount")],
+        )
+    )
+    layer.conn.execute(
+        """
+        CREATE TABLE events (
+            id INTEGER,
+            occurred_at TIMESTAMP,
+            unit_price DOUBLE,
+            quantity INTEGER,
+            category VARCHAR,
+            amount DOUBLE
+        );
+        INSERT INTO events VALUES
+            (1, '2024-01-15 12:00:00', 5, 2, 'A', 10),
+            (2, '2024-02-10 08:00:00', 12, 2, 'A', 24),
+            (3, '2024-02-12 08:00:00', 4, 2, 'B', 8);
+        """
+    )
+    filters = [
+        "events.created_at__month = DATE '2024-02-01'",
+        "events.gross >= 20",
+    ]
+
+    postgres_sql = layer.compile(
+        metrics=["events.revenue"],
+        dimensions=["events.category"],
+        filters=filters,
+        dialect="postgres",
+    )
+    where_sql = postgres_sql.split("WHERE", 1)[1]
+    assert "created_at__month" not in where_sql
+    assert "events.gross" not in where_sql
+    assert "DATE_TRUNC('MONTH', occurred_at)" in where_sql
+    assert "unit_price * quantity >= 20" in where_sql
+
+    assert df_rows(
+        layer.query(
+            metrics=["events.revenue"],
+            dimensions=["events.category"],
+            filters=filters,
+        )
+    ) == [("A", 24.0)]
 
 
 def test_metric_level_filters_use_case_when(layer):

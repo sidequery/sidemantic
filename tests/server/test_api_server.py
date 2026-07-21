@@ -179,7 +179,12 @@ def test_dashboard_endpoint_is_optional_and_authenticated(tmp_path):
                                 "dimensions": ["orders.created_at__day", "orders.status"],
                             },
                             "encoding": {"x": "orders.created_at__day", "y": "orders.order_count"},
-                        }
+                        },
+                        {
+                            "id": "orders_kpi",
+                            "type": "kpi",
+                            "query": {"metrics": ["orders.order_count"]},
+                        },
                     ],
                 }
             ],
@@ -192,6 +197,7 @@ def test_dashboard_endpoint_is_optional_and_authenticated(tmp_path):
     response = configured.get("/dashboard", headers=_auth_headers())
     assert response.status_code == 200
     assert response.json()["title"] == "Orders overview"
+    assert [chart["id"] for chart in response.json()["tabs"][0]["charts"]] == ["orders", "orders_kpi"]
     assert unconfigured.get("/dashboard").status_code == 404
 
 

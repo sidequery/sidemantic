@@ -8,6 +8,7 @@ import duckdb
 import pytest
 
 from sidemantic import Dimension, Metric, Model
+from tests.utils import fetch_dicts
 
 
 @pytest.fixture
@@ -169,6 +170,55 @@ def test_cumulative_with_regular_metric(timeseries_db, layer):
     # Day 3
     assert df["total_revenue"].iloc[2] == 200.00
     assert df["running_total"].iloc[2] == 450.00
+
+
+def test_cumulative_partitions_by_requested_non_time_dimensions(layer):
+    """Running totals restart for each categorical group in the query grain."""
+    layer.conn.execute("""
+        CREATE TABLE regional_orders (
+            order_id INTEGER,
+            order_date DATE,
+            region VARCHAR,
+            amount INTEGER
+        )
+    """)
+    layer.conn.execute("""
+        INSERT INTO regional_orders VALUES
+            (1, DATE '2024-01-01', 'North', 10),
+            (2, DATE '2024-01-02', 'North', 20),
+            (3, DATE '2024-01-01', 'South', 100),
+            (4, DATE '2024-01-02', 'South', 200)
+    """)
+    layer.add_model(
+        Model(
+            name="regional_orders",
+            table="regional_orders",
+            primary_key="order_id",
+            dimensions=[
+                Dimension(name="order_date", type="time", granularity="day"),
+                Dimension(name="region", type="categorical"),
+            ],
+            metrics=[Metric(name="daily_revenue", agg="sum", sql="amount")],
+        )
+    )
+    layer.add_metric(
+        Metric(name="regional_running_revenue", type="cumulative", sql="regional_orders.daily_revenue")
+    )
+
+    rows = fetch_dicts(
+        layer.query(
+            metrics=["regional_running_revenue"],
+            dimensions=["regional_orders.order_date", "regional_orders.region"],
+            order_by=["regional_orders.region", "regional_orders.order_date"],
+        )
+    )
+
+    assert [(str(row["order_date"]), row["region"], row["regional_running_revenue"]) for row in rows] == [
+        ("2024-01-01", "North", 10),
+        ("2024-01-02", "North", 30),
+        ("2024-01-01", "South", 100),
+        ("2024-01-02", "South", 300),
+    ]
 
 
 def test_rolling_average(timeseries_db, layer):

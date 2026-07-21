@@ -2523,6 +2523,39 @@ def test_fanout_join_key_preaggregation_rejects_one_to_many_remote_dimension(sem
     assert candidates["join_key_preaggregation"].reason == "remote_dimension_not_many_to_one"
 
 
+def test_join_key_preaggregation_rejects_custom_relationship_predicate(semantic_layer):
+    orders = semantic_layer.get_model("orders")
+    customers = semantic_layer.get_model("customers")
+    orders.relationships = [
+        Relationship(
+            name="customers",
+            type="many_to_one",
+            foreign_key="customer_id",
+            sql="{from}.customer_id = {to}.id AND {to}.tier = 'premium'",
+        )
+    ]
+    customers.relationships = []
+    semantic_layer.graph.build_adjacency()
+    orders.pre_aggregations = [
+        PreAggregation(
+            name="by_customer",
+            measures=["revenue"],
+            dimensions=["customer_id"],
+        )
+    ]
+    semantic_layer.use_preaggregations = True
+
+    sql = "SELECT orders.revenue, customers.region FROM orders ORDER BY customers.region"
+    explanation = semantic_layer.explain_sql(sql)
+    candidates = _candidate_by_name(explanation)
+
+    assert explanation.chosen_plan == "direct_semantic"
+    assert candidates["join_key_preaggregation"].valid is False
+    assert candidates["join_key_preaggregation"].reason == "custom_join_predicate_not_supported"
+    assert "tier = 'premium'" in explanation.rewritten_sql
+    assert fetch_rows(semantic_layer.sql(sql)) == [("EU", None), ("US", 250.0)]
+
+
 def test_wrapped_window_metric_executes_against_baseline(semantic_layer):
     semantic_layer.add_metric(
         Metric(

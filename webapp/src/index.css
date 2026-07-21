@@ -2,6 +2,14 @@
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  /* Font tokens — hosts (and the /typography gallery) can restyle the whole app by
+   * overriding these three variables; nothing below hardcodes a family. */
+  --font-sans: "Geist Sans", Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --font-display: var(--font-sans);
+}
+
 :root,
 :root[data-theme="light"] {
   /* Sidequery design tokens — warm parchment neutrals, near-black ink, a gold accent
@@ -81,20 +89,26 @@ body {
   color: var(--ink);
   /* Geist first: hosts that load it (the Sidequery platform) get the brand face,
    * everyone else falls back cleanly. */
-  font-family: "Geist Sans", Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-family: var(--font-sans);
   font-size: 13px;
   line-height: 1.4;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
 
-/* Tighter tracking on headings so titles read intentional, not default. */
+/* Tighter tracking on headings so titles read intentional, not default. Headings take the
+ * display face, which defaults to the sans — override --font-display for an editorial look. */
 h1 {
   letter-spacing: -0.025em;
 }
 h2,
 h3 {
   letter-spacing: -0.018em;
+}
+h1,
+h2,
+h3 {
+  font-family: var(--font-display);
 }
 
 /* Numbers, ids, codes read as mono with tabular figures — the precise "data tool" feel. */

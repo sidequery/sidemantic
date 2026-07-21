@@ -27,8 +27,10 @@ const config: Config = {
         "chart-primary-selected": "var(--chart-primary-selected)",
       },
       fontFamily: {
-        sans: ["Geist Sans", "Inter", "system-ui", "-apple-system", "Segoe UI", "Roboto", "sans-serif"],
-        mono: ["Geist Mono", "SFMono-Regular", "ui-monospace", "Menlo", "Consolas", "monospace"],
+        // Resolved through CSS variables (src/index.css) so hosts and the typography
+        // gallery can swap faces without touching component classes.
+        sans: "var(--font-sans, sans-serif)",
+        mono: "var(--font-mono, monospace)",
       },
       fontSize: {
         "2xs": ["11px", { lineHeight: "1.3" }],

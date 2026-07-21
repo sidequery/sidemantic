@@ -2,6 +2,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
 import { ComponentGallery } from "./views/ComponentGallery";
+import { TypographyGallery } from "./views/TypographyGallery";
 import { initTheme } from "./lib/theme";
 import "./index.css";
 
@@ -12,6 +13,12 @@ if (!root) throw new Error("Missing #root element");
 
 createRoot(root).render(
   <StrictMode>
-    {window.location.pathname === "/components" ? <ComponentGallery /> : <App />}
+    {window.location.pathname === "/components" ? (
+      <ComponentGallery />
+    ) : window.location.pathname === "/typography" ? (
+      <TypographyGallery />
+    ) : (
+      <App />
+    )}
   </StrictMode>,
 );

@@ -71,17 +71,18 @@ export function DataTable({
 
   const hasTotals = totals && columns.some((column) => totals[column.key]);
 
+  // Search sits above and the pager below as chromeless rows — only the table itself owns a border.
   return (
-    <div className="overflow-hidden border border-line bg-surface">
+    <div>
       {searchable ? (
-        <div className="flex items-center gap-2 border-b border-line px-3 py-1.5">
+        <div className="mb-2 flex items-center gap-2">
           <input
             type="search"
             aria-label="Search rows"
             placeholder="Search…"
             value={search}
             onChange={(event) => setSearch(event.target.value)}
-            className="w-full max-w-64 rounded-full border border-line bg-surface px-2.5 py-1 text-2xs text-ink placeholder:text-faint"
+            className="h-7 w-full max-w-64 rounded-full border border-line bg-surface px-2.5 text-xs text-ink placeholder:text-faint"
           />
           {search ? (
             <span className="whitespace-nowrap text-2xs text-faint tnum">
@@ -90,7 +91,7 @@ export function DataTable({
           ) : null}
         </div>
       ) : null}
-      <div className="overflow-auto">
+      <div className="overflow-auto border border-line bg-surface">
         <table className="w-max min-w-full border-collapse text-xs" data-testid="pivot-table">
           <thead>
           <tr className="bg-surface-soft">
@@ -185,7 +186,7 @@ export function DataTable({
       {paginate ? (
         <div
           data-testid="pivot-table-pager"
-          className="flex items-center justify-between gap-3 border-t border-line px-3 py-1 text-2xs text-faint"
+          className="mt-1.5 flex items-center justify-between gap-3 text-2xs text-faint"
         >
           <span className="tnum">
             {start + 1}–{Math.min(start + pageSize, filteredRows.length)} of {filteredRows.length.toLocaleString()}

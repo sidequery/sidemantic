@@ -7786,10 +7786,9 @@ function DataTable({
   }, [rows, pageSize, sortKey, sortDir, search]);
   const hasTotals = totals && columns.some((column) => totals[column.key]);
   return /* @__PURE__ */ jsx_runtime.jsxs("div", {
-    className: "overflow-hidden border border-line bg-surface",
     children: [
       searchable ? /* @__PURE__ */ jsx_runtime.jsxs("div", {
-        className: "flex items-center gap-2 border-b border-line px-3 py-1.5",
+        className: "mb-2 flex items-center gap-2",
         children: [
           /* @__PURE__ */ jsx_runtime.jsx("input", {
             type: "search",
@@ -7797,7 +7796,7 @@ function DataTable({
             placeholder: "Search…",
             value: search,
             onChange: (event) => setSearch(event.target.value),
-            className: "w-full max-w-64 rounded-full border border-line bg-surface px-2.5 py-1 text-2xs text-ink placeholder:text-faint"
+            className: "h-7 w-full max-w-64 rounded-full border border-line bg-surface px-2.5 text-xs text-ink placeholder:text-faint"
           }),
           search ? /* @__PURE__ */ jsx_runtime.jsxs("span", {
             className: "whitespace-nowrap text-2xs text-faint tnum",
@@ -7810,7 +7809,7 @@ function DataTable({
         ]
       }) : null,
       /* @__PURE__ */ jsx_runtime.jsx("div", {
-        className: "overflow-auto",
+        className: "overflow-auto border border-line bg-surface",
         children: /* @__PURE__ */ jsx_runtime.jsxs("table", {
           className: "w-max min-w-full border-collapse text-xs",
           "data-testid": "pivot-table",
@@ -7907,7 +7906,7 @@ function DataTable({
       }),
       paginate ? /* @__PURE__ */ jsx_runtime.jsxs("div", {
         "data-testid": "pivot-table-pager",
-        className: "flex items-center justify-between gap-3 border-t border-line px-3 py-1 text-2xs text-faint",
+        className: "mt-1.5 flex items-center justify-between gap-3 text-2xs text-faint",
         children: [
           /* @__PURE__ */ jsx_runtime.jsxs("span", {
             className: "tnum",

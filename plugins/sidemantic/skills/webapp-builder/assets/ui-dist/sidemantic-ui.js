@@ -693,25 +693,25 @@ function DataTable({
 import { jsx as jsx5, jsxs as jsxs5 } from "react/jsx-runtime";
 function DashboardShell({ title, eyebrow = "Sidemantic", status, toolbar, children }) {
   return /* @__PURE__ */ jsxs5("main", {
-    className: "mx-auto max-w-6xl px-4 py-5 text-slate-950 sm:px-6",
+    className: "mx-auto max-w-6xl px-4 py-5 text-ink sm:px-6",
     children: [
       /* @__PURE__ */ jsxs5("header", {
-        className: "flex flex-wrap items-end justify-between gap-4 border-b border-slate-200 pb-4",
+        className: "flex flex-wrap items-end justify-between gap-4 border-b border-line pb-4",
         children: [
           /* @__PURE__ */ jsxs5("div", {
             children: [
               /* @__PURE__ */ jsx5("p", {
-                className: "text-xs font-medium uppercase tracking-normal text-slate-500",
+                className: "text-xs font-medium uppercase tracking-normal text-faint",
                 children: eyebrow
               }),
               /* @__PURE__ */ jsx5("h1", {
-                className: "mt-1 text-2xl font-semibold tracking-normal",
+                className: "mt-1 text-2xl font-semibold text-ink",
                 children: title
               })
             ]
           }),
           status ? /* @__PURE__ */ jsx5("div", {
-            className: "text-sm text-slate-500",
+            className: "text-sm text-muted",
             children: status
           }) : null
         ]
@@ -846,10 +846,10 @@ function TimeSeriesChart({
   const delta = hoverCur && hoverPrev && hoverPrev.y !== 0 ? (hoverCur.y - hoverPrev.y) / Math.abs(hoverPrev.y) * 100 : null;
   const summary = ariaLabel ?? (empty ? "Time series chart: not enough data to plot." : `Time series chart, ${count} points from ${formatLabel(points[0].x)} to ${formatLabel(points[count - 1].x)}.`);
   return /* @__PURE__ */ jsxs6("div", {
-    className: "relative border border-line bg-surface text-chart-primary",
+    className: "relative text-chart-primary",
     children: [
       /* @__PURE__ */ jsxs6("div", {
-        className: "absolute right-3 top-2 z-10 flex items-center gap-3 text-2xs text-faint",
+        className: "flex items-center justify-end gap-3 px-3 pt-2 text-2xs text-faint",
         children: [
           /* @__PURE__ */ jsxs6("span", {
             className: "flex items-center gap-1",
@@ -1651,7 +1651,7 @@ function FilterPill(props) {
     return /* @__PURE__ */ jsxs10("span", {
       "data-dimension": props.dimension,
       "data-value": props.value,
-      className: "inline-flex max-w-full items-center gap-1.5 rounded-full border border-line bg-surface px-2 py-0.5 text-2xs text-muted",
+      className: "inline-flex max-w-full items-center gap-1 rounded-full bg-surface-soft px-2 py-0.5 text-2xs leading-4 text-muted",
       children: [
         /* @__PURE__ */ jsxs10("span", {
           className: "truncate",
@@ -1671,7 +1671,7 @@ function FilterPill(props) {
           type: "button",
           "aria-label": `Remove filter ${props.value}`,
           onClick: props.onRemove,
-          className: "grid size-3.5 place-items-center rounded-full bg-surface-soft text-faint hover:bg-line hover:text-ink",
+          className: "-mr-0.5 px-0.5 text-faint hover:text-ink",
           children: "×"
         }) : null
       ]
@@ -1684,7 +1684,7 @@ function FilterPill(props) {
     "data-mode": filter.mode,
     children: [
       /* @__PURE__ */ jsxs10("span", {
-        className: "inline-flex max-w-full items-center gap-1.5 rounded-full border border-line bg-surface px-2 py-0.5 text-2xs text-muted",
+        className: "inline-flex max-w-full items-center gap-1 rounded-full bg-surface-soft px-2 py-0.5 text-2xs leading-4 text-muted",
         children: [
           /* @__PURE__ */ jsxs10("button", {
             type: "button",
@@ -2050,7 +2050,7 @@ function Leaderboard({
 import { useState as useState13 } from "react";
 
 // webapp/src/components/Sparkline.tsx
-import { useEffect as useEffect11, useRef as useRef9, useState as useState12 } from "react";
+import { useEffect as useEffect11, useId as useId2, useRef as useRef9, useState as useState12 } from "react";
 import { jsx as jsx16, jsxs as jsxs14, Fragment as Fragment6 } from "react/jsx-runtime";
 function Sparkline({
   values,
@@ -2062,6 +2062,7 @@ function Sparkline({
   onBrush
 }) {
   const containerRef = useRef9(null);
+  const gradientId = useId2();
   const svgRef = useRef9(null);
   const dragStart = useRef9(null);
   const [width, setWidth] = useState12(200);
@@ -2171,10 +2172,30 @@ function Sparkline({
         onPointerLeave: leave,
         onDoubleClick: () => onBrush?.(null),
         children: [
+          /* @__PURE__ */ jsx16("defs", {
+            children: /* @__PURE__ */ jsxs14("linearGradient", {
+              id: gradientId,
+              x1: "0",
+              y1: "0",
+              x2: "0",
+              y2: "1",
+              children: [
+                /* @__PURE__ */ jsx16("stop", {
+                  offset: "0%",
+                  stopColor: "currentColor",
+                  stopOpacity: 0.16
+                }),
+                /* @__PURE__ */ jsx16("stop", {
+                  offset: "100%",
+                  stopColor: "currentColor",
+                  stopOpacity: 0
+                })
+              ]
+            })
+          }),
           /* @__PURE__ */ jsx16("path", {
             d: area,
-            fill: "currentColor",
-            opacity: 0.1
+            fill: `url(#${gradientId})`
           }),
           /* @__PURE__ */ jsx16("path", {
             d: `M ${line}`,
@@ -3158,7 +3179,7 @@ function Button({ variant = "secondary", size = "md", type = "button", className
   });
 }
 // webapp/src/components/Combobox.tsx
-import { useEffect as useEffect16, useId as useId2, useMemo as useMemo5, useRef as useRef14, useState as useState18 } from "react";
+import { useEffect as useEffect16, useId as useId3, useMemo as useMemo5, useRef as useRef14, useState as useState18 } from "react";
 import { jsx as jsx25, jsxs as jsxs22 } from "react/jsx-runtime";
 function filterOptions(options, query) {
   const needle = query.trim().toLowerCase();
@@ -3168,7 +3189,7 @@ function filterOptions(options, query) {
 }
 function Combobox(props) {
   const { options, placeholder = "Search…", ariaLabel, disabled, maxVisible = 50 } = props;
-  const listId = useId2();
+  const listId = useId3();
   const rootRef = useRef14(null);
   const [open, setOpen] = useState18(false);
   const [query, setQuery] = useState18("");
@@ -3231,7 +3252,7 @@ function Combobox(props) {
     children: [
       props.multiple ? props.values.map((value) => /* @__PURE__ */ jsxs22("span", {
         "data-chip": value,
-        className: "inline-flex items-center gap-1 rounded-full border border-line bg-surface-soft px-2 py-0.5 text-muted",
+        className: "inline-flex items-center gap-1 rounded-full bg-surface-soft px-2 py-0.5 leading-4 text-muted",
         children: [
           /* @__PURE__ */ jsx25("span", {
             className: "max-w-32 truncate",
@@ -3769,7 +3790,7 @@ function Tabs({ tabs, active, onChange, ariaLabel = "Tabs" }) {
   });
 }
 // webapp/src/components/TimezoneSelect.tsx
-import { useId as useId3, useMemo as useMemo6, useState as useState21 } from "react";
+import { useId as useId4, useMemo as useMemo6, useState as useState21 } from "react";
 
 // webapp/src/lib/timezones.ts
 var COMMON_TIMEZONES = [
@@ -3829,7 +3850,7 @@ function timezoneOffsetLabel(zone, at = new Date) {
 import { jsx as jsx32, jsxs as jsxs28 } from "react/jsx-runtime";
 var SEARCH_SENTINEL = "__search__";
 function TimezoneSelect({ timezone, disabled, onChange }) {
-  const listId = useId3();
+  const listId = useId4();
   const [searching, setSearching] = useState21(false);
   const [text, setText] = useState21("");
   const options = useMemo6(() => {

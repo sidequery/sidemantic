@@ -61,9 +61,11 @@ export function MetricTimeSeries({
           </button>
         ) : null}
       </header>
+      {/* The card chrome lives here, once — TimeSeriesChart itself is chromeless. */}
       {!hasTime ? null : loading && points.length < 2 ? (
         <div className="skeleton h-[280px] w-full" />
       ) : (
+        <div className="overflow-hidden rounded-lg border border-line bg-surface shadow-[var(--shadow-sm)]">
         <TimeSeriesChart
           points={points}
           comparison={comparisonPoints}
@@ -74,6 +76,7 @@ export function MetricTimeSeries({
           ariaLabel={ariaSummary}
           onBrush={onBrush}
         />
+        </div>
       )}
     </section>
   );

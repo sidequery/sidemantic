@@ -152,10 +152,12 @@ export function TimeSeriesChart({
       ? "Time series chart: not enough data to plot."
       : `Time series chart, ${count} points from ${formatLabel(points[0].x)} to ${formatLabel(points[count - 1].x)}.`);
 
+  // Chromeless: the hosting surface owns any border/background. Never draw a card here —
+  // nesting bordered containers is off limits.
   return (
-    <div className="relative border border-line bg-surface text-chart-primary">
-      {/* legend */}
-      <div className="absolute right-3 top-2 z-10 flex items-center gap-3 text-2xs text-faint">
+    <div className="relative text-chart-primary">
+      {/* Legend lives in flow above the plot so it never collides with the line. */}
+      <div className="flex items-center justify-end gap-3 px-3 pt-2 text-2xs text-faint">
         <span className="flex items-center gap-1">
           <span className="inline-block h-0.5 w-3 bg-chart-primary" /> Current
         </span>

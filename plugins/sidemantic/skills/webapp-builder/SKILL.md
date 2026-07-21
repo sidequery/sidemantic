@@ -260,7 +260,7 @@ Analytics webapps should feel work-focused:
 
 - Dense, scannable layouts beat marketing sections.
 - Do not add hero pages unless the requested artifact is a public landing page.
-- Avoid nested cards. Use full-width tool surfaces, tables, panels, and repeated item cards only where they represent actual data units.
+- NEVER nest containers. A bordered/surfaced box inside another bordered/surfaced box is off limits — one container owns the chrome, its contents are chromeless. Charts and other content components must not draw their own card border/background; the hosting panel does. Interactive controls (buttons, selects, chips) inside a panel are fine — the rule is about container chrome, not control chrome. Use full-width tool surfaces, tables, panels, and repeated item cards only where they represent actual data units.
 - Use stable dimensions for cards, grids, sparklines, toolbar controls, and result panes to avoid layout shift during loading.
 - Keep text small and container-appropriate inside dashboards.
 - Use existing app colors/components first. For net-new Sidemantic demos, use a restrained neutral UI with a single accent and clear positive/negative colors.
@@ -279,6 +279,7 @@ Analytics webapps should feel work-focused:
 - Calling a component gallery an app. A kitchen-sink example can show primitives, but if it has dashboard controls, they must drive real local or server-backed state.
 - Rendering loading, empty, and error states as persistent content in a dashboard. Show state components only for their actual branch, or label the surface as a component gallery.
 - Letting SVG charts paint outside cards. Use bounded `viewBox`, padding, and `overflow: hidden`; verify with screenshots.
+- Container-in-container chrome. Wrapping an already-bordered component in another bordered/surfaced box (or giving a chart its own card inside a panel) is a hard failure — flatten to one container.
 - Pulling optional dependencies into core imports. Keep web/API/widget dependencies lazy and optional.
 - Using ports `3000` or `8000` in worktrees. Prefer `4100`, `4400`, `5174`, or another available 4xxx-5xxx port.
 - Opening static HTML with `file://` when it fetches JSON/CSV. Serve it locally instead, because browser file-scheme fetch behavior differs from a real app.

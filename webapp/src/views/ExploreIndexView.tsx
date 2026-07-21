@@ -41,7 +41,7 @@ export function ExploreIndexView() {
             {model.description ? <p className="line-clamp-2 text-2xs text-muted">{model.description}</p> : null}
             <div className="mt-auto flex flex-wrap gap-1 pt-1">
               {model.metrics.slice(0, 3).map((metric) => (
-                <span key={metric.ref} className="border border-line px-1.5 py-0.5 text-2xs text-muted">
+                <span key={metric.ref} className="rounded-full bg-surface-soft px-2 py-0.5 text-2xs text-muted">
                   {metric.label}
                 </span>
               ))}

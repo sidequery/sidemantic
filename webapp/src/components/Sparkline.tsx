@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { ChartTooltip, type ChartTooltipState } from "./ChartTooltip";
 
 export type SparklineBrushRange = { from: string; to: string };
@@ -24,6 +24,7 @@ export function Sparkline({
   onBrush,
 }: SparklineProps) {
   const containerRef = useRef<HTMLSpanElement>(null);
+  const gradientId = useId();
   const svgRef = useRef<SVGSVGElement>(null);
   const dragStart = useRef<number | null>(null);
   const [width, setWidth] = useState(200);
@@ -125,7 +126,14 @@ export function Sparkline({
         onPointerLeave={leave}
         onDoubleClick={() => onBrush?.(null)}
       >
-        <path d={area} fill="currentColor" opacity={0.1} />
+        {/* Fade the area to nothing so it reads as a soft glow under the line, not a slab. */}
+        <defs>
+          <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="currentColor" stopOpacity={0.16} />
+            <stop offset="100%" stopColor="currentColor" stopOpacity={0} />
+          </linearGradient>
+        </defs>
+        <path d={area} fill={`url(#${gradientId})`} />
         <path d={`M ${line}`} fill="none" stroke="currentColor" strokeWidth={1.5} vectorEffect="non-scaling-stroke" />
         {brush ? (
           <rect x={Math.min(brush.a, brush.b)} y={0} width={Math.abs(brush.b - brush.a)} height={height} fill="currentColor" opacity={0.12} />

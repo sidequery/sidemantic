@@ -107,7 +107,7 @@ export function Combobox(props: ComboboxProps) {
             <span
               key={value}
               data-chip={value}
-              className="inline-flex items-center gap-1 rounded-full border border-line bg-surface-soft px-2 py-0.5 text-muted"
+              className="inline-flex items-center gap-1 rounded-full bg-surface-soft px-2 py-0.5 leading-4 text-muted"
             >
               <span className="max-w-32 truncate">{labelFor(value)}</span>
               <button

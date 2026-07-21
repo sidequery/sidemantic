@@ -8376,7 +8376,7 @@ function FilterPill(props) {
     return /* @__PURE__ */ jsx_runtime4.jsxs("span", {
       "data-dimension": props.dimension,
       "data-value": props.value,
-      className: "inline-flex max-w-full items-center gap-1.5 rounded-full border border-line bg-surface px-2 py-0.5 text-2xs text-muted",
+      className: "inline-flex max-w-full items-center gap-1 rounded-full bg-surface-soft px-2 py-0.5 text-2xs leading-4 text-muted",
       children: [
         /* @__PURE__ */ jsx_runtime4.jsxs("span", {
           className: "truncate",
@@ -8396,7 +8396,7 @@ function FilterPill(props) {
           type: "button",
           "aria-label": `Remove filter ${props.value}`,
           onClick: props.onRemove,
-          className: "grid size-3.5 place-items-center rounded-full bg-surface-soft text-faint hover:bg-line hover:text-ink",
+          className: "-mr-0.5 px-0.5 text-faint hover:text-ink",
           children: "×"
         }) : null
       ]
@@ -8409,7 +8409,7 @@ function FilterPill(props) {
     "data-mode": filter.mode,
     children: [
       /* @__PURE__ */ jsx_runtime4.jsxs("span", {
-        className: "inline-flex max-w-full items-center gap-1.5 rounded-full border border-line bg-surface px-2 py-0.5 text-2xs text-muted",
+        className: "inline-flex max-w-full items-center gap-1 rounded-full bg-surface-soft px-2 py-0.5 text-2xs leading-4 text-muted",
         children: [
           /* @__PURE__ */ jsx_runtime4.jsxs("button", {
             type: "button",
@@ -8615,6 +8615,7 @@ function Sparkline({
   onBrush
 }) {
   const containerRef = import_react8.useRef(null);
+  const gradientId = import_react8.useId();
   const svgRef = import_react8.useRef(null);
   const dragStart = import_react8.useRef(null);
   const [width, setWidth] = import_react8.useState(200);
@@ -8724,10 +8725,30 @@ function Sparkline({
         onPointerLeave: leave,
         onDoubleClick: () => onBrush?.(null),
         children: [
+          /* @__PURE__ */ jsx_runtime7.jsx("defs", {
+            children: /* @__PURE__ */ jsx_runtime7.jsxs("linearGradient", {
+              id: gradientId,
+              x1: "0",
+              y1: "0",
+              x2: "0",
+              y2: "1",
+              children: [
+                /* @__PURE__ */ jsx_runtime7.jsx("stop", {
+                  offset: "0%",
+                  stopColor: "currentColor",
+                  stopOpacity: 0.16
+                }),
+                /* @__PURE__ */ jsx_runtime7.jsx("stop", {
+                  offset: "100%",
+                  stopColor: "currentColor",
+                  stopOpacity: 0
+                })
+              ]
+            })
+          }),
           /* @__PURE__ */ jsx_runtime7.jsx("path", {
             d: area,
-            fill: "currentColor",
-            opacity: 0.1
+            fill: `url(#${gradientId})`
           }),
           /* @__PURE__ */ jsx_runtime7.jsx("path", {
             d: `M ${line}`,

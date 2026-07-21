@@ -386,7 +386,8 @@ export function ComponentGallery() {
 
         <section>
           <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-faint">Dashboard shell</h2>
-          <div className="overflow-hidden border border-line bg-surface">
+          {/* No wrapper card: the shell composes cards itself, and nesting containers is off limits. */}
+          <div>
             <DashboardShell
               eyebrow="Embedded shell example"
               title="Revenue overview"

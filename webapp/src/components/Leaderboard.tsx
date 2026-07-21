@@ -66,9 +66,9 @@ export function Leaderboard({
       data-dimension={dimension}
       data-expanded={expanded || undefined}
       aria-label={`${title}, ranked by ${metricLabel}`}
-      className="flex min-h-60 flex-col border-b border-r border-line bg-surface data-[expanded=true]:col-span-full"
+      className="flex min-h-64 flex-col overflow-hidden rounded-xl bg-surface shadow-sm data-[expanded=true]:col-span-full"
     >
-      <header className="flex items-center justify-between gap-3 px-3 pb-2 pt-2.5">
+      <header className="flex items-center justify-between gap-3 px-4 pb-3 pt-4">
         <div className="flex min-w-0 items-baseline gap-2">
           <h3 className="truncate text-sm font-semibold text-ink">{title}</h3>
           <p className="sr-only">Ranked by {metricLabel}</p>
@@ -78,7 +78,7 @@ export function Leaderboard({
             role="group"
             aria-label="Context column"
             data-testid="leaderboard-context-toggle"
-            className="flex shrink-0 overflow-hidden border border-line text-2xs"
+            className="flex shrink-0 overflow-hidden rounded-full bg-surface-soft p-0.5 text-2xs"
           >
             {contextOptions.map((option) => (
               <button
@@ -89,7 +89,8 @@ export function Leaderboard({
                 data-context={option.key}
                 data-active={contextColumn === option.key || undefined}
                 onClick={() => onContextColumn(option.key)}
-                className="border-l border-line px-1.5 py-0.5 font-mono text-faint first:border-l-0 hover:bg-surface-soft data-[active=true]:bg-accent-soft data-[active=true]:text-accent"
+                aria-label={option.title}
+                className="min-h-7 min-w-7 rounded-full px-1.5 font-mono text-faint hover:text-ink data-[active=true]:bg-surface data-[active=true]:text-accent data-[active=true]:shadow-sm"
               >
                 {option.label}
               </button>
@@ -121,7 +122,7 @@ export function Leaderboard({
                 data-tone={tone}
                 onClick={() => onToggle?.(row.value)}
                 aria-pressed={isSelected}
-                className={`leaderboard-row relative grid w-full ${rowGrid} items-center gap-3 overflow-hidden border-0 bg-transparent px-3 py-1 text-left text-xs text-ink data-[selected=true]:bg-chart-primary-selected`}
+                className={`leaderboard-row relative grid min-h-9 w-full ${rowGrid} items-center gap-3 overflow-hidden border-0 bg-transparent px-4 py-1.5 text-left text-sm text-ink data-[selected=true]:bg-chart-primary-selected`}
               >
                 <span
                   aria-hidden="true"
@@ -150,7 +151,7 @@ export function Leaderboard({
           data-action={expanded ? "leaderboard-back" : "leaderboard-expand"}
           aria-expanded={expanded}
           onClick={() => onExpandedChange?.(!expanded)}
-          className="leaderboard-expand mt-1 min-h-9 border-0 border-t border-line bg-transparent px-3 text-left text-xs font-normal text-faint hover:text-accent"
+          className="leaderboard-expand mt-auto min-h-10 border-0 border-t border-line/70 bg-transparent px-4 text-left text-xs font-medium text-muted hover:bg-surface-soft hover:text-accent"
         >
           {expanded ? "← All dimensions" : `Expand table (${rows.length})`}
         </button>

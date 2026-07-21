@@ -19,6 +19,41 @@ test("the home index lists models and opens one into Explore", async ({ page }) 
   await expect(page.locator('button[data-metric="customers.customer_count"]')).toBeVisible();
 });
 
+test("the mobile catalog is a focus-managed drawer and leaves data in the first viewport", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/?view=explore&model=orders&metric=orders.revenue");
+
+  const metrics = page.locator('[data-testid="metric-totals"]');
+  await expect(metrics).toBeVisible();
+  expect((await metrics.boundingBox())?.y).toBeLessThan(320);
+  await expect(page.getByRole("dialog", { name: "Data catalog" })).toHaveCount(0);
+
+  const trigger = page.getByRole("button", { name: "Open catalog" });
+  await trigger.click();
+  const catalog = page.getByRole("dialog", { name: "Data catalog" });
+  await expect(catalog).toBeVisible();
+  await expect(catalog.getByRole("button", { name: "Close catalog" })).toBeFocused();
+  await expect(catalog.getByTestId("catalog-drawer-header")).toHaveCSS("background-color", "rgb(255, 255, 255)");
+
+  await page.keyboard.press("Escape");
+  await expect(catalog).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+});
+
+test("view tabs support arrow keys and query status is announced", async ({ page }) => {
+  await page.goto("/?view=explore&model=orders&metric=orders.revenue");
+
+  const explore = page.getByRole("tab", { name: "Explore" });
+  const pivot = page.getByRole("tab", { name: "Pivot" });
+  await explore.focus();
+  await page.keyboard.press("ArrowRight");
+
+  await expect(pivot).toBeFocused();
+  await expect(pivot).toHaveAttribute("aria-selected", "true");
+  await expect.poll(() => new URL(page.url()).searchParams.get("view")).toBe("pivot");
+  await expect(page.getByRole("status")).toContainText(/Updating|Up to date/);
+});
+
 test("crossfilter, reset, and metric re-rank change rendered data", async ({ page }) => {
   const params = new URLSearchParams({
     view: "explore",
@@ -82,10 +117,10 @@ test("brush-to-zoom on the chart sets a date range and shows the comparison over
   await page.mouse.up();
 
   await expect.poll(() => new URL(page.url()).searchParams.get("from")).not.toBeNull();
-  await expect(page.getByText("Prev period")).toBeVisible();
+  await expect(page.getByText("Prev period", { exact: true })).toBeVisible();
   const resetZoom = page.getByRole("button", { name: "Reset zoom" });
   await expect(resetZoom).toBeVisible();
-  expect((await resetZoom.boundingBox())?.height).toBeLessThanOrEqual(26);
+  expect((await resetZoom.boundingBox())?.height).toBeGreaterThanOrEqual(32);
   await resetZoom.click();
   await expect.poll(() => new URL(page.url()).searchParams.get("from")).toBeNull();
   await expect(resetZoom).toHaveCount(0);
@@ -192,7 +227,7 @@ test("component gallery exposes the WASM-style leaderboard and full-width expand
   await expect(analyticalCells.last()).toHaveCSS("border-bottom-style", "solid");
   const leaderboards = page.locator('[data-testid="dimension-leaderboard"]');
   await expect(leaderboards).toHaveCount(4);
-  await expect(leaderboards.first()).toHaveCSS("border-radius", "0px");
+  await expect(leaderboards.first()).toHaveCSS("border-radius", "12px");
   await expect(page.locator('[data-testid="gallery-filter-pills"] [data-dimension]')).toHaveCount(3);
   await expect(page.getByRole("button", { name: "Remove filter East" })).toBeVisible();
   await expect(page.getByRole("img", { name: "Eight month revenue trend" })).toBeVisible();

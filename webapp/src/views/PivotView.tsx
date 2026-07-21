@@ -79,7 +79,7 @@ export function PivotView() {
   if (!model) return <div className="p-4"><EmptyState message="No model available." /></div>;
 
   return (
-    <div className="flex flex-col gap-4 p-4">
+    <div className="mx-auto flex w-full max-w-[1600px] flex-col gap-6 p-4 sm:p-6">
       {error ? (
         <ErrorState message={error} />
       ) : columns.length === 0 ? (

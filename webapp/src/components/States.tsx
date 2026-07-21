@@ -8,19 +8,22 @@ function StateBox({ tone, title, message }: StateBoxProps & { tone: "muted" | "d
   const danger = tone === "danger";
   return (
     <div
-      className={`grid min-h-[200px] place-items-center border bg-surface p-6 text-center ${
-        danger ? "border-danger/40" : "border-line"
-      }`}
+      className={`grid min-h-[220px] place-items-center rounded-2xl bg-surface p-8 text-center shadow-sm ${danger ? "ring-1 ring-danger/30" : ""}`}
       data-state={tone}
       role={danger ? "alert" : "status"}
       aria-live={danger ? "assertive" : "polite"}
     >
       <div className="max-w-md">
-        {tone === "loading" ? <span aria-hidden="true" className="motion-safe:animate-pulse inline-block size-2 rounded-full bg-accent" /> : null}
+        <span
+          aria-hidden="true"
+          className={`mx-auto mb-4 grid size-10 place-items-center rounded-full ${danger ? "bg-danger-soft text-danger" : "bg-surface-soft text-muted"}`}
+        >
+          {tone === "loading" ? <span className="spinner size-4 rounded-full border-2 border-line border-t-accent" /> : danger ? "!" : "—"}
+        </span>
         {title ? (
-          <h3 className={`text-sm font-semibold ${danger ? "text-danger" : "text-ink"}`}>{title}</h3>
+          <h3 className={`text-base font-semibold tracking-[-0.01em] ${danger ? "text-danger" : "text-ink"}`}>{title}</h3>
         ) : null}
-        <p className={`mt-1 text-xs ${danger ? "text-danger" : "text-muted"}`}>{message}</p>
+        <p className={`mt-1.5 text-sm ${danger ? "text-danger" : "text-muted"}`}>{message}</p>
       </div>
     </div>
   );

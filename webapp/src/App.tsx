@@ -23,14 +23,22 @@ import { PivotView } from "./views/PivotView";
 function QueryStatus() {
   const active = useQueryActive();
   return (
-    <span className="flex items-center gap-1.5 text-2xs text-faint" title={active ? "Querying" : "Idle"}>
+    <span
+      role="status"
+      aria-live="polite"
+      aria-atomic="true"
+      className="flex min-h-9 items-center gap-1.5 rounded-full bg-surface-soft px-3 text-xs text-muted"
+      title={active ? "Updating data" : "Data is up to date"}
+    >
       {active ? (
-        <svg viewBox="0 0 24 24" className="spinner size-3.5 text-accent" fill="none" stroke="currentColor" strokeWidth="3">
+        <svg aria-hidden="true" viewBox="0 0 24 24" className="spinner size-3.5 text-accent" fill="none" stroke="currentColor" strokeWidth="3">
           <path d="M12 3a9 9 0 1 0 9 9" strokeLinecap="round" />
         </svg>
       ) : (
         <span aria-hidden="true" className="inline-block size-2 rounded-full bg-accent" />
       )}
+      <span className="hidden sm:inline">{active ? "Updating" : "Up to date"}</span>
+      <span className="sr-only sm:hidden">{active ? "Updating data" : "Data is up to date"}</span>
     </span>
   );
 }
@@ -66,7 +74,7 @@ function CopyLinkButton() {
         setCopied(true);
         window.setTimeout(() => setCopied(false), 1200);
       }}
-      className="border border-line bg-surface px-2 py-1 text-2xs text-muted hover:border-faint hover:text-ink"
+      className="min-h-9 rounded-full border border-line bg-surface px-3 text-xs font-medium text-muted transition-colors hover:bg-surface-soft hover:text-ink"
     >
       {copied ? "Copied" : "Copy link"}
     </button>
@@ -112,10 +120,10 @@ function Shell() {
       type="button"
       onClick={() => dispatch({ type: "setView", view: "home" })}
       aria-label="Home"
-      className="flex min-w-0 items-baseline gap-2"
+      className="flex min-h-9 min-w-0 items-center gap-2 rounded-lg px-1 text-left"
     >
-      <span className="text-sm font-semibold text-ink">Sidemantic</span>
-      {!isHome && model?.label ? <span className="truncate text-2xs text-faint">{model.label}</span> : null}
+      <span className="text-base font-semibold tracking-[-0.015em] text-ink">Sidemantic</span>
+      {!isHome && model?.label ? <span className="truncate text-xs text-muted">/ {model.label}</span> : null}
     </button>
   );
 
@@ -142,7 +150,7 @@ function Shell() {
         <button
           type="button"
           onClick={() => dispatch({ type: "reset", initial })}
-          className="border border-line bg-surface px-2 py-1 text-2xs text-muted hover:border-faint hover:text-ink"
+          className="min-h-9 rounded-full border border-line bg-surface px-3 text-xs font-medium text-muted transition-colors hover:bg-surface-soft hover:text-ink"
         >
           Reset
         </button>

@@ -36,13 +36,13 @@ export function RowPreviewDrawer() {
     <section
       data-testid="row-preview-drawer"
       data-open={open || undefined}
-      className="absolute inset-x-0 bottom-0 z-30 border-t border-line bg-surface shadow-[0_-8px_24px_rgba(0,0,0,0.16)]"
+      className="absolute inset-x-3 bottom-3 z-30 overflow-hidden rounded-xl bg-surface shadow-floating sm:inset-x-5"
     >
       <button
         type="button"
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
-        className="flex h-8 w-full items-center justify-between px-3 text-left text-2xs font-semibold uppercase tracking-wide text-muted hover:bg-surface-soft hover:text-ink"
+        className="flex min-h-10 w-full items-center justify-between px-4 text-left text-xs font-medium text-muted hover:bg-surface-soft hover:text-ink"
       >
         <span>Rows preview</span>
         <span aria-hidden="true">{open ? "▼" : "▲"}</span>

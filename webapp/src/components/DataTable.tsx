@@ -29,24 +29,24 @@ export function DataTable({ columns, rows, loading, sortKey, sortDir, onSort, re
   }, [rows, pageSize, sortKey, sortDir]);
 
   return (
-    <div className="overflow-hidden border border-line bg-surface">
+    <div className="overflow-hidden rounded-xl bg-surface shadow-sm">
       <div className="overflow-auto">
         <table className="w-max min-w-full border-collapse text-xs" data-testid="pivot-table">
           <thead>
-          <tr className="bg-surface-soft">
+          <tr className="bg-surface-soft/80">
             {columns.map((column) => {
               const active = sortKey === column.key;
               return (
                 <th
                   key={column.key}
-                  className={`max-w-80 whitespace-nowrap border-b border-line px-3 py-1.5 font-semibold text-faint ${column.numeric ? "min-w-32 text-right" : "min-w-40 text-left"}`}
+                  className={`max-w-80 whitespace-nowrap border-b border-line px-4 py-2 font-semibold text-muted ${column.numeric ? "min-w-32 text-right" : "min-w-40 text-left"}`}
                 >
                   {column.sortable && onSort ? (
                     <button
                       type="button"
                       onClick={() => onSort(column.key)}
                       aria-label={`Sort by ${column.label}${active ? `, currently ${sortDir === "asc" ? "ascending" : "descending"}` : ""}`}
-                      className={`inline-flex min-h-11 max-w-full items-center gap-1 whitespace-nowrap hover:text-ink ${active ? "text-ink" : ""}`}
+                      className={`inline-flex min-h-11 max-w-full items-center gap-1 whitespace-nowrap rounded-md hover:text-ink ${active ? "text-ink" : ""}`}
                     >
                       <span className="truncate">{column.label}</span>
                       <span aria-hidden="true" className="text-[9px]">
@@ -82,7 +82,7 @@ export function DataTable({ columns, rows, loading, sortKey, sortDir, onSort, re
                   return (
                     <td
                       key={column.key}
-                      className={`max-w-80 whitespace-nowrap border-b border-line px-3 py-1.5 text-muted ${
+                      className={`max-w-80 whitespace-nowrap border-b border-line/70 px-4 py-2 text-muted ${
                         column.numeric ? "min-w-32 text-right font-mono tnum text-ink" : "min-w-40"
                       }`}
                     >

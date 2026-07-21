@@ -68,12 +68,12 @@ export function QueryDebugPanel({ queries, inputs = {} }: QueryDebugPanelProps) 
   const tokens = tokenizeSql(text || "No queries yet.");
 
   return (
-    <details className="border border-line bg-surface">
-      <summary className="cursor-pointer px-3 py-2 text-2xs font-semibold uppercase tracking-wide text-faint">
+    <details className="overflow-hidden rounded-xl bg-surface shadow-sm">
+      <summary className="min-h-11 px-4 py-3 text-xs font-medium text-muted hover:bg-surface-soft hover:text-ink">
         Generated SQL
       </summary>
       {Object.keys(inputs).length > 0 ? (
-        <div data-testid="query-inputs" className="grid gap-px border-t border-line bg-line sm:grid-cols-2">
+        <div data-testid="query-inputs" className="grid gap-px border-t border-line/70 bg-line sm:grid-cols-2">
           {Object.entries(inputs).map(([name, input]) =>
             input ? (
               <section key={name} className="min-w-0 bg-surface px-3 py-2 text-2xs">
@@ -96,7 +96,7 @@ export function QueryDebugPanel({ queries, inputs = {} }: QueryDebugPanelProps) 
       ) : null}
       <pre
         data-testid="query-debug"
-        className="max-h-72 overflow-auto whitespace-pre-wrap border-t border-line px-3 py-2 font-mono text-2xs text-muted"
+        className="max-h-72 overflow-auto whitespace-pre-wrap border-t border-line/70 bg-bg px-4 py-3 font-mono text-xs leading-relaxed text-muted"
       >
         {tokens.map((token, index): ReactNode =>
           TOKEN_CLASS[token.kind] ? (

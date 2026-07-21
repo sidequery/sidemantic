@@ -45,7 +45,7 @@ export function MetricCard({
   const summary = (
     <>
       <div className="flex items-baseline justify-between gap-2">
-        <span className="truncate text-2xs font-semibold uppercase tracking-wide text-faint">{label}</span>
+        <span className="truncate text-xs font-medium text-muted">{label}</span>
         {sparkHover?.label ? (
           <span className="shrink-0 font-mono text-2xs text-faint">{sparkHover.label}</span>
         ) : delta ? (
@@ -55,7 +55,7 @@ export function MetricCard({
           </span>
         ) : null}
       </div>
-      <div className="font-mono tnum text-base font-semibold text-ink">
+      <div className="font-mono tnum text-xl font-semibold tracking-[-0.025em] text-ink">
         {loading ? (
           <span className="skeleton inline-block h-5 w-24 align-middle" />
         ) : sparkHover ? (
@@ -68,7 +68,7 @@ export function MetricCard({
   );
 
   const className =
-    "group flex w-full flex-col gap-1.5 border border-line bg-surface px-3 py-2.5 text-left data-[selected=true]:border-accent data-[selected=true]:ring-1 data-[selected=true]:ring-accent";
+    "group flex min-h-36 w-full flex-col gap-2 rounded-xl bg-surface px-4 py-3.5 text-left shadow-sm transition-[transform,box-shadow] duration-150 ease-out hover:-translate-y-px hover:shadow-floating data-[selected=true]:ring-2 data-[selected=true]:ring-accent";
   const sparkline = (
     <Sparkline
       values={sparkValues}
@@ -98,7 +98,7 @@ export function MetricCard({
         data-metric={metric}
         aria-pressed={!!selected}
         onClick={() => onSelect(metric)}
-        className="-m-1 flex flex-col gap-1 border-0 bg-transparent p-1 text-left transition hover:opacity-75"
+        className="-m-1 flex min-h-12 flex-col gap-1 rounded-lg border-0 bg-transparent p-1 text-left transition-colors hover:text-accent"
       >
         {summary}
       </button>

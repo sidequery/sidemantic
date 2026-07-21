@@ -45,24 +45,24 @@ export function MetricTimeSeries({
 }.`;
 
   return (
-    <section className="flex flex-col gap-2">
-      <header className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 px-0.5">
-        <h2 className="text-2xs font-semibold uppercase tracking-wide text-faint">{metric.label}</h2>
-        <span className="font-mono tnum text-xl font-semibold text-ink">{formatValue(total, hint)}</span>
+    <section className="flex flex-col gap-3 rounded-2xl bg-surface p-4 shadow-sm sm:p-5">
+      <header className="flex flex-wrap items-baseline gap-x-3 gap-y-1 px-0.5">
+        <h2 className="text-sm font-semibold text-ink">{metric.label}</h2>
+        <span className="font-mono tnum text-2xl font-semibold tracking-[-0.03em] text-ink">{formatValue(total, hint)}</span>
         {delta ? <span className={`text-xs ${TONE[delta.tone]}`}>{delta.label} vs {comparisonLabel.toLowerCase()}</span> : null}
         {!hasTime ? <span className="text-2xs text-faint">No time dimension</span> : null}
         {activeRange ? (
           <button
             type="button"
             onClick={() => onBrush(null)}
-            className="ml-auto h-6 border border-line bg-surface px-2 text-2xs text-muted hover:border-faint hover:text-ink"
+            className="ml-auto min-h-8 rounded-full bg-surface-soft px-3 text-xs font-medium text-muted hover:bg-line hover:text-ink"
           >
             Reset zoom
           </button>
         ) : null}
       </header>
       {!hasTime ? null : loading && points.length < 2 ? (
-        <div className="skeleton h-[280px] w-full" />
+        <div className="skeleton h-[280px] w-full rounded-xl" />
       ) : (
         <TimeSeriesChart
           points={points}

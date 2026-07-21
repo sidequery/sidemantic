@@ -8479,7 +8479,7 @@ function Leaderboard({
     "data-dimension": dimension,
     "data-expanded": expanded || undefined,
     "aria-label": `${title}, ranked by ${metricLabel}`,
-    className: "flex min-h-60 flex-col border-b border-r border-line bg-surface data-[expanded=true]:col-span-full",
+    className: "flex min-h-40 flex-col border-b border-r border-line bg-surface data-[expanded=true]:col-span-full",
     children: [
       /* @__PURE__ */ jsx_runtime5.jsxs("header", {
         className: "flex items-center justify-between gap-3 px-3 pb-2 pt-2.5",

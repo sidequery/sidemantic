@@ -268,6 +268,7 @@ Analytics webapps should feel work-focused:
 - Control voice is soft, not tactical: controls (buttons, selects, comboboxes, date pickers, chips, tab groups) are pill-shaped with comfortable padding; popovers and cards use large radii and token shadows. Labels are normal case — never uppercase tracked micro-labels. Mono tabular numerals are reserved for data values so they stay the loudest voice.
 - One control metric: every toolbar control shares the same height (28px standard, 24px small) and 12px label text. Mixed control heights in one row are a defect.
 - Do not put a surface panel behind control groups. Toolbars, filter rows, and input clusters sit directly on the page, spaced with gaps — no bordered/filled box behind them and no divider rules between rows. The controls' own pill chrome is all the structure they need.
+- Table accessories float outside the table border: the search input sits chromeless above the table and the pager sits chromeless below it. Never wrap them in header/footer strips attached to the table container.
 - Use existing app colors/components first. For net-new Sidemantic demos, use a restrained neutral UI with a single accent and clear positive/negative colors.
 
 ## Common Failures

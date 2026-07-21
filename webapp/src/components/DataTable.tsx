@@ -108,7 +108,7 @@ export function DataTable({
                       type="button"
                       onClick={() => onSort(column.key)}
                       aria-label={`Sort by ${column.label}${active ? `, currently ${sortDir === "asc" ? "ascending" : "descending"}` : ""}`}
-                      className={`inline-flex min-h-11 max-w-full items-center gap-1 whitespace-nowrap hover:text-ink ${active ? "text-ink" : ""}`}
+                      className={`table-sort inline-flex max-w-full items-center gap-1 whitespace-nowrap hover:text-ink ${active ? "text-ink" : ""}`}
                     >
                       <span className="truncate">{column.label}</span>
                       <span aria-hidden="true" className="text-[9px]">
@@ -185,7 +185,7 @@ export function DataTable({
       {paginate ? (
         <div
           data-testid="pivot-table-pager"
-          className="flex min-h-11 items-center justify-between gap-3 border-t border-line px-3 text-2xs text-faint"
+          className="flex items-center justify-between gap-3 border-t border-line px-3 py-1 text-2xs text-faint"
         >
           <span className="tnum">
             {start + 1}–{Math.min(start + pageSize, filteredRows.length)} of {filteredRows.length.toLocaleString()}
@@ -196,7 +196,7 @@ export function DataTable({
               type="button"
               disabled={safePage === 0}
               onClick={() => setPage((value) => Math.max(0, value - 1))}
-              className="min-h-11 min-w-11 px-2 text-muted hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
+              className="table-pager-button px-2 py-1 text-muted hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
             >
               Prev
             </button>
@@ -204,7 +204,7 @@ export function DataTable({
               type="button"
               disabled={safePage >= pageCount - 1}
               onClick={() => setPage((value) => Math.min(pageCount - 1, value + 1))}
-              className="min-h-11 min-w-11 px-2 text-muted hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
+              className="table-pager-button px-2 py-1 text-muted hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
             >
               Next
             </button>

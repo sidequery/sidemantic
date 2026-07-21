@@ -569,7 +569,7 @@ function DataTable({
                       type: "button",
                       onClick: () => onSort(column.key),
                       "aria-label": `Sort by ${column.label}${active ? `, currently ${sortDir === "asc" ? "ascending" : "descending"}` : ""}`,
-                      className: `inline-flex min-h-11 max-w-full items-center gap-1 whitespace-nowrap hover:text-ink ${active ? "text-ink" : ""}`,
+                      className: `table-sort inline-flex max-w-full items-center gap-1 whitespace-nowrap hover:text-ink ${active ? "text-ink" : ""}`,
                       children: [
                         /* @__PURE__ */ jsx4("span", {
                           className: "truncate",
@@ -650,7 +650,7 @@ function DataTable({
       }),
       paginate ? /* @__PURE__ */ jsxs4("div", {
         "data-testid": "pivot-table-pager",
-        className: "flex min-h-11 items-center justify-between gap-3 border-t border-line px-3 text-2xs text-faint",
+        className: "flex items-center justify-between gap-3 border-t border-line px-3 py-1 text-2xs text-faint",
         children: [
           /* @__PURE__ */ jsxs4("span", {
             className: "tnum",
@@ -670,14 +670,14 @@ function DataTable({
                 type: "button",
                 disabled: safePage === 0,
                 onClick: () => setPage((value) => Math.max(0, value - 1)),
-                className: "min-h-11 min-w-11 px-2 text-muted hover:text-ink disabled:cursor-not-allowed disabled:opacity-40",
+                className: "table-pager-button px-2 py-1 text-muted hover:text-ink disabled:cursor-not-allowed disabled:opacity-40",
                 children: "Prev"
               }),
               /* @__PURE__ */ jsx4("button", {
                 type: "button",
                 disabled: safePage >= pageCount - 1,
                 onClick: () => setPage((value) => Math.min(pageCount - 1, value + 1)),
-                className: "min-h-11 min-w-11 px-2 text-muted hover:text-ink disabled:cursor-not-allowed disabled:opacity-40",
+                className: "table-pager-button px-2 py-1 text-muted hover:text-ink disabled:cursor-not-allowed disabled:opacity-40",
                 children: "Next"
               })
             ]

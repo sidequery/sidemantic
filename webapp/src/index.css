@@ -167,8 +167,13 @@ h3 {
 
 @media (pointer: coarse) {
   .leaderboard-row,
-  .leaderboard-expand {
+  .leaderboard-expand,
+  .table-sort,
+  .table-pager-button {
     min-height: 44px;
+  }
+  .table-pager-button {
+    min-width: 44px;
   }
 }
 

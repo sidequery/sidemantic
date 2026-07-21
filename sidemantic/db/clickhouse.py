@@ -231,6 +231,7 @@ class ClickHouseAdapter(BaseDatabaseAdapter):
         FROM system.query_log
         WHERE event_time >= now() - INTERVAL {days_back} DAY
           AND type = 'QueryFinish'
+          AND is_initial_query = 1
           AND exception = ''
           AND lower(query) NOT LIKE '%system.query_log%'
           {instrumentation_filter}

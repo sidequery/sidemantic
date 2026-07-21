@@ -2361,10 +2361,15 @@ fn build_preagg_query_history_sql(
     context: &str,
 ) -> CliResult<String> {
     match dialect {
+        // QUERY_HISTORY applies RESULT_LIMIT (default 100, max 10000) BEFORE the outer
+        // WHERE/LIMIT, so always request the max and let the outer LIMIT trim.
+        // The NOT ILIKE guard keeps this fetch query (which contains the marker
+        // literal) from matching itself on subsequent runs.
         "snowflake" => Ok(format!(
             "SELECT query_text \
-             FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY(END_TIME_RANGE_START => DATEADD('day', -{days_back}, CURRENT_TIMESTAMP()))) \
+             FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY(END_TIME_RANGE_START => DATEADD('day', -{days_back}, CURRENT_TIMESTAMP()), RESULT_LIMIT => 10000)) \
              WHERE query_text LIKE '%-- sidemantic:%' \
+               AND query_text NOT ILIKE '%INFORMATION_SCHEMA.QUERY_HISTORY%' \
                AND execution_status = 'SUCCESS' \
              ORDER BY start_time DESC \
              LIMIT {limit}"
@@ -2378,6 +2383,7 @@ fn build_preagg_query_history_sql(
                    AND job_type = 'QUERY' \
                    AND state = 'DONE' \
                    AND query LIKE '%-- sidemantic:%' \
+                   AND NOT REGEXP_CONTAINS(UPPER(query), r'INFORMATION_SCHEMA\\.JOBS_BY_PROJECT') \
                  ORDER BY creation_time DESC \
                  LIMIT {limit}"
             ))
@@ -2387,7 +2393,8 @@ fn build_preagg_query_history_sql(
              FROM system.query.history \
              WHERE start_time >= CURRENT_TIMESTAMP() - INTERVAL {days_back} DAYS \
                AND statement_text LIKE '%-- sidemantic:%' \
-               AND status = 'FINISHED' \
+               AND LOWER(statement_text) NOT LIKE '%system.query.history%' \
+               AND execution_status = 'FINISHED' \
              ORDER BY start_time DESC \
              LIMIT {limit}"
         )),
@@ -2396,7 +2403,9 @@ fn build_preagg_query_history_sql(
              FROM system.query_log \
              WHERE event_time >= now() - INTERVAL {days_back} DAY \
                AND query LIKE '%-- sidemantic:%' \
+               AND lower(query) NOT LIKE '%system.query_log%' \
                AND type = 'QueryFinish' \
+               AND is_initial_query = 1 \
                AND exception = '' \
              ORDER BY event_time DESC \
              LIMIT {limit}"

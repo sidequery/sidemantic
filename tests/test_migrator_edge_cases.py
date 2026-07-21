@@ -249,8 +249,13 @@ def test_generate_rewritten_query_with_cte():
 
     sql = rewritten["query_1"]
 
-    # Should preserve CTE structure
-    assert "WITH" in sql or "high_value" in sql
+    # The rewrite targets the underlying physical table; the CTE alias is not a
+    # real table and must not appear as one.
+    assert "FROM orders" in sql
+    assert "high_value" not in sql
+    # The CTE's row filter is part of the query pipeline and must be preserved
+    analysis = report.query_analyses[0]
+    assert any("amount > 100" in f for f in analysis.filters)
 
 
 def test_generate_models_implicit_join():

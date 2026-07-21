@@ -59,6 +59,8 @@ class PreAggregationRecommender:
         self.min_query_count = min_query_count
         self.min_benefit_score = min_benefit_score
         self.patterns: dict[QueryPattern, int] = defaultdict(int)
+        self.queries_seen = 0
+        self.queries_matched = 0
 
     def parse_query_log(self, queries: list[str]) -> None:
         """Parse instrumented queries and extract patterns.
@@ -67,8 +69,10 @@ class PreAggregationRecommender:
             queries: List of SQL queries with instrumentation comments
         """
         for query in queries:
+            self.queries_seen += 1
             pattern = self._extract_pattern(query)
             if pattern:
+                self.queries_matched += 1
                 self.patterns[pattern] += 1
 
     def parse_query_log_file(self, file_path: str) -> None:
@@ -77,13 +81,12 @@ class PreAggregationRecommender:
         Args:
             file_path: Path to file containing queries
         """
+        from sidemantic.core.migrator import split_sql_statements
+
         with open(file_path) as f:
             content = f.read()
 
-        # Split by semicolon for multi-query files
-        queries = [q.strip() for q in content.split(";") if q.strip()]
-
-        self.parse_query_log(queries)
+        self.parse_query_log(split_sql_statements(content))
 
     def fetch_and_parse_query_history(self, connection: Any, days_back: int = 7, limit: int = 1000) -> None:
         """Fetch query history from database and parse for pre-aggregation patterns.
@@ -140,6 +143,12 @@ class PreAggregationRecommender:
         dimensions = [d for d in dimensions if d]
         granularities = [g for g in granularities if g]
 
+        # Queries already served by a pre-aggregation must not feed new
+        # recommendations: they would keep re-recommending existing rollups
+        # and inflate benefit scores with already-optimized traffic.
+        if parts.get("used_preagg", "").lower() == "true":
+            return None
+
         # Only track single-model queries (multi-model queries can't use pre-aggs currently)
         if len(models) != 1:
             return None
@@ -191,7 +200,7 @@ class PreAggregationRecommender:
         # Sort by benefit score descending
         recommendations.sort(key=lambda r: r.estimated_benefit_score, reverse=True)
 
-        if top_n:
+        if top_n is not None:
             recommendations = recommendations[:top_n]
 
         return recommendations
@@ -244,6 +253,11 @@ class PreAggregationRecommender:
         """
         parts = []
 
+        # Prefix with the model so names stay unique across models even after
+        # leaf-name stripping below.
+        if pattern.model:
+            parts.append(pattern.model.split(".")[-1])
+
         # Add granularity if present
         if pattern.granularities:
             # Use the finest granularity for naming
@@ -262,7 +276,12 @@ class PreAggregationRecommender:
             if len(dims) <= 2:
                 parts.extend([d.split(".")[-1] for d in dims])
             else:
-                parts.append(f"{len(dims)}dims")
+                # Collapsing to a bare count would collide for distinct dimension
+                # sets of the same size; add a stable digest of the full set.
+                import hashlib
+
+                digest = hashlib.md5("_".join(dims).encode()).hexdigest()[:6]
+                parts.append(f"{len(dims)}dims_{digest}")
 
         # Add metric indicator
         if len(pattern.metrics) == 1:
@@ -306,9 +325,9 @@ class PreAggregationRecommender:
                     time_dimension = dim_name
                     break
 
-            if not time_dimension and dimensions:
-                # Fallback: use first dimension
-                time_dimension = dimensions[0].split(".")[-1]
+            # If no dimension looks like a time column, leave time_dimension
+            # unset rather than declaring an arbitrary (likely categorical)
+            # dimension as time-truncated, which would corrupt the rollup.
 
             # Use finest granularity
             if time_dimension:
@@ -346,7 +365,17 @@ class PreAggregationRecommender:
 
         return {
             "total_queries": total_queries,
+            "queries_seen": self.queries_seen,
+            "queries_skipped": self.queries_seen - self.queries_matched,
             "unique_patterns": unique_patterns,
             "models": dict(model_counts),
-            "patterns_above_threshold": sum(1 for p, c in self.patterns.items() if c >= self.min_query_count),
+            # Mirror get_recommendations: both the count threshold and the
+            # benefit-score floor must pass, or this count overstates what the
+            # recommendation list will actually contain.
+            "patterns_above_threshold": sum(
+                1
+                for pattern, count in self.patterns.items()
+                if count >= self.min_query_count
+                and self._calculate_benefit_score(pattern, count) >= self.min_benefit_score
+            ),
         }

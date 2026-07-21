@@ -192,7 +192,7 @@ class DatabricksAdapter(BaseDatabaseAdapter):
         SELECT statement_text
         FROM system.query.history
         WHERE start_time >= CURRENT_TIMESTAMP() - INTERVAL {days_back} DAYS
-          AND status = 'FINISHED'
+          AND execution_status = 'FINISHED'
           AND LOWER(statement_text) NOT LIKE '%system.query.history%'
           {instrumentation_filter}
         ORDER BY start_time DESC

@@ -686,7 +686,9 @@ sidemantic preagg recommend [OPTIONS]
 .PP
 Show pre\-aggregation recommendations based on query patterns.
 .PP
-Examples: sidemantic preagg recommend \-\-connection "bigquery://project/dataset" sidemantic preagg recommend \-\-db data.db \-\-min\-count 50 \-\-top 10 sidemantic preagg recommend \-\-queries queries.sql \-\-min\-score 0.5
+Query\-history import requires a warehouse with a queryable history (Snowflake, BigQuery, Databricks, or ClickHouse); for DuckDB and other adapters, pass a query log with \-\-queries instead.
+.PP
+Examples: sidemantic preagg recommend \-\-connection "bigquery://project/dataset" sidemantic preagg recommend \-\-connection "snowflake://..." \-\-min\-count 50 \-\-top 10 sidemantic preagg recommend \-\-queries queries.sql \-\-min\-score 0.5
 .SS OPTIONS
 .TP
 \fB\-\-queries, \-q PATH\fR
@@ -725,7 +727,9 @@ Apply pre\-aggregation recommendations to model YAML files.
 .PP
 Analyzes query patterns and automatically adds pre\-aggregation definitions to model YAML files.
 .PP
-Examples: sidemantic preagg apply models/ \-\-connection "bigquery://project/dataset" sidemantic preagg apply models/ \-\-db data.db \-\-top 5 sidemantic preagg apply models/ \-\-queries queries.sql \-\-dry\-run
+Query\-history import requires a warehouse with a queryable history (Snowflake, BigQuery, Databricks, or ClickHouse); for DuckDB and other adapters, pass a query log with \-\-queries instead.
+.PP
+Examples: sidemantic preagg apply models/ \-\-connection "bigquery://project/dataset" sidemantic preagg apply models/ \-\-connection "snowflake://..." \-\-top 5 sidemantic preagg apply models/ \-\-queries queries.sql \-\-dry\-run
 .SS OPTIONS
 .TP
 \fB\-\-queries, \-q PATH\fR

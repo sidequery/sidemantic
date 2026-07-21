@@ -106,7 +106,6 @@ export function BarLineCombo({
                 y={Math.min(valueY, baselineY)}
                 width={barWidth}
                 height={Math.abs(valueY - baselineY)}
-                rx="3"
                 data-label={item.label}
                 data-bar={value}
                 data-line={lines[index]}

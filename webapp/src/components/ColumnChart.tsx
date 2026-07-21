@@ -80,7 +80,6 @@ export function ColumnChart({ data, height = 200, ariaLabel }: ColumnChartProps)
                 y={y}
                 width={barWidth}
                 height={barHeight}
-                rx="3"
                 data-label={item.label}
                 data-value={value}
                 data-tone={value < 0 ? "negative" : "positive"}

@@ -213,7 +213,7 @@ export function ComponentGallery() {
               <button
                 type="button"
                 onClick={() => setGalleryFilters({ "orders.region": ["East", "West"], "orders.status": ["completed"] })}
-                className="min-h-11 border border-line px-3 text-2xs text-muted hover:bg-surface-soft"
+                className="rounded border border-line px-2 py-1 text-2xs text-muted hover:bg-surface-soft"
               >
                 Reset filters
               </button>
@@ -224,7 +224,7 @@ export function ComponentGallery() {
         <section>
           <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-faint">Charts</h2>
           <div className="grid gap-3 xl:grid-cols-2">
-            <article className="min-w-0 rounded-lg border border-line bg-surface p-3 shadow-[var(--shadow-sm)]">
+            <article className="min-w-0">
               <h3 className="mb-2 text-xs font-semibold">Sparkline</h3>
               <Sparkline
                 values={[31, 42, 38, 55, 60, 74, 69, 83]}
@@ -232,15 +232,15 @@ export function ComponentGallery() {
                 ariaLabel="Eight month revenue trend"
               />
             </article>
-            <article className="min-w-0 rounded-lg border border-line bg-surface p-3 shadow-[var(--shadow-sm)]">
+            <article className="min-w-0">
               <h3 className="mb-2 text-xs font-semibold">Column chart</h3>
               <ColumnChart data={[{ label: "East", value: 83 }, { label: "South", value: 81 }, { label: "West", value: 72 }, { label: "Returns", value: -18 }]} />
             </article>
-            <article className="min-w-0 rounded-lg border border-line bg-surface p-3 shadow-[var(--shadow-sm)]">
+            <article className="min-w-0">
               <h3 className="mb-2 text-xs font-semibold">Line chart compatibility export</h3>
               <LineChart data={[{ label: "Jan", value: 31 }, { label: "Feb", value: 42 }, { label: "Mar", value: 38 }, { label: "Apr", value: 55 }, { label: "May", value: 60 }]} />
             </article>
-            <article className="min-w-0 rounded-lg border border-line bg-surface p-3 shadow-[var(--shadow-sm)]">
+            <article className="min-w-0">
               <h3 className="mb-2 text-xs font-semibold">Interactive time series</h3>
               <TimeSeriesChart
                 points={[31, 42, 38, 55, 60, 74].map((y, index) => ({ x: `2025-0${index + 1}-01`, y }))}
@@ -248,15 +248,15 @@ export function ComponentGallery() {
                 formatValue={(value) => `$${value.toLocaleString()}k`}
               />
             </article>
-            <article className="min-w-0 rounded-lg border border-line bg-surface p-3 shadow-[var(--shadow-sm)]">
+            <article className="min-w-0">
               <h3 className="mb-2 text-xs font-semibold">Donut</h3>
               <DonutChart data={[{ label: "iOS", value: 4200 }, { label: "Android", value: 3100 }, { label: "Web", value: 1900 }, { label: "Other", value: 400 }]} />
             </article>
-            <article className="min-w-0 rounded-lg border border-line bg-surface p-3 shadow-[var(--shadow-sm)]">
+            <article className="min-w-0">
               <h3 className="mb-2 text-xs font-semibold">Stacked area (long rows via rowsToSeries)</h3>
               <StackedAreaChart labels={stackedSeries.labels} series={stackedSeries.series} height={200} />
             </article>
-            <article className="min-w-0 rounded-lg border border-line bg-surface p-3 shadow-[var(--shadow-sm)]">
+            <article className="min-w-0">
               <h3 className="mb-2 text-xs font-semibold">Bar + line combo (dual axis)</h3>
               <BarLineCombo
                 data={MONTH_LABELS.map((label, index) => ({ label, bar: 200 + index * 42, line: 0.02 + index * 0.004 }))}
@@ -266,19 +266,19 @@ export function ComponentGallery() {
                 height={200}
               />
             </article>
-            <article className="min-w-0 rounded-lg border border-line bg-surface p-3 shadow-[var(--shadow-sm)]">
+            <article className="min-w-0">
               <h3 className="mb-2 text-xs font-semibold">Histogram</h3>
               <HistogramChart values={histogramValues} bins={20} />
             </article>
-            <article className="min-w-0 rounded-lg border border-line bg-surface p-3 shadow-[var(--shadow-sm)]">
+            <article className="min-w-0">
               <h3 className="mb-2 text-xs font-semibold">Scatter</h3>
               <ScatterChart points={scatterPoints} xLabel="Sessions" yLabel="Orders" height={200} />
             </article>
-            <article className="min-w-0 rounded-lg border border-line bg-surface p-3 shadow-[var(--shadow-sm)]">
+            <article className="min-w-0">
               <h3 className="mb-2 text-xs font-semibold">Heatmap</h3>
               <HeatmapChart cells={heatmapCells} height={200} />
             </article>
-            <article className="min-w-0 rounded-lg border border-line bg-surface p-3 shadow-[var(--shadow-sm)]">
+            <article className="min-w-0">
               <h3 className="mb-2 text-xs font-semibold">Waterfall</h3>
               <WaterfallChart
                 data={[
@@ -291,7 +291,7 @@ export function ComponentGallery() {
                 height={200}
               />
             </article>
-            <article className="min-w-0 rounded-lg border border-line bg-surface p-3 shadow-[var(--shadow-sm)] xl:col-span-2">
+            <article className="min-w-0 xl:col-span-2">
               <h3 className="mb-2 text-xs font-semibold">Network</h3>
               <NetworkChart
                 nodes={[

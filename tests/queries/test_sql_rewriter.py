@@ -1581,8 +1581,17 @@ def test_compile_post_process(semantic_layer):
     assert "WITH WITH" not in outer_sql
 
 
-def test_query_post_process(semantic_layer):
+def test_query_post_process(semantic_layer, monkeypatch):
     """Test post_process parameter on query()."""
+    original_compile = semantic_layer.compile
+    compile_calls = 0
+
+    def counted_compile(*args, **kwargs):
+        nonlocal compile_calls
+        compile_calls += 1
+        return original_compile(*args, **kwargs)
+
+    monkeypatch.setattr(semantic_layer, "compile", counted_compile)
     result = semantic_layer.query(
         metrics=["orders.revenue"],
         dimensions=["orders.status"],
@@ -1598,6 +1607,7 @@ def test_query_post_process(semantic_layer):
             assert row["tier"] == "high"
         else:
             assert row["tier"] == "low"
+    assert compile_calls == 1
 
 
 def test_post_process_missing_placeholder(semantic_layer):

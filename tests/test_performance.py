@@ -198,6 +198,35 @@ def test_sql_generation_performance(performance_layer):
     assert avg_ms < 15.0, f"SQL generation too slow: {avg_ms:.3f}ms"
 
 
+def test_semantic_layer_reuses_the_warm_sql_planner(performance_layer, monkeypatch):
+    """Repeated public compile calls hit a layer-scoped generator cache."""
+    generator = performance_layer._python_generator()
+    original = generator._build_model_cte
+    calls = 0
+
+    def counted(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(generator, "_build_model_cte", counted)
+
+    first = performance_layer.compile(
+        metrics=["orders.revenue"],
+        dimensions=["orders.status"],
+        filters=["orders.status = 'completed'"],
+    )
+    second = performance_layer.compile(
+        metrics=["orders.revenue"],
+        dimensions=["orders.status"],
+        filters=["orders.status = 'completed'"],
+    )
+
+    assert first == second
+    assert performance_layer._python_generator() is generator
+    assert calls == 1
+
+
 def test_multi_join_generation_performance(performance_layer):
     """Measure performance of SQL generation with multiple joins."""
     from sidemantic.sql.generator import SQLGenerator

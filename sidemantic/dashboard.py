@@ -21,7 +21,17 @@ from sidemantic.viz import CrossfilterDashboard, CrossfilterTab, _unique_field_a
 
 DASHBOARD_SCHEMA = "sidemantic.dashboard.v1"
 TS_SCHEMA = "sidemantic.schema.v1"
-VALID_CHART_TYPES = {"auto", "bar", "line", "area", "scatter", "point"}
+VALID_CHART_TYPES = {
+    "area",
+    "auto",
+    "bar",
+    "kpi",
+    "leaderboard",
+    "line",
+    "point",
+    "scatter",
+    "table",
+}
 VALID_RENDERERS = {"vega-lite", "plotly", "observable-plot", "d3", "crossfilter"}
 TIME_GRANULARITIES = ["second", "minute", "hour", "day", "week", "month", "quarter", "year"]
 __all__ = [
@@ -128,9 +138,6 @@ class DashboardDocument:
             if not isinstance(charts, list) or not charts:
                 errors.append(f"{path}.charts must be a non-empty list")
                 continue
-            if len(charts) != 1:
-                errors.append(f"{path}.charts currently supports exactly one chart in the canonical dashboard UI")
-
             chart_ids: set[str] = set()
             for chart_index, chart in enumerate(charts):
                 chart_path = f"{path}.charts[{chart_index}]"
@@ -161,6 +168,13 @@ class DashboardDocument:
         errors = self.validate(layer)
         if errors:
             raise DashboardSpecError("; ".join(errors))
+        multi_chart_tabs = [str(tab["id"]) for tab in self.tabs if len(tab["charts"]) != 1]
+        if multi_chart_tabs:
+            raise DashboardSpecError(
+                "The experimental crossfilter adapter supports exactly one chart per tab; "
+                f"tabs {', '.join(multi_chart_tabs)} contain multiple charts. "
+                "Use `sidemantic dashboard serve` for the canonical multi-chart dashboard UI."
+            )
 
         tabs: list[CrossfilterTab] = []
         for tab in self.tabs:
@@ -268,7 +282,7 @@ export type Metric = typeof {schema_name}.metrics[number];
 export type Dimension = typeof {schema_name}.dimensions[number];
 export type SemanticField = typeof {schema_name}.fields[number];
 export type DashboardRenderer = "vega-lite" | "plotly" | "observable-plot" | "d3" | "crossfilter";
-export type ChartType = "auto" | "bar" | "line" | "area" | "scatter" | "point";
+export type ChartType = "auto" | "kpi" | "bar" | "line" | "area" | "leaderboard" | "table" | "scatter" | "point";
 
 export interface FieldValueMap {{
 {value_map}
@@ -320,6 +334,10 @@ export type DashboardChart = {{
   query: ChartQuery;
   encoding?: ChartEncoding;
   interactions?: ChartInteractions;
+  layout?: {{
+    colSpan?: 1 | 2;
+    rowSpan?: number;
+  }};
 }};
 
 export type ChartQuery = {{
@@ -377,6 +395,9 @@ def _validate_chart(
     execute_sql: bool = False,
 ) -> list[str]:
     errors: list[str] = []
+    chart_id = chart.get("id")
+    if not isinstance(chart_id, str) or not chart_id:
+        errors.append(f"{path}.id is required")
     chart_type = str(chart.get("type") or "auto")
     if chart_type not in VALID_CHART_TYPES:
         errors.append(f"{path}.type must be one of: {', '.join(sorted(VALID_CHART_TYPES))}")

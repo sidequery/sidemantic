@@ -133,6 +133,10 @@ class SemanticLayer:
         self.graph = SemanticGraph()
         self._sql_rewrite_cache: dict[tuple[object, ...], str] = {}
         self._sql_rewrite_cache_limit = 256
+        # SQLGenerator owns the expensive graph/path/filter planning caches. Reuse
+        # one per query-affecting configuration instead of constructing a fresh,
+        # empty cache for every compile request.
+        self._python_generators: dict[tuple[object, ...], SQLGenerator] = {}
         # Monotonic counter bumped whenever the model/metric graph or query-affecting
         # config mutates. Included in result-cache keys so cached Arrow results are
         # invalidated the moment the layer definition changes.
@@ -688,39 +692,28 @@ class SemanticLayer:
         )
         used_preagg = "used_preagg=true" in routing_sql
 
-        if post_process:
-            sql = self.compile(
-                metrics=metrics,
-                dimensions=dimensions,
-                filters=filters,
-                segments=segments,
-                order_by=order_by,
-                limit=limit,
-                ungrouped=ungrouped,
-                parameters=parameters,
-                use_preaggregations=use_preaggregations,
-                post_process=post_process,
-                timezone=timezone,
-                user_attributes=user_attributes,
-            )
-        else:
-            sql = routing_sql
+        # `routing_sql` is already the complete semantic compile. Post-processing
+        # only wraps it, so compiling the same query a second time wastes the most
+        # expensive planner path and can never change routing.
+        sql = self._apply_post_process(routing_sql, post_process)
 
         def recompile_raw():
-            return self.compile(
+            raw_sql = self.compile(
                 metrics=metrics,
                 dimensions=dimensions,
                 filters=filters,
                 segments=segments,
                 order_by=order_by,
                 limit=limit,
+                offset=offset,
                 ungrouped=ungrouped,
                 parameters=parameters,
                 use_preaggregations=False,
-                post_process=post_process,
                 timezone=timezone,
+                with_totals=with_totals,
                 user_attributes=user_attributes,
             )
+            return self._apply_post_process(raw_sql, post_process)
 
         return self._execute_with_preagg_fallback(
             sql, recompile_raw, use_preaggs=use_preaggs, strict=strict, used_preagg=used_preagg
@@ -1029,14 +1022,7 @@ class SemanticLayer:
         with_totals: bool = False,
         user_attributes: dict | None = None,
     ) -> str:
-        generator = SQLGenerator(
-            self.graph,
-            dialect=dialect or self.dialect,
-            preagg_database=self.preagg_database,
-            preagg_schema=self.preagg_schema,
-            timezone=timezone,
-            allow_non_additive_unsafe=self.allow_non_additive_unsafe,
-        )
+        generator = self._python_generator(dialect=dialect, timezone=timezone)
 
         return generator.generate(
             metrics=metrics,
@@ -1054,6 +1040,32 @@ class SemanticLayer:
             user_attributes=user_attributes,
         )
 
+    def _python_generator(self, *, dialect: str | None = None, timezone: str | None = None) -> SQLGenerator:
+        """Return a persistent planner for one query-affecting configuration."""
+        key = (
+            dialect or self.dialect,
+            self.preagg_database,
+            self.preagg_schema,
+            timezone,
+            self.allow_non_additive_unsafe,
+        )
+        generator = self._python_generators.get(key)
+        if generator is None:
+            generator = SQLGenerator(
+                self.graph,
+                dialect=dialect or self.dialect,
+                preagg_database=self.preagg_database,
+                preagg_schema=self.preagg_schema,
+                timezone=timezone,
+                allow_non_additive_unsafe=self.allow_non_additive_unsafe,
+            )
+            # Configuration combinations are naturally tiny (usually one
+            # dialect plus UTC/local timezone). Bound unusual dynamic callers.
+            if len(self._python_generators) >= 16:
+                self._python_generators.pop(next(iter(self._python_generators)))
+            self._python_generators[key] = generator
+        return generator
+
     def _security_participating_models(
         self,
         metrics: list[str] | None,
@@ -1067,7 +1079,7 @@ class SemanticLayer:
         ``_enforce_security`` iterates over. Segments are named filters on a model, so a
         ``model.segment`` reference also makes that model participate.
         """
-        generator = SQLGenerator(self.graph, dialect=self.dialect)
+        generator = self._python_generator()
         model_names = list(generator._find_required_models(metrics or [], dimensions or [], filters or []))
         for segment_ref in segments or []:
             if "." in segment_ref:
@@ -1240,12 +1252,7 @@ class SemanticLayer:
                     sql = sql.replace("TIMESTAMP_TRUNC(", "DATE_TRUNC(")
 
             if "-- sidemantic:" not in sql:
-                generator = SQLGenerator(
-                    self.graph,
-                    dialect=dialect or self.dialect,
-                    preagg_database=self.preagg_database,
-                    preagg_schema=self.preagg_schema,
-                )
+                generator = self._python_generator(dialect=dialect)
                 segment_filters = generator._resolve_segments(segments or [])
                 all_filters = list(filters or []) + segment_filters
                 model_names = generator._find_required_models(metrics or [], dimensions or [], all_filters)
@@ -1337,12 +1344,7 @@ class SemanticLayer:
 
         use_preaggs = use_preaggregations if use_preaggregations is not None else self.use_preaggregations
 
-        generator = SQLGenerator(
-            self.graph,
-            dialect=dialect or self.dialect,
-            preagg_database=self.preagg_database,
-            preagg_schema=self.preagg_schema,
-        )
+        generator = self._python_generator(dialect=dialect)
         segment_filters = generator._resolve_segments(segments)
         all_filters = filters + segment_filters
         model_names = generator._find_required_models(metrics, dimensions, all_filters)

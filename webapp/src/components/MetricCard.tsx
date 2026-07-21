@@ -9,6 +9,10 @@ type MetricCardProps = {
   valueText?: string;
   format?: FormatHint;
   delta?: { label: string; tone: Tone } | null;
+  /** Caption naming what the delta compares against, e.g. "vs previous month". */
+  comparison?: string;
+  /** 0..1 renders a thin progress/attainment bar under the value. */
+  progress?: number;
   sparkValues?: number[];
   sparkLabels?: string[];
   selected?: boolean;
@@ -33,6 +37,8 @@ export function MetricCard({
   valueText,
   format,
   delta,
+  comparison,
+  progress,
   sparkValues = [],
   sparkLabels,
   selected,
@@ -64,6 +70,18 @@ export function MetricCard({
           valueText ?? formatValue(value, format)
         )}
       </div>
+      {comparison ? <div className="text-2xs text-faint">{comparison}</div> : null}
+      {progress != null && Number.isFinite(progress) ? (
+        <div
+          role="progressbar"
+          aria-valuemin={0}
+          aria-valuemax={1}
+          aria-valuenow={Math.min(Math.max(progress, 0), 1)}
+          className="h-1 w-full bg-surface-soft"
+        >
+          <div className="h-full bg-chart-primary" style={{ width: `${Math.min(Math.max(progress, 0), 1) * 100}%` }} />
+        </div>
+      ) : null}
     </>
   );
 

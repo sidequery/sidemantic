@@ -7745,15 +7745,70 @@ function paginateRows(rows, page, pageSize) {
 
 // webapp/src/components/DataTable.tsx
 var jsx_runtime = __toESM(require_jsx_runtime(), 1);
-function DataTable({ columns, rows, loading, sortKey, sortDir, onSort, renderCell, pageSize = 50 }) {
+function columnTotal(rows, key, kind) {
+  if (kind === "count")
+    return rows.length;
+  const values = rows.map((row) => typeof row[key] === "number" ? row[key] : Number(row[key])).filter(Number.isFinite);
+  if (values.length === 0)
+    return Number.NaN;
+  if (kind === "min")
+    return Math.min(...values);
+  if (kind === "max")
+    return Math.max(...values);
+  const sum = values.reduce((total, value) => total + value, 0);
+  return kind === "avg" ? sum / values.length : sum;
+}
+var TOTAL_LABEL = { sum: "Σ", avg: "avg", min: "min", max: "max", count: "n" };
+function DataTable({
+  columns,
+  rows,
+  loading,
+  sortKey,
+  sortDir,
+  onSort,
+  renderCell,
+  pageSize = 50,
+  searchable,
+  totals,
+  stickyHeader = true
+}) {
   const [page, setPage] = import_react.useState(0);
-  const { paginate, pageCount, safePage, start, visibleRows } = paginateRows(rows, page, pageSize);
+  const [search, setSearch] = import_react.useState("");
+  const filteredRows = import_react.useMemo(() => {
+    const needle = search.trim().toLowerCase();
+    if (!searchable || !needle)
+      return rows;
+    return rows.filter((row) => columns.some((column) => String(row[column.key] ?? "").toLowerCase().includes(needle)));
+  }, [rows, columns, search, searchable]);
+  const { paginate, pageCount, safePage, start, visibleRows } = paginateRows(filteredRows, page, pageSize);
   import_react.useEffect(() => {
     setPage(0);
-  }, [rows, pageSize, sortKey, sortDir]);
+  }, [rows, pageSize, sortKey, sortDir, search]);
+  const hasTotals = totals && columns.some((column) => totals[column.key]);
   return /* @__PURE__ */ jsx_runtime.jsxs("div", {
     className: "overflow-hidden border border-line bg-surface",
     children: [
+      searchable ? /* @__PURE__ */ jsx_runtime.jsxs("div", {
+        className: "flex items-center gap-2 border-b border-line px-3 py-1.5",
+        children: [
+          /* @__PURE__ */ jsx_runtime.jsx("input", {
+            type: "search",
+            "aria-label": "Search rows",
+            placeholder: "Search…",
+            value: search,
+            onChange: (event) => setSearch(event.target.value),
+            className: "w-full max-w-64 border border-line bg-surface px-1.5 py-1 text-2xs text-ink placeholder:text-faint"
+          }),
+          search ? /* @__PURE__ */ jsx_runtime.jsxs("span", {
+            className: "whitespace-nowrap text-2xs text-faint tnum",
+            children: [
+              filteredRows.length.toLocaleString(),
+              " of ",
+              rows.length.toLocaleString()
+            ]
+          }) : null
+        ]
+      }) : null,
       /* @__PURE__ */ jsx_runtime.jsx("div", {
         className: "overflow-auto",
         children: /* @__PURE__ */ jsx_runtime.jsxs("table", {
@@ -7766,7 +7821,7 @@ function DataTable({ columns, rows, loading, sortKey, sortDir, onSort, renderCel
                 children: columns.map((column) => {
                   const active = sortKey === column.key;
                   return /* @__PURE__ */ jsx_runtime.jsx("th", {
-                    className: `max-w-80 whitespace-nowrap border-b border-line px-3 py-1.5 font-semibold text-faint ${column.numeric ? "min-w-32 text-right" : "min-w-40 text-left"}`,
+                    className: `max-w-80 whitespace-nowrap border-b border-line bg-surface-soft px-3 py-1.5 font-semibold text-faint ${column.numeric ? "min-w-32 text-right" : "min-w-40 text-left"} ${stickyHeader ? "sticky top-0 z-10" : ""}`,
                     children: column.sortable && onSort ? /* @__PURE__ */ jsx_runtime.jsxs("button", {
                       type: "button",
                       onClick: () => onSort(column.key),
@@ -7793,17 +7848,17 @@ function DataTable({ columns, rows, loading, sortKey, sortDir, onSort, renderCel
               })
             }),
             /* @__PURE__ */ jsx_runtime.jsx("tbody", {
-              children: loading && rows.length === 0 ? /* @__PURE__ */ jsx_runtime.jsx("tr", {
+              children: loading && filteredRows.length === 0 ? /* @__PURE__ */ jsx_runtime.jsx("tr", {
                 children: /* @__PURE__ */ jsx_runtime.jsx("td", {
                   colSpan: columns.length,
                   className: "px-3 py-6 text-center text-faint",
                   children: "Loading…"
                 })
-              }) : rows.length === 0 ? /* @__PURE__ */ jsx_runtime.jsx("tr", {
+              }) : filteredRows.length === 0 ? /* @__PURE__ */ jsx_runtime.jsx("tr", {
                 children: /* @__PURE__ */ jsx_runtime.jsx("td", {
                   colSpan: columns.length,
                   className: "px-3 py-6 text-center text-faint",
-                  children: "No rows"
+                  children: search ? "No matching rows" : "No rows"
                 })
               }) : visibleRows.map((row, index) => /* @__PURE__ */ jsx_runtime.jsx("tr", {
                 className: "hover:bg-surface-soft",
@@ -7819,7 +7874,34 @@ function DataTable({ columns, rows, loading, sortKey, sortDir, onSort, renderCel
                   }, column.key);
                 })
               }, start + index))
-            })
+            }),
+            hasTotals && filteredRows.length > 0 ? /* @__PURE__ */ jsx_runtime.jsx("tfoot", {
+              children: /* @__PURE__ */ jsx_runtime.jsx("tr", {
+                className: "bg-surface-soft",
+                "data-testid": "table-totals",
+                children: columns.map((column) => {
+                  const kind = totals?.[column.key];
+                  if (!kind)
+                    return /* @__PURE__ */ jsx_runtime.jsx("td", {
+                      className: "border-t border-line px-3 py-1.5"
+                    }, column.key);
+                  const total = columnTotal(filteredRows, column.key, kind);
+                  const text = kind === "count" ? total.toLocaleString() : Number.isFinite(total) ? renderCell(column, total) : "—";
+                  return /* @__PURE__ */ jsx_runtime.jsxs("td", {
+                    "data-total": kind,
+                    className: `whitespace-nowrap border-t border-line px-3 py-1.5 font-mono tnum font-medium text-ink ${column.numeric ? "text-right" : "text-left"}`,
+                    children: [
+                      /* @__PURE__ */ jsx_runtime.jsx("span", {
+                        "aria-hidden": "true",
+                        className: "mr-1 text-2xs text-faint",
+                        children: TOTAL_LABEL[kind]
+                      }),
+                      text
+                    ]
+                  }, column.key);
+                })
+              })
+            }) : null
           ]
         })
       }),
@@ -7832,9 +7914,9 @@ function DataTable({ columns, rows, loading, sortKey, sortDir, onSort, renderCel
             children: [
               start + 1,
               "–",
-              Math.min(start + pageSize, rows.length),
+              Math.min(start + pageSize, filteredRows.length),
               " of ",
-              rows.length.toLocaleString(),
+              filteredRows.length.toLocaleString(),
               loading ? " · Updating…" : ""
             ]
           }),
@@ -8710,6 +8792,8 @@ function MetricCard({
   valueText,
   format,
   delta,
+  comparison,
+  progress,
   sparkValues = [],
   sparkLabels,
   selected,
@@ -8750,7 +8834,22 @@ function MetricCard({
         children: loading ? /* @__PURE__ */ jsx_runtime8.jsx("span", {
           className: "skeleton inline-block h-5 w-24 align-middle"
         }) : sparkHover ? formatValue(sparkHover.value, format) : valueText ?? formatValue(value, format)
-      })
+      }),
+      comparison ? /* @__PURE__ */ jsx_runtime8.jsx("div", {
+        className: "text-2xs text-faint",
+        children: comparison
+      }) : null,
+      progress != null && Number.isFinite(progress) ? /* @__PURE__ */ jsx_runtime8.jsx("div", {
+        role: "progressbar",
+        "aria-valuemin": 0,
+        "aria-valuemax": 1,
+        "aria-valuenow": Math.min(Math.max(progress, 0), 1),
+        className: "h-1 w-full bg-surface-soft",
+        children: /* @__PURE__ */ jsx_runtime8.jsx("div", {
+          className: "h-full bg-chart-primary",
+          style: { width: `${Math.min(Math.max(progress, 0), 1) * 100}%` }
+        })
+      }) : null
     ]
   });
   const className = "group flex w-full flex-col gap-1.5 border border-line bg-surface px-3 py-2.5 text-left data-[selected=true]:border-accent data-[selected=true]:ring-1 data-[selected=true]:ring-accent";
@@ -8979,7 +9078,13 @@ var TOKEN_PROPERTIES = {
   chartPrimarySoft: "--chart-primary-soft",
   chartPrimarySelected: "--chart-primary-selected",
   danger: "--danger",
-  dangerSoft: "--danger-soft"
+  dangerSoft: "--danger-soft",
+  viz1: "--viz-1",
+  viz2: "--viz-2",
+  viz3: "--viz-3",
+  viz4: "--viz-4",
+  viz5: "--viz-5",
+  viz6: "--viz-6"
 };
 var KEY = "sidemantic-theme";
 function getTheme() {

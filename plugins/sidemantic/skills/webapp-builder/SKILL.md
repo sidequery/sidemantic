@@ -33,15 +33,45 @@ Use `--list` to inspect the distribution. Existing target files are never overwr
 
 Available React primitives:
 
+Analytics surfaces:
+
 - `DashboardShell`: dense analytics page frame with status and toolbar slots.
-- `MetricCard`: metric label, value, delta, loading, selected state.
+- `MetricCard`: metric label, value, delta, comparison caption, progress bar, loading, selected state.
 - `Leaderboard`: ranked dimension rows with bars, selection, and stable data attributes.
 - `FilterPill`: active filter display and removal.
-- `Sparkline`: small SVG trend line.
-- `ColumnChart`: compact categorical bars for comparisons.
-- `QueryDebugPanel`: generated SQL/debug surface.
+- `QueryDebugPanel` (+ `tokenizeSql`): generated SQL/debug surface.
 - `DataPreviewTable`: stable sample row preview.
-- `LoadingState`, `EmptyState`, `ErrorState`: fixed-height status surfaces.
+- `DataTable` (+ `columnTotal`, `paginateRows`): sortable, paginated result table with optional client search, totals footer, and sticky header.
+- `LoadingState`, `EmptyState`, `ErrorState`, `StatusDot`, `ErrorBoundary`: status surfaces.
+
+Charts (hand-rolled SVG, theme-token driven, shared `ChartTooltip`/`useChartTooltip`):
+
+- `TimeSeriesChart`: full-size metric series with crosshair, comparison overlay, brush-to-zoom.
+- `LineChart`, `Sparkline`: compact trend lines.
+- `ColumnChart`: categorical bars with a zero baseline.
+- `BarLineCombo`: dual-axis bars + independently scaled line.
+- `StackedAreaChart`: composition over time using the categorical `--viz-N` palette.
+- `DonutChart` (+ `donutSegments`): part-of-whole with center total and legend.
+- `HistogramChart` (+ `binValues`): distribution of one numeric field.
+- `ScatterChart`: numeric x/y correlation, optional multi-series coloring.
+- `HeatmapChart`: category-by-category intensity grid.
+- `WaterfallChart` (+ `waterfallSteps`): contribution bridge with running totals.
+- `NetworkChart` (+ `layoutNetwork`): deterministic force-directed graph.
+
+Inputs and controls (dependency-free, accessible):
+
+- `Button`, `Select`, `Switch`, `Tabs`: base controls in the data-tool idiom.
+- `Combobox` (+ `filterOptions`): searchable listbox; single-select, or `multiple` with removable chips. Use `Combobox` for multi-select or long lists where typeahead beats scanning; `Select` for a short static single choice.
+- `DatePicker` (+ `monthGrid`): single or range calendar, inline or popover, ISO string values.
+- `DateRangeControl`: preset + custom date range with comparison-mode picker.
+- `GrainSelect`, `TimezoneSelect`, `ViewSwitcher`: dashboard toolbar controls.
+- `Tooltip`: hover tooltip for arbitrary triggers (header hints, truncated labels), on the same surface as chart tooltips.
+
+Standard conventions shared by the primitives:
+
+- Data passing: feed query-result rows straight into charts through the row adapters — `rowsToCategories`, `rowsToBarLine`, `rowsToPoints`, `rowsToSeries` (long-to-wide pivot), `rowsToCells`, `rowsToTimeSeries` — instead of hand-reshaping per call site. `parseTemporal` normalizes ISO strings, epoch seconds/milliseconds, and Date values.
+- Tooltips: charts compose `TooltipRows` (heading + aligned label/value rows + series swatches) inside `ChartTooltip`, so every hover reads the same. Custom charts should do the same rather than inventing new tooltip markup.
+- Palette: `vizColor(index)` / `VIZ_COLOR_COUNT` cycle the theme's `--viz-1..--viz-6` categorical colors; override them (and all other tokens) via `applyThemeTokens`.
 
 State primitives are conditional UI branches. Do not render loading, empty, and error examples as permanent app content unless the user explicitly asks for a component gallery.
 
@@ -200,15 +230,15 @@ The CLI `sidemantic query` auto-adds default time dimensions for metrics when a 
 ## Bundled Scripts
 
 - `scripts/inspect_layer.py`: inspect models, compile app query shapes, execute samples with `--execute`, or require execution with `--require-execute`.
-- `scripts/copy_components.py`: copy React + Tailwind or static component source from `assets/components/` into a project.
+- `scripts/copy_components.py`: copy the React + Tailwind or static component distribution from `assets/ui-dist/` into a project.
 - `scripts/scaffold_static_app.py`: create a small static dashboard from an executed app spec by copying templates and components. It writes `index.html`, `styles.css`, `sidemantic-components.js`, `app.js`, and `data/app-spec.json`.
 - `scripts/verify_static_app.py`: dependency-free fallback verifier for static dashboards. It checks files, executed result samples, true totals, non-id leaderboard dimensions, and expected DOM/data bindings.
 - `scripts/verify_static_interactions.mjs`: Playwright smoke test for standard static component contracts. It verifies real data changes for filter, leaderboard, metric, reset, and chart-bounds behavior.
 
 ## Bundled Assets
 
-- `assets/components/react-tailwind/`: copyable React source for analytics apps using Tailwind v3.
-- `assets/components/static/`: copyable plain JS/CSS components and helper utilities for generated demos and no-build static pages.
+- `assets/ui-dist/sidemantic-ui.js` + `sidemantic-ui.css`: the built React + Tailwind distribution copied by `copy_components.py --kind react-tailwind`.
+- `assets/ui-dist/sidemantic-ui-static.js`: the static mount-helper bundle copied by `copy_components.py --kind static`.
 - `assets/templates/static-dashboard/`: readable static app templates used by `scaffold_static_app.py`.
 
 After copying assets into a project, treat them as that project's code. Modify them to match local component APIs, naming, tests, and design system constraints.

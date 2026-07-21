@@ -20,6 +20,13 @@
   --chart-primary: #6875e8;
   --chart-primary-soft: rgba(104, 117, 232, 0.14);
   --chart-primary-selected: rgba(104, 117, 232, 0.22);
+  /* Categorical series palette for multi-series charts (donut, stacked area, network groups). */
+  --viz-1: #6875e8;
+  --viz-2: #3aa189;
+  --viz-3: #d9913f;
+  --viz-4: #c266b7;
+  --viz-5: #5aa7d6;
+  --viz-6: #a0a43e;
   --shadow: 0 8px 24px rgba(16, 24, 40, 0.1);
   color-scheme: light;
 }
@@ -40,6 +47,12 @@
   --chart-primary: #8b96ff;
   --chart-primary-soft: rgba(139, 150, 255, 0.18);
   --chart-primary-selected: rgba(139, 150, 255, 0.28);
+  --viz-1: #8b96ff;
+  --viz-2: #55c2a9;
+  --viz-3: #e8ab62;
+  --viz-4: #d98ad0;
+  --viz-5: #7cc0e8;
+  --viz-6: #bcc060;
   --shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
   color-scheme: dark;
 }

@@ -1,20 +1,36 @@
 import { useMemo, useState } from "react";
+import { BarLineCombo } from "../components/BarLineCombo";
+import { Button } from "../components/Button";
 import { ColumnChart } from "../components/ColumnChart";
+import { Combobox } from "../components/Combobox";
 import { DashboardShell } from "../components/DashboardShell";
 import { DataTable, type Column } from "../components/DataTable";
+import { DatePicker, type DatePickerRange } from "../components/DatePicker";
 import { DateRangeControl } from "../components/DateRangeControl";
 import { DataPreviewTable, LineChart } from "../components/DistributionAdapters";
+import { DonutChart } from "../components/DonutChart";
 import { FilterPill } from "../components/FilterPill";
 import { GrainSelect } from "../components/GrainSelect";
+import { HeatmapChart } from "../components/HeatmapChart";
+import { HistogramChart } from "../components/HistogramChart";
 import { Leaderboard, type LeaderboardRow } from "../components/Leaderboard";
 import { MetricCard } from "../components/MetricCard";
+import { NetworkChart } from "../components/NetworkChart";
 import { QueryDebugPanel } from "../components/QueryDebugPanel";
+import { ScatterChart } from "../components/ScatterChart";
+import { Select } from "../components/Select";
 import { Sparkline } from "../components/Sparkline";
+import { StackedAreaChart } from "../components/StackedAreaChart";
 import { EmptyState, ErrorState, LoadingState, StatusDot } from "../components/States";
+import { Switch } from "../components/Switch";
+import { Tabs } from "../components/Tabs";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { TimeSeriesChart } from "../components/TimeSeriesChart";
+import { Tooltip } from "../components/Tooltip";
 import { ViewSwitcher } from "../components/ViewSwitcher";
+import { WaterfallChart } from "../components/WaterfallChart";
 import type { Grain } from "../data/types";
+import { rowsToSeries } from "../lib/rows";
 import type { DateRange } from "../lib/time";
 import type { ViewKind } from "../state/explorerState";
 import { formatValue } from "../lib/format";
@@ -58,6 +74,31 @@ const tableRows = Array.from({ length: 17 }, (_, index) => ({
   orders: 420 - index * 11,
 }));
 
+const MONTH_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug"];
+// Long-form rows in query-result shape, pivoted through rowsToSeries for the stacked area demo.
+const planRows = MONTH_LABELS.flatMap((month, index) => [
+  { month, plan: "Basic", revenue: 120 + index * 26 },
+  { month, plan: "Pro", revenue: 60 + index * 24 },
+  { month, plan: "Enterprise", revenue: index < 2 ? 0 : 10 + index * 12 },
+]);
+const scatterPoints = Array.from({ length: 48 }, (_, index) => ({
+  x: index + 1,
+  y: (index + 1) * 1.6 + ((Math.sin(index * 78.233) * 43758.5453) % 18),
+  label: `Account ${index + 1}`,
+  series: index % 2 ? "Returning" : "New",
+}));
+const histogramValues = Array.from({ length: 400 }, (_, index) => Math.abs((Math.sin(index * 12.9898) * 43758.5453) % 1) * 100);
+const heatmapCells = ["East", "South", "West", "North"].flatMap((region, row) =>
+  MONTH_LABELS.map((month, index) => ({ x: month, y: region, value: (row + 1) * (index + 1) * 7 - (index % 4 === 3 ? 80 : 0) })),
+);
+
+const METRIC_OPTIONS = [
+  { value: "orders.revenue", label: "Revenue" },
+  { value: "orders.count", label: "Order count" },
+  { value: "customers.count", label: "Customer count" },
+  { value: "orders.margin", label: "Gross margin" },
+];
+
 export function ComponentGallery() {
   const [selectedMetric, setSelectedMetric] = useState("orders.revenue");
   const [selected, setSelected] = useState<Record<string, string[]>>({});
@@ -70,6 +111,14 @@ export function ComponentGallery() {
   const [grain, setGrain] = useState<Grain>("month");
   const [view, setView] = useState<ViewKind>("explore");
   const [comparison, setComparison] = useState<"off" | "previous" | "year" | "custom">("previous");
+  const [pickedMetric, setPickedMetric] = useState<string | null>("orders.revenue");
+  const [pickedMetrics, setPickedMetrics] = useState<string[]>(["orders.revenue", "orders.count"]);
+  const [pickedFruit, setPickedFruit] = useState("apple");
+  const [compactRows, setCompactRows] = useState(true);
+  const [galleryTab, setGalleryTab] = useState("explore");
+  const [pickedDate, setPickedDate] = useState<string | null>("2025-06-15");
+  const [pickedRange, setPickedRange] = useState<DatePickerRange | null>({ from: "2025-06-01", to: "2025-06-21" });
+  const stackedSeries = useMemo(() => rowsToSeries(planRows, { x: "month", y: "revenue", series: "plan" }), []);
   const [sort, setSort] = useState<{ key: string; dir: "asc" | "desc" }>({ key: "revenue", dir: "desc" });
   const sortedRows = useMemo(
     () => [...tableRows].sort((left, right) => {
@@ -97,7 +146,16 @@ export function ComponentGallery() {
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
             <MetricCard metric="orders.revenue" label="Revenue" value={288291} format={{ format: "currency" }} selected={selectedMetric === "orders.revenue"} sparkValues={[31, 42, 38, 55, 60, 74]} onSelect={setSelectedMetric} />
             <MetricCard metric="orders.count" label="Order Count" value={447} selected={selectedMetric === "orders.count"} sparkValues={[21, 34, 28, 41, 44, 51]} onSelect={setSelectedMetric} />
-            <MetricCard metric="orders.margin" label="Gross Margin" value={0.324} format={{ format: "percent" }} sparkValues={[24, 26, 29, 27, 31, 32]} />
+            <MetricCard
+              metric="orders.margin"
+              label="Gross Margin"
+              value={0.324}
+              format={{ format: "percent" }}
+              delta={{ label: "+1.1pt", tone: "positive" }}
+              comparison="vs previous month"
+              progress={0.72}
+              sparkValues={[24, 26, 29, 27, 31, 32]}
+            />
           </div>
         </section>
 
@@ -191,6 +249,103 @@ export function ComponentGallery() {
                 formatValue={(value) => `$${value.toLocaleString()}k`}
               />
             </article>
+            <article className="border border-line bg-surface p-3">
+              <h3 className="mb-2 text-xs font-semibold">Donut</h3>
+              <DonutChart data={[{ label: "iOS", value: 4200 }, { label: "Android", value: 3100 }, { label: "Web", value: 1900 }, { label: "Other", value: 400 }]} />
+            </article>
+            <article className="border border-line bg-surface p-3">
+              <h3 className="mb-2 text-xs font-semibold">Stacked area (long rows via rowsToSeries)</h3>
+              <StackedAreaChart labels={stackedSeries.labels} series={stackedSeries.series} height={200} />
+            </article>
+            <article className="border border-line bg-surface p-3">
+              <h3 className="mb-2 text-xs font-semibold">Bar + line combo (dual axis)</h3>
+              <BarLineCombo
+                data={MONTH_LABELS.map((label, index) => ({ label, bar: 200 + index * 42, line: 0.02 + index * 0.004 }))}
+                barLabel="Revenue"
+                lineLabel="Conversion"
+                formatLine={(value) => `${(value * 100).toFixed(1)}%`}
+                height={200}
+              />
+            </article>
+            <article className="border border-line bg-surface p-3">
+              <h3 className="mb-2 text-xs font-semibold">Histogram</h3>
+              <HistogramChart values={histogramValues} bins={20} />
+            </article>
+            <article className="border border-line bg-surface p-3">
+              <h3 className="mb-2 text-xs font-semibold">Scatter</h3>
+              <ScatterChart points={scatterPoints} xLabel="Sessions" yLabel="Orders" height={200} />
+            </article>
+            <article className="border border-line bg-surface p-3">
+              <h3 className="mb-2 text-xs font-semibold">Heatmap</h3>
+              <HeatmapChart cells={heatmapCells} height={200} />
+            </article>
+            <article className="border border-line bg-surface p-3">
+              <h3 className="mb-2 text-xs font-semibold">Waterfall</h3>
+              <WaterfallChart
+                data={[
+                  { label: "Gross", value: 1000, isTotal: true },
+                  { label: "Refunds", value: -140 },
+                  { label: "Discounts", value: -90 },
+                  { label: "Upsells", value: 130 },
+                  { label: "Net", value: 900, isTotal: true },
+                ]}
+                height={200}
+              />
+            </article>
+            <article className="border border-line bg-surface p-3 xl:col-span-2">
+              <h3 className="mb-2 text-xs font-semibold">Network</h3>
+              <NetworkChart
+                nodes={[
+                  { id: "orders", group: "fact" },
+                  { id: "payments", group: "fact" },
+                  { id: "customers", group: "dimension" },
+                  { id: "products", group: "dimension" },
+                  { id: "regions", group: "dimension" },
+                ]}
+                links={[
+                  { source: "orders", target: "customers", weight: 3 },
+                  { source: "orders", target: "products", weight: 2 },
+                  { source: "orders", target: "regions" },
+                  { source: "payments", target: "orders", weight: 2 },
+                  { source: "payments", target: "customers" },
+                ]}
+                height={260}
+              />
+            </article>
+          </div>
+        </section>
+
+        <section>
+          <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-faint">Inputs</h2>
+          <div className="space-y-3 border border-line bg-surface p-3">
+            <div className="flex flex-wrap items-center gap-3">
+              <Button variant="primary">Primary</Button>
+              <Button>Secondary</Button>
+              <Button variant="ghost">Ghost</Button>
+              <Button variant="danger">Danger</Button>
+              <Button size="sm">Small</Button>
+              <Select
+                label="Fruit"
+                value={pickedFruit}
+                onChange={setPickedFruit}
+                options={[{ value: "apple", label: "Apple" }, { value: "banana", label: "Banana" }, { value: "cherry", label: "Cherry" }]}
+              />
+              <Switch checked={compactRows} onChange={setCompactRows} label="Compact rows" />
+              <Tabs
+                tabs={[{ key: "explore", label: "Explore" }, { key: "pivot", label: "Pivot" }, { key: "sql", label: "SQL" }]}
+                active={galleryTab}
+                onChange={setGalleryTab}
+              />
+              <Tooltip content="Revenue in USD, net of refunds">
+                <span className="cursor-help text-2xs text-muted underline decoration-dotted">What is revenue?</span>
+              </Tooltip>
+            </div>
+            <div className="flex flex-wrap items-start gap-3 border-t border-line pt-3">
+              <Combobox value={pickedMetric} onChange={setPickedMetric} options={METRIC_OPTIONS} ariaLabel="Metric" />
+              <Combobox multiple values={pickedMetrics} onChange={setPickedMetrics} options={METRIC_OPTIONS} ariaLabel="Metrics" />
+              <DatePicker mode="single" value={pickedDate} onChange={setPickedDate} ariaLabel="Date" />
+              <DatePicker mode="range" value={pickedRange} onChange={setPickedRange} ariaLabel="Range" />
+            </div>
           </div>
         </section>
 
@@ -204,6 +359,8 @@ export function ComponentGallery() {
             sortDir={sort.dir}
             onSort={(key) => setSort((current) => ({ key, dir: current.key === key && current.dir === "desc" ? "asc" : "desc" }))}
             renderCell={(column, value) => column.numeric ? Number(value).toLocaleString() : String(value)}
+            searchable
+            totals={{ region: "count", revenue: "sum", orders: "sum" }}
           />
           <div className="mt-3">
             <h3 className="mb-2 text-xs font-semibold text-muted">Distribution-friendly data preview</h3>

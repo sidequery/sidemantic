@@ -185,7 +185,7 @@ export function ComponentGallery() {
 
         <section>
           <h2 className="mb-2 text-xs font-medium text-muted">Filters and controls</h2>
-          <div className="space-y-3 rounded-xl border border-line bg-surface p-4 shadow-[var(--shadow-sm)]">
+          <div className="space-y-3">
             <div data-testid="gallery-filter-pills" className="flex min-h-8 flex-wrap items-center gap-2">
               {Object.entries(galleryFilters).flatMap(([dimension, values]) =>
                 values.map((value) => (
@@ -204,7 +204,7 @@ export function ComponentGallery() {
                 <span className="text-2xs text-faint">No active filters</span>
               ) : null}
             </div>
-            <div className="flex flex-wrap items-center gap-3 border-t border-line pt-3">
+            <div className="flex flex-wrap items-center gap-3">
               <DateRangeControl range={dateRange} onChange={setDateRange} comparison={comparison} onComparisonChange={setComparison} />
               <GrainSelect grain={grain} options={["day", "week", "month", "quarter", "year"]} onChange={setGrain} />
               <ViewSwitcher view={view} onChange={setView} />
@@ -316,7 +316,7 @@ export function ComponentGallery() {
 
         <section>
           <h2 className="mb-2 text-xs font-medium text-muted">Inputs</h2>
-          <div className="space-y-3 rounded-xl border border-line bg-surface p-4 shadow-[var(--shadow-sm)]">
+          <div className="space-y-3">
             <div className="flex flex-wrap items-center gap-3">
               <Button variant="primary">Primary</Button>
               <Button>Secondary</Button>
@@ -339,7 +339,7 @@ export function ComponentGallery() {
                 <span className="cursor-help text-2xs text-muted underline decoration-dotted">What is revenue?</span>
               </Tooltip>
             </div>
-            <div className="flex flex-wrap items-start gap-3 border-t border-line pt-3">
+            <div className="flex flex-wrap items-start gap-3">
               <Combobox value={pickedMetric} onChange={setPickedMetric} options={METRIC_OPTIONS} ariaLabel="Metric" />
               <Combobox multiple values={pickedMetrics} onChange={setPickedMetrics} options={METRIC_OPTIONS} ariaLabel="Metrics" />
               <DatePicker mode="single" value={pickedDate} onChange={setPickedDate} ariaLabel="Date" />

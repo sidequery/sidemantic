@@ -30,7 +30,7 @@ describe("DatePicker", () => {
     expect(html).toContain('aria-selected="true" data-date="2024-02-06"');
     expect(html).toContain('aria-selected="false" data-date="2024-02-08"');
     // Edges fill solid; interior days use the soft wash.
-    expect(html).toContain('data-date="2024-02-05" class="py-1 text-center font-mono tnum bg-accent text-surface');
-    expect(html).toContain('data-date="2024-02-06" class="py-1 text-center font-mono tnum bg-accent-soft text-accent');
+    expect(html).toContain('data-date="2024-02-05" class="py-1 text-center tnum bg-accent text-surface');
+    expect(html).toContain('data-date="2024-02-06" class="py-1 text-center tnum bg-accent-soft text-accent');
   });
 });

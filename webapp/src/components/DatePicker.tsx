@@ -142,7 +142,7 @@ export function DatePicker(props: DatePickerProps) {
                 aria-selected={isSelected(cell.iso)}
                 data-date={cell.iso}
                 onClick={() => pick(cell.iso)}
-                className={`py-1 text-center font-mono tnum ${
+                className={`py-1 text-center tnum ${
                   isEdge(cell.iso)
                     ? "bg-accent text-surface"
                     : isSelected(cell.iso)
@@ -187,7 +187,7 @@ export function DatePicker(props: DatePickerProps) {
         }`}
       >
         <span className="text-faint">{ariaLabel ?? "Date"}</span>
-        <span className="font-mono tnum">{summary}</span>
+        <span className="tnum">{summary}</span>
         <span aria-hidden="true" className="text-faint">
           ▾
         </span>

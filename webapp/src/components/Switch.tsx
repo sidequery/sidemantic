@@ -11,7 +11,7 @@ type SwitchProps = {
 // focus handling come for free.
 export function Switch({ checked, onChange, label, ariaLabel, disabled }: SwitchProps) {
   return (
-    <label className={`flex items-center gap-1.5 text-2xs ${disabled ? "opacity-50" : ""}`}>
+    <label className={`flex items-center gap-1.5 text-xs ${disabled ? "opacity-50" : ""}`}>
       <button
         type="button"
         role="switch"

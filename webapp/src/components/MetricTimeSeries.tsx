@@ -55,7 +55,7 @@ export function MetricTimeSeries({
           <button
             type="button"
             onClick={() => onBrush(null)}
-            className="ml-auto rounded-full border border-line bg-surface px-2.5 py-1 text-2xs text-muted hover:border-line-strong hover:text-ink"
+            className="ml-auto inline-flex h-7 items-center rounded-full border border-line bg-surface px-3 text-xs text-muted hover:border-line-strong hover:text-ink"
           >
             Reset zoom
           </button>

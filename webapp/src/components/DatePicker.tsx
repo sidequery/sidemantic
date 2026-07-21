@@ -180,9 +180,9 @@ export function DatePicker(props: DatePickerProps) {
     : (props.value ?? "Any date");
 
   return (
-    <details ref={details} className="relative inline-block text-2xs">
+    <details ref={details} className="relative inline-block text-xs">
       <summary
-        className={`flex cursor-pointer items-center gap-1.5 rounded-full border border-line bg-surface px-3 py-1.5 text-ink ${
+        className={`flex cursor-pointer items-center h-7 gap-1.5 rounded-full border border-line bg-surface px-3 text-ink ${
           disabled ? "pointer-events-none opacity-50" : ""
         }`}
       >

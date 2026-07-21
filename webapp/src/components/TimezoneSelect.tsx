@@ -64,7 +64,7 @@ export function TimezoneSelect({ timezone, disabled, onChange }: TimezoneSelectP
             setSearching(false);
             setText("");
           }}
-          className="w-36 rounded-full border border-line bg-surface px-1.5 py-1 text-2xs text-ink disabled:opacity-50"
+          className="h-7 w-36 rounded-full border border-line bg-surface px-2.5 text-xs text-ink disabled:opacity-50"
         />
         <datalist id={listId}>
           {zones.map((zone) => (
@@ -87,7 +87,7 @@ export function TimezoneSelect({ timezone, disabled, onChange }: TimezoneSelectP
           if (event.target.value === SEARCH_SENTINEL) setSearching(true);
           else onChange(event.target.value);
         }}
-        className="max-w-[11rem] rounded-full border border-line bg-surface px-1.5 py-1 text-2xs text-ink disabled:opacity-50"
+        className="h-7 max-w-[11rem] rounded-full border border-line bg-surface px-2.5 text-xs text-ink disabled:opacity-50"
       >
         {options.map((zone) => (
           <option key={zone} value={zone}>

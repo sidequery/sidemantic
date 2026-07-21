@@ -3171,11 +3171,11 @@ var VARIANT_CLASSES = {
   danger: "border-danger bg-danger-soft font-medium text-danger hover:bg-danger hover:text-surface"
 };
 function Button({ variant = "secondary", size = "md", type = "button", className, ...rest }) {
-  const sizing = size === "sm" ? "px-2.5 py-1 text-2xs" : "px-3 py-1.5 text-xs";
+  const sizing = size === "sm" ? "h-6 px-2.5 text-2xs" : "h-7 px-3 text-xs";
   return /* @__PURE__ */ jsx24("button", {
     type,
     "data-variant": variant,
-    className: `rounded-full border ${sizing} ${VARIANT_CLASSES[variant]} disabled:pointer-events-none disabled:opacity-50 ${className ?? ""}`,
+    className: `inline-flex items-center justify-center rounded-full border ${sizing} ${VARIANT_CLASSES[variant]} disabled:pointer-events-none disabled:opacity-50 ${className ?? ""}`,
     ...rest
   });
 }
@@ -3249,7 +3249,7 @@ function Combobox(props) {
   const inputPlaceholder = !props.multiple && props.value != null ? labelFor(props.value) : placeholder;
   return /* @__PURE__ */ jsxs22("div", {
     ref: rootRef,
-    className: "relative inline-flex min-w-40 flex-wrap items-center gap-1 text-2xs",
+    className: "relative inline-flex min-w-40 flex-wrap items-center gap-1 text-xs",
     children: [
       props.multiple ? props.values.map((value) => /* @__PURE__ */ jsxs22("span", {
         "data-chip": value,
@@ -3290,7 +3290,7 @@ function Combobox(props) {
             },
             onFocus: () => setOpen(true),
             onKeyDown,
-            className: "w-full rounded-full border border-line bg-surface px-2.5 py-1 text-ink placeholder:text-faint disabled:opacity-50"
+            className: "h-7 w-full rounded-full border border-line bg-surface px-3 text-ink placeholder:text-faint disabled:opacity-50"
           }),
           selectedValues.length > 0 ? /* @__PURE__ */ jsx25("button", {
             type: "button",
@@ -3488,10 +3488,10 @@ function DatePicker(props) {
   const summary = isRange ? props.value ? `${props.value.from} → ${props.value.to}` : "Any dates" : props.value ?? "Any date";
   return /* @__PURE__ */ jsxs23("details", {
     ref: details,
-    className: "relative inline-block text-2xs",
+    className: "relative inline-block text-xs",
     children: [
       /* @__PURE__ */ jsxs23("summary", {
-        className: `flex cursor-pointer items-center gap-1.5 rounded-full border border-line bg-surface px-3 py-1.5 text-ink ${disabled ? "pointer-events-none opacity-50" : ""}`,
+        className: `flex cursor-pointer items-center h-7 gap-1.5 rounded-full border border-line bg-surface px-3 text-ink ${disabled ? "pointer-events-none opacity-50" : ""}`,
         children: [
           /* @__PURE__ */ jsx26("span", {
             className: "text-faint",
@@ -3555,10 +3555,10 @@ function DateRangeControl({
   const comparisonDisabled = !range;
   return /* @__PURE__ */ jsxs24("details", {
     ref: details,
-    className: "relative text-2xs",
+    className: "relative text-xs",
     children: [
       /* @__PURE__ */ jsxs24("summary", {
-        className: `flex cursor-pointer items-center gap-1.5 rounded-full border border-line bg-surface px-3 py-1.5 text-ink ${disabled ? "pointer-events-none opacity-50" : ""}`,
+        className: `flex cursor-pointer items-center h-7 gap-1.5 rounded-full border border-line bg-surface px-3 text-ink ${disabled ? "pointer-events-none opacity-50" : ""}`,
         children: [
           /* @__PURE__ */ jsx27("span", {
             className: "text-faint",
@@ -3693,7 +3693,7 @@ function DateRangeControl({
 import { jsx as jsx28, jsxs as jsxs25 } from "react/jsx-runtime";
 function GrainSelect({ grain, options, disabled, onChange }) {
   return /* @__PURE__ */ jsxs25("label", {
-    className: "flex items-center gap-1.5 text-2xs text-faint",
+    className: "flex items-center gap-1.5 text-xs text-faint",
     children: [
       /* @__PURE__ */ jsx28("span", {
         className: "hidden sm:inline",
@@ -3704,7 +3704,7 @@ function GrainSelect({ grain, options, disabled, onChange }) {
         value: grain,
         disabled,
         onChange: (event) => onChange(event.target.value),
-        className: "rounded-full border border-line bg-surface px-2.5 py-1 text-2xs text-ink disabled:opacity-50",
+        className: "h-7 rounded-full border border-line bg-surface px-2.5 text-xs text-ink disabled:opacity-50",
         children: options.map((option) => /* @__PURE__ */ jsx28("option", {
           value: option,
           children: labelize2(option)
@@ -3717,7 +3717,7 @@ function GrainSelect({ grain, options, disabled, onChange }) {
 import { jsx as jsx29, jsxs as jsxs26 } from "react/jsx-runtime";
 function Select({ value, options, onChange, label, ariaLabel, placeholder, disabled }) {
   return /* @__PURE__ */ jsxs26("label", {
-    className: "flex items-center gap-1.5 text-2xs text-faint",
+    className: "flex items-center gap-1.5 text-xs text-faint",
     children: [
       label ? /* @__PURE__ */ jsx29("span", {
         className: "hidden sm:inline",
@@ -3728,7 +3728,7 @@ function Select({ value, options, onChange, label, ariaLabel, placeholder, disab
         value,
         disabled,
         onChange: (event) => onChange(event.target.value),
-        className: "rounded-full border border-line bg-surface px-2.5 py-1 text-2xs text-ink disabled:opacity-50",
+        className: "h-7 rounded-full border border-line bg-surface px-2.5 text-xs text-ink disabled:opacity-50",
         children: [
           placeholder ? /* @__PURE__ */ jsx29("option", {
             value: "",
@@ -3748,7 +3748,7 @@ function Select({ value, options, onChange, label, ariaLabel, placeholder, disab
 import { jsx as jsx30, jsxs as jsxs27 } from "react/jsx-runtime";
 function Switch({ checked, onChange, label, ariaLabel, disabled }) {
   return /* @__PURE__ */ jsxs27("label", {
-    className: `flex items-center gap-1.5 text-2xs ${disabled ? "opacity-50" : ""}`,
+    className: `flex items-center gap-1.5 text-xs ${disabled ? "opacity-50" : ""}`,
     children: [
       /* @__PURE__ */ jsx30("button", {
         type: "button",
@@ -3777,7 +3777,7 @@ function Tabs({ tabs, active, onChange, ariaLabel = "Tabs" }) {
   return /* @__PURE__ */ jsx31("div", {
     role: "tablist",
     "aria-label": ariaLabel,
-    className: "inline-flex items-center gap-0.5 rounded-full border border-line bg-surface p-0.5",
+    className: "inline-flex items-center gap-0.5 rounded-full border border-line bg-surface p-px",
     children: tabs.map((tab) => /* @__PURE__ */ jsx31("button", {
       role: "tab",
       type: "button",
@@ -3785,7 +3785,7 @@ function Tabs({ tabs, active, onChange, ariaLabel = "Tabs" }) {
       "data-tab": tab.key,
       "data-selected": active === tab.key || undefined,
       onClick: () => onChange(tab.key),
-      className: "rounded-full px-2.5 py-1 text-2xs font-medium text-muted hover:bg-surface-soft hover:text-ink data-[selected=true]:bg-accent-soft data-[selected=true]:text-accent",
+      className: "inline-flex h-6 items-center rounded-full px-2.5 text-xs font-medium text-muted hover:bg-surface-soft hover:text-ink data-[selected=true]:bg-accent-soft data-[selected=true]:text-accent",
       children: tab.label
     }, tab.key))
   });
@@ -3902,7 +3902,7 @@ function TimezoneSelect({ timezone, disabled, onChange }) {
             setSearching(false);
             setText("");
           },
-          className: "w-36 rounded-full border border-line bg-surface px-1.5 py-1 text-2xs text-ink disabled:opacity-50"
+          className: "h-7 w-36 rounded-full border border-line bg-surface px-2.5 text-xs text-ink disabled:opacity-50"
         }),
         /* @__PURE__ */ jsx32("datalist", {
           id: listId,
@@ -3931,7 +3931,7 @@ function TimezoneSelect({ timezone, disabled, onChange }) {
           else
             onChange(event.target.value);
         },
-        className: "max-w-[11rem] rounded-full border border-line bg-surface px-1.5 py-1 text-2xs text-ink disabled:opacity-50",
+        className: "h-7 max-w-[11rem] rounded-full border border-line bg-surface px-2.5 text-xs text-ink disabled:opacity-50",
         children: [
           options.map((zone) => /* @__PURE__ */ jsxs28("option", {
             value: zone,
@@ -3976,7 +3976,7 @@ function ViewSwitcher({ view, onChange }) {
   return /* @__PURE__ */ jsx34("div", {
     role: "tablist",
     "aria-label": "View",
-    className: "inline-flex items-center gap-0.5 rounded-full border border-line bg-surface p-0.5",
+    className: "inline-flex items-center gap-0.5 rounded-full border border-line bg-surface p-px",
     children: SEGMENTS.map((segment) => /* @__PURE__ */ jsx34("button", {
       role: "tab",
       type: "button",
@@ -3984,7 +3984,7 @@ function ViewSwitcher({ view, onChange }) {
       "data-view": segment.key,
       "data-selected": view === segment.key || undefined,
       onClick: () => onChange(segment.key),
-      className: "rounded-full px-2.5 py-1 text-2xs font-medium text-muted hover:bg-surface-soft hover:text-ink data-[selected=true]:bg-accent-soft data-[selected=true]:text-accent",
+      className: "inline-flex h-6 items-center rounded-full px-2.5 text-xs font-medium text-muted hover:bg-surface-soft hover:text-ink data-[selected=true]:bg-accent-soft data-[selected=true]:text-accent",
       children: segment.label
     }, segment.key))
   });

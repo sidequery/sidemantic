@@ -215,7 +215,7 @@ export function ComponentGallery() {
               <button
                 type="button"
                 onClick={() => setGalleryFilters({ "orders.region": ["East", "West"], "orders.status": ["completed"] })}
-                className="rounded-full border border-line px-2.5 py-1 text-2xs text-muted hover:bg-surface-soft"
+                className="inline-flex h-7 items-center rounded-full border border-line px-3 text-xs text-muted hover:bg-surface-soft"
               >
                 Reset filters
               </button>

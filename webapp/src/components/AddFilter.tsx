@@ -42,7 +42,7 @@ export function AddFilter({ model }: { model: CatalogModel }) {
         aria-haspopup="dialog"
         aria-expanded={open}
         onClick={() => (open ? close() : setOpen(true))}
-        className="shrink-0 rounded-full border border-dashed border-line px-2.5 py-1 text-2xs text-muted hover:border-faint hover:text-ink"
+        className="inline-flex h-7 shrink-0 items-center rounded-full border border-dashed border-line px-3 text-xs text-muted hover:border-faint hover:text-ink"
       >
         + Filter
       </button>

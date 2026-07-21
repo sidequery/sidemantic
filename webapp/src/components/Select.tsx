@@ -15,14 +15,14 @@ type SelectProps = {
 // mobile, and screen-reader behavior come from the platform.
 export function Select({ value, options, onChange, label, ariaLabel, placeholder, disabled }: SelectProps) {
   return (
-    <label className="flex items-center gap-1.5 text-2xs text-faint">
+    <label className="flex items-center gap-1.5 text-xs text-faint">
       {label ? <span className="hidden sm:inline">{label}</span> : null}
       <select
         aria-label={ariaLabel ?? label}
         value={value}
         disabled={disabled}
         onChange={(event) => onChange(event.target.value)}
-        className="rounded-full border border-line bg-surface px-2.5 py-1 text-2xs text-ink disabled:opacity-50"
+        className="h-7 rounded-full border border-line bg-surface px-2.5 text-xs text-ink disabled:opacity-50"
       >
         {placeholder ? (
           <option value="" disabled>

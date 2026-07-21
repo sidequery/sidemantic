@@ -10,14 +10,14 @@ type GrainSelectProps = {
 
 export function GrainSelect({ grain, options, disabled, onChange }: GrainSelectProps) {
   return (
-    <label className="flex items-center gap-1.5 text-2xs text-faint">
+    <label className="flex items-center gap-1.5 text-xs text-faint">
       <span className="hidden sm:inline">Grain</span>
       <select
         aria-label="Time grain"
         value={grain}
         disabled={disabled}
         onChange={(event) => onChange(event.target.value as Grain)}
-        className="rounded-full border border-line bg-surface px-2.5 py-1 text-2xs text-ink disabled:opacity-50"
+        className="h-7 rounded-full border border-line bg-surface px-2.5 text-xs text-ink disabled:opacity-50"
       >
         {options.map((option) => (
           <option key={option} value={option}>

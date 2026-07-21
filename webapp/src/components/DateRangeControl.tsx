@@ -51,9 +51,9 @@ export function DateRangeControl({
   const comparisonDisabled = !range;
 
   return (
-    <details ref={details} className="relative text-2xs">
+    <details ref={details} className="relative text-xs">
       <summary
-        className={`flex cursor-pointer items-center gap-1.5 rounded-full border border-line bg-surface px-3 py-1.5 text-ink ${
+        className={`flex cursor-pointer items-center h-7 gap-1.5 rounded-full border border-line bg-surface px-3 text-ink ${
           disabled ? "pointer-events-none opacity-50" : ""
         }`}
       >

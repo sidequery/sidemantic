@@ -101,7 +101,7 @@ export function Combobox(props: ComboboxProps) {
   const inputPlaceholder = !props.multiple && props.value != null ? labelFor(props.value) : placeholder;
 
   return (
-    <div ref={rootRef} className="relative inline-flex min-w-40 flex-wrap items-center gap-1 text-2xs">
+    <div ref={rootRef} className="relative inline-flex min-w-40 flex-wrap items-center gap-1 text-xs">
       {props.multiple
         ? props.values.map((value) => (
             <span
@@ -141,7 +141,7 @@ export function Combobox(props: ComboboxProps) {
           }}
           onFocus={() => setOpen(true)}
           onKeyDown={onKeyDown}
-          className="w-full rounded-full border border-line bg-surface px-2.5 py-1 text-ink placeholder:text-faint disabled:opacity-50"
+          className="h-7 w-full rounded-full border border-line bg-surface px-3 text-ink placeholder:text-faint disabled:opacity-50"
         />
         {selectedValues.length > 0 ? (
           <button

@@ -7,10 +7,11 @@ from typing import Any
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.parameter import Parameter
+from sidemantic.core.relationship import Relationship
 from sidemantic.core.table_calculation import TableCalculation
 
 
-def _relationship_local_key_columns(model: Model, relationship: object) -> list[str]:
+def _relationship_local_key_columns(model: Model, relationship: Relationship) -> list[str]:
     primary_key = getattr(relationship, "primary_key", None)
     if primary_key:
         return relationship.primary_key_columns
@@ -388,7 +389,7 @@ class SemanticGraph:
             raise KeyError(f"Model {to_model} not found")
 
         # BFS to find shortest path
-        queue = deque([(from_model, [])])
+        queue: deque[tuple[str, list[JoinPath]]] = deque([(from_model, [])])
         visited = {from_model}
 
         while queue:

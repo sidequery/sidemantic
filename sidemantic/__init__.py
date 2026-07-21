@@ -52,23 +52,23 @@ if TYPE_CHECKING:
 
 def __getattr__(name):  # Lazy import to avoid importing duckdb on package import
     if name == "SemanticLayer":
-        from sidemantic.core.semantic_layer import SemanticLayer  # type: ignore
+        from sidemantic.core.semantic_layer import SemanticLayer
 
         return SemanticLayer
     if name == "load_from_directory":
-        from sidemantic.loaders import load_from_directory  # type: ignore
+        from sidemantic.loaders import load_from_directory
 
         return load_from_directory
     if name == "DashboardDocument":
-        from sidemantic.dashboard import DashboardDocument  # type: ignore
+        from sidemantic.dashboard import DashboardDocument
 
         return DashboardDocument
     if name == "DashboardSpecError":
-        from sidemantic.dashboard import DashboardSpecError  # type: ignore
+        from sidemantic.dashboard import DashboardSpecError
 
         return DashboardSpecError
     if name == "SecurityError":
-        from sidemantic.core.semantic_layer import SecurityError  # type: ignore
+        from sidemantic.core.semantic_layer import SecurityError
 
         return SecurityError
     raise AttributeError(name)

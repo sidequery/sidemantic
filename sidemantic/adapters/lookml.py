@@ -2734,7 +2734,7 @@ class LookMLAdapter(BaseAdapter):
                             col = f"CASE WHEN {joined} THEN {col} END"
                         measure_full_sql_lookup[m_name] = agg_template.format(col)
                 elif m_type == "count":
-                    # type: count with no sql -> COUNT(*); fold the measure's own filters
+                    # A LookML count with no SQL becomes COUNT(*); fold the measure's own filters
                     # so a filtered count (completed_count) keeps its filter in a mixed-expr
                     # expansion instead of counting all rows.
                     joined = _folded_measure_filter(m)
@@ -3937,7 +3937,7 @@ class LookMLAdapter(BaseAdapter):
         # Determine if this is a derived/ratio metric
         metric_type = None
         if measure_type == "number":
-            # type: number is a derived measure, but it requires SQL
+            # A LookML number is a derived measure, but it requires SQL
             # If no SQL, this is likely a placeholder in an abstract/template view
             if sql:
                 metric_type = "derived"
@@ -4239,7 +4239,7 @@ class LookMLAdapter(BaseAdapter):
                 # computed across every row instead of the filtered population.
                 # Expand through the full SQL when the base has no plain <AGG>({model}.<measure>)
                 # form: a FILTERED base (carries a CASE filter), OR an untemplated COMPLETE
-                # type:number base (e.g. a re-imported STDDEV/VAR_SAMP). Both are projected via
+                # LookML number base (e.g. a re-imported STDDEV/VAR_SAMP). Both are projected via
                 # dedicated raw aliases, not as `<cte>.<measure>`, so `{model}.<measure>` would
                 # reference a missing column.
                 if ref_name in measure_full_sql_lookup and (
@@ -5507,7 +5507,7 @@ class LookMLAdapter(BaseAdapter):
                         "median": "median",
                     }
                     # Aggregations Looker has no native measure type for: emit as a
-                    # type: number with an explicit SQL aggregate.
+                    # LookML number with an explicit SQL aggregate.
                     sql_agg_funcs = {
                         "stddev": "STDDEV",
                         "stddev_pop": "STDDEV_POP",
@@ -5551,7 +5551,7 @@ class LookMLAdapter(BaseAdapter):
                             continue
                         measure_def["type"] = "number"
                         if metric.filters:
-                            # type: number re-imports as a derived metric whose generator
+                            # A LookML number re-imports as a derived metric whose generator
                             # does not apply LookML `filters`, so fold them into the aggregate
                             # here. Reuse _fold_filters_into_aggregate so DISTINCT stays OUTSIDE
                             # the CASE (STDDEV(DISTINCT amount) -> STDDEV(DISTINCT CASE WHEN ...
@@ -5624,7 +5624,7 @@ class LookMLAdapter(BaseAdapter):
                         # An aggregate expression that ALSO carries a raw column OUTSIDE any
                         # aggregate (SUM({model}.amount) + {model}.tax_rate) is not a valid grouped
                         # measure: the import side's _mixed_is_aggregate_safe rejects it, so a
-                        # type: number here would be dropped on re-import (and Looker would GROUP BY
+                        # A LookML number here would be dropped on re-import (and Looker would GROUP BY
                         # error on the ungrouped column). Skip to keep the round-trip consistent.
                         if not self._mixed_is_aggregate_safe(col_sql.replace("${TABLE}", "{model}"), lambda rn: False):
                             logger.warning(
@@ -5646,7 +5646,7 @@ class LookMLAdapter(BaseAdapter):
                         elif not metric.filters and not self._aggregate_references_column(col_sql):
                             # ANY OTHER zero-column aggregate -- COUNT(NULL), COUNT(DISTINCT 1),
                             # SUM(1), MAX('x') -- has the same fate as a bare constant count: a
-                            # type: number re-imports as an opaque complete-SQL metric whose
+                            # A LookML number re-imports as an opaque complete-SQL metric whose
                             # referenced-column set is empty, so compiling it builds an empty model
                             # CTE (SELECT ... FROM with no select list). Unlike a plain row count it
                             # has no faithful native form, so skip it with a warning. (A FILTERED

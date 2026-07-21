@@ -50,11 +50,6 @@ class Model(BaseModel):
         default_factory=list, description="Pre-aggregation definitions for query optimization"
     )
 
-    # Security policy (data model only - enforcement is a separate work item, not wired in yet)
-    security: SecurityPolicy | None = Field(
-        None, description="Security policy: model access expression and row-level filters (not yet enforced)"
-    )
-
     # Default time dimension for all metrics in this model
     default_time_dimension: str | None = Field(
         None, description="Default time dimension for metrics (auto-included in queries)"
@@ -159,7 +154,7 @@ class Model(BaseModel):
         path = [dimension_name]
 
         # Walk up the parent chain with cycle detection
-        current = dim
+        current: Dimension | None = dim
         visited = {dimension_name}
         while current and current.parent:
             if current.parent in visited:

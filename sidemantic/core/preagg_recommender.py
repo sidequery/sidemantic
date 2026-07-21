@@ -340,7 +340,7 @@ class PreAggregationRecommender:
         unique_patterns = len(self.patterns)
 
         # Group by model
-        model_counts = defaultdict(int)
+        model_counts: defaultdict[str, int] = defaultdict(int)
         for pattern, count in self.patterns.items():
             model_counts[pattern.model] += count
 

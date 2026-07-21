@@ -9,9 +9,12 @@ jobs:
   python:
     name: Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12"]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
 
     steps:
       - uses: actions/checkout@v4
@@ -66,7 +69,9 @@ jobs:
         run: uv run ruff format --check . --exclude docs/_extensions --exclude sidemantic-duckdb/extension-ci-tools --exclude sidemantic-duckdb/scripts --exclude sidemantic-duckdb/duckdb --exclude sidemantic/adapters/malloy_grammar --exclude sidemantic/adapters/holistics_grammar
 
       - name: Run tests
-        run: uv run pytest -v
+        # Rich otherwise treats the GitHub log stream as an interactive terminal,
+        # which makes Click's captured-output tests emit ANSI styling.
+        run: env -u GITHUB_ACTIONS uv run pytest -v --cov-fail-under=76
 
       - name: Run installed-wheel DAX smoke
         run: |
@@ -79,6 +84,79 @@ jobs:
 
           sidemantic_dax.parse_expression("1")
           PY
+
+  types-and-packaging:
+    name: Types and Python packaging
+    runs-on: ubuntu-latest
+    env:
+      UV_PYTHON: "3.12"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Check public API types
+        run: |
+          uv run mypy
+          uv run mypy --config-file tests/typing/mypy.ini tests/typing/package_consumer.py
+
+      - name: Check typed package marker
+        run: |
+          uv build --wheel
+          unzip -l dist/*.whl | grep -q 'sidemantic/py.typed'
+
+  dependency-compatibility:
+    name: Dependencies (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: minimum direct
+            python-version: "3.11"
+            resolution: lowest-direct
+          - name: unlocked latest
+            python-version: "3.14"
+            resolution: highest
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Resolve ${{ matrix.name }} dependencies
+        run: uv sync --extra dev --extra dax --upgrade --resolution ${{ matrix.resolution }}
+
+      - name: Exercise maintained Python surfaces
+        run: >-
+          uv run --no-sync pytest
+          tests/core
+          tests/lsp
+          tests/widget
+          tests/test_charts.py
+          tests/test_core_imports.py
+          tests/test_project.py
+          -q
+          -o addopts="-m 'not integration'"
 
   base-install-cli:
     name: Base Install CLI

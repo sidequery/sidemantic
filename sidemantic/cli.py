@@ -1043,8 +1043,10 @@ def _migration_report_json(report, *, verbose: bool = True) -> dict[str, object]
 
 def _migration_queries(queries: Path | None) -> Path:
     project = _project()
+    display_path = queries
     if queries is None:
         resolved = project.root / "queries"
+        display_path = resolved
     elif str(queries) == "-":
         return Path("-")
     else:
@@ -1054,7 +1056,7 @@ def _migration_queries(queries: Path | None) -> Path:
     resolved = resolved.resolve()
     if not resolved.exists():
         raise typer.BadParameter(
-            f"Query source not found: {resolved}",
+            f"Query source not found: {display_path}",
             param_hint="QUERIES",
         )
     return resolved

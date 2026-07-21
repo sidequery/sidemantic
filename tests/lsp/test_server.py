@@ -1,5 +1,7 @@
 """Tests for the LSP server."""
 
+from types import SimpleNamespace
+
 from lsprotocol import types as lsp
 
 from sidemantic.core.metric import Metric
@@ -25,8 +27,19 @@ from sidemantic.lsp.server import (
     get_field_docs,
     get_python_constructor_context,
     get_word_at_position,
+    is_python_definition_document,
     range_equals,
+    validate_document,
 )
+
+
+class _DiagnosticServer:
+    def __init__(self, source: str):
+        self.workspace = SimpleNamespace(get_text_document=lambda _uri: SimpleNamespace(source=source))
+        self.published: list[tuple[str, list[lsp.Diagnostic]]] = []
+
+    def publish_diagnostics(self, uri: str, diagnostics: list[lsp.Diagnostic]) -> None:
+        self.published.append((uri, diagnostics))
 
 
 def test_get_completion_context_top_level():
@@ -428,3 +441,45 @@ def test_build_code_actions_no_known_fix():
 def test_keywords_include_core_definitions():
     """Test keyword list stays aligned with core top-level definition types."""
     assert sorted(KEYWORDS) == sorted(DEF_TYPE_TO_MODEL.keys())
+
+
+def test_python_definition_document_detection_is_narrow():
+    assert is_python_definition_document("file:///workspace/sidemantic.py")
+    assert is_python_definition_document("file:///workspace/orders.sidemantic.py")
+    assert not is_python_definition_document("file:///workspace/orders.py")
+    assert not is_python_definition_document("file:///workspace/orders.sidemantic.sql")
+
+
+def test_validate_python_document_reports_syntax_error():
+    uri = "file:///workspace/orders.sidemantic.py"
+    server = _DiagnosticServer("Model(name='orders'")
+
+    validate_document(server, uri)
+
+    published_uri, diagnostics = server.published[-1]
+    assert published_uri == uri
+    assert len(diagnostics) == 1
+    assert diagnostics[0].message.startswith("Parse error:")
+    assert diagnostics[0].severity == lsp.DiagnosticSeverity.Error
+
+
+def test_validate_python_document_checks_constructor_properties():
+    uri = "file:///workspace/orders.sidemantic.py"
+    server = _DiagnosticServer("Dimension(name='status', type='unsupported')")
+
+    validate_document(server, uri)
+
+    diagnostics = server.published[-1][1]
+    assert len(diagnostics) == 1
+    assert "Input should be" in diagnostics[0].message
+
+
+def test_validate_sql_document_publishes_parse_diagnostics():
+    uri = "file:///workspace/orders.sidemantic.sql"
+    server = _DiagnosticServer("MODEL !!!")
+
+    validate_document(server, uri)
+
+    diagnostics = server.published[-1][1]
+    assert len(diagnostics) == 1
+    assert diagnostics[0].message.startswith("Parse error:")

@@ -163,7 +163,7 @@ def test_recommendation_name_generation():
     )
 
     name = recommender._generate_name(pattern)
-    assert name == "day_status_revenue"
+    assert name == "orders_day_status_revenue"
 
     # Pattern with multiple metrics
     pattern2 = QueryPattern(
@@ -174,7 +174,31 @@ def test_recommendation_name_generation():
     )
 
     name2 = recommender._generate_name(pattern2)
-    assert name2 == "status_2metrics"
+    assert name2 == "orders_status_2metrics"
+
+    # Distinct >2-dimension sets of the same shape must not collide
+    pattern3 = QueryPattern(
+        model="orders",
+        metrics=frozenset(["orders.revenue"]),
+        dimensions=frozenset(["orders.a", "orders.b", "orders.c"]),
+        granularities=frozenset(),
+    )
+    pattern4 = QueryPattern(
+        model="orders",
+        metrics=frozenset(["orders.revenue"]),
+        dimensions=frozenset(["orders.x", "orders.y", "orders.z"]),
+        granularities=frozenset(),
+    )
+    assert recommender._generate_name(pattern3) != recommender._generate_name(pattern4)
+
+    # Same-name dimensions on different models must not collide either
+    pattern5 = QueryPattern(
+        model="customers",
+        metrics=frozenset(["customers.revenue"]),
+        dimensions=frozenset(["customers.status"]),
+        granularities=frozenset(["day"]),
+    )
+    assert recommender._generate_name(pattern) != recommender._generate_name(pattern5)
 
 
 def test_generate_preagg_definition():
@@ -194,7 +218,7 @@ def test_generate_preagg_definition():
     # Generate pre-aggregation definition
     preagg = recommender.generate_preagg_definition(recommendations[0])
 
-    assert preagg.name == "day_created_at_revenue"
+    assert preagg.name == "orders_day_created_at_revenue"
     assert "revenue" in preagg.measures
     assert preagg.time_dimension == "created_at"
     assert preagg.granularity == "day"
@@ -388,3 +412,61 @@ def test_fetch_and_parse_query_history_filters_non_instrumented():
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+def test_used_preagg_queries_do_not_feed_recommendations():
+    """Traffic already served by a pre-agg must not re-recommend it."""
+    recommender = PreAggregationRecommender(min_query_count=1)
+
+    recommender.parse_query_log(
+        [
+            "SELECT revenue FROM orders_preagg -- sidemantic: models=orders metrics=orders.revenue dimensions=orders.status used_preagg=true",
+            "SELECT revenue FROM orders -- sidemantic: models=orders metrics=orders.revenue dimensions=orders.region",
+        ]
+    )
+
+    recommendations = recommender.get_recommendations()
+    assert len(recommendations) == 1
+    assert recommendations[0].pattern.dimensions == frozenset(["orders.region"])
+
+
+def test_top_n_zero_returns_no_recommendations():
+    recommender = PreAggregationRecommender(min_query_count=1)
+    recommender.parse_query_log(["SELECT revenue FROM orders -- sidemantic: models=orders metrics=orders.revenue"])
+
+    assert recommender.get_recommendations(top_n=0) == []
+
+
+def test_summary_reports_skipped_queries_and_score_threshold():
+    recommender = PreAggregationRecommender(min_query_count=1, min_benefit_score=0.99)
+    recommender.parse_query_log(
+        [
+            "SELECT 1",  # not instrumented
+            "SELECT revenue FROM orders -- sidemantic: models=orders metrics=orders.revenue",
+        ]
+    )
+
+    summary = recommender.get_summary()
+    assert summary["queries_seen"] == 2
+    assert summary["queries_skipped"] == 1
+    assert summary["total_queries"] == 1
+    # patterns_above_threshold must honor the benefit-score floor like
+    # get_recommendations does
+    assert summary["patterns_above_threshold"] == len(recommender.get_recommendations())
+
+
+def test_time_dimension_not_forced_onto_categorical_dimension():
+    """Granularity without a time-like dimension must not truncate a categorical."""
+    recommender = PreAggregationRecommender(min_query_count=1)
+    recommender.parse_query_log(
+        [
+            "SELECT revenue FROM orders -- sidemantic: models=orders metrics=orders.revenue dimensions=orders.status granularities=day"
+        ]
+    )
+
+    recommendations = recommender.get_recommendations()
+    preagg = recommender.generate_preagg_definition(recommendations[0])
+
+    assert preagg.time_dimension is None
+    assert preagg.granularity is None
+    assert preagg.dimensions == ["status"]

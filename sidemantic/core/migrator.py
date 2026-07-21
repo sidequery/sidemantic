@@ -54,6 +54,74 @@ def _normalize_agg_name(node) -> str:
     return _AGG_NAME_MAP.get(type(node).__name__.lower(), type(node).__name__.lower())
 
 
+def split_sql_statements(content: str) -> list[str]:
+    """Split SQL text on statement-separating semicolons.
+
+    Semicolons inside string literals, quoted identifiers, and comments do not
+    terminate a statement; a naive ``str.split(";")`` corrupts such queries.
+    """
+    statements: list[str] = []
+    current: list[str] = []
+    i = 0
+    n = len(content)
+    while i < n:
+        ch = content[i]
+        if ch in ("'", '"', "`"):
+            quote = ch
+            current.append(ch)
+            i += 1
+            while i < n:
+                if content[i] == "\\" and i + 1 < n:
+                    current.append(content[i : i + 2])
+                    i += 2
+                    continue
+                current.append(content[i])
+                if content[i] == quote:
+                    if i + 1 < n and content[i + 1] == quote:
+                        # Doubled-quote escape stays inside the literal
+                        current.append(content[i + 1])
+                        i += 2
+                        continue
+                    i += 1
+                    break
+                i += 1
+            continue
+        if content[i : i + 2] == "--":
+            end = content.find("\n", i)
+            comment = content[i:] if end == -1 else content[i:end]
+            stripped = comment.rstrip()
+            if stripped.endswith(";"):
+                # Query logs join statements with ';' after a trailing
+                # instrumentation comment (markers are emitted as a suffix
+                # line); a comment-final ';' is a statement separator.
+                current.append(stripped[:-1])
+                statements.append("".join(current))
+                current = []
+            else:
+                current.append(comment)
+            if end == -1:
+                break
+            i = end
+            continue
+        if content[i : i + 2] == "/*":
+            end = content.find("*/", i + 2)
+            if end == -1:
+                current.append(content[i:])
+                break
+            current.append(content[i : end + 2])
+            i = end + 2
+            continue
+        if ch == ";":
+            statements.append("".join(current))
+            current = []
+            i += 1
+            continue
+        current.append(ch)
+        i += 1
+    statements.append("".join(current))
+    return [statement.strip() for statement in statements if statement.strip()]
+
+
 @dataclass
 class QueryAnalysis:
     """Analysis of a single SQL query."""
@@ -242,9 +310,7 @@ class Migrator:
 
         for sql_file in folder.glob(pattern):
             content = sql_file.read_text()
-            # Split by semicolon for multi-query files
-            file_queries = [q.strip() for q in content.split(";") if q.strip()]
-            queries.extend(file_queries)
+            queries.extend(split_sql_statements(content))
 
         return self.analyze_queries(queries)
 
@@ -262,6 +328,12 @@ class Migrator:
         try:
             # Parse SQL
             parsed = sqlglot.parse_one(query, read=self.dialect)
+
+            # Warehouse history is full of DDL/DML (CREATE/INSERT/COPY/MERGE);
+            # analyzing those would generate models for staging/audit tables.
+            if not isinstance(parsed, exp.Query):
+                analysis.parse_error = "Not a SELECT query (skipped)"
+                return analysis
 
             # Extract components
             self._extract_tables(parsed, analysis)
@@ -289,10 +361,14 @@ class Migrator:
 
     def _extract_tables(self, parsed: exp.Expression, analysis: QueryAnalysis) -> None:
         """Extract table references and aliases, including subquery aliases."""
+        # CTE aliases look like table references but are not physical tables;
+        # treating them as tables generates junk models named after the alias.
+        cte_names = {cte.alias_or_name for cte in parsed.find_all(exp.CTE) if cte.alias_or_name}
+
         # Find the main FROM clause
         from_clause = parsed.find(exp.From)
         if from_clause:
-            if isinstance(from_clause.this, exp.Table):
+            if isinstance(from_clause.this, exp.Table) and from_clause.this.name not in cte_names:
                 analysis.from_table = from_clause.this.name
                 analysis.from_alias = from_clause.this.alias or None
                 if analysis.from_alias:
@@ -320,7 +396,7 @@ class Migrator:
         # Collect all tables and their aliases
         for table in parsed.find_all(exp.Table):
             table_name = table.name
-            if table_name:
+            if table_name and table_name not in cte_names:
                 analysis.tables.add(table_name)
                 if table.alias:
                     analysis.table_aliases[table.alias] = table_name
@@ -464,8 +540,15 @@ class Migrator:
                                 table_name = analysis.table_aliases[table_name]
 
                     # Infer table if not found
-                    if not table_name and len(analysis.tables) == 1:
-                        table_name = list(analysis.tables)[0]
+                    if not table_name:
+                        if len(analysis.tables) == 1:
+                            table_name = list(analysis.tables)[0]
+                        elif self.table_columns:
+                            # Multi-table query: attribute only when information_schema
+                            # confirms exactly one candidate table has this column.
+                            matches = [t for t in analysis.tables if col_name in self.table_columns.get(t, set())]
+                            if len(matches) == 1:
+                                table_name = matches[0]
 
                     # Store aggregation
                     agg_tuple = (agg_name, col_name, table_name or "")
@@ -724,12 +807,18 @@ class Migrator:
                     fk_column = right.name
                     pk_table = left_table
                     pk_column = left.name
-                else:
-                    # Can't determine - use left as FK
+                elif left_is_fk and right_is_fk:
+                    # Both look like FKs (e.g. o.customer_id = c.customer_id):
+                    # direction is ambiguous; keep left-as-FK behavior.
                     fk_table = left_table
                     fk_column = left.name
                     pk_table = right_table
                     pk_column = right.name
+                else:
+                    # Neither side looks like a key and information_schema has no
+                    # answer; an arbitrary col = col equality (e.g. a value
+                    # correlation) is not evidence of a relationship.
+                    return
 
             # Infer primary key column if not from information_schema
             if pk_column and not self.foreign_keys:
@@ -876,91 +965,91 @@ class Migrator:
                 for select_expr in select.expressions:
                     # Get alias if present
                     metric_name = None
-                if isinstance(select_expr, exp.Alias):
-                    metric_name = select_expr.alias
-                    inner_expr = select_expr.this
-                else:
-                    inner_expr = select_expr
+                    if isinstance(select_expr, exp.Alias):
+                        metric_name = select_expr.alias
+                        inner_expr = select_expr.this
+                    else:
+                        inner_expr = select_expr
 
-                # Check if this is a window function
-                if not isinstance(inner_expr, exp.Window):
-                    continue
+                    # Check if this is a window function
+                    if not isinstance(inner_expr, exp.Window):
+                        continue
 
-                # Extract the base aggregation inside the window
-                agg_func = inner_expr.this
-                if not isinstance(agg_func, exp.AggFunc):
-                    # Skip non-aggregation window functions (ROW_NUMBER, RANK, etc.)
-                    continue
+                    # Extract the base aggregation inside the window
+                    agg_func = inner_expr.this
+                    if not isinstance(agg_func, exp.AggFunc):
+                        # Skip non-aggregation window functions (ROW_NUMBER, RANK, etc.)
+                        continue
 
-                # Get aggregation type and column
-                agg_type = _normalize_agg_name(agg_func)
+                    # Get aggregation type and column
+                    agg_type = _normalize_agg_name(agg_func)
 
-                # Extract column from aggregation
-                col_expr = agg_func.this
-                if col_expr is None:
-                    # No column expression - skip this window function
-                    continue
-                elif isinstance(col_expr, exp.Column):
-                    col_name = col_expr.name
-                    table_name = col_expr.table if col_expr.table else ""
-                    if table_name and table_name in analysis.table_aliases:
-                        table_name = analysis.table_aliases[table_name]
-                elif isinstance(col_expr, exp.Star):
-                    col_name = "*"
-                    table_name = ""
-                else:
-                    # Complex expression
-                    col_name = str(col_expr)
-                    table_name = ""
-                    # Try to infer table
-                    columns = list(col_expr.find_all(exp.Column))
-                    if columns:
-                        table_name = columns[0].table if columns[0].table else ""
+                    # Extract column from aggregation
+                    col_expr = agg_func.this
+                    if col_expr is None:
+                        # No column expression - skip this window function
+                        continue
+                    elif isinstance(col_expr, exp.Column):
+                        col_name = col_expr.name
+                        table_name = col_expr.table if col_expr.table else ""
                         if table_name and table_name in analysis.table_aliases:
                             table_name = analysis.table_aliases[table_name]
-
-                # Infer table if not found
-                if not table_name and len(analysis.tables) == 1:
-                    table_name = list(analysis.tables)[0]
-
-                # Generate base metric reference
-                if agg_type == "count" and col_name == "*":
-                    base_metric_name = "count"
-                elif agg_type == "count_distinct":
-                    base_metric_name = f"{col_name}_count"
-                else:
-                    base_metric_name = f"{agg_type}_{col_name}"
-
-                # Build base metric reference in model.metric format
-                base_metric_ref = f"{table_name}.{base_metric_name}" if table_name else base_metric_name
-
-                # Analyze OVER clause
-                cumulative_params = self._analyze_window_spec(inner_expr, analysis)
-
-                # Generate metric name if not aliased
-                if not metric_name:
-                    if cumulative_params.get("window"):
-                        metric_name = f"rolling_{base_metric_name}"
-                    elif cumulative_params.get("grain_to_date"):
-                        grain = cumulative_params["grain_to_date"]
-                        metric_name = f"{grain}_to_date_{base_metric_name}"
+                    elif isinstance(col_expr, exp.Star):
+                        col_name = "*"
+                        table_name = ""
                     else:
-                        metric_name = f"running_{base_metric_name}"
+                        # Complex expression
+                        col_name = str(col_expr)
+                        table_name = ""
+                        # Try to infer table
+                        columns = list(col_expr.find_all(exp.Column))
+                        if columns:
+                            table_name = columns[0].table if columns[0].table else ""
+                            if table_name and table_name in analysis.table_aliases:
+                                table_name = analysis.table_aliases[table_name]
 
-                # Store cumulative metric info
-                cumulative_metric = {
-                    "name": metric_name,
-                    "base_metric": base_metric_ref,
-                    "table": table_name,
-                    **cumulative_params,
-                }
+                    # Infer table if not found
+                    if not table_name and len(analysis.tables) == 1:
+                        table_name = list(analysis.tables)[0]
 
-                analysis.cumulative_metrics.append(cumulative_metric)
+                    # Generate base metric reference
+                    if agg_type == "count" and col_name == "*":
+                        base_metric_name = "count"
+                    elif agg_type == "count_distinct":
+                        base_metric_name = f"{col_name}_count"
+                    else:
+                        base_metric_name = f"{agg_type}_{col_name}"
 
-                # Mark the base aggregation as being part of a cumulative metric
-                # so it doesn't get added as a standalone metric
-                base_agg_tuple = (agg_type, col_name, table_name)
-                analysis.aggregations_in_cumulative.add(base_agg_tuple)
+                    # Build base metric reference in model.metric format
+                    base_metric_ref = f"{table_name}.{base_metric_name}" if table_name else base_metric_name
+
+                    # Analyze OVER clause
+                    cumulative_params = self._analyze_window_spec(inner_expr, analysis)
+
+                    # Generate metric name if not aliased
+                    if not metric_name:
+                        if cumulative_params.get("window"):
+                            metric_name = f"rolling_{base_metric_name}"
+                        elif cumulative_params.get("grain_to_date"):
+                            grain = cumulative_params["grain_to_date"]
+                            metric_name = f"{grain}_to_date_{base_metric_name}"
+                        else:
+                            metric_name = f"running_{base_metric_name}"
+
+                    # Store cumulative metric info
+                    cumulative_metric = {
+                        "name": metric_name,
+                        "base_metric": base_metric_ref,
+                        "table": table_name,
+                        **cumulative_params,
+                    }
+
+                    analysis.cumulative_metrics.append(cumulative_metric)
+
+                    # Mark the base aggregation as being part of a cumulative metric
+                    # so it doesn't get added as a standalone metric
+                    base_agg_tuple = (agg_type, col_name, table_name)
+                    analysis.aggregations_in_cumulative.add(base_agg_tuple)
         except (AttributeError, TypeError, KeyError):
             # If there are any issues extracting window functions, just skip them
             # This ensures the analyzer doesn't fail on complex window function queries
@@ -1033,11 +1122,47 @@ class Migrator:
         return params
 
     def _extract_filters(self, parsed: exp.Expression, analysis: QueryAnalysis) -> None:
-        """Extract WHERE clause filters."""
-        for where in parsed.find_all(exp.Where):
-            filter_expr = str(where.this)
-            if filter_expr:
-                analysis.filters.append(filter_expr)
+        """Extract WHERE clause filters that belong to the query pipeline.
+
+        Follows the FROM/JOIN chain through CTEs and derived tables, whose row
+        filters apply to the final result. Predicate subqueries (IN/EXISTS/...)
+        are excluded: re-applying their inner WHERE at the top level changes the
+        result set of a rewrite.
+        """
+        root = parsed
+        while isinstance(root, exp.Subquery):
+            root = root.this
+        if not isinstance(root, exp.Select):
+            return
+
+        ctes = {cte.alias_or_name: cte.this for cte in parsed.find_all(exp.CTE) if cte.alias_or_name}
+        visited_ctes: set[str] = set()
+
+        def add_pipeline_filters(select: exp.Select) -> None:
+            where = select.args.get("where")
+            if where is not None:
+                filter_expr = str(where.this)
+                if filter_expr:
+                    analysis.filters.append(filter_expr)
+
+            sources = []
+            # sqlglot >= 30 stores the FROM clause under "from_"
+            from_clause = select.args.get("from_") or select.args.get("from")
+            if from_clause is not None:
+                sources.append(from_clause.this)
+            for join in select.args.get("joins") or []:
+                sources.append(join.this)
+
+            for source in sources:
+                if isinstance(source, exp.Subquery) and isinstance(source.this, exp.Select):
+                    add_pipeline_filters(source.this)
+                elif isinstance(source, exp.Table) and source.name in ctes and source.name not in visited_ctes:
+                    visited_ctes.add(source.name)
+                    inner = ctes[source.name]
+                    if isinstance(inner, exp.Select):
+                        add_pipeline_filters(inner)
+
+        add_pipeline_filters(root)
 
     def _extract_having(self, parsed: exp.Expression, analysis: QueryAnalysis) -> None:
         """Extract HAVING clause."""
@@ -1072,6 +1197,17 @@ class Migrator:
                 except ValueError:
                     pass
 
+    @staticmethod
+    def _metric_matches_column(metric, col_name: str) -> bool:
+        """Whether an existing metric covers an aggregated column reference.
+
+        COUNT(*) only matches row-count metrics (no sql or sql="*"), never
+        COUNT(col): the two differ on NULLs, e.g. after LEFT JOINs.
+        """
+        if col_name == "*":
+            return metric.sql in (None, "", "*")
+        return metric.sql == col_name
+
     def _check_coverage(self, analysis: QueryAnalysis) -> None:
         """Check if query can be rewritten and identify gaps."""
         # Check if all tables are in the semantic layer as models
@@ -1092,7 +1228,7 @@ class Migrator:
                 # Check if metric exists
                 metric_found = False
                 for metric in model.metrics:
-                    if metric.agg == agg_type and col_name in (metric.sql, "*"):
+                    if metric.agg == agg_type and self._metric_matches_column(metric, col_name):
                         metric_found = True
                         break
 
@@ -1161,7 +1297,7 @@ class Migrator:
             if model_name:
                 model = self.layer.graph.models[model_name]
                 for metric in model.metrics:
-                    if metric.agg == agg_type and col_name in (metric.sql, "*"):
+                    if metric.agg == agg_type and self._metric_matches_column(metric, col_name):
                         metrics.append(f"{model_name}.{metric.name}")
                         break
 

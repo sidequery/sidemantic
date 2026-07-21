@@ -179,9 +179,11 @@ class BigQueryAdapter(BaseDatabaseAdapter):
         """
         days_back, limit = validate_query_history_params(days_back, limit)
         instrumentation_filter = "AND query LIKE '%-- sidemantic:%'" if instrumented_only else ""
+        # Region qualifiers are lowercase (`region-us`); Client.location is often "US".
+        location = (self.client.location or "us").lower()
         sql = f"""
         SELECT query
-        FROM `{self.project_id}.region-{self.client.location}.INFORMATION_SCHEMA.JOBS_BY_PROJECT`
+        FROM `{self.project_id}.region-{location}.INFORMATION_SCHEMA.JOBS_BY_PROJECT`
         WHERE creation_time >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {days_back} DAY)
           AND job_type = 'QUERY'
           AND state = 'DONE'

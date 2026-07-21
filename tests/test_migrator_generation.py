@@ -1260,3 +1260,141 @@ def test_cross_model_derived_metric_in_rewritten_query():
 
     # Cross-model derived metric should appear in the rewritten query
     assert "revenue_per_customer" in sql
+
+
+def test_window_function_detected_in_any_select_position():
+    """Cumulative metrics must be found even when the window fn is not the last projection."""
+    layer = SemanticLayer(auto_register=False)
+    analyzer = Migrator(layer)
+
+    report = analyzer.analyze_queries(
+        [
+            """
+            SELECT SUM(amount) OVER (ORDER BY order_date) AS running_total, status
+            FROM orders
+            """
+        ]
+    )
+
+    analysis = report.query_analyses[0]
+    assert analysis.parse_error is None
+    assert len(analysis.cumulative_metrics) == 1
+    assert analysis.cumulative_metrics[0]["name"] == "running_total"
+
+
+def test_non_select_statements_are_skipped():
+    """DDL/DML from warehouse history must not generate models."""
+    layer = SemanticLayer(auto_register=False)
+    analyzer = Migrator(layer)
+
+    report = analyzer.analyze_queries(
+        [
+            "CREATE TABLE staging_orders AS SELECT * FROM orders",
+            "INSERT INTO audit_log VALUES (1, 'x')",
+            "DELETE FROM temp_table WHERE id = 1",
+            "SELECT status, SUM(amount) FROM orders GROUP BY status",
+        ]
+    )
+    models = analyzer.generate_models(report)
+
+    assert report.parseable_queries == 1
+    assert set(models) == {"orders"}
+
+
+def test_cte_aliases_are_not_treated_as_tables():
+    layer = SemanticLayer(auto_register=False)
+    analyzer = Migrator(layer)
+
+    report = analyzer.analyze_queries(
+        [
+            """
+            WITH recent AS (SELECT * FROM orders WHERE order_date >= '2025-01-01')
+            SELECT status, SUM(amount) FROM recent GROUP BY status
+            """
+        ]
+    )
+    models = analyzer.generate_models(report)
+
+    assert "recent" not in models
+    assert "orders" in models
+
+
+def test_subquery_where_does_not_leak_into_filters():
+    """Inner predicates re-applied at the outer level would change the result set."""
+    layer = SemanticLayer(auto_register=False)
+    analyzer = Migrator(layer)
+
+    report = analyzer.analyze_queries(
+        [
+            """
+            SELECT status, SUM(amount)
+            FROM orders
+            WHERE customer_id IN (SELECT id FROM customers WHERE region = 'US')
+            GROUP BY status
+            """
+        ]
+    )
+
+    analysis = report.query_analyses[0]
+    # Exactly one top-level filter: the IN predicate. The inner WHERE must not
+    # surface as a second standalone filter (it may appear inside the IN text).
+    assert len(analysis.filters) == 1
+    assert analysis.filters[0].startswith("customer_id IN")
+
+
+def test_count_star_not_covered_by_count_column_metric():
+    """COUNT(*) and COUNT(col) differ on NULLs; one must not satisfy the other."""
+    from sidemantic import Dimension, Metric, Model
+
+    layer = SemanticLayer(auto_register=False)
+    layer.graph.add_model(
+        Model(
+            name="orders",
+            table="orders",
+            dimensions=[Dimension(name="status", sql="status", type="categorical")],
+            metrics=[Metric(name="cust_count", agg="count", sql="customer_id")],
+        )
+    )
+    analyzer = Migrator(layer)
+
+    report = analyzer.analyze_queries(["SELECT status, COUNT(*) FROM orders GROUP BY status"])
+    analysis = report.query_analyses[0]
+
+    assert ("orders", "count", "*") in analysis.missing_metrics
+    assert not analysis.can_rewrite
+
+
+def test_no_relationship_from_non_key_equality():
+    """An arbitrary col = col correlation is not evidence of a relationship."""
+    layer = SemanticLayer(auto_register=False)
+    analyzer = Migrator(layer)
+
+    report = analyzer.analyze_queries(
+        [
+            """
+            SELECT o.status, SUM(o.amount)
+            FROM orders o, customers c
+            WHERE o.code = c.code
+            GROUP BY o.status
+            """
+        ]
+    )
+
+    assert report.query_analyses[0].relationships == []
+
+
+def test_split_sql_statements_respects_literals_and_comments():
+    from sidemantic.core.migrator import split_sql_statements
+
+    content = """
+    -- sidemantic: models=orders metrics=orders.revenue
+    SELECT * FROM orders WHERE note = 'a;b';
+    /* block; comment */
+    SELECT * FROM customers;
+    """
+    statements = split_sql_statements(content)
+
+    assert len(statements) == 2
+    assert "'a;b'" in statements[0]
+    assert "-- sidemantic:" in statements[0]
+    assert statements[1].startswith("/* block; comment */")

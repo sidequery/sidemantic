@@ -898,8 +898,10 @@ def migrator(
             return queries_from_history
 
         if queries and (str(queries) == "-" or queries.is_file()):
+            from sidemantic.core.migrator import split_sql_statements
+
             content = read_text_input(queries, label="migration SQL")
-            return [query.strip() for query in content.split(";") if query.strip()]
+            return split_sql_statements(content)
         return None
 
     # Bootstrap mode - generate models from queries
@@ -2680,12 +2682,19 @@ def preagg_recommend(
     """
     Show pre-aggregation recommendations based on query patterns.
 
+    Query-history import requires a warehouse with a queryable history
+    (Snowflake, BigQuery, Databricks, or ClickHouse); for DuckDB and other
+    adapters, pass a query log with --queries instead.
+
     Examples:
       sidemantic preagg recommend --connection "bigquery://project/dataset"
-      sidemantic preagg recommend --db data.db --min-count 50 --top 10
+      sidemantic preagg recommend --connection "snowflake://..." --min-count 50 --top 10
       sidemantic preagg recommend --queries queries.sql --min-score 0.5
     """
     from sidemantic.core.preagg_recommender import PreAggregationRecommender
+
+    if queries is not None and (connection or db):
+        raise typer.BadParameter("--queries and --connection/--db are mutually exclusive")
 
     try:
         output_format = resolve_output_format(json_output=json_output)
@@ -2713,8 +2722,10 @@ def preagg_recommend(
                 recommender.fetch_and_parse_query_history(adapter, days_back=days_back, limit=limit)
         elif queries:
             if str(queries) == "-":
+                from sidemantic.core.migrator import split_sql_statements
+
                 sql = read_text_input(queries, label="query log")
-                recommender.parse_query_log([query.strip() for query in sql.split(";") if query.strip()])
+                recommender.parse_query_log(split_sql_statements(sql))
             elif not queries.exists():
                 raise InvocationError(f"Query source does not exist: {queries}")
             elif queries.is_file():
@@ -2726,6 +2737,11 @@ def preagg_recommend(
         # Print summary
         summary = recommender.get_summary()
         emit_diagnostic(f"✓ Analyzed {summary['total_queries']} queries")
+        if summary.get("queries_skipped"):
+            emit_diagnostic(
+                f"Skipped {summary['queries_skipped']} of {summary['queries_seen']} queries "
+                "(no usable sidemantic instrumentation)"
+            )
         emit_diagnostic(f"Found {summary['unique_patterns']} unique patterns")
         emit_diagnostic(f"{summary['patterns_above_threshold']} patterns above threshold")
 
@@ -2818,13 +2834,20 @@ def preagg_apply(
 
     Analyzes query patterns and automatically adds pre-aggregation definitions to model YAML files.
 
+    Query-history import requires a warehouse with a queryable history
+    (Snowflake, BigQuery, Databricks, or ClickHouse); for DuckDB and other
+    adapters, pass a query log with --queries instead.
+
     Examples:
       sidemantic preagg apply models/ --connection "bigquery://project/dataset"
-      sidemantic preagg apply models/ --db data.db --top 5
+      sidemantic preagg apply models/ --connection "snowflake://..." --top 5
       sidemantic preagg apply models/ --queries queries.sql --dry-run
     """
     from sidemantic.core.preagg_management import apply_recommendations_to_yaml
     from sidemantic.core.preagg_recommender import PreAggregationRecommender
+
+    if queries is not None and (connection or db):
+        raise typer.BadParameter("--queries and --connection/--db are mutually exclusive")
 
     try:
         output_format = resolve_output_format(json_output=json_output)
@@ -2854,8 +2877,10 @@ def preagg_apply(
                 recommender.fetch_and_parse_query_history(adapter, days_back=days_back, limit=limit)
         elif queries:
             if str(queries) == "-":
+                from sidemantic.core.migrator import split_sql_statements
+
                 sql = read_text_input(queries, label="query log")
-                recommender.parse_query_log([query.strip() for query in sql.split(";") if query.strip()])
+                recommender.parse_query_log(split_sql_statements(sql))
             elif not queries.exists():
                 raise InvocationError(f"Query source does not exist: {queries}")
             elif queries.is_file():

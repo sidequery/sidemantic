@@ -235,10 +235,14 @@ class SnowflakeAdapter(BaseDatabaseAdapter):
         """
         days_back, limit = validate_query_history_params(days_back, limit, max_days_back=7)
         instrumentation_filter = "AND query_text LIKE '%-- sidemantic:%'" if instrumented_only else ""
+        # QUERY_HISTORY applies RESULT_LIMIT (default 100, max 10000) BEFORE the outer
+        # WHERE/LIMIT, so rows removed by the filters below still consume its budget.
+        # Always request the max and let the outer LIMIT trim to the caller's limit.
         sql = f"""
         SELECT query_text
         FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY(
-            END_TIME_RANGE_START => DATEADD('day', -{days_back}, CURRENT_TIMESTAMP())
+            END_TIME_RANGE_START => DATEADD('day', -{days_back}, CURRENT_TIMESTAMP()),
+            RESULT_LIMIT => 10000
         ))
         WHERE execution_status = 'SUCCESS'
           AND query_text NOT ILIKE '%INFORMATION_SCHEMA.QUERY_HISTORY%'

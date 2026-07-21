@@ -154,6 +154,8 @@ export function ComponentGallery() {
               delta={{ label: "+1.1pt", tone: "positive" }}
               comparison="vs previous month"
               sparkValues={[24, 26, 29, 27, 31, 32]}
+              selected={selectedMetric === "orders.margin"}
+              onSelect={setSelectedMetric}
             />
           </div>
         </section>

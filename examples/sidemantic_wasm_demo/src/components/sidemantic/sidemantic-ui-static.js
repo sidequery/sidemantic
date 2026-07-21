@@ -8570,7 +8570,7 @@ function Leaderboard({
         "data-action": expanded ? "leaderboard-back" : "leaderboard-expand",
         "aria-expanded": expanded,
         onClick: () => onExpandedChange?.(!expanded),
-        className: "leaderboard-expand mt-1 min-h-9 border-0 border-t border-line bg-transparent px-3 text-left text-xs font-normal text-faint hover:text-accent",
+        className: "leaderboard-expand border-0 border-t border-line bg-transparent px-3 py-1 text-left text-xs font-normal text-faint hover:text-accent",
         children: expanded ? "← All dimensions" : `Expand table (${rows.length})`
       }) : null
     ]
@@ -8867,16 +8867,19 @@ function MetricCard({
       }) : null
     ]
   });
-  const className = "group flex w-full flex-col gap-1.5 rounded-xl border border-line bg-surface px-3.5 py-3 text-left shadow-[var(--shadow-sm)] transition-colors hover:border-line-strong data-[selected=true]:border-accent";
-  const sparkline = /* @__PURE__ */ jsx_runtime8.jsx(Sparkline, {
-    values: sparkValues,
-    labels: sparkLabels,
-    onHover: (point) => {
-      setSparkHover(point);
-      onSparkHover?.(point);
-    },
-    onBrush: onSparkBrush,
-    formatValue: (sparkValue) => formatValue(sparkValue, format)
+  const className = "group flex w-full flex-col gap-1.5 overflow-hidden rounded-xl border border-line bg-surface px-3.5 pt-3 text-left shadow-[var(--shadow-sm)] transition-colors hover:border-line-strong data-[selected=true]:border-accent";
+  const sparkline = /* @__PURE__ */ jsx_runtime8.jsx("div", {
+    className: "-mx-3.5 mt-auto",
+    children: /* @__PURE__ */ jsx_runtime8.jsx(Sparkline, {
+      values: sparkValues,
+      labels: sparkLabels,
+      onHover: (point) => {
+        setSparkHover(point);
+        onSparkHover?.(point);
+      },
+      onBrush: onSparkBrush,
+      formatValue: (sparkValue) => formatValue(sparkValue, format)
+    })
   });
   if (!onSelect) {
     return /* @__PURE__ */ jsx_runtime8.jsxs("article", {

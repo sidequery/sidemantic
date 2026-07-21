@@ -150,7 +150,7 @@ export function Leaderboard({
           data-action={expanded ? "leaderboard-back" : "leaderboard-expand"}
           aria-expanded={expanded}
           onClick={() => onExpandedChange?.(!expanded)}
-          className="leaderboard-expand mt-1 min-h-9 border-0 border-t border-line bg-transparent px-3 text-left text-xs font-normal text-faint hover:text-accent"
+          className="leaderboard-expand border-0 border-t border-line bg-transparent px-3 py-1 text-left text-xs font-normal text-faint hover:text-accent"
         >
           {expanded ? "← All dimensions" : `Expand table (${rows.length})`}
         </button>

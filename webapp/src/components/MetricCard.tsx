@@ -76,8 +76,10 @@ export function MetricCard({
   );
 
   const className =
-    "group flex w-full flex-col gap-1.5 rounded-xl border border-line bg-surface px-3.5 py-3 text-left shadow-[var(--shadow-sm)] transition-colors hover:border-line-strong data-[selected=true]:border-accent";
+    "group flex w-full flex-col gap-1.5 overflow-hidden rounded-xl border border-line bg-surface px-3.5 pt-3 text-left shadow-[var(--shadow-sm)] transition-colors hover:border-line-strong data-[selected=true]:border-accent";
+  // Bleed to the card edges: the text block keeps its padding, the trend runs edge to edge.
   const sparkline = (
+    <div className="-mx-3.5 mt-auto">
     <Sparkline
       values={sparkValues}
       labels={sparkLabels}
@@ -88,6 +90,7 @@ export function MetricCard({
       onBrush={onSparkBrush}
       formatValue={(sparkValue) => formatValue(sparkValue, format)}
     />
+    </div>
   );
 
   if (!onSelect) {

@@ -36,7 +36,7 @@ Available React primitives:
 Analytics surfaces:
 
 - `DashboardShell`: dense analytics page frame with status and toolbar slots.
-- `MetricCard`: metric label, value, delta, comparison caption, progress bar, loading, selected state.
+- `MetricCard`: metric label, value, inline delta with comparison caption, loading, selected state.
 - `Leaderboard`: ranked dimension rows with bars, selection, and stable data attributes.
 - `FilterPill`: active filter display and removal.
 - `QueryDebugPanel` (+ `tokenizeSql`): generated SQL/debug surface.

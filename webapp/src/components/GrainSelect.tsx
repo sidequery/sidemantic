@@ -17,7 +17,7 @@ export function GrainSelect({ grain, options, disabled, onChange }: GrainSelectP
         value={grain}
         disabled={disabled}
         onChange={(event) => onChange(event.target.value as Grain)}
-        className="border border-line bg-surface px-1.5 py-1 text-2xs text-ink disabled:opacity-50"
+        className="rounded border border-line bg-surface px-1.5 py-1 text-2xs text-ink disabled:opacity-50"
       >
         {options.map((option) => (
           <option key={option} value={option}>

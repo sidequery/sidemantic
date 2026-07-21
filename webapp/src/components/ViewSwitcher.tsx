@@ -7,7 +7,7 @@ const SEGMENTS: { key: ViewKind; label: string }[] = [
 
 export function ViewSwitcher({ view, onChange }: { view: ViewKind; onChange: (view: ViewKind) => void }) {
   return (
-    <div role="tablist" aria-label="View" className="flex items-center border border-line bg-surface">
+    <div role="tablist" aria-label="View" className="flex items-center overflow-hidden rounded border border-line bg-surface">
       {SEGMENTS.map((segment) => (
         <button
           key={segment.key}

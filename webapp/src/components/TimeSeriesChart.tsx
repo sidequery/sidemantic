@@ -153,11 +153,11 @@ export function TimeSeriesChart({
       : `Time series chart, ${count} points from ${formatLabel(points[0].x)} to ${formatLabel(points[count - 1].x)}.`);
 
   return (
-    <div className="relative border border-line bg-surface text-accent">
+    <div className="relative border border-line bg-surface text-chart-primary">
       {/* legend */}
       <div className="absolute right-3 top-2 z-10 flex items-center gap-3 text-2xs text-faint">
         <span className="flex items-center gap-1">
-          <span className="inline-block h-0.5 w-3 bg-accent" /> Current
+          <span className="inline-block h-0.5 w-3 bg-chart-primary" /> Current
         </span>
         {comparison?.length ? (
           <span className="flex items-center gap-1">
@@ -213,7 +213,7 @@ export function TimeSeriesChart({
                 y={PAD.top}
                 width={Math.abs(brush.b - brush.a)}
                 height={plotH}
-                className="fill-accent"
+                className="fill-chart-primary"
                 opacity={0.12}
               />
             ) : null}
@@ -254,7 +254,7 @@ export function TimeSeriesChart({
             </div>
           ) : null}
           {delta != null ? (
-            <div className={`mt-0.5 text-right font-mono ${delta > 0 ? "text-accent" : delta < 0 ? "text-danger" : "text-faint"}`}>
+            <div className={`mt-0.5 text-right font-mono ${delta > 0 ? "text-success" : delta < 0 ? "text-danger" : "text-faint"}`}>
               {delta.toLocaleString(undefined, { maximumFractionDigits: 1, signDisplay: "exceptZero" })}%
             </div>
           ) : null}

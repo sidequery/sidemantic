@@ -8376,7 +8376,7 @@ function FilterPill(props) {
     return /* @__PURE__ */ jsx_runtime4.jsxs("span", {
       "data-dimension": props.dimension,
       "data-value": props.value,
-      className: "inline-flex max-w-full items-center gap-1.5 border border-line bg-surface px-2 py-0.5 text-2xs text-muted",
+      className: "inline-flex max-w-full items-center gap-1.5 rounded-full border border-line bg-surface px-2 py-0.5 text-2xs text-muted",
       children: [
         /* @__PURE__ */ jsx_runtime4.jsxs("span", {
           className: "truncate",
@@ -8409,7 +8409,7 @@ function FilterPill(props) {
     "data-mode": filter.mode,
     children: [
       /* @__PURE__ */ jsx_runtime4.jsxs("span", {
-        className: "inline-flex max-w-full items-center gap-1.5 border border-line bg-surface px-2 py-0.5 text-2xs text-muted",
+        className: "inline-flex max-w-full items-center gap-1.5 rounded-full border border-line bg-surface px-2 py-0.5 text-2xs text-muted",
         children: [
           /* @__PURE__ */ jsx_runtime4.jsxs("button", {
             type: "button",
@@ -8448,7 +8448,7 @@ function FilterPill(props) {
 // webapp/src/components/Leaderboard.tsx
 var jsx_runtime5 = __toESM(require_jsx_runtime(), 1);
 var CONTEXT_TONE = {
-  positive: "text-accent",
+  positive: "text-success",
   negative: "text-danger",
   neutral: "text-faint"
 };
@@ -8598,7 +8598,7 @@ function ChartTooltip({
   return /* @__PURE__ */ jsx_runtime6.jsx("div", {
     role: "tooltip",
     style: { position, left: tip.x + offset, top: tip.y + offset, pointerEvents: "none", zIndex: 50, ...style },
-    className: className || "rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-white shadow",
+    className: className || "rounded-md border border-line bg-surface px-2 py-1.5 text-xs text-ink shadow-[var(--shadow)]",
     children: tip.content
   });
 }
@@ -8780,7 +8780,7 @@ function Sparkline({
 // webapp/src/components/MetricCard.tsx
 var jsx_runtime8 = __toESM(require_jsx_runtime(), 1);
 var TONE_CLASS = {
-  positive: "text-accent",
+  positive: "text-success",
   negative: "text-danger",
   neutral: "text-faint"
 };
@@ -8793,7 +8793,6 @@ function MetricCard({
   format,
   delta,
   comparison,
-  progress,
   sparkValues = [],
   sparkLabels,
   selected,
@@ -8809,15 +8808,27 @@ function MetricCard({
         className: "flex items-baseline justify-between gap-2",
         children: [
           /* @__PURE__ */ jsx_runtime8.jsx("span", {
-            className: "truncate text-2xs font-semibold uppercase tracking-wide text-faint",
+            className: "truncate text-2xs font-medium uppercase tracking-[0.08em] text-faint",
             children: label
           }),
           sparkHover?.label ? /* @__PURE__ */ jsx_runtime8.jsx("span", {
             className: "shrink-0 font-mono text-2xs text-faint",
             children: sparkHover.label
-          }) : delta ? /* @__PURE__ */ jsx_runtime8.jsxs("span", {
+          }) : null
+        ]
+      }),
+      /* @__PURE__ */ jsx_runtime8.jsx("div", {
+        className: "font-mono tnum text-[19px] font-semibold leading-tight tracking-tight text-ink",
+        children: loading ? /* @__PURE__ */ jsx_runtime8.jsx("span", {
+          className: "skeleton inline-block h-6 w-24 align-middle"
+        }) : sparkHover ? formatValue(sparkHover.value, format) : valueText ?? formatValue(value, format)
+      }),
+      delta || comparison ? /* @__PURE__ */ jsx_runtime8.jsxs("div", {
+        className: "flex items-baseline gap-1 text-2xs",
+        children: [
+          delta ? /* @__PURE__ */ jsx_runtime8.jsxs("span", {
             "data-tone": delta.tone,
-            className: `shrink-0 text-2xs font-medium ${TONE_CLASS[delta.tone]}`,
+            className: `font-mono tnum font-medium ${TONE_CLASS[delta.tone]}`,
             children: [
               /* @__PURE__ */ jsx_runtime8.jsx("span", {
                 "aria-hidden": "true",
@@ -8826,33 +8837,16 @@ function MetricCard({
               }),
               delta.label
             ]
+          }) : null,
+          comparison ? /* @__PURE__ */ jsx_runtime8.jsx("span", {
+            className: "truncate text-faint",
+            children: comparison
           }) : null
         ]
-      }),
-      /* @__PURE__ */ jsx_runtime8.jsx("div", {
-        className: "font-mono tnum text-base font-semibold text-ink",
-        children: loading ? /* @__PURE__ */ jsx_runtime8.jsx("span", {
-          className: "skeleton inline-block h-5 w-24 align-middle"
-        }) : sparkHover ? formatValue(sparkHover.value, format) : valueText ?? formatValue(value, format)
-      }),
-      comparison ? /* @__PURE__ */ jsx_runtime8.jsx("div", {
-        className: "text-2xs text-faint",
-        children: comparison
-      }) : null,
-      progress != null && Number.isFinite(progress) ? /* @__PURE__ */ jsx_runtime8.jsx("div", {
-        role: "progressbar",
-        "aria-valuemin": 0,
-        "aria-valuemax": 1,
-        "aria-valuenow": Math.min(Math.max(progress, 0), 1),
-        className: "h-1 w-full bg-surface-soft",
-        children: /* @__PURE__ */ jsx_runtime8.jsx("div", {
-          className: "h-full bg-chart-primary",
-          style: { width: `${Math.min(Math.max(progress, 0), 1) * 100}%` }
-        })
       }) : null
     ]
   });
-  const className = "group flex w-full flex-col gap-1.5 border border-line bg-surface px-3 py-2.5 text-left data-[selected=true]:border-accent data-[selected=true]:ring-1 data-[selected=true]:ring-accent";
+  const className = "group flex w-full flex-col gap-1.5 rounded-lg border border-line bg-surface px-3.5 py-3 text-left shadow-[var(--shadow-sm)] transition-colors hover:border-line-strong data-[selected=true]:border-accent";
   const sparkline = /* @__PURE__ */ jsx_runtime8.jsx(Sparkline, {
     values: sparkValues,
     labels: sparkLabels,
@@ -9079,12 +9073,15 @@ var TOKEN_PROPERTIES = {
   chartPrimarySelected: "--chart-primary-selected",
   danger: "--danger",
   dangerSoft: "--danger-soft",
+  success: "--success",
+  successSoft: "--success-soft",
   viz1: "--viz-1",
   viz2: "--viz-2",
   viz3: "--viz-3",
   viz4: "--viz-4",
   viz5: "--viz-5",
-  viz6: "--viz-6"
+  viz6: "--viz-6",
+  viz7: "--viz-7"
 };
 var KEY = "sidemantic-theme";
 function getTheme() {

@@ -11,7 +11,7 @@ type TabsProps = {
 // the tablist only — associate panels via aria-controls/ids in the caller if needed.
 export function Tabs({ tabs, active, onChange, ariaLabel = "Tabs" }: TabsProps) {
   return (
-    <div role="tablist" aria-label={ariaLabel} className="flex items-center border border-line bg-surface">
+    <div role="tablist" aria-label={ariaLabel} className="flex items-center overflow-hidden rounded border border-line bg-surface">
       {tabs.map((tab) => (
         <button
           key={tab.key}

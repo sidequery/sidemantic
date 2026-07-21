@@ -28,7 +28,7 @@ type LeaderboardProps = {
 };
 
 const CONTEXT_TONE: Record<Tone, string> = {
-  positive: "text-accent",
+  positive: "text-success",
   negative: "text-danger",
   neutral: "text-faint",
 };

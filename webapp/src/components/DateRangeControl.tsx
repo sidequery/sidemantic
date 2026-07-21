@@ -53,7 +53,7 @@ export function DateRangeControl({
   return (
     <details ref={details} className="relative text-2xs">
       <summary
-        className={`flex cursor-pointer items-center gap-1.5 border border-line bg-surface px-2 py-1 text-ink ${
+        className={`flex cursor-pointer items-center gap-1.5 rounded border border-line bg-surface px-2 py-1 text-ink ${
           disabled ? "pointer-events-none opacity-50" : ""
         }`}
       >
@@ -61,7 +61,7 @@ export function DateRangeControl({
         <span className="font-mono tnum">{summary}</span>
         <span aria-hidden="true" className="text-faint">▾</span>
       </summary>
-      <div className="absolute right-0 z-50 mt-1 w-64 border border-line bg-surface p-2 shadow-lg">
+      <div className="absolute right-0 z-50 mt-1 w-64 rounded-md border border-line bg-surface p-2 shadow-[var(--shadow)]">
         <button
           type="button"
           onClick={() => apply(undefined)}

@@ -22,7 +22,7 @@ export function Button({ variant = "secondary", size = "md", type = "button", cl
     <button
       type={type}
       data-variant={variant}
-      className={`border ${sizing} ${VARIANT_CLASSES[variant]} disabled:pointer-events-none disabled:opacity-50 ${className ?? ""}`}
+      className={`rounded border ${sizing} ${VARIANT_CLASSES[variant]} disabled:pointer-events-none disabled:opacity-50 ${className ?? ""}`}
       {...rest}
     />
   );

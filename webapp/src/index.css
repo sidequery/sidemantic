@@ -4,56 +4,68 @@
 
 :root,
 :root[data-theme="light"] {
-  /* hogflare-derived "data tool" tokens — light */
-  --bg: #f5f6f8;
+  /* Sidequery design tokens — warm parchment neutrals, near-black ink, a gold accent
+   * thread, and an earthy categorical palette. The accent is the TEXT-SAFE gold
+   * (decorative brand gold fails contrast as text on light surfaces). */
+  --bg: #f6f5f1;
   --surface: #ffffff;
-  --surface-soft: #eef1f4;
-  --ink: #0b0d10;
-  --muted: #586170;
-  --faint: #858f9c;
-  --line: #dde2e8;
-  --accent: #6875e8;
-  --accent-hover: #5663d6;
-  --accent-soft: rgba(104, 117, 232, 0.14);
-  --danger: #b3392f;
-  --danger-soft: #fbeae8;
-  --chart-primary: #6875e8;
-  --chart-primary-soft: rgba(104, 117, 232, 0.14);
-  --chart-primary-selected: rgba(104, 117, 232, 0.22);
+  --surface-soft: #f0eee8;
+  --ink: #1b1917;
+  --muted: #45403a;
+  --faint: #8b8378;
+  --line: #e7e4dd;
+  --line-strong: #d8d2c8;
+  --accent: #8a6116;
+  --accent-hover: #6d4c0f;
+  --accent-soft: #fff6e2;
+  --danger: #dc2626;
+  --danger-soft: rgba(239, 68, 68, 0.1);
+  --success: #047857;
+  --success-soft: rgba(16, 185, 129, 0.1);
+  --chart-primary: #5b7fa6;
+  --chart-primary-soft: rgba(91, 127, 166, 0.16);
+  --chart-primary-selected: rgba(91, 127, 166, 0.26);
   /* Categorical series palette for multi-series charts (donut, stacked area, network groups). */
-  --viz-1: #6875e8;
-  --viz-2: #3aa189;
-  --viz-3: #d9913f;
-  --viz-4: #c266b7;
-  --viz-5: #5aa7d6;
-  --viz-6: #a0a43e;
-  --shadow: 0 8px 24px rgba(16, 24, 40, 0.1);
+  --viz-1: #5b7fa6; /* slate */
+  --viz-2: #6fa287; /* sage */
+  --viz-3: #c06e52; /* terracotta */
+  --viz-4: #d9a441; /* ochre */
+  --viz-5: #8b7bb0; /* heather */
+  --viz-6: #c98ba4; /* rose */
+  --viz-7: #5fa3a8; /* teal-stone */
+  --shadow-sm: 0 1px 2px 0 rgba(27, 25, 23, 0.04), 0 1px 3px 0 rgba(27, 25, 23, 0.06);
+  --shadow: 0 8px 18px -12px rgba(27, 25, 23, 0.18), 0 2px 8px -4px rgba(27, 25, 23, 0.12);
   color-scheme: light;
 }
 
 :root[data-theme="dark"] {
-  --bg: #0c0f14;
-  --surface: #14181f;
-  --surface-soft: #1b212a;
-  --ink: #e8ebf1;
-  --muted: #98a2b1;
-  --faint: #69727e;
-  --line: #262d38;
-  --accent: #8b96ff;
-  --accent-hover: #a2aaff;
-  --accent-soft: rgba(139, 150, 255, 0.18);
-  --danger: #f1796b;
-  --danger-soft: rgba(241, 121, 107, 0.14);
-  --chart-primary: #8b96ff;
-  --chart-primary-soft: rgba(139, 150, 255, 0.18);
-  --chart-primary-selected: rgba(139, 150, 255, 0.28);
-  --viz-1: #8b96ff;
-  --viz-2: #55c2a9;
-  --viz-3: #e8ab62;
-  --viz-4: #d98ad0;
-  --viz-5: #7cc0e8;
-  --viz-6: #bcc060;
-  --shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  --bg: #141312;
+  --surface: #1c1a18;
+  --surface-soft: #25231f;
+  --ink: #f4f2ee;
+  --muted: #d8d2c8;
+  --faint: #958c80;
+  --line: #2e2b27;
+  --line-strong: #423d36;
+  --accent: #f1bd5b;
+  --accent-hover: #f6d083;
+  --accent-soft: #342817;
+  --danger: #f87171;
+  --danger-soft: rgba(248, 113, 113, 0.15);
+  --success: #6ee7b7;
+  --success-soft: rgba(52, 211, 153, 0.15);
+  --chart-primary: #7a9cc0;
+  --chart-primary-soft: rgba(122, 156, 192, 0.2);
+  --chart-primary-selected: rgba(122, 156, 192, 0.32);
+  --viz-1: #7a9cc0;
+  --viz-2: #8cbba1;
+  --viz-3: #d98a6e;
+  --viz-4: #e7b95c;
+  --viz-5: #a796c8;
+  --viz-6: #d9a4bc;
+  --viz-7: #7cbec3;
+  --shadow-sm: 0 1px 3px 0 rgba(0, 0, 0, 0.3), 0 1px 2px -1px rgba(0, 0, 0, 0.3);
+  --shadow: 0 10px 18px -12px rgba(0, 0, 0, 0.45), 0 2px 8px -4px rgba(0, 0, 0, 0.35);
   color-scheme: dark;
 }
 
@@ -67,11 +79,22 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--ink);
-  font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  /* Geist first: hosts that load it (the Sidequery platform) get the brand face,
+   * everyone else falls back cleanly. */
+  font-family: "Geist Sans", Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   font-size: 13px;
   line-height: 1.4;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+}
+
+/* Tighter tracking on headings so titles read intentional, not default. */
+h1 {
+  letter-spacing: -0.025em;
+}
+h2,
+h3 {
+  letter-spacing: -0.018em;
 }
 
 /* Numbers, ids, codes read as mono with tabular figures — the precise "data tool" feel. */

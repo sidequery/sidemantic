@@ -25,7 +25,7 @@ function ChartTooltip({
   return /* @__PURE__ */ jsx("div", {
     role: "tooltip",
     style: { position, left: tip.x + offset, top: tip.y + offset, pointerEvents: "none", zIndex: 50, ...style },
-    className: className || "rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-white shadow",
+    className: className || "rounded-md border border-line bg-surface px-2 py-1.5 text-xs text-ink shadow-[var(--shadow)]",
     children: tip.content
   });
 }
@@ -34,25 +34,25 @@ function TooltipRows({ title, rows }) {
     className: "min-w-28",
     children: [
       title ? /* @__PURE__ */ jsx("div", {
-        className: "mb-0.5 font-mono text-slate-400",
+        className: "mb-0.5 font-mono text-faint",
         children: title
       }) : null,
       rows.map((row, index) => /* @__PURE__ */ jsxs("div", {
         className: "flex items-center justify-between gap-3",
         children: [
           /* @__PURE__ */ jsxs("span", {
-            className: "flex items-center gap-1",
+            className: "flex items-center gap-1 text-muted",
             children: [
               row.swatch ? /* @__PURE__ */ jsx("span", {
                 "aria-hidden": "true",
-                className: "inline-block size-2",
+                className: "inline-block size-2 rounded-sm",
                 style: { background: row.swatch }
               }) : null,
               row.label
             ]
           }),
           /* @__PURE__ */ jsx("span", {
-            className: "font-mono tnum",
+            className: "font-mono tnum font-medium text-ink",
             children: row.value
           })
         ]
@@ -178,7 +178,7 @@ function filterSummary(filter) {
 }
 
 // webapp/src/lib/viz.ts
-var VIZ_COLOR_COUNT = 6;
+var VIZ_COLOR_COUNT = 7;
 function vizColor(index) {
   const slot = (index % VIZ_COLOR_COUNT + VIZ_COLOR_COUNT) % VIZ_COLOR_COUNT;
   return `var(--viz-${slot + 1})`;
@@ -846,7 +846,7 @@ function TimeSeriesChart({
   const delta = hoverCur && hoverPrev && hoverPrev.y !== 0 ? (hoverCur.y - hoverPrev.y) / Math.abs(hoverPrev.y) * 100 : null;
   const summary = ariaLabel ?? (empty ? "Time series chart: not enough data to plot." : `Time series chart, ${count} points from ${formatLabel(points[0].x)} to ${formatLabel(points[count - 1].x)}.`);
   return /* @__PURE__ */ jsxs6("div", {
-    className: "relative border border-line bg-surface text-accent",
+    className: "relative border border-line bg-surface text-chart-primary",
     children: [
       /* @__PURE__ */ jsxs6("div", {
         className: "absolute right-3 top-2 z-10 flex items-center gap-3 text-2xs text-faint",
@@ -855,7 +855,7 @@ function TimeSeriesChart({
             className: "flex items-center gap-1",
             children: [
               /* @__PURE__ */ jsx6("span", {
-                className: "inline-block h-0.5 w-3 bg-accent"
+                className: "inline-block h-0.5 w-3 bg-chart-primary"
               }),
               " Current"
             ]
@@ -953,7 +953,7 @@ function TimeSeriesChart({
               y: PAD.top,
               width: Math.abs(brush.b - brush.a),
               height: plotH,
-              className: "fill-accent",
+              className: "fill-chart-primary",
               opacity: 0.12
             }) : null,
             safeHover != null && hoverCur ? /* @__PURE__ */ jsxs6("g", {
@@ -1025,7 +1025,7 @@ function TimeSeriesChart({
             ]
           }) : null,
           delta != null ? /* @__PURE__ */ jsxs6("div", {
-            className: `mt-0.5 text-right font-mono ${delta > 0 ? "text-accent" : delta < 0 ? "text-danger" : "text-faint"}`,
+            className: `mt-0.5 text-right font-mono ${delta > 0 ? "text-success" : delta < 0 ? "text-danger" : "text-faint"}`,
             children: [
               delta.toLocaleString(undefined, { maximumFractionDigits: 1, signDisplay: "exceptZero" }),
               "%"
@@ -1651,7 +1651,7 @@ function FilterPill(props) {
     return /* @__PURE__ */ jsxs10("span", {
       "data-dimension": props.dimension,
       "data-value": props.value,
-      className: "inline-flex max-w-full items-center gap-1.5 border border-line bg-surface px-2 py-0.5 text-2xs text-muted",
+      className: "inline-flex max-w-full items-center gap-1.5 rounded-full border border-line bg-surface px-2 py-0.5 text-2xs text-muted",
       children: [
         /* @__PURE__ */ jsxs10("span", {
           className: "truncate",
@@ -1684,7 +1684,7 @@ function FilterPill(props) {
     "data-mode": filter.mode,
     children: [
       /* @__PURE__ */ jsxs10("span", {
-        className: "inline-flex max-w-full items-center gap-1.5 border border-line bg-surface px-2 py-0.5 text-2xs text-muted",
+        className: "inline-flex max-w-full items-center gap-1.5 rounded-full border border-line bg-surface px-2 py-0.5 text-2xs text-muted",
         children: [
           /* @__PURE__ */ jsxs10("button", {
             type: "button",
@@ -1918,7 +1918,7 @@ function HistogramChart({ values, bins, height = 200, format = formatCompact, ar
 // webapp/src/components/Leaderboard.tsx
 import { jsx as jsx15, jsxs as jsxs13 } from "react/jsx-runtime";
 var CONTEXT_TONE = {
-  positive: "text-accent",
+  positive: "text-success",
   negative: "text-danger",
   neutral: "text-faint"
 };
@@ -2227,7 +2227,7 @@ function Sparkline({
 // webapp/src/components/MetricCard.tsx
 import { jsx as jsx17, jsxs as jsxs15, Fragment as Fragment7 } from "react/jsx-runtime";
 var TONE_CLASS = {
-  positive: "text-accent",
+  positive: "text-success",
   negative: "text-danger",
   neutral: "text-faint"
 };
@@ -2240,7 +2240,6 @@ function MetricCard({
   format,
   delta,
   comparison,
-  progress,
   sparkValues = [],
   sparkLabels,
   selected,
@@ -2256,15 +2255,27 @@ function MetricCard({
         className: "flex items-baseline justify-between gap-2",
         children: [
           /* @__PURE__ */ jsx17("span", {
-            className: "truncate text-2xs font-semibold uppercase tracking-wide text-faint",
+            className: "truncate text-2xs font-medium uppercase tracking-[0.08em] text-faint",
             children: label
           }),
           sparkHover?.label ? /* @__PURE__ */ jsx17("span", {
             className: "shrink-0 font-mono text-2xs text-faint",
             children: sparkHover.label
-          }) : delta ? /* @__PURE__ */ jsxs15("span", {
+          }) : null
+        ]
+      }),
+      /* @__PURE__ */ jsx17("div", {
+        className: "font-mono tnum text-[19px] font-semibold leading-tight tracking-tight text-ink",
+        children: loading ? /* @__PURE__ */ jsx17("span", {
+          className: "skeleton inline-block h-6 w-24 align-middle"
+        }) : sparkHover ? formatValue(sparkHover.value, format) : valueText ?? formatValue(value, format)
+      }),
+      delta || comparison ? /* @__PURE__ */ jsxs15("div", {
+        className: "flex items-baseline gap-1 text-2xs",
+        children: [
+          delta ? /* @__PURE__ */ jsxs15("span", {
             "data-tone": delta.tone,
-            className: `shrink-0 text-2xs font-medium ${TONE_CLASS[delta.tone]}`,
+            className: `font-mono tnum font-medium ${TONE_CLASS[delta.tone]}`,
             children: [
               /* @__PURE__ */ jsx17("span", {
                 "aria-hidden": "true",
@@ -2273,33 +2284,16 @@ function MetricCard({
               }),
               delta.label
             ]
+          }) : null,
+          comparison ? /* @__PURE__ */ jsx17("span", {
+            className: "truncate text-faint",
+            children: comparison
           }) : null
         ]
-      }),
-      /* @__PURE__ */ jsx17("div", {
-        className: "font-mono tnum text-base font-semibold text-ink",
-        children: loading ? /* @__PURE__ */ jsx17("span", {
-          className: "skeleton inline-block h-5 w-24 align-middle"
-        }) : sparkHover ? formatValue(sparkHover.value, format) : valueText ?? formatValue(value, format)
-      }),
-      comparison ? /* @__PURE__ */ jsx17("div", {
-        className: "text-2xs text-faint",
-        children: comparison
-      }) : null,
-      progress != null && Number.isFinite(progress) ? /* @__PURE__ */ jsx17("div", {
-        role: "progressbar",
-        "aria-valuemin": 0,
-        "aria-valuemax": 1,
-        "aria-valuenow": Math.min(Math.max(progress, 0), 1),
-        className: "h-1 w-full bg-surface-soft",
-        children: /* @__PURE__ */ jsx17("div", {
-          className: "h-full bg-chart-primary",
-          style: { width: `${Math.min(Math.max(progress, 0), 1) * 100}%` }
-        })
       }) : null
     ]
   });
-  const className = "group flex w-full flex-col gap-1.5 border border-line bg-surface px-3 py-2.5 text-left data-[selected=true]:border-accent data-[selected=true]:ring-1 data-[selected=true]:ring-accent";
+  const className = "group flex w-full flex-col gap-1.5 rounded-lg border border-line bg-surface px-3.5 py-3 text-left shadow-[var(--shadow-sm)] transition-colors hover:border-line-strong data-[selected=true]:border-accent";
   const sparkline = /* @__PURE__ */ jsx17(Sparkline, {
     values: sparkValues,
     labels: sparkLabels,
@@ -3010,7 +3004,7 @@ function ErrorState({ title = "Query failed", message }) {
   });
 }
 function StatusDot({ status }) {
-  const color = status === "ok" ? "bg-accent" : status === "loading" ? "bg-faint animate-pulse" : "bg-line";
+  const color = status === "ok" ? "bg-success" : status === "loading" ? "bg-faint animate-pulse" : "bg-line";
   return /* @__PURE__ */ jsx22("span", {
     "aria-hidden": "true",
     className: `inline-block size-2 rounded-full ${color}`
@@ -3159,7 +3153,7 @@ function Button({ variant = "secondary", size = "md", type = "button", className
   return /* @__PURE__ */ jsx24("button", {
     type,
     "data-variant": variant,
-    className: `border ${sizing} ${VARIANT_CLASSES[variant]} disabled:pointer-events-none disabled:opacity-50 ${className ?? ""}`,
+    className: `rounded border ${sizing} ${VARIANT_CLASSES[variant]} disabled:pointer-events-none disabled:opacity-50 ${className ?? ""}`,
     ...rest
   });
 }
@@ -3237,7 +3231,7 @@ function Combobox(props) {
     children: [
       props.multiple ? props.values.map((value) => /* @__PURE__ */ jsxs22("span", {
         "data-chip": value,
-        className: "inline-flex items-center gap-1 border border-line bg-surface-soft px-1.5 py-0.5 text-muted",
+        className: "inline-flex items-center gap-1 rounded-full border border-line bg-surface-soft px-2 py-0.5 text-muted",
         children: [
           /* @__PURE__ */ jsx25("span", {
             className: "max-w-32 truncate",
@@ -3274,7 +3268,7 @@ function Combobox(props) {
             },
             onFocus: () => setOpen(true),
             onKeyDown,
-            className: "w-full border border-line bg-surface px-1.5 py-1 text-ink placeholder:text-faint disabled:opacity-50"
+            className: "w-full rounded border border-line bg-surface px-1.5 py-1 text-ink placeholder:text-faint disabled:opacity-50"
           }),
           selectedValues.length > 0 ? /* @__PURE__ */ jsx25("button", {
             type: "button",
@@ -3290,7 +3284,7 @@ function Combobox(props) {
         id: listId,
         role: "listbox",
         "aria-multiselectable": props.multiple || undefined,
-        className: "absolute left-0 top-full z-50 mt-1 max-h-56 w-full min-w-40 overflow-y-auto border border-line bg-surface p-1 shadow-lg",
+        className: "absolute left-0 top-full z-50 mt-1 max-h-56 w-full min-w-40 overflow-y-auto rounded-md border border-line bg-surface p-1 shadow-[var(--shadow)]",
         children: [
           matches.length === 0 ? /* @__PURE__ */ jsx25("li", {
             className: "px-1.5 py-1 text-faint",
@@ -3397,7 +3391,7 @@ function DatePicker(props) {
   }
   const today = todayIso();
   const calendar = /* @__PURE__ */ jsxs23("div", {
-    className: "w-56 select-none border border-line bg-surface p-2 text-2xs",
+    className: "w-56 select-none rounded-md border border-line bg-surface p-2 text-2xs",
     "aria-label": ariaLabel ?? "Calendar",
     children: [
       /* @__PURE__ */ jsxs23("div", {
@@ -3475,7 +3469,7 @@ function DatePicker(props) {
     className: "relative inline-block text-2xs",
     children: [
       /* @__PURE__ */ jsxs23("summary", {
-        className: `flex cursor-pointer items-center gap-1.5 border border-line bg-surface px-2 py-1 text-ink ${disabled ? "pointer-events-none opacity-50" : ""}`,
+        className: `flex cursor-pointer items-center gap-1.5 rounded border border-line bg-surface px-2 py-1 text-ink ${disabled ? "pointer-events-none opacity-50" : ""}`,
         children: [
           /* @__PURE__ */ jsx26("span", {
             className: "text-faint",
@@ -3493,7 +3487,7 @@ function DatePicker(props) {
         ]
       }),
       /* @__PURE__ */ jsx26("div", {
-        className: "absolute left-0 z-50 mt-1 shadow-lg",
+        className: "absolute left-0 z-50 mt-1 shadow-[var(--shadow)]",
         children: calendar
       })
     ]
@@ -3542,7 +3536,7 @@ function DateRangeControl({
     className: "relative text-2xs",
     children: [
       /* @__PURE__ */ jsxs24("summary", {
-        className: `flex cursor-pointer items-center gap-1.5 border border-line bg-surface px-2 py-1 text-ink ${disabled ? "pointer-events-none opacity-50" : ""}`,
+        className: `flex cursor-pointer items-center gap-1.5 rounded border border-line bg-surface px-2 py-1 text-ink ${disabled ? "pointer-events-none opacity-50" : ""}`,
         children: [
           /* @__PURE__ */ jsx27("span", {
             className: "text-faint",
@@ -3560,7 +3554,7 @@ function DateRangeControl({
         ]
       }),
       /* @__PURE__ */ jsxs24("div", {
-        className: "absolute right-0 z-50 mt-1 w-64 border border-line bg-surface p-2 shadow-lg",
+        className: "absolute right-0 z-50 mt-1 w-64 rounded-md border border-line bg-surface p-2 shadow-[var(--shadow)]",
         children: [
           /* @__PURE__ */ jsx27("button", {
             type: "button",
@@ -3688,7 +3682,7 @@ function GrainSelect({ grain, options, disabled, onChange }) {
         value: grain,
         disabled,
         onChange: (event) => onChange(event.target.value),
-        className: "border border-line bg-surface px-1.5 py-1 text-2xs text-ink disabled:opacity-50",
+        className: "rounded border border-line bg-surface px-1.5 py-1 text-2xs text-ink disabled:opacity-50",
         children: options.map((option) => /* @__PURE__ */ jsx28("option", {
           value: option,
           children: labelize2(option)
@@ -3712,7 +3706,7 @@ function Select({ value, options, onChange, label, ariaLabel, placeholder, disab
         value,
         disabled,
         onChange: (event) => onChange(event.target.value),
-        className: "border border-line bg-surface px-1.5 py-1 text-2xs text-ink disabled:opacity-50",
+        className: "rounded border border-line bg-surface px-1.5 py-1 text-2xs text-ink disabled:opacity-50",
         children: [
           placeholder ? /* @__PURE__ */ jsx29("option", {
             value: "",
@@ -3761,7 +3755,7 @@ function Tabs({ tabs, active, onChange, ariaLabel = "Tabs" }) {
   return /* @__PURE__ */ jsx31("div", {
     role: "tablist",
     "aria-label": ariaLabel,
-    className: "flex items-center border border-line bg-surface",
+    className: "flex items-center overflow-hidden rounded border border-line bg-surface",
     children: tabs.map((tab) => /* @__PURE__ */ jsx31("button", {
       role: "tab",
       type: "button",
@@ -3886,7 +3880,7 @@ function TimezoneSelect({ timezone, disabled, onChange }) {
             setSearching(false);
             setText("");
           },
-          className: "w-36 border border-line bg-surface px-1.5 py-1 text-2xs text-ink disabled:opacity-50"
+          className: "w-36 rounded border border-line bg-surface px-1.5 py-1 text-2xs text-ink disabled:opacity-50"
         }),
         /* @__PURE__ */ jsx32("datalist", {
           id: listId,
@@ -3915,7 +3909,7 @@ function TimezoneSelect({ timezone, disabled, onChange }) {
           else
             onChange(event.target.value);
         },
-        className: "max-w-[11rem] border border-line bg-surface px-1.5 py-1 text-2xs text-ink disabled:opacity-50",
+        className: "max-w-[11rem] rounded border border-line bg-surface px-1.5 py-1 text-2xs text-ink disabled:opacity-50",
         children: [
           options.map((zone) => /* @__PURE__ */ jsxs28("option", {
             value: zone,
@@ -3960,7 +3954,7 @@ function ViewSwitcher({ view, onChange }) {
   return /* @__PURE__ */ jsx34("div", {
     role: "tablist",
     "aria-label": "View",
-    className: "flex items-center border border-line bg-surface",
+    className: "flex items-center overflow-hidden rounded border border-line bg-surface",
     children: SEGMENTS.map((segment) => /* @__PURE__ */ jsx34("button", {
       role: "tab",
       type: "button",
@@ -3989,12 +3983,15 @@ var TOKEN_PROPERTIES = {
   chartPrimarySelected: "--chart-primary-selected",
   danger: "--danger",
   dangerSoft: "--danger-soft",
+  success: "--success",
+  successSoft: "--success-soft",
   viz1: "--viz-1",
   viz2: "--viz-2",
   viz3: "--viz-3",
   viz4: "--viz-4",
   viz5: "--viz-5",
-  viz6: "--viz-6"
+  viz6: "--viz-6",
+  viz7: "--viz-7"
 };
 var KEY = "sidemantic-theme";
 function getTheme() {

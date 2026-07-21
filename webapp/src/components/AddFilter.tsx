@@ -42,7 +42,7 @@ export function AddFilter({ model }: { model: CatalogModel }) {
         aria-haspopup="dialog"
         aria-expanded={open}
         onClick={() => (open ? close() : setOpen(true))}
-        className="shrink-0 border border-dashed border-line px-2 py-0.5 text-2xs text-muted hover:border-faint hover:text-ink"
+        className="shrink-0 rounded-full border border-dashed border-line px-2 py-0.5 text-2xs text-muted hover:border-faint hover:text-ink"
       >
         + Filter
       </button>
@@ -50,7 +50,7 @@ export function AddFilter({ model }: { model: CatalogModel }) {
         <div
           role="menu"
           aria-label="Add a filter for a dimension"
-          className="absolute left-0 z-50 mt-1 max-h-64 w-48 overflow-y-auto border border-line bg-surface p-1 text-2xs shadow-lg"
+          className="absolute left-0 z-50 mt-1 max-h-64 w-48 overflow-y-auto rounded-md border border-line bg-surface p-1 text-2xs shadow-[var(--shadow)]"
         >
           {dims.map((dim) => (
             <button

@@ -15,12 +15,15 @@ export type ThemeTokens = Partial<{
   chartPrimarySelected: string;
   danger: string;
   dangerSoft: string;
+  success: string;
+  successSoft: string;
   viz1: string;
   viz2: string;
   viz3: string;
   viz4: string;
   viz5: string;
   viz6: string;
+  viz7: string;
 }>;
 
 const TOKEN_PROPERTIES: Record<keyof ThemeTokens, `--${string}`> = {
@@ -38,12 +41,15 @@ const TOKEN_PROPERTIES: Record<keyof ThemeTokens, `--${string}`> = {
   chartPrimarySelected: "--chart-primary-selected",
   danger: "--danger",
   dangerSoft: "--danger-soft",
+  success: "--success",
+  successSoft: "--success-soft",
   viz1: "--viz-1",
   viz2: "--viz-2",
   viz3: "--viz-3",
   viz4: "--viz-4",
   viz5: "--viz-5",
   viz6: "--viz-6",
+  viz7: "--viz-7",
 };
 
 const KEY = "sidemantic-theme";

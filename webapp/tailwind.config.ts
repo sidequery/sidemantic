@@ -19,13 +19,16 @@ const config: Config = {
         "accent-soft": "var(--accent-soft)",
         danger: "var(--danger)",
         "danger-soft": "var(--danger-soft)",
+        success: "var(--success)",
+        "success-soft": "var(--success-soft)",
+        "line-strong": "var(--line-strong)",
         "chart-primary": "var(--chart-primary)",
         "chart-primary-soft": "var(--chart-primary-soft)",
         "chart-primary-selected": "var(--chart-primary-selected)",
       },
       fontFamily: {
-        sans: ["Inter", "system-ui", "-apple-system", "Segoe UI", "Roboto", "sans-serif"],
-        mono: ["SFMono-Regular", "ui-monospace", "Menlo", "Consolas", "monospace"],
+        sans: ["Geist Sans", "Inter", "system-ui", "-apple-system", "Segoe UI", "Roboto", "sans-serif"],
+        mono: ["Geist Mono", "SFMono-Regular", "ui-monospace", "Menlo", "Consolas", "monospace"],
       },
       fontSize: {
         "2xs": ["11px", { lineHeight: "1.3" }],

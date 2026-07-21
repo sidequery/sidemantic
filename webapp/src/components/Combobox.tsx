@@ -107,7 +107,7 @@ export function Combobox(props: ComboboxProps) {
             <span
               key={value}
               data-chip={value}
-              className="inline-flex items-center gap-1 border border-line bg-surface-soft px-1.5 py-0.5 text-muted"
+              className="inline-flex items-center gap-1 rounded-full border border-line bg-surface-soft px-2 py-0.5 text-muted"
             >
               <span className="max-w-32 truncate">{labelFor(value)}</span>
               <button
@@ -141,7 +141,7 @@ export function Combobox(props: ComboboxProps) {
           }}
           onFocus={() => setOpen(true)}
           onKeyDown={onKeyDown}
-          className="w-full border border-line bg-surface px-1.5 py-1 text-ink placeholder:text-faint disabled:opacity-50"
+          className="w-full rounded border border-line bg-surface px-1.5 py-1 text-ink placeholder:text-faint disabled:opacity-50"
         />
         {selectedValues.length > 0 ? (
           <button
@@ -160,7 +160,7 @@ export function Combobox(props: ComboboxProps) {
           id={listId}
           role="listbox"
           aria-multiselectable={props.multiple || undefined}
-          className="absolute left-0 top-full z-50 mt-1 max-h-56 w-full min-w-40 overflow-y-auto border border-line bg-surface p-1 shadow-lg"
+          className="absolute left-0 top-full z-50 mt-1 max-h-56 w-full min-w-40 overflow-y-auto rounded-md border border-line bg-surface p-1 shadow-[var(--shadow)]"
         >
           {matches.length === 0 ? <li className="px-1.5 py-1 text-faint">No matches</li> : null}
           {matches.map((option, index) => (

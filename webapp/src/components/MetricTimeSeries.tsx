@@ -2,7 +2,7 @@ import type { CatalogMetric } from "../data/types";
 import { formatCompact, formatDelta, formatValue } from "../lib/format";
 import { TimeSeriesChart, type BrushRange, type SeriesPoint } from "./TimeSeriesChart";
 
-const TONE = { positive: "text-accent", negative: "text-danger", neutral: "text-faint" } as const;
+const TONE = { positive: "text-success", negative: "text-danger", neutral: "text-faint" } as const;
 
 type MetricTimeSeriesProps = {
   metric: CatalogMetric;

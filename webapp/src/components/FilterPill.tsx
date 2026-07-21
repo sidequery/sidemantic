@@ -27,7 +27,7 @@ export function FilterPill(props: FilterPillProps) {
 
   if (!("dim" in props)) {
     return (
-      <span data-dimension={props.dimension} data-value={props.value} className="inline-flex max-w-full items-center gap-1.5 border border-line bg-surface px-2 py-0.5 text-2xs text-muted">
+      <span data-dimension={props.dimension} data-value={props.value} className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-line bg-surface px-2 py-0.5 text-2xs text-muted">
         <span className="truncate"><span className="text-faint">{props.dimensionLabel ?? props.dimension}:</span> {props.value}</span>
         {props.onRemove ? (
           <button type="button" aria-label={`Remove filter ${props.value}`} onClick={props.onRemove} className="grid size-3.5 place-items-center rounded-full bg-surface-soft text-faint hover:bg-line hover:text-ink">×</button>
@@ -40,7 +40,7 @@ export function FilterPill(props: FilterPillProps) {
 
   return (
     <span className="relative inline-flex max-w-full items-center" data-dimension={dim.ref} data-mode={filter.mode}>
-      <span className="inline-flex max-w-full items-center gap-1.5 border border-line bg-surface px-2 py-0.5 text-2xs text-muted">
+      <span className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-line bg-surface px-2 py-0.5 text-2xs text-muted">
         <button
           type="button"
           aria-label={`Edit filter ${dim.label}`}

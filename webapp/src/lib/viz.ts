@@ -1,7 +1,7 @@
 // Shared helpers for the categorical chart components. Colors resolve through the theme's
 // --viz-N custom properties so embedders can rebrand charts via applyThemeTokens.
 
-export const VIZ_COLOR_COUNT = 6;
+export const VIZ_COLOR_COUNT = 7;
 
 /** CSS color for the Nth series (0-based), cycling through the theme's categorical palette. */
 export function vizColor(index: number): string {

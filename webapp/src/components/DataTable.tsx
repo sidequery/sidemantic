@@ -75,7 +75,13 @@ export function DataTable({
   return (
     <div>
       {searchable ? (
-        <div className="mb-2 flex items-center gap-2">
+        // Right-aligned so a section title on the left keeps its own lane.
+        <div className="mb-2 flex items-center justify-end gap-2">
+          {search ? (
+            <span className="whitespace-nowrap text-2xs text-faint tnum">
+              {filteredRows.length.toLocaleString()} of {rows.length.toLocaleString()}
+            </span>
+          ) : null}
           <input
             type="search"
             aria-label="Search rows"
@@ -84,11 +90,6 @@ export function DataTable({
             onChange={(event) => setSearch(event.target.value)}
             className="h-7 w-full max-w-64 rounded-full border border-line bg-surface px-2.5 text-xs text-ink placeholder:text-faint"
           />
-          {search ? (
-            <span className="whitespace-nowrap text-2xs text-faint tnum">
-              {filteredRows.length.toLocaleString()} of {rows.length.toLocaleString()}
-            </span>
-          ) : null}
         </div>
       ) : null}
       <div className="overflow-auto border border-line bg-surface">

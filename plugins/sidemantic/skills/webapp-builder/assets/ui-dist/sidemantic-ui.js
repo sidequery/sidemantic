@@ -531,16 +531,8 @@ function DataTable({
   return /* @__PURE__ */ jsxs4("div", {
     children: [
       searchable ? /* @__PURE__ */ jsxs4("div", {
-        className: "mb-2 flex items-center gap-2",
+        className: "mb-2 flex items-center justify-end gap-2",
         children: [
-          /* @__PURE__ */ jsx4("input", {
-            type: "search",
-            "aria-label": "Search rows",
-            placeholder: "Search…",
-            value: search,
-            onChange: (event) => setSearch(event.target.value),
-            className: "h-7 w-full max-w-64 rounded-full border border-line bg-surface px-2.5 text-xs text-ink placeholder:text-faint"
-          }),
           search ? /* @__PURE__ */ jsxs4("span", {
             className: "whitespace-nowrap text-2xs text-faint tnum",
             children: [
@@ -548,7 +540,15 @@ function DataTable({
               " of ",
               rows.length.toLocaleString()
             ]
-          }) : null
+          }) : null,
+          /* @__PURE__ */ jsx4("input", {
+            type: "search",
+            "aria-label": "Search rows",
+            placeholder: "Search…",
+            value: search,
+            onChange: (event) => setSearch(event.target.value),
+            className: "h-7 w-full max-w-64 rounded-full border border-line bg-surface px-2.5 text-xs text-ink placeholder:text-faint"
+          })
         ]
       }) : null,
       /* @__PURE__ */ jsx4("div", {

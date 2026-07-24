@@ -835,7 +835,10 @@ def _looks_like_native_sidemantic_yaml(data: dict) -> bool:
         and set(data) <= ROOT_FIELDS
     ):
         return True
-    if not any(_yaml_has_top_level_key(data, key) for key in ("metrics", "parameters", "sql_metrics", "sql_segments")):
+    if not any(
+        _yaml_has_top_level_key(data, key)
+        for key in ("metrics", "parameters", "sql_metrics", "sql_segments", "explores", "views", "saved_queries")
+    ):
         return False
     if data.get("version") == NATIVE_FORMAT_VERSION:
         return True
@@ -1449,6 +1452,22 @@ def _merge_graph_passthrough_metadata(target_graph: object, source_graph: object
             target_metadata = {}
             target_graph.metadata = target_metadata
         _deep_merge_metadata(target_metadata, source_metadata)
+
+    # Consumption contracts live outside the physical model graph but must merge
+    # across the same multi-file CLI loading workflow.
+    for attr, label in (("explores", "Explore"), ("saved_queries", "Saved query")):
+        source_items = getattr(source_graph, attr, None)
+        if not isinstance(source_items, dict):
+            continue
+        target_items = getattr(target_graph, attr, None)
+        if not isinstance(target_items, dict):
+            target_items = {}
+            setattr(target_graph, attr, target_items)
+        for name, value in source_items.items():
+            existing = target_items.get(name)
+            if existing is not None and existing.model_dump() != value.model_dump():
+                raise ValueError(f"{label} {name} is defined more than once with different values")
+            target_items[name] = value
 
     # Carry over Snowflake dynamic top-level attributes set by the adapter. Lists
     # (verified_queries) accumulate across files; scalars take the latest value.

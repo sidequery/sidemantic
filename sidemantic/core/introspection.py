@@ -5,6 +5,12 @@ from __future__ import annotations
 from dataclasses import asdict, is_dataclass
 from typing import Any
 
+from sidemantic.core.consumption import (
+    expression_field_references,
+    graph_metric_is_public,
+    serialize_consumption_contract,
+)
+from sidemantic.core.governance import governance_dict
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.relationship import Relationship
@@ -16,20 +22,41 @@ def describe_graph(
 ) -> dict[str, Any]:
     warnings = _warnings(graph)
     requested = set(model_names or [])
+    visible_model_names = {
+        model.name for model in graph.models.values() if not enforce_visibility or model.visibility == "public"
+    }
     models = [
-        _describe_model(model, warnings, enforce_visibility)
+        _describe_model(model, warnings, enforce_visibility, visible_model_names)
         for model in graph.models.values()
-        if not requested or model.name in requested
+        if (not requested or model.name in requested) and model.name in visible_model_names
     ]
     metrics = [
         _describe_metric(metric, warnings, model_name=None)
         for metric in graph.metrics.values()
-        if _include_graph_metric(metric, requested) and not (enforce_visibility and not getattr(metric, "public", True))
+        if _include_graph_metric(metric, requested)
+        and not (enforce_visibility and not graph_metric_is_public(metric, graph))
+    ]
+
+    explores = [
+        serialized
+        for explore in graph.explores.values()
+        if not requested or explore.model in requested
+        if (serialized := serialize_consumption_contract(explore, graph, enforce_visibility=enforce_visibility))
+        is not None
+    ]
+    saved_queries = [
+        serialized
+        for saved in graph.saved_queries.values()
+        if _include_saved_query(saved, graph, requested)
+        if (serialized := serialize_consumption_contract(saved, graph, enforce_visibility=enforce_visibility))
+        is not None
     ]
 
     return {
         "models": models,
         "metrics": metrics,
+        "explores": explores,
+        "saved_queries": saved_queries,
         "import_warnings": warnings,
     }
 
@@ -43,6 +70,42 @@ def _include_graph_metric(metric: Metric, requested_models: set[str]) -> bool:
     return owner_model is None
 
 
+def _include_saved_query(saved: Any, graph: SemanticGraph, requested_models: set[str]) -> bool:
+    """Scope a saved query to its Explore base or explicitly referenced models."""
+    if not requested_models:
+        return True
+
+    base_model = ""
+    if saved.explore and (explore := graph.explores.get(saved.explore)) is not None:
+        base_model = explore.model
+        if base_model in requested_models:
+            return True
+
+    references = [*saved.dimensions, *saved.metrics, *saved.segments]
+    try:
+        references.extend(
+            expression_field_references(
+                [*saved.filters, *saved.order_by],
+                base_model,
+                graph_metrics=graph.metrics.keys(),
+                graph_models=graph.models.keys(),
+            )
+        )
+    except Exception:
+        pass
+
+    for reference in references:
+        if "." in reference and reference.split(".", 1)[0] in requested_models:
+            return True
+        if reference in graph.metrics:
+            from sidemantic.sql.generator import SQLGenerator
+
+            source_models = SQLGenerator(graph)._find_required_models([reference], [], [])
+            if requested_models.intersection(source_models):
+                return True
+    return False
+
+
 def _metric_owner_model(metric: Metric) -> str | None:
     base_metric = getattr(metric, "base_metric", None)
     if isinstance(base_metric, str) and "." in base_metric:
@@ -51,10 +114,17 @@ def _metric_owner_model(metric: Metric) -> str | None:
     return None
 
 
-def _describe_model(model: Model, warnings: list[dict[str, Any]], enforce_visibility: bool = False) -> dict[str, Any]:
+def _describe_model(
+    model: Model,
+    warnings: list[dict[str, Any]],
+    enforce_visibility: bool = False,
+    visible_model_names: set[str] | None = None,
+) -> dict[str, Any]:
     model_kind = _model_kind(model)
     dimensions = model.dimensions if not enforce_visibility else [d for d in model.dimensions if d.public]
-    metrics = model.metrics if not enforce_visibility else [m for m in model.metrics if m.public]
+    metrics = (
+        model.metrics if not enforce_visibility else [m for m in model.metrics if m.public and m.visibility == "public"]
+    )
     info: dict[str, Any] = {
         "name": model.name,
         "kind": model_kind,
@@ -64,9 +134,11 @@ def _describe_model(model: Model, warnings: list[dict[str, Any]], enforce_visibi
         "dimensions": [_describe_dimension(dimension, warnings, model) for dimension in dimensions],
         "metrics": [_describe_metric(metric, warnings, model.name, model=model) for metric in metrics],
         "relationships": [
-            _describe_relationship(relationship, warnings, model=model) for relationship in model.relationships
+            _describe_relationship(relationship, warnings, model=model)
+            for relationship in model.relationships
+            if not enforce_visibility or visible_model_names is None or relationship.name in visible_model_names
         ],
-        "segments": [segment.name for segment in model.segments],
+        "segments": [segment.name for segment in model.segments if not enforce_visibility or segment.public],
     }
     if model_kind == "calculated_table":
         info["calculated_table"] = True
@@ -79,6 +151,9 @@ def _describe_model(model: Model, warnings: list[dict[str, Any]], enforce_visibi
         info["default_grain"] = model.default_grain
     if model.meta:
         info["meta"] = model.meta
+    governance = governance_dict(model)
+    if governance:
+        info["governance"] = governance
     return _drop_none(info)
 
 
@@ -144,6 +219,9 @@ def _describe_metric(
         info["format"] = metric.format
     if metric.meta:
         info["meta"] = metric.meta
+    governance = governance_dict(metric)
+    if governance:
+        info["governance"] = governance
     result = _drop_none(info)
     # Current Sidequery Swift DTOs decode these as non-optional arrays. Keep
     # them present even when empty while Sidequery moves to richer metadata.

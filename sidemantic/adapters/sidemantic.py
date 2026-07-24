@@ -7,8 +7,10 @@ from pathlib import Path
 import yaml
 
 from sidemantic.adapters.base import BaseAdapter
+from sidemantic.core.consumption import Explore, SavedQuery
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.freshness import Freshness
+from sidemantic.core.governance import GOVERNANCE_FIELDS, governance_dict
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.parameter import Parameter
@@ -29,6 +31,9 @@ ROOT_FIELDS = {
     "models",
     "metrics",
     "parameters",
+    "explores",
+    "views",
+    "saved_queries",
     "metadata",
     "sql_metrics",
     "sql_segments",
@@ -61,7 +66,7 @@ MODEL_FIELDS = {
     "freshness",
     "sql_metrics",
     "sql_segments",
-}
+} | GOVERNANCE_FIELDS
 SECURITY_FIELDS = {
     "access",
     "row_filters",
@@ -145,7 +150,39 @@ METRIC_FIELDS = {
     "metadata",
     "meta",
     "public",
-}
+} | GOVERNANCE_FIELDS
+EXPLORE_FIELDS = {
+    "name",
+    "model",
+    "label",
+    "description",
+    "allowed_dimensions",
+    "allowed_metrics",
+    "allowed_filter_fields",
+    "allowed_order_by",
+    "default_dimensions",
+    "default_metrics",
+    "filters",
+    "default_filters",
+    "default_order_by",
+    "default_limit",
+    "max_limit",
+    "metadata",
+} | GOVERNANCE_FIELDS
+SAVED_QUERY_FIELDS = {
+    "name",
+    "explore",
+    "label",
+    "description",
+    "dimensions",
+    "metrics",
+    "filters",
+    "segments",
+    "order_by",
+    "limit",
+    "parameters",
+    "metadata",
+} | GOVERNANCE_FIELDS
 RELATIONSHIP_FIELDS = {
     "name",
     "type",
@@ -294,6 +331,9 @@ def normalize_sql_frontmatter(frontmatter: dict) -> dict:
     normalized.pop("connection", None)
     normalized.pop("models", None)
     normalized.pop("parameters", None)
+    normalized.pop("explores", None)
+    normalized.pop("views", None)
+    normalized.pop("saved_queries", None)
     # ``metadata`` is a root-only native field (graph-level), so it must not by
     # itself make the frontmatter look like a model definition. Graph metadata is
     # extracted separately by the caller before this decision.
@@ -367,6 +407,22 @@ class SidemanticAdapter(BaseAdapter):
                 except Exception as exc:
                     raise ValueError(f"{source_path}: invalid SQL definitions: {exc}") from exc
 
+                # SQL model files may colocate root-level consumption contracts
+                # with model frontmatter. Extract them before deciding whether
+                # the remaining frontmatter describes a model.
+                explore_defs = [*(frontmatter.get("explores") or []), *(frontmatter.get("views") or [])]
+                for explore_def in explore_defs:
+                    reject_unknown_fields(explore_def, EXPLORE_FIELDS, "explore", source_path=source_path)
+                    graph.add_explore(Explore(**explore_def))
+                for saved_query_def in frontmatter.get("saved_queries") or []:
+                    reject_unknown_fields(
+                        saved_query_def,
+                        SAVED_QUERY_FIELDS,
+                        "saved_query",
+                        source_path=source_path,
+                    )
+                    graph.add_saved_query(SavedQuery(**saved_query_def))
+
                 # Parse frontmatter as a model only when it still contains model fields
                 # after native contract metadata such as `version`/`metadata` is removed.
                 normalized_frontmatter = normalize_sql_frontmatter(frontmatter) if frontmatter else {}
@@ -434,6 +490,15 @@ class SidemanticAdapter(BaseAdapter):
             parameter = self._parse_parameter(parameter_def, source_path=source_path, context="parameter")
             if parameter:
                 graph.add_parameter(parameter)
+
+        explore_defs = [*(data.get("explores") or []), *(data.get("views") or [])]
+        for explore_def in explore_defs:
+            reject_unknown_fields(explore_def, EXPLORE_FIELDS, "explore", source_path=source_path)
+            graph.add_explore(Explore(**explore_def))
+
+        for saved_query_def in data.get("saved_queries") or []:
+            reject_unknown_fields(saved_query_def, SAVED_QUERY_FIELDS, "saved_query", source_path=source_path)
+            graph.add_saved_query(SavedQuery(**saved_query_def))
 
         # Parse SQL-defined metrics/segments if present
         if "sql_metrics" in data:
@@ -514,6 +579,14 @@ class SidemanticAdapter(BaseAdapter):
 
         if graph.parameters:
             data["parameters"] = [self._export_parameter(parameter) for parameter in graph.parameters.values()]
+
+        if graph.explores:
+            data["explores"] = [self._export_explore(explore) for explore in graph.explores.values()]
+
+        if graph.saved_queries:
+            data["saved_queries"] = [
+                self._export_saved_query(saved_query) for saved_query in graph.saved_queries.values()
+            ]
 
         if graph.metadata:
             data["metadata"] = graph.metadata
@@ -717,6 +790,14 @@ class SidemanticAdapter(BaseAdapter):
             "metadata",
             "auto_dimensions",
             "meta",
+            "owner",
+            "domain",
+            "category",
+            "tags",
+            "status",
+            "certification",
+            "deprecation",
+            "visibility",
         ]:
             if field in model_def:
                 model_kwargs[field] = model_def.get(field)
@@ -847,6 +928,15 @@ class SidemanticAdapter(BaseAdapter):
             "synonyms",
             "meta",
             "public",
+            "owner",
+            "domain",
+            "category",
+            "tags",
+            "status",
+            "certification",
+            "deprecation",
+            "freshness",
+            "visibility",
         ]:
             if field in metric_def:
                 metric_kwargs[field] = metric_def.get(field)
@@ -904,6 +994,7 @@ class SidemanticAdapter(BaseAdapter):
             Model definition dictionary
         """
         result = {"name": model.name}
+        result.update(governance_dict(model))
         model_dax = _dax_text(model)
 
         if model_dax:
@@ -1020,6 +1111,7 @@ class SidemanticAdapter(BaseAdapter):
                     "name": measure.name,
                     "agg": measure.agg,
                 }
+                measure_def.update(governance_dict(measure))
                 measure_dax = _dax_text(measure)
                 if measure_dax:
                     measure_def["dax"] = measure_dax
@@ -1167,6 +1259,7 @@ class SidemanticAdapter(BaseAdapter):
         result = {
             "name": measure.name,
         }
+        result.update(governance_dict(measure))
 
         if measure.type:
             result["type"] = measure.type
@@ -1325,6 +1418,14 @@ class SidemanticAdapter(BaseAdapter):
             result["default_to_today"] = parameter.default_to_today
 
         return result
+
+    @staticmethod
+    def _export_explore(explore: Explore) -> dict:
+        return explore.model_dump(exclude_none=True, exclude_defaults=True, mode="json")
+
+    @staticmethod
+    def _export_saved_query(saved_query: SavedQuery) -> dict:
+        return saved_query.model_dump(exclude_none=True, exclude_defaults=True, mode="json")
 
 
 def _dax_text(obj) -> str | None:

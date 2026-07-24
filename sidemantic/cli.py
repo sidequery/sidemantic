@@ -1055,8 +1055,9 @@ def _migration_queries(queries: Path | None) -> Path:
             resolved = project.root / resolved
     resolved = resolved.resolve()
     if not resolved.exists():
+        display_path = queries if queries is not None else resolved
         raise typer.BadParameter(
-            f"Query source not found: {resolved}",
+            f"Query source not found: {display_path}",
             param_hint="QUERIES",
         )
     return resolved
@@ -1170,8 +1171,21 @@ def info(
                 "metrics": len(model.metrics),
                 "relationships": len(model.relationships),
                 "connected_to": [relationship.name for relationship in model.relationships],
+                "owner": model.owner,
+                "domain": model.domain,
+                "status": model.status,
+                "certification": model.certification,
+                "visibility": model.visibility,
             }
             for model_name, model in sorted(layer.graph.models.items())
+        ]
+        explores_payload = [
+            explore.model_dump(exclude_none=True, exclude_defaults=True, mode="json")
+            for _, explore in sorted(layer.graph.explores.items())
+        ]
+        saved_queries_payload = [
+            saved.model_dump(exclude_none=True, exclude_defaults=True, mode="json")
+            for _, saved in sorted(layer.graph.saved_queries.items())
         ]
 
         if structured:
@@ -1179,7 +1193,12 @@ def info(
                 models_payload,
                 columns=("name", "table", "dimensions", "metrics", "relationships", "connected_to"),
                 output_format=output_format,
-                json_value={"path": str(directory), "models": models_payload},
+                json_value={
+                    "path": str(directory),
+                    "models": models_payload,
+                    "explores": explores_payload,
+                    "saved_queries": saved_queries_payload,
+                },
             )
             return
 
@@ -1200,7 +1219,23 @@ def info(
             )
             if model["connected_to"]:
                 lines.append(f"  Connected to: {', '.join(model['connected_to'])}")
+            governance = [
+                f"{key}={model[key]}"
+                for key in ("owner", "domain", "status", "certification", "visibility")
+                if model[key] is not None and not (key == "visibility" and model[key] == "public")
+            ]
+            if governance:
+                lines.append(f"  Governance: {', '.join(governance)}")
             lines.append("")
+        if explores_payload:
+            lines.append("Explores:")
+            for explore in explores_payload:
+                lines.append(f"  - {explore['name']} (model: {explore['model']})")
+            lines.append("")
+        if saved_queries_payload:
+            lines.append("Saved queries:")
+            for saved in saved_queries_payload:
+                lines.append(f"  - {saved['name']}")
         _emit_long_report("\n".join(lines).rstrip())
 
     except typer.Exit:
@@ -1573,7 +1608,7 @@ def export_native(
 
 @app.command(epilog=GROUP_EPILOG)
 def query(
-    sql: str = typer.Argument(..., help="SQL query to execute, or - to read from stdin"),
+    sql: str = typer.Argument(None, help="SQL query to execute, or - to read from stdin"),
     models: Path = typer.Option(None, "--models", "-m", help="Directory containing semantic layer files"),
     output: Path = typer.Option(None, "--output", "-o", help="Output file (default: stdout)"),
     connection: str = typer.Option(
@@ -1586,6 +1621,13 @@ def query(
     use_preaggregations: bool = typer.Option(
         False, "--use-preaggregations", help="Enable automatic pre-aggregation routing"
     ),
+    explore: str = typer.Option(None, "--explore", help="Run through a curated Explore/View contract"),
+    saved_query: str = typer.Option(None, "--saved-query", help="Execute an immutable SavedQuery contract"),
+    metric: list[str] | None = typer.Option(None, "--metric", help="Metric for --explore (repeatable)"),
+    dimension: list[str] | None = typer.Option(None, "--dimension", help="Dimension for --explore (repeatable)"),
+    query_filter: list[str] | None = typer.Option(None, "--filter", help="Filter for --explore (repeatable)"),
+    order_by: list[str] | None = typer.Option(None, "--order-by", help="Ordering for --explore (repeatable)"),
+    limit: int = typer.Option(None, "--limit", min=0, help="Row limit for --explore"),
 ):
     """
     Execute a SQL query and output results as CSV.
@@ -1598,10 +1640,23 @@ def query(
       sidemantic query "SELECT revenue FROM orders" --db data.duckdb
       sidemantic query "SELECT revenue FROM orders" --dry-run
       sidemantic query "SELECT revenue FROM orders" --use-preaggregations --dry-run
+      sidemantic query --explore revenue_overview --dry-run
+      sidemantic query --saved-query monthly_revenue
     """
     try:
         output_format = resolve_output_format(default="csv")
-        sql = read_sql_input(sql)
+        if sql is None and not explore and not saved_query:
+            raise typer.BadParameter("SQL is required unless --explore or --saved-query is used")
+        if sql is not None and (explore or saved_query):
+            raise typer.BadParameter("SQL cannot be combined with --explore or --saved-query")
+        if saved_query and (
+            metric is not None
+            or dimension is not None
+            or query_filter is not None
+            or order_by is not None
+            or limit is not None
+        ):
+            raise typer.BadParameter("--saved-query cannot be combined with query overrides")
         layer = _load_query_layer(
             models,
             connection=connection,
@@ -1610,6 +1665,41 @@ def query(
             engine=engine,
             fallback=fallback,
         )
+
+        if explore or saved_query:
+            query_kwargs = {
+                "metrics": metric,
+                "dimensions": dimension,
+                "filters": query_filter,
+                "order_by": order_by,
+                "limit": limit,
+                "explore": explore,
+                "saved_query": saved_query,
+                "use_preaggregations": use_preaggregations,
+            }
+            if dry_run:
+                compiled_sql = layer.compile(**query_kwargs)
+                if cli_state().format_explicit and output_format in {"csv", "json", "jsonl"}:
+                    emit_records(
+                        [{"sql": compiled_sql}],
+                        columns=("sql",),
+                        output_format=output_format,
+                        json_value={"sql": compiled_sql},
+                    )
+                else:
+                    emit_result(compiled_sql)
+                return
+            result = layer.query(**query_kwargs)
+            columns = [desc[0] for desc in result.description]
+            rows = result.fetchall()
+            rendered = render_rows(rows, columns=columns, output_format=output_format)
+            write_text_output(output, rendered)
+            if output and str(output) != "-":
+                emit_diagnostic(f"Results written to {output}")
+            return
+
+        assert sql is not None
+        sql = read_sql_input(sql)
 
         # Dry run: show generated SQL without executing
         if dry_run:

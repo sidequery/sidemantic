@@ -4,6 +4,7 @@ import json
 from copy import deepcopy
 from pathlib import Path
 
+from sidemantic.core.consumption import Explore, SavedQuery
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.freshness import Freshness
 from sidemantic.core.metric import Metric
@@ -67,6 +68,8 @@ def generate_yaml_schema() -> dict:
     metric_schema = Metric.model_json_schema()
     relationship_schema = Relationship.model_json_schema()
     parameter_schema = Parameter.model_json_schema()
+    explore_schema = Explore.model_json_schema()
+    saved_query_schema = SavedQuery.model_json_schema()
 
     # Build complete schema
     schema = {
@@ -86,16 +89,36 @@ def generate_yaml_schema() -> dict:
                 "description": "Parameter definitions for dynamic queries",
                 "items": parameter_schema,
             },
+            "explores": {
+                "type": "array",
+                "description": "Curated Explore/View consumption contracts",
+                "items": explore_schema,
+            },
+            "views": {
+                "type": "array",
+                "description": "Compatibility alias for explores; exports use explores",
+                "items": explore_schema,
+            },
+            "saved_queries": {
+                "type": "array",
+                "description": "Immutable named structured queries",
+                "items": saved_query_schema,
+            },
         },
-        "required": ["models"],
+        "anyOf": [
+            {"required": [section]}
+            for section in ("models", "metrics", "parameters", "explores", "views", "saved_queries")
+        ],
         "$defs": {
             **model_schema.get("$defs", {}),
             **metric_schema.get("$defs", {}),
             **parameter_schema.get("$defs", {}),
             "Dimension": dimension_schema,
+            "Explore": explore_schema,
             "Freshness": Freshness.model_json_schema(),
             "Metric": metric_schema,
             "Relationship": relationship_schema,
+            "SavedQuery": saved_query_schema,
             "Segment": Segment.model_json_schema(),
             "Parameter": parameter_schema,
         },

@@ -1,0 +1,62 @@
+version: 1
+
+models:
+  - name: orders
+    table: orders
+    primary_key: order_id
+    description: Canonical order facts
+    owner: analytics-platform
+    domain: commerce
+    category: sales
+    tags: [tier-1, finance]
+    status: active
+    certification: certified
+    freshness:
+      watermark: updated_at
+      ttl_seconds: 3600
+    dimensions:
+      - name: status
+        type: categorical
+      - name: created_at
+        type: time
+        granularity: day
+    metrics:
+      - name: revenue
+        agg: sum
+        sql: amount
+        owner: finance
+        certification: certified
+      - name: order_count
+        agg: count
+
+explores:
+  - name: revenue_overview
+    model: orders
+    label: Revenue overview
+    description: Trusted entrypoint for revenue consumption
+    owner: analytics-platform
+    domain: commerce
+    category: executive-reporting
+    tags: [curated]
+    status: active
+    certification: verified
+    allowed_dimensions: [status, created_at__month]
+    allowed_metrics: [revenue, order_count]
+    allowed_filter_fields: [status, created_at]
+    allowed_order_by: [revenue, order_count]
+    default_dimensions: [status]
+    default_metrics: [revenue]
+    filters: ["orders.status != 'deleted'"]
+    default_order_by: ["orders.revenue DESC"]
+    default_limit: 25
+    max_limit: 1000
+
+saved_queries:
+  - name: top_revenue_statuses
+    explore: revenue_overview
+    description: Highest-revenue order statuses
+    dimensions: [status]
+    metrics: [revenue]
+    filters: ["orders.status != 'cancelled'"]
+    order_by: ["orders.revenue DESC"]
+    limit: 10

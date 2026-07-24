@@ -4,7 +4,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from sidemantic import SemanticLayer, load_from_directory
-from sidemantic.validation import validate_metric, validate_model, validate_model_warnings
+from sidemantic.validation import (
+    validate_explore,
+    validate_governance,
+    validate_metric,
+    validate_model,
+    validate_model_warnings,
+    validate_saved_query,
+)
 
 
 @dataclass
@@ -36,6 +43,9 @@ def validate_directory(directory: str | Path) -> ValidationReport:
     for model_name, model in layer.graph.models.items():
         report.errors.extend(validate_model(model))
         report.warnings.extend(validate_model_warnings(model))
+        governance_errors, governance_warnings = validate_governance(model, f"Model '{model_name}'")
+        report.errors.extend(governance_errors)
+        report.warnings.extend(governance_warnings)
 
         if not model.dimensions:
             report.warnings.append(f"Model '{model_name}' has no dimensions")
@@ -44,6 +54,9 @@ def validate_directory(directory: str | Path) -> ValidationReport:
 
         for metric in model.metrics:
             report.errors.extend(validate_metric(metric, layer.graph))
+            governance_errors, governance_warnings = validate_governance(metric, f"Metric '{model_name}.{metric.name}'")
+            report.errors.extend(governance_errors)
+            report.warnings.extend(governance_warnings)
 
         for rel in model.relationships:
             if rel.name not in layer.graph.models:
@@ -66,6 +79,19 @@ def validate_directory(directory: str | Path) -> ValidationReport:
 
     for metric in layer.graph.metrics.values():
         report.errors.extend(validate_metric(metric, layer.graph))
+        governance_errors, governance_warnings = validate_governance(metric, f"Metric '{metric.name}'")
+        report.errors.extend(governance_errors)
+        report.warnings.extend(governance_warnings)
+
+    for explore in layer.graph.explores.values():
+        errors, warnings = validate_explore(explore, layer.graph)
+        report.errors.extend(errors)
+        report.warnings.extend(warnings)
+
+    for saved_query in layer.graph.saved_queries.values():
+        errors, warnings = validate_saved_query(saved_query, layer.graph)
+        report.errors.extend(errors)
+        report.warnings.extend(warnings)
 
     if len(layer.graph.models) > 1:
         orphaned = []
@@ -89,5 +115,7 @@ def validate_directory(directory: str | Path) -> ValidationReport:
     report.info.append(f"Total dimensions: {total_dims}")
     report.info.append(f"Total metrics: {total_metrics}")
     report.info.append(f"Total relationships: {total_rels}")
+    report.info.append(f"Total explores: {len(layer.graph.explores)}")
+    report.info.append(f"Total saved queries: {len(layer.graph.saved_queries)}")
 
     return report

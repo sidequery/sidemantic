@@ -64,6 +64,28 @@ metrics:
     type: ratio
     numerator: orders.total_revenue
     denominator: orders.order_count
+
+explores:
+  - name: revenue_overview
+    model: orders
+    allowed_dimensions: [status]
+    allowed_metrics: [total_revenue]
+    allowed_filter_fields: [status]
+    allowed_order_by: [total_revenue]
+    default_dimensions: [status]
+    default_metrics: [total_revenue]
+    filters: ["orders.status != 'deleted'"]
+    default_order_by: ["orders.total_revenue DESC"]
+    default_limit: 25
+    max_limit: 1000
+
+saved_queries:
+  - name: top_revenue_statuses
+    explore: revenue_overview
+    dimensions: [status]
+    metrics: [total_revenue]
+    order_by: ["orders.total_revenue DESC"]
+    limit: 10
 ```
 
 Top-level sections:
@@ -74,6 +96,64 @@ Top-level sections:
 | `models` | No | List of model definitions. Most useful projects define at least one model. |
 | `metrics` | No | Graph-level metrics. Rust assigns these to exactly one owning model when possible. |
 | `parameters` | No | Graph-level parameters for templates and query-time substitution. |
+| `explores` | No | Curated Explore/View consumption contracts, separate from physical models. |
+| `views` | No | Input compatibility alias for `explores`; native exports use `explores`. |
+| `saved_queries` | No | Immutable named structured queries. |
+
+## Consumption Contracts
+
+Explores (also exposed as the Python `View` alias) curate how a semantic graph is
+consumed without becoming physical models. `model` selects the base model.
+`allowed_dimensions` and `allowed_metrics` are enforced selection allowlists;
+`allowed_filter_fields` and `allowed_order_by` constrain caller filters and ordering.
+For each allowlist, `null` means unrestricted. Defaults populate omitted selections.
+`filters` are mandatory and are always combined with caller filters;
+`default_filters` are used only when the caller provides no filters. `default_limit`
+fills an omitted limit and `max_limit` rejects an oversized limit.
+
+Saved queries contain `dimensions`, `metrics`, `filters`, `segments`, `order_by`,
+`limit`, and optional `parameters`. A saved query may name an `explore`; it is then
+validated and executed through that contract. Saved queries are immutable at query
+time: callers select a different saved query rather than overriding its fields.
+
+Hex views map to Explores while retaining their content groups for round-trip export.
+LookML explores map their base view, exact field sets, mandatory filters, labels, and
+group labels when those values are lossless. MetricFlow saved queries become typed
+SavedQuery objects and retain the original expressions/exports in `metadata.metricflow`.
+MetricFlow `Dimension()`/`TimeDimension()` expressions have no lossless executable
+Sidemantic equivalent, so validation reports a compatibility warning and execution
+fails with conversion guidance instead of silently changing query meaning.
+
+These objects are catalog definitions, not collaborative BI content. Sidemantic does
+not add folders, schedules, comments, alerts, or content-management state for them.
+
+The Python CLI/runtime owns consumption-contract loading and validation. Queries can
+still use the Rust SQL generator because Python resolves and enforces the contract
+before engine dispatch. The standalone experimental Rust YAML loader does not yet
+store `explores` or `saved_queries`; use Python validation (or automatic fallback)
+for files containing these sections.
+
+## Governance Metadata
+
+Models, metrics, and explores share these optional fields:
+
+| Field | Notes |
+|---|---|
+| `owner` | Accountable person or team. |
+| `domain` | Business domain. |
+| `category` | Catalog category. |
+| `tags` | Searchable string tags. |
+| `status` | `draft`, `active`, or `deprecated`. |
+| `certification` | `certified`, `verified`, or `uncertified`. |
+| `deprecation` | Lifecycle object with `message`, `deprecated_at`, `sunset_at`, and `replaced_by`. |
+| `freshness` | `watermark`/`sql` and optional `ttl_seconds` expectation. |
+| `visibility` | `public`, `internal`, or `private`. Metadata unless visibility enforcement is enabled. |
+
+Governance is deliberately distinct from authorization. `visibility` controls public
+catalog/query discovery when visibility enforcement is enabled; it is not RBAC. Model
+`security` remains the access and row-filter policy. Existing metric `public: false`
+input remains supported and maps to private visibility; native exports preserve the
+compatibility flag.
 
 Top-level metrics are graph-scoped in the Python runtime. The Rust runtime does not
 store a separate graph-metric namespace at execution time; it assigns each top-level

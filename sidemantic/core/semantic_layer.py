@@ -8,6 +8,14 @@ from pathlib import Path
 
 import yaml
 
+from sidemantic.core.consumption import (
+    Explore,
+    SavedQuery,
+    expression_field_references,
+    graph_metric_is_public,
+    qualify_expression_fields,
+    qualify_order_by_fields,
+)
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.semantic_graph import SemanticGraph
@@ -616,6 +624,36 @@ class SemanticLayer:
         self._sql_rewrite_cache.clear()
         self._generation += 1
 
+    def add_explore(self, explore: Explore) -> None:
+        """Validate and add a curated Explore/View contract."""
+        from sidemantic.validation import validate_explore
+
+        errors, _warnings = validate_explore(explore, self.graph)
+        if errors:
+            raise ValueError(f"Explore '{explore.name}' validation failed:\n" + "\n".join(f"  - {e}" for e in errors))
+        self.graph.add_explore(explore)
+        self._generation += 1
+
+    def add_saved_query(self, saved_query: SavedQuery) -> None:
+        """Validate and add an immutable SavedQuery contract."""
+        from sidemantic.validation import validate_saved_query
+
+        errors, _warnings = validate_saved_query(saved_query, self.graph)
+        if errors:
+            raise ValueError(
+                f"Saved query '{saved_query.name}' validation failed:\n" + "\n".join(f"  - {e}" for e in errors)
+            )
+        self.graph.add_saved_query(saved_query)
+        self._generation += 1
+
+    def get_explore(self, name: str) -> Explore:
+        """Get a curated Explore/View by name."""
+        return self.graph.get_explore(name)
+
+    def get_saved_query(self, name: str) -> SavedQuery:
+        """Get a SavedQuery by name."""
+        return self.graph.get_saved_query(name)
+
     def query(
         self,
         metrics: list[str] | None = None,
@@ -633,6 +671,8 @@ class SemanticLayer:
         timezone: str | None = None,
         with_totals: bool = False,
         user_attributes: dict | None = None,
+        explore: str | None = None,
+        saved_query: str | None = None,
     ):
         """Execute a query against the semantic layer.
 
@@ -685,6 +725,8 @@ class SemanticLayer:
             timezone=timezone,
             with_totals=with_totals,
             user_attributes=user_attributes,
+            explore=explore,
+            saved_query=saved_query,
         )
         used_preagg = "used_preagg=true" in routing_sql
 
@@ -702,6 +744,8 @@ class SemanticLayer:
                 post_process=post_process,
                 timezone=timezone,
                 user_attributes=user_attributes,
+                explore=explore,
+                saved_query=saved_query,
             )
         else:
             sql = routing_sql
@@ -720,6 +764,8 @@ class SemanticLayer:
                 post_process=post_process,
                 timezone=timezone,
                 user_attributes=user_attributes,
+                explore=explore,
+                saved_query=saved_query,
             )
 
         return self._execute_with_preagg_fallback(
@@ -830,6 +876,168 @@ class SemanticLayer:
             limit = self.max_limit
         return limit
 
+    @staticmethod
+    def _consumption_reference(reference: str, base_model: str) -> str:
+        """Qualify a simple Explore field against its base model."""
+        if "." in reference or "(" in reference or " " in reference:
+            return reference
+        return f"{base_model}.{reference}"
+
+    def _consumption_metric_reference(self, reference: str, base_model: str) -> str:
+        """Keep graph metrics graph-scoped; qualify model-local metrics."""
+        if reference in self.graph.metrics:
+            return reference
+        return self._consumption_reference(reference, base_model)
+
+    def _resolve_consumption_contract(
+        self,
+        *,
+        explore_name: str | None,
+        saved_query_name: str | None,
+        metrics: list[str] | None,
+        dimensions: list[str] | None,
+        filters: list[str] | None,
+        segments: list[str] | None,
+        order_by: list[str] | None,
+        limit: int | None,
+        offset: int | None,
+        ungrouped: bool,
+        parameters: dict | None,
+        timezone: str | None,
+    ) -> tuple:
+        """Resolve defaults and enforce a named consumption contract."""
+        caller_supplied_order_by = order_by is not None
+        if saved_query_name:
+            supplied = {
+                "explore": explore_name,
+                "metrics": metrics,
+                "dimensions": dimensions,
+                "filters": filters,
+                "segments": segments,
+                "order_by": order_by,
+                "limit": limit,
+                "offset": offset,
+                "ungrouped": True if ungrouped else None,
+                "parameters": parameters,
+                "timezone": timezone,
+            }
+            overridden = [name for name, value in supplied.items() if value is not None]
+            if overridden:
+                raise ValueError(
+                    f"Saved query '{saved_query_name}' is immutable; remove overrides for: {', '.join(overridden)}"
+                )
+            definition = self.graph.get_saved_query(saved_query_name)
+            if definition.visibility != "public" and self.enforce_visibility:
+                raise ValueError(f"Saved query '{saved_query_name}' is not public")
+            metricflow_metadata = (definition.metadata or {}).get("metricflow", {})
+            if metricflow_metadata.get("executable") is False:
+                message = metricflow_metadata.get("compatibility_message") or "source syntax is not executable"
+                raise ValueError(f"Saved query '{saved_query_name}' cannot execute: {message}")
+            explore_name = definition.explore
+            metrics = list(definition.metrics)
+            dimensions = list(definition.dimensions)
+            filters = list(definition.filters)
+            segments = list(definition.segments)
+            order_by = list(definition.order_by)
+            limit = definition.limit
+            parameters = dict(definition.parameters) if definition.parameters is not None else None
+
+        if not explore_name:
+            return metrics, dimensions, filters, segments, order_by, limit, parameters, None
+
+        contract = self.graph.get_explore(explore_name)
+        if contract.visibility != "public" and self.enforce_visibility:
+            raise ValueError(f"Explore '{explore_name}' is not public")
+        base_model = self.graph.models.get(contract.model)
+        if self.enforce_visibility and (base_model is None or base_model.visibility != "public"):
+            raise SecurityError(f"Explore '{explore_name}' base model '{contract.model}' is not public")
+
+        if metrics is None:
+            metrics = list(contract.default_metrics)
+        if dimensions is None:
+            dimensions = list(contract.default_dimensions)
+        if (
+            not metrics
+            and not dimensions
+            and (contract.allowed_metrics is not None or contract.allowed_dimensions is not None)
+        ):
+            raise ValueError(f"Explore '{explore_name}' must select at least one metric or dimension")
+        metrics = [self._consumption_metric_reference(ref, contract.model) for ref in metrics]
+        dimensions = [self._consumption_reference(ref, contract.model) for ref in dimensions]
+        if segments is not None:
+            segments = [self._consumption_reference(ref, contract.model) for ref in segments]
+
+        if contract.allowed_metrics is not None:
+            allowed = {self._consumption_metric_reference(ref, contract.model) for ref in contract.allowed_metrics}
+            denied = [ref for ref in metrics if ref not in allowed]
+            if denied:
+                raise ValueError(f"Explore '{explore_name}' does not allow metric(s): {', '.join(denied)}")
+        if contract.allowed_dimensions is not None:
+            allowed = {self._consumption_reference(ref, contract.model) for ref in contract.allowed_dimensions}
+            denied = [ref for ref in dimensions if ref not in allowed]
+            if denied:
+                raise ValueError(f"Explore '{explore_name}' does not allow dimension(s): {', '.join(denied)}")
+
+        selected_filters = list(contract.default_filters) if filters is None else list(filters)
+        from sidemantic.core.parameter import ParameterSet
+
+        parameter_set = ParameterSet(self.graph.parameters, parameters)
+        mandatory_filters = [parameter_set.interpolate(expression) for expression in contract.filters]
+        selected_filters = [parameter_set.interpolate(expression) for expression in selected_filters]
+        graph_metrics = self.graph.metrics.keys()
+        if contract.allowed_filter_fields is not None:
+            allowed = {
+                self._consumption_metric_reference(ref, contract.model) for ref in contract.allowed_filter_fields
+            }
+            denied = sorted(
+                expression_field_references(
+                    selected_filters,
+                    contract.model,
+                    graph_metrics=graph_metrics,
+                    graph_models=self.graph.models.keys(),
+                )
+                - allowed
+            )
+            if denied:
+                raise ValueError(f"Explore '{explore_name}' does not allow filter field(s): {', '.join(denied)}")
+        filters = qualify_expression_fields(
+            [*mandatory_filters, *selected_filters],
+            contract.model,
+            graph_metrics=graph_metrics,
+        )
+        if order_by is None:
+            order_by = list(contract.default_order_by)
+        if contract.allowed_order_by is not None:
+            allowed = {self._consumption_metric_reference(ref, contract.model) for ref in contract.allowed_order_by}
+            order_references = expression_field_references(
+                order_by,
+                contract.model,
+                graph_metrics=graph_metrics,
+                graph_models=self.graph.models.keys(),
+            )
+            denied = sorted(order_references - allowed)
+            if denied:
+                raise ValueError(f"Explore '{explore_name}' does not allow ordering by: {', '.join(denied)}")
+        else:
+            order_references = expression_field_references(
+                order_by,
+                contract.model,
+                graph_metrics=graph_metrics,
+                graph_models=self.graph.models.keys(),
+            )
+        unselected_order_fields = sorted(order_references - {*metrics, *dimensions})
+        if caller_supplied_order_by and unselected_order_fields:
+            raise ValueError(
+                f"Explore '{explore_name}' ordering field(s) must be selected by the query: "
+                f"{', '.join(unselected_order_fields)}"
+            )
+        order_by = qualify_order_by_fields(order_by, contract.model, graph_metrics=graph_metrics)
+        if limit is None:
+            limit = contract.default_limit
+        if contract.max_limit is not None and limit is not None and limit > contract.max_limit:
+            raise ValueError(f"Explore '{explore_name}' limit {limit} exceeds max_limit {contract.max_limit}")
+        return metrics, dimensions, filters, segments, order_by, limit, parameters, contract.model
+
     def compile(
         self,
         metrics: list[str] | None = None,
@@ -848,6 +1056,8 @@ class SemanticLayer:
         timezone: str | None = None,
         with_totals: bool = False,
         user_attributes: dict | None = None,
+        explore: str | None = None,
+        saved_query: str | None = None,
     ) -> str:
         """Compile a query to SQL without executing.
 
@@ -887,6 +1097,29 @@ class SemanticLayer:
         """
         from sidemantic.validation import QueryValidationError, validate_query
 
+        (
+            metrics,
+            dimensions,
+            filters,
+            segments,
+            order_by,
+            limit,
+            parameters,
+            consumption_base_model,
+        ) = self._resolve_consumption_contract(
+            explore_name=explore,
+            saved_query_name=saved_query,
+            metrics=metrics,
+            dimensions=dimensions,
+            filters=filters,
+            segments=segments,
+            order_by=order_by,
+            limit=limit,
+            offset=offset,
+            ungrouped=ungrouped,
+            parameters=parameters,
+            timezone=timezone,
+        )
         metrics = metrics or []
         dimensions = dimensions or []
 
@@ -934,7 +1167,13 @@ class SemanticLayer:
         # The Rust generator implements neither query-timezone bucketing nor with_totals
         # GROUPING SETS, so use the Python path when either is requested.
         # (Pre-agg bypass for timezone queries is enforced inside SQLGenerator.generate.)
-        if self._use_rust_sql_generator and not timezone and not with_totals and not security_forces_python:
+        if (
+            self._use_rust_sql_generator
+            and not timezone
+            and not with_totals
+            and not security_forces_python
+            and consumption_base_model is None
+        ):
             inner_sql = self._compile_with_rust(
                 metrics=metrics,
                 dimensions=dimensions,
@@ -965,6 +1204,7 @@ class SemanticLayer:
                     parameters=parameters,
                     use_preaggregations=use_preaggs,
                     aliases=aliases,
+                    base_model=consumption_base_model,
                 )
                 if inner_sql.strip() != python_sql.strip():
                     if self._rust_no_fallback or self._strict_rust_sql_generator_entrypoint:
@@ -988,6 +1228,7 @@ class SemanticLayer:
                 timezone=timezone,
                 with_totals=with_totals,
                 user_attributes=user_attributes,
+                base_model=consumption_base_model,
             )
 
         return self._apply_post_process(inner_sql, post_process)
@@ -1028,6 +1269,7 @@ class SemanticLayer:
         timezone: str | None = None,
         with_totals: bool = False,
         user_attributes: dict | None = None,
+        base_model: str | None = None,
     ) -> str:
         generator = SQLGenerator(
             self.graph,
@@ -1036,6 +1278,7 @@ class SemanticLayer:
             preagg_schema=self.preagg_schema,
             timezone=timezone,
             allow_non_additive_unsafe=self.allow_non_additive_unsafe,
+            base_model=base_model,
         )
 
         return generator.generate(
@@ -1118,12 +1361,14 @@ class SemanticLayer:
         model = self.graph.models.get(model_name)
         if model is None:
             return True
+        if model.visibility != "public":
+            return False
         dimension = model.get_dimension(field_name)
         if dimension is not None:
             return dimension.public
         metric_obj = model.get_metric(field_name)
         if metric_obj is not None:
-            return metric_obj.public
+            return metric_obj.public and metric_obj.visibility == "public"
         return True
 
     def _enforce_visibility_for_query(
@@ -1156,7 +1401,7 @@ class SemanticLayer:
             if "." not in metric:
                 # Graph-level metric reference.
                 graph_metric = self.graph.metrics.get(metric)
-                if graph_metric is not None and not getattr(graph_metric, "public", True):
+                if graph_metric is not None and not graph_metric_is_public(graph_metric, self.graph):
                     raise SecurityError(f"Field '{metric}' is not public")
                 continue
             model_name, field_name = metric.split(".", 1)
@@ -1172,6 +1417,8 @@ class SemanticLayer:
             model = self.graph.models.get(model_name)
             if model is None:
                 continue
+            if model.visibility != "public":
+                raise SecurityError(f"Segment '{model_name}.{segment_name}' is not public")
             segment = model.get_segment(segment_name) if hasattr(model, "get_segment") else None
             if segment is not None and not getattr(segment, "public", True):
                 raise SecurityError(f"Segment '{model_name}.{segment_name}' is not public")

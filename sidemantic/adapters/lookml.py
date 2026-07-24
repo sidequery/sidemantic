@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 
 from sidemantic.adapters.base import BaseAdapter
+from sidemantic.core.consumption import Explore
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
@@ -3002,6 +3003,10 @@ class LookMLAdapter(BaseAdapter):
             model_kwargs["primary_key"] = primary_key
         if model_meta:
             model_kwargs["meta"] = model_meta
+        if view_def.get("hidden") in ("yes", True):
+            model_kwargs["visibility"] = "private"
+        if view_def.get("tags"):
+            model_kwargs["tags"] = list(view_def["tags"])
 
         return Model(**model_kwargs)
 
@@ -4420,6 +4425,17 @@ class LookMLAdapter(BaseAdapter):
                 return
 
         base_model = graph.models[base_model_name]
+        consumption_filters: list[str] = []
+        join_aliases = {
+            join_def.get("name"): join_def.get("from", join_def.get("name"))
+            for join_def in explore_def.get("joins") or []
+            if join_def.get("name")
+        }
+
+        def _semantic_model_name(lookml_qualifier: str) -> str:
+            if lookml_qualifier in {explore_name, base_model_name}:
+                return base_model_name
+            return join_aliases.get(lookml_qualifier, lookml_qualifier)
 
         # Set description from explore if model doesn't already have one
         explore_desc = explore_def.get("description")
@@ -4463,8 +4479,19 @@ class LookMLAdapter(BaseAdapter):
 
         sql_always_where = explore_def.get("sql_always_where")
         if sql_always_where:
-            # Translate LookML ${view.field} references to {model}.field
+            # Segments resolve ``{model}`` when they are selected, while Explore
+            # filters flow through the normal semantic query compiler and therefore
+            # need real semantic model references. Keep separate translations so a
+            # LookML mandatory filter is executable in both paths.
+            consumption_filter = sql_always_where.replace("${TABLE}", base_model_name)
+            consumption_filter = re.sub(
+                r"\$\{(\w+)\.(\w+)\}",
+                lambda match: f"{_semantic_model_name(match.group(1))}.{match.group(2)}",
+                consumption_filter,
+            )
+            sql_always_where = sql_always_where.replace("${TABLE}", "{model}")
             sql_always_where = re.sub(r"\$\{(\w+)\.(\w+)\}", r"{model}.\2", sql_always_where)
+            consumption_filters.append(consumption_filter)
             segment_name = f"_sql_always_where_{explore_name}"
             # Skip if this exact segment already exists
             existing_names = {s.name for s in base_model.segments}
@@ -4487,6 +4514,10 @@ class LookMLAdapter(BaseAdapter):
                 # Strip view qualifier (e.g. "fact_orders.created_date" -> "created_date")
                 # so _convert_lookml_filter_to_sql doesn't produce {model}.view.col
                 bare_field = field.rsplit(".", 1)[-1] if "." in field else field
+                field_model_name = base_model_name
+                if "." in field:
+                    field_qualifier = field.rsplit(".", 1)[0]
+                    field_model_name = _semantic_model_name(field_qualifier)
                 filter_sql = self._convert_lookml_filter_to_sql(bare_field, str(value))
                 segment_name = f"_always_filter_{explore_name}_{field}"
                 if filter_sql and segment_name not in existing_names:
@@ -4498,6 +4529,8 @@ class LookMLAdapter(BaseAdapter):
                         )
                     )
                     existing_names.add(segment_name)
+                if filter_sql:
+                    consumption_filters.append(filter_sql.replace("{model}", field_model_name))
 
             for item in filter_items:
                 if isinstance(item, list):
@@ -4553,6 +4586,61 @@ class LookMLAdapter(BaseAdapter):
             if relationship:
                 # Add relationship to the base model
                 base_model.relationships.append(relationship)
+
+        # Keep the LookML explore as a consumption contract instead of only
+        # flattening its joins and filters into the physical model graph. An
+        # explicit `fields` list becomes an allowlist when every entry resolves
+        # losslessly; wildcard/exclusion sets remain adapter metadata.
+        allowed_dimensions: list[str] | None = None
+        allowed_metrics: list[str] | None = None
+        raw_fields = explore_def.get("fields")
+        if isinstance(raw_fields, list):
+            candidate_dimensions: list[str] = []
+            candidate_metrics: list[str] = []
+            lossless = True
+            for raw_field in raw_fields:
+                if not isinstance(raw_field, str) or "*" in raw_field or raw_field.startswith("-"):
+                    lossless = False
+                    break
+                if "." in raw_field:
+                    model_name, field_name = raw_field.split(".", 1)
+                    model_name = _semantic_model_name(model_name)
+                else:
+                    model_name, field_name = base_model_name, raw_field
+                field_model = graph.models.get(model_name)
+                if field_model is None:
+                    lossless = False
+                    break
+                reference = f"{model_name}.{field_name}"
+                if field_model.get_dimension(field_name):
+                    candidate_dimensions.append(reference)
+                elif field_model.get_metric(field_name):
+                    candidate_metrics.append(reference)
+                else:
+                    lossless = False
+                    break
+            if lossless:
+                allowed_dimensions = candidate_dimensions
+                allowed_metrics = candidate_metrics
+
+        if explore_name not in graph.explores:
+            metadata = {
+                "lookml": {key: explore_def[key] for key in ("fields", "group_label", "hidden") if key in explore_def}
+            }
+            graph.add_explore(
+                Explore(
+                    name=explore_name,
+                    model=base_model_name,
+                    label=explore_def.get("label"),
+                    description=explore_def.get("description"),
+                    allowed_dimensions=allowed_dimensions,
+                    allowed_metrics=allowed_metrics,
+                    filters=consumption_filters,
+                    category=explore_def.get("group_label"),
+                    visibility="private" if explore_def.get("hidden") in ("yes", True) else "public",
+                    metadata=metadata,
+                )
+            )
 
     def _parse_join(self, join_def: dict, base_model_name: str, explore_name: str | None = None) -> Relationship | None:
         """Parse a join definition into a Relationship.

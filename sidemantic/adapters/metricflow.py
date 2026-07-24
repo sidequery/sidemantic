@@ -5,6 +5,7 @@ from pathlib import Path
 import yaml
 
 from sidemantic.adapters.base import BaseAdapter
+from sidemantic.core.consumption import SavedQuery
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
@@ -82,9 +83,54 @@ class MetricFlowAdapter(BaseAdapter):
         # Rebuild adjacency graph after resolving relationship names
         graph.build_adjacency()
 
-        # Expose parsed saved queries on the graph for downstream consumers.
+        # Expose parsed saved queries as first-class contracts. Keep the legacy
+        # metadata mirror for consumers written before the typed graph API.
         if self.saved_queries:
             graph.metadata["saved_queries"] = self.saved_queries
+            for definition in self.saved_queries.values():
+                where = definition.get("where") or []
+                if isinstance(where, str):
+                    where = [where]
+                order_by = definition.get("order_by") or []
+                if isinstance(order_by, str):
+                    order_by = [order_by]
+                external_syntax = any(
+                    token in value
+                    for value in [*(definition.get("group_by") or []), *where, *order_by]
+                    if isinstance(value, str)
+                    for token in ("Dimension(", "TimeDimension(", "Metric(", "{{")
+                )
+                graph.add_saved_query(
+                    SavedQuery(
+                        name=definition["name"],
+                        label=definition.get("label"),
+                        description=definition.get("description"),
+                        metrics=definition.get("metrics") or [],
+                        dimensions=definition.get("group_by") or [],
+                        filters=where,
+                        order_by=order_by,
+                        limit=definition.get("limit"),
+                        metadata={
+                            "metricflow": {
+                                "group_by": definition.get("group_by") or [],
+                                "where": definition.get("where"),
+                                "order_by": definition.get("order_by"),
+                                "exports": definition.get("exports") or [],
+                                "executable": not external_syntax,
+                                **(
+                                    {
+                                        "compatibility_message": (
+                                            "MetricFlow Dimension()/TimeDimension()/Metric() expressions are preserved "
+                                            "losslessly but must be converted to Sidemantic field references before execution"
+                                        )
+                                    }
+                                    if external_syntax
+                                    else {}
+                                ),
+                            }
+                        },
+                    )
+                )
 
         # Expose parsed conversion metrics (retained as non-queryable metadata).
         if self.conversion_metrics:
@@ -173,8 +219,7 @@ class MetricFlowAdapter(BaseAdapter):
             if metric:
                 self._add_metric(graph, metric)
 
-        # Parse saved queries (top-level, both specs). These have no direct
-        # Sidemantic equivalent, so retain them for downstream consumers.
+        # Parse saved queries (top-level, both specs).
         self._parse_saved_queries(data.get("saved_queries"))
 
     @staticmethod

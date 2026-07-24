@@ -4,8 +4,10 @@ from typing import TYPE_CHECKING
 
 __version__ = "0.10.2"
 
+from sidemantic.core.consumption import Explore, SavedQuery, View
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.freshness import Freshness
+from sidemantic.core.governance import Deprecation
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.parameter import Parameter
@@ -21,9 +23,11 @@ Measure = Metric
 
 __all__ = [
     "Dimension",
+    "Deprecation",
     "DashboardDocument",
     "DashboardSpecError",
     "Freshness",
+    "Explore",
     "Measure",  # Backwards compatibility
     "Metric",
     "Model",
@@ -41,7 +45,9 @@ __all__ = [
     "SecurityError",
     "SecurityPolicy",
     "Segment",
+    "SavedQuery",
     "SemanticLayer",
+    "View",
     "load_from_directory",
 ]
 

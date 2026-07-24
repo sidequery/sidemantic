@@ -542,10 +542,16 @@ def configure_click_color(ctx: click.Context, *, enabled: bool) -> None:
     it.
     """
 
-    if not enabled:
-        ctx.color = False
-    elif os.environ.get("FORCE_COLOR", ""):
-        ctx.color = True
+    forced = bool(os.environ.get("FORCE_COLOR", ""))
+    resolved = forced or (enabled and is_terminal(sys.stdout))
+    ctx.color = resolved
+
+    # Typer snapshots GitHub Actions into a module-level ``FORCE_TERMINAL``
+    # setting at import time, bypassing Click's per-invocation color decision.
+    # Keep Rich help on the same contract while still allowing FORCE_COLOR.
+    import typer.rich_utils as typer_rich_utils
+
+    typer_rich_utils.FORCE_TERMINAL = resolved
 
 
 def _env_truthy(name: str) -> bool:

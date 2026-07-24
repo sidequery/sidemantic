@@ -186,12 +186,12 @@ Allow writing to an existing destination
 .SH "SIDEMANTIC QUERY"
 .SS SYNOPSIS
 .B
-sidemantic query [OPTIONS] SQL
+sidemantic query [OPTIONS] [[SQL]]
 .SS DESCRIPTION
 .PP
 Execute a SQL query and output results as CSV.
 .PP
-Examples: sidemantic query "SELECT revenue FROM orders" sidemantic query "SELECT * FROM orders" \-\-output results.csv sidemantic query "SELECT * FROM orders" \-\-models ./models sidemantic query "SELECT revenue FROM orders" \-\-connection "postgres://localhost:5432/db" sidemantic query "SELECT revenue FROM orders" \-\-db data.duckdb sidemantic query "SELECT revenue FROM orders" \-\-dry\-run sidemantic query "SELECT revenue FROM orders" \-\-use\-preaggregations \-\-dry\-run
+Examples: sidemantic query "SELECT revenue FROM orders" sidemantic query "SELECT * FROM orders" \-\-output results.csv sidemantic query "SELECT * FROM orders" \-\-models ./models sidemantic query "SELECT revenue FROM orders" \-\-connection "postgres://localhost:5432/db" sidemantic query "SELECT revenue FROM orders" \-\-db data.duckdb sidemantic query "SELECT revenue FROM orders" \-\-dry\-run sidemantic query "SELECT revenue FROM orders" \-\-use\-preaggregations \-\-dry\-run sidemantic query \-\-explore revenue_overview \-\-dry\-run sidemantic query \-\-saved\-query monthly_revenue
 .SS OPTIONS
 .TP
 \fB\-\-models, \-m PATH\fR
@@ -217,6 +217,27 @@ Allow Rust engine fallback to Python
 .TP
 \fB\-\-use\-preaggregations\fR
 Enable automatic pre\-aggregation routing
+.TP
+\fB\-\-explore TEXT\fR
+Run through a curated Explore/View contract
+.TP
+\fB\-\-saved\-query TEXT\fR
+Execute an immutable SavedQuery contract
+.TP
+\fB\-\-metric TEXT\fR
+Metric for \-\-explore (repeatable)
+.TP
+\fB\-\-dimension TEXT\fR
+Dimension for \-\-explore (repeatable)
+.TP
+\fB\-\-filter TEXT\fR
+Filter for \-\-explore (repeatable)
+.TP
+\fB\-\-order\-by TEXT\fR
+Ordering for \-\-explore (repeatable)
+.TP
+\fB\-\-limit INTEGER RANGE\fR
+Row limit for \-\-explore
 .SH "SIDEMANTIC EXPLAIN"
 .SS SYNOPSIS
 .B

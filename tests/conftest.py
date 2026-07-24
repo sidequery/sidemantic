@@ -7,6 +7,7 @@ import pytest
 # Test captured output against Sidemantic's default policy even when the host
 # runner requests colored logs. Individual color tests opt back in explicitly.
 os.environ.pop("FORCE_COLOR", None)
+os.environ["NO_COLOR"] = "1"
 
 from sidemantic import SemanticLayer
 

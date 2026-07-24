@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Literal, get_args, get_origin
 from sidemantic.sql.aggregation_detection import sql_has_aggregate
 
 if TYPE_CHECKING:
+    from sidemantic.core.consumption import Explore, SavedQuery
     from sidemantic.core.metric import Metric
     from sidemantic.core.model import Model
     from sidemantic.core.semantic_graph import SemanticGraph
@@ -33,6 +34,394 @@ class ModelValidationError(ValidationError):
     """Raised when model validation fails."""
 
     pass
+
+
+def validate_governance(value, label: str) -> tuple[list[str], list[str]]:
+    """Validate cross-field governance lifecycle metadata."""
+    errors: list[str] = []
+    warnings: list[str] = []
+    deprecation = getattr(value, "deprecation", None)
+    status = getattr(value, "status", None)
+    if status == "deprecated" and deprecation is None:
+        errors.append(f"{label} is deprecated but has no deprecation lifecycle/message")
+    if deprecation is not None:
+        if not deprecation.message:
+            warnings.append(f"{label} deprecation has no migration message")
+        if deprecation.deprecated_at and deprecation.sunset_at and deprecation.sunset_at < deprecation.deprecated_at:
+            errors.append(f"{label} deprecation sunset_at is before deprecated_at")
+    tags = getattr(value, "tags", []) or []
+    if len(tags) != len(set(tags)):
+        errors.append(f"{label} has duplicate governance tags")
+    return errors, warnings
+
+
+def _qualified_consumption_refs(references: list[str], base_model: str) -> list[str]:
+    return [ref if "." in ref or "(" in ref or " " in ref else f"{base_model}.{ref}" for ref in references]
+
+
+def _qualified_consumption_metrics(references: list[str], base_model: str, graph: "SemanticGraph") -> list[str]:
+    return [ref if ref in graph.metrics else _qualified_consumption_refs([ref], base_model)[0] for ref in references]
+
+
+def _is_metric_or_dimension(reference: str, graph: "SemanticGraph") -> bool:
+    return not validate_query([reference], [], graph) or not validate_query([], [reference], graph)
+
+
+def _validate_consumption_expressions(
+    label: str,
+    field_kind: str,
+    expressions: list[str],
+    base_model: str,
+    graph: "SemanticGraph",
+    *,
+    query_metrics: list[str] | None = None,
+    query_dimensions: list[str] | None = None,
+) -> list[str]:
+    from sidemantic.core.consumption import expression_field_references
+
+    try:
+        references = expression_field_references(
+            expressions,
+            base_model,
+            graph_metrics=graph.metrics.keys(),
+            graph_models=graph.models.keys(),
+        )
+    except Exception as error:
+        return [f"{label} contains an invalid {field_kind} expression: {error}"]
+    errors = [
+        f"{label} {field_kind} field '{reference}' is not a metric or dimension"
+        for reference in sorted(references)
+        if not _is_metric_or_dimension(reference, graph)
+    ]
+    if errors:
+        return errors
+
+    expression_metrics: list[str] = []
+    expression_dimensions: list[str] = []
+    for reference in sorted(references):
+        if not validate_query([reference], [], graph):
+            expression_metrics.append(reference)
+        else:
+            expression_dimensions.append(reference)
+    compatibility_errors = validate_query(
+        [*(query_metrics or []), *expression_metrics],
+        [*(query_dimensions or []), *expression_dimensions],
+        graph,
+    )
+    return [
+        f"{label} {field_kind} expression is incompatible with its selected query: {error}"
+        for error in compatibility_errors
+    ]
+
+
+def _validate_order_fields_selected(
+    label: str,
+    expressions: list[str],
+    selected_metrics: list[str],
+    selected_dimensions: list[str],
+    base_model: str,
+    graph: "SemanticGraph",
+) -> list[str]:
+    from sidemantic.core.consumption import expression_field_references
+
+    try:
+        references = expression_field_references(
+            expressions,
+            base_model,
+            graph_metrics=graph.metrics.keys(),
+            graph_models=graph.models.keys(),
+        )
+    except Exception:
+        return []
+    selected = {*selected_metrics, *selected_dimensions}
+    outside = sorted(references - selected)
+    if not outside:
+        return []
+    return [f"{label} ordering field(s) must be selected by the query: {', '.join(outside)}"]
+
+
+def _validate_consumption_base_model(
+    label: str,
+    base_model: str,
+    metrics: list[str],
+    dimensions: list[str],
+    graph: "SemanticGraph",
+    filters: list[str] | None = None,
+) -> list[str]:
+    from sidemantic.sql.generator import SQLGenerator
+
+    selected_models = SQLGenerator(graph)._find_required_models(metrics, dimensions, filters or [])
+    errors: list[str] = []
+    for model_name in selected_models:
+        if model_name == base_model:
+            continue
+        try:
+            graph.find_relationship_path(base_model, model_name)
+        except (KeyError, ValueError):
+            errors.append(f"{label} has no join path from base model '{base_model}' to selected model '{model_name}'")
+    return errors
+
+
+def validate_explore(explore: "Explore", graph: "SemanticGraph") -> tuple[list[str], list[str]]:
+    """Validate a curated Explore/View contract against the physical graph."""
+    errors, warnings = validate_governance(explore, f"Explore '{explore.name}'")
+    if explore.model not in graph.models:
+        errors.append(f"Explore '{explore.name}' references model '{explore.model}' which doesn't exist")
+        return errors, warnings
+    dimensions = [*(explore.allowed_dimensions or []), *explore.default_dimensions]
+    metrics = [*(explore.allowed_metrics or []), *explore.default_metrics]
+    qualified_metrics = _qualified_consumption_metrics(metrics, explore.model, graph)
+    qualified_dimensions = _qualified_consumption_refs(dimensions, explore.model)
+    errors.extend(
+        validate_query(
+            qualified_metrics,
+            qualified_dimensions,
+            graph,
+        )
+    )
+    errors.extend(
+        _validate_consumption_base_model(
+            f"Explore '{explore.name}'",
+            explore.model,
+            qualified_metrics,
+            qualified_dimensions,
+            graph,
+        )
+    )
+    for field_kind, references in (
+        ("filter", explore.allowed_filter_fields or []),
+        ("ordering", explore.allowed_order_by or []),
+    ):
+        for reference in _qualified_consumption_metrics(references, explore.model, graph):
+            if not _is_metric_or_dimension(reference, graph):
+                errors.append(f"Explore '{explore.name}' {field_kind} field '{reference}' is not a metric or dimension")
+    errors.extend(
+        _validate_consumption_expressions(
+            f"Explore '{explore.name}'",
+            "filter",
+            [*explore.filters, *explore.default_filters],
+            explore.model,
+            graph,
+            query_metrics=qualified_metrics,
+            query_dimensions=qualified_dimensions,
+        )
+    )
+    errors.extend(
+        _validate_consumption_expressions(
+            f"Explore '{explore.name}'",
+            "ordering",
+            explore.default_order_by,
+            explore.model,
+            graph,
+            query_metrics=qualified_metrics,
+            query_dimensions=qualified_dimensions,
+        )
+    )
+    errors.extend(
+        _validate_order_fields_selected(
+            f"Explore '{explore.name}' default",
+            explore.default_order_by,
+            _qualified_consumption_metrics(explore.default_metrics, explore.model, graph),
+            _qualified_consumption_refs(explore.default_dimensions, explore.model),
+            explore.model,
+            graph,
+        )
+    )
+    if not metrics and not dimensions:
+        warnings.append(f"Explore '{explore.name}' defines no allowed or default fields")
+    if any(not value.strip() for value in [*explore.filters, *explore.default_filters, *explore.default_order_by]):
+        errors.append(f"Explore '{explore.name}' contains an empty filter or ordering expression")
+    return errors, warnings
+
+
+def validate_saved_query(saved_query: "SavedQuery", graph: "SemanticGraph") -> tuple[list[str], list[str]]:
+    """Validate a SavedQuery against its Explore and physical graph."""
+    errors, warnings = validate_governance(saved_query, f"Saved query '{saved_query.name}'")
+    metricflow_metadata = (saved_query.metadata or {}).get("metricflow", {})
+    preserved_external_syntax = metricflow_metadata.get("executable") is False
+    if preserved_external_syntax:
+        warnings.append(
+            f"Saved query '{saved_query.name}' is preserved from MetricFlow but is not executable: "
+            f"{metricflow_metadata.get('compatibility_message', 'convert source expressions to Sidemantic references')}"
+        )
+    base_model = ""
+    explore = None
+    if saved_query.explore:
+        explore = graph.explores.get(saved_query.explore)
+        if explore is None:
+            errors.append(
+                f"Saved query '{saved_query.name}' references explore '{saved_query.explore}' which doesn't exist"
+            )
+        else:
+            base_model = explore.model
+    metrics = (
+        _qualified_consumption_metrics(saved_query.metrics, base_model, graph) if base_model else saved_query.metrics
+    )
+    dimensions = (
+        _qualified_consumption_refs(saved_query.dimensions, base_model) if base_model else saved_query.dimensions
+    )
+    validated_filters = list(saved_query.filters)
+    inherited_explore_filters = list(explore.filters) if explore is not None else []
+    from sidemantic.core.parameter import ParameterSet
+
+    parameter_set = ParameterSet(graph.parameters, saved_query.parameters)
+    try:
+        validated_filters = [parameter_set.interpolate(expression) for expression in validated_filters]
+        inherited_explore_filters = [parameter_set.interpolate(expression) for expression in inherited_explore_filters]
+    except (KeyError, TypeError, ValueError) as error:
+        errors.append(f"Saved query '{saved_query.name}' has invalid parameter values: {error}")
+        validated_filters = []
+        inherited_explore_filters = []
+    if not preserved_external_syntax:
+        errors.extend(validate_query(metrics, dimensions, graph))
+        errors.extend(
+            _validate_consumption_expressions(
+                f"Saved query '{saved_query.name}'",
+                "filter",
+                validated_filters,
+                base_model,
+                graph,
+                query_metrics=metrics,
+                query_dimensions=dimensions,
+            )
+        )
+        errors.extend(
+            _validate_consumption_expressions(
+                f"Saved query '{saved_query.name}'",
+                "ordering",
+                saved_query.order_by,
+                base_model,
+                graph,
+                query_metrics=metrics,
+                query_dimensions=dimensions,
+            )
+        )
+        errors.extend(
+            _validate_order_fields_selected(
+                f"Saved query '{saved_query.name}'",
+                saved_query.order_by,
+                metrics,
+                dimensions,
+                base_model,
+                graph,
+            )
+        )
+        valid_segments: list[str] = []
+        for raw_segment in saved_query.segments:
+            segment_ref = raw_segment
+            if "." not in segment_ref and base_model:
+                segment_ref = f"{base_model}.{segment_ref}"
+            if "." not in segment_ref:
+                errors.append(
+                    f"Saved query '{saved_query.name}' segment reference must be in format 'model.segment': "
+                    f"{raw_segment}"
+                )
+                continue
+            model_name, segment_name = segment_ref.split(".", 1)
+            model = graph.models.get(model_name)
+            if model is None:
+                errors.append(
+                    f"Saved query '{saved_query.name}' segment '{raw_segment}' references model "
+                    f"'{model_name}' which doesn't exist"
+                )
+            elif model.get_segment(segment_name) is None:
+                errors.append(
+                    f"Saved query '{saved_query.name}' references segment '{segment_name}' which doesn't exist "
+                    f"on model '{model_name}'"
+                )
+            else:
+                valid_segments.append(segment_ref)
+        if explore is not None:
+            from sidemantic.sql.generator import SQLGenerator
+
+            segment_filters = SQLGenerator(graph)._resolve_segments(valid_segments)
+            errors.extend(
+                _validate_consumption_base_model(
+                    f"Saved query '{saved_query.name}'",
+                    explore.model,
+                    metrics,
+                    dimensions,
+                    graph,
+                    filters=segment_filters,
+                )
+            )
+            errors.extend(
+                _validate_consumption_expressions(
+                    f"Saved query '{saved_query.name}' inherited Explore '{explore.name}'",
+                    "filter",
+                    inherited_explore_filters,
+                    base_model,
+                    graph,
+                    query_metrics=metrics,
+                    query_dimensions=dimensions,
+                )
+            )
+            if explore.allowed_metrics is not None:
+                allowed_metrics = set(_qualified_consumption_metrics(explore.allowed_metrics, base_model, graph))
+                denied_metrics = sorted(set(metrics) - allowed_metrics)
+                if denied_metrics:
+                    errors.append(
+                        f"Saved query '{saved_query.name}' selects metric(s) not allowed by Explore "
+                        f"'{explore.name}': {', '.join(denied_metrics)}"
+                    )
+            if explore.allowed_dimensions is not None:
+                allowed_dimensions = set(_qualified_consumption_refs(explore.allowed_dimensions, base_model))
+                denied_dimensions = sorted(set(dimensions) - allowed_dimensions)
+                if denied_dimensions:
+                    errors.append(
+                        f"Saved query '{saved_query.name}' selects dimension(s) not allowed by Explore "
+                        f"'{explore.name}': {', '.join(denied_dimensions)}"
+                    )
+
+            from sidemantic.core.consumption import expression_field_references
+
+            graph_metrics = graph.metrics.keys()
+            if explore.allowed_filter_fields is not None:
+                allowed_filters = set(_qualified_consumption_metrics(explore.allowed_filter_fields, base_model, graph))
+                denied_filters = sorted(
+                    expression_field_references(
+                        validated_filters,
+                        base_model,
+                        graph_metrics=graph_metrics,
+                        graph_models=graph.models.keys(),
+                    )
+                    - allowed_filters
+                )
+                if denied_filters:
+                    errors.append(
+                        f"Saved query '{saved_query.name}' filters on field(s) not allowed by Explore "
+                        f"'{explore.name}': {', '.join(denied_filters)}"
+                    )
+            if explore.allowed_order_by is not None:
+                allowed_ordering = set(_qualified_consumption_metrics(explore.allowed_order_by, base_model, graph))
+                denied_ordering = sorted(
+                    expression_field_references(
+                        saved_query.order_by,
+                        base_model,
+                        graph_metrics=graph_metrics,
+                        graph_models=graph.models.keys(),
+                    )
+                    - allowed_ordering
+                )
+                if denied_ordering:
+                    errors.append(
+                        f"Saved query '{saved_query.name}' orders by field(s) not allowed by Explore "
+                        f"'{explore.name}': {', '.join(denied_ordering)}"
+                    )
+            if (
+                explore.max_limit is not None
+                and saved_query.limit is not None
+                and saved_query.limit > explore.max_limit
+            ):
+                errors.append(
+                    f"Saved query '{saved_query.name}' limit {saved_query.limit} exceeds Explore "
+                    f"'{explore.name}' max_limit {explore.max_limit}"
+                )
+    if not saved_query.metrics and not saved_query.dimensions:
+        errors.append(f"Saved query '{saved_query.name}' must select at least one metric or dimension")
+    if any(not value.strip() for value in [*saved_query.filters, *saved_query.order_by]):
+        errors.append(f"Saved query '{saved_query.name}' contains an empty filter or ordering expression")
+    return errors, warnings
 
 
 def _extract_literal_strings(annotation) -> set[str]:

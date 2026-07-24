@@ -9,6 +9,8 @@ Key design:
 - This matches Cube.dev's approach where metrics are queryable as columns
 """
 
+from sidemantic.core.consumption import graph_metric_is_public, serialize_consumption_contract
+from sidemantic.core.governance import governance_dict
 from sidemantic.core.semantic_graph import SemanticGraph
 
 
@@ -101,19 +103,26 @@ def get_catalog_metadata(graph: SemanticGraph, schema: str = "public", enforce_v
     columns = []
     constraints = []
     key_column_usage = []
+    visible_model_names = {
+        model_name
+        for model_name, model in graph.models.items()
+        if not enforce_visibility or model.visibility == "public"
+    }
 
     for model_name, model in graph.models.items():
+        if model_name not in visible_model_names:
+            continue
         # Add table entry
-        tables.append(
-            {
-                "table_catalog": "sidemantic",
-                "table_schema": schema,
-                "table_name": model.name,
-                "table_type": "BASE TABLE",
-                "is_insertable_into": "NO",  # Read-only semantic layer
-                "is_typed": "NO",
-            }
-        )
+        table_meta = {
+            "table_catalog": "sidemantic",
+            "table_schema": schema,
+            "table_name": model.name,
+            "table_type": "BASE TABLE",
+            "is_insertable_into": "NO",  # Read-only semantic layer
+            "is_typed": "NO",
+        }
+        table_meta.update(governance_dict(model))
+        tables.append(table_meta)
 
         ordinal = 1
 
@@ -210,7 +219,7 @@ def get_catalog_metadata(graph: SemanticGraph, schema: str = "public", enforce_v
         # The semantic layer handles the aggregation behind the scenes
         for metric in model.metrics:
             # Omit non-public metrics when visibility enforcement is on.
-            if enforce_visibility and not metric.public:
+            if enforce_visibility and (not metric.public or metric.visibility != "public"):
                 continue
 
             data_type = get_postgres_type_for_metric(metric.agg)
@@ -238,12 +247,15 @@ def get_catalog_metadata(graph: SemanticGraph, schema: str = "public", enforce_v
                 col_meta["description"] = metric.description
             if metric.label:
                 col_meta["label"] = metric.label
+            col_meta.update(governance_dict(metric))
 
             columns.append(col_meta)
             ordinal += 1
 
         # Add foreign key constraints from relationships
         for rel in model.relationships:
+            if rel.name not in visible_model_names:
+                continue
             if rel.type in ("many_to_one", "one_to_one"):
                 # This model has a foreign key to another model
                 fk_column = rel.foreign_key
@@ -289,9 +301,34 @@ def get_catalog_metadata(graph: SemanticGraph, schema: str = "public", enforce_v
                         col["is_foreign_key"] = True
                         break
 
+    explores = [
+        serialized
+        for explore in graph.explores.values()
+        if (serialized := serialize_consumption_contract(explore, graph, enforce_visibility=enforce_visibility))
+        is not None
+    ]
+    saved_queries = [
+        serialized
+        for saved_query in graph.saved_queries.values()
+        if (serialized := serialize_consumption_contract(saved_query, graph, enforce_visibility=enforce_visibility))
+        is not None
+    ]
+    graph_metrics = [
+        {
+            "name": metric.name,
+            "type": metric.type,
+            "description": metric.description,
+            **governance_dict(metric),
+        }
+        for metric in graph.metrics.values()
+        if not enforce_visibility or graph_metric_is_public(metric, graph)
+    ]
     return {
         "tables": tables,
         "columns": columns,
         "constraints": constraints,
         "key_column_usage": key_column_usage,
+        "semantic_metrics": graph_metrics,
+        "explores": explores,
+        "saved_queries": saved_queries,
     }

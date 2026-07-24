@@ -4,7 +4,7 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
 
 class Freshness(BaseModel):
-    """Model-level freshness policy for live chart/runtime responses.
+    """Freshness expectation for models, metrics, and curated explores.
 
     Prefer ``watermark`` for normal semantic-model usage. ``sql`` is retained as
     an advanced escape hatch when the source freshness marker cannot be expressed

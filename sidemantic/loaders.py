@@ -1508,9 +1508,13 @@ def _infer_relationships(models: dict) -> None:
             # Find if any of these tables exist
             for target in potential_targets:
                 if target in models and target != model_name and not _unincluded(models[target]):
-                    # Check if this relationship already exists
+                    # A relationship declared on either side is authoritative. In
+                    # particular, the target may join on a non-primary key, while
+                    # convention-based inference would fabricate a conflicting
+                    # edge to the target's primary key.
                     existing = [r for r in model.relationships if r.name == target]
-                    if not existing:
+                    declared_reverse = [r for r in models[target].relationships if r.name == model_name]
+                    if not existing and not declared_reverse:
                         # Add many_to_one relationship
                         model.relationships.append(
                             Relationship(name=target, type="many_to_one", foreign_key=dimension.name)

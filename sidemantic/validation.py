@@ -889,12 +889,16 @@ def validate_query(metrics: list[str], dimensions: list[str], graph: "SemanticGr
 
     # Check that all model pairs can be joined
     # Only check models that exist in the graph (errors for missing models already reported above)
-    valid_model_names = [m for m in model_names if m in graph.models]
-    model_list = list(valid_model_names)
+    from sidemantic.core.semantic_graph import AmbiguousJoinPathError
+
+    model_list = sorted(m for m in model_names if m in graph.models)
+    query_model_set = frozenset(model_list)
     for i, model_a in enumerate(model_list):
         for model_b in model_list[i + 1 :]:
             try:
-                graph.find_relationship_path(model_a, model_b)
+                graph.find_relationship_path(model_a, model_b, query_models=query_model_set)
+            except AmbiguousJoinPathError as exc:
+                errors.append(str(exc))
             except (ValueError, KeyError):
                 # Catch both ValueError (no path) and KeyError (model doesn't exist)
                 errors.append(

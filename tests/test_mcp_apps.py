@@ -1,11 +1,13 @@
 """Tests for MCP Apps UI integration."""
 
+from pathlib import Path
+
 import pytest
 
 pytest.importorskip("mcp")  # Skip if mcp extra not installed
 
-from sidemantic.apps import build_chart_html, create_chart_resource
-from sidemantic.mcp_server import create_chart, initialize_layer
+from sidemantic.apps import _get_protocol_widget_html, build_chart_html, create_chart_resource
+from sidemantic.mcp_server import chart_widget_resource, create_chart, initialize_layer
 
 
 @pytest.fixture
@@ -55,6 +57,45 @@ def test_build_chart_html():
     assert 'type="module"' not in html
     assert "esm.sh" not in html
     assert "<script src=" not in html
+
+
+def test_protocol_widget_source_is_self_contained_and_csp_safe():
+    """The source widget uses MCP Apps and the CSP-safe Vega interpreter."""
+    source_root = Path(__file__).parents[1] / "sidemantic" / "apps" / "web"
+    app_source = (source_root / "chart-app.ts").read_text()
+    config = (source_root / "vite.config.ts").read_text()
+
+    assert 'from "@modelcontextprotocol/ext-apps"' in app_source
+    assert 'from "vega-interpreter"' in app_source
+    assert "ast: true" in app_source
+    assert '"vega-functions/codegenExpression": "vega-interpreter"' in config
+
+
+def test_protocol_widget_lifecycle_cleans_up_stale_renders():
+    source = (Path(__file__).parents[1] / "sidemantic" / "apps" / "web" / "chart-app.ts").read_text()
+
+    assert "activeObserver.disconnect()" in source
+    assert "activeView.finalize()" in source
+    assert "generation !== renderGeneration" in source
+    assert "lastSpec = null" in source
+
+
+def test_protocol_widget_resource_uses_lazy_built_asset(monkeypatch):
+    import sidemantic.apps as apps
+
+    monkeypatch.setattr(apps, "_get_protocol_widget_html", lambda: "<!DOCTYPE html><p>chart</p>")
+
+    assert chart_widget_resource() == "<!DOCTYPE html><p>chart</p>"
+
+
+def test_protocol_widget_loader_reports_missing_build(monkeypatch, tmp_path):
+    import sidemantic.apps as apps
+
+    monkeypatch.setattr(apps, "_PROTOCOL_WIDGET_HTML", None)
+    monkeypatch.setattr(apps, "Path", lambda _path: tmp_path)
+
+    with pytest.raises(FileNotFoundError, match="bun run build"):
+        _get_protocol_widget_html()
 
 
 def test_build_chart_html_escapes_json():

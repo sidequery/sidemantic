@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { HttpBackend } from "./data/httpAdapter";
+import type { DashboardDocument } from "./data/dashboardTypes";
 import type { Catalog } from "./data/types";
 import { AppShell } from "./components/AppShell";
+import { AppBrand } from "./components/AppBrand";
 import { AddFilter } from "./components/AddFilter";
 import { Catalog as CatalogRail } from "./components/Catalog";
 import { ErrorBoundary } from "./components/ErrorBoundary";
@@ -13,24 +15,35 @@ import { RowPreviewDrawer } from "./components/RowPreviewDrawer";
 import { EmptyState, ErrorState, LoadingState } from "./components/States";
 import { ThemeToggle } from "./components/ThemeToggle";
 import { ViewSwitcher } from "./components/ViewSwitcher";
+import { dashboardTabConfig } from "./lib/dashboard";
 import { grainOptions } from "./lib/time";
 import { ExplorerProvider, useExplorer } from "./state/ExplorerContext";
+import { initialStateFromCatalog } from "./state/explorerState";
 import { useQueryActive } from "./state/queryActivity";
+import { shouldUseExplorer } from "./state/dashboardState";
 import { ExploreIndexView } from "./views/ExploreIndexView";
 import { ExplorerView } from "./views/ExplorerView";
 import { PivotView } from "./views/PivotView";
+import { DashboardDocumentView } from "./views/DashboardDocumentView";
 
 function QueryStatus() {
   const active = useQueryActive();
   return (
-    <span className="flex items-center gap-1.5 text-2xs text-faint" title={active ? "Querying" : "Idle"}>
+    <span
+      role="status"
+      aria-live="polite"
+      aria-atomic="true"
+      className="flex items-center gap-1.5 text-2xs text-faint"
+      title={active ? "Updating data" : "Data is up to date"}
+    >
       {active ? (
-        <svg viewBox="0 0 24 24" className="spinner size-3.5 text-accent" fill="none" stroke="currentColor" strokeWidth="3">
+        <svg aria-hidden="true" viewBox="0 0 24 24" className="spinner size-3.5 text-accent" fill="none" stroke="currentColor" strokeWidth="3">
           <path d="M12 3a9 9 0 1 0 9 9" strokeLinecap="round" />
         </svg>
       ) : (
         <span aria-hidden="true" className="inline-block size-2 rounded-full bg-accent" />
       )}
+      <span className="sr-only">{active ? "Updating data" : "Data is up to date"}</span>
     </span>
   );
 }
@@ -111,12 +124,22 @@ function SessionLogin({ backend, onAuthenticated }: { backend: HttpBackend; onAu
 }
 
 function Shell() {
-  const { state, dispatch, catalog, initial } = useExplorer();
-  const isHome = state.view === "home";
+  const { state, dispatch, catalog, initial, dashboard } = useExplorer();
+  const isDashboard = Boolean(dashboard);
+  const isHome = state.view === "home" && !isDashboard;
   const model = catalog.models.find((m) => m.name === state.model);
+  const configured = useMemo(
+    () => dashboardTabConfig(catalog, dashboard, state.dashboardTab),
+    [catalog, dashboard, state.dashboardTab],
+  );
+  const resetInitial = useMemo(
+    () => (dashboard ? initialStateFromCatalog(catalog, dashboard, state.dashboardTab) : initial),
+    [catalog, dashboard, initial, state.dashboardTab],
+  );
   const dirty = state.dateRange != null || Object.keys(state.filters).length > 0;
-  const hasTime = Boolean(model?.timeDimension);
-  const grains = grainOptions(model?.timeDimension?.supportedGranularities);
+  const activeTimeDimension = configured?.timeDimension ?? model?.timeDimension;
+  const hasTime = Boolean(activeTimeDimension);
+  const grains = grainOptions(activeTimeDimension?.supportedGranularities, state.grain);
   // Resolve a filtered dimension's ref back to its catalog dimension + owning model, so a pill can
   // open the editor. Filters target the active model's dimensions in practice.
   const dimByRef = useMemo(() => {
@@ -141,15 +164,11 @@ function Shell() {
   });
 
   const brand = (
-    <button
-      type="button"
-      onClick={() => dispatch({ type: "setView", view: "home" })}
-      aria-label="Home"
-      className="flex min-w-0 items-baseline gap-2"
-    >
-      <span className="text-sm font-semibold text-ink">Sidemantic</span>
-      {!isHome && model?.label ? <span className="truncate text-2xs text-faint">{model.label}</span> : null}
-    </button>
+    <AppBrand
+      dashboardTitle={dashboard?.title}
+      modelLabel={!isHome && !isDashboard ? model?.label : undefined}
+      onHome={() => dispatch({ type: "setView", view: "home" })}
+    />
   );
 
   // On the home/index view the model-scoped controls (view switcher, date/grain, filters) don't apply.
@@ -160,7 +179,38 @@ function Shell() {
     </>
   ) : (
     <>
-      <ViewSwitcher view={state.view} onChange={(view) => dispatch({ type: "setView", view })} />
+      {dashboard ? (
+        <div className="flex items-center border border-line bg-surface" role="tablist" aria-label="Dashboard tabs">
+          {dashboard.tabs.map((tab) => {
+            const selected = tab.id === state.dashboardTab;
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                role="tab"
+                aria-selected={selected}
+                className={`px-2 py-1 text-2xs ${selected ? "bg-accent text-white" : "text-muted hover:text-ink"}`}
+                onClick={() => {
+                  const config = dashboardTabConfig(catalog, dashboard, tab.id);
+                  if (config) {
+                    dispatch({
+                      type: "setDashboardTab",
+                      tab: config.id,
+                      model: config.model.name,
+                      metric: config.selectedMetric,
+                      grain: config.grain,
+                    });
+                  }
+                }}
+              >
+                {tab.label ?? tab.id}
+              </button>
+            );
+          })}
+        </div>
+      ) : (
+        <ViewSwitcher view={state.view} onChange={(view) => dispatch({ type: "setView", view })} />
+      )}
       <DateRangeControl
         range={state.dateRange}
         disabled={!hasTime}
@@ -174,7 +224,7 @@ function Shell() {
       {dirty ? (
         <button
           type="button"
-          onClick={() => dispatch({ type: "reset", initial })}
+          onClick={() => dispatch({ type: "reset", initial: resetInitial })}
           className="border border-line bg-surface px-2 py-1 text-2xs text-muted hover:border-faint hover:text-ink"
         >
           Reset
@@ -209,7 +259,7 @@ function Shell() {
       toolbar={toolbar}
       filters={isHome ? undefined : filters}
       rail={<CatalogRail />}
-      showRail={!isHome}
+      showRail={!isHome && !isDashboard}
       openRailRequest={state.view === "pivot"}
       drawer={isHome ? undefined : <RowPreviewDrawer />}
     >
@@ -228,20 +278,20 @@ export function App() {
     () => new HttpBackend({ transport: "json", onUnauthorized: () => setAuthRequired(true) }),
     [],
   );
-  const [catalog, setCatalog] = useState<Catalog | null>(null);
+  const [boot, setBoot] = useState<{ catalog: Catalog; dashboard: DashboardDocument | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
+  const forceExplorer = shouldUseExplorer(window.location.pathname, window.location.search);
 
   useEffect(() => {
     let alive = true;
-    backend
-      .getCatalog()
-      .then((value) => alive && setCatalog(value))
+    Promise.all([backend.getCatalog(), forceExplorer ? Promise.resolve(null) : backend.getDashboard()])
+      .then(([catalog, dashboard]) => alive && setBoot({ catalog, dashboard }))
       .catch((err: unknown) => alive && setError(err instanceof Error ? err.message : String(err)));
     return () => {
       alive = false;
     };
-  }, [backend, reload]);
+  }, [backend, forceExplorer, reload]);
 
   if (authRequired) {
     return (
@@ -258,12 +308,15 @@ export function App() {
     );
   }
   if (error) return <FullScreen><ErrorState title="Could not load semantic layer" message={error} /></FullScreen>;
-  if (!catalog) return <FullScreen><LoadingState title="Loading semantic layer" message="Reading models and metrics…" /></FullScreen>;
-  if (!catalog.models.length)
+  if (!boot) return <FullScreen><LoadingState title="Loading semantic layer" message="Reading models and metrics…" /></FullScreen>;
+  if (!boot.catalog.models.length)
     return <FullScreen><EmptyState title="Empty semantic layer" message="No models were found." /></FullScreen>;
 
+  if (boot.dashboard)
+    return <DashboardDocumentView document={boot.dashboard} catalog={boot.catalog} backend={backend} />;
+
   return (
-    <ExplorerProvider catalog={catalog} backend={backend}>
+    <ExplorerProvider catalog={boot.catalog} backend={backend}>
       <Shell />
     </ExplorerProvider>
   );

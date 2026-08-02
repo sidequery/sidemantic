@@ -35,10 +35,13 @@ function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === "string");
 }
 
-// Accept only YYYY-MM-DD calendar dates, so a hand-edited ?from/&to can't seed the date helpers
-// with values that parse to NaN and break series/leaderboard queries.
-function isIsoDate(value: string | null): value is string {
-  return value != null && /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(value));
+// Accept calendar dates and second-precision timestamps emitted by fine-grain chart brushes.
+function isIsoTemporal(value: string | null): value is string {
+  return (
+    value != null &&
+    /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2})?$/.test(value) &&
+    !Number.isNaN(Date.parse(value))
+  );
 }
 
 const FILTER_MODES = new Set<FilterMode>(["include", "exclude", "contains"]);
@@ -84,6 +87,7 @@ function serializeFilters(filters: FilterState): Record<string, string[] | DimFi
 export function encodeState(state: ExplorerState): string {
   const params = new URLSearchParams();
   params.set("view", state.view);
+  if (state.dashboardTab) params.set("tab", state.dashboardTab);
   if (state.model) params.set("model", state.model);
   if (state.selectedMetric) params.set("metric", state.selectedMetric);
   if (state.grain) params.set("grain", state.grain);
@@ -111,6 +115,8 @@ export function decodeState(search: string, base: ExplorerState): ExplorerState 
 
   const view = params.get("view");
   if (view && VIEWS.includes(view as ViewKind)) next.view = view as ViewKind;
+  const tab = params.get("tab");
+  if (tab) next.dashboardTab = tab;
   const model = params.get("model");
   if (model) next.model = model;
   const metric = params.get("metric");
@@ -123,7 +129,9 @@ export function decodeState(search: string, base: ExplorerState): ExplorerState 
 
   const from = params.get("from");
   const to = params.get("to");
-  if (isIsoDate(from) && isIsoDate(to) && from <= to) next.dateRange = { from, to } satisfies DateRange;
+  if (isIsoTemporal(from) && isIsoTemporal(to) && Date.parse(from) <= Date.parse(to)) {
+    next.dateRange = { from, to } satisfies DateRange;
+  }
 
   const ctx = params.get("ctx");
   if (ctx && CONTEXT_COLUMNS.has(ctx as ContextColumn)) next.contextColumn = ctx as ContextColumn;
@@ -133,7 +141,7 @@ export function decodeState(search: string, base: ExplorerState): ExplorerState 
   // ordered ISO range — otherwise fall through to the default (no custom range).
   const cfrom = params.get("cfrom");
   const cto = params.get("cto");
-  if (next.comparison === "custom" && isIsoDate(cfrom) && isIsoDate(cto) && cfrom <= cto) {
+  if (next.comparison === "custom" && isIsoTemporal(cfrom) && isIsoTemporal(cto) && Date.parse(cfrom) <= Date.parse(cto)) {
     next.comparisonRange = { from: cfrom, to: cto } satisfies DateRange;
   }
 

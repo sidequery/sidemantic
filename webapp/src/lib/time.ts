@@ -1,18 +1,20 @@
 import type { Grain } from "../data/types";
 
-export const ALL_GRAINS: Grain[] = ["hour", "day", "week", "month", "quarter", "year"];
+export const ALL_GRAINS: Grain[] = ["second", "minute", "hour", "day", "week", "month", "quarter", "year"];
 
 /** Grains offered in the UI, restricted to a dimension's supported set when known. */
-export function grainOptions(supported?: string[]): Grain[] {
+export function grainOptions(supported?: string[], active?: Grain): Grain[] {
   if (supported?.length) {
     const set = new Set(supported.map((g) => g.toLowerCase()));
     const filtered = ALL_GRAINS.filter((g) => set.has(g));
     if (filtered.length) return filtered;
   }
-  return ["day", "week", "month", "quarter", "year"];
+  const defaults: Grain[] = ["day", "week", "month", "quarter", "year"];
+  if (active && !defaults.includes(active)) return ALL_GRAINS.filter((grain) => grain === active || defaults.includes(grain));
+  return defaults;
 }
 
-/** Inclusive day range, ISO dates (YYYY-MM-DD). */
+/** Inclusive ISO date range, or a half-open ISO timestamp range for sub-day chart brushes. */
 export type DateRange = { from: string; to: string };
 
 function isoDate(date: Date): string {
@@ -48,6 +50,15 @@ function daysInRange(range: DateRange): number {
 
 /** The equal-length window immediately preceding `range`, for period-over-period comparison. */
 export function previousRange(range: DateRange): DateRange {
+  if (range.from.includes("T") || range.to.includes("T")) {
+    const from = Date.parse(normalizeBucketLabel(range.from));
+    const to = Date.parse(normalizeBucketLabel(range.to));
+    const duration = to - from;
+    return {
+      from: new Date(from - duration).toISOString().slice(0, 19),
+      to: new Date(from).toISOString().slice(0, 19),
+    };
+  }
   const length = daysInRange(range);
   const to = addDays(range.from, -1);
   const from = addDays(to, -(length - 1));
@@ -58,6 +69,24 @@ export function previousRange(range: DateRange): DateRange {
  *  in a non-leap year, so it clamps to Feb 28 (matching how spreadsheets/BI tools handle the leap
  *  day in year-over-year comparisons). */
 function isoYearAgo(value: string): string {
+  if (value.includes("T")) {
+    const date = new Date(normalizeBucketLabel(value));
+    const year = date.getUTCFullYear() - 1;
+    const month = date.getUTCMonth();
+    const lastOfMonth = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+    return new Date(
+      Date.UTC(
+        year,
+        month,
+        Math.min(date.getUTCDate(), lastOfMonth),
+        date.getUTCHours(),
+        date.getUTCMinutes(),
+        date.getUTCSeconds(),
+      ),
+    )
+      .toISOString()
+      .slice(0, 19);
+  }
   const date = parseISO(value);
   const year = date.getUTCFullYear() - 1;
   const month = date.getUTCMonth();
@@ -89,10 +118,11 @@ export function previousYearRange(range: DateRange): DateRange {
 export function formatBucketLabel(label: string, grain: Grain): string {
   const trimmed = label.trim();
   const date = trimmed.slice(0, 10);
-  if (grain !== "hour") return date || label;
-  // Pull HH:MM out of "YYYY-MM-DD[ T]HH:MM(:SS)?" when the label carries a clock time.
-  const time = trimmed.slice(10).match(/(\d{2}):(\d{2})/);
-  return time ? `${date} ${time[1]}:${time[2]}` : date || label;
+  if (grain !== "second" && grain !== "minute" && grain !== "hour") return date || label;
+  const time = trimmed.slice(10).match(/(\d{2}):(\d{2})(?::(\d{2}))?/);
+  if (!time) return date || label;
+  const clock = grain === "second" && time[3] ? `${time[1]}:${time[2]}:${time[3]}` : `${time[1]}:${time[2]}`;
+  return `${date} ${clock}`;
 }
 
 export type DatePreset = { key: string; label: string; days: number };
@@ -123,6 +153,9 @@ export function presetRange(days: number, today: Date = new Date()): DateRange {
  *  shifting the literals by the zone offset) is deferred — it needs the dimension's column
  *  expression and zone-shifted literals, a larger change than this item. */
 export function timeFilters(ref: string, range: DateRange): string[] {
+  if (range.from.includes("T") || range.to.includes("T")) {
+    return [`${ref} >= cast('${range.from}' as timestamp)`, `${ref} < cast('${range.to}' as timestamp)`];
+  }
   return [`${ref} >= cast('${range.from}' as date)`, `${ref} < cast('${addDays(range.to, 1)}' as date)`];
 }
 
@@ -130,8 +163,9 @@ export function timeFilters(ref: string, range: DateRange): string[] {
  *  series to the current one by bucket position rather than ordinal index, so missing (sparse)
  *  buckets in either period don't shift the overlay. */
 export function bucketOffset(first: string, label: string, grain: Grain): number {
-  if (grain === "hour") {
-    return Math.round((Date.parse(normalizeBucketLabel(label)) - Date.parse(normalizeBucketLabel(first))) / 3_600_000);
+  if (grain === "second" || grain === "minute" || grain === "hour") {
+    const divisor = grain === "second" ? 1_000 : grain === "minute" ? 60_000 : 3_600_000;
+    return Math.round((Date.parse(normalizeBucketLabel(label)) - Date.parse(normalizeBucketLabel(first))) / divisor);
   }
   const a = parseISO(first);
   const b = parseISO(label);
@@ -150,13 +184,22 @@ export function bucketOffset(first: string, label: string, grain: Grain): number
   }
 }
 
-/** Inclusive last calendar day of the bucket that starts at `start` for a given grain.
- *  Used to turn a brushed bucket range into a precise date filter. */
+function timestampBoundary(start: string, milliseconds: number): string {
+  return new Date(Date.parse(normalizeBucketLabel(start)) + milliseconds).toISOString().slice(0, 19);
+}
+
+/** Inclusive last calendar day for date grains, or the exclusive next timestamp boundary for
+ * sub-day grains. Used to turn a brushed bucket range into a precise filter. */
 export function endOfBucket(start: string, grain: Grain): string {
   const normalizedStart = dateOnly(start);
   const date = parseISO(normalizedStart);
   switch (grain) {
+    case "second":
+      return timestampBoundary(start, 1_000);
+    case "minute":
+      return timestampBoundary(start, 60_000);
     case "hour":
+      return timestampBoundary(start, 3_600_000);
     case "day":
       return normalizedStart;
     case "week":

@@ -26,6 +26,7 @@
   --accent: #8a6116;
   --accent-hover: #6d4c0f;
   --accent-soft: #fff6e2;
+  --focus: #1b1917;
   --danger: #dc2626;
   --danger-soft: rgba(239, 68, 68, 0.1);
   --success: #047857;
@@ -58,6 +59,7 @@
   --accent: #f1bd5b;
   --accent-hover: #f6d083;
   --accent-soft: #342817;
+  --focus: #f4f2ee;
   --danger: #f87171;
   --danger-soft: rgba(248, 113, 113, 0.15);
   --success: #6ee7b7;
@@ -96,6 +98,31 @@ body {
   text-rendering: optimizeLegibility;
 }
 
+button,
+input,
+select,
+summary {
+  touch-action: manipulation;
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+button:not(:disabled),
+summary:not([aria-disabled="true"]),
+select:not(:disabled) {
+  cursor: pointer;
+}
+
+button:disabled,
+input:disabled,
+select:disabled {
+  cursor: not-allowed;
+}
+
 /* Tighter tracking on headings so titles read intentional, not default. Headings take the
  * display face, which defaults to the sans — override --font-display for an editorial look. */
 h1 {
@@ -117,10 +144,10 @@ h3 {
   font-variant-numeric: tabular-nums;
 }
 
-/* Focus rings sit inside the hairline grid rather than spilling outside it. */
+/* Keep a high-contrast focus indicator visible on both themes. */
 :focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
 }
 
 ::selection {
@@ -180,6 +207,22 @@ h3 {
 }
 
 @media (pointer: coarse) {
+  button,
+  summary,
+  select,
+  input:not([type="checkbox"]):not([type="radio"]) {
+    min-height: 44px;
+  }
+
+  input:not([type="checkbox"]):not([type="radio"]),
+  select {
+    font-size: 16px;
+  }
+
+  button[aria-label] {
+    min-width: 44px;
+  }
+
   .leaderboard-row,
   .leaderboard-expand,
   .table-sort,
@@ -192,6 +235,15 @@ h3 {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+
   .skeleton,
   .spinner {
     animation: none;

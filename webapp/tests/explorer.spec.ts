@@ -19,6 +19,38 @@ test("the home index lists models and opens one into Explore", async ({ page }) 
   await expect(page.locator('button[data-metric="customers.customer_count"]')).toBeVisible();
 });
 
+test("the mobile catalog is a focus-managed dialog", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/?view=explore&model=orders&metric=orders.revenue");
+
+  await expect(page.getByRole("dialog", { name: "Data catalog" })).toHaveCount(0);
+  const trigger = page.getByRole("button", { name: "Open catalog" });
+  await trigger.click();
+
+  const catalog = page.getByRole("dialog", { name: "Data catalog" });
+  await expect(catalog).toBeVisible();
+  await expect(catalog.getByRole("button", { name: "Close catalog" })).toBeFocused();
+  await expect(catalog.locator('[data-testid="catalog-drawer-header"]')).toHaveCSS("background-color", "rgb(255, 255, 255)");
+
+  await page.keyboard.press("Escape");
+  await expect(catalog).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+});
+
+test("view tabs support arrow keys and query status is announced", async ({ page }) => {
+  await page.goto("/?view=explore&model=orders&metric=orders.revenue");
+
+  const explore = page.getByRole("tab", { name: "Explore" });
+  const pivot = page.getByRole("tab", { name: "Pivot" });
+  await explore.focus();
+  await page.keyboard.press("ArrowRight");
+
+  await expect(pivot).toBeFocused();
+  await expect(pivot).toHaveAttribute("aria-selected", "true");
+  await expect.poll(() => new URL(page.url()).searchParams.get("view")).toBe("pivot");
+  await expect(page.getByRole("status")).toContainText(/Updating data|Data is up to date/);
+});
+
 test("crossfilter, reset, and metric re-rank change rendered data", async ({ page }) => {
   const params = new URLSearchParams({
     view: "explore",

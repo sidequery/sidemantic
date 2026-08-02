@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { aliasOf, type CatalogMetric } from "../data/types";
+import { useEffect, useMemo, useState } from "react";
+import { queryAlias, type CatalogMetric, type Grain, type StructuredQuery } from "../data/types";
 import { LeaderboardPanel } from "../components/LeaderboardPanel";
 import { MetricCard } from "../components/MetricCard";
 import { MetricTimeSeries } from "../components/MetricTimeSeries";
@@ -8,8 +8,8 @@ import { EmptyState, ErrorState } from "../components/States";
 import type { BrushRange } from "../components/TimeSeriesChart";
 import { formatDelta, formatValue } from "../lib/format";
 import { graphMetricsForModel } from "../lib/catalog";
-import { composeFilters, dimTypes, metricSeries, metricTotals } from "../lib/queries";
-import type { StructuredQuery } from "../data/types";
+import { dashboardTabConfig } from "../lib/dashboard";
+import { catalogDimTypes, composeFilters, metricSeries, metricTotals } from "../lib/queries";
 import {
   bucketOffset,
   dateOnly,
@@ -26,14 +26,44 @@ function metricHint(metric?: CatalogMetric) {
   return { format: metric?.format, type: metric?.type };
 }
 
+export function resolveExpandedLeaderboard(
+  expandedRef: string | null,
+  dimensions: ReadonlyArray<{ ref: string }>,
+): string | null {
+  return expandedRef && dimensions.some((dimension) => dimension.ref === expandedRef) ? expandedRef : null;
+}
+
+export function chronologicalSeriesRows<T extends Record<string, unknown>>(rows: T[], timeAlias: string): T[] {
+  return [...rows].sort((left, right) => String(left[timeAlias] ?? "").localeCompare(String(right[timeAlias] ?? "")));
+}
+
+export function brushDateRange(range: BrushRange, grain: Grain): DateRange {
+  const fineGrain = grain === "second" || grain === "minute" || grain === "hour";
+  return {
+    from: fineGrain ? range.from.replace(" ", "T") : dateOnly(range.from),
+    to: endOfBucket(range.to, grain),
+  };
+}
+
 export function ExplorerView() {
-  const { state, dispatch, catalog, backend } = useExplorer();
+  const { state, dispatch, catalog, backend, dashboard } = useExplorer();
   const [expandedLeaderboard, setExpandedLeaderboard] = useState<string | null>(null);
   const model = catalog.models.find((m) => m.name === state.model);
+  const configured = useMemo(
+    () => dashboardTabConfig(catalog, dashboard, state.dashboardTab),
+    [catalog, dashboard, state.dashboardTab],
+  );
 
-  const metrics = model?.metrics ?? [];
-  const graphMetrics = graphMetricsForModel(catalog, state.model);
-  const timeRef = model?.timeDimension?.ref;
+  useEffect(() => {
+    setExpandedLeaderboard(null);
+  }, [state.dashboardTab, state.model]);
+
+  const metrics = configured?.metrics ?? model?.metrics ?? [];
+  const configuredMetricRefs = new Set(metrics.map((metric) => metric.ref));
+  const graphMetrics = graphMetricsForModel(catalog, state.model).filter(
+    (metric) => !configured || configuredMetricRefs.has(metric.ref),
+  );
+  const timeRef = configured?.timeDimension?.ref ?? model?.timeDimension?.ref;
 
   // Focused metric drives the chart + leaderboard ranking. It may be a graph-level metric that
   // isn't one of the model's strip metrics.
@@ -49,10 +79,10 @@ export function ExplorerView() {
     return rankMetric && !focusedInStrip ? [...refs, rankMetric.ref] : refs;
   }, [metrics, rankMetric, focusedInStrip]);
 
-  const types = useMemo(() => dimTypes(model?.dimensions ?? []), [model]);
+  const types = useMemo(() => catalogDimTypes(catalog), [catalog]);
   const baseFilters = useMemo(
-    () => composeFilters(state.filters, { timeRef, range: state.dateRange, types }),
-    [state.filters, timeRef, state.dateRange, types],
+    () => [...(configured?.filters ?? []), ...composeFilters(state.filters, { timeRef, range: state.dateRange, types })],
+    [configured, state.filters, timeRef, state.dateRange, types],
   );
   // Resolve the chosen comparison mode into a concrete window. `off` (or no active date range, since
   // every comparison here is relative to one) means no comparison at all — the strip cards, chart
@@ -64,8 +94,11 @@ export function ExplorerView() {
     return previousRange(state.dateRange);
   }, [state.comparison, state.dateRange, state.comparisonRange]);
   const prevFilters = useMemo(
-    () => (prevRange && timeRef ? composeFilters(state.filters, { timeRef, range: prevRange, types }) : null),
-    [state.filters, timeRef, prevRange, types],
+    () =>
+      prevRange && timeRef
+        ? [...(configured?.filters ?? []), ...composeFilters(state.filters, { timeRef, range: prevRange, types })]
+        : null,
+    [configured, state.filters, timeRef, prevRange, types],
   );
 
   // Stamp the selected timezone onto every query so the backend truncates time buckets in-zone
@@ -75,20 +108,51 @@ export function ExplorerView() {
     query ? { ...query, timezone: tz } : null;
 
   // Strip queries — one aggregate per shape, covering every metric at once.
-  const totals = useQueryResult(backend, stripMetricRefs.length ? withTz(metricTotals(stripMetricRefs, baseFilters)) : null);
+  const totals = useQueryResult(
+    backend,
+    stripMetricRefs.length
+      ? withTz(metricTotals(stripMetricRefs, baseFilters, configured?.segments, configured?.usePreaggregations))
+      : null,
+  );
   const series = useQueryResult(
     backend,
-    stripMetricRefs.length && timeRef ? withTz(metricSeries(stripMetricRefs, timeRef, state.grain, baseFilters)) : null,
+    stripMetricRefs.length && timeRef
+      ? withTz(
+          metricSeries(
+            stripMetricRefs,
+            timeRef,
+            state.grain,
+            baseFilters,
+            configured?.segments,
+            configured?.usePreaggregations,
+            Boolean(state.dateRange),
+          ),
+        )
+      : null,
   );
   const comparison = useQueryResult(
     backend,
-    stripMetricRefs.length && prevFilters ? withTz(metricTotals(stripMetricRefs, prevFilters)) : null,
+    stripMetricRefs.length && prevFilters
+      ? withTz(metricTotals(stripMetricRefs, prevFilters, configured?.segments, configured?.usePreaggregations))
+      : null,
   );
   // The single extra query the chart needs: the focused metric over the *previous* period (the
   // dashed overlay). Everything else is reused from the strip results above.
   const prevSeries = useQueryResult(
     backend,
-    rankMetric && timeRef && prevFilters ? withTz(metricSeries([rankMetric.ref], timeRef, state.grain, prevFilters)) : null,
+    rankMetric && timeRef && prevFilters
+      ? withTz(
+          metricSeries(
+            [rankMetric.ref],
+            timeRef,
+            state.grain,
+            prevFilters,
+            configured?.segments,
+            configured?.usePreaggregations,
+            true,
+          ),
+        )
+      : null,
   );
 
   // Surface a failure from any strip query (totals/series/comparison/prev), not just totals, so a
@@ -97,34 +161,51 @@ export function ExplorerView() {
 
   if (!model) return <div className="p-4"><EmptyState message="No model available in this semantic layer." /></div>;
 
-  const leaderboardDims = model.dimensions.filter((dim) => dim.type !== "time");
+  const leaderboardDims = (configured?.dimensions ?? model.dimensions).filter((dim) => dim.type !== "time");
+  const activeExpandedLeaderboard = resolveExpandedLeaderboard(expandedLeaderboard, leaderboardDims);
   const comparisonLabel = state.comparison === "year" ? "Prev year" : state.comparison === "custom" ? "Comparison" : "Prev period";
 
   // A kept result from a previous model has different metric columns. Ignore it until the fresh one
   // lands (cards/chart keep showing their skeleton) rather than reading missing columns as zeros.
-  const shapeAlias = metrics[0] ? aliasOf(metrics[0].ref) : rankMetric ? aliasOf(rankMetric.ref) : null;
+  const seriesTimeRef = timeRef ? `${timeRef}__${state.grain}` : "";
+  const seriesFields = seriesTimeRef ? [...stripMetricRefs, seriesTimeRef] : stripMetricRefs;
+  const prevSeriesFields = rankMetric && seriesTimeRef ? [rankMetric.ref, seriesTimeRef] : [];
+  const shapeAlias = metrics[0]
+    ? queryAlias(metrics[0].ref, stripMetricRefs)
+    : rankMetric
+      ? queryAlias(rankMetric.ref, stripMetricRefs)
+      : null;
   const fresh = (r?: { columns: string[] }) => !r || !shapeAlias || r.columns.includes(shapeAlias);
   const totalsRow = fresh(totals.result) ? totals.result?.rows[0] : undefined;
   const prevRow = fresh(comparison.result) ? comparison.result?.rows[0] : undefined;
-  const seriesRows = fresh(series.result) ? (series.result?.rows ?? []) : [];
+  const rawSeriesRows = fresh(series.result) ? (series.result?.rows ?? []) : [];
 
   // Chart data derived from the strip aggregates (no duplicate total/series queries).
-  const mAlias = rankMetric ? aliasOf(rankMetric.ref) : "";
-  const tAlias = timeRef ? aliasOf(`${timeRef}__${state.grain}`) : "";
+  const mAlias = rankMetric ? queryAlias(rankMetric.ref, stripMetricRefs) : "";
+  const seriesMetricAlias = rankMetric ? queryAlias(rankMetric.ref, seriesFields) : "";
+  const prevSeriesMetricAlias = rankMetric ? queryAlias(rankMetric.ref, prevSeriesFields) : "";
+  const tAlias = seriesTimeRef ? queryAlias(seriesTimeRef, seriesFields) : "";
+  const prevTimeAlias = seriesTimeRef ? queryAlias(seriesTimeRef, prevSeriesFields) : "";
+  const seriesRows = tAlias ? chronologicalSeriesRows(rawSeriesRows, tAlias) : rawSeriesRows;
   const chartTotal = totalsRow && mAlias ? Number(totalsRow[mAlias]) : NaN;
   const chartPrevTotal = prevRow && mAlias ? Number(prevRow[mAlias]) : undefined;
-  const chartPoints = mAlias ? seriesRows.map((row) => ({ x: String(row[tAlias] ?? ""), y: Number(row[mAlias]) })) : [];
+  const chartPoints = seriesMetricAlias
+    ? seriesRows.map((row) => ({ x: String(row[tAlias] ?? ""), y: Number(row[seriesMetricAlias]) }))
+    : [];
   // Align the previous-period series to the current buckets by position (bucketOffset), so a missing
   // bucket in either period doesn't shift the dashed overlay or hover delta onto the wrong bucket.
-  const prevRows = prevSeries.result?.rows ?? [];
+  const prevRows = prevTimeAlias ? chronologicalSeriesRows(prevSeries.result?.rows ?? [], prevTimeAlias) : [];
   const chartComparison =
-    mAlias && chartPoints.length > 0 && prevRows.length > 0
+    prevSeriesMetricAlias && chartPoints.length > 0 && prevRows.length > 0
       ? (() => {
-          const prevFirst = String(prevRows[0][tAlias] ?? "");
+          const prevFirst = String(prevRows[0][prevTimeAlias] ?? "");
           const curFirst = chartPoints[0].x;
           const prevByOffset = new Map<number, number>();
           for (const row of prevRows) {
-            prevByOffset.set(bucketOffset(prevFirst, String(row[tAlias] ?? ""), state.grain), Number(row[mAlias]));
+            prevByOffset.set(
+              bucketOffset(prevFirst, String(row[prevTimeAlias] ?? ""), state.grain),
+              Number(row[prevSeriesMetricAlias]),
+            );
           }
           return chartPoints.map((point) => ({
             x: point.x,
@@ -135,8 +216,7 @@ export function ExplorerView() {
 
   function onBrush(range: BrushRange | null) {
     if (!range) dispatch({ type: "setDateRange", range: undefined });
-    // Bucket labels can be timestamps (hour grain); store a clean date-only range.
-    else dispatch({ type: "setDateRange", range: { from: dateOnly(range.from), to: endOfBucket(range.to, state.grain) } });
+    else dispatch({ type: "setDateRange", range: brushDateRange(range, state.grain) });
   }
 
   return (
@@ -149,10 +229,11 @@ export function ExplorerView() {
           <div className="col-span-full"><EmptyState message="This model has no metrics." /></div>
         ) : (
           metrics.map((metric) => {
-            const alias = aliasOf(metric.ref);
-            const value = totalsRow ? Number(totalsRow[alias]) : NaN;
-            const prev = prevRow ? Number(prevRow[alias]) : undefined;
-            const sparkValues = seriesRows.map((row) => Number(row[alias])).filter(Number.isFinite);
+            const totalsAlias = queryAlias(metric.ref, stripMetricRefs);
+            const seriesAlias = queryAlias(metric.ref, seriesFields);
+            const value = totalsRow ? Number(totalsRow[totalsAlias]) : NaN;
+            const prev = prevRow ? Number(prevRow[totalsAlias]) : undefined;
+            const sparkValues = seriesRows.map((row) => Number(row[seriesAlias])).filter(Number.isFinite);
             return (
               <MetricCard
                 key={metric.ref}
@@ -191,17 +272,21 @@ export function ExplorerView() {
       <div className="grid grid-cols-[repeat(auto-fit,minmax(220px,1fr))] gap-0 border-l border-t border-line">
         {rankMetric && leaderboardDims.length ? (
           leaderboardDims
-            .filter((dim) => expandedLeaderboard === null || expandedLeaderboard === dim.ref)
+            .filter((dim) => activeExpandedLeaderboard === null || activeExpandedLeaderboard === dim.ref)
             .map((dim) => (
               <LeaderboardPanel
                 key={dim.ref}
                 dim={dim}
                 model={model}
+                timeDimensionRef={timeRef}
                 rankMetric={rankMetric}
                 contextColumn={state.contextColumn}
                 metricTotal={Number.isFinite(chartTotal) ? chartTotal : undefined}
                 comparisonRange={prevRange ?? undefined}
-                expanded={expandedLeaderboard === dim.ref}
+                baseFilters={configured?.filters}
+                baseSegments={configured?.segments}
+                usePreaggregations={configured?.usePreaggregations}
+                expanded={activeExpandedLeaderboard === dim.ref}
                 onExpandedChange={(expanded) => setExpandedLeaderboard(expanded ? dim.ref : null)}
               />
             ))

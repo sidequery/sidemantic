@@ -154,7 +154,7 @@ class Model(GovernedObject):
         path = [dimension_name]
 
         # Walk up the parent chain with cycle detection
-        current = dim
+        current: Dimension | None = dim
         visited = {dimension_name}
         while current and current.parent:
             if current.parent in visited:

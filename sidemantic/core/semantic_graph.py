@@ -9,10 +9,11 @@ from sidemantic.core.consumption import Explore, SavedQuery
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.parameter import Parameter
+from sidemantic.core.relationship import Relationship
 from sidemantic.core.table_calculation import TableCalculation
 
 
-def _relationship_local_key_columns(model: Model, relationship: object) -> list[str]:
+def _relationship_local_key_columns(model: Model, relationship: Relationship) -> list[str]:
     primary_key = getattr(relationship, "primary_key", None)
     if primary_key:
         return relationship.primary_key_columns
@@ -476,7 +477,9 @@ class SemanticGraph:
         if cached is not None:
             return list(cached)
 
-        queue = deque([(from_model, tuple(), frozenset({from_model}))])
+        queue: deque[tuple[str, tuple[JoinPath, ...], frozenset[str]]] = deque(
+            [(from_model, tuple(), frozenset({from_model}))]
+        )
         shortest_length: int | None = None
         candidates: dict[tuple[object, ...], tuple[JoinPath, ...]] = {}
 

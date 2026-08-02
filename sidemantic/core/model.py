@@ -2,10 +2,10 @@
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import Field
 
 from sidemantic.core.dimension import Dimension
-from sidemantic.core.freshness import Freshness
+from sidemantic.core.governance import GovernedObject
 from sidemantic.core.metric import Metric
 from sidemantic.core.pre_aggregation import PreAggregation
 from sidemantic.core.relationship import Relationship
@@ -13,7 +13,7 @@ from sidemantic.core.security import SecurityPolicy
 from sidemantic.core.segment import Segment
 
 
-class Model(BaseModel):
+class Model(GovernedObject):
     """Model (dataset) definition.
 
     Models are the foundation of the semantic layer, mapping to physical tables
@@ -62,11 +62,6 @@ class Model(BaseModel):
     default_grain: Literal["second", "minute", "hour", "day", "week", "month", "quarter", "year"] | None = Field(
         None, description="Default time granularity when using default_time_dimension"
     )
-    freshness: Freshness | None = Field(
-        None,
-        description="Model-level source freshness policy inherited by live chart runtimes",
-    )
-
     # Auto-discover dimensions from database schema
     auto_dimensions: bool = Field(
         default=False,

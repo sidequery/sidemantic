@@ -2,10 +2,12 @@
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import Field, model_validator
+
+from sidemantic.core.governance import GovernedObject
 
 
-class Metric(BaseModel):
+class Metric(GovernedObject):
     """Measure definition - supports simple aggregations and complex metric types.
 
     Measures can be:
@@ -76,6 +78,10 @@ class Metric(BaseModel):
         Complex expressions like SUM(x) / SUM(y) are preserved as-is.
         """
         if isinstance(data, dict):
+            if data.get("public") is False and "visibility" not in data:
+                data["visibility"] = "private"
+            if data.get("visibility") in {"internal", "private"} and "public" not in data:
+                data["public"] = False
             # Step 1: Handle expr alias
             expr_val = data.get("expr")
             sql_val = data.get("sql")

@@ -13,8 +13,10 @@ models:
     relationships:
       - name: orders
         type: one_to_many
+        foreign_key: id
       - name: profiles
         type: one_to_one
+        foreign_key: id
 
   - name: orders
     table: orders
@@ -42,6 +44,7 @@ models:
     relationships:
       - name: accounts
         type: many_to_one
+        foreign_key: accounts_id
 
   - name: accounts
     table: accounts

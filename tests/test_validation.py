@@ -13,9 +13,8 @@ from sidemantic.validation import (
 from sidemantic.validation_runner import validate_directory
 
 
-def test_model_has_default_primary_key(layer):
-    """Test that models have a default primary key."""
-    # Model without explicit primary_key should default to "id"
+def test_model_without_primary_key_remains_explicitly_keyless(layer):
+    """Models must not manufacture an ``id`` key when none was declared."""
     model = Model(
         name="orders",
         table="orders",
@@ -25,7 +24,8 @@ def test_model_has_default_primary_key(layer):
     )
 
     layer.add_model(model)
-    assert model.primary_key == "id"
+    assert model.primary_key is None
+    assert model.primary_key_columns == []
 
 
 def test_model_validation_no_table(layer):

@@ -470,9 +470,9 @@ def test_relationship_foreign_key_columns_multi():
 
 
 def test_relationship_foreign_key_columns_default():
-    """Test foreign_key_columns defaults to {name}_id for many_to_one."""
+    """Unknown relationship foreign keys remain explicit."""
     rel = Relationship(name="customers", type="many_to_one")
-    assert rel.foreign_key_columns == ["customers_id"]
+    assert rel.foreign_key_columns == []
 
 
 def test_relationship_primary_key_columns_single():
@@ -492,9 +492,9 @@ def test_relationship_primary_key_columns_multi():
 
 
 def test_relationship_primary_key_columns_default():
-    """Test primary_key_columns defaults to [id]."""
+    """Unknown relationship primary keys remain explicit."""
     rel = Relationship(name="customers", type="many_to_one")
-    assert rel.primary_key_columns == ["id"]
+    assert rel.primary_key_columns == []
 
 
 if __name__ == "__main__":

@@ -21,7 +21,7 @@ class Relationship(BaseModel):
         description="Type of relationship"
     )
     foreign_key: str | list[str] | None = Field(
-        default=None, description="Foreign key column(s) (defaults to {name}_id for many_to_one)"
+        default=None, description="Foreign key column(s); required for keyed relationships unless sql is provided"
     )
     primary_key: str | list[str] | None = Field(
         default=None,
@@ -47,27 +47,22 @@ class Relationship(BaseModel):
     metadata: dict[str, Any] | None = Field(None, description="Adapter-specific metadata payload")
 
     @property
-    def sql_expr(self) -> str:
-        """Get SQL expression for the foreign key (first column for composite keys)."""
+    def sql_expr(self) -> str | None:
+        """Get the first explicitly declared foreign-key column, if any."""
         if self.foreign_key:
             if isinstance(self.foreign_key, list):
-                return self.foreign_key[0] if self.foreign_key else f"{self.name}_id"
+                return self.foreign_key[0] if self.foreign_key else None
             return self.foreign_key
-
-        # Default: {name}_id for many_to_one
-        if self.type == "many_to_one":
-            return f"{self.name}_id"
-        else:
-            return "id"
+        return None
 
     @property
-    def related_key(self) -> str:
-        """Get the key in the related model (first column for composite keys)."""
+    def related_key(self) -> str | None:
+        """Get the first explicitly declared related key, if any."""
         if self.primary_key:
             if isinstance(self.primary_key, list):
-                return self.primary_key[0] if self.primary_key else "id"
+                return self.primary_key[0] if self.primary_key else None
             return self.primary_key
-        return "id"
+        return None
 
     @property
     def foreign_key_columns(self) -> list[str]:
@@ -75,10 +70,7 @@ class Relationship(BaseModel):
         if self.type == "cross":
             return []
         if self.foreign_key is None:
-            # Default: {name}_id for many_to_one
-            if self.type == "many_to_one":
-                return [f"{self.name}_id"]
-            return ["id"]
+            return []
         if isinstance(self.foreign_key, str):
             return [self.foreign_key]
         return self.foreign_key
@@ -89,7 +81,7 @@ class Relationship(BaseModel):
         if self.type == "cross":
             return []
         if self.primary_key is None:
-            return ["id"]
+            return []
         if isinstance(self.primary_key, str):
             return [self.primary_key]
         return self.primary_key

@@ -2362,6 +2362,40 @@ def test_ungrouped_rollup_without_pk_falls_to_raw(layer):
     assert plan.used_preaggregation is False
 
 
+def test_ungrouped_keyless_model_falls_to_raw(layer):
+    """An empty key set is not evidence that an aggregate rollup preserves detail rows."""
+    layer.use_preaggregations = True
+    layer.conn.execute("CREATE TABLE orders (status VARCHAR, amount DECIMAL(10, 2))")
+    layer.conn.execute("CREATE TABLE orders_preagg_by_status (status VARCHAR, revenue_raw DECIMAL(10, 2))")
+    model = Model(
+        name="orders",
+        table="orders",
+        dimensions=[Dimension(name="status", type="categorical", sql="status")],
+        metrics=[Metric(name="revenue", agg="sum", sql="amount")],
+        pre_aggregations=[PreAggregation(name="by_status", measures=["revenue"], dimensions=["status"])],
+    )
+    layer.add_model(model)
+
+    sql = layer.compile(
+        metrics=["orders.revenue"],
+        dimensions=["orders.status"],
+        ungrouped=True,
+    )
+
+    assert "orders_preagg_by_status" not in sql
+    assert "orders_cte" in sql
+    assert "used_preagg=true" not in sql
+
+    plan = layer.explain(
+        metrics=["orders.revenue"],
+        dimensions=["orders.status"],
+        ungrouped=True,
+        use_preaggregations=True,
+    )
+    assert plan.used_preaggregation is False
+    assert plan.routing_reason == "ungrouped query, model has no declared primary key for unique rows"
+
+
 def test_ungrouped_composite_pk_partial_rollup_falls_to_raw(layer):
     """A rollup carrying only part of a composite primary key cannot guarantee unique rows."""
     layer.use_preaggregations = True

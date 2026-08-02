@@ -783,14 +783,14 @@ def test_refresh_incremental_with_lookback():
         lookback="5 days",
     )
 
-    # With append mode, we'll have duplicates
+    # Lookback refresh replaces the overlapping range instead of appending duplicates.
     total_revenue = conn.execute("""
         SELECT SUM(total_revenue)
         FROM orders_preagg_daily
         WHERE order_date = DATE '2024-01-05'
     """).fetchone()[0]
 
-    assert total_revenue == 1208  # 104 + 1104 from lookback
+    assert total_revenue == 1104
 
 
 def test_refresh_incremental_uses_update_window_as_default_lookback():
@@ -844,7 +844,7 @@ def test_refresh_incremental_uses_update_window_as_default_lookback():
         WHERE order_date = DATE '2024-01-05'
     """).fetchone()[0]
 
-    assert total_revenue == 1208  # late-arriving 1104 reprocessed because update_window covered it
+    assert total_revenue == 1104  # late-arriving value replaced because update_window covered it
 
 
 def test_explicit_lookback_overrides_update_window():
@@ -1098,6 +1098,45 @@ def test_generate_materialization_sql_no_time_dimension():
     assert "category as category" in sql
     assert "brand as brand" in sql
     assert "SUM(price) as avg_price_raw" in sql
+
+
+def test_total_rollup_materializes_filtered_metrics_without_empty_group_by():
+    conn = duckdb.connect(":memory:")
+    conn.execute(
+        "CREATE TABLE orders AS SELECT * FROM (VALUES "
+        "(1, 'completed', 100), (2, 'pending', 50), (3, 'completed', 25)) "
+        "t(id, status, amount)"
+    )
+    model = Model(
+        name="orders",
+        table="orders",
+        primary_key="id",
+        metrics=[
+            Metric(
+                name="completed_revenue",
+                agg="sum",
+                sql="amount",
+                filters=["{model}.status = 'completed'"],
+            ),
+            Metric(
+                name="completed_count",
+                agg="count",
+                filters=["{model}.status = 'completed'"],
+            ),
+        ],
+    )
+    preagg = PreAggregation(
+        name="totals",
+        measures=["completed_revenue", "completed_count"],
+        dimensions=[],
+    )
+
+    sql = preagg.generate_materialization_sql(model)
+
+    assert "GROUP BY" not in sql
+    assert "SUM(CASE WHEN status = 'completed' THEN amount ELSE NULL END)" in sql
+    assert "COUNT(CASE WHEN status = 'completed' THEN 1 ELSE NULL END)" in sql
+    assert conn.execute(sql).fetchall() == [(125, 2)]
 
 
 def test_avg_preaggregation_rolls_up_with_sum_count_state(layer):

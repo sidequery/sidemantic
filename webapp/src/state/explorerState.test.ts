@@ -1,7 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import { NULL_TOKEN } from "../data/types";
+import { NULL_TOKEN, type Catalog, type DashboardSpec } from "../data/types";
+import type { DashboardTabConfig } from "../lib/dashboard";
 import { includeFilter, type FilterState } from "../lib/queries";
-import { explorerReducer, type ExplorerAction, type ExplorerState } from "./explorerState";
+import {
+  applyDashboardConfig,
+  explorerReducer,
+  initialStateFromCatalog,
+  type ExplorerAction,
+  type ExplorerState,
+} from "./explorerState";
 
 const base: ExplorerState = {
   view: "explore",
@@ -181,5 +188,72 @@ describe("explorerReducer reset", () => {
   test("preserves the pivot view too", () => {
     const dirty: ExplorerState = { ...initial, view: "pivot", filters: { "orders.status": includeFilter(["shipped"]) } };
     expect(explorerReducer(dirty, { type: "reset", initial }).view).toBe("pivot");
+  });
+
+  test("can reset controls to the active dashboard tab instead of the first tab", () => {
+    const catalog: Catalog = {
+      models: [
+        {
+          name: "orders",
+          label: "Orders",
+          metrics: [
+            { ref: "orders.revenue", name: "revenue", model: "orders", label: "Revenue" },
+            { ref: "orders.count", name: "count", model: "orders", label: "Count" },
+          ],
+          dimensions: [],
+          defaultGrain: "day",
+        },
+      ],
+      graphMetrics: [],
+    };
+    const dashboard: DashboardSpec = {
+      title: "Orders",
+      tabs: [
+        { id: "revenue", charts: [{ id: "revenue", query: { metrics: "orders.revenue" } }] },
+        { id: "count", charts: [{ id: "count", query: { metrics: "orders.count" } }] },
+      ],
+    };
+    const tabInitial = initialStateFromCatalog(catalog, dashboard, "count");
+    const dirty = {
+      ...tabInitial,
+      filters: { "orders.status": includeFilter(["shipped"]) },
+      dateRange: { from: "2024-01-01", to: "2024-03-01" },
+    } satisfies ExplorerState;
+
+    const next = explorerReducer(dirty, { type: "reset", initial: tabInitial });
+    expect(next.dashboardTab).toBe("count");
+    expect(next.selectedMetric).toBe("orders.count");
+    expect(next.filters).toEqual({});
+  });
+});
+
+describe("applyDashboardConfig", () => {
+  const configured: DashboardTabConfig = {
+    id: "overview",
+    label: "Overview",
+    title: "Orders",
+    model: { name: "orders", label: "Orders", dimensions: [], metrics: [] },
+    metrics: [
+      { ref: "orders.revenue", name: "revenue", model: "orders", label: "Revenue" },
+      { ref: "orders.count", name: "count", model: "orders", label: "Count" },
+    ],
+    dimensions: [],
+    selectedMetric: "orders.revenue",
+    grain: "month",
+    filters: [],
+    segments: [],
+  };
+
+  test("preserves explicit valid metric and grain selections from a copied link", () => {
+    const decoded = { ...base, selectedMetric: "orders.count", grain: "minute" as const };
+    const hydrated = applyDashboardConfig(decoded, configured, "?tab=overview&metric=orders.count&grain=minute");
+    expect(hydrated.selectedMetric).toBe("orders.count");
+    expect(hydrated.grain).toBe("minute");
+  });
+
+  test("uses dashboard defaults when metric and grain are not explicit", () => {
+    const hydrated = applyDashboardConfig(base, configured, "?tab=overview");
+    expect(hydrated.selectedMetric).toBe("orders.revenue");
+    expect(hydrated.grain).toBe("month");
   });
 });

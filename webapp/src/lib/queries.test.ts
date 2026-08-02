@@ -1,6 +1,18 @@
 import { describe, expect, test } from "bun:test";
-import { NULL_TOKEN } from "../data/types";
-import { filterExprs, includeFilter, isEmptyFilter, likeEscape, type DimFilter } from "./queries";
+import { NULL_TOKEN, type Catalog } from "../data/types";
+import {
+  catalogDimTypes,
+  dimensionLeaderboard,
+  distinctValues,
+  filterExprs,
+  includeFilter,
+  isEmptyFilter,
+  likeEscape,
+  metricSeries,
+  metricTotals,
+  previewRows,
+  type DimFilter,
+} from "./queries";
 
 // Shorthands so the existing include-mode cases read the same as before the mode refactor.
 const inc = (values: string[]): DimFilter => includeFilter(values);
@@ -29,6 +41,28 @@ describe("filterExprs (include mode — preserved behavior)", () => {
     const types = { "orders.amount": "numeric", "orders.is_paid": "boolean" };
     expect(filterExprs({ "orders.amount": inc(["5"]) }, { types })).toEqual(["orders.amount = 5"]);
     expect(filterExprs({ "orders.is_paid": inc(["true"]) }, { types })).toEqual(["orders.is_paid = true"]);
+  });
+
+  test("catalog type maps include dimensions from related models", () => {
+    const catalog: Catalog = {
+      models: [
+        { name: "orders", label: "Orders", dimensions: [], metrics: [] },
+        {
+          name: "customers",
+          label: "Customers",
+          dimensions: [
+            { ref: "customers.age", name: "age", model: "customers", label: "Age", type: "numeric" },
+            { ref: "customers.active", name: "active", model: "customers", label: "Active", type: "boolean" },
+          ],
+          metrics: [],
+        },
+      ],
+      graphMetrics: [],
+    };
+    const types = catalogDimTypes(catalog);
+
+    expect(filterExprs({ "customers.age": inc(["42"]) }, { types })).toEqual(["customers.age = 42"]);
+    expect(filterExprs({ "customers.active": inc(["true"]) }, { types })).toEqual(["customers.active = true"]);
   });
 
   test("a non-numeric value on a numeric dimension still quotes (no silent bad SQL)", () => {
@@ -138,5 +172,54 @@ describe("isEmptyFilter", () => {
     expect(isEmptyFilter(has("x"))).toBe(false);
     // A contains filter ignores its (inert) values for emptiness.
     expect(isEmptyFilter({ mode: "contains", values: ["a"], pattern: "" })).toBe(true);
+  });
+});
+
+describe("dashboard query configuration", () => {
+  test("caps fine-grain series at a render-safe point count", () => {
+    for (const grain of ["second", "minute"] as const) {
+      const query = metricSeries(["orders.revenue"], "orders.created_at", grain, []);
+      expect(query.limit).toBe(2000);
+      expect(query.orderBy).toEqual([`orders.created_at__${grain} DESC`]);
+    }
+    expect(metricSeries(["orders.revenue"], "orders.created_at", "day", []).orderBy).toEqual([
+      "orders.created_at__day ASC",
+    ]);
+  });
+
+  test("does not truncate explicitly bounded fine-grain series", () => {
+    for (const grain of ["second", "minute"] as const) {
+      const query = metricSeries(["orders.revenue"], "orders.created_at", grain, [], undefined, undefined, true);
+      expect(query.limit).toBeUndefined();
+      expect(query.orderBy).toEqual([`orders.created_at__${grain} ASC`]);
+    }
+  });
+
+  test("threads segments and pre-aggregation opt-outs through every Explore query", () => {
+    const segments = ["orders.completed"];
+    const queries = [
+      metricTotals(["orders.revenue"], [], segments, false),
+      metricSeries(["orders.revenue"], "orders.created_at", "month", [], segments, false),
+      dimensionLeaderboard("orders.revenue", "orders.region", [], 6, segments, false),
+    ];
+    for (const query of queries) {
+      expect(query.segments).toEqual(segments);
+      expect(query.usePreaggregations).toBe(false);
+    }
+  });
+
+  test("threads dashboard context through distinct-value and row-preview queries", () => {
+    const filters = ["orders.tenant_id = 7"];
+    const segments = ["orders.completed"];
+    const queries = [
+      distinctValues("orders.status", filters, 50, segments, false),
+      previewRows({ dimensions: ["orders.status"], metrics: [] }, filters, 50, segments, false),
+    ];
+
+    for (const query of queries) {
+      expect(query.filters).toEqual(filters);
+      expect(query.segments).toEqual(segments);
+      expect(query.usePreaggregations).toBe(false);
+    }
   });
 });

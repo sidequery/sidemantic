@@ -1,7 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { addDays, bucketOffset, endOfBucket, formatBucketLabel, previousRange, previousYearRange } from "./time";
+import { addDays, bucketOffset, endOfBucket, formatBucketLabel, grainOptions, previousRange, previousYearRange, timeFilters } from "./time";
 
 describe("bucketOffset", () => {
+  test("counts second and minute timestamp buckets", () => {
+    expect(bucketOffset("2024-01-01T00:00:00", "2024-01-01T00:00:42", "second")).toBe(42);
+    expect(bucketOffset("2024-01-01T00:00:00", "2024-01-01T00:42:00", "minute")).toBe(42);
+  });
   test("counts whole grain units between two bucket starts", () => {
     expect(bucketOffset("2024-01-01", "2024-01-01", "day")).toBe(0);
     expect(bucketOffset("2024-01-01", "2024-01-05", "day")).toBe(4);
@@ -28,6 +32,13 @@ describe("previousRange", () => {
       to: "2024-01-07",
     });
   });
+
+  test("preserves a half-open timestamp window", () => {
+    expect(previousRange({ from: "2024-01-01T00:05:00", to: "2024-01-01T00:06:00" })).toEqual({
+      from: "2024-01-01T00:04:00",
+      to: "2024-01-01T00:05:00",
+    });
+  });
 });
 
 describe("previousYearRange", () => {
@@ -49,6 +60,13 @@ describe("previousYearRange", () => {
     expect(previousYearRange({ from: "2025-02-01", to: "2025-02-28" })).toEqual({
       from: "2024-02-01",
       to: "2024-02-28",
+    });
+  });
+
+  test("preserves timestamp precision", () => {
+    expect(previousYearRange({ from: "2024-01-01T00:05:00", to: "2024-01-01T00:06:00" })).toEqual({
+      from: "2023-01-01T00:05:00",
+      to: "2023-01-01T00:06:00",
     });
   });
 
@@ -79,6 +97,18 @@ describe("endOfBucket", () => {
     expect(endOfBucket("2024-01-01", "quarter")).toBe("2024-03-31");
     expect(endOfBucket("2024-01-01", "year")).toBe("2024-12-31");
   });
+
+  test("returns an exclusive timestamp boundary for sub-day buckets", () => {
+    expect(endOfBucket("2024-01-01T00:00:05", "second")).toBe("2024-01-01T00:00:06");
+    expect(endOfBucket("2024-01-01T00:05:00", "minute")).toBe("2024-01-01T00:06:00");
+  });
+});
+
+test("timeFilters preserves half-open timestamp bounds", () => {
+  expect(timeFilters("orders.created_at", { from: "2024-01-01T00:05:00", to: "2024-01-01T00:06:00" })).toEqual([
+    "orders.created_at >= cast('2024-01-01T00:05:00' as timestamp)",
+    "orders.created_at < cast('2024-01-01T00:06:00' as timestamp)",
+  ]);
 });
 
 describe("addDays", () => {
@@ -89,6 +119,10 @@ describe("addDays", () => {
 });
 
 describe("formatBucketLabel", () => {
+  test("retains clock precision for second and minute grains", () => {
+    expect(formatBucketLabel("2024-01-02T03:04:05", "second")).toBe("2024-01-02 03:04:05");
+    expect(formatBucketLabel("2024-01-02T03:04:00", "minute")).toBe("2024-01-02 03:04");
+  });
   // The backend already truncates in the selected timezone and returns local wall-clock
   // bucket labels, so formatBucketLabel must NOT re-zone them (that double-shifts the date).
   test("presents day-grain labels as their local calendar date, without shifting", () => {
@@ -108,5 +142,12 @@ describe("formatBucketLabel", () => {
   test("passes empty / unparseable labels through", () => {
     expect(formatBucketLabel("", "day")).toBe("");
     expect(formatBucketLabel("not-a-date", "day")).toBe("not-a-date");
+  });
+});
+
+describe("grainOptions", () => {
+  test("keeps an active fine-grain dashboard option when catalog support is unspecified", () => {
+    expect(grainOptions(undefined, "minute")).toEqual(["minute", "day", "week", "month", "quarter", "year"]);
+    expect(grainOptions(undefined, "second")).toEqual(["second", "day", "week", "month", "quarter", "year"]);
   });
 });

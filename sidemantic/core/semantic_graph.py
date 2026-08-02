@@ -68,6 +68,7 @@ class SemanticGraph:
     def __init__(self):
         self.models: dict[str, Model] = {}
         self.metrics: dict[str, Metric] = {}
+        self.metric_owners: dict[str, str] = {}
         self.table_calculations: dict[str, TableCalculation] = {}
         self.parameters: dict[str, Parameter] = {}
         self.import_warnings: list[dict[str, object]] = []
@@ -103,16 +104,21 @@ class SemanticGraph:
 
         self._mark_dirty()
 
-    def add_metric(self, measure: Metric) -> None:
+    def add_metric(self, measure: Metric, model_name: str | None = None) -> None:
         """Add a measure to the graph.
 
         Args:
             measure: Metric to add
+            model_name: Optional owning model for a graph-addressable model metric
         """
         if measure.name in self.metrics:
             raise ValueError(f"Measure {measure.name} already exists")
+        if model_name is not None and model_name not in self.models:
+            raise ValueError(f"Model {model_name} not found for measure {measure.name}")
 
         self.metrics[measure.name] = measure
+        if model_name is not None:
+            self.metric_owners[measure.name] = model_name
         self._mark_dirty()
 
     def add_table_calculation(self, calc: TableCalculation) -> None:

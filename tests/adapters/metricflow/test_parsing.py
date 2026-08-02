@@ -4,7 +4,9 @@ from pathlib import Path
 
 import pytest
 
+from sidemantic import Metric, Model
 from sidemantic.adapters.metricflow import MetricFlowAdapter
+from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.sql.generator import SQLGenerator
 
 # =============================================================================
@@ -1032,6 +1034,28 @@ def test_metricflow_inline_constant_count_anchored_to_model():
             assert "count" in sql.lower()
     finally:
         path.unlink(missing_ok=True)
+
+
+def test_metricflow_keyless_inline_count_planner_contract():
+    """Keyless inline row counts retain model context without a fabricated key."""
+    graph = SemanticGraph()
+    graph.add_model(Model(name="events", table="events"))
+    graph.add_metric(Metric(name="row_count", agg="count"), model_name="events")
+    graph.add_metric(
+        Metric(name="active_count", agg="count", filters=["status = 'active'"]),
+        model_name="events",
+    )
+
+    generator = SQLGenerator(graph)
+    row_count_sql = generator.generate(metrics=["row_count"])
+    assert "events" in row_count_sql.lower()
+    assert "count(*)" in row_count_sql.lower()
+    assert ".none" not in row_count_sql.lower()
+
+    active_count_sql = generator.generate(metrics=["active_count"])
+    assert "status as status" in active_count_sql.lower()
+    assert "events_cte.status = 'active'" in active_count_sql.lower()
+    assert ".none" not in active_count_sql.lower()
 
 
 def test_metricflow_inline_exprless_non_count_uses_metric_column():

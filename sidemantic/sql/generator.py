@@ -110,6 +110,7 @@ class SQLGenerator:
         timezone: str | None = None,
         allow_non_additive_unsafe: bool = False,
         enforce_visibility: bool = False,
+        base_model: str | None = None,
     ):
         """Initialize SQL generator.
 
@@ -126,6 +127,9 @@ class SQLGenerator:
                 implements semi-additive handling (QUALIFY last/first snapshot per group);
                 this flag opts back into the old, naive behavior explicitly (default: False)
             enforce_visibility: Reject references to fields declared ``public: false``
+            base_model: Optional model that must anchor the generated join graph. Explore
+                contracts use this to preserve their declared row scope when callers select
+                fields only from joined models.
         """
         self.graph = graph
         self.dialect = dialect
@@ -133,6 +137,7 @@ class SQLGenerator:
         self.preagg_schema = preagg_schema
         self.allow_non_additive_unsafe = allow_non_additive_unsafe
         self.enforce_visibility = enforce_visibility
+        self.base_model = base_model
         # The timezone is interpolated into SQL string literals (AT TIME ZONE '...', etc.),
         # so it must not contain quote/escape characters. Restrict to IANA-name characters
         # to prevent SQL injection from a request- or preference-supplied value; the database
@@ -1503,6 +1508,9 @@ class SQLGenerator:
             if model_name not in seen:
                 models.append(model_name)
                 seen.add(model_name)
+
+        if self.base_model:
+            add_model(self.base_model)
 
         def collect_models_from_metric(metric_ref: str):
             """Recursively collect models needed from a metric."""

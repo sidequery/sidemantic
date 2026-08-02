@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import sqlglot
-import yaml
 from sqlglot import exp
 
 from sidemantic.core.dialect import (
@@ -35,6 +34,7 @@ from sidemantic.core.pre_aggregation import Index, PreAggregation, RefreshKey
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.segment import Segment
 from sidemantic.sql.aggregation_detection import sql_has_aggregate
+from sidemantic.yaml_compat import safe_load as _yaml_safe_load
 
 
 def _split_top_level(text: str, delimiter: str = ",") -> list[str]:
@@ -733,7 +733,7 @@ def parse_sql_file_with_frontmatter_extended(
             sql_body = parts[2].strip()
 
             if frontmatter_text:
-                frontmatter = yaml.safe_load(frontmatter_text) or {}
+                frontmatter = _yaml_safe_load(frontmatter_text) or {}
 
     _, _, _, metrics, segments, parameters, pre_aggregations = _parse_sql_statements(sql_body)
 

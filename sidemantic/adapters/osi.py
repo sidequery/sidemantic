@@ -31,6 +31,7 @@ from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
+from sidemantic.yaml_compat import safe_load as _yaml_safe_load
 
 # Directories that hold generated/compiled artifacts rather than source models.
 # dbt writes a copy of the OSI document to ``target/`` on ``dbt compile``; parsing
@@ -186,7 +187,7 @@ class OSIAdapter(BaseAdapter):
                 data = json.loads(text) if text.strip() else None
             else:
                 # In-development OSI profile ships as YAML (the default).
-                data = yaml.safe_load(f)
+                data = _yaml_safe_load(f)
 
         if not data:
             return

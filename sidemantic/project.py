@@ -61,10 +61,10 @@ def _load_config_values(config_path: Path) -> dict[str, Any]:
         with config_path.open() as config_file:
             values = json.load(config_file)
     else:
-        import yaml
+        from sidemantic.yaml_compat import safe_load as _yaml_safe_load
 
         with config_path.open() as config_file:
-            values = yaml.safe_load(config_file)
+            values = _yaml_safe_load(config_file)
     return values if isinstance(values, dict) else {}
 
 

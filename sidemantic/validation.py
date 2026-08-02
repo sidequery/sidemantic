@@ -731,45 +731,73 @@ def validate_metric(measure: "Metric", graph: "SemanticGraph") -> list[str]:
     return errors
 
 
+_ACYCLIC_MEMO = None  # weakref.WeakKeyDictionary, initialized lazily
+
+
+def _acyclic_safe_set(graph: "SemanticGraph") -> set[str]:
+    """Return metrics proven acyclic for the graph's current version."""
+    global _ACYCLIC_MEMO
+    import weakref
+
+    if _ACYCLIC_MEMO is None:
+        _ACYCLIC_MEMO = weakref.WeakKeyDictionary()
+    version = getattr(graph, "_version", 0)
+    entry = _ACYCLIC_MEMO.get(graph)
+    if entry is None or entry[0] != version:
+        entry = (version, set())
+        _ACYCLIC_MEMO[graph] = entry
+    return entry[1]
+
+
 def _check_circular_dependencies(
-    measure: "Metric", graph: "SemanticGraph", visited: set[str], path: list[str] | None = None
+    measure: "Metric",
+    graph: "SemanticGraph",
+    visited: set[str] | None = None,
+    path: list[str] | None = None,
 ) -> list[str] | None:
-    """Check for circular dependencies in derived measures.
+    """Find a derived-metric cycle with iterative, graph-versioned DFS.
 
-    Args:
-        measure: Metric to check
-        graph: Semantic graph
-        visited: Set of visited measure names
-        path: Current dependency path
-
-    Returns:
-        List of measure names in circular path, or None if no cycle
+    ``visited`` and ``path`` remain accepted for compatibility with callers of
+    the former recursive helper.
     """
-    if path is None:
-        path = []
-
-    if measure.name in visited:
-        # Found a cycle
-        cycle_start = path.index(measure.name)
-        return path[cycle_start:] + [measure.name]
-
     if measure.type != "derived":
         return None
 
-    visited.add(measure.name)
-    path.append(measure.name)
+    safe = _acyclic_safe_set(graph)
+    if measure.name in safe:
+        return None
 
-    dependencies = measure.get_dependencies(graph)
-    for dep_name in dependencies:
+    def resolve(name: str):
         try:
-            dep_measure = graph.get_metric(dep_name)
-            if dep_measure:
-                cycle = _check_circular_dependencies(dep_measure, graph, visited.copy(), path.copy())
-                if cycle:
-                    return cycle
+            return graph.get_metric(name)
         except KeyError:
-            # Dependency doesn't exist yet, skip circular check
-            pass
+            return None
+
+    on_stack = {measure.name}
+    order = [measure.name]
+    frames = [(measure, iter(measure.get_dependencies(graph)))]
+
+    while frames:
+        current, dependencies = frames[-1]
+        advanced = False
+        for dependency_name in dependencies:
+            dependency = resolve(dependency_name)
+            if dependency is None or dependency.type != "derived" or dependency.name in safe:
+                continue
+            if dependency.name in on_stack:
+                cycle_start = order.index(dependency.name)
+                return order[cycle_start:] + [dependency.name]
+            on_stack.add(dependency.name)
+            order.append(dependency.name)
+            frames.append((dependency, iter(dependency.get_dependencies(graph))))
+            advanced = True
+            break
+        if not advanced:
+            frames.pop()
+            on_stack.discard(current.name)
+            if order and order[-1] == current.name:
+                order.pop()
+            safe.add(current.name)
 
     return None
 

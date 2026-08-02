@@ -1,14 +1,21 @@
 """Pytest configuration and fixtures."""
 
-import os
-
 import pytest
-
-# Test captured output against Sidemantic's default policy even when the host
-# runner requests colored logs. Individual color tests opt back in explicitly.
-os.environ.pop("FORCE_COLOR", None)
+from typer import rich_utils as typer_rich_utils
 
 from sidemantic import SemanticLayer
+
+
+@pytest.fixture(autouse=True)
+def isolate_cli_color_environment(monkeypatch: pytest.MonkeyPatch):
+    """Keep host color settings from leaking into captured CLI output."""
+
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
+
+    # Typer snapshots GitHub Actions' color preference when rich_utils is
+    # imported. Restore automatic stream detection for tests while still
+    # allowing individual FORCE_COLOR tests to opt in dynamically.
+    monkeypatch.setattr(typer_rich_utils, "FORCE_TERMINAL", None)
 
 
 @pytest.fixture(autouse=True)

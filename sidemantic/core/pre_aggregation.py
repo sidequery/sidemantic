@@ -229,20 +229,36 @@ class PreAggregation(BaseModel):
                         # PERCENTILE) are not re-aggregatable. Skip them (the matcher likewise
                         # never routes complete-expression measures to a rollup).
                         continue
-                    # Generate aggregation expression
+                    # Generate aggregation expression. Metric filters belong inside
+                    # the aggregate input, exactly as they do for live queries; a
+                    # rollup must never materialize an unfiltered value for a
+                    # filtered semantic metric.
                     agg_type = measure.agg.upper()
-                    if agg_type == "COUNT" and not measure.sql:
+                    filter_sql = " AND ".join(
+                        condition.replace("{model}.", "").replace("{model}", "")
+                        for condition in (measure.filters or [])
+                    )
+                    measure_input = measure.sql_expr
+                    if filter_sql:
+                        if agg_type == "COUNT" and not measure.sql:
+                            measure_input = f"CASE WHEN {filter_sql} THEN 1 ELSE NULL END"
+                        else:
+                            measure_input = f"CASE WHEN {filter_sql} THEN {measure_input} ELSE NULL END"
+
+                    if agg_type == "COUNT" and not measure.sql and not filter_sql:
                         # COUNT(*) case
                         select_exprs.append(f"COUNT(*) as {measure_name}_raw")
+                    elif agg_type == "COUNT" and not measure.sql:
+                        select_exprs.append(f"COUNT({measure_input}) as {measure_name}_raw")
                     elif agg_type == "AVG":
                         # Store AVG as additive sum state. A compatible count
                         # measure must also be present before query planning can
                         # roll this up safely.
-                        select_exprs.append(f"SUM({measure.sql_expr}) as {measure_name}_raw")
+                        select_exprs.append(f"SUM({measure_input}) as {measure_name}_raw")
                     elif agg_type == "COUNT_DISTINCT":
-                        select_exprs.append(f"COUNT(DISTINCT {measure.sql_expr}) as {measure_name}_raw")
+                        select_exprs.append(f"COUNT(DISTINCT {measure_input}) as {measure_name}_raw")
                     else:
-                        select_exprs.append(f"{agg_type}({measure.sql_expr}) as {measure_name}_raw")
+                        select_exprs.append(f"{agg_type}({measure_input}) as {measure_name}_raw")
 
         # A rollup that projects nothing would render "SELECT  FROM ... GROUP BY " (invalid
         # SQL). This happens when its measures are all non-materializable (agg=None: derived or
@@ -270,8 +286,9 @@ class PreAggregation(BaseModel):
 
         sql = f"""SELECT
   {select_str}
-FROM {from_clause}{where_clause}
-GROUP BY {group_by_str}"""
+FROM {from_clause}{where_clause}"""
+        if group_by_str:
+            sql += f"\nGROUP BY {group_by_str}"
 
         return sql
 
@@ -754,6 +771,11 @@ GROUP BY {group_by_str}"""
         if not table_exists:
             connection.execute(f"CREATE TABLE {table_name} AS {incremental_sql}")
         else:
+            # A lookback reprocesses an overlapping watermark range. Delete that
+            # range before inserting its replacement so repeated refreshes remain
+            # idempotent instead of accumulating duplicate rollup rows.
+            if lookback:
+                connection.execute(f"DELETE FROM {table_name} WHERE {watermark_column} >= {watermark_str}")
             connection.execute(f"INSERT INTO {table_name} {incremental_sql}")
 
         # Get new watermark

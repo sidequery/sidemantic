@@ -6,12 +6,49 @@ from pathlib import Path
 import yaml
 
 from sidemantic import SemanticLayer
-from sidemantic.adapters.thoughtspot import ThoughtSpotAdapter
+from sidemantic.adapters.thoughtspot import ThoughtSpotAdapter, _extract_all_join_refs
 from sidemantic.loaders import load_from_directory
 
 # =============================================================================
 # BASIC PARSING TESTS
 # =============================================================================
+
+
+def test_join_conjunction_split_ignores_and_inside_bracketed_identifiers():
+    expr = "[a::x] = [b::y] AND [a::label AND code] = [b::label AND code]"
+
+    assert _extract_all_join_refs(expr) == [
+        (("a", "x"), ("b", "y")),
+        (("a", "label AND code"), ("b", "label AND code")),
+    ]
+
+
+def test_join_conjunction_split_ignores_and_inside_strings_and_parentheses():
+    expr = "[a::x] = [b::y] AND ([a::label] = [b::label]) AND 'left AND right' = 'left AND right'"
+
+    assert _extract_all_join_refs(expr) == [
+        (("a", "x"), ("b", "y")),
+        (("a", "label"), ("b", "label")),
+    ]
+
+
+def test_join_conjunction_split_flattens_nested_parenthesized_groups():
+    expr = "[a::x] = [b::x] AND ([a::y] = [b::y] AND [a::z] = [b::z])"
+
+    assert _extract_all_join_refs(expr) == [
+        (("a", "x"), ("b", "x")),
+        (("a", "y"), ("b", "y")),
+        (("a", "z"), ("b", "z")),
+    ]
+
+
+def test_join_conjunction_split_ignores_and_inside_comments():
+    block = "[a::x] = [b::x] /* AND ignored */ AND [a::y] = [b::y]"
+    line = "[a::x] = [b::x] -- AND ignored\nAND [a::y] = [b::y]"
+    expected = [(("a", "x"), ("b", "x")), (("a", "y"), ("b", "y"))]
+
+    assert _extract_all_join_refs(block) == expected
+    assert _extract_all_join_refs(line) == expected
 
 
 def test_import_real_thoughtspot_examples():

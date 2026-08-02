@@ -59,8 +59,6 @@ _TML_DOT_REF = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)
 _BARE_IDENTIFIER = re.compile(r"(?<![\w.])([A-Za-z_][A-Za-z0-9_]*)(?![\w.])(?!\s*\()")
 # A quoted string literal (single or double quoted, with doubled-quote escapes).
 _STRING_LITERAL = re.compile(r"'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"")
-# Split a join predicate into conjuncts on a word-boundary `AND` (case-insensitive).
-_AND_SPLIT = re.compile(r"\bAND\b", re.IGNORECASE)
 # A plain `=` equality operator (not part of `<=`, `>=`, `!=`, `<>`, or `==`).
 _EQUALITY_OP = re.compile(r"(?<![<>=!])=(?![=])")
 
@@ -225,7 +223,7 @@ def _extract_all_join_refs(
         return None
 
     pairs: list[tuple[tuple[str | None, str], tuple[str | None, str]]] = []
-    for conjunct in _AND_SPLIT.split(expr):
+    for conjunct in _split_join_conjunctions(expr):
         # A plain equality has exactly one `=` (not part of `<=`/`>=`/`!=`).
         equalities = _EQUALITY_OP.findall(conjunct)
         if len(equalities) != 1:
@@ -243,6 +241,185 @@ def _extract_all_join_refs(
                 right = (table_path_lookup[right[0]], right[1])
         pairs.append((left, right))
     return pairs
+
+
+def _split_join_conjunctions(expr: str) -> list[str]:
+    """Split top-level AND tokens while respecting TML identifiers and literals."""
+    text = _strip_join_outer_parentheses(_strip_join_comments(expr).strip())
+
+    result: list[str] = []
+    start = 0
+    depth = 0
+    quote: str | None = None
+    in_brackets = False
+    i = 0
+    while i < len(text):
+        char = text[i]
+        if quote is not None:
+            if char == quote:
+                if i + 1 < len(text) and text[i + 1] == quote:
+                    i += 2
+                    continue
+                quote = None
+            i += 1
+            continue
+        if in_brackets:
+            if char == "]":
+                if i + 1 < len(text) and text[i + 1] == "]":
+                    i += 2
+                    continue
+                in_brackets = False
+            i += 1
+            continue
+        if char in ("'", '"'):
+            quote = char
+            i += 1
+            continue
+        if char == "[":
+            in_brackets = True
+            i += 1
+            continue
+        if char == "(":
+            depth += 1
+            i += 1
+            continue
+        if char == ")":
+            depth = max(0, depth - 1)
+            i += 1
+            continue
+        if (
+            depth == 0
+            and text[i : i + 3].upper() == "AND"
+            and (i == 0 or not (text[i - 1].isalnum() or text[i - 1] == "_"))
+            and (i + 3 == len(text) or not (text[i + 3].isalnum() or text[i + 3] == "_"))
+        ):
+            result.append(text[start:i].strip())
+            start = i + 3
+            i += 3
+            continue
+        i += 1
+    result.append(text[start:].strip())
+
+    flattened: list[str] = []
+    for item in result:
+        stripped = _strip_join_outer_parentheses(item)
+        if stripped != item:
+            flattened.extend(_split_join_conjunctions(stripped))
+        else:
+            flattened.append(item)
+    return flattened
+
+
+def _strip_join_comments(expr: str) -> str:
+    """Remove SQL comments without interpreting markers inside TML refs or strings."""
+    out: list[str] = []
+    i = 0
+    quote: str | None = None
+    in_brackets = False
+    while i < len(expr):
+        char = expr[i]
+        if quote is not None:
+            out.append(char)
+            if char == quote:
+                if i + 1 < len(expr) and expr[i + 1] == quote:
+                    out.append(expr[i + 1])
+                    i += 2
+                    continue
+                quote = None
+            i += 1
+            continue
+        if in_brackets:
+            out.append(char)
+            if char == "]":
+                if i + 1 < len(expr) and expr[i + 1] == "]":
+                    out.append(expr[i + 1])
+                    i += 2
+                    continue
+                in_brackets = False
+            i += 1
+            continue
+        if char in ("'", '"'):
+            quote = char
+            out.append(char)
+            i += 1
+            continue
+        if char == "[":
+            in_brackets = True
+            out.append(char)
+            i += 1
+            continue
+        if expr.startswith("--", i):
+            end = expr.find("\n", i + 2)
+            if end < 0:
+                break
+            out.append(" ")
+            i = end
+            continue
+        if expr.startswith("/*", i):
+            depth = 1
+            i += 2
+            while i < len(expr) and depth:
+                if expr.startswith("/*", i):
+                    depth += 1
+                    i += 2
+                elif expr.startswith("*/", i):
+                    depth -= 1
+                    i += 2
+                else:
+                    i += 1
+            out.append(" ")
+            continue
+        out.append(char)
+        i += 1
+    return "".join(out)
+
+
+def _strip_join_outer_parentheses(text: str) -> str:
+    """Remove only balanced parentheses that enclose an entire TML predicate."""
+    while text.startswith("(") and text.endswith(")"):
+        depth = 0
+        encloses_all = True
+        quote: str | None = None
+        in_brackets = False
+        index = 0
+        while index < len(text):
+            char = text[index]
+            if quote is not None:
+                if char == quote:
+                    if index + 1 < len(text) and text[index + 1] == quote:
+                        index += 2
+                        continue
+                    quote = None
+                index += 1
+                continue
+            if in_brackets:
+                if char == "]":
+                    if index + 1 < len(text) and text[index + 1] == "]":
+                        index += 2
+                        continue
+                    in_brackets = False
+                index += 1
+                continue
+            if char in ("'", '"'):
+                quote = char
+                index += 1
+                continue
+            if char == "[":
+                in_brackets = True
+                index += 1
+                continue
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+                if depth == 0 and index != len(text) - 1:
+                    encloses_all = False
+                    break
+            index += 1
+        if not encloses_all or depth != 0:
+            break
+        text = text[1:-1].strip()
+    return text
 
 
 def _split_sql_identifier(sql: str | None) -> tuple[str | None, str | None]:

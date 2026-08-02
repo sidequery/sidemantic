@@ -2,7 +2,22 @@
 
 from pathlib import Path
 
-from sidemantic.adapters.malloy import MalloyAdapter
+from sidemantic.adapters.malloy import MalloyAdapter, MalloyModelVisitor
+
+
+def test_expression_transforms_ignore_malloy_syntax_inside_strings():
+    transform = MalloyModelVisitor()._transform_malloy_expr
+
+    assert transform("'@2024-01-01'") == "'@2024-01-01'"
+    assert transform("note = '@2024-01-01'") == "note = '@2024-01-01'"
+    assert transform("'timestamp_seconds!timestamp(x)'") == "'timestamp_seconds!timestamp(x)'"
+    assert transform("note = '@2024-01-01' AND created_at >= @2024-01-01") == (
+        "note = '@2024-01-01' AND created_at >= DATE '2024-01-01'"
+    )
+    assert transform("timestamp_seconds!timestamp(x)") == "timestamp_seconds(x)"
+    assert transform("\"name ~ r'x'\"") == "\"name ~ r'x'\""
+    assert transform("note ? 'a | b' | 'c'") == "note IN ('a | b', 'c')"
+    assert transform(r"name ~ r'a\'b'") == r"REGEXP_MATCHES(name, 'a\''b')"
 
 
 class TestEdgeCases:

@@ -1,8 +1,10 @@
 """Test metric-level filters."""
 
 import duckdb
+from sqlglot import exp
 
 from sidemantic import Dimension, Metric, Model, SemanticLayer
+from sidemantic.sql.generator import SQLGenerator
 from tests.utils import df_rows
 
 
@@ -352,6 +354,87 @@ def test_mixed_filters_separate_where_and_having(layer):
     assert "status = 'completed'" in sql
     assert "HAVING" in sql
     assert "revenue > 100" in sql
+
+
+def test_filter_classification_ignores_metric_names_in_non_column_tokens():
+    layer = SemanticLayer()
+    layer.add_model(
+        Model(
+            name="orders",
+            table="orders_table",
+            dimensions=[Dimension(name="status", type="categorical")],
+            metrics=[Metric(name="revenue", agg="sum", sql="amount")],
+        )
+    )
+    generator = SQLGenerator(layer.graph)
+    predicates = [
+        "orders.status = 'orders.revenue'",
+        '"orders.revenue" = 1',
+        "orders.status = 'paid' -- orders.revenue",
+        "orders.status = $$orders.revenue$$",
+    ]
+
+    assert generator._split_where_having_filters(predicates, ["orders"]) == (predicates, [])
+    assert generator._split_where_having_filters(["orders.revenue > 100"], ["orders"]) == (
+        [],
+        ["orders.revenue > 100"],
+    )
+
+
+def test_where_filter_rewrite_only_changes_semantic_columns():
+    layer = SemanticLayer()
+    layer.add_model(
+        Model(
+            name="orders",
+            table="orders_table",
+            dimensions=[Dimension(name="status", type="categorical")],
+            metrics=[Metric(name="revenue", agg="sum", sql="amount")],
+        )
+    )
+    generator = SQLGenerator(layer.graph, dialect="postgres")
+    predicate = (
+        "orders.status = 'orders.revenue' "
+        'AND "orders.revenue" = "orders.revenue" '
+        "AND orders.status <> $$orders.status$$ /* orders.revenue */"
+    )
+
+    query = generator._add_where_filters_to_query(exp.select("*"), [predicate], ["orders"])
+    rendered = query.sql(dialect="postgres")
+
+    assert rendered.count("orders_cte.status") == 2
+    assert "'orders.revenue'" in rendered
+    assert rendered.count('"orders.revenue"') == 2
+    assert "$$orders.status$$" in rendered
+    assert "orders.revenue" in rendered.split("/*", 1)[1]
+
+
+def test_filter_classification_and_rewrite_respect_nested_select_alias_scope():
+    layer = SemanticLayer()
+    layer.add_model(
+        Model(
+            name="orders",
+            table="orders_table",
+            dimensions=[Dimension(name="status", type="categorical")],
+            metrics=[Metric(name="revenue", agg="sum", sql="amount")],
+        )
+    )
+    generator = SQLGenerator(layer.graph)
+    metric_predicate = "EXISTS (SELECT 1 FROM audit AS orders WHERE orders.revenue > 100)"
+    row_predicate = "EXISTS (SELECT 1 FROM audit AS orders WHERE orders.status = 'paid')"
+
+    assert generator._split_where_having_filters([metric_predicate], ["orders"]) == ([metric_predicate], [])
+    uppercase_alias = "EXISTS (SELECT 1 FROM audit AS ORDERS WHERE orders.revenue > 100)"
+    assert generator._split_where_having_filters([uppercase_alias], ["orders"]) == ([uppercase_alias], [])
+    rendered = generator._add_where_filters_to_query(exp.select("*"), [row_predicate], ["orders"]).sql()
+    assert "orders.status = 'paid'" in rendered
+    assert "orders_cte" not in rendered
+
+    snowflake_generator = SQLGenerator(layer.graph, dialect="snowflake")
+    quoted_folded_alias = 'EXISTS (SELECT 1 FROM audit AS "ORDERS" WHERE orders.revenue > 100)'
+    assert snowflake_generator._split_where_having_filters([quoted_folded_alias], ["orders"]) == (
+        [quoted_folded_alias],
+        [],
+    )
 
 
 def test_metric_level_filters_use_case_when(layer):

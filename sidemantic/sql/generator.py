@@ -15,13 +15,6 @@ from sidemantic.sql.aggregation_detection import sql_has_aggregate
 from sidemantic.sql.fragment import _column_is_bound_in_select, parse_sql_fragment, rewrite_sql_column_spans
 from sidemantic.validation import QueryValidationError
 
-# Dialects whose SQL supports the QUALIFY clause natively. Semi-additive
-# (non_additive_dimension) handling emits a QUALIFY into each affected model's CTE
-# to keep only the last (or first) snapshot per group; dialects without QUALIFY
-# (e.g. postgres, mysql) are rejected rather than served an equivalent subquery in
-# this first cut. See SQLGenerator._plan_semi_additive.
-_QUALIFY_DIALECTS = frozenset({"duckdb", "snowflake", "bigquery", "databricks", "spark", "clickhouse"})
-
 
 @lru_cache(maxsize=4096)
 def _quote_identifier_cached(name: str, dialect: str, is_simple: bool) -> str:
@@ -124,7 +117,7 @@ class SQLGenerator:
             allow_non_additive_unsafe: When True, skip the semi-additive rewrite for
                 metrics that declare a non_additive_dimension and aggregate them naively
                 over ALL snapshots (over-aggregated, wrong results). By default the generator
-                implements semi-additive handling (QUALIFY last/first snapshot per group);
+                implements semi-additive handling with portable nested window markers;
                 this flag opts back into the old, naive behavior explicitly (default: False)
             enforce_visibility: Reject references to fields declared ``public: false``
             base_model: Optional model that must anchor the generated join graph. Explore
@@ -179,22 +172,21 @@ class SQLGenerator:
         base_model_name: str,
         model_names: list[str],
         parsed_dims: list[tuple[str, str | None]] | None = None,
-    ) -> dict[str, tuple[str, str]]:
+    ) -> dict[str, dict[str, tuple[str, str, tuple[str, ...] | None]]]:
         """Plan semi-additive (non_additive_dimension) handling for a grouped query.
 
         A measure with ``non_additive_dimension`` must be aggregated over only the
         rows at the last (max) — or first (min) — value of that time dimension per
         group, so an account-balance snapshot is summed across accounts but NOT
-        double-counted across days. We implement this by emitting a QUALIFY into the
-        owning model's CTE (see ``_build_model_cte``) that keeps only those rows.
+        double-counted across days. A nested SELECT marks the matching snapshot for
+        each affected leaf without filtering rows used by sibling metrics.
 
-        Returns a mapping ``model_name -> (non_additive_dimension_name, window)`` for
-        the models that need a semi-additive QUALIFY. ``window`` is "min" or "max".
+        Returns ``model -> metric -> (dimension, window, groupings)``. Each metric
+        receives its own marker in a nested SELECT, so sibling additive metrics keep
+        their full row set and dialects without QUALIFY are supported.
 
         Raises ``UnsupportedMetricError`` only for cases we do NOT implement:
 
-        - a dialect without QUALIFY (postgres, mysql, ...), since we don't emit the
-          equivalent subquery/self-join in this first cut; and
         - the combination of semi-additive handling with fan-out symmetric aggregation
           for the SAME model. These two rewrites don't compose safely: symmetric
           aggregation deduplicates fan-out rows via SUM(DISTINCT hash+value) at the
@@ -209,7 +201,7 @@ class SQLGenerator:
         hatch: it now means "skip correct handling, aggregate naively", not "opt out
         of a guard".
         """
-        plan: dict[str, tuple[str, str]] = {}
+        plan: dict[str, dict[str, tuple[str, str, tuple[str, ...] | None]]] = {}
 
         # Collect requested semi-additive measures and their owning models. Traverse metric
         # dependencies so a graph-level/derived metric that WRAPS a model measure declaring
@@ -245,18 +237,8 @@ class SQLGenerator:
         # Lazy import to avoid a circular import (semantic_layer imports this module).
         from sidemantic.core.semantic_layer import UnsupportedMetricError
 
-        if self.dialect not in _QUALIFY_DIALECTS:
-            reference = semi_additive[0][0]
-            raise UnsupportedMetricError(
-                f"Metric '{reference}' declares non_additive_dimension, which is handled "
-                f"with a QUALIFY clause, but dialect '{self.dialect}' has no QUALIFY support. "
-                "Semi-additive handling is currently implemented only for "
-                f"{sorted(_QUALIFY_DIALECTS)}. Pre-aggregate this metric upstream, or pass "
-                "allow_non_additive_unsafe=True to query it anyway (naive, over-aggregated)."
-            )
-
-        # Fan-out detection: a model whose measures are computed with symmetric
-        # aggregation cannot also carry a semi-additive QUALIFY (see docstring).
+        # Preserve the existing fan-out guard: this focused snapshot path does not
+        # replace symmetric aggregation or its entity-isolation semantics.
         fanout = self._has_fanout_joins(base_model_name, [m for m in model_names if m != base_model_name])
 
         for reference, metric in semi_additive:
@@ -289,8 +271,8 @@ class SQLGenerator:
 
             # If the query groups by the non-additive dimension at its RAW grain, each
             # group is already a single snapshot value, so the measure is additive within
-            # the group and no QUALIFY is needed. But a COARSER grain (e.g. day__month)
-            # still spans many snapshots per bucket, so it must keep the QUALIFY (partitioned
+            # the group and no snapshot marker is needed. But a COARSER grain (e.g. day__month)
+            # still spans many snapshots per bucket, so it keeps the marker (partitioned
             # by the truncated bucket) -- otherwise a month-end-balance-style query silently
             # sums every daily snapshot in the month. Only the raw-grain case is additive.
             grouped_by_non_additive_raw = False
@@ -307,19 +289,7 @@ class SQLGenerator:
             window = getattr(metric, "non_additive_window", "max") or "max"
             groupings = getattr(metric, "non_additive_window_groupings", None)
             proposed = (metric.non_additive_dimension, window, tuple(groupings) if groupings else None)
-            existing = plan.get(owning_model)
-            if existing is not None and existing != proposed:
-                # A single model CTE carries one QUALIFY, so two semi-additive metrics on the
-                # same model that need different (dimension, window) snapshots cannot both be
-                # served correctly here (e.g. opening balance with min and closing with max).
-                # Refuse rather than silently applying only the last plan.
-                raise UnsupportedMetricError(
-                    f"Model '{owning_model}' is queried with conflicting semi-additive metrics: "
-                    f"one needs non_additive ({existing[0]!r}, window={existing[1]!r}) and another "
-                    f"needs ({proposed[0]!r}, window={proposed[1]!r}). A single model CTE can carry "
-                    "only one snapshot rule. Query them in separate requests, or pre-aggregate upstream."
-                )
-            plan[owning_model] = proposed
+            plan.setdefault(owning_model, {})[metric.name] = proposed
 
         return plan
 
@@ -1079,12 +1049,9 @@ class SQLGenerator:
                 segments,
             )
 
-        # Semi-additive (non_additive_dimension) metrics are handled below by injecting
-        # a QUALIFY into the owning model's CTE (see _plan_semi_additive / _build_model_cte).
-        # The plan (and any UnsupportedMetricError for unimplemented dialects or the
-        # semi-additive + symmetric-aggregate combination) is computed once model_names
-        # is known; a non-empty plan also forces the live CTE path (pre-aggregations do
-        # not model per-group last-snapshot filtering).
+        # Semi-additive (non_additive_dimension) metrics use nested per-leaf window
+        # markers. Planning happens once model_names is known; a non-empty plan forces
+        # the live CTE path because rollups do not model snapshot selection.
 
         # Pre-aggregations are materialized with UTC time buckets, so a timezone-bucketed
         # query cannot be served from a rollup without returning wrong (UTC) buckets. Force a
@@ -1255,12 +1222,12 @@ class SQLGenerator:
         # Find all models needed for the query
         model_names = self._find_required_models(metrics, dimensions, filters)
 
-        # Plan semi-additive handling. Raises for unimplemented cases (non-QUALIFY
-        # dialect, or semi-additive combined with fan-out symmetric aggregation on the
-        # same model). A non-empty plan forces the live CTE path (below) so the QUALIFY
-        # can be injected; pre-aggregation routing is skipped for these queries.
+        # Plan semi-additive handling. A non-empty plan forces the live CTE path;
+        # pre-aggregation routing is skipped because rollups do not encode snapshots.
         semi_additive_plan = (
-            self._plan_semi_additive(metrics, model_names[0], model_names, parsed_dims) if model_names else {}
+            self._plan_semi_additive(metrics, model_names[0], model_names, parsed_dims)
+            if model_names and not ungrouped
+            else {}
         )
         if semi_additive_plan:
             use_preaggregations = False
@@ -1288,9 +1255,8 @@ class SQLGenerator:
 
         # Check if we need symmetric aggregation (pre-aggregation approach)
         # This is needed when metrics come from different models at different join levels.
-        # Skip this fan-out path for semi-additive queries: _plan_semi_additive already
-        # rejected any semi-additive measure whose owning model is fanned out, so a
-        # surviving plan must be served by the standard CTE path (which injects QUALIFY).
+        # Skip the multi-fact split for semi-additive queries; the snapshot path below
+        # owns the per-leaf row sets and rejects unsupported fan-out combinations.
         if not semi_additive_plan and self._needs_preaggregation_for_fanout(metrics, dimensions):
             return self._cache_generate_result(
                 cache_key,
@@ -1433,6 +1399,7 @@ class SQLGenerator:
             ungrouped=ungrouped,
             aliases=aliases,
             with_totals=with_totals,
+            semi_additive_plan=semi_additive_plan,
         )
 
         # Combine CTEs and main query
@@ -2006,7 +1973,7 @@ class SQLGenerator:
         all_models: set[str] | None = None,
         metric_filter_columns: set[str] | None = None,
         ungrouped: bool = False,
-        semi_additive: tuple[str, str] | None = None,
+        semi_additive: dict[str, tuple[str, str, tuple[str, ...] | None]] | None = None,
     ) -> str:
         """Build CTE SQL for a model with optional filter pushdown.
 
@@ -2019,10 +1986,8 @@ class SQLGenerator:
             all_models: All models in query (for determining if joins needed)
             metric_filter_columns: Columns needed for metric-level filters
             ungrouped: Whether the query is returning raw ungrouped rows
-            semi_additive: Optional ``(non_additive_dimension_name, window)`` for a
-                semi-additive measure owned by this model. When set, a QUALIFY is added
-                so only rows at the last (window="max") or first ("min") value of that
-                time dimension per group survive. See ``_plan_semi_additive``.
+            semi_additive: Per-measure snapshot plans owned by this model. Their
+                time/grouping dimensions are projected for the nested snapshot stage.
 
         Returns:
             CTE SQL string
@@ -2037,14 +2002,13 @@ class SQLGenerator:
             model_name, dimensions, filters, order_by, metric_filter_columns
         )
 
-        # Semi-additive handling needs the non_additive_dimension column projected into
-        # this CTE (aliased to its dimension name) so the QUALIFY below can reference it,
-        # even when the query does not group by it. Declared window_groupings must also be
-        # projected so the QUALIFY can partition per those dimensions.
+        # Snapshot and declared grouping dimensions must be projected even when the
+        # query does not group by them so the nested window stage can reference them.
         if semi_additive is not None:
-            needed_dimensions.add(semi_additive[0])
-            for grouping_col in semi_additive[2] or ():
-                needed_dimensions.add(grouping_col)
+            for non_additive_dim, _window, groupings in semi_additive.values():
+                needed_dimensions.add(non_additive_dim)
+                for grouping_col in groupings or ():
+                    needed_dimensions.add(grouping_col)
 
         # Build SELECT columns
         select_cols = []
@@ -2450,55 +2414,6 @@ class SQLGenerator:
 
             where_clause = f"\n  WHERE {' AND '.join(processed_filters)}"
 
-        # Build QUALIFY clause for semi-additive (non_additive_dimension) measures.
-        # Keep only the rows at the last (window="max") or first ("min") value of the
-        # non-additive time dimension per group. Referencing the CTE's own SELECT aliases
-        # here is valid under QUALIFY in DuckDB and the other _QUALIFY_DIALECTS.
-        qualify_clause = ""
-        if semi_additive is not None:
-            non_additive_dim, window, groupings = semi_additive
-            time_col = self._quote_identifier(non_additive_dim)
-
-            partition_aliases: list[str] = []
-            seen_partition: set[str] = set()
-
-            def _add_partition(alias: str) -> None:
-                if alias not in seen_partition:
-                    seen_partition.add(alias)
-                    partition_aliases.append(self._quote_identifier(alias))
-
-            if groupings:
-                # Declared window_groupings (MetricFlow): the snapshot is taken per these
-                # dimensions regardless of the query's grouping (e.g. balance-per-user).
-                for grouping_col in groupings:
-                    _add_partition(grouping_col)
-                # A coarser grain of the non-additive dim requested by the query still scopes
-                # the snapshot to that bucket (month-end balance per user).
-                for dim_ref, gran in dimensions:
-                    if dim_ref == f"{model_name}.{non_additive_dim}" and gran is not None:
-                        _add_partition(f"{non_additive_dim}__{gran}")
-            else:
-                # No declared groupings: partition by the query's other grouping dimensions
-                # for THIS model (e.g. account/region), excluding the raw non-additive axis.
-                for dim_ref, gran in dimensions:
-                    if not dim_ref.startswith(model_name + "."):
-                        continue
-                    dim_name = dim_ref.split(".", 1)[1]
-                    if dim_name == non_additive_dim and gran is None:
-                        # The non-additive time dim at its RAW grain is the window axis, never a
-                        # partition key. A coarser grain of it (day__month) IS a partition key.
-                        continue
-                    _add_partition(f"{dim_name}__{gran}" if gran else dim_name)
-
-            agg = "MAX" if window == "max" else "MIN"
-            if partition_aliases:
-                partition_sql = ", ".join(partition_aliases)
-                window_expr = f"{agg}({time_col}) OVER (PARTITION BY {partition_sql})"
-            else:
-                # No other grouping dimensions: one global last/first snapshot.
-                window_expr = f"{agg}({time_col}) OVER ()"
-            qualify_clause = f"\n  QUALIFY {time_col} = {window_expr}"
-
         # Build CTE
         if not select_cols:
             # A complete-SQL measure whose SQL references no columns (e.g. a bare COUNT(*))
@@ -2509,7 +2424,7 @@ class SQLGenerator:
         select_str = ",\n    ".join(select_cols)
         cte_sql = (
             f"{self._quote_identifier(self._cte_name(model_name))} AS "
-            f"(\n  SELECT\n    {select_str}\n  FROM {from_clause}{where_clause}{qualify_clause}\n)"
+            f"(\n  SELECT\n    {select_str}\n  FROM {from_clause}{where_clause}\n)"
         )
 
         return cte_sql
@@ -3430,6 +3345,245 @@ class SQLGenerator:
             outer_query = outer_query.offset(offset)
         return outer_query.sql(dialect=self.dialect, pretty=True)
 
+    def _build_semi_additive_select(
+        self,
+        base_model_name: str,
+        other_models: list[str],
+        parsed_dims: list[tuple[str, str | None]],
+        metrics: list[str],
+        filters: list[str] | None,
+        models_with_filters: set[str],
+        order_by: list[str] | None,
+        limit: int | None,
+        offset: int | None,
+        aliases: dict[str, str],
+        with_totals: bool,
+        semi_additive_plan: dict[str, dict[str, tuple[str, str, tuple[str, ...] | None]]],
+    ) -> str:
+        """Aggregate snapshot leaves independently in a portable nested query."""
+        from sidemantic.core.semantic_layer import UnsupportedMetricError
+
+        if len(semi_additive_plan) != 1:
+            raise UnsupportedMetricError("Semi-additive metrics from multiple metric models are unsupported")
+        metric_model_name = next(iter(semi_additive_plan))
+        model_plan = semi_additive_plan[metric_model_name]
+        leaf_metrics: dict[str, object] = {}
+        planned_outputs: list[tuple[str, object, str | None]] = []
+
+        def resolve(reference: str, context: str | None) -> tuple[str | None, object]:
+            if "." not in reference and context:
+                local = self.graph.get_model(context).get_metric(reference)
+                if local is not None:
+                    return context, local
+            try:
+                owner, metric = self.graph.resolve_metric_reference(reference)
+            except KeyError as exc:
+                raise ValueError(f"Metric {reference} not found") from exc
+            if metric is None:
+                raise ValueError(f"Metric {reference} not found")
+            return owner, metric
+
+        def collect_leaves(metric, context: str | None, stack: set[int]) -> None:
+            if id(metric) in stack:
+                raise ValueError(f"Circular metric dependency involving {metric.name}")
+            stack = {*stack, id(metric)}
+            if metric.agg:
+                if context != metric_model_name:
+                    raise UnsupportedMetricError("Semi-additive metrics cannot be combined with multiple metric models")
+                leaf_metrics.setdefault(metric.name, metric)
+                return
+            if metric.type == "ratio":
+                dependencies = [metric.numerator, metric.denominator]
+            elif metric.type == "derived" or (not metric.type and metric.sql):
+                dependencies = metric.get_dependencies(self.graph, context)
+            else:
+                dependencies = []
+            if not dependencies or any(dependency is None for dependency in dependencies):
+                raise UnsupportedMetricError(f"Metric '{metric.name}' cannot be planned with semi-additive snapshots")
+            for dependency in dependencies:
+                dep_context, dep_metric = resolve(dependency, context)
+                collect_leaves(dep_metric, dep_context or context, stack)
+
+        for metric_ref in metrics:
+            context, metric = resolve(metric_ref, None)
+            collect_leaves(metric, context, set())
+            planned_outputs.append((metric_ref, metric, context))
+
+        dim_internal_names = [f"__sidemantic_dim_{idx}" for idx in range(len(parsed_dims))]
+        metric_internal_names = {
+            metric_name: f"__sidemantic_metric_{idx}" for idx, metric_name in enumerate(leaf_metrics)
+        }
+        snapshot_fields: dict[str, str] = {}
+        for non_additive_dim, _window, groupings in model_plan.values():
+            for field_name in (non_additive_dim, *(groupings or ())):
+                snapshot_fields.setdefault(field_name, f"__sidemantic_snapshot_field_{len(snapshot_fields)}")
+
+        inner_selects: list[str] = []
+        for (dim_ref, gran), internal_name in zip(parsed_dims, dim_internal_names, strict=True):
+            dim_model, dim_name = dim_ref.split(".", 1)
+            source_name = f"{dim_name}__{gran}" if gran else dim_name
+            inner_selects.append(f"{self._cte_ref(dim_model, source_name)} AS {self._quote_alias(internal_name)}")
+        for metric_name, metric in leaf_metrics.items():
+            internal_name = metric_internal_names[metric_name]
+            inner_selects.append(
+                f"{self._cte_ref(metric_model_name, f'{metric.name}_raw')} AS {self._quote_alias(internal_name)}"
+            )
+        for field_name, internal_name in snapshot_fields.items():
+            inner_selects.append(
+                f"{self._cte_ref(metric_model_name, field_name)} AS {self._quote_alias(internal_name)}"
+            )
+
+        inner_query = select(*inner_selects).from_(self._quote_identifier(self._cte_name(base_model_name)))
+        inner_query = self._add_join_paths_to_query(inner_query, base_model_name, other_models, models_with_filters)
+        where_filters, having_filters = self._split_where_having_filters(
+            filters or [], [base_model_name] + other_models
+        )
+        inner_query = self._add_where_filters_to_query(inner_query, where_filters, [base_model_name] + other_models)
+
+        rows_alias = "__sidemantic_rows"
+        rows_table = self._quote_identifier(rows_alias)
+        snapshot_selects = [
+            f"{rows_table}.{self._quote_identifier(name)} AS {self._quote_alias(name)}" for name in dim_internal_names
+        ]
+        for metric_name, metric in leaf_metrics.items():
+            internal_name = metric_internal_names[metric_name]
+            raw_ref = f"{rows_table}.{self._quote_identifier(internal_name)}"
+            snapshot = model_plan.get(metric.name)
+            if snapshot is not None:
+                non_additive_dim, window, groupings = snapshot
+                time_ref = f"{rows_table}.{self._quote_identifier(snapshot_fields[non_additive_dim])}"
+                partitions: list[str] = []
+
+                def add_partition(internal_name: str) -> None:
+                    ref = f"{rows_table}.{self._quote_identifier(internal_name)}"
+                    if ref not in partitions:
+                        partitions.append(ref)
+
+                if groupings:
+                    for grouping in groupings:
+                        add_partition(snapshot_fields[grouping])
+                    for idx, (dim_ref, gran) in enumerate(parsed_dims):
+                        if dim_ref == f"{metric_model_name}.{non_additive_dim}" and gran is not None:
+                            add_partition(dim_internal_names[idx])
+                else:
+                    for idx, (dim_ref, gran) in enumerate(parsed_dims):
+                        if dim_ref == f"{metric_model_name}.{non_additive_dim}" and gran is None:
+                            continue
+                        add_partition(dim_internal_names[idx])
+
+                aggregate = "MAX" if window == "max" else "MIN"
+                partition_sql = f"PARTITION BY {', '.join(partitions)}" if partitions else ""
+                marker = f"{aggregate}({time_ref}) OVER ({partition_sql})"
+                raw_ref = f"CASE WHEN {time_ref} = {marker} THEN {raw_ref} ELSE NULL END"
+            snapshot_selects.append(f"{raw_ref} AS {self._quote_alias(internal_name)}")
+
+        inner_sql = inner_query.sql(dialect=self.dialect, pretty=True)
+        snapshot_sql = (
+            "SELECT\n  "
+            + ",\n  ".join(snapshot_selects)
+            + f"\nFROM (\n{inner_sql}\n) AS {self._quote_alias(rows_alias)}"
+        )
+        snapshot_alias = "__sidemantic_snapshot"
+        snapshot_table = self._quote_identifier(snapshot_alias)
+
+        leaf_aggregates: dict[int, str] = {}
+        for metric_name, metric in leaf_metrics.items():
+            raw_ref = f"{snapshot_table}.{self._quote_identifier(metric_internal_names[metric_name])}"
+            if metric.agg == "count_distinct":
+                aggregate = f"COUNT(DISTINCT {raw_ref})"
+            elif metric.agg == "approx_count_distinct":
+                aggregate = f"APPROX_COUNT_DISTINCT({raw_ref})"
+            else:
+                aggregate = f"{self._agg_sql_name(metric.agg)}({raw_ref})"
+            leaf_aggregates[id(metric)] = self._wrap_with_fill_nulls(aggregate, metric)
+
+        def build_metric(metric, context: str | None, stack: set[int] | None = None) -> str:
+            import re
+
+            stack = set() if stack is None else stack
+            if id(metric) in stack:
+                raise ValueError(f"Circular metric dependency involving {metric.name}")
+            stack = {*stack, id(metric)}
+            if metric.agg:
+                return leaf_aggregates[id(metric)]
+            if metric.type == "ratio":
+                if not metric.numerator or not metric.denominator:
+                    raise ValueError(f"Ratio metric {metric.name} requires numerator and denominator")
+                num_context, numerator = resolve(metric.numerator, context)
+                den_context, denominator = resolve(metric.denominator, context)
+                num_sql = build_metric(numerator, num_context or context, stack)
+                den_sql = build_metric(denominator, den_context or context, stack)
+                return f"({num_sql}) / NULLIF({den_sql}, 0)"
+            formula = metric.sql or ""
+            dependencies = sorted(metric.get_dependencies(self.graph, context), key=len, reverse=True)
+            for dependency in dependencies:
+                dep_context, dep_metric = resolve(dependency, context)
+                dep_sql = build_metric(dep_metric, dep_context or context, stack)
+                if "." in dependency and re.search(r"\b" + re.escape(dependency) + r"\b", formula):
+                    formula = re.sub(r"\b" + re.escape(dependency) + r"\b", f"({dep_sql})", formula)
+                else:
+                    bare_name = dependency.split(".", 1)[-1]
+                    formula = re.sub(r"(?<!\.)\b" + re.escape(bare_name) + r"\b", f"({dep_sql})", formula)
+            return formula
+
+        outer_selects: list[str] = []
+        output_aliases: dict[str, str] = {}
+        for idx, (dim_ref, gran) in enumerate(parsed_dims):
+            _model_name, dim_name = dim_ref.split(".", 1)
+            default_alias = f"{dim_name}__{gran}" if gran else dim_name
+            full_ref = f"{dim_ref}__{gran}" if gran else dim_ref
+            alias = aliases.get(full_ref, default_alias)
+            source = f"{snapshot_table}.{self._quote_identifier(dim_internal_names[idx])}"
+            outer_selects.append(f"{source} AS {self._quote_alias(alias)}")
+            output_aliases[full_ref] = alias
+            output_aliases[dim_ref] = alias
+            output_aliases[default_alias] = alias
+
+        metric_expressions: dict[str, str] = {}
+        for metric_ref, metric, context in planned_outputs:
+            value = self._wrap_with_fill_nulls(build_metric(metric, context), metric)
+            alias = aliases.get(metric_ref, metric.name)
+            outer_selects.append(f"{value} AS {self._quote_alias(alias)}")
+            output_aliases[metric_ref] = alias
+            output_aliases[metric.name] = alias
+            metric_expressions[metric_ref] = value
+            metric_expressions.setdefault(metric.name, value)
+
+        if with_totals and parsed_dims:
+            first_dim = f"{snapshot_table}.{self._quote_identifier(dim_internal_names[0])}"
+            outer_selects.append(f"GROUPING({first_dim}) AS _is_total")
+
+        sql = (
+            "SELECT\n  "
+            + ",\n  ".join(outer_selects)
+            + f"\nFROM (\n{snapshot_sql}\n) AS {self._quote_alias(snapshot_alias)}"
+        )
+        if parsed_dims:
+            if with_totals:
+                positions = ", ".join(str(idx) for idx in range(1, len(parsed_dims) + 1))
+                sql += f"\nGROUP BY GROUPING SETS (({positions}), ())"
+            else:
+                sql += "\nGROUP BY " + ", ".join(str(idx) for idx in range(1, len(parsed_dims) + 1))
+        for having_filter in having_filters:
+            rewritten = having_filter
+            for reference, expression in metric_expressions.items():
+                rewritten = rewritten.replace(reference, f"({expression})")
+            sql += f"\nHAVING {rewritten}"
+        if order_by:
+            order_exprs = []
+            for field in order_by:
+                parts = field.rsplit(" ", 1)
+                field_ref = parts[0] if len(parts) == 2 and parts[1].upper() in {"ASC", "DESC"} else field
+                direction = f" {parts[1].upper()}" if field_ref != field else ""
+                alias = output_aliases.get(field_ref, field_ref.split(".", 1)[-1])
+                order_exprs.append(f"{self._quote_alias(alias)}{direction}")
+            sql += f"\nORDER BY {', '.join(order_exprs)}"
+        if limit is not None:
+            sql += f"\nLIMIT {limit}"
+        if offset is not None:
+            sql += f"\nOFFSET {offset}"
+        return sql
+
     def _build_main_select(
         self,
         base_model_name: str,
@@ -3444,6 +3598,7 @@ class SQLGenerator:
         ungrouped: bool = False,
         aliases: dict[str, str] | None = None,
         with_totals: bool = False,
+        semi_additive_plan: dict[str, dict[str, tuple[str, str, tuple[str, ...] | None]]] | None = None,
     ) -> str:
         """Build main SELECT using SQLGlot builder API.
 
@@ -3465,6 +3620,21 @@ class SQLGenerator:
             SQL SELECT statement
         """
         aliases = aliases or {}
+        if semi_additive_plan:
+            return self._build_semi_additive_select(
+                base_model_name,
+                other_models,
+                parsed_dims,
+                metrics,
+                filters,
+                models_with_filters,
+                order_by,
+                limit,
+                offset,
+                aliases,
+                with_totals,
+                semi_additive_plan,
+            )
         # Detect if symmetric aggregates are needed
         symmetric_agg_needed = self._has_fanout_joins(base_model_name, other_models)
 
@@ -3861,6 +4031,57 @@ class SQLGenerator:
             return offset_map[comparison_type].get(time_granularity, 1)
 
         return 1
+
+    @staticmethod
+    def _parse_period_interval(value: str | None) -> tuple[int, str] | None:
+        if not value:
+            return None
+        parts = value.strip().split()
+        if len(parts) != 2:
+            return None
+        try:
+            amount = int(parts[0])
+        except ValueError:
+            return None
+        unit = parts[1].lower().rstrip("s")
+        if amount <= 0 or unit not in {"day", "week", "month", "quarter", "year"}:
+            return None
+        if unit == "quarter":
+            return amount * 3, "month"
+        return amount, unit
+
+    def _comparison_period_interval(self, metric, time_granularity: str | None) -> tuple[int, str] | None:
+        explicit = self._parse_period_interval(metric.time_offset)
+        if explicit is not None:
+            return explicit
+        comparison_type = metric.comparison_type or "prior_period"
+        intervals = {
+            "dod": (1, "day"),
+            "wow": (1, "week"),
+            "mom": (1, "month"),
+            "qoq": (3, "month"),
+            "yoy": (1, "year"),
+        }
+        if comparison_type == "prior_period":
+            return (1, time_granularity) if time_granularity else None
+        return intervals.get(comparison_type)
+
+    def _exact_period_lookup_sql(
+        self,
+        value_expr: str,
+        time_expr: str,
+        partition_clause: str,
+        interval: tuple[int, str] | None,
+    ) -> str | None:
+        """Lookup a value at an exact calendar offset using a value-based frame."""
+        if interval is None or self.dialect not in {"duckdb", "postgres"}:
+            return None
+        amount, unit = interval
+        interval_sql = self._build_interval(str(amount), unit)
+        return (
+            f"MAX({value_expr}) OVER ({partition_clause}ORDER BY {time_expr} "
+            f"RANGE BETWEEN {interval_sql} PRECEDING AND {interval_sql} PRECEDING)"
+        )
 
     def _offset_window_to_lag_rows(self, offset_window: str | None, time_granularity: str | None) -> int:
         """Convert a ratio offset_window (e.g. '3 months') to a row-based LAG offset.
@@ -4662,7 +4883,7 @@ class SQLGenerator:
             else:
                 dim_model_name = model_name
                 dim_name = dim_ref_str
-            alias = dim_name
+            alias = f"{dim_name}__{granularity}" if granularity else dim_name
 
             if alias in entity_dim_aliases:
                 continue  # Already included
@@ -5876,7 +6097,8 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
             if metric.window_expression:
                 order_col = time_dim
                 frame = metric.window_frame or "ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW"
-                window_expr = f"{metric.window_expression} OVER (ORDER BY {order_col} {frame}) AS {metric_alias}"
+                window_value = f"{metric.window_expression} OVER (ORDER BY {order_col} {frame})"
+                window_expr = f"{self._wrap_with_fill_nulls(window_value, metric)} AS {metric_alias}"
                 select_exprs.append(window_expr)
                 cumulative_window_entries.append((window_expr, metric_alias))
                 continue
@@ -5926,21 +6148,22 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
                 grain = metric.grain_to_date
                 partition = self._date_trunc(grain, time_dim)
 
-                window_expr = f"{agg_func}({base_col}) OVER (PARTITION BY {partition} ORDER BY {time_dim} ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS {metric_alias}"
+                window_value = f"{agg_func}({base_col}) OVER (PARTITION BY {partition} ORDER BY {time_dim} ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)"
             elif metric.window:
                 # Parse window (e.g., "7 days")
                 window_parts = metric.window.split()
                 if len(window_parts) == 2:
                     num, unit = window_parts
                     # For date-based windows, use RANGE
-                    window_expr = f"{agg_func}({base_col}) OVER (ORDER BY {time_dim} RANGE BETWEEN INTERVAL '{num} {unit}' PRECEDING AND CURRENT ROW) AS {metric_alias}"
+                    window_value = f"{agg_func}({base_col}) OVER (ORDER BY {time_dim} RANGE BETWEEN INTERVAL '{num} {unit}' PRECEDING AND CURRENT ROW)"
                 else:
                     # Fallback to rows
-                    window_expr = f"{agg_func}({base_col}) OVER (ORDER BY {time_dim} ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS {metric_alias}"
+                    window_value = f"{agg_func}({base_col}) OVER (ORDER BY {time_dim} ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)"
             else:
                 # Running total (unbounded window)
-                window_expr = f"{agg_func}({base_col}) OVER (ORDER BY {time_dim} ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS {metric_alias}"
+                window_value = f"{agg_func}({base_col}) OVER (ORDER BY {time_dim} ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)"
 
+            window_expr = f"{self._wrap_with_fill_nulls(window_value, metric)} AS {metric_alias}"
             select_exprs.append(window_expr)
             cumulative_window_entries.append((window_expr, metric_alias))
 
@@ -6005,7 +6228,7 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
                                 time_dim = f"base.{dim_name}"
                                 if gran:
                                     time_dim = f"base.{dim_name}__{gran}"
-                                    time_dim_gran = gran
+                                time_dim_gran = gran or dim.granularity
                                 break
 
                 if not time_dim:
@@ -6045,14 +6268,22 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
                 else:
                     lag_input_expr = metric_column(base_ref)
 
-                # Calculate LAG offset
-                lag_offset = self._calculate_lag_offset(metric.comparison_type, time_dim_gran)
-
-                # Add LAG for base metric (quote alias to handle dotted names)
-                prev_value_alias = self._quote_alias(f"{m}_prev_value")
-                lag_selects.append(
-                    f"LAG({lag_input_expr}, {lag_offset}) OVER ({partition_clause}ORDER BY {time_dim}) AS {prev_value_alias}"
+                exact_lookup = self._exact_period_lookup_sql(
+                    lag_input_expr,
+                    time_dim,
+                    partition_clause,
+                    (
+                        self._comparison_period_interval(metric, time_dim_gran)
+                        if time_dim_gran or metric.time_offset
+                        else None
+                    ),
                 )
+                if exact_lookup is None:
+                    lag_offset = self._calculate_lag_offset(metric.comparison_type, time_dim_gran)
+                    exact_lookup = f"LAG({lag_input_expr}, {lag_offset}) OVER ({partition_clause}ORDER BY {time_dim})"
+
+                prev_value_alias = self._quote_alias(f"{m}_prev_value")
+                lag_selects.append(f"{exact_lookup} AS {prev_value_alias}")
 
             # Add LAG expressions for each offset ratio metric
             for m in offset_ratio_metrics:
@@ -6103,13 +6334,21 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
                 # Get denominator alias
                 denom_alias = metric_ref_alias(metric.denominator)
 
-                # Add LAG for denominator - reference base.denom_alias since it's from inner query
-                # Quote alias to handle dotted names
-                lag_rows = self._offset_window_to_lag_rows(metric.offset_window, time_dim_gran)
-                prev_denom_alias = self._quote_alias(f"{m}_prev_denom")
-                lag_selects.append(
-                    f"LAG(base.{sql_identifier(denom_alias)}, {lag_rows}) OVER ({partition_clause}ORDER BY {time_dim}) AS {prev_denom_alias}"
+                denominator_expr = f"base.{sql_identifier(denom_alias)}"
+                interval = self._parse_period_interval(metric.offset_window) if time_dim_gran else None
+                prior_denominator = self._exact_period_lookup_sql(
+                    denominator_expr,
+                    time_dim,
+                    partition_clause,
+                    interval,
                 )
+                if prior_denominator is None:
+                    lag_rows = self._offset_window_to_lag_rows(metric.offset_window, time_dim_gran)
+                    prior_denominator = (
+                        f"LAG({denominator_expr}, {lag_rows}) OVER ({partition_clause}ORDER BY {time_dim})"
+                    )
+                prev_denom_alias = self._quote_alias(f"{m}_prev_denom")
+                lag_selects.append(f"{prior_denominator} AS {prev_denom_alias}")
 
             # Build intermediate CTE - inner_query already has all the columns we need
             # We need to add "base." prefix since we're wrapping inner_query in a FROM (inner_query) AS base
@@ -6141,14 +6380,15 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
                 # Build calculation based on calculation type
                 calc_type = metric.calculation or "percent_change"
                 if calc_type == "difference":
-                    expr = f"({base_alias} - {prev_value_col}) AS {final_alias}"
+                    value_expr = f"({base_alias} - {prev_value_col})"
                 elif calc_type == "percent_change":
-                    expr = f"(({base_alias} - {prev_value_col}) / NULLIF({prev_value_col}, 0) * 100) AS {final_alias}"
+                    value_expr = f"(({base_alias} - {prev_value_col}) / NULLIF({prev_value_col}, 0) * 100)"
                 elif calc_type == "ratio":
-                    expr = f"({base_alias} / NULLIF({prev_value_col}, 0)) AS {final_alias}"
+                    value_expr = f"({base_alias} / NULLIF({prev_value_col}, 0))"
                 else:
                     raise ValueError(f"Unknown calculation type: {calc_type}")
 
+                expr = f"{self._wrap_with_fill_nulls(value_expr, metric)} AS {final_alias}"
                 final_selects.append(expr)
 
             # Add offset ratio metrics
@@ -6165,7 +6405,8 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
                 final_alias = self._quote_alias(m)
 
                 # Calculate ratio using the lagged value
-                offset_expr = f"{num_alias} / NULLIF({prev_denom_col}, 0) AS {final_alias}"
+                ratio_expr = f"{num_alias} / NULLIF({prev_denom_col}, 0)"
+                offset_expr = f"{self._wrap_with_fill_nulls(ratio_expr, metric)} AS {final_alias}"
                 final_selects.append(offset_expr)
 
             # Build final query

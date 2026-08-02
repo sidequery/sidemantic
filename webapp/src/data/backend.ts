@@ -1,4 +1,5 @@
-import type { Catalog, DashboardSpec, QueryResult, StructuredQuery } from "./types";
+import type { DashboardDocument } from "./dashboardTypes";
+import type { Catalog, QueryResult, StructuredQuery } from "./types";
 
 // One interface, two implementations. The HTTP adapter targets the shared contract both the
 // Python (`sidemantic api-serve`) and Rust (`sidemantic-server`) backends expose identically.
@@ -9,8 +10,8 @@ export interface SidemanticBackend {
   health(): Promise<boolean>;
   /** Rich semantic catalog from /describe, falling back to /graph (+/models) when absent. */
   getCatalog(): Promise<Catalog>;
-  /** GET /dashboard — optional declarative configuration for the canonical UI. */
-  getDashboard(): Promise<DashboardSpec | null>;
+  /** GET /dashboard — loaded declarative dashboard, or null for the generic explorer. */
+  getDashboard(): Promise<DashboardDocument | null>;
   /** POST /compile — semantic query -> dialect SQL, no execution. */
   compile(query: StructuredQuery): Promise<string>;
   /** POST /query — execute (Arrow preferred, JSON fallback) and return rows + SQL. */

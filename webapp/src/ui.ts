@@ -61,7 +61,7 @@ export type { ChartTooltipState, TooltipRow } from "./components/ChartTooltip";
 export type { LeaderboardRow } from "./components/Leaderboard";
 export type { QueryDebugInput, SqlToken } from "./components/QueryDebugPanel";
 export type { SparklineBrushRange, SparklineProps } from "./components/Sparkline";
-export type { BrushRange, SeriesPoint } from "./components/TimeSeriesChart";
+export type { BrushRange, NamedSeries, SeriesPoint } from "./components/TimeSeriesChart";
 export type { FormatHint, Tone } from "./lib/format";
 export type { BarLineDatum } from "./components/BarLineCombo";
 export type { DonutDatum, DonutSegment } from "./components/DonutChart";

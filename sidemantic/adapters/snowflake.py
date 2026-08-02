@@ -14,6 +14,7 @@ from sidemantic.core.relationship import Relationship
 from sidemantic.core.segment import Segment
 from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.sql.fragment import parse_sql_fragment, rewrite_sql_column_spans
+from sidemantic.yaml_compat import safe_load as _yaml_safe_load
 
 
 def _qualify_columns(sql_expr: str) -> str:
@@ -213,7 +214,7 @@ class SnowflakeAdapter(BaseAdapter):
                 definitions, applied after every file's tables are loaded.
         """
         with open(file_path) as f:
-            data = yaml.safe_load(f)
+            data = _yaml_safe_load(f)
 
         if not data:
             return

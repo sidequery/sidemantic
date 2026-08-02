@@ -2770,5 +2770,75 @@ def test_lambda_union_does_not_double_count_boundary_bucket():
     assert by_day["2024-01-02"] == 500  # boundary bucket re-aggregated once from source, not 800
 
 
+def _multi_fact_filter_layer():
+    from sidemantic import Relationship, SemanticLayer
+
+    layer = SemanticLayer()
+    con = layer.adapter.conn
+    con.execute("CREATE TABLE orders (id INTEGER, region VARCHAR, status VARCHAR, amount DOUBLE)")
+    con.execute("INSERT INTO orders VALUES (1,'US','completed',100),(2,'EU','completed',200)")
+    con.execute("CREATE TABLE line_items (id INTEGER, order_id INTEGER, qty INTEGER)")
+    con.execute("INSERT INTO line_items VALUES (1,1,5),(2,2,7)")
+    layer.add_model(
+        Model(
+            name="orders",
+            table="orders",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="status", type="categorical"),
+                Dimension(name="region", type="categorical"),
+            ],
+            metrics=[Metric(name="revenue", agg="sum", sql="amount")],
+            relationships=[Relationship(name="line_items", type="one_to_many", foreign_key="order_id")],
+        )
+    )
+    layer.add_model(
+        Model(
+            name="line_items",
+            table="line_items",
+            primary_key="id",
+            dimensions=[Dimension(name="qty_d", sql="qty", type="numeric")],
+            metrics=[Metric(name="total_qty", agg="sum", sql="qty")],
+            relationships=[Relationship(name="orders", type="many_to_one", foreign_key="order_id")],
+        )
+    )
+    return layer
+
+
+def test_fanout_preagg_applies_query_filters_to_every_child():
+    layer = _multi_fact_filter_layer()
+
+    rows = layer.query(
+        metrics=["orders.revenue", "line_items.total_qty"],
+        dimensions=["orders.status"],
+        filters=["orders.region = 'US'"],
+    ).fetchall()
+    assert rows == [("completed", 100.0, 5)]
+
+    rows = layer.query(
+        metrics=["orders.revenue", "line_items.total_qty"],
+        dimensions=["orders.status"],
+    ).fetchall()
+    assert rows == [("completed", 300.0, 12)]
+
+
+def test_fanout_preagg_metric_filter_stays_on_outer_query():
+    layer = _multi_fact_filter_layer()
+
+    rows = layer.query(
+        metrics=["orders.revenue", "line_items.total_qty"],
+        dimensions=["orders.status"],
+        filters=["orders.revenue > 50"],
+    ).fetchall()
+    assert rows == [("completed", 300.0, 12)]
+
+    rows = layer.query(
+        metrics=["orders.revenue", "line_items.total_qty"],
+        dimensions=["orders.status"],
+        filters=["orders.revenue > 500"],
+    ).fetchall()
+    assert rows == []
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

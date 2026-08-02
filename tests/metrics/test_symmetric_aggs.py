@@ -1,9 +1,11 @@
 """Tests for symmetric aggregates (fan-out join handling)."""
 
 import duckdb
+import pytest
 
 from sidemantic.core.model import Dimension, Metric, Model, Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
+from sidemantic.core.semantic_layer import UnsupportedMetricError
 from sidemantic.core.symmetric_aggregate import build_symmetric_aggregate_sql
 from sidemantic.sql.generator import SQLGenerator
 from tests.utils import fetch_rows
@@ -326,6 +328,266 @@ def test_symmetric_aggregates_with_data():
     conn.close()
 
 
+def test_fanout_isolates_typed_entity_rows_for_double_sum_avg_and_nulls():
+    conn = duckdb.connect(":memory:")
+    conn.execute("CREATE TABLE raw_orders (id BIGINT PRIMARY KEY, amount DOUBLE)")
+    conn.execute("INSERT INTO raw_orders VALUES (1, 100.25), (2, 50.75), (3, NULL)")
+    conn.execute("""
+        CREATE TABLE raw_items AS
+        SELECT * FROM (VALUES
+            (1, 1, 'paid'), (2, 1, 'paid'), (3, 2, 'paid'), (4, 3, 'null-only')
+        ) AS t(id, order_id, category)
+    """)
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="orders",
+            table="raw_orders",
+            primary_key="id",
+            metrics=[
+                Metric(name="revenue", agg="sum", sql="amount"),
+                Metric(name="average_order_value", agg="avg", sql="amount"),
+            ],
+            relationships=[Relationship(name="items", type="one_to_many", sql="id", foreign_key="order_id")],
+        )
+    )
+    graph.add_model(
+        Model(
+            name="items",
+            table="raw_items",
+            primary_key="id",
+            dimensions=[Dimension(name="category", type="categorical")],
+            relationships=[Relationship(name="orders", type="many_to_one", foreign_key="order_id")],
+        )
+    )
+
+    sql = SQLGenerator(graph).generate(
+        metrics=["orders.revenue", "orders.average_order_value"],
+        dimensions=["items.category"],
+        order_by=["items.category"],
+    )
+    assert "HASH(" not in sql
+    assert "SELECT DISTINCT" in sql
+    assert conn.execute(sql).fetchall() == [("null-only", None, None), ("paid", 151.0, 75.5)]
+
+
+def test_fanout_evaluates_complete_sql_over_deduplicated_entity_rows():
+    conn = duckdb.connect(":memory:")
+    conn.execute("CREATE TABLE raw_orders AS SELECT * FROM (VALUES (1, 100.0), (2, 200.0)) t(id, amount)")
+    conn.execute(
+        "CREATE TABLE raw_items AS "
+        "SELECT * FROM (VALUES (1, 1, 'all'), (2, 1, 'all'), (3, 2, 'all')) t(id, order_id, category)"
+    )
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="orders",
+            table="raw_orders",
+            primary_key="id",
+            metrics=[
+                Metric(
+                    name="average_order_value",
+                    sql="SUM({model}.amount) / COUNT(*)",
+                    sql_is_complete=True,
+                ),
+                Metric(name="opaque_order_count", sql="COUNT(*)", sql_is_complete=True),
+            ],
+            relationships=[Relationship(name="items", type="one_to_many", sql="id", foreign_key="order_id")],
+        )
+    )
+    graph.add_model(
+        Model(
+            name="items",
+            table="raw_items",
+            primary_key="id",
+            dimensions=[Dimension(name="category", type="categorical")],
+            relationships=[Relationship(name="orders", type="many_to_one", foreign_key="order_id")],
+        )
+    )
+
+    sql = SQLGenerator(graph).generate(
+        metrics=["orders.average_order_value", "orders.opaque_order_count"],
+        dimensions=["items.category"],
+    )
+    assert "SELECT DISTINCT" in sql
+    assert conn.execute(sql).fetchall() == [("all", 150.0, 2)]
+
+
+def test_fanout_rejects_filtered_zero_column_complete_sql():
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="orders",
+            table="raw_orders",
+            primary_key="id",
+            metrics=[
+                Metric(
+                    name="completed_count",
+                    sql="COUNT(*)",
+                    sql_is_complete=True,
+                    filters=["{model}.status = 'completed'"],
+                )
+            ],
+            relationships=[Relationship(name="items", type="one_to_many", sql="id", foreign_key="order_id")],
+        )
+    )
+    graph.add_model(
+        Model(
+            name="items",
+            table="raw_items",
+            primary_key="id",
+            dimensions=[Dimension(name="category", type="categorical")],
+            relationships=[Relationship(name="orders", type="many_to_one", foreign_key="order_id")],
+        )
+    )
+
+    with pytest.raises(UnsupportedMetricError, match="cannot be evaluated safely"):
+        SQLGenerator(graph).generate(metrics=["orders.completed_count"], dimensions=["items.category"])
+
+
+def test_fanout_typed_composite_keys_do_not_collide_on_delimiters():
+    conn = duckdb.connect(":memory:")
+    conn.execute("""
+        CREATE TABLE raw_orders AS
+        SELECT * FROM (VALUES
+            ('a|b', 'c', 100.0::DOUBLE), ('a', 'b|c', 200.0::DOUBLE)
+        ) AS t(part_a, part_b, amount)
+    """)
+    conn.execute("""
+        CREATE TABLE raw_items AS
+        SELECT * FROM (VALUES
+            (1, 'a|b', 'c', 'all'), (2, 'a|b', 'c', 'all'), (3, 'a', 'b|c', 'all')
+        ) AS t(id, part_a, part_b, category)
+    """)
+
+    join_sql = "{from}.part_a = {to}.part_a AND {from}.part_b = {to}.part_b"
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="orders",
+            table="raw_orders",
+            primary_key=["part_a", "part_b"],
+            metrics=[Metric(name="revenue", agg="sum", sql="amount")],
+            relationships=[Relationship(name="items", type="one_to_many", sql=join_sql)],
+        )
+    )
+    graph.add_model(
+        Model(
+            name="items",
+            table="raw_items",
+            primary_key="id",
+            dimensions=[Dimension(name="category", type="categorical")],
+            relationships=[Relationship(name="orders", type="many_to_one", sql=join_sql)],
+        )
+    )
+
+    sql = SQLGenerator(graph).generate(metrics=["orders.revenue"], dimensions=["items.category"])
+    assert conn.execute(sql).fetchall() == [("all", 300.0)]
+    assert "CONCAT(" not in sql
+
+
+def test_filter_only_sibling_fanout_is_deduplicated_for_non_base_metric():
+    conn = duckdb.connect(":memory:")
+    conn.execute("CREATE TABLE customers AS SELECT * FROM (VALUES (1, 'east')) AS t(id, region)")
+    conn.execute("CREATE TABLE orders AS SELECT * FROM (VALUES (1, 1, 100), (2, 1, 50)) t(id, customer_id, amount)")
+    conn.execute("""
+        CREATE TABLE tickets AS
+        SELECT * FROM (VALUES (1, 1, 'open'), (2, 1, 'open'), (3, 1, 'closed')) t(id, customer_id, kind)
+    """)
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="customers",
+            table="customers",
+            primary_key="id",
+            dimensions=[Dimension(name="region", type="categorical")],
+            relationships=[
+                Relationship(name="orders", type="one_to_many", sql="id", foreign_key="customer_id"),
+                Relationship(name="tickets", type="one_to_many", sql="id", foreign_key="customer_id"),
+            ],
+        )
+    )
+    graph.add_model(
+        Model(
+            name="orders",
+            table="orders",
+            primary_key="id",
+            metrics=[Metric(name="revenue", agg="sum", sql="amount")],
+            relationships=[Relationship(name="customers", type="many_to_one", foreign_key="customer_id")],
+        )
+    )
+    graph.add_model(
+        Model(
+            name="tickets",
+            table="tickets",
+            primary_key="id",
+            dimensions=[Dimension(name="kind", type="categorical")],
+            relationships=[Relationship(name="customers", type="many_to_one", foreign_key="customer_id")],
+        )
+    )
+
+    sql = SQLGenerator(graph).generate(
+        metrics=["orders.revenue"],
+        dimensions=["customers.region"],
+        filters=["tickets.kind = 'open'"],
+    )
+    assert conn.execute(sql).fetchall() == [("east", 150)]
+    assert "SELECT DISTINCT" in sql
+
+
+def test_derived_and_ratio_metrics_reuse_fanout_safe_leaf_aggregates():
+    conn = duckdb.connect(":memory:")
+    conn.execute("CREATE TABLE raw_orders AS SELECT * FROM (VALUES (1, 100.0), (2, 200.0)) t(id, amount)")
+    conn.execute(
+        "CREATE TABLE raw_items AS "
+        "SELECT * FROM (VALUES (1, 1, 'all'), (2, 1, 'all'), (3, 2, 'all')) t(id, order_id, category)"
+    )
+
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="orders",
+            table="raw_orders",
+            primary_key="id",
+            metrics=[
+                Metric(name="revenue", agg="sum", sql="amount"),
+                Metric(name="order_count", agg="count"),
+                Metric(name="double_revenue", type="derived", sql="revenue * 2"),
+            ],
+            relationships=[Relationship(name="items", type="one_to_many", sql="id", foreign_key="order_id")],
+        )
+    )
+    graph.add_model(
+        Model(
+            name="items",
+            table="raw_items",
+            primary_key="id",
+            dimensions=[Dimension(name="category", type="categorical")],
+            relationships=[Relationship(name="orders", type="many_to_one", foreign_key="order_id")],
+        )
+    )
+    graph.add_metric(
+        Metric(
+            name="average_order_value",
+            type="ratio",
+            numerator="orders.revenue",
+            denominator="orders.order_count",
+        )
+    )
+
+    sql = SQLGenerator(graph).generate(
+        metrics=["orders.revenue", "orders.order_count", "orders.double_revenue", "average_order_value"],
+        dimensions=["items.category"],
+    )
+    assert conn.execute(sql).fetchall() == [("all", 300.0, 2, 600.0, 150.0)]
+    assert "HASH(" not in sql
+    assert "metric_0_metric_0" not in sql
+    assert sql.count("SELECT DISTINCT") == 1
+
+
 def test_preagg_grain_preserved_with_filters():
     """Test that preagg subqueries preserve the requested dimension grain when filters are applied.
 
@@ -402,13 +664,12 @@ def test_preagg_grain_preserved_with_filters():
     assert len(dates) == len(set(dates)), f"Duplicate dimension keys in preagg result: {dates}"
 
     # Verify correct values:
-    # The orders filter (status='shipped') only constrains orders_preagg.
-    # items_preagg aggregates ALL items by order_date (joined via orders).
-    # 2024-01-01: revenue=100 (shipped), total_qty=18 (items for orders 1+2)
+    # A query-level filter scopes every child to the same population.
+    # 2024-01-01: revenue=100 and total_qty=8 (items for shipped order 1).
     # 2024-01-02: revenue=150 (shipped), total_qty=7 (items for order 3)
     rows_sorted = sorted(rows, key=lambda r: r[0])
     assert rows_sorted[0][1] == 100  # 2024-01-01 revenue (shipped only)
-    assert rows_sorted[0][2] == 18  # 2024-01-01 total_qty (all items for date)
+    assert rows_sorted[0][2] == 8
     assert rows_sorted[1][1] == 150  # 2024-01-02 revenue
     assert rows_sorted[1][2] == 7  # 2024-01-02 total_qty
 

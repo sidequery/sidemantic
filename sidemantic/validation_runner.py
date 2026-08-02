@@ -19,6 +19,21 @@ class ValidationReport:
         return not self.errors
 
 
+def _find_orphaned_models(models: dict[str, object]) -> list[str]:
+    """Return models with neither outgoing nor incoming relationships in O(V+E)."""
+    incoming_targets = {
+        relationship.name
+        for source_name, source in models.items()
+        for relationship in source.relationships
+        if relationship.name != source_name
+    }
+    return [
+        model_name
+        for model_name, model in models.items()
+        if not model.relationships and model_name not in incoming_targets
+    ]
+
+
 def validate_directory(directory: str | Path) -> ValidationReport:
     """Load and validate semantic layer definitions from a directory."""
     directory = Path(directory)
@@ -68,16 +83,7 @@ def validate_directory(directory: str | Path) -> ValidationReport:
         report.errors.extend(validate_metric(metric, layer.graph))
 
     if len(layer.graph.models) > 1:
-        orphaned = []
-        for model_name, model in layer.graph.models.items():
-            has_outgoing = bool(model.relationships)
-            has_incoming = any(
-                any(rel.name == model_name for rel in other.relationships)
-                for other_name, other in layer.graph.models.items()
-                if other_name != model_name
-            )
-            if not has_outgoing and not has_incoming:
-                orphaned.append(model_name)
+        orphaned = _find_orphaned_models(layer.graph.models)
 
         if orphaned:
             report.warnings.append(f"Orphaned models (no relationships): {', '.join(orphaned)}")

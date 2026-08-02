@@ -227,6 +227,53 @@ def test_query_validation_no_join_path(layer):
     assert "'products'" in str(exc_info.value)
 
 
+def test_query_validation_reports_ambiguous_join_routes(layer):
+    layer.add_model(
+        Model(
+            name="a",
+            table="a",
+            primary_key="id",
+            metrics=[Metric(name="total", agg="count")],
+            relationships=[
+                Relationship(name="b", type="many_to_one", foreign_key="b_id"),
+                Relationship(name="c", type="many_to_one", foreign_key="c_id"),
+            ],
+        )
+    )
+    layer.add_model(
+        Model(
+            name="b",
+            table="b",
+            primary_key="id",
+            relationships=[Relationship(name="d", type="many_to_one", foreign_key="d_id")],
+        )
+    )
+    layer.add_model(
+        Model(
+            name="c",
+            table="c",
+            primary_key="id",
+            relationships=[Relationship(name="d", type="many_to_one", foreign_key="d_id")],
+        )
+    )
+    layer.add_model(
+        Model(
+            name="d",
+            table="d",
+            primary_key="id",
+            dimensions=[Dimension(name="label", type="categorical")],
+        )
+    )
+
+    with pytest.raises(QueryValidationError) as exc_info:
+        layer.compile(metrics=["a.total"], dimensions=["d.label"])
+
+    message = str(exc_info.value)
+    assert "Ambiguous join paths between a and d" in message
+    assert "a -> b -> d" in message
+    assert "a -> c -> d" in message
+
+
 def test_query_validation_invalid_granularity(layer):
     """Test that invalid time granularities are rejected."""
     layer.add_model(

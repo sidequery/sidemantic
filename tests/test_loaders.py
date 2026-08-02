@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from sidemantic import SemanticLayer
-from sidemantic.loaders import load_from_directory
+from sidemantic import Dimension, Model, Relationship, SemanticLayer
+from sidemantic.loaders import _infer_relationships, load_from_directory
 
 
 def test_load_from_directory_does_not_require_antlr4_without_antlr_formats(tmp_path, monkeypatch):
@@ -33,6 +33,35 @@ def test_load_from_directory_does_not_require_antlr4_without_antlr_formats(tmp_p
     load_from_directory(layer, tmp_path)
 
     assert "orders" in layer.graph.models
+
+
+def test_inference_respects_reverse_relationship_on_non_primary_key():
+    invoices = Model(
+        name="invoices",
+        table="invoices",
+        primary_key="id",
+        dimensions=[Dimension(name="account_id", type="categorical")],
+    )
+    accounts = Model(
+        name="accounts",
+        table="accounts",
+        primary_key="id",
+        dimensions=[Dimension(name="external_id", type="categorical")],
+        relationships=[
+            Relationship(
+                name="invoices",
+                type="one_to_many",
+                foreign_key="account_id",
+                primary_key="external_id",
+            )
+        ],
+    )
+
+    _infer_relationships({"invoices": invoices, "accounts": accounts})
+
+    assert invoices.relationships == []
+    assert len(accounts.relationships) == 1
+    assert accounts.relationships[0].primary_key == "external_id"
 
 
 def test_load_from_directory_strict_raises_on_detected_parse_error(tmp_path):

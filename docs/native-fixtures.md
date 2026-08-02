@@ -2,6 +2,12 @@
 
 The native fixture suite is the shared compatibility corpus for native Sidemantic YAML and SQL projects. It lives under `tests/native-fixtures/` and is driven by `tests/native-fixtures/manifest.yml`.
 
+Runtime support claims are declared in the machine-readable
+[`runtime-conformance.yml`](runtime-conformance.yml). The generated
+[`runtime-feature-matrix.md`](runtime-feature-matrix.md) links each supported or
+partial claim to its fixture runner or dedicated runtime test, and CI verifies
+that referenced evidence and fixture names exist.
+
 The suite is intentionally format-first. It does not test LookML, MetricFlow, Cube, Hex, Rill, Malloy, or other external import formats directly. Those adapters should export native YAML/SQL, then native fixtures and Rust validation should prove the exported project behaves correctly.
 
 ## Layout

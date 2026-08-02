@@ -97,6 +97,15 @@ result cache is keyed per user so cached rows never leak across users.
 A `SecurityError` (denied access gate, deny-by-default, undefined attribute) maps to
 **HTTP 403**.
 
+The embedded web UI never reads bearer tokens from a URL, persists them in
+`localStorage`/`sessionStorage`, or includes them in shareable links. When the API is
+bearer-protected, the UI prompts once and exchanges the bearer through
+`POST /auth/session` for a short-lived credential. Same-origin deployments receive an
+HttpOnly, `SameSite=Strict` cookie. Cross-origin deployments receive a short-lived
+credential kept only in memory and sent with the `Sidemantic-Session` authorization
+scheme. The server stores only a SHA-256 digest of either session credential and expires
+it after ten minutes. API clients may continue to send the configured bearer directly.
+
 **The `/sql` and `/raw` endpoints are disabled (HTTP 403) whenever any model declares a
 security policy.** They rewrite/execute free-form SQL and cannot apply per-user row
 filters, so they refuse rather than return unscoped rows — use the structured `/query`

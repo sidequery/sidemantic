@@ -35,27 +35,6 @@ function QueryStatus() {
   );
 }
 
-// Allow a bearer token for auth-gated backends: `?token=…` (persisted to localStorage and stripped
-// from the URL) or a previously stored token. Resolved once at module load.
-function resolveApiToken(): string | undefined {
-  const params = new URLSearchParams(window.location.search);
-  const fromUrl = params.get("token");
-  try {
-    if (fromUrl) {
-      localStorage.setItem("sidemantic-token", fromUrl);
-      params.delete("token");
-      const query = params.toString();
-      window.history.replaceState(null, "", `${window.location.pathname}${query ? `?${query}` : ""}`);
-      return fromUrl;
-    }
-    return localStorage.getItem("sidemantic-token") ?? undefined;
-  } catch {
-    return fromUrl ?? undefined; // storage unavailable (e.g. private mode)
-  }
-}
-
-const API_TOKEN = resolveApiToken();
-
 function CopyLinkButton() {
   const [copied, setCopied] = useState(false);
   return (
@@ -75,6 +54,60 @@ function CopyLinkButton() {
 
 function FullScreen({ children }: { children: React.ReactNode }) {
   return <div className="grid h-screen place-items-center bg-bg p-6">{children}</div>;
+}
+
+function SessionLogin({ backend, onAuthenticated }: { backend: HttpBackend; onAuthenticated: () => void }) {
+  const [token, setToken] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  return (
+    <div className="w-full max-w-sm border border-line bg-surface p-6 shadow-sm">
+      <h1 className="text-base font-semibold text-ink">Connect to Sidemantic</h1>
+      <p className="mt-2 text-xs leading-5 text-muted">
+        Enter the API bearer once. It is exchanged for a short-lived, HttpOnly browser session
+        where supported, and is never placed in the URL or browser storage.
+      </p>
+      <form
+        className="mt-5 space-y-3"
+        onSubmit={async (event) => {
+          event.preventDefault();
+          setSubmitting(true);
+          setError(null);
+          try {
+            await backend.createBrowserSession(token);
+            setToken("");
+            onAuthenticated();
+          } catch (err: unknown) {
+            setError(err instanceof Error ? err.message : String(err));
+          } finally {
+            setSubmitting(false);
+          }
+        }}
+      >
+        <label className="block text-xs font-medium text-ink" htmlFor="api-token">
+          API bearer token
+        </label>
+        <input
+          id="api-token"
+          type="password"
+          autoComplete="off"
+          required
+          value={token}
+          onChange={(event) => setToken(event.target.value)}
+          className="w-full border border-line bg-bg px-3 py-2 text-sm text-ink outline-none focus:border-accent"
+        />
+        {error ? <p className="text-xs text-red-700">{error}</p> : null}
+        <button
+          type="submit"
+          disabled={submitting || !token}
+          className="w-full bg-accent px-3 py-2 text-xs font-semibold text-white disabled:opacity-50"
+        >
+          {submitting ? "Connecting…" : "Connect"}
+        </button>
+      </form>
+    </div>
+  );
 }
 
 function Shell() {
@@ -190,9 +223,14 @@ function Shell() {
 }
 
 export function App() {
-  const backend = useMemo(() => new HttpBackend({ transport: "json", token: API_TOKEN }), []);
+  const [authRequired, setAuthRequired] = useState(false);
+  const backend = useMemo(
+    () => new HttpBackend({ transport: "json", onUnauthorized: () => setAuthRequired(true) }),
+    [],
+  );
   const [catalog, setCatalog] = useState<Catalog | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [reload, setReload] = useState(0);
 
   useEffect(() => {
     let alive = true;
@@ -203,8 +241,22 @@ export function App() {
     return () => {
       alive = false;
     };
-  }, [backend]);
+  }, [backend, reload]);
 
+  if (authRequired) {
+    return (
+      <FullScreen>
+        <SessionLogin
+          backend={backend}
+          onAuthenticated={() => {
+            setAuthRequired(false);
+            setError(null);
+            setReload((value) => value + 1);
+          }}
+        />
+      </FullScreen>
+    );
+  }
   if (error) return <FullScreen><ErrorState title="Could not load semantic layer" message={error} /></FullScreen>;
   if (!catalog) return <FullScreen><LoadingState title="Loading semantic layer" message="Reading models and metrics…" /></FullScreen>;
   if (!catalog.models.length)

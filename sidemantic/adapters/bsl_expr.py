@@ -636,6 +636,10 @@ def _render_sql_node_as_bsl(node: exp.Expression | None) -> str | None:
         right = _render_sql_node_as_bsl(node.expression)
         return f"CONCAT({left}, {right})" if left is not None and right is not None else None
     if isinstance(node, exp.Case):
+        operand_node = node.this
+        operand = _render_sql_node_as_bsl(operand_node)
+        if operand_node is not None and operand is None:
+            return None
         default = _render_sql_node_as_bsl(node.args.get("default")) or "None"
         result = default
         for branch in reversed(node.args.get("ifs") or []):
@@ -643,6 +647,8 @@ def _render_sql_node_as_bsl(node: exp.Expression | None) -> str | None:
             true = _render_sql_node_as_bsl(branch.args.get("true"))
             if condition is None or true is None:
                 return None
+            if operand is not None:
+                condition = f"{operand} == {condition}"
             result = f"{true} if {condition} else {result}"
         return f"({result})"
     if isinstance(node, exp.Cast):

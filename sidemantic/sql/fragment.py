@@ -23,9 +23,6 @@ def _quoted_end(sql: str, start: int, closing: str) -> int:
                 i += 2
                 continue
             return i + 1
-        if sql[i] == "\\" and closing in {"'", '"', "`"}:
-            i += 2
-            continue
         i += 1
     return len(sql)
 

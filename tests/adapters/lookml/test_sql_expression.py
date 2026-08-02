@@ -43,6 +43,19 @@ def test_placeholder_conversion_and_qualifier_stripping_are_lexical():
     )
 
 
+def test_placeholder_conversion_honors_backslash_escaped_quote_delimiters():
+    postgres = r"CONCAT(E'it\'s ${TABLE}', ${TABLE}.name)"
+    mysql = r"CONCAT('it\'s ${TABLE}', ${TABLE}.name)"
+
+    assert replace_lookml_placeholders(postgres, {"${TABLE}": "{model}"}) == (
+        r"CONCAT(E'it\'s ${TABLE}', {model}.name)"
+    )
+    assert replace_lookml_placeholders(mysql, {"${TABLE}": "{model}"}) == (r"CONCAT('it\'s ${TABLE}', {model}.name)")
+
+    standard = r"'C:\' || ${TABLE}.name"
+    assert replace_lookml_placeholders(standard, {"${TABLE}": "{model}"}) == r"'C:\' || {model}.name"
+
+
 def test_subquery_detection_ignores_postgres_dollar_quoted_literals():
     detect = LookMLAdapter._has_subquery
 

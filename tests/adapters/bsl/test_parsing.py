@@ -1527,6 +1527,12 @@ class TestBSLCompoundExpressions:
         ast.parse(result, mode="eval")
         assert bsl_to_sql(result) == ("CASE WHEN status = 'paid' THEN amount ELSE 0 END", "sum", None)
 
+    def test_sql_to_bsl_expr_preserves_simple_case_operand(self):
+        result = _sql_to_bsl_expr("CASE status WHEN 'paid' THEN amount ELSE 0 END", "sum")
+        assert result == ("((_.amount if _.status == 'paid' else 0)).sum()")
+        ast.parse(result, mode="eval")
+        assert bsl_to_sql(result) == ("CASE WHEN status = 'paid' THEN amount ELSE 0 END", "sum", None)
+
     @pytest.mark.parametrize(
         ("sql", "expected"),
         [

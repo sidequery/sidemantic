@@ -173,11 +173,42 @@ class ParsedLookMLSQL:
     dialect: str | None
 
 
+def _is_backslash_escaped_closer(sql: str, start: int, index: int, closing: str) -> bool:
+    """Recognize explicit PostgreSQL and unambiguous MySQL-style quote escapes.
+
+    LookML expressions do not carry their warehouse dialect. A later closer is
+    therefore required, and SQL boundary punctuation wins for an unprefixed
+    string so a standard-SQL trailing backslash cannot swallow following code.
+    """
+    backslashes = 0
+    j = index - 1
+    while j > start and sql[j] == "\\":
+        backslashes += 1
+        j -= 1
+    if not backslashes % 2 or sql.find(closing, index + 1) < 0:
+        return False
+
+    escape_string = (
+        closing == "'"
+        and start > 0
+        and sql[start - 1] in "eE"
+        and (start == 1 or not (sql[start - 2].isalnum() or sql[start - 2] == "_"))
+    )
+    next_nonspace = index + 1
+    while next_nonspace < len(sql) and sql[next_nonspace].isspace():
+        next_nonspace += 1
+    continues_quoted_text = next_nonspace < len(sql) and sql[next_nonspace] not in ",;)]}|&+-*/<=>"
+    return escape_string or continues_quoted_text
+
+
 def _quoted_end(sql: str, start: int, closing: str) -> int:
-    """Return the exclusive end of a SQL quoted token, honoring doubled closers."""
+    """Return the exclusive end of a SQL quoted token, honoring escaped closers."""
     i = start + 1
     while i < len(sql):
         if sql[i] == closing:
+            if _is_backslash_escaped_closer(sql, start, i, closing):
+                i += 1
+                continue
             if i + 1 < len(sql) and sql[i + 1] == closing:
                 i += 2
                 continue

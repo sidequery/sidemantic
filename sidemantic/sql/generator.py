@@ -594,6 +594,59 @@ class SQLGenerator:
                 result.append(f)
         return result
 
+    def _rewrite_filter_for_model_source(self, filter_sql: str, model) -> str:
+        """Resolve a pushed semantic filter against the model's raw source."""
+        model_name = model.name
+        source_alias = "t" if model.sql else None
+        resolved_filter = filter_sql.replace("{model}.", f"{model_name}.").replace("{model}", model_name)
+        try:
+            parsed = _parse_fragment(resolved_filter, self.dialect)
+        except Exception:
+            return resolved_filter
+
+        for column in list(parsed.find_all(exp.Column)):
+            table_name = column.table
+            if table_name and table_name.replace("_cte", "") != model_name:
+                continue
+
+            dimension_name = column.name
+            granularity = None
+            dimension = model.get_dimension(dimension_name)
+            if dimension is None and "__" in dimension_name:
+                candidate_name, candidate_granularity = dimension_name.rsplit("__", 1)
+                candidate = model.get_dimension(candidate_name)
+                if candidate is not None and candidate.type == "time":
+                    granularity = candidate_granularity
+                    dimension = candidate
+
+            if dimension is None:
+                column.set("table", exp.to_identifier(source_alias) if source_alias else None)
+                continue
+
+            self._ensure_sql_dimension(model_name, dimension)
+            replacement_sql = self._dimension_base_expr(dimension)
+            effective_granularity = granularity
+            if dimension.type == "time" and effective_granularity is None:
+                effective_granularity = dimension.granularity
+            if effective_granularity:
+                replacement_sql = self._date_trunc(effective_granularity, replacement_sql)
+            if source_alias:
+                replacement_sql = replacement_sql.replace("{model}", source_alias)
+            else:
+                replacement_sql = replacement_sql.replace("{model}.", "").replace("{model}", "")
+
+            try:
+                replacement = _parse_fragment(replacement_sql, self.dialect)
+            except Exception:
+                continue
+            for replacement_column in replacement.find_all(exp.Column):
+                replacement_table = replacement_column.table
+                if replacement_table and replacement_table.replace("_cte", "") == model_name:
+                    replacement_column.set("table", exp.to_identifier(source_alias) if source_alias else None)
+            column.replace(replacement)
+
+        return parsed.sql(dialect=self.dialect)
+
     def _quote_alias(self, name: str) -> str:
         """Quote an identifier for use as a SQL alias.
 
@@ -2370,22 +2423,7 @@ class SQLGenerator:
         # Build WHERE clause for pushed-down filters
         where_clause = ""
         if filters:
-            # Process filters - replace model_cte references with direct column names using SQLGlot
-            processed_filters = []
-            for f in filters:
-                try:
-                    parsed = _parse_fragment(f, self.dialect)
-                    # Remove table qualifiers (model_name_cte. or model_name.)
-                    for col in parsed.find_all(exp.Column):
-                        if col.table:
-                            clean_table = col.table.replace("_cte", "")
-                            if clean_table == model_name:
-                                col.set("table", None)
-                    processed_filter = parsed.sql(dialect=self.dialect)
-                    processed_filters.append(processed_filter)
-                except Exception:
-                    # If parsing fails, use original filter
-                    processed_filters.append(f)
+            processed_filters = [self._rewrite_filter_for_model_source(f, model) for f in filters]
 
             where_clause = f"\n  WHERE {' AND '.join(processed_filters)}"
 

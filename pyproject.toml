@@ -24,6 +24,7 @@ dev = [
     "pytest>=8.0.0",
     "pytest-cov>=5.0.0",
     "ruff>=0.6.0",
+    "mypy>=1.11.0",
     "pandas>=2.2,<3",
     "numpy>=1.26,<3",
     "playwright>=1.50.0",
@@ -209,6 +210,32 @@ addopts = "-m 'not integration' --cov=sidemantic --cov-report=term-missing"  # S
 
 [tool.coverage.run]
 source = ["sidemantic"]
+
+[tool.mypy]
+python_version = "3.11"
+files = [
+    "sidemantic/__init__.py",
+    "sidemantic/core/dimension.py",
+    "sidemantic/core/freshness.py",
+    "sidemantic/core/metric.py",
+    "sidemantic/core/model.py",
+    "sidemantic/core/parameter.py",
+    "sidemantic/core/pre_aggregation.py",
+    "sidemantic/core/preagg_recommender.py",
+    "sidemantic/core/query_plan.py",
+    "sidemantic/core/registry.py",
+    "sidemantic/core/relationship.py",
+    "sidemantic/core/security.py",
+    "sidemantic/core/segment.py",
+    "sidemantic/core/semantic_graph.py",
+    "sidemantic/core/semantic_layer.py",
+]
+check_untyped_defs = true
+follow_imports = "skip"
+ignore_missing_imports = true
+show_error_codes = true
+warn_redundant_casts = true
+warn_unused_ignores = true
 
 [tool.uv]
 prerelease = "if-necessary"

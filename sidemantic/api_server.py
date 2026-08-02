@@ -30,7 +30,6 @@ from sidemantic.server.common import (
     table_to_json_rows,
     validate_filter_expression,
 )
-from sidemantic.sql.query_rewriter import QueryRewriter
 
 ARROW_FORMAT = "arrow"
 JSON_FORMAT = "json"
@@ -373,24 +372,6 @@ def create_app(
             )
         return parsed
 
-    def deny_free_sql_if_secured() -> None:
-        """Deny the free-form SQL endpoints when any model declares a security policy.
-
-        ``/sql`` (semantic rewrite) and ``/raw`` (direct passthrough) cannot apply
-        per-user row filters -- the rewriter/raw paths do not thread user attributes,
-        and ``/raw`` reads the underlying table directly, bypassing the model entirely.
-        Rather than silently return unscoped rows for a secured model, refuse these
-        endpoints outright when security is in play and point callers at ``/query``,
-        which enforces access gates and row filters.
-        """
-        layer = app.state.layer
-        if any(getattr(model, "security", None) is not None for model in layer.graph.models.values()):
-            raise SecurityError(
-                "The /sql and /raw endpoints cannot enforce row-level security and are "
-                "disabled because a model declares a security policy. Use the structured "
-                "/query endpoint, which applies access gates and row filters per user."
-            )
-
     @app.post("/auth/session", include_in_schema=False)
     def create_browser_session(
         request: Request,
@@ -602,11 +583,19 @@ def create_app(
         return _build_query_response(request, current_layer, table, sql=sql, format_override=format)
 
     @app.post("/sql/compile", dependencies=[Depends(require_auth)])
-    def compile_sql(payload: SQLRequest) -> dict[str, str]:
+    def compile_sql(payload: SQLRequest, request: Request) -> dict[str, str]:
         # Pure CPU: rewrites SQL from the in-memory graph, no DB access, no lock.
+        from sidemantic.core.transport_security import rewrite_transport_sql
+
         current_layer = app.state.layer
+        user_attributes = resolve_user_attributes(request)
         query = _normalize_sql_query(payload.query)
-        rewritten_sql = QueryRewriter(current_layer.graph, dialect=current_layer.dialect).rewrite(query)
+        rewritten_sql = rewrite_transport_sql(
+            current_layer,
+            query,
+            user_attributes=user_attributes,
+            transport="HTTP /sql/compile",
+        )
         return {"sql": rewritten_sql}
 
     @app.post("/sql", dependencies=[Depends(require_auth)])
@@ -617,11 +606,17 @@ def create_app(
     ):
         # Read-only query: rewrite (pure CPU) then execute on a fresh per-request
         # cursor, routed through _query_table for opt-in result caching.
+        from sidemantic.core.transport_security import rewrite_transport_sql
+
         current_layer = app.state.layer
         user_attributes = resolve_user_attributes(request)
-        deny_free_sql_if_secured()
         query = _normalize_sql_query(payload.query)
-        rewritten_sql = QueryRewriter(current_layer.graph, dialect=current_layer.dialect).rewrite(query)
+        rewritten_sql = rewrite_transport_sql(
+            current_layer,
+            query,
+            user_attributes=user_attributes,
+            transport="HTTP /sql",
+        )
         table = _query_table(app, current_layer, rewritten_sql, user_attributes=user_attributes)
         return _build_query_response(
             request,
@@ -641,9 +636,11 @@ def create_app(
         """Execute raw SQL directly on the underlying database, bypassing the semantic rewriter."""
         # Read-only query (SELECT enforced) on a fresh per-request cursor,
         # routed through _query_table for opt-in result caching.
+        from sidemantic.core.transport_security import deny_raw_sql
+
         current_layer = app.state.layer
         user_attributes = resolve_user_attributes(request)
-        deny_free_sql_if_secured()
+        deny_raw_sql(current_layer, transport="HTTP /raw")
         query = _normalize_sql_query(payload.query)
         _require_select_statement(query)
         table = _query_table(app, current_layer, query, user_attributes=user_attributes)

@@ -102,7 +102,13 @@ def _balance_layer():
 def test_semi_additive_month_grain_uses_last_snapshot():
     layer = _balance_layer()
     sql = layer.compile(metrics=["bal.total_balance"], dimensions=["bal.day__month"])
-    assert "QUALIFY" in sql, "coarse grain must keep the semi-additive QUALIFY"
+    normalized_sql = " ".join(sql.split())
+    # The portable rewrite nulls out rows before the last snapshot, then aggregates
+    # the surviving values. This must remain a MAX window scoped to the output grain.
+    assert "CASE WHEN" in normalized_sql
+    assert " = MAX(" in normalized_sql
+    assert " OVER (PARTITION BY " in normalized_sql
+    assert " ELSE NULL END" in normalized_sql
     # Correct: last day-of-month per account, summed = 110 + 210 = 320 (NOT naive 620).
     assert layer.query(metrics=["bal.total_balance"], dimensions=["bal.day__month"]).fetchall() == [
         (datetime.date(2026, 1, 1), 320)

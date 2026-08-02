@@ -6,6 +6,7 @@ import os
 from collections.abc import Callable
 from contextvars import ContextVar, Token
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -686,7 +687,7 @@ class SemanticLayer:
         limit: int | None = None,
         offset: int | None = None,
         ungrouped: bool = False,
-        parameters: dict[str, any] | None = None,
+        parameters: dict[str, Any] | None = None,
         use_preaggregations: bool | None = None,
         preagg_strict: bool | None = None,
         post_process: str | None = None,
@@ -1079,7 +1080,7 @@ class SemanticLayer:
         offset: int | None = None,
         dialect: str | None = None,
         ungrouped: bool = False,
-        parameters: dict[str, any] | None = None,
+        parameters: dict[str, Any] | None = None,
         use_preaggregations: bool | None = None,
         aliases: dict[str, str] | None = None,
         post_process: str | None = None,
@@ -1295,7 +1296,7 @@ class SemanticLayer:
         offset: int | None,
         dialect: str | None,
         ungrouped: bool,
-        parameters: dict[str, any] | None,
+        parameters: dict[str, Any] | None,
         use_preaggregations: bool,
         aliases: dict[str, str] | None,
         timezone: str | None = None,
@@ -1435,7 +1436,7 @@ class SemanticLayer:
         offset: int | None,
         dialect: str | None,
         ungrouped: bool,
-        parameters: dict[str, any] | None,
+        parameters: dict[str, Any] | None,
         use_preaggregations: bool,
         aliases: dict[str, str] | None,
     ) -> str | None:
@@ -1533,7 +1534,7 @@ class SemanticLayer:
         offset: int | None = None,
         dialect: str | None = None,
         ungrouped: bool = False,
-        parameters: dict[str, any] | None = None,
+        parameters: dict[str, Any] | None = None,
         use_preaggregations: bool | None = None,
     ):
         """Explain query routing, showing whether pre-aggregations are used and why.

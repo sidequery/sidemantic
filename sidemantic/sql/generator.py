@@ -7,12 +7,14 @@ from functools import lru_cache
 import sqlglot
 from sqlglot import exp, select
 from sqlglot.dialects.dialect import Dialect
+from sqlglot.errors import SqlglotError
 
 from sidemantic.core.preagg_matcher import PreAggregationMatcher
 from sidemantic.core.semantic_graph import SemanticGraph, _relationship_local_key_columns
 from sidemantic.core.symmetric_aggregate import build_symmetric_aggregate_sql
 from sidemantic.sql.aggregation_detection import sql_has_aggregate
 from sidemantic.sql.fragment import _column_is_bound_in_select, parse_sql_fragment, rewrite_sql_column_spans
+from sidemantic.sql.parsing import parse_fragment as _parse_fragment
 from sidemantic.validation import QueryValidationError
 
 
@@ -22,30 +24,6 @@ def _quote_identifier_cached(name: str, dialect: str, is_simple: bool) -> str:
     if is_simple:
         return sqlglot.to_identifier(name).sql(dialect=dialect)
     return sqlglot.to_identifier(name, quoted=True).sql(dialect=dialect)
-
-
-@lru_cache(maxsize=4096)
-def _parse_fragment_cached(sql: str, dialect: str) -> exp.Expression:
-    """Parse a SQL fragment once, cached across all SQLGenerator instances.
-
-    sqlglot parsing dominates compile latency because the generator re-parses the
-    same small fragments (filters, metric SQL, column refs) many times per compile.
-    A single parse_one is ~100x the cost of an AST copy, so callers that mutate the
-    tree should go through _parse_fragment() (which copies) rather than parsing anew.
-
-    The cached tree is shared; NEVER mutate the value returned here directly.
-    """
-    return sqlglot.parse_one(sql, dialect=dialect)
-
-
-def _parse_fragment(sql: str, dialect: str) -> exp.Expression:
-    """Return a fresh, mutable copy of a cached parsed fragment.
-
-    Use this at any call site that embeds the result into a larger tree or mutates
-    it in place (find_all + set/replace, transform, etc.), since sqlglot maintains
-    parent pointers on nodes.
-    """
-    return _parse_fragment_cached(sql, dialect).copy()
 
 
 @lru_cache(maxsize=4096)
@@ -521,7 +499,7 @@ class SQLGenerator:
                     if tbl and tbl.replace("_cte", "") == model_name:
                         column.set("table", None)
                 result.append(parsed.sql(dialect=self.dialect))
-            except Exception:
+            except SqlglotError:
                 result.append(f_resolved)
         return result
 
@@ -566,7 +544,7 @@ class SQLGenerator:
                                 rcol.set("table", None)
                         column.replace(replacement)
                 result.append(parsed.sql(dialect=self.dialect))
-            except Exception:
+            except SqlglotError:
                 result.append(f)
         return result
 
@@ -577,7 +555,7 @@ class SQLGenerator:
         resolved_filter = filter_sql.replace("{model}.", f"{model_name}.").replace("{model}", model_name)
         try:
             parsed = _parse_fragment(resolved_filter, self.dialect)
-        except Exception:
+        except SqlglotError:
             return resolved_filter
 
         for column in list(parsed.find_all(exp.Column)):
@@ -613,7 +591,7 @@ class SQLGenerator:
 
             try:
                 replacement = _parse_fragment(replacement_sql, self.dialect)
-            except Exception:
+            except SqlglotError:
                 continue
             for replacement_column in replacement.find_all(exp.Column):
                 replacement_table = replacement_column.table
@@ -713,7 +691,7 @@ class SQLGenerator:
         condition = join_path.custom_condition.replace("{from}", from_marker).replace("{to}", to_marker)
         try:
             parsed = _parse_fragment(condition, self.dialect)
-        except Exception as exc:
+        except SqlglotError as exc:
             raise ValueError(
                 "Could not parse custom relationship SQL for "
                 f"{join_path.from_model} -> {join_path.to_model}: {join_path.custom_condition}"
@@ -954,7 +932,7 @@ class SQLGenerator:
                 rendered = render_row_filter(filter_template, user_attributes)
                 try:
                     parsed = _parse_fragment(rendered, self.dialect)
-                except Exception as exc:
+                except SqlglotError as exc:
                     raise SecurityError(
                         f"Row filter for model '{model_name}' failed to parse as SQL: {rendered!r}"
                     ) from exc
@@ -1339,7 +1317,7 @@ class SQLGenerator:
                         # Remove _cte suffix if present
                         model_name = column.table.replace("_cte", "")
                         models_with_filters.add(model_name)
-            except Exception:
+            except SqlglotError:
                 logging.debug("Failed to parse filter for model extraction: %s", filter_expr, exc_info=True)
 
         # Extract columns needed for metric-level filters (before building CTEs)
@@ -1360,7 +1338,7 @@ class SQLGenerator:
                             if model_name not in metric_filter_cols_by_model:
                                 metric_filter_cols_by_model[model_name] = set()
                             metric_filter_cols_by_model[model_name].add(column.name)
-            except Exception:
+            except SqlglotError:
                 logging.debug(
                     "Failed to parse outer filter for column extraction: %s",
                     filter_expr,
@@ -1453,7 +1431,7 @@ class SQLGenerator:
             """Qualify unaliased columns in segment filters with model alias."""
             try:
                 parsed = _parse_fragment(filter_sql, self.dialect)
-            except Exception:
+            except SqlglotError:
                 return filter_sql
 
             def visit(node: exp.Expression) -> None:
@@ -1509,7 +1487,7 @@ class SQLGenerator:
                 model_name = column.table.replace("_cte", "")
                 if model_name in self.graph.models:
                     models.add(model_name)
-        except Exception:
+        except SqlglotError:
             pass
         return models
 
@@ -1611,7 +1589,7 @@ class SQLGenerator:
                             # Remove _cte suffix if present (shouldn't be, but be defensive)
                             model_name = column.table.replace("_cte", "")
                             add_model(model_name)
-                except Exception:
+                except SqlglotError:
                     logging.debug("Failed to parse filter for model extraction: %s", filter_expr, exc_info=True)
 
         return models
@@ -1660,14 +1638,14 @@ class SQLGenerator:
                         exp.paren(c).sql(dialect=self.dialect) if isinstance(c, exp.Or) else c.sql(dialect=self.dialect)
                     )
                     flat_parts.append(rendered)
-            except Exception:
+            except SqlglotError:
                 flat_parts.append(filter_expr)
 
         for filter_expr in flat_parts:
             # Parse filter expression with SQLGlot
             try:
                 parsed = _parse_fragment(filter_expr, self.dialect)
-            except Exception:
+            except SqlglotError:
                 # If parsing fails, keep in main query to be safe
                 main_query_filters.append(filter_expr)
                 continue
@@ -1773,7 +1751,7 @@ class SQLGenerator:
                             columns_by_model[model_name].add(col.name)
                         elif not col.table:
                             columns_by_model[model_name].add(col.name)
-                except Exception:
+                except SqlglotError:
                     logging.debug("Failed to parse metric filter: %s", aliased_filter, exc_info=True)
 
         def add_sql_columns(sql_expr: str, default_model_name: str | None = None):
@@ -1791,7 +1769,7 @@ class SQLGenerator:
                         if default_model_name not in columns_by_model:
                             columns_by_model[default_model_name] = set()
                         columns_by_model[default_model_name].add(col.name)
-            except Exception:
+            except SqlglotError:
                 pass
 
         def extract_from_measure_ref(metric_ref: str):
@@ -1863,7 +1841,7 @@ class SQLGenerator:
                             if candidate and candidate in self.graph.models:
                                 filter_model_name = candidate
                                 break
-                    except Exception:
+                    except SqlglotError:
                         filter_model_name = None
                 if filter_model_name:
                     add_filter_columns(filter_model_name, metric.filters)
@@ -1944,7 +1922,7 @@ class SQLGenerator:
                     for col in parsed.find_all(exp.Column):
                         if col.table and col.table.replace("_cte", "") == model_name:
                             needed.add(col.name)
-                except Exception:
+                except SqlglotError:
                     logging.debug("Failed to parse filter for column extraction: %s", filter_expr, exc_info=True)
 
         # Dimensions referenced in ORDER BY
@@ -2192,7 +2170,7 @@ class SQLGenerator:
                     extra_metric_sql_columns.add(col.name)
                     if isinstance(col.this, exp.Identifier) and col.this.args.get("quoted"):
                         quoted_raw_columns.add(col.name)
-            except Exception:
+            except SqlglotError:
                 logging.debug("Failed to parse metric SQL for columns: %s", sql_expr, exc_info=True)
 
         def collect_measures_from_metric(metric_ref: str, visited: set[str] | None = None):
@@ -2833,7 +2811,7 @@ class SQLGenerator:
                         if col.table and col.table in preagg_table_map:
                             col.set("table", exp.to_identifier(preagg_table_map[col.table]))
                     rewritten.append(parsed.sql(dialect=self.dialect))
-                except Exception:
+                except SqlglotError:
                     # Parsing failed, fall back to the raw filter expression.
                     # This is best-effort: the filter may reference CTE names
                     # that don't exist on the outer query, but that will surface
@@ -4158,7 +4136,7 @@ class SQLGenerator:
                 seen.add(col.name)
                 quoted = isinstance(col.this, exp.Identifier) and bool(col.this.args.get("quoted"))
                 columns.append((col.name, quoted))
-        except Exception:
+        except SqlglotError:
             logging.debug("Failed to parse complete-sql measure for columns: %s", sql_expr, exc_info=True)
         return columns
 
@@ -4185,7 +4163,7 @@ class SQLGenerator:
                     ),
                 )
             expr = parsed.sql(dialect=self.dialect)
-        except Exception:
+        except SqlglotError:
             logging.debug("Failed to rewrite complete-sql measure expr: %s", expr, exc_info=True)
             expr = self._rewrite_model_refs_to_ctes(expr)
 
@@ -4205,7 +4183,7 @@ class SQLGenerator:
                     cte_name = self._cte_name(model_name)
                     col.set("table", exp.to_identifier(cte_name, quoted=not self._is_simple_identifier(cte_name)))
             return parsed.sql(dialect=self.dialect)
-        except Exception:
+        except SqlglotError:
             rewritten = sql_expr
             for model_name in self.graph.models:
                 rewritten = rewritten.replace(
@@ -4233,7 +4211,7 @@ class SQLGenerator:
                     candidate = col.table.replace("_cte", "") if col.table else None
                     if candidate and candidate in self.graph.models:
                         return candidate
-            except Exception:
+            except SqlglotError:
                 return None
         return None
 
@@ -4251,7 +4229,7 @@ class SQLGenerator:
         cte_identifier = exp.to_identifier(cte_name, quoted=not self._is_simple_identifier(cte_name))
         try:
             parsed = _parse_fragment(filter_expr, self.dialect)
-        except Exception:
+        except SqlglotError:
             return self._rewrite_model_refs_to_ctes(filter_expr)
         for col in parsed.find_all(exp.Column):
             if col.table:
@@ -5483,7 +5461,7 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
                     elif not col.table and qualify_bare and table_alias:
                         col.set("table", table_alias)
                 result = parsed.sql(dialect=self.dialect)
-            except Exception:
+            except SqlglotError:
                 pass
             return result
 
@@ -6450,7 +6428,7 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
     def _filter_references_model_metric(self, model, filter_expr: str) -> bool:
         try:
             parsed = _parse_fragment(filter_expr, self.dialect)
-        except Exception:
+        except SqlglotError:
             return False
 
         for column in parsed.find_all(exp.Column):
@@ -6492,7 +6470,7 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
             return f"SUM({metric.name}_raw)"
         try:
             expression = _parse_fragment(metric.sql, self.dialect)
-        except Exception:
+        except SqlglotError:
             return metric.sql
 
         def replace_column(node):
@@ -6511,7 +6489,7 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
     def _rewrite_preaggregation_aggregate_filter(self, model, preagg, filter_expr: str) -> str:
         try:
             parsed = _parse_fragment(filter_expr, self.dialect)
-        except Exception:
+        except SqlglotError:
             return filter_expr.replace(f"{model.name}_cte.", "").replace(f"{model.name}.", "")
 
         def replace_column(node):
@@ -6803,7 +6781,7 @@ LEFT JOIN {preagg_table} AS {rollup_alias}
         expression_sql = expression_sql.replace("{model}", alias)
         try:
             expression = _parse_fragment(expression_sql, self.dialect)
-        except Exception:
+        except SqlglotError:
             if self._is_simple_identifier(expression_sql):
                 return f"{alias}.{self._quote_identifier(expression_sql)}"
             return expression_sql

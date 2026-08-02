@@ -1451,7 +1451,7 @@ facts:
                 skip_default_time_dimensions=True,
             )
             assert "CROSS JOIN facts_cte" in sql
-            assert "id AS id" not in sql
+            assert "id AS id" in sql
 
             conn = duckdb.connect(":memory:")
             conn.execute("CREATE TABLE calendar(day DATE)")

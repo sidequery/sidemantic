@@ -554,7 +554,7 @@ def test_get_semantic_graph(demo_layer):
     assert "metrics" in model
     assert "segments" in model
     assert "completed_orders" in model["segments"]
-    assert model["primary_key"] is None
+    assert "primary_key" not in model
 
 
 def test_get_models_enriched(demo_layer):
@@ -563,7 +563,7 @@ def test_get_models_enriched(demo_layer):
     model = result["models"][0]
 
     # Check new fields
-    assert model["primary_key"] is None
+    assert "primary_key" not in model
     assert model["description"] == "All customer orders"
 
     # Check segments are included

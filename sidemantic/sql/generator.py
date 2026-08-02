@@ -1594,6 +1594,49 @@ class SQLGenerator:
 
         return models
 
+    def _find_aggregate_metric_models(self, metric_refs: list[str]) -> set[str]:
+        """Find models whose entity keys can de-duplicate selected aggregate leaves."""
+        models: set[str] = set()
+        visited: set[int] = set()
+
+        def resolve(reference: str, model_context: str | None):
+            if "." not in reference and model_context:
+                local_metric = self.graph.get_model(model_context).get_metric(reference)
+                if local_metric is not None:
+                    return model_context, local_metric
+            try:
+                return self.graph.resolve_metric_reference(reference)
+            except KeyError:
+                return None
+
+        def collect(metric, model_context: str | None) -> None:
+            if id(metric) in visited:
+                return
+            visited.add(id(metric))
+
+            if metric.agg or getattr(metric, "sql_is_complete", False):
+                if model_context:
+                    models.add(model_context)
+                return
+
+            dependencies: list[str] = []
+            if metric.type == "ratio":
+                dependencies = [ref for ref in (metric.numerator, metric.denominator) if ref]
+            elif metric.type == "derived" or (not metric.type and metric.sql):
+                dependencies = metric.get_dependencies(self.graph, model_context)
+
+            for dependency in dependencies:
+                resolved = resolve(dependency, model_context)
+                if resolved is not None:
+                    collect(resolved[1], resolved[0] or model_context)
+
+        for metric_ref in metric_refs:
+            resolved = resolve(metric_ref, None)
+            if resolved is not None:
+                collect(resolved[1], resolved[0])
+
+        return models
+
     def _classify_filters_for_pushdown(
         self, filters: list[str], all_models: set[str]
     ) -> tuple[dict[str, list[str]], list[str], dict[str, list[str]]]:
@@ -1974,6 +2017,10 @@ class SQLGenerator:
         self._ensure_sql_model(model_name, model)
         all_models = all_models or {model_name}
         needs_keyed_joins = self._model_needs_keyed_join_columns(model_name, all_models)
+        metric_models = self._find_aggregate_metric_models(metrics)
+        needs_cross_fanout_key = model_name in metric_models and self._model_has_cross_join_in_query(
+            model_name, all_models
+        )
 
         # Find which dimensions are actually needed
         needed_dimensions = self._find_needed_dimensions(
@@ -1999,7 +2046,9 @@ class SQLGenerator:
                 select_cols.append(f"{self._quote_identifier(column)} AS {self._quote_alias(column)}")
                 columns_added.add(column)
 
-        include_primary_keys = needs_keyed_joins or ungrouped or bool(model.sql)
+        # Cross joins do not need keys for the join predicate, but exact fan-out aggregation
+        # still de-duplicates metric rows by their entity key after the Cartesian product.
+        include_primary_keys = needs_keyed_joins or needs_cross_fanout_key or ungrouped or bool(model.sql)
         if include_primary_keys:
             for pk_col in model.primary_key_columns:
                 add_passthrough_column(pk_col)
@@ -2431,6 +2480,22 @@ class SQLGenerator:
                     return True
 
         return False
+
+    def _model_has_cross_join_in_query(self, model_name: str, all_models: set[str]) -> bool:
+        """Return whether this model participates in a cross join in this query."""
+        if len(all_models) <= 1:
+            return False
+
+        model = self.graph.get_model(model_name)
+        if any(rel.name in all_models and rel.type == "cross" for rel in model.relationships):
+            return True
+
+        return any(
+            rel.name == model_name and rel.type == "cross"
+            for other_model_name, other_model in self.graph.models.items()
+            if other_model_name in all_models
+            for rel in other_model.relationships
+        )
 
     def _has_fanout_joins(self, base_model_name: str, other_models: list[str]) -> dict[str, bool]:
         """Determine which models need symmetric aggregates due to fan-out.

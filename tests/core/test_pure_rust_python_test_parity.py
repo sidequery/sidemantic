@@ -111,6 +111,9 @@ PRE_RUN_XFAILS = {
 
 
 EXPECTED_GAPS = {
+    "tests.test_validation::test_query_validation_reports_ambiguous_join_routes": (
+        "Rust query validation does not yet reject ambiguous join routes"
+    ),
     "tests.queries.test_ungrouped_queries::test_with_totals_single_dimension": (
         "Rust adapter does not yet support the with_totals (GROUPING SETS grand-total) compile kwarg"
     ),
@@ -226,6 +229,9 @@ EXPECTED_GAPS = {
         "Rust adapter does not yet support Python pre-aggregation routing (ungrouped drill-to-detail)"
     ),
     "tests.optimizations.test_pre_aggregations::test_ungrouped_rollup_without_pk_falls_to_raw": (
+        "Rust adapter does not yet support Python pre-aggregation routing (ungrouped drill-to-detail)"
+    ),
+    "tests.optimizations.test_pre_aggregations::test_ungrouped_keyless_model_falls_to_raw": (
         "Rust adapter does not yet support Python pre-aggregation routing (ungrouped drill-to-detail)"
     ),
     "tests.optimizations.test_pre_aggregations::test_lambda_preaggregation_unions_batch_rollup_with_fresh_source": (

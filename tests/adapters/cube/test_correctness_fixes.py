@@ -1418,6 +1418,8 @@ def test_cross_cube_trailing_column_ref_translated_to_member():
 cubes:
   - name: orders
     sql_table: orders
+    dimensions:
+      - {name: id, type: number, sql: id, primary_key: true}
     measures:
       - {name: amount, type: sum, sql: amt}
   - name: line_items
@@ -1434,12 +1436,13 @@ cubes:
     )
     m = graph.get_model("line_items").get_metric("derived_x")
     assert m.sql == "orders.amount * 2"
+    assert graph.get_model("orders").primary_key == "id"
     # It compiles to valid SQL (joins orders, references its measure) -- not a ${...} struct literal.
     layer = SemanticLayer()
     layer.graph = graph
     compiled = layer.compile(metrics=["line_items.derived_x"])
     assert "${orders}" not in compiled and "{'orders'" not in compiled
-    assert "SUM(orders_cte.amount_raw)" in compiled
+    assert "SUM(__sidemantic_dedup." in compiled
 
 
 def test_rollup_with_only_unmaterializable_measures_is_rejected():

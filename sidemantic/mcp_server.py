@@ -737,11 +737,12 @@ def get_semantic_graph() -> dict[str, Any]:
         model_info: dict[str, Any] = {
             "name": model_name,
             "table": model.table,
-            "primary_key": _visible_dimension_name(model, model.primary_key, layer.enforce_visibility),
             "dimensions": [d.name for d in model.dimensions if not layer.enforce_visibility or d.public],
             "metrics": [m.name for m in model.metrics if not layer.enforce_visibility or m.public],
             "relationships": [{"name": r.name, "type": r.type} for r in model.relationships],
         }
+        if primary_key := _visible_dimension_name(model, model.primary_key, layer.enforce_visibility):
+            model_info["primary_key"] = primary_key
         if model.description:
             model_info["description"] = model.description
         visible_segments = [s.name for s in model.segments if not layer.enforce_visibility or s.public]

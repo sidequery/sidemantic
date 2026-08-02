@@ -332,6 +332,12 @@ class SQLGenerator:
             "approx_count_distinct": "APPROX_COUNT_DISTINCT",
         }.get(agg, agg.upper())
 
+    def _safe_divide_sql(self, numerator: str, denominator: str) -> str:
+        """Build fractional division without PostgreSQL integer truncation."""
+        if self.dialect == "postgres":
+            return f"CAST(({numerator}) AS DOUBLE PRECISION) / NULLIF(({denominator}), 0)"
+        return f"({numerator}) / NULLIF({denominator}, 0)"
+
     @staticmethod
     def _model_from_clause(model) -> str:
         if model.sql:
@@ -1754,6 +1760,23 @@ class SQLGenerator:
 
         return pushdown_filters, main_query_filters, window_dim_filters
 
+    def _filter_references_metric(self, filter_expr: str, model_names: set[str]) -> bool:
+        """Return whether a filter references a metric owned by one of the models."""
+        try:
+            parsed = _parse_fragment(filter_expr, self.dialect)
+        except Exception:
+            # Fail closed: an unclassifiable filter stays at the outer aggregate grain.
+            return True
+        for column in parsed.find_all(exp.Column):
+            if not column.table:
+                continue
+            clean_name = column.table.replace("_cte", "")
+            if clean_name in model_names:
+                model = self.graph.get_model(clean_name)
+                if model and model.get_metric(column.name):
+                    return True
+        return False
+
     def _extract_metric_filter_columns(self, metrics: list[str]) -> dict[str, set[str]]:
         """Extract columns referenced in metric-level filters and SQL expressions.
 
@@ -2733,13 +2756,21 @@ class SQLGenerator:
         segment_filters = self._resolve_segments(segments or [])
         all_filters = (filters or []) + segment_filters
 
-        # Partition filters by model so sub-queries only get relevant filters.
-        # Cross-model filters (referencing models outside the sub-query) would
-        # produce invalid SQL referencing CTEs that don't exist.
+        # Query-level row filters define one population, so every child query must
+        # see them. Otherwise sibling metrics in the final row can describe different
+        # populations. Metric filters remain at the outer aggregate grain.
         all_model_names = set(metrics_by_model.keys())
         pushdown_by_model, shared_filters, window_dim_filters = self._classify_filters_for_pushdown(
             all_filters, all_model_names
         )
+        child_filters = [filter_expr for model_filters in pushdown_by_model.values() for filter_expr in model_filters]
+        outer_filters = []
+        for filter_expr in shared_filters:
+            if self._filter_references_metric(filter_expr, all_model_names):
+                outer_filters.append(filter_expr)
+            else:
+                child_filters.append(filter_expr)
+        shared_filters = outer_filters
 
         # Generate a pre-aggregated CTE for each metric model
         preagg_ctes = []
@@ -2749,11 +2780,11 @@ class SQLGenerator:
             cte_name = f"{model_name}_preagg"
             cte_names.append(cte_name)
 
-            # Pass pushdown filters plus any window-dim filters for this model.
+            # Pass every query-level row filter plus window-dim filters for this model.
             # Window-dim filters are pushed into the model's sub-query (not the
             # outer preagg join) so the recursive generate() handles them in its
             # own outer WHERE, preserving the requested dimension grain.
-            model_filters = pushdown_by_model.get(model_name, []) + window_dim_filters.get(model_name, [])
+            model_filters = child_filters + window_dim_filters.get(model_name, [])
 
             # Generate sub-query for this model's metrics at the dimension grain
             # We call generate() recursively but it won't trigger pre-aggregation
@@ -3044,6 +3075,361 @@ class SQLGenerator:
 
         return query
 
+    def _rewrite_having_filter(self, filter_expr: str, metric_expressions: dict[str, str]) -> str:
+        """Replace semantic metric references with their aggregate expressions."""
+        try:
+            parsed = _parse_fragment(filter_expr, self.dialect)
+        except Exception:
+            return filter_expr
+
+        for column in list(parsed.find_all(exp.Column)):
+            qualified_ref = f"{column.table.replace('_cte', '')}.{column.name}" if column.table else None
+            replacement_sql = metric_expressions.get(qualified_ref) if qualified_ref else None
+            if replacement_sql is None and not column.table:
+                replacement_sql = metric_expressions.get(column.name)
+            if replacement_sql is None:
+                continue
+            try:
+                column.replace(_parse_fragment(replacement_sql, self.dialect))
+            except Exception:
+                continue
+        return parsed.sql(dialect=self.dialect)
+
+    def _fanout_safe_metric_plan(
+        self,
+        metrics: list[str],
+        symmetric_agg_needed: dict[str, bool],
+    ) -> tuple[str, list[tuple[str, object, str | None]], list[tuple[str, object]]] | None:
+        """Plan exact entity-row aggregation for metrics owned by one fanned-out model."""
+        planned_outputs: list[tuple[str, object, str | None]] = []
+        leaf_metrics: dict[str, tuple[str, object]] = {}
+        metric_models: set[str] = set()
+        supported_aggs = {
+            "sum",
+            "avg",
+            "count",
+            "count_distinct",
+            "approx_count_distinct",
+            "min",
+            "max",
+            "median",
+            "stddev",
+            "stddev_pop",
+            "variance",
+            "variance_pop",
+        }
+
+        def resolve_reference(reference: str, model_context: str | None) -> tuple[str | None, object] | None:
+            if "." not in reference and model_context:
+                local_metric = self.graph.get_model(model_context).get_metric(reference)
+                if local_metric is not None:
+                    return model_context, local_metric
+            try:
+                resolved_model_name, resolved_metric = self.graph.resolve_metric_reference(reference)
+            except KeyError:
+                return None
+            if resolved_metric is None:
+                return None
+            return resolved_model_name, resolved_metric
+
+        def collect_leaves(metric, metric_context: str | None, stack: set[int]) -> bool:
+            identity = id(metric)
+            if identity in stack:
+                return False
+            stack = {*stack, identity}
+
+            if getattr(metric, "sql_is_complete", False):
+                if metric_context is None or not metric.sql:
+                    return False
+                try:
+                    parsed = _parse_fragment(metric.sql.replace("{model}.", "").replace("{model}", ""), self.dialect)
+                except Exception:
+                    return False
+                if any(
+                    column.table and column.table.replace("_cte", "") != metric_context
+                    for column in parsed.find_all(exp.Column)
+                ):
+                    return False
+                columns = self._complete_sql_columns(metric)
+                if metric.filters and not columns:
+                    return False
+                canonical_ref = f"{metric_context}.{metric.name}"
+                leaf_metrics.setdefault(canonical_ref, (canonical_ref, metric))
+                metric_models.add(metric_context)
+                return True
+            if metric.agg:
+                if metric_context is None or metric.agg not in supported_aggs:
+                    return False
+                canonical_ref = f"{metric_context}.{metric.name}"
+                leaf_metrics.setdefault(canonical_ref, (canonical_ref, metric))
+                metric_models.add(metric_context)
+                return True
+            if metric.type == "ratio":
+                if not metric.numerator or not metric.denominator:
+                    return False
+                for dependency in (metric.numerator, metric.denominator):
+                    resolved = resolve_reference(dependency, metric_context)
+                    if resolved is None or not collect_leaves(resolved[1], resolved[0] or metric_context, stack):
+                        return False
+                return True
+            if metric.type == "derived" or (not metric.type and metric.sql):
+                if not metric.sql or "__bsl_all(" in metric.sql or sql_has_aggregate(metric.sql, self.dialect):
+                    return False
+                for dependency in metric.get_dependencies(self.graph, metric_context):
+                    resolved = resolve_reference(dependency, metric_context)
+                    if resolved is None or not collect_leaves(resolved[1], resolved[0] or metric_context, stack):
+                        return False
+                return True
+            return False
+
+        for metric_ref in metrics:
+            resolved = resolve_reference(metric_ref, None)
+            if resolved is None:
+                return None
+            resolved_model_name, metric = resolved
+            if not collect_leaves(metric, resolved_model_name, set()):
+                return None
+            planned_outputs.append((metric_ref, metric, resolved_model_name))
+
+        if len(metric_models) != 1:
+            return None
+        model_name = next(iter(metric_models))
+        if not symmetric_agg_needed.get(model_name, False):
+            return None
+
+        model = self.graph.get_model(model_name)
+        self._require_primary_key(model_name, model.primary_key_columns, "to isolate measures across a fan-out join")
+        return model_name, planned_outputs, list(leaf_metrics.values())
+
+    def _build_fanout_safe_select(
+        self,
+        base_model_name: str,
+        other_models: list[str],
+        parsed_dims: list[tuple[str, str | None]],
+        metric_model_name: str,
+        planned_outputs: list[tuple[str, object, str | None]],
+        leaf_metrics: list[tuple[str, object]],
+        filters: list[str] | None,
+        models_with_filters: set[str],
+        order_by: list[str] | None,
+        limit: int | None,
+        offset: int | None,
+        aliases: dict[str, str],
+        with_totals: bool,
+    ) -> str:
+        """Aggregate one model from exact DISTINCT dimension plus typed-PK rows."""
+        dedup_alias = "__sidemantic_dedup"
+        dim_internal_names = [f"__sidemantic_dim_{idx}" for idx in range(len(parsed_dims))]
+        model = self.graph.get_model(metric_model_name)
+        pk_internal_names = [f"__sidemantic_pk_{idx}" for idx in range(len(model.primary_key_columns))]
+        metric_internal_names = [f"__sidemantic_metric_{idx}" for idx in range(len(leaf_metrics))]
+        complete_column_internal_names: dict[int, dict[str, str]] = {}
+        for leaf_idx, (_metric_ref, measure) in enumerate(leaf_metrics):
+            if getattr(measure, "sql_is_complete", False):
+                complete_column_internal_names[id(measure)] = {
+                    column_name: f"__sidemantic_complete_{leaf_idx}_{column_idx}"
+                    for column_idx, (column_name, _quoted) in enumerate(self._complete_sql_columns(measure))
+                }
+
+        inner_select_exprs: list[str] = []
+        for (dim_ref, gran), internal_name in zip(parsed_dims, dim_internal_names, strict=True):
+            dim_model_name, dim_name = dim_ref.split(".", 1)
+            cte_col_name = f"{dim_name}__{gran}" if gran else dim_name
+            inner_select_exprs.append(
+                f"{self._cte_ref(dim_model_name, cte_col_name)} AS {self._quote_alias(internal_name)}"
+            )
+        for pk_col, internal_name in zip(model.primary_key_columns, pk_internal_names, strict=True):
+            inner_select_exprs.append(
+                f"{self._cte_ref(metric_model_name, pk_col)} AS {self._quote_alias(internal_name)}"
+            )
+        for (_metric_ref, measure), internal_name in zip(leaf_metrics, metric_internal_names, strict=True):
+            if getattr(measure, "sql_is_complete", False):
+                for column_name, complete_internal_name in complete_column_internal_names[id(measure)].items():
+                    source_name = self._complete_sql_raw_alias(measure.name, column_name)
+                    inner_select_exprs.append(
+                        f"{self._cte_ref(metric_model_name, source_name)} AS {self._quote_alias(complete_internal_name)}"
+                    )
+                continue
+            inner_select_exprs.append(
+                f"{self._cte_ref(metric_model_name, f'{measure.name}_raw')} AS {self._quote_alias(internal_name)}"
+            )
+
+        inner_query = (
+            select(*inner_select_exprs).distinct().from_(self._quote_identifier(self._cte_name(base_model_name)))
+        )
+        inner_query = self._add_join_paths_to_query(inner_query, base_model_name, other_models, models_with_filters)
+        where_filters, having_filters = self._split_where_having_filters(
+            filters or [], [base_model_name] + other_models
+        )
+        inner_query = self._add_where_filters_to_query(inner_query, where_filters, [base_model_name] + other_models)
+
+        field_names: dict[str, list[str]] = {}
+        for dim_ref, gran in parsed_dims:
+            dim_model_name, dim_name = dim_ref.split(".", 1)
+            field_name = f"{dim_name}__{gran}" if gran else dim_name
+            field_names.setdefault(field_name, []).append(dim_model_name)
+        for metric_ref, metric, metric_context in planned_outputs:
+            owner = metric_context or (metric_ref.split(".", 1)[0] if "." in metric_ref else "")
+            field_names.setdefault(metric.name, []).append(owner)
+        has_collision = {name: len(owners) > 1 for name, owners in field_names.items()}
+
+        output_aliases: dict[str, str] = {}
+        outer_select_exprs: list[str] = []
+        dedup_table = self._quote_identifier(dedup_alias)
+        for idx, (dim_ref, gran) in enumerate(parsed_dims):
+            dim_model_name, dim_name = dim_ref.split(".", 1)
+            base_alias = f"{dim_name}__{gran}" if gran else dim_name
+            full_ref = f"{dim_ref}__{gran}" if gran else dim_ref
+            alias = aliases.get(full_ref)
+            if alias is None:
+                alias = f"{dim_model_name}_{base_alias}" if has_collision.get(base_alias, False) else base_alias
+            internal_ref = f"{dedup_table}.{self._quote_identifier(dim_internal_names[idx])}"
+            outer_select_exprs.append(f"{internal_ref} AS {self._quote_alias(alias)}")
+            output_aliases[full_ref] = alias
+            output_aliases[dim_ref] = alias
+            output_aliases[base_alias] = alias
+
+        def aggregate_entity_rows(measure, raw_ref: str) -> str:
+            agg = measure.agg
+            if agg == "count":
+                aggregate = f"COUNT({raw_ref})"
+            elif agg == "count_distinct":
+                aggregate = f"COUNT({raw_ref})" if not measure.sql else f"COUNT(DISTINCT {raw_ref})"
+            elif agg == "approx_count_distinct":
+                aggregate = f"COUNT({raw_ref})" if not measure.sql else f"APPROX_COUNT_DISTINCT({raw_ref})"
+            else:
+                aggregate = f"{self._agg_sql_name(agg)}({raw_ref})"
+            return self._wrap_with_fill_nulls(aggregate, measure)
+
+        def complete_sql_over_entity_rows(measure) -> str:
+            formula = (measure.sql or "").replace("{model}.", "").replace("{model}", "")
+            try:
+                parsed = _parse_fragment(formula, self.dialect)
+            except Exception as exc:
+                raise ValueError(f"Complete SQL metric {measure.name} could not be parsed safely") from exc
+            column_names = complete_column_internal_names.get(id(measure), {})
+            for column in parsed.find_all(exp.Column):
+                if column.name not in column_names:
+                    raise ValueError(f"Complete SQL metric {measure.name} references unsupported column {column.sql()}")
+                internal_name = column_names[column.name]
+                column.set(
+                    "this", exp.to_identifier(internal_name, quoted=not self._is_simple_identifier(internal_name))
+                )
+                column.set("table", exp.to_identifier(dedup_alias, quoted=not self._is_simple_identifier(dedup_alias)))
+            entity_formula = parsed.sql(dialect=self.dialect)
+            if parsed_dims and not sql_has_aggregate(measure.sql or "", self.dialect):
+                entity_formula = f"ANY_VALUE({entity_formula})"
+            return entity_formula
+
+        leaf_aggregate_by_id: dict[int, str] = {}
+        for idx, (_leaf_ref, measure) in enumerate(leaf_metrics):
+            if getattr(measure, "sql_is_complete", False):
+                continue
+            raw_ref = f"{dedup_table}.{self._quote_identifier(metric_internal_names[idx])}"
+            leaf_aggregate_by_id[id(measure)] = aggregate_entity_rows(measure, raw_ref)
+
+        def resolve_calculation_reference(reference: str, model_context: str | None):
+            if "." not in reference and model_context:
+                local_metric = self.graph.get_model(model_context).get_metric(reference)
+                if local_metric is not None:
+                    return model_context, local_metric
+            try:
+                return self.graph.resolve_metric_reference(reference)
+            except KeyError as exc:
+                raise ValueError(f"Metric {reference} not found") from exc
+
+        def build_calculated_metric(metric, model_context: str | None, stack: set[int] | None = None) -> str:
+            stack = set() if stack is None else stack
+            if id(metric) in stack:
+                raise ValueError(f"Circular metric dependency involving {metric.name}")
+            stack = {*stack, id(metric)}
+            if getattr(metric, "sql_is_complete", False):
+                return complete_sql_over_entity_rows(metric)
+            if metric.agg:
+                if id(metric) not in leaf_aggregate_by_id:
+                    raise ValueError(f"Metric {metric.name} was not planned at the entity grain")
+                return leaf_aggregate_by_id[id(metric)]
+            if metric.type == "ratio":
+                if not metric.numerator or not metric.denominator:
+                    raise ValueError(f"Ratio metric {metric.name} requires numerator and denominator")
+                numerator_context, numerator = resolve_calculation_reference(metric.numerator, model_context)
+                denominator_context, denominator = resolve_calculation_reference(metric.denominator, model_context)
+                numerator_sql = build_calculated_metric(numerator, numerator_context or model_context, stack)
+                denominator_sql = build_calculated_metric(denominator, denominator_context or model_context, stack)
+                return self._safe_divide_sql(numerator_sql, denominator_sql)
+            if metric.type == "derived" or (not metric.type and metric.sql):
+                if not metric.sql:
+                    raise ValueError(f"Derived metric {metric.name} missing sql")
+                formula = metric.sql
+                dependencies = sorted(metric.get_dependencies(self.graph, model_context), key=len, reverse=True)
+                import re
+
+                for dependency in dependencies:
+                    dependency_context, dependency_metric = resolve_calculation_reference(dependency, model_context)
+                    dependency_sql = build_calculated_metric(
+                        dependency_metric, dependency_context or model_context, stack
+                    )
+                    if "." in dependency:
+                        qualified_pattern = r"\b" + re.escape(dependency) + r"\b"
+                        if re.search(qualified_pattern, formula):
+                            formula = re.sub(qualified_pattern, f"({dependency_sql})", formula)
+                        else:
+                            bare_name = dependency.split(".", 1)[1]
+                            formula = re.sub(
+                                r"(?<!\.)\b" + re.escape(bare_name) + r"\b", f"({dependency_sql})", formula
+                            )
+                    else:
+                        formula = re.sub(r"(?<!\.)\b" + re.escape(dependency) + r"\b", f"({dependency_sql})", formula)
+                return formula
+            raise ValueError(f"Metric {metric.name} cannot be planned at the entity grain")
+
+        having_metric_expressions: dict[str, str] = {}
+        for metric_ref, metric, metric_context in planned_outputs:
+            if metric_ref in aliases:
+                alias = aliases[metric_ref]
+            elif has_collision.get(metric.name, False):
+                alias = f"{metric_model_name}_{metric.name}"
+            else:
+                alias = metric.name
+            aggregate = build_calculated_metric(metric, metric_context or metric_model_name)
+            aggregate = self._wrap_with_fill_nulls(aggregate, metric)
+            outer_select_exprs.append(f"{aggregate} AS {self._quote_alias(alias)}")
+            output_aliases[metric_ref] = alias
+            output_aliases[metric.name] = alias
+            having_metric_expressions[metric_ref] = aggregate
+            having_metric_expressions.setdefault(metric.name, aggregate)
+
+        if with_totals and parsed_dims:
+            first_dim = f"{dedup_table}.{self._quote_identifier(dim_internal_names[0])}"
+            outer_select_exprs.append(f"GROUPING({first_dim}) AS _is_total")
+
+        outer_query = select(*outer_select_exprs).from_(inner_query.subquery(dedup_alias))
+        if parsed_dims:
+            if with_totals:
+                positions = ", ".join(str(i) for i in range(1, len(parsed_dims) + 1))
+                outer_query = outer_query.group_by(f"GROUPING SETS (({positions}), ())")
+            else:
+                outer_query = outer_query.group_by(*range(1, len(parsed_dims) + 1))
+        for filter_expr in having_filters:
+            outer_query = outer_query.having(self._rewrite_having_filter(filter_expr, having_metric_expressions))
+
+        if order_by:
+            order_exprs = []
+            for field in order_by:
+                parts = field.rsplit(" ", 1)
+                field_ref = parts[0] if len(parts) == 2 and parts[1].upper() in {"ASC", "DESC"} else field
+                direction = f" {parts[1].upper()}" if field_ref != field else ""
+                output_alias = output_aliases.get(field_ref)
+                if output_alias is None and "." in field_ref:
+                    output_alias = output_aliases.get(field_ref.split(".", 1)[1])
+                order_exprs.append(f"{self._quote_alias(output_alias or field_ref)}{direction}")
+            outer_query = outer_query.order_by(*order_exprs)
+        if limit is not None:
+            outer_query = outer_query.limit(limit)
+        if offset is not None:
+            outer_query = outer_query.offset(offset)
+        return outer_query.sql(dialect=self.dialect, pretty=True)
+
     def _build_main_select(
         self,
         base_model_name: str,
@@ -3082,26 +3468,65 @@ class SQLGenerator:
         # Detect if symmetric aggregates are needed
         symmetric_agg_needed = self._has_fanout_joins(base_model_name, other_models)
 
-        dimension_models = {dim_ref.split(".")[0] for dim_ref, _ in parsed_dims if "." in dim_ref}
+        # A model introduced only by a query-level filter can multiply the metric
+        # model just like a selected dimension model can.
+        row_context_models = {base_model_name, *other_models}
         metric_models = set()
         for metric_ref in metrics:
-            try:
-                metric_model_name, _ = self.graph.resolve_metric_reference(metric_ref)
-            except KeyError:
-                metric_model_name = None
-            if metric_model_name:
-                metric_models.add(metric_model_name)
+            metric_models.update(self._find_required_models([metric_ref], []))
         for metric_model in metric_models:
-            for dimension_model in dimension_models:
-                if metric_model == dimension_model:
+            for context_model in row_context_models:
+                if metric_model == context_model:
                     continue
                 try:
-                    join_path = self.graph.find_relationship_path(metric_model, dimension_model)
+                    join_path = self.graph.find_relationship_path(metric_model, context_model)
                 except ValueError:
                     continue
-                if any(jp.relationship == "one_to_many" for jp in join_path):
+                if any(jp.relationship in {"one_to_many", "many_to_many", "cross"} for jp in join_path):
                     symmetric_agg_needed[metric_model] = True
                     break
+
+        fanout_safe_plan = self._fanout_safe_metric_plan(metrics, symmetric_agg_needed)
+        if fanout_safe_plan is not None and not ungrouped:
+            metric_model_name, planned_outputs, leaf_metrics = fanout_safe_plan
+            return self._build_fanout_safe_select(
+                base_model_name=base_model_name,
+                other_models=other_models,
+                parsed_dims=parsed_dims,
+                metric_model_name=metric_model_name,
+                planned_outputs=planned_outputs,
+                leaf_metrics=leaf_metrics,
+                filters=filters,
+                models_with_filters=models_with_filters,
+                order_by=order_by,
+                limit=limit,
+                offset=offset,
+                aliases=aliases,
+                with_totals=with_totals,
+            )
+
+        unsafe_complete_metrics = []
+        if not ungrouped:
+            for metric_ref in metrics:
+                try:
+                    resolved_model_name, resolved_metric = self.graph.resolve_metric_reference(metric_ref)
+                except KeyError:
+                    continue
+                if (
+                    resolved_model_name
+                    and resolved_metric
+                    and getattr(resolved_metric, "sql_is_complete", False)
+                    and symmetric_agg_needed.get(resolved_model_name, False)
+                ):
+                    unsafe_complete_metrics.append(metric_ref)
+        if unsafe_complete_metrics:
+            from sidemantic.core.semantic_layer import UnsupportedMetricError
+
+            raise UnsupportedMetricError(
+                "Opaque complete-SQL metrics cannot be evaluated safely across this fan-out join: "
+                f"{', '.join(unsafe_complete_metrics)}. Use a parseable aggregate over columns from its owning "
+                "model, or query the metric without the multiplying relationship."
+            )
 
         # Check for dimension/metric name collisions across models
         # If there are collisions, prefix with model name

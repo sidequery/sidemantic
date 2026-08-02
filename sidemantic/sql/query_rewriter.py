@@ -3050,7 +3050,7 @@ class QueryRewriter:
             return False
         try:
             parsed = sqlglot.parse_one(sql, dialect=self.dialect)
-        except Exception:
+        except SqlglotError:
             return False
         return isinstance(parsed, exp.Select) and self._contains_implicit_yardstick_measure_query(parsed)
 

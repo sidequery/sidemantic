@@ -772,7 +772,14 @@ class SemanticLayer:
         )
 
     def _execute_with_preagg_fallback(
-        self, primary_sql, recompile_raw, *, use_preaggs: bool, strict: bool, used_preagg: bool
+        self,
+        primary_sql,
+        recompile_raw,
+        *,
+        use_preaggs: bool,
+        strict: bool,
+        used_preagg: bool,
+        execute=None,
     ):
         """Execute primary_sql, falling back to raw tables when a routed rollup is missing.
 
@@ -783,8 +790,9 @@ class SemanticLayer:
         - if the routed rollup table does not exist, fall back to recompile_raw() (or
           raise in strict mode). Any other error surfaces unchanged.
         """
+        execute_query = execute or self.adapter.execute
         if not use_preaggs:
-            return self.adapter.execute(primary_sql)
+            return execute_query(primary_sql)
 
         # Rollup-only: a query no rollup can serve must error rather than scan raw tables.
         if strict and not used_preagg:
@@ -794,7 +802,7 @@ class SemanticLayer:
             )
 
         try:
-            return self.adapter.execute(primary_sql)
+            return execute_query(primary_sql)
         except Exception as exc:
             # Only intervene when a routed pre-aggregation table is missing; every
             # other error surfaces unchanged.
@@ -807,7 +815,7 @@ class SemanticLayer:
                 ) from exc
             # A pure optimization fell through: recompile against raw tables so the
             # query still returns correct results.
-            return self.adapter.execute(recompile_raw())
+            return execute_query(recompile_raw())
 
     @staticmethod
     def _is_missing_relation_error(error: Exception) -> bool:

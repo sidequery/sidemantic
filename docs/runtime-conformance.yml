@@ -1,0 +1,198 @@
+schema_version: 1
+status_legend:
+  supported: Implemented on this runtime surface and backed by the listed automated evidence.
+  partial: Some shapes are implemented, but callers must not assume full Python-runtime behavior.
+  unsupported: Not part of this runtime surface.
+runtimes:
+  python:
+    label: Python
+    lifecycle: stable
+    scope: Canonical import, migration, orchestration, and full semantic-query runtime.
+  rust:
+    label: Rust native runtime
+    lifecycle: experimental
+    scope: Native format runtime; not an external-format compatibility layer.
+  duckdb_extension:
+    label: DuckDB extension
+    lifecycle: experimental
+    scope: DuckDB-native wrapper around selected sidemantic-rs contracts.
+  wasm:
+    label: WASM
+    lifecycle: experimental
+    scope: Browser-safe sidemantic-rs subset; not the Python/Pyodide product surface.
+capabilities:
+  shared_native_fixture_contract:
+    label: Shared native YAML/SQL fixture contract
+    python:
+      status: supported
+      evidence: [tests/native_compat/test_basic_model_fixture.py]
+      fixtures: all
+    rust:
+      status: supported
+      evidence: [sidemantic-rs/tests/native_fixtures.rs]
+      fixtures: all
+    duckdb_extension:
+      status: partial
+      evidence: [sidemantic-duckdb/test/sql/sidemantic_native_contract.test]
+      detail: Dedicated extension cases, not the complete shared manifest.
+    wasm:
+      status: partial
+      evidence: [sidemantic-rs/tests/wasm_parity_subset.rs]
+      detail: Curated parity subset, not the complete shared manifest.
+  native_yaml_load:
+    label: Native YAML load
+    python:
+      status: supported
+      evidence: [tests/native_compat/test_basic_model_fixture.py]
+      fixtures: [basic_model]
+    rust:
+      status: supported
+      evidence: [sidemantic-rs/tests/native_fixtures.rs]
+      fixtures: [basic_model]
+    duckdb_extension:
+      status: supported
+      evidence: [sidemantic-duckdb/test/sql/sidemantic_native_contract.test]
+    wasm:
+      status: supported
+      evidence: [sidemantic-rs/tests/wasm_parity_subset.rs]
+  native_sql_definitions:
+    label: Native SQL and frontmatter definitions
+    python:
+      status: supported
+      evidence: [tests/native_compat/test_basic_model_fixture.py]
+      fixtures: [native_sql_definitions, sql_frontmatter_definitions, compact_sql_model]
+    rust:
+      status: supported
+      evidence: [sidemantic-rs/tests/native_fixtures.rs]
+      fixtures: [native_sql_definitions, sql_frontmatter_definitions, compact_sql_model]
+    duckdb_extension:
+      status: partial
+      evidence: [sidemantic-duckdb/test/sql/sidemantic_native_contract.test]
+    wasm:
+      status: partial
+      evidence: [sidemantic-rs/tests/wasm_parity_subset.rs]
+  structured_query_compile:
+    label: Structured metric/dimension query compilation
+    python:
+      status: supported
+      evidence: [tests/native_compat/test_basic_model_fixture.py]
+      fixtures: all_valid
+    rust:
+      status: supported
+      evidence: [sidemantic-rs/tests/native_fixtures.rs]
+      fixtures: all_valid
+    duckdb_extension:
+      status: partial
+      evidence: [sidemantic-duckdb/test/sql/sidemantic.test]
+    wasm:
+      status: partial
+      evidence: [sidemantic-rs/tests/wasm_parity_subset.rs]
+  semantic_sql_rewrite:
+    label: Semantic SQL rewrite
+    python:
+      status: supported
+      evidence: [tests/native_compat/test_basic_model_fixture.py, tests/queries/test_sql_rewriter.py]
+    rust:
+      status: partial
+      evidence: [sidemantic-rs/tests/native_fixtures.rs]
+      detail: Native subset; Python remains the full rewrite implementation.
+    duckdb_extension:
+      status: partial
+      evidence: [sidemantic-duckdb/test/sql/sidemantic.test]
+    wasm:
+      status: partial
+      evidence: [sidemantic-rs/tests/wasm_parity_subset.rs]
+  relationships_and_joins:
+    label: Relationships, composite keys, and multi-hop joins
+    python:
+      status: supported
+      evidence: [tests/native_compat/test_basic_model_fixture.py]
+      fixtures: [relationships, composite_keys, multi_hop_joins, many_to_many_relationship]
+    rust:
+      status: supported
+      evidence: [sidemantic-rs/tests/native_fixtures.rs]
+      fixtures: [relationships, composite_keys, multi_hop_joins, many_to_many_relationship]
+    duckdb_extension:
+      status: partial
+      evidence: [sidemantic-duckdb/test/sql/sidemantic_native_contract.test]
+    wasm:
+      status: partial
+      evidence: [sidemantic-rs/tests/wasm_parity_subset.rs]
+  advanced_metrics:
+    label: Cumulative, comparison, conversion, retention, and cohort metrics
+    python:
+      status: supported
+      evidence: [tests/native_compat/test_basic_model_fixture.py]
+      fixtures: [advanced_metrics]
+    rust:
+      status: supported
+      evidence: [sidemantic-rs/tests/native_fixtures.rs]
+      fixtures: [advanced_metrics]
+    duckdb_extension:
+      status: unsupported
+    wasm:
+      status: partial
+      evidence: [sidemantic-rs/tests/wasm_parity_subset.rs]
+  preaggregation_routing:
+    label: Pre-aggregation routing
+    python:
+      status: supported
+      evidence: [tests/native_compat/test_basic_model_fixture.py]
+      fixtures: [preaggregation_routing]
+    rust:
+      status: supported
+      evidence: [sidemantic-rs/tests/native_fixtures.rs]
+      fixtures: [preaggregation_routing]
+    duckdb_extension:
+      status: unsupported
+    wasm:
+      status: partial
+      evidence: [sidemantic-rs/tests/wasm_parity_subset.rs]
+  duckdb_execution:
+    label: DuckDB query execution
+    python:
+      status: supported
+      evidence: [tests/native_compat/test_basic_model_fixture.py]
+    rust:
+      status: supported
+      evidence: [sidemantic-rs/tests/adbc_duckdb_e2e.rs]
+    duckdb_extension:
+      status: supported
+      evidence: [sidemantic-duckdb/test/sql/sidemantic.test]
+    wasm:
+      status: unsupported
+  external_format_import:
+    label: External format import and migration
+    python:
+      status: supported
+      evidence: [tests/adapters/test_fixture_functionality_contracts.py]
+    rust:
+      status: unsupported
+    duckdb_extension:
+      status: unsupported
+    wasm:
+      status: unsupported
+  python_definition_files:
+    label: Python semantic definition files
+    python:
+      status: supported
+      evidence: [tests/core/test_directory_loaders.py]
+    rust:
+      status: unsupported
+    duckdb_extension:
+      status: unsupported
+    wasm:
+      status: unsupported
+  server_and_notebook_surfaces:
+    label: HTTP, PostgreSQL wire, MCP, notebook, and widget surfaces
+    python:
+      status: supported
+      evidence: [tests/server/test_api_server.py, tests/server/test_connection.py, tests/widget/test_widget_examples.py]
+    rust:
+      status: partial
+      evidence: [sidemantic-rs/tests/http_server.rs, sidemantic-rs/tests/mcp_protocol.rs]
+      detail: Experimental native HTTP/MCP binaries; no Python widget/notebook parity.
+    duckdb_extension:
+      status: unsupported
+    wasm:
+      status: unsupported

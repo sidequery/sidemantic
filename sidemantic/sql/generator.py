@@ -1709,7 +1709,7 @@ class SQLGenerator:
         """Return whether a filter references a metric owned by one of the models."""
         try:
             parsed = _parse_fragment(filter_expr, self.dialect)
-        except Exception:
+        except SqlglotError:
             # Fail closed: an unclassifiable filter stays at the outer aggregate grain.
             return True
         for column in parsed.find_all(exp.Column):
@@ -2972,7 +2972,7 @@ class SQLGenerator:
         """Replace semantic metric references with their aggregate expressions."""
         try:
             parsed = _parse_fragment(filter_expr, self.dialect)
-        except Exception:
+        except SqlglotError:
             return filter_expr
 
         for column in list(parsed.find_all(exp.Column)):
@@ -2984,7 +2984,7 @@ class SQLGenerator:
                 continue
             try:
                 column.replace(_parse_fragment(replacement_sql, self.dialect))
-            except Exception:
+            except SqlglotError:
                 continue
         return parsed.sql(dialect=self.dialect)
 
@@ -3036,7 +3036,7 @@ class SQLGenerator:
                     return False
                 try:
                     parsed = _parse_fragment(metric.sql.replace("{model}.", "").replace("{model}", ""), self.dialect)
-                except Exception:
+                except SqlglotError:
                     return False
                 if any(
                     column.table and column.table.replace("_cte", "") != metric_context
@@ -3198,7 +3198,7 @@ class SQLGenerator:
             formula = (measure.sql or "").replace("{model}.", "").replace("{model}", "")
             try:
                 parsed = _parse_fragment(formula, self.dialect)
-            except Exception as exc:
+            except SqlglotError as exc:
                 raise ValueError(f"Complete SQL metric {measure.name} could not be parsed safely") from exc
             column_names = complete_column_internal_names.get(id(measure), {})
             for column in parsed.find_all(exp.Column):

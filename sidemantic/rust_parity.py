@@ -11,6 +11,10 @@ from functools import lru_cache
 from pathlib import Path
 
 
+class ParityMatrixError(RuntimeError):
+    """Raised when the checked-in Rust parity contract is malformed."""
+
+
 def _repo_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
@@ -22,8 +26,8 @@ def _load_parity_matrix() -> dict:
         return {"subsystems": {}}
     try:
         return json.loads(matrix_path.read_text())
-    except Exception:
-        return {"subsystems": {}}
+    except json.JSONDecodeError as exc:
+        raise ParityMatrixError(f"Invalid Rust parity matrix JSON: {matrix_path}") from exc
 
 
 @lru_cache(maxsize=1)

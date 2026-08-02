@@ -743,29 +743,22 @@ def _query_table_with_preagg_fallback(
     user_attributes: dict | None = None,
 ) -> tuple[Any, str]:
     """Execute routed SQL, falling back to raw tables when its rollup is missing."""
-    from sidemantic.core.semantic_layer import PreaggregationStrictError
+    executed_sql = sql
 
-    if not use_preaggs:
-        return _query_table(app, layer, sql, user_attributes=user_attributes), sql
+    def execute(candidate_sql: str):
+        nonlocal executed_sql
+        executed_sql = candidate_sql
+        return _query_table(app, layer, candidate_sql, user_attributes=user_attributes)
 
-    used_preagg = "used_preagg=true" in sql
-    if strict and not used_preagg:
-        raise PreaggregationStrictError(
-            "Strict pre-aggregation mode: no pre-aggregation matched this query "
-            "(its metrics/dimensions/granularity are not covered by any rollup)."
-        )
-    try:
-        return _query_table(app, layer, sql, user_attributes=user_attributes), sql
-    except Exception as exc:
-        if not used_preagg or not layer._is_missing_relation_error(exc):
-            raise
-        if strict:
-            raise PreaggregationStrictError(
-                "Strict pre-aggregation mode: the matching pre-aggregation table is not built. "
-                "Materialize it (e.g. `sidemantic preagg refresh`) before querying."
-            ) from exc
-        raw_sql = recompile_raw()
-        return _query_table(app, layer, raw_sql, user_attributes=user_attributes), raw_sql
+    table = layer._execute_with_preagg_fallback(
+        sql,
+        recompile_raw,
+        use_preaggs=use_preaggs,
+        strict=strict,
+        used_preagg="used_preagg=true" in sql,
+        execute=execute,
+    )
+    return table, executed_sql
 
 
 def _query_table(app: FastAPI, layer: SemanticLayer, sql: str, user_attributes: dict | None = None) -> Any:

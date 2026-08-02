@@ -6,6 +6,7 @@ import sqlglot
 from sqlglot import exp
 
 from sidemantic import Dimension, Metric, Model, Relationship, Segment, SemanticLayer
+from sidemantic.validation import QueryValidationError
 from tests.utils import df_rows
 
 
@@ -799,6 +800,33 @@ def test_direct_many_to_many_without_target_key_joins_on_model_pk():
     # Local side joins on A's primary key; it never references a raw a_id column (A has none).
     assert re.search(r"a_cte\.id\b", sql)
     assert "a_cte.a_id" not in sql
+
+
+def test_keyless_direct_many_to_many_has_no_join_path_when_queried():
+    """An incomplete keyless relationship is ignored until a query actually needs that join."""
+    layer = SemanticLayer()
+    layer.add_model(
+        Model(
+            name="a",
+            table="a",
+            metrics=[Metric(name="cnt", agg="count")],
+            relationships=[Relationship(name="b", type="many_to_many", foreign_key="a_id")],
+        )
+    )
+    layer.add_model(
+        Model(
+            name="b",
+            table="b",
+            primary_key="a_id",
+            dimensions=[Dimension(name="label", type="categorical")],
+        )
+    )
+
+    sql = layer.compile(metrics=["a.cnt"])
+    assert "a_cte" in sql
+
+    with pytest.raises(QueryValidationError, match="No join path found between models"):
+        layer.compile(metrics=["a.cnt"], dimensions=["b.label"])
 
 
 if __name__ == "__main__":

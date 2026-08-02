@@ -130,7 +130,7 @@ jobs:
             cat "$tmpdir/serve.err" >&2
             exit 1
           fi
-          grep -q "sidemantic\\[serve\\]" "$tmpdir/serve.err"
+          grep -q "sidemantic\\[api\\]" "$tmpdir/serve.err"
 
   update-schema:
     name: Update JSON Schema

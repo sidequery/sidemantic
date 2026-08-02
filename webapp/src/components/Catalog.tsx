@@ -12,6 +12,7 @@ function MetricRow({ metric, selected, multiple, onSelect }: { metric: CatalogMe
       type="button"
       data-catalog-metric={metric.ref}
       data-selected={selected || undefined}
+      aria-pressed={selected}
       title={metric.description}
       onClick={onSelect}
       className="flex w-full items-center justify-between gap-2 border-l-2 px-3 py-1 text-left text-xs hover:bg-surface-soft data-[selected=true]:border-l-accent data-[selected=true]:bg-accent-soft data-[selected=true]:text-accent border-l-transparent text-muted"
@@ -51,7 +52,7 @@ export function Catalog() {
   const pivotMetrics = state.pivotMetrics.length ? state.pivotMetrics : state.selectedMetric ? [state.selectedMetric] : [];
 
   return (
-    <nav className="flex flex-col gap-4 py-3 text-sm">
+    <nav aria-label="Semantic layer catalog" className="flex flex-col gap-4 py-3 text-sm">
       <section className="px-3">
         <h2 className="mb-1 text-xs font-medium text-muted">Model</h2>
         <select

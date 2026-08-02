@@ -29,14 +29,21 @@ import { DashboardDocumentView } from "./views/DashboardDocumentView";
 function QueryStatus() {
   const active = useQueryActive();
   return (
-    <span className="flex items-center gap-1.5 text-2xs text-faint" title={active ? "Querying" : "Idle"}>
+    <span
+      role="status"
+      aria-live="polite"
+      aria-atomic="true"
+      className="flex items-center gap-1.5 text-2xs text-faint"
+      title={active ? "Updating data" : "Data is up to date"}
+    >
       {active ? (
-        <svg viewBox="0 0 24 24" className="spinner size-3.5 text-accent" fill="none" stroke="currentColor" strokeWidth="3">
+        <svg aria-hidden="true" viewBox="0 0 24 24" className="spinner size-3.5 text-accent" fill="none" stroke="currentColor" strokeWidth="3">
           <path d="M12 3a9 9 0 1 0 9 9" strokeLinecap="round" />
         </svg>
       ) : (
         <span aria-hidden="true" className="inline-block size-2 rounded-full bg-accent" />
       )}
+      <span className="sr-only">{active ? "Updating data" : "Data is up to date"}</span>
     </span>
   );
 }

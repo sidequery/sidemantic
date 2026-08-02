@@ -226,8 +226,8 @@ def test_result_cache_no_cross_user_leak_end_to_end():
     assert tenants_b == {2}
 
 
-def test_sql_endpoint_denied_when_model_secured():
-    """P0-3: /sql cannot enforce row filters, so it must refuse when security is declared."""
+def test_sql_endpoint_enforces_row_filter_when_model_secured():
+    """Semantic SQL uses the same row-filtered generator as /query."""
     layer = _make_layer()
     client = TestClient(create_app(layer, auth_token="secret"))
     resp = client.post(
@@ -235,7 +235,20 @@ def test_sql_endpoint_denied_when_model_secured():
         json={"query": "SELECT order_count FROM orders"},
         headers=_headers(user_attrs={"tenant_id": 1}),
     )
-    assert resp.status_code == 403, resp.text
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["rows"] == [{"order_count": 2}]
+
+
+def test_sql_compile_endpoint_enforces_row_filter_when_model_secured():
+    layer = _make_layer()
+    client = TestClient(create_app(layer, auth_token="secret"))
+    resp = client.post(
+        "/sql/compile",
+        json={"query": "SELECT order_count FROM orders"},
+        headers=_headers(user_attrs={"tenant_id": 2}),
+    )
+    assert resp.status_code == 200, resp.text
+    assert "WHERE tenant_id = 2" in resp.json()["sql"]
 
 
 def test_raw_endpoint_denied_when_model_secured():
@@ -248,6 +261,37 @@ def test_raw_endpoint_denied_when_model_secured():
         headers=_headers(user_attrs={"tenant_id": 1}),
     )
     assert resp.status_code == 403, resp.text
+
+
+def test_sql_passthrough_denied_when_security_active():
+    layer = _make_layer()
+    layer.adapter.execute("create table audit_log (message varchar)")
+    client = TestClient(create_app(layer, auth_token="secret"))
+    resp = client.post(
+        "/sql",
+        json={"query": "SELECT message FROM audit_log"},
+        headers=_headers(user_attrs={"tenant_id": 1}),
+    )
+    assert resp.status_code == 403, resp.text
+    assert "non-semantic" in resp.json()["error"]
+
+
+def test_sql_and_raw_deny_hidden_fields_when_visibility_enforced():
+    layer = _make_layer()
+    client = TestClient(create_app(layer, auth_token="secret", enforce_visibility=True))
+    headers = _headers(user_attrs={"tenant_id": 1})
+
+    sql_resp = client.post(
+        "/sql",
+        json={"query": "SELECT secret_note, order_count FROM orders"},
+        headers=headers,
+    )
+    assert sql_resp.status_code == 403, sql_resp.text
+    assert "not public" in sql_resp.json()["error"]
+
+    raw_resp = client.post("/raw", json={"query": "SELECT status FROM orders"}, headers=headers)
+    assert raw_resp.status_code == 403, raw_resp.text
+    assert "raw sql bypasses" in raw_resp.json()["error"].lower()
 
 
 def test_sql_endpoint_allowed_without_security():

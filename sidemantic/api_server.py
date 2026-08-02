@@ -104,6 +104,7 @@ class StructuredQueryRequest(BaseModel):
     ungrouped: bool = False
     parameters: dict[str, Any] | None = None
     use_preaggregations: bool | None = None
+    preagg_strict: bool | None = None
     timezone: str | None = None
 
     def resolved_filters(self) -> list[str]:
@@ -333,13 +334,17 @@ def create_app(
     async def handle_value_error(_request: Request, exc: ValueError):
         return JSONResponse({"error": str(exc)}, status_code=400)
 
-    from sidemantic.core.semantic_layer import SecurityError
+    from sidemantic.core.semantic_layer import PreaggregationStrictError, SecurityError
 
     @app.exception_handler(SecurityError)
     async def handle_security_error(_request: Request, exc: SecurityError):
         # A secured model was queried without sufficient user attributes (or an
         # access gate denied the request). Map to 403 Forbidden.
         return JSONResponse({"error": str(exc)}, status_code=403)
+
+    @app.exception_handler(PreaggregationStrictError)
+    async def handle_preagg_strict_error(_request: Request, exc: PreaggregationStrictError):
+        return JSONResponse({"error": str(exc)}, status_code=409)
 
     def resolve_user_attributes(request: Request) -> dict | None:
         """Parse per-request user attributes from the trusted user header.
@@ -565,22 +570,40 @@ def create_app(
         filters = payload.resolved_filters()
         for filter_str in filters:
             validate_filter_expression(filter_str, dialect=current_layer.dialect)
-        sql = current_layer.compile(
-            dimensions=payload.dimensions,
-            metrics=payload.metrics,
-            filters=filters,
-            segments=payload.segments or None,
-            order_by=payload.order_by or None,
-            limit=payload.limit,
-            offset=payload.offset,
-            ungrouped=payload.ungrouped,
-            parameters=payload.parameters,
-            use_preaggregations=payload.use_preaggregations,
-            user_attributes=user_attributes,
-            timezone=payload.timezone,
+
+        def compile_query(use_preaggregations: bool | None) -> str:
+            return current_layer.compile(
+                dimensions=payload.dimensions,
+                metrics=payload.metrics,
+                filters=filters,
+                segments=payload.segments or None,
+                order_by=payload.order_by or None,
+                limit=payload.limit,
+                offset=payload.offset,
+                ungrouped=payload.ungrouped,
+                parameters=payload.parameters,
+                use_preaggregations=use_preaggregations,
+                user_attributes=user_attributes,
+                timezone=payload.timezone,
+            )
+
+        sql = compile_query(payload.use_preaggregations)
+        use_preaggs = (
+            payload.use_preaggregations
+            if payload.use_preaggregations is not None
+            else current_layer.use_preaggregations
         )
-        table = _query_table(app, current_layer, sql, user_attributes=user_attributes)
-        return _build_query_response(request, current_layer, table, sql=sql, format_override=format)
+        strict = payload.preagg_strict if payload.preagg_strict is not None else current_layer.preagg_strict
+        table, executed_sql = _query_table_with_preagg_fallback(
+            app,
+            current_layer,
+            sql,
+            lambda: compile_query(False),
+            use_preaggs=use_preaggs,
+            strict=strict,
+            user_attributes=user_attributes,
+        )
+        return _build_query_response(request, current_layer, table, sql=executed_sql, format_override=format)
 
     @app.post("/sql/compile", dependencies=[Depends(require_auth)])
     def compile_sql(payload: SQLRequest, request: Request) -> dict[str, str]:
@@ -617,12 +640,26 @@ def create_app(
             user_attributes=user_attributes,
             transport="HTTP /sql",
         )
-        table = _query_table(app, current_layer, rewritten_sql, user_attributes=user_attributes)
+        table, executed_sql = _query_table_with_preagg_fallback(
+            app,
+            current_layer,
+            rewritten_sql,
+            lambda: rewrite_transport_sql(
+                current_layer,
+                query,
+                user_attributes=user_attributes,
+                transport="HTTP /sql",
+                use_preaggregations=False,
+            ),
+            use_preaggs=current_layer.use_preaggregations,
+            strict=current_layer.preagg_strict,
+            user_attributes=user_attributes,
+        )
         return _build_query_response(
             request,
             current_layer,
             table,
-            sql=rewritten_sql,
+            sql=executed_sql,
             original_sql=query,
             format_override=format,
         )
@@ -693,6 +730,42 @@ def _execute_to_table(layer: SemanticLayer, sql: str) -> Any:
     result = layer.adapter.cursor().execute(sql)
     reader = result_to_record_batch_reader(result, layer.adapter)
     return record_batch_reader_to_table(reader)
+
+
+def _query_table_with_preagg_fallback(
+    app: FastAPI,
+    layer: SemanticLayer,
+    sql: str,
+    recompile_raw,
+    *,
+    use_preaggs: bool,
+    strict: bool,
+    user_attributes: dict | None = None,
+) -> tuple[Any, str]:
+    """Execute routed SQL, falling back to raw tables when its rollup is missing."""
+    from sidemantic.core.semantic_layer import PreaggregationStrictError
+
+    if not use_preaggs:
+        return _query_table(app, layer, sql, user_attributes=user_attributes), sql
+
+    used_preagg = "used_preagg=true" in sql
+    if strict and not used_preagg:
+        raise PreaggregationStrictError(
+            "Strict pre-aggregation mode: no pre-aggregation matched this query "
+            "(its metrics/dimensions/granularity are not covered by any rollup)."
+        )
+    try:
+        return _query_table(app, layer, sql, user_attributes=user_attributes), sql
+    except Exception as exc:
+        if not used_preagg or not layer._is_missing_relation_error(exc):
+            raise
+        if strict:
+            raise PreaggregationStrictError(
+                "Strict pre-aggregation mode: the matching pre-aggregation table is not built. "
+                "Materialize it (e.g. `sidemantic preagg refresh`) before querying."
+            ) from exc
+        raw_sql = recompile_raw()
+        return _query_table(app, layer, raw_sql, user_attributes=user_attributes), raw_sql
 
 
 def _query_table(app: FastAPI, layer: SemanticLayer, sql: str, user_attributes: dict | None = None) -> Any:

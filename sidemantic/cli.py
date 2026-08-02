@@ -2001,6 +2001,11 @@ def pg_serve(
         "--user-attrs-file",
         help="Path to a JSON file mapping usernames -> user-attribute dicts for row/access security",
     ),
+    enforce_visibility: bool = typer.Option(
+        False,
+        "--enforce-visibility",
+        help="Hide and reject fields declared public: false",
+    ),
 ):
     """
     Start a PostgreSQL-compatible server for the semantic layer.
@@ -2075,9 +2080,18 @@ def pg_serve(
     preagg_db = _loaded_config.preagg_database if _loaded_config else None
     preagg_sch = _loaded_config.preagg_schema if _loaded_config else None
     if connection_str:
-        layer = SemanticLayer(connection=connection_str, preagg_database=preagg_db, preagg_schema=preagg_sch)
+        layer = SemanticLayer(
+            connection=connection_str,
+            preagg_database=preagg_db,
+            preagg_schema=preagg_sch,
+            enforce_visibility=enforce_visibility,
+        )
     else:
-        layer = SemanticLayer(preagg_database=preagg_db, preagg_schema=preagg_sch)
+        layer = SemanticLayer(
+            preagg_database=preagg_db,
+            preagg_schema=preagg_sch,
+            enforce_visibility=enforce_visibility,
+        )
 
     # Load models
     with progress("Preparing PostgreSQL server"):
@@ -2123,6 +2137,11 @@ def pg_serve(
     if user_attrs_file is not None:
         import json
 
+        if username_resolved is None or password_resolved is None:
+            raise InvocationError(
+                "--user-attrs-file requires PostgreSQL username/password authentication; "
+                "otherwise clients could select another user's security attributes"
+            )
         if not user_attrs_file.exists():
             raise InvocationError(f"user-attrs file {user_attrs_file} does not exist")
         try:

@@ -639,6 +639,60 @@ def test_serve_rejects_partial_auth(monkeypatch, tmp_path):
     assert "both --username and --password" in result.output
 
 
+def test_serve_rejects_user_attributes_without_authentication(monkeypatch, tmp_path):
+    ensure_fake_riffq()
+
+    def fake_start_server(*args, **kwargs):
+        raise AssertionError("start_server should not be called with an unauthenticated attribute map")
+
+    monkeypatch.setattr("sidemantic.server.server.start_server", fake_start_server)
+    _write_min_model(tmp_path)
+    attrs_file = tmp_path / "users.json"
+    attrs_file.write_text('{"analyst": {"tenant_id": 1}}')
+
+    result = runner.invoke(
+        app,
+        ["server", "postgres", str(tmp_path), "--user-attrs-file", str(attrs_file)],
+    )
+
+    assert result.exit_code == 2
+    assert "requires PostgreSQL username/password authentication" in result.output
+
+
+def test_serve_applies_postgres_visibility_and_user_map(monkeypatch, tmp_path):
+    ensure_fake_riffq()
+    called = {}
+
+    def fake_start_server(layer, host, port, username, password, user_attrs_map=None):
+        called["layer"] = layer
+        called["user_attrs_map"] = user_attrs_map
+
+    monkeypatch.setattr("sidemantic.server.server.start_server", fake_start_server)
+    _write_min_model(tmp_path)
+    attrs_file = tmp_path / "users.json"
+    attrs_file.write_text('{"analyst": {"tenant_id": 1}}')
+
+    result = runner.invoke(
+        app,
+        [
+            "server",
+            "postgres",
+            str(tmp_path),
+            "--username",
+            "mapped-users",
+            "--password",
+            "shared-secret",
+            "--user-attrs-file",
+            str(attrs_file),
+            "--enforce-visibility",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert called["layer"].enforce_visibility is True
+    assert called["user_attrs_map"] == {"analyst": {"tenant_id": 1}}
+
+
 def test_serve_uses_loaded_config_defaults(monkeypatch, tmp_path):
     ensure_fake_riffq()
     called = {}

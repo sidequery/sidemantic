@@ -826,11 +826,20 @@ def test_mcp_serve_calls_initialize(monkeypatch, tmp_path):
     called = {}
     events = []
 
-    def fake_initialize_layer(directory, db_path=None, connection=None, init_sql=None):
+    def fake_initialize_layer(
+        directory,
+        db_path=None,
+        connection=None,
+        init_sql=None,
+        user_attributes=None,
+        enforce_visibility=False,
+    ):
         called["directory"] = directory
         called["db_path"] = db_path
         called["connection"] = connection
         called["init_sql"] = init_sql
+        called["user_attributes"] = user_attributes
+        called["enforce_visibility"] = enforce_visibility
 
     def fake_run(*args, **kwargs):
         events.append("start")
@@ -846,6 +855,8 @@ def test_mcp_serve_calls_initialize(monkeypatch, tmp_path):
     assert result.exit_code == 0
     assert called["directory"] == str(tmp_path)
     assert called["db_path"] is None
+    assert called["user_attributes"] is None
+    assert called["enforce_visibility"] is False
     assert called.get("run") is True
     assert events == ["warning", "start"]
 
@@ -855,6 +866,47 @@ def test_docker_entrypoint_does_not_use_eval():
     content = entrypoint_path.read_text()
 
     assert "eval " not in content
+
+
+def test_mcp_serve_applies_static_user_attributes_and_visibility(monkeypatch, tmp_path):
+    ensure_fake_mcp()
+    called = {}
+
+    def fake_initialize_layer(
+        directory,
+        db_path=None,
+        connection=None,
+        init_sql=None,
+        user_attributes=None,
+        enforce_visibility=False,
+    ):
+        called["directory"] = directory
+        called["user_attributes"] = user_attributes
+        called["enforce_visibility"] = enforce_visibility
+
+    monkeypatch.setattr("sidemantic.mcp_server.initialize_layer", fake_initialize_layer)
+    monkeypatch.setattr("sidemantic.mcp_server.mcp.run", lambda *args, **kwargs: None)
+    monkeypatch.setattr("sidemantic.cli_contract.emit_warning", lambda _message: None)
+
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    attrs_file = tmp_path / "user.json"
+    attrs_file.write_text('{"role": "analyst", "tenant_id": 7}')
+
+    result = runner.invoke(
+        app,
+        [
+            "mcp-serve",
+            str(models_dir),
+            "--user-attrs-file",
+            str(attrs_file),
+            "--enforce-visibility",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert called["user_attributes"] == {"role": "analyst", "tenant_id": 7}
+    assert called["enforce_visibility"] is True
 
 
 def test_mcp_serve_apps_implies_http_and_uses_config(monkeypatch, tmp_path):
@@ -874,11 +926,20 @@ connection:
 """
     )
 
-    def fake_initialize_layer(directory, db_path=None, connection=None, init_sql=None):
+    def fake_initialize_layer(
+        directory,
+        db_path=None,
+        connection=None,
+        init_sql=None,
+        user_attributes=None,
+        enforce_visibility=False,
+    ):
         called["directory"] = directory
         called["db_path"] = db_path
         called["connection"] = connection
         called["init_sql"] = init_sql
+        called["user_attributes"] = user_attributes
+        called["enforce_visibility"] = enforce_visibility
 
     def fake_run(*args, **kwargs):
         called["transport"] = kwargs["transport"]

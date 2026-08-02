@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 
 type AppShellProps = {
   brand: ReactNode;
@@ -15,22 +15,79 @@ type AppShellProps = {
 
 /** Collapsible rail | stage frame with a top toolbar and an active-filter strip. */
 export function AppShell({ brand, toolbar, filters, rail, children, drawer, showRail = true, openRailRequest }: AppShellProps) {
-  const [railOpen, setRailOpen] = useState(true);
+  const [mobile, setMobile] = useState(
+    () => typeof window !== "undefined" && window.matchMedia("(max-width: 767px)").matches,
+  );
+  const [railOpen, setRailOpen] = useState(
+    () => typeof window === "undefined" || !window.matchMedia("(max-width: 767px)").matches,
+  );
+  const railId = useId();
+  const railRef = useRef<HTMLElement>(null);
+  const toggleRef = useRef<HTMLButtonElement>(null);
   const railVisible = showRail && railOpen;
 
   useEffect(() => {
-    if (openRailRequest) setRailOpen(true);
-  }, [openRailRequest]);
+    const query = window.matchMedia("(max-width: 767px)");
+    const update = () => {
+      setMobile(query.matches);
+      setRailOpen(!query.matches);
+    };
+    query.addEventListener("change", update);
+    return () => query.removeEventListener("change", update);
+  }, []);
+
+  useEffect(() => {
+    if (openRailRequest && !mobile) setRailOpen(true);
+  }, [openRailRequest, mobile]);
+
+  useEffect(() => {
+    if (!mobile || !railOpen) return;
+    const opener = toggleRef.current;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    window.requestAnimationFrame(() => railRef.current?.querySelector<HTMLElement>("button")?.focus());
+
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setRailOpen(false);
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const focusable = railRef.current?.querySelectorAll<HTMLElement>(
+        'button:not(:disabled), select:not(:disabled), input:not(:disabled), [href], [tabindex]:not([tabindex="-1"])',
+      );
+      if (!focusable?.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+
+    document.addEventListener("keydown", onKeyDown, true);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", onKeyDown, true);
+      opener?.focus();
+    };
+  }, [mobile, railOpen]);
 
   return (
-    <div className="flex h-screen min-w-0 flex-col overflow-hidden bg-bg text-ink">
+    <div className="flex h-[100dvh] min-w-0 flex-col overflow-hidden bg-bg text-ink">
       <header className="relative z-40 flex shrink-0 flex-col gap-2 border-b border-line bg-surface px-3 py-2 md:flex-row md:items-center md:justify-between md:gap-3">
         <div className="flex min-w-0 items-center gap-2">
           {showRail ? (
             <button
+              ref={toggleRef}
               type="button"
-              aria-label={railOpen ? "Collapse sidebar" : "Expand sidebar"}
+              aria-label={mobile ? "Open catalog" : railOpen ? "Collapse sidebar" : "Expand sidebar"}
               aria-expanded={railOpen}
+              aria-controls={railId}
               onClick={() => setRailOpen((open) => !open)}
               className="grid size-7 shrink-0 place-items-center border border-line text-faint hover:border-faint hover:text-ink"
             >
@@ -52,10 +109,52 @@ export function AppShell({ brand, toolbar, filters, rail, children, drawer, show
       ) : null}
 
       <div className={`grid min-h-0 min-w-0 flex-1 grid-cols-1 ${railVisible ? "md:grid-cols-[260px_minmax(0,1fr)]" : "md:grid-cols-1"}`}>
-        {showRail ? (
-          <aside className={`max-h-64 min-h-0 overflow-y-auto border-b border-line bg-surface md:max-h-none md:border-b-0 md:border-r ${railVisible ? "" : "hidden"}`}>
-            {rail}
-          </aside>
+        {showRail && railVisible ? (
+          <>
+            {mobile ? (
+              <button
+                type="button"
+                aria-label="Close catalog"
+                className="fixed inset-0 z-40 bg-black/35 backdrop-blur-[2px]"
+                onClick={() => setRailOpen(false)}
+              />
+            ) : null}
+            <aside
+              id={railId}
+              ref={railRef}
+              role={mobile ? "dialog" : undefined}
+              aria-modal={mobile ? "true" : undefined}
+              aria-label={mobile ? "Data catalog" : undefined}
+              onClick={(event) => {
+                if (mobile && (event.target as HTMLElement).closest("[data-catalog-metric], [data-catalog-dimension]")) {
+                  setRailOpen(false);
+                }
+              }}
+              onChange={() => mobile && setRailOpen(false)}
+              className="fixed inset-y-0 left-0 z-50 min-h-0 w-[min(88vw,320px)] overflow-y-auto bg-surface shadow-[var(--shadow)] md:static md:z-auto md:w-auto md:border-r md:border-line md:shadow-none"
+            >
+              {mobile ? (
+                <div
+                  data-testid="catalog-drawer-header"
+                  className="sticky top-0 z-10 flex items-center justify-between border-b border-line bg-surface px-4 py-3"
+                >
+                  <div>
+                    <p className="text-sm font-semibold text-ink">Catalog</p>
+                    <p className="text-xs text-muted">Choose a model and fields</p>
+                  </div>
+                  <button
+                    type="button"
+                    aria-label="Close catalog"
+                    onClick={() => setRailOpen(false)}
+                    className="grid size-10 place-items-center rounded-full bg-surface-soft text-muted hover:bg-line hover:text-ink"
+                  >
+                    <span aria-hidden="true" className="text-xl leading-none">×</span>
+                  </button>
+                </div>
+              ) : null}
+              {rail}
+            </aside>
+          </>
         ) : null}
         <main className="relative min-h-0 min-w-0 overflow-hidden">
           <div className={`h-full overflow-y-auto ${drawer ? "pb-8" : ""}`}>{children}</div>

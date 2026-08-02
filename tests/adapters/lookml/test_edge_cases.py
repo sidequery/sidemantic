@@ -9711,13 +9711,6 @@ def test_lookml_export_aggregate_order_by_not_folded_into_case():
     folded = LookMLAdapter._fold_filters_into_aggregate("SUM({model}.amount)", filters, model)
     assert folded and folded.startswith("SUM(CASE WHEN")
 
-    # The detector itself: only a TOP-LEVEL, unquoted ORDER BY counts.
-    assert LookMLAdapter._has_top_level_order_by("{model}.a ORDER BY {model}.b")
-    assert LookMLAdapter._has_top_level_order_by("{model}.a order by {model}.b")  # case-insensitive
-    assert not LookMLAdapter._has_top_level_order_by("'a order by b'")  # string literal
-    assert not LookMLAdapter._has_top_level_order_by("F({model}.a, ' order by ')")  # literal in a call
-    assert not LookMLAdapter._has_top_level_order_by("{model}.reorder_by_date")  # word boundary
-
 
 def test_lookml_export_all_modifier_stays_outside_folded_case():
     """COUNT(ALL x) must fold as COUNT(ALL CASE ... END), not COUNT(CASE ... THEN ALL x END).

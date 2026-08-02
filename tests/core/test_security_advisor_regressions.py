@@ -110,9 +110,10 @@ def test_semi_additive_month_grain_uses_last_snapshot():
     assert " OVER (PARTITION BY " in normalized_sql
     assert " ELSE NULL END" in normalized_sql
     # Correct: last day-of-month per account, summed = 110 + 210 = 320 (NOT naive 620).
-    assert layer.query(metrics=["bal.total_balance"], dimensions=["bal.day__month"]).fetchall() == [
-        (datetime.date(2026, 1, 1), 320)
-    ]
+    rows = layer.query(metrics=["bal.total_balance"], dimensions=["bal.day__month"]).fetchall()
+    assert len(rows) == 1
+    month, total = rows[0]
+    assert (month.year, month.month, month.day, total) == (2026, 1, 1, 320)
 
 
 def test_semi_additive_raw_grain_is_additive_no_qualify():

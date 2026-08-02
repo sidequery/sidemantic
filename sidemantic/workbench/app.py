@@ -579,17 +579,35 @@ class SidequeryWorkbench(App):
             if not sql:
                 return
 
-            # Execute query and get rendered SQL
-            from sidemantic.sql.query_rewriter import QueryRewriter
+            # Route semantic SQL through the shared security-aware rewriter.
+            from sidemantic.core.transport_security import rewrite_transport_sql
 
-            rewriter = QueryRewriter(self.layer.graph, dialect=self.layer.dialect)
-            rendered_sql = rewriter.rewrite(sql)
+            rendered_sql = rewrite_transport_sql(
+                self.layer,
+                sql,
+                user_attributes=None,
+                transport="Workbench",
+            )
 
             # Store rendered SQL
             self.last_rendered_sql = rendered_sql
 
-            # Execute the query
-            result = self.layer.adapter.execute(rendered_sql)
+            def recompile_raw():
+                return rewrite_transport_sql(
+                    self.layer,
+                    sql,
+                    user_attributes=None,
+                    transport="Workbench",
+                    use_preaggregations=False,
+                )
+
+            result = self.layer._execute_with_preagg_fallback(
+                rendered_sql,
+                recompile_raw,
+                use_preaggs=self.layer.use_preaggregations,
+                strict=self.layer.preagg_strict,
+                used_preagg="used_preagg=true" in rendered_sql,
+            )
 
             # Get column names and rows
             columns = [desc[0] for desc in result.description]

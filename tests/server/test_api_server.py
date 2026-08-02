@@ -640,3 +640,98 @@ def test_json_responses_use_arrow_reader_for_generic_adapters():
 
     assert response.status_code == 200
     assert response.json()["rows"] == [{"order_count": 7}]
+
+
+def _build_unbuilt_rollup_client(tmp_path: Path, preagg_strict: bool = False) -> TestClient:
+    """Build a client whose matching pre-aggregation was never materialized."""
+    from sidemantic.core.pre_aggregation import PreAggregation
+
+    db_path = tmp_path / "preagg-warehouse.duckdb"
+    conn = duckdb.connect(str(db_path))
+    conn.execute("create table orders (id integer, status varchar, amount double)")
+    conn.executemany(
+        "insert into orders values (?, ?, ?)",
+        [(1, "completed", 10.0), (2, "completed", 20.0), (3, "pending", 5.0)],
+    )
+    conn.close()
+
+    layer = SemanticLayer(
+        connection=f"duckdb:///{db_path}",
+        auto_register=False,
+        use_preaggregations=True,
+        preagg_strict=preagg_strict,
+    )
+    layer.add_model(
+        Model(
+            name="orders",
+            table="orders",
+            primary_key="id",
+            dimensions=[Dimension(name="status", sql="status", type="categorical")],
+            metrics=[Metric(name="revenue", agg="sum", sql="amount")],
+            pre_aggregations=[PreAggregation(name="by_status", measures=["revenue"], dimensions=["status"])],
+        )
+    )
+    return TestClient(create_app(layer))
+
+
+def test_query_falls_back_to_raw_when_rollup_missing(tmp_path):
+    client = _build_unbuilt_rollup_client(tmp_path)
+
+    response = client.post("/query", json={"metrics": ["orders.revenue"], "dimensions": ["orders.status"]})
+
+    assert response.status_code == 200
+    rows = sorted((row["status"], row["revenue"]) for row in response.json()["rows"])
+    assert rows == [("completed", 30.0), ("pending", 5.0)]
+    assert "used_preagg=true" not in response.json()["sql"]
+
+
+def test_query_strict_mode_returns_409_when_rollup_missing(tmp_path):
+    client = _build_unbuilt_rollup_client(tmp_path, preagg_strict=True)
+
+    response = client.post("/query", json={"metrics": ["orders.revenue"], "dimensions": ["orders.status"]})
+
+    assert response.status_code == 409
+    assert "not built" in response.json()["error"]
+
+
+def test_query_strict_override_via_payload(tmp_path):
+    client = _build_unbuilt_rollup_client(tmp_path)
+
+    response = client.post(
+        "/query",
+        json={"metrics": ["orders.revenue"], "dimensions": ["orders.status"], "preagg_strict": True},
+    )
+
+    assert response.status_code == 409
+
+
+def test_sql_endpoint_falls_back_to_raw_when_rollup_missing(tmp_path):
+    client = _build_unbuilt_rollup_client(tmp_path)
+
+    compiled = client.post(
+        "/sql/compile",
+        json={"query": "SELECT orders.revenue, orders.status FROM orders"},
+    )
+    response = client.post(
+        "/sql",
+        json={"query": "SELECT orders.revenue, orders.status FROM orders"},
+    )
+
+    assert compiled.status_code == 200
+    assert "used_preagg=true" in compiled.json()["sql"]
+    assert response.status_code == 200
+    rows = sorted((row["status"], row["revenue"]) for row in response.json()["rows"])
+    assert rows == [("completed", 30.0), ("pending", 5.0)]
+    assert "used_preagg=true" not in response.json()["sql"]
+
+
+def test_sql_endpoint_strict_mode_returns_409_when_rollup_missing(tmp_path):
+    client = _build_unbuilt_rollup_client(tmp_path, preagg_strict=True)
+
+    response = client.post(
+        "/sql",
+        json={"query": "SELECT orders.revenue, orders.status FROM orders"},
+    )
+
+    assert response.status_code == 409
+    assert "not built" in response.json()["error"]

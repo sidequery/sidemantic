@@ -14,8 +14,10 @@ from tests.optional_dep_stubs import ensure_fake_mcp
 
 ensure_fake_mcp()
 
-from sidemantic import Metric, Model
+from sidemantic import Dimension, Metric, Model, SemanticLayer
+from sidemantic.core.pre_aggregation import PreAggregation
 from sidemantic.core.relationship import Relationship
+from sidemantic.core.semantic_layer import PreaggregationStrictError
 from sidemantic.mcp_server import (
     _convert_to_json_compatible,
     _format_join_condition,
@@ -259,6 +261,45 @@ def test_run_query_metrics_only(demo_layer):
     assert result["sql"] is not None
     assert "SUM" in result["sql"].upper()
     assert "COUNT" in result["sql"].upper()
+
+
+def _unbuilt_rollup_layer(*, strict: bool = False) -> SemanticLayer:
+    layer = SemanticLayer(auto_register=False, use_preaggregations=True, preagg_strict=strict)
+    layer.adapter.execute("create table orders (id integer, status varchar, amount double)")
+    layer.adapter.execute(
+        "insert into orders values (1, 'completed', 10.0), (2, 'completed', 20.0), (3, 'pending', 5.0)"
+    )
+    layer.add_model(
+        Model(
+            name="orders",
+            table="orders",
+            primary_key="id",
+            dimensions=[Dimension(name="status", sql="status", type="categorical")],
+            metrics=[Metric(name="revenue", agg="sum", sql="amount")],
+            pre_aggregations=[PreAggregation(name="by_status", measures=["revenue"], dimensions=["status"])],
+        )
+    )
+    return layer
+
+
+def test_run_query_falls_back_when_rollup_is_missing(monkeypatch):
+    import sidemantic.mcp_server as mcp_server
+
+    monkeypatch.setattr(mcp_server, "_layer", _unbuilt_rollup_layer())
+
+    result = run_query(metrics=["orders.revenue"], dimensions=["orders.status"])
+
+    rows = sorted((row["status"], row["revenue"]) for row in result["rows"])
+    assert rows == [("completed", 30.0), ("pending", 5.0)]
+
+
+def test_run_query_strict_mode_rejects_missing_rollup(monkeypatch):
+    import sidemantic.mcp_server as mcp_server
+
+    monkeypatch.setattr(mcp_server, "_layer", _unbuilt_rollup_layer(strict=True))
+
+    with pytest.raises(PreaggregationStrictError, match="not built"):
+        run_query(metrics=["orders.revenue"], dimensions=["orders.status"])
 
 
 def test_run_query_decimal_conversion(demo_layer):

@@ -136,6 +136,42 @@ def test_cohort_with_dimension():
     assert result["EU"] == 1
 
 
+def test_cohort_with_time_grain_uses_grained_output_alias():
+    """Grained cohort dimensions remain addressable by their public output name."""
+    events = Model(
+        name="events",
+        sql="""
+            SELECT 1 AS user_id, 'web' AS platform, DATE '2024-01-01' AS ts
+            UNION ALL SELECT 1, 'mobile', DATE '2024-01-02'
+            UNION ALL SELECT 2, 'web', DATE '2024-02-01'
+            UNION ALL SELECT 2, 'mobile', DATE '2024-02-02'
+            UNION ALL SELECT 3, 'web', DATE '2024-02-03'
+        """,
+        primary_key="user_id",
+        dimensions=[
+            Dimension(name="user_id", sql="user_id", type="categorical"),
+            Dimension(name="platform", sql="platform", type="categorical"),
+            Dimension(name="ts", sql="ts", type="time", granularity="day"),
+        ],
+        metrics=[_make_multi_platform_metric()],
+    )
+    graph = SemanticGraph()
+    graph.add_model(events)
+
+    sql = SQLGenerator(graph).generate(
+        metrics=["events.multi_platform_users"],
+        dimensions=["events.ts__month"],
+        order_by=["events.ts__month"],
+    )
+    result = duckdb.connect(":memory:").execute(sql)
+
+    assert [column[0] for column in result.description] == ["ts__month", "multi_platform_users"]
+    assert [(row[0].isoformat(), row[1]) for row in df_rows(result)] == [
+        ("2024-01-01", 1),
+        ("2024-02-01", 1),
+    ]
+
+
 def test_cohort_outer_agg_without_sql_raises():
     """Non-count outer agg without sql should raise, not emit SUM(*)."""
     events = _make_events_model()

@@ -261,6 +261,12 @@ class SemanticGraph:
             relationship_type: str,
             custom_condition: str | None = None,
         ) -> None:
+            # Invalid/unknown key pairs are not graph edges. Structural validation reports the
+            # actionable cause; omitting the edge prevents compilation from producing ``JOIN ON``
+            # predicates with fabricated or empty columns when validation is bypassed.
+            if relationship_type != "cross" and custom_condition is None:
+                if not from_keys or not to_keys or len(from_keys) != len(to_keys):
+                    return
             if from_model not in self._adjacency:
                 self._adjacency[from_model] = []
             self._adjacency[from_model].append((to_model, from_keys, to_keys, relationship_type, custom_condition))

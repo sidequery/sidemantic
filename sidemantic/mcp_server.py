@@ -134,7 +134,7 @@ def _format_join_condition(model_name: str, rel, models: dict[str, Any]) -> str 
         return None
 
     if rel.type == "many_to_one":
-        fk = rel.foreign_key or f"{related_name}_id"
+        fk = rel.foreign_key
         pk = rel.primary_key or related_model.primary_key
         return _format_join_key_pairs(model_name, _key_columns(fk), related_name, _key_columns(pk))
 
@@ -179,6 +179,8 @@ def _format_join_condition(model_name: str, rel, models: dict[str, Any]) -> str 
 
 
 def _key_columns(value: Any) -> list[str]:
+    if value is None:
+        return []
     if isinstance(value, list):
         return [str(column) for column in value]
     return [str(value)]
@@ -716,6 +718,7 @@ def get_semantic_graph() -> dict[str, Any]:
         model_info: dict[str, Any] = {
             "name": model_name,
             "table": model.table,
+            "primary_key": _visible_dimension_name(model, model.primary_key, layer.enforce_visibility),
             "dimensions": [d.name for d in model.dimensions if not layer.enforce_visibility or d.public],
             "metrics": [m.name for m in model.metrics if not layer.enforce_visibility or m.public],
             "relationships": [{"name": r.name, "type": r.type} for r in model.relationships],
@@ -725,8 +728,6 @@ def get_semantic_graph() -> dict[str, Any]:
         visible_segments = [s.name for s in model.segments if not layer.enforce_visibility or s.public]
         if visible_segments:
             model_info["segments"] = visible_segments
-        if primary_key := _visible_dimension_name(model, model.primary_key, layer.enforce_visibility):
-            model_info["primary_key"] = primary_key
         if default_time_dimension := _visible_dimension_name(
             model, model.default_time_dimension, layer.enforce_visibility
         ):

@@ -384,7 +384,7 @@ function axisTicks2(min, max, count = 4) {
   const step = (max - min) / (count - 1);
   return Array.from({ length: count }, (_, index) => min + step * index);
 }
-function ColumnChart({ data, height = 200, ariaLabel }) {
+function ColumnChart({ data, height = 200, ariaLabel, selectedLabel, onSelect }) {
   const ref = useRef2(null);
   const [width, setWidth] = useState3(640);
   const { tip, handlers } = useChartTooltip();
@@ -449,12 +449,23 @@ function ColumnChart({ data, height = 200, ariaLabel }) {
             className: "stroke-line"
           }),
           data.map((item, index) => {
+            const filterValue = item.filterValue ?? item.label;
             const value = values[index] ?? 0;
             const valueY = yForValue(value);
             const barHeight = Math.abs(valueY - baselineY);
             const x = MARGIN2.left + slot * index + (slot - barWidth) / 2;
             const y = Math.min(valueY, baselineY);
             return /* @__PURE__ */ jsxs3("g", {
+              role: onSelect ? "button" : undefined,
+              tabIndex: onSelect ? 0 : undefined,
+              "aria-label": onSelect ? `Filter to ${item.label}` : undefined,
+              "aria-pressed": onSelect ? selectedLabel === filterValue : undefined,
+              onClick: onSelect ? () => onSelect(filterValue) : undefined,
+              onKeyDown: onSelect ? (event) => {
+                if (event.key === "Enter" || event.key === " ")
+                  onSelect(filterValue);
+              } : undefined,
+              className: onSelect ? "cursor-pointer" : undefined,
               children: [
                 /* @__PURE__ */ jsx3("rect", {
                   x,
@@ -464,7 +475,7 @@ function ColumnChart({ data, height = 200, ariaLabel }) {
                   "data-label": item.label,
                   "data-value": value,
                   "data-tone": value < 0 ? "negative" : "positive",
-                  className: value < 0 ? "fill-danger" : "fill-chart-primary",
+                  className: selectedLabel === filterValue ? "fill-accent" : value < 0 ? "fill-danger" : "fill-chart-primary",
                   ...handlers(`${item.label}: ${formatValue(value)}`)
                 }),
                 /* @__PURE__ */ jsx3("text", {
@@ -475,7 +486,7 @@ function ColumnChart({ data, height = 200, ariaLabel }) {
                   children: item.label.slice(0, 8)
                 })
               ]
-            }, item.label);
+            }, `${filterValue}-${index}`);
           })
         ]
       }),
@@ -729,11 +740,17 @@ import { useEffect as useEffect4, useRef as useRef3, useState as useState5 } fro
 import { jsx as jsx6, jsxs as jsxs6 } from "react/jsx-runtime";
 var HEIGHT = 280;
 var PAD = { top: 14, right: 18, bottom: 26, left: 60 };
+var SERIES_COLORS = ["var(--accent)", "var(--danger)", "#0f9f8f", "#d98921", "#a66dd4", "#3b82c4"];
+function seriesColor(index) {
+  return SERIES_COLORS[index % SERIES_COLORS.length];
+}
 function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
 }
 function TimeSeriesChart({
   points,
+  seriesLabel = "Current",
+  additionalSeries = [],
   comparison,
   formatValue: formatValue2,
   formatAxis = formatValue2,
@@ -761,7 +778,8 @@ function TimeSeriesChart({
     return () => observer.disconnect();
   }, []);
   const count = points.length;
-  const all = [...points, ...comparison ?? []].map((point) => point.y).filter(Number.isFinite);
+  const chartSeries = [{ label: seriesLabel, points }, ...additionalSeries];
+  const all = [...chartSeries.flatMap((series) => series.points), ...comparison ?? []].map((point) => point.y).filter(Number.isFinite);
   const empty = count < 2 || all.length === 0;
   const min = empty ? 0 : Math.min(0, ...all);
   const max = empty ? 1 : Math.max(...all);
@@ -771,7 +789,6 @@ function TimeSeriesChart({
   const xAt = (index) => PAD.left + (count <= 1 ? 0 : index / (count - 1) * plotW);
   const yAt = (value) => PAD.top + (1 - (value - min) / span) * plotH;
   const indexAtX = (px) => clamp(Math.round((px - PAD.left) / plotW * (count - 1)), 0, count - 1);
-  const pathFor = (series) => series.map((point, index) => `${xAt(index).toFixed(1)},${yAt(point.y).toFixed(1)}`).join(" L ");
   const gappedPath = (series) => {
     const segments = [];
     let run = [];
@@ -787,8 +804,7 @@ function TimeSeriesChart({
       segments.push(run.join(" L "));
     return segments.map((segment) => `M ${segment}`).join(" ");
   };
-  const line = pathFor(points);
-  const area = empty ? "" : `M ${xAt(0).toFixed(1)},${yAt(min).toFixed(1)} L ${line} L ${xAt(count - 1).toFixed(1)},${yAt(min).toFixed(1)} Z`;
+  const area = empty || points.some((point) => !Number.isFinite(point.y)) ? "" : `M ${xAt(0).toFixed(1)},${yAt(min).toFixed(1)} L ${points.map((point, index) => `${xAt(index).toFixed(1)},${yAt(point.y).toFixed(1)}`).join(" L ")} L ${xAt(count - 1).toFixed(1)},${yAt(min).toFixed(1)} Z`;
   function pxFromEvent(event) {
     const rect = svgRef.current?.getBoundingClientRect();
     return rect ? event.clientX - rect.left : 0;
@@ -836,7 +852,13 @@ function TimeSeriesChart({
   const labelEvery = Math.max(1, Math.ceil(count / 8));
   const ticks = [max, min + span * 0.66, min + span * 0.33, min];
   const safeHover = hover != null && hover >= 0 && hover < count ? hover : null;
-  const hoverCur = safeHover != null ? points[safeHover] : null;
+  const hoverCurRaw = safeHover != null ? points[safeHover] : null;
+  const hoverCur = hoverCurRaw && Number.isFinite(hoverCurRaw.y) ? hoverCurRaw : null;
+  const hoverLabel = safeHover != null ? points[safeHover]?.x : null;
+  const hoverSeries = safeHover == null ? [] : chartSeries.flatMap((series, index) => {
+    const point = series.points[safeHover];
+    return point && Number.isFinite(point.y) ? [{ ...series, point, index }] : [];
+  });
   const hoverPrevRaw = safeHover != null ? comparison?.[safeHover] ?? null : null;
   const hoverPrev = hoverPrevRaw && Number.isFinite(hoverPrevRaw.y) ? hoverPrevRaw : null;
   const tooltipLeft = safeHover != null ? clamp(xAt(safeHover), 80, width - 80) : 0;
@@ -846,17 +868,19 @@ function TimeSeriesChart({
     className: "relative text-chart-primary",
     children: [
       /* @__PURE__ */ jsxs6("div", {
-        className: "flex items-center justify-end gap-3 px-3 pt-2 text-2xs text-faint",
+        className: "flex flex-wrap items-center justify-end gap-x-3 gap-y-0.5 px-3 pt-2 text-2xs text-faint",
         children: [
-          /* @__PURE__ */ jsxs6("span", {
+          chartSeries.map((series, index) => /* @__PURE__ */ jsxs6("span", {
             className: "flex items-center gap-1",
             children: [
               /* @__PURE__ */ jsx6("span", {
-                className: "inline-block h-0.5 w-3 bg-chart-primary"
+                className: "inline-block h-0.5 w-3",
+                style: { backgroundColor: seriesColor(index) }
               }),
-              " Current"
+              " ",
+              series.label
             ]
-          }),
+          }, `${series.label}-${index}`)),
           comparison?.length ? /* @__PURE__ */ jsxs6("span", {
             className: "flex items-center gap-1",
             children: [
@@ -935,16 +959,16 @@ function TimeSeriesChart({
               strokeWidth: 1.25,
               strokeDasharray: "4 3"
             }) : null,
-            /* @__PURE__ */ jsx6("path", {
+            area ? /* @__PURE__ */ jsx6("path", {
               d: area,
               fill: "url(#ts-fill)"
-            }),
-            /* @__PURE__ */ jsx6("path", {
-              d: `M ${line}`,
+            }) : null,
+            chartSeries.map((series, index) => /* @__PURE__ */ jsx6("path", {
+              d: gappedPath(series.points),
               fill: "none",
-              stroke: "currentColor",
+              stroke: seriesColor(index),
               strokeWidth: 1.75
-            }),
+            }, `${series.label}-${index}`)),
             brush ? /* @__PURE__ */ jsx6("rect", {
               x: Math.min(brush.a, brush.b),
               y: PAD.top,
@@ -953,7 +977,7 @@ function TimeSeriesChart({
               className: "fill-chart-primary",
               opacity: 0.12
             }) : null,
-            safeHover != null && hoverCur ? /* @__PURE__ */ jsxs6("g", {
+            safeHover != null && hoverSeries.length ? /* @__PURE__ */ jsxs6("g", {
               children: [
                 /* @__PURE__ */ jsx6("line", {
                   x1: xAt(safeHover),
@@ -969,12 +993,12 @@ function TimeSeriesChart({
                   r: 3,
                   className: "fill-faint"
                 }) : null,
-                /* @__PURE__ */ jsx6("circle", {
+                hoverSeries.map((series) => /* @__PURE__ */ jsx6("circle", {
                   cx: xAt(safeHover),
-                  cy: yAt(hoverCur.y),
+                  cy: yAt(series.point.y),
                   r: 3.5,
-                  fill: "currentColor"
-                })
+                  fill: seriesColor(series.index)
+                }, `${series.label}-${series.index}`))
               ]
             }) : null,
             points.map((point, index) => index % labelEvery === 0 || index === count - 1 ? /* @__PURE__ */ jsx6("text", {
@@ -987,27 +1011,27 @@ function TimeSeriesChart({
           ]
         })
       }),
-      hoverCur ? /* @__PURE__ */ jsxs6("div", {
+      hoverSeries.length && hoverLabel ? /* @__PURE__ */ jsxs6("div", {
         className: "pointer-events-none absolute top-8 z-20 -translate-x-1/2 whitespace-nowrap border border-line bg-surface px-2 py-1.5 text-2xs shadow-[var(--shadow)]",
         style: { left: tooltipLeft },
         children: [
           /* @__PURE__ */ jsx6("div", {
             className: "mb-0.5 font-mono text-faint",
-            children: formatLabel(hoverCur.x)
+            children: formatLabel(hoverLabel)
           }),
-          /* @__PURE__ */ jsxs6("div", {
+          hoverSeries.map((series) => /* @__PURE__ */ jsxs6("div", {
             className: "flex items-center justify-between gap-3",
             children: [
               /* @__PURE__ */ jsx6("span", {
                 className: "text-muted",
-                children: "Current"
+                children: series.label
               }),
               /* @__PURE__ */ jsx6("span", {
                 className: "font-mono tnum font-medium text-ink",
-                children: formatValue2(hoverCur.y)
+                children: formatValue2(series.point.y)
               })
             ]
-          }),
+          }, `${series.label}-${series.index}`)),
           hoverPrev ? /* @__PURE__ */ jsxs6("div", {
             className: "flex items-center justify-between gap-3",
             children: [
@@ -1243,8 +1267,95 @@ import { useState as useState9 } from "react";
 // webapp/src/components/FilterEditor.tsx
 import { useEffect as useEffect8, useId, useMemo as useMemo3, useRef as useRef6, useState as useState8 } from "react";
 
+// webapp/src/lib/catalog.ts
+function graphMetricsForModel(catalog, modelName) {
+  const joinable = new Set;
+  for (const pair of catalog.joinablePairs ?? []) {
+    if (pair.from === modelName)
+      joinable.add(pair.to);
+    if (pair.to === modelName)
+      joinable.add(pair.from);
+  }
+  return catalog.graphMetrics.filter((metric) => {
+    if (!metric.ownerModel)
+      return true;
+    return metric.ownerModel === modelName || joinable.has(metric.ownerModel);
+  });
+}
+
+// webapp/src/lib/dashboard.ts
+var GRAINS = new Set(["second", "minute", "hour", "day", "week", "month", "quarter", "year"]);
+function asList(value) {
+  if (value === undefined)
+    return [];
+  return Array.isArray(value) ? value : [value];
+}
+function dimensionForRef(catalog, ref) {
+  return catalog.models.flatMap((model) => model.dimensions).find((dimension) => ref === dimension.ref || ref.startsWith(`${dimension.ref}__`));
+}
+function grainForRef(ref, fallback) {
+  const candidate = ref.split("__").at(-1);
+  return candidate && GRAINS.has(candidate) ? candidate : fallback;
+}
+function defaultPreaggregations(dashboard) {
+  const query = dashboard.defaults?.query;
+  if (!query || typeof query !== "object")
+    return;
+  const defaults = query;
+  const value = defaults.use_preaggregations ?? defaults.usePreaggregations;
+  return typeof value === "boolean" ? value : undefined;
+}
+function interactionPreaggregations(dashboard, chart) {
+  const defaults = dashboard.defaults?.query;
+  const defaultQuery = defaults && typeof defaults === "object" ? defaults : {};
+  const value = chart.query.interaction_preaggregations ?? chart.query.interactionPreaggregations ?? chart.interaction_preaggregations ?? chart.interactionPreaggregations ?? defaultQuery.interaction_preaggregations ?? defaultQuery.interactionPreaggregations;
+  return typeof value === "boolean" ? value : undefined;
+}
+function dashboardTabConfig(catalog, dashboard, tabId) {
+  if (!dashboard?.tabs.length)
+    return null;
+  const tab = dashboard.tabs.find((candidate) => candidate.id === tabId) ?? dashboard.tabs[0];
+  const chart = tab.charts[0];
+  if (!chart)
+    return null;
+  const dimensionRefs = asList(chart.query.dimensions);
+  const metricRefs = asList(chart.query.metrics);
+  const graphMetricOwner = metricRefs.map((ref) => catalog.graphMetrics.find((metric) => metric.ref === ref)?.ownerModel).find((owner) => Boolean(owner));
+  const modelName = metricRefs.find((ref) => ref.includes("."))?.split(".")[0] ?? graphMetricOwner ?? dimensionRefs.find((ref) => ref.includes("."))?.split(".")[0];
+  const model = catalog.models.find((candidate) => candidate.name === modelName) ?? catalog.models[0];
+  if (!model)
+    return null;
+  const availableMetrics = [
+    ...catalog.models.flatMap((candidate) => candidate.metrics),
+    ...graphMetricsForModel(catalog, model.name)
+  ];
+  const metrics = metricRefs.map((ref) => availableMetrics.find((metric) => metric.ref === ref)).filter((metric) => Boolean(metric));
+  const dimensions = dimensionRefs.map((ref) => dimensionForRef(catalog, ref)).filter((dimension, index, all) => Boolean(dimension) && all.findIndex((candidate) => candidate?.ref === dimension?.ref) === index);
+  const encodedY = chart.encoding?.y;
+  const encodedMetrics = Array.isArray(encodedY) ? encodedY : encodedY ? [encodedY] : [];
+  const selectedMetric = encodedMetrics.find((ref) => metrics.some((metric) => metric.ref === ref)) ?? metrics[0]?.ref ?? model.metrics[0]?.ref ?? "";
+  const encodedTime = chart.encoding?.x;
+  const timeRef = (encodedTime && dimensionForRef(catalog, encodedTime)?.type === "time" ? encodedTime : undefined) ?? dimensionRefs.find((ref) => dimensionForRef(catalog, ref)?.type === "time");
+  const fallbackGrain = model.defaultGrain ?? "month";
+  const timeDimension = timeRef ? dimensionForRef(catalog, timeRef) : model.timeDimension;
+  return {
+    id: tab.id,
+    label: tab.label ?? tab.id,
+    title: chart.title ?? dashboard.title,
+    model,
+    metrics: metrics.length ? metrics : model.metrics,
+    dimensions: dimensions.length ? dimensions : model.dimensions,
+    timeDimension,
+    selectedMetric,
+    grain: timeRef ? grainForRef(timeRef, fallbackGrain) : fallbackGrain,
+    filters: asList(chart.query.filters),
+    segments: asList(chart.query.segments),
+    usePreaggregations: interactionPreaggregations(dashboard, chart) ?? chart.query.use_preaggregations ?? chart.query.usePreaggregations ?? defaultPreaggregations(dashboard)
+  };
+}
+
 // webapp/src/lib/time.ts
-var ALL_GRAINS = ["hour", "day", "week", "month", "quarter", "year"];
+var ALL_GRAINS = ["second", "minute", "hour", "day", "week", "month", "quarter", "year"];
 function isoDate(date) {
   return date.toISOString().slice(0, 10);
 }
@@ -1271,12 +1382,21 @@ function presetRange(days, today = new Date) {
   return { from: addDays(to, -(days - 1)), to };
 }
 function timeFilters(ref, range) {
+  if (range.from.includes("T") || range.to.includes("T")) {
+    return [`${ref} >= cast('${range.from}' as timestamp)`, `${ref} < cast('${range.to}' as timestamp)`];
+  }
   return [`${ref} >= cast('${range.from}' as date)`, `${ref} < cast('${addDays(range.to, 1)}' as date)`];
 }
 
 // webapp/src/lib/queries.ts
 function isEmptyFilter(filter) {
   return filter.mode === "contains" ? !filter.pattern : filter.values.length === 0;
+}
+function dimTypes(dimensions) {
+  return Object.fromEntries(dimensions.map((dim) => [dim.ref, dim.type]));
+}
+function catalogDimTypes(catalog) {
+  return dimTypes(catalog.models.flatMap((model) => model.dimensions));
 }
 function filterLiteral(value, type) {
   if ((type === "numeric" || type === "number") && value.trim() !== "" && Number.isFinite(Number(value))) {
@@ -1347,15 +1467,22 @@ function composeFilters(filters, opts = {}) {
     base.push(...timeFilters(opts.timeRef, opts.range));
   return base;
 }
-function distinctValues(dimRef, filters, limit = 50) {
-  return { dimensions: [dimRef], filters, orderBy: [`${dimRef} ASC`], limit };
+function distinctValues(dimRef, filters, limit = 50, segments, usePreaggregations) {
+  return {
+    dimensions: [dimRef],
+    filters,
+    ...segments?.length ? { segments } : {},
+    ...usePreaggregations != null ? { usePreaggregations } : {},
+    orderBy: [`${dimRef} ASC`],
+    limit
+  };
 }
 
 // webapp/src/state/ExplorerContext.tsx
 import { createContext, useContext, useEffect as useEffect6, useMemo as useMemo2, useReducer } from "react";
 
 // webapp/src/state/url.ts
-var GRAINS = new Set(ALL_GRAINS);
+var GRAINS2 = new Set(ALL_GRAINS);
 var CONTEXT_COLUMNS = new Set(["none", "pctTotal", "delta", "deltaPct"]);
 var COMPARISONS = new Set(["off", "previous", "year", "custom"]);
 var FILTER_MODES = new Set(["include", "exclude", "contains"]);
@@ -1440,7 +1567,8 @@ function FilterEditor({
   model,
   onClose
 }) {
-  const { state, dispatch, backend } = useExplorer();
+  const { state, dispatch, backend, catalog, dashboard } = useExplorer();
+  const configured = useMemo3(() => dashboardTabConfig(catalog, dashboard, state.dashboardTab), [catalog, dashboard, state.dashboardTab]);
   const filter = state.filters[dim.ref];
   const [mode, setModeState] = useState8(filter?.mode ?? "include");
   const selected = useMemo3(() => new Set(filter?.mode !== "contains" ? filter?.values ?? [] : []), [filter]);
@@ -1482,17 +1610,21 @@ function FilterEditor({
       return;
     dispatch({ type: "setFilterPattern", dim: dim.ref, pattern: debouncedPattern });
   }, [debouncedPattern, mode, dim.ref, dispatch]);
-  const timeRef = model.timeDimension?.ref;
+  const timeRef = configured?.timeDimension?.ref ?? model.timeDimension?.ref;
+  const types = useMemo3(() => catalogDimTypes(catalog), [catalog]);
   const valueFilters = useMemo3(() => {
-    const base = composeFilters(state.filters, { timeRef, range: state.dateRange, excludeDim: dim.ref });
+    const base = [
+      ...configured?.filters ?? [],
+      ...composeFilters(state.filters, { timeRef, range: state.dateRange, excludeDim: dim.ref, types })
+    ];
     if (debouncedSearch.trim()) {
       const pat = sqlLiteral(`%${likeEscape(debouncedSearch.trim())}%`);
       base.push(`CAST(${dim.ref} AS VARCHAR) ILIKE ${pat} ESCAPE '\\'`);
     }
     return base;
-  }, [state.filters, timeRef, state.dateRange, dim.ref, debouncedSearch]);
+  }, [configured, state.filters, timeRef, state.dateRange, dim.ref, debouncedSearch, types]);
   const listMode = mode !== "contains";
-  const { result, loading, error } = useQueryResult(backend, listMode ? distinctValues(dim.ref, valueFilters, VALUE_LIMIT) : null);
+  const { result, loading, error } = useQueryResult(backend, listMode ? distinctValues(dim.ref, valueFilters, VALUE_LIMIT, configured?.segments, configured?.usePreaggregations) : null);
   const dimAlias = aliasOf(dim.ref);
   const values = useMemo3(() => {
     if (!result)
@@ -3555,9 +3687,20 @@ function DateRangeControl({
   return /* @__PURE__ */ jsxs24("details", {
     ref: details,
     className: "relative text-xs",
+    onToggle: (event) => {
+      if (disabled)
+        event.currentTarget.open = false;
+    },
     children: [
       /* @__PURE__ */ jsxs24("summary", {
-        className: `flex cursor-pointer items-center h-7 gap-1.5 rounded-full border border-line bg-surface px-3 text-ink ${disabled ? "pointer-events-none opacity-50" : ""}`,
+        "aria-disabled": disabled || undefined,
+        tabIndex: disabled ? -1 : undefined,
+        onClick: (event) => disabled && event.preventDefault(),
+        onKeyDown: (event) => {
+          if (disabled && (event.key === "Enter" || event.key === " "))
+            event.preventDefault();
+        },
+        className: `flex h-7 cursor-pointer items-center gap-1.5 rounded-full border border-line bg-surface px-3 text-ink ${disabled ? "cursor-not-allowed opacity-50" : ""}`,
         children: [
           /* @__PURE__ */ jsx27("span", {
             className: "text-faint",
@@ -3636,9 +3779,10 @@ function DateRangeControl({
                 children: "Compare to"
               }),
               /* @__PURE__ */ jsx27("div", {
-                className: `grid grid-cols-2 ${comparisonDisabled ? "pointer-events-none opacity-50" : ""}`,
+                className: `grid grid-cols-2 ${comparisonDisabled ? "opacity-50" : ""}`,
                 children: COMPARISON_OPTIONS.map((option) => /* @__PURE__ */ jsx27("button", {
                   type: "button",
+                  disabled: comparisonDisabled,
                   "data-comparison": option.key,
                   "data-active": comparison === option.key || undefined,
                   onClick: () => applyComparison(option.key),
@@ -3966,13 +4110,22 @@ function Tooltip({ content, children, className }) {
   });
 }
 // webapp/src/components/ViewSwitcher.tsx
+import { useRef as useRef17 } from "react";
 import { jsx as jsx34 } from "react/jsx-runtime";
 var SEGMENTS = [
   { key: "explore", label: "Explore" },
   { key: "pivot", label: "Pivot" }
 ];
 function ViewSwitcher({ view, onChange }) {
+  const list = useRef17(null);
+  function move(direction) {
+    const current = Math.max(0, SEGMENTS.findIndex((segment) => segment.key === view));
+    const next = SEGMENTS[(current + direction + SEGMENTS.length) % SEGMENTS.length];
+    onChange(next.key);
+    window.requestAnimationFrame(() => list.current?.querySelector(`[data-view="${next.key}"]`)?.focus());
+  }
   return /* @__PURE__ */ jsx34("div", {
+    ref: list,
     role: "tablist",
     "aria-label": "View",
     className: "inline-flex items-center gap-0.5 rounded-full border border-line bg-surface p-px",
@@ -3980,9 +4133,19 @@ function ViewSwitcher({ view, onChange }) {
       role: "tab",
       type: "button",
       "aria-selected": view === segment.key,
+      tabIndex: view === segment.key ? 0 : -1,
       "data-view": segment.key,
       "data-selected": view === segment.key || undefined,
       onClick: () => onChange(segment.key),
+      onKeyDown: (event) => {
+        if (event.key === "ArrowLeft") {
+          event.preventDefault();
+          move(-1);
+        } else if (event.key === "ArrowRight") {
+          event.preventDefault();
+          move(1);
+        }
+      },
       className: "inline-flex h-6 items-center rounded-full px-2.5 text-xs font-medium text-muted hover:bg-surface-soft hover:text-ink data-[selected=true]:bg-accent-soft data-[selected=true]:text-accent",
       children: segment.label
     }, segment.key))

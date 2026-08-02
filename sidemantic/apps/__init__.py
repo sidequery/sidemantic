@@ -11,6 +11,7 @@ from typing import Any
 from sidemantic.vendor_assets import inline_vendor_scripts
 
 _WIDGET_TEMPLATE: str | None = None
+_PROTOCOL_WIDGET_HTML: str | None = None
 
 
 def _get_widget_template() -> str:
@@ -20,6 +21,19 @@ def _get_widget_template() -> str:
         path = Path(__file__).parent / "chart_widget.html"
         _WIDGET_TEMPLATE = path.read_text()
     return _WIDGET_TEMPLATE
+
+
+def _get_protocol_widget_html() -> str:
+    """Load the Vite-built chart widget used by the MCP Apps resource."""
+    global _PROTOCOL_WIDGET_HTML
+    if _PROTOCOL_WIDGET_HTML is None:
+        built = Path(__file__).parent / "chart.html"
+        if not built.exists():
+            raise FileNotFoundError(
+                f"Chart widget not built at {built}. Run: cd sidemantic/apps/web && bun install && bun run build"
+            )
+        _PROTOCOL_WIDGET_HTML = built.read_text()
+    return _PROTOCOL_WIDGET_HTML
 
 
 def build_chart_html(vega_spec: dict[str, Any]) -> str:

@@ -785,7 +785,24 @@ def get_semantic_graph() -> dict[str, Any]:
     return result
 
 
-# --- MCP Resource: Catalog Metadata ---
+# --- MCP Resources ---
+
+
+@mcp.resource(
+    "ui://sidemantic/chart",
+    mime_type="text/html;profile=mcp-app",
+    meta={
+        "ui": {
+            "csp": {"connectDomains": [], "resourceDomains": []},
+        },
+        "mcpui.dev/ui-preferred-frame-size": ["100%", "500px"],
+    },
+)
+def chart_widget_resource() -> str:
+    """Return the interactive Vega-Lite chart widget."""
+    from sidemantic.apps import _get_protocol_widget_html
+
+    return _get_protocol_widget_html()
 
 
 @mcp.resource("semantic://catalog")

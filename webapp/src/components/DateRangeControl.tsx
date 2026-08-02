@@ -51,10 +51,22 @@ export function DateRangeControl({
   const comparisonDisabled = !range;
 
   return (
-    <details ref={details} className="relative text-xs">
+    <details
+      ref={details}
+      className="relative text-xs"
+      onToggle={(event) => {
+        if (disabled) event.currentTarget.open = false;
+      }}
+    >
       <summary
-        className={`flex cursor-pointer items-center h-7 gap-1.5 rounded-full border border-line bg-surface px-3 text-ink ${
-          disabled ? "pointer-events-none opacity-50" : ""
+        aria-disabled={disabled || undefined}
+        tabIndex={disabled ? -1 : undefined}
+        onClick={(event) => disabled && event.preventDefault()}
+        onKeyDown={(event) => {
+          if (disabled && (event.key === "Enter" || event.key === " ")) event.preventDefault();
+        }}
+        className={`flex h-7 cursor-pointer items-center gap-1.5 rounded-full border border-line bg-surface px-3 text-ink ${
+          disabled ? "cursor-not-allowed opacity-50" : ""
         }`}
       >
         <span className="text-faint">Range</span>
@@ -113,11 +125,12 @@ export function DateRangeControl({
 
         <div className="mt-1 px-1 pb-1" data-testid="comparison-picker">
           <p className="mb-1 px-1.5 text-2xs text-faint">Compare to</p>
-          <div className={`grid grid-cols-2 ${comparisonDisabled ? "pointer-events-none opacity-50" : ""}`}>
+          <div className={`grid grid-cols-2 ${comparisonDisabled ? "opacity-50" : ""}`}>
             {COMPARISON_OPTIONS.map((option) => (
               <button
                 key={option.key}
                 type="button"
+                disabled={comparisonDisabled}
                 data-comparison={option.key}
                 data-active={comparison === option.key || undefined}
                 onClick={() => applyComparison(option.key)}

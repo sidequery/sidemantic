@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { HttpBackend } from "./data/httpAdapter";
-import type { Catalog, DashboardSpec } from "./data/types";
+import type { DashboardDocument } from "./data/dashboardTypes";
+import type { Catalog } from "./data/types";
 import { AppShell } from "./components/AppShell";
 import { AppBrand } from "./components/AppBrand";
 import { AddFilter } from "./components/AddFilter";
@@ -19,21 +20,30 @@ import { grainOptions } from "./lib/time";
 import { ExplorerProvider, useExplorer } from "./state/ExplorerContext";
 import { initialStateFromCatalog } from "./state/explorerState";
 import { useQueryActive } from "./state/queryActivity";
+import { shouldUseExplorer } from "./state/dashboardState";
 import { ExploreIndexView } from "./views/ExploreIndexView";
 import { ExplorerView } from "./views/ExplorerView";
 import { PivotView } from "./views/PivotView";
+import { DashboardDocumentView } from "./views/DashboardDocumentView";
 
 function QueryStatus() {
   const active = useQueryActive();
   return (
-    <span className="flex items-center gap-1.5 text-2xs text-faint" title={active ? "Querying" : "Idle"}>
+    <span
+      role="status"
+      aria-live="polite"
+      aria-atomic="true"
+      className="flex items-center gap-1.5 text-2xs text-faint"
+      title={active ? "Updating data" : "Data is up to date"}
+    >
       {active ? (
-        <svg viewBox="0 0 24 24" className="spinner size-3.5 text-accent" fill="none" stroke="currentColor" strokeWidth="3">
+        <svg aria-hidden="true" viewBox="0 0 24 24" className="spinner size-3.5 text-accent" fill="none" stroke="currentColor" strokeWidth="3">
           <path d="M12 3a9 9 0 1 0 9 9" strokeLinecap="round" />
         </svg>
       ) : (
         <span aria-hidden="true" className="inline-block size-2 rounded-full bg-accent" />
       )}
+      <span className="sr-only">{active ? "Updating data" : "Data is up to date"}</span>
     </span>
   );
 }
@@ -268,19 +278,20 @@ export function App() {
     () => new HttpBackend({ transport: "json", onUnauthorized: () => setAuthRequired(true) }),
     [],
   );
-  const [boot, setBoot] = useState<{ catalog: Catalog; dashboard: DashboardSpec | null } | null>(null);
+  const [boot, setBoot] = useState<{ catalog: Catalog; dashboard: DashboardDocument | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
+  const forceExplorer = shouldUseExplorer(window.location.pathname, window.location.search);
 
   useEffect(() => {
     let alive = true;
-    Promise.all([backend.getCatalog(), backend.getDashboard()])
+    Promise.all([backend.getCatalog(), forceExplorer ? Promise.resolve(null) : backend.getDashboard()])
       .then(([catalog, dashboard]) => alive && setBoot({ catalog, dashboard }))
       .catch((err: unknown) => alive && setError(err instanceof Error ? err.message : String(err)));
     return () => {
       alive = false;
     };
-  }, [backend, reload]);
+  }, [backend, forceExplorer, reload]);
 
   if (authRequired) {
     return (
@@ -301,8 +312,11 @@ export function App() {
   if (!boot.catalog.models.length)
     return <FullScreen><EmptyState title="Empty semantic layer" message="No models were found." /></FullScreen>;
 
+  if (boot.dashboard)
+    return <DashboardDocumentView document={boot.dashboard} catalog={boot.catalog} backend={backend} />;
+
   return (
-    <ExplorerProvider catalog={boot.catalog} backend={backend} dashboard={boot.dashboard}>
+    <ExplorerProvider catalog={boot.catalog} backend={backend}>
       <Shell />
     </ExplorerProvider>
   );

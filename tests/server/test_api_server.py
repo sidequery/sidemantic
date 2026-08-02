@@ -133,6 +133,50 @@ def test_health_requires_auth(tmp_path):
     assert response.status_code == 401
 
 
+def test_bearer_exchange_issues_short_lived_httponly_session(tmp_path):
+    client = _build_test_client(tmp_path)
+
+    exchange = client.post("/auth/session", headers=_auth_headers())
+    assert exchange.status_code == 200
+    assert exchange.json() == {"expires_in": 600}
+    cookie = exchange.headers["set-cookie"]
+    assert "sidemantic_session=" in cookie
+    assert "HttpOnly" in cookie
+    assert "SameSite=strict" in cookie
+    assert exchange.headers["cache-control"] == "no-store"
+
+    assert client.get("/health").status_code == 200
+
+    logout = client.delete("/auth/session")
+    assert logout.status_code == 204
+    assert client.get("/health").status_code == 401
+
+
+def test_bearer_exchange_rejects_invalid_token(tmp_path):
+    client = _build_test_client(tmp_path)
+
+    response = client.post("/auth/session", headers=_auth_headers("wrong"))
+
+    assert response.status_code == 401
+
+
+def test_bearer_exchange_issues_short_lived_header_session(tmp_path):
+    client = _build_test_client(tmp_path)
+
+    exchange = client.post(
+        "/auth/session",
+        headers={**_auth_headers(), "X-Sidemantic-Session-Mode": "header"},
+    )
+    assert exchange.status_code == 200
+    payload = exchange.json()
+    assert payload["expires_in"] == 600
+    session = payload["session_token"]
+    assert "set-cookie" not in exchange.headers
+
+    response = client.get("/health", headers={"Authorization": f"Sidemantic-Session {session}"})
+    assert response.status_code == 200
+
+
 def test_readyz_is_public(tmp_path):
     client = _build_test_client(tmp_path)
 

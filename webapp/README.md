@@ -88,3 +88,15 @@ The built bundle is served by either backend from a single process:
 Both copies are committed (synced by `scripts/build_webapp.py`), so neither backend build needs a JS
 toolchain. Both backends serve `/describe`, so the UI gets the rich (typed) catalog on either — it
 only falls back to the names-only `/graph` catalog against a backend that doesn't expose `/describe`.
+
+### Host-owned URL state
+
+`ExplorerProvider` reads `window.location.search` and rewrites the URL with `history.replaceState`
+by default. A host app that renders on the server, or whose router owns history, can take both over:
+
+- `initialSearch` — the query string to hydrate from. Supplying it means the initial render never
+  touches `window`, so the explorer renders on a server without a client-only gate.
+- `onSearchChange` — receives the mirrored query string (`"?view=explore&..."`) on every state
+  change instead of `history.replaceState`, for the host router to apply.
+
+Omit both and the standalone browser behavior is unchanged.

@@ -1265,7 +1265,7 @@ class ErrorBoundary extends Component {
 import { useState as useState9 } from "react";
 
 // webapp/src/components/FilterEditor.tsx
-import { useEffect as useEffect8, useId, useMemo as useMemo3, useRef as useRef6, useState as useState8 } from "react";
+import { useEffect as useEffect8, useId, useMemo as useMemo3, useRef as useRef7, useState as useState8 } from "react";
 
 // webapp/src/lib/catalog.ts
 function graphMetricsForModel(catalog, modelName) {
@@ -1479,7 +1479,7 @@ function distinctValues(dimRef, filters, limit = 50, segments, usePreaggregation
 }
 
 // webapp/src/state/ExplorerContext.tsx
-import { createContext, useContext, useEffect as useEffect6, useMemo as useMemo2, useReducer } from "react";
+import { createContext, useContext, useEffect as useEffect6, useMemo as useMemo2, useReducer, useRef as useRef5 } from "react";
 
 // webapp/src/state/url.ts
 var GRAINS2 = new Set(ALL_GRAINS);
@@ -1498,7 +1498,7 @@ function useExplorer() {
 }
 
 // webapp/src/state/useQueryResult.ts
-import { useEffect as useEffect7, useRef as useRef5, useState as useState7 } from "react";
+import { useEffect as useEffect7, useRef as useRef6, useState as useState7 } from "react";
 
 // webapp/src/state/queryActivity.ts
 import { useSyncExternalStore } from "react";
@@ -1520,7 +1520,7 @@ function endQuery() {
 var DEBOUNCE_MS = 80;
 function useQueryResult(backend, query) {
   const [state, setState] = useState7({ loading: false });
-  const token = useRef5(0);
+  const token = useRef6(0);
   const key = query ? JSON.stringify(query) : null;
   useEffect7(() => {
     if (!query) {
@@ -1572,8 +1572,8 @@ function FilterEditor({
   const filter = state.filters[dim.ref];
   const [mode, setModeState] = useState8(filter?.mode ?? "include");
   const selected = useMemo3(() => new Set(filter?.mode !== "contains" ? filter?.values ?? [] : []), [filter]);
-  const panelRef = useRef6(null);
-  const searchRef = useRef6(null);
+  const panelRef = useRef7(null);
+  const searchRef = useRef7(null);
   const labelId = useId();
   const [search, setSearch] = useState8("");
   const debouncedSearch = useDebounced(search, SEARCH_DEBOUNCE_MS);
@@ -1849,7 +1849,7 @@ function FilterPill(props) {
   });
 }
 // webapp/src/components/HeatmapChart.tsx
-import { useEffect as useEffect9, useRef as useRef7, useState as useState10 } from "react";
+import { useEffect as useEffect9, useRef as useRef8, useState as useState10 } from "react";
 import { jsx as jsx13, jsxs as jsxs11, Fragment as Fragment4 } from "react/jsx-runtime";
 var MARGIN3 = { top: 8, right: 8, bottom: 26, left: 76 };
 function orderedLabels(cells, key, explicit) {
@@ -1862,7 +1862,7 @@ function orderedLabels(cells, key, explicit) {
   return seen;
 }
 function HeatmapChart({ cells, xLabels, yLabels, height = 240, format = formatValue, ariaLabel }) {
-  const ref = useRef7(null);
+  const ref = useRef8(null);
   const [width, setWidth] = useState10(640);
   const { tip, handlers } = useChartTooltip();
   useEffect9(() => observeWidth(ref.current, 240, setWidth), []);
@@ -1936,7 +1936,7 @@ function HeatmapChart({ cells, xLabels, yLabels, height = 240, format = formatVa
   });
 }
 // webapp/src/components/HistogramChart.tsx
-import { useEffect as useEffect10, useRef as useRef8, useState as useState11 } from "react";
+import { useEffect as useEffect10, useRef as useRef9, useState as useState11 } from "react";
 import { jsx as jsx14, jsxs as jsxs12, Fragment as Fragment5 } from "react/jsx-runtime";
 function binValues(values, bins) {
   const finite = values.filter(Number.isFinite);
@@ -1961,7 +1961,7 @@ function binValues(values, bins) {
 }
 var MARGIN4 = { top: 12, right: 14, bottom: 26, left: 44 };
 function HistogramChart({ values, bins, height = 200, format = formatCompact, ariaLabel }) {
-  const ref = useRef8(null);
+  const ref = useRef9(null);
   const [width, setWidth] = useState11(640);
   const { tip, handlers } = useChartTooltip();
   useEffect10(() => observeWidth(ref.current, 160, setWidth), []);
@@ -2181,7 +2181,7 @@ function Leaderboard({
 import { useState as useState13 } from "react";
 
 // webapp/src/components/Sparkline.tsx
-import { useEffect as useEffect11, useId as useId2, useRef as useRef9, useState as useState12 } from "react";
+import { useEffect as useEffect11, useId as useId2, useRef as useRef10, useState as useState12 } from "react";
 import { jsx as jsx16, jsxs as jsxs14, Fragment as Fragment6 } from "react/jsx-runtime";
 function Sparkline({
   values,
@@ -2192,10 +2192,10 @@ function Sparkline({
   onHover,
   onBrush
 }) {
-  const containerRef = useRef9(null);
+  const containerRef = useRef10(null);
   const gradientId = useId2();
-  const svgRef = useRef9(null);
-  const dragStart = useRef9(null);
+  const svgRef = useRef10(null);
+  const dragStart = useRef10(null);
   const [width, setWidth] = useState12(200);
   const [hover, setHover] = useState12(null);
   const [brush, setBrush] = useState12(null);
@@ -2488,7 +2488,7 @@ function MetricCard({
   });
 }
 // webapp/src/components/NetworkChart.tsx
-import { useEffect as useEffect12, useMemo as useMemo4, useRef as useRef10, useState as useState14 } from "react";
+import { useEffect as useEffect12, useMemo as useMemo4, useRef as useRef11, useState as useState14 } from "react";
 import { jsx as jsx18, jsxs as jsxs16, Fragment as Fragment8 } from "react/jsx-runtime";
 function hashSeed(text) {
   let hash = 2166136261;
@@ -2585,7 +2585,7 @@ function layoutNetwork(nodes, links, { width = 640, height = 320, iterations = 1
   }));
 }
 function NetworkChart({ nodes, links, height = 320, ariaLabel }) {
-  const ref = useRef10(null);
+  const ref = useRef11(null);
   const [width, setWidth] = useState14(640);
   const { tip, handlers } = useChartTooltip();
   useEffect12(() => observeWidth(ref.current, 240, setWidth), []);
@@ -2801,7 +2801,7 @@ ${sql}`).join(`
   });
 }
 // webapp/src/components/ScatterChart.tsx
-import { useEffect as useEffect13, useRef as useRef11, useState as useState15 } from "react";
+import { useEffect as useEffect13, useRef as useRef12, useState as useState15 } from "react";
 import { jsx as jsx20, jsxs as jsxs18, Fragment as Fragment9 } from "react/jsx-runtime";
 var MARGIN5 = { top: 12, right: 14, bottom: 30, left: 48 };
 function ScatterChart({
@@ -2813,7 +2813,7 @@ function ScatterChart({
   formatY = formatCompact,
   ariaLabel
 }) {
-  const ref = useRef11(null);
+  const ref = useRef12(null);
   const [width, setWidth] = useState15(640);
   const { tip, handlers } = useChartTooltip();
   useEffect13(() => observeWidth(ref.current, 200, setWidth), []);
@@ -2945,7 +2945,7 @@ function ScatterChart({
   });
 }
 // webapp/src/components/StackedAreaChart.tsx
-import { useEffect as useEffect14, useRef as useRef12, useState as useState16 } from "react";
+import { useEffect as useEffect14, useRef as useRef13, useState as useState16 } from "react";
 import { jsx as jsx21, jsxs as jsxs19 } from "react/jsx-runtime";
 var MARGIN6 = { top: 12, right: 14, bottom: 26, left: 48 };
 function clamp2(value, min, max) {
@@ -2959,7 +2959,7 @@ function StackedAreaChart({
   formatLabel = (label) => label,
   ariaLabel
 }) {
-  const container = useRef12(null);
+  const container = useRef13(null);
   const [width, setWidth] = useState16(640);
   const [hover, setHover] = useState16(null);
   useEffect14(() => observeWidth(container.current, 240, setWidth), []);
@@ -3166,7 +3166,7 @@ function StatusDot({ status }) {
   });
 }
 // webapp/src/components/WaterfallChart.tsx
-import { useEffect as useEffect15, useRef as useRef13, useState as useState17 } from "react";
+import { useEffect as useEffect15, useRef as useRef14, useState as useState17 } from "react";
 import { jsx as jsx23, jsxs as jsxs21, Fragment as Fragment10 } from "react/jsx-runtime";
 function waterfallSteps(data) {
   let running = 0;
@@ -3183,7 +3183,7 @@ function waterfallSteps(data) {
 }
 var MARGIN7 = { top: 12, right: 14, bottom: 26, left: 48 };
 function WaterfallChart({ data, height = 220, format = formatValue, ariaLabel }) {
-  const ref = useRef13(null);
+  const ref = useRef14(null);
   const [width, setWidth] = useState17(640);
   const { tip, handlers } = useChartTooltip();
   useEffect15(() => observeWidth(ref.current, 200, setWidth), []);
@@ -3313,7 +3313,7 @@ function Button({ variant = "secondary", size = "md", type = "button", className
   });
 }
 // webapp/src/components/Combobox.tsx
-import { useEffect as useEffect16, useId as useId3, useMemo as useMemo5, useRef as useRef14, useState as useState18 } from "react";
+import { useEffect as useEffect16, useId as useId3, useMemo as useMemo5, useRef as useRef15, useState as useState18 } from "react";
 import { jsx as jsx25, jsxs as jsxs22 } from "react/jsx-runtime";
 function filterOptions(options, query) {
   const needle = query.trim().toLowerCase();
@@ -3324,7 +3324,7 @@ function filterOptions(options, query) {
 function Combobox(props) {
   const { options, placeholder = "Search…", ariaLabel, disabled, maxVisible = 50 } = props;
   const listId = useId3();
-  const rootRef = useRef14(null);
+  const rootRef = useRef15(null);
   const [open, setOpen] = useState18(false);
   const [query, setQuery] = useState18("");
   const [activeIndex, setActiveIndex] = useState18(0);
@@ -3470,7 +3470,7 @@ function Combobox(props) {
   });
 }
 // webapp/src/components/DatePicker.tsx
-import { useRef as useRef15, useState as useState19 } from "react";
+import { useRef as useRef16, useState as useState19 } from "react";
 import { jsx as jsx26, jsxs as jsxs23 } from "react/jsx-runtime";
 var WEEKDAYS = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
 var MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
@@ -3508,7 +3508,7 @@ function DatePicker(props) {
   const [year, setYear] = useState19(() => Number((anchor ?? todayIso()).slice(0, 4)));
   const [monthIndex, setMonthIndex] = useState19(() => Number((anchor ?? todayIso()).slice(5, 7)) - 1);
   const [pending, setPending] = useState19(null);
-  const details = useRef15(null);
+  const details = useRef16(null);
   function shiftMonth(delta) {
     const next = new Date(Date.UTC(year, monthIndex + delta, 1));
     setYear(next.getUTCFullYear());
@@ -3649,7 +3649,7 @@ function DatePicker(props) {
   });
 }
 // webapp/src/components/DateRangeControl.tsx
-import { useRef as useRef16, useState as useState20 } from "react";
+import { useRef as useRef17, useState as useState20 } from "react";
 import { jsx as jsx27, jsxs as jsxs24 } from "react/jsx-runtime";
 var COMPARISON_OPTIONS = [
   { key: "off", label: "Off" },
@@ -3665,7 +3665,7 @@ function DateRangeControl({
   comparisonRange,
   onComparisonChange
 }) {
-  const details = useRef16(null);
+  const details = useRef17(null);
   const [from, setFrom] = useState20(range?.from ?? "");
   const [to, setTo] = useState20(range?.to ?? "");
   const [cmpFrom, setCmpFrom] = useState20(comparisonRange?.from ?? "");
@@ -4112,14 +4112,14 @@ function Tooltip({ content, children, className }) {
   });
 }
 // webapp/src/components/ViewSwitcher.tsx
-import { useRef as useRef17 } from "react";
+import { useRef as useRef18 } from "react";
 import { jsx as jsx34 } from "react/jsx-runtime";
 var SEGMENTS = [
   { key: "explore", label: "Explore" },
   { key: "pivot", label: "Pivot" }
 ];
 function ViewSwitcher({ view, onChange }) {
-  const list = useRef17(null);
+  const list = useRef18(null);
   function move(direction) {
     const current = Math.max(0, SEGMENTS.findIndex((segment) => segment.key === view));
     const next = SEGMENTS[(current + direction + SEGMENTS.length) % SEGMENTS.length];

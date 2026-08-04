@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useMemo, useReducer, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useMemo, useReducer, useRef, type ReactNode } from "react";
 import type { SidemanticBackend } from "../data/backend";
 import type { Catalog, DashboardSpec } from "../data/types";
 import { dashboardTabConfig } from "../lib/dashboard";
@@ -22,15 +22,32 @@ type ExplorerContextValue = {
 
 const ExplorerContext = createContext<ExplorerContextValue | null>(null);
 
+/** The query string (`"?view=explore"`, or `""` when state is fully default) that mirrors a given
+ *  explorer state — the same shape as `window.location.search`, so it round-trips through
+ *  `initialSearch`. */
+export function searchForState(state: ExplorerState): string {
+  const query = encodeState(state);
+  return query ? `?${query}` : "";
+}
+
 export function ExplorerProvider({
   catalog,
   backend,
   dashboard,
+  initialSearch,
+  onSearchChange,
   children,
 }: {
   catalog: Catalog;
   backend: SidemanticBackend;
   dashboard?: DashboardSpec | null;
+  /** Query string to hydrate the initial state from (with or without the leading "?"). Defaults to
+   *  the browser's `window.location.search`; a host that server-renders can pass the request's
+   *  query string so the first render never touches `window`. */
+  initialSearch?: string;
+  /** Called with the mirrored query string ("?..." or "") on every state change, instead of
+   *  rewriting the browser URL. Lets a host router own history. */
+  onSearchChange?: (search: string) => void;
   children: ReactNode;
 }) {
   const initial = useMemo(() => initialStateFromCatalog(catalog, dashboard), [catalog, dashboard]);
@@ -38,18 +55,31 @@ export function ExplorerProvider({
     explorerReducer,
     undefined as never,
     () => {
-      const decoded = decodeState(window.location.search, initial);
+      // Without a host-supplied search, read the browser URL — and fall back to an empty query when
+      // there is no window at all (a bare server render), so hydration lands on the default state.
+      const search = initialSearch ?? (typeof window === "undefined" ? "" : window.location.search);
+      const decoded = decodeState(search, initial);
       const configured = dashboardTabConfig(catalog, dashboard, decoded.dashboardTab);
       if (!configured) return decoded;
-      return applyDashboardConfig(decoded, configured, window.location.search);
+      return applyDashboardConfig(decoded, configured, search);
     },
   );
 
+  // Held in a ref so an inline host callback doesn't re-run the sync on every render.
+  const onSearchChangeRef = useRef(onSearchChange);
+  onSearchChangeRef.current = onSearchChange;
+
   // Sync selections + filters to the URL for deep-linkable, shareable views.
   useEffect(() => {
-    const query = encodeState(state);
-    const next = `${window.location.pathname}${query ? `?${query}` : ""}`;
-    window.history.replaceState(null, "", next);
+    const search = searchForState(state);
+    const notify = onSearchChangeRef.current;
+    // A host that owns the URL gets the query string and writes it however its router requires.
+    if (notify) {
+      notify(search);
+      return;
+    }
+    if (typeof window === "undefined") return;
+    window.history.replaceState(null, "", `${window.location.pathname}${search}`);
   }, [state]);
 
   const value = useMemo(

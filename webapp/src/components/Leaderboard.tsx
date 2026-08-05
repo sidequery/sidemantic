@@ -1,3 +1,4 @@
+import type { Ref } from "react";
 import { displayDimValue, type Tone } from "../lib/format";
 import type { ContextColumn } from "../state/explorerState";
 
@@ -25,6 +26,8 @@ type LeaderboardProps = {
   collapsedLimit?: number;
   expanded?: boolean;
   onExpandedChange?: (expanded: boolean) => void;
+  /** Attached to the root section, so an owner can measure or observe the panel (lazy mounting). */
+  containerRef?: Ref<HTMLElement>;
 };
 
 const CONTEXT_TONE: Record<Tone, string> = {
@@ -48,6 +51,7 @@ export function Leaderboard({
   collapsedLimit = 6,
   expanded = false,
   onExpandedChange,
+  containerRef,
 }: LeaderboardProps) {
   const selected = new Set(selectedValues);
   const visibleRows = expanded ? rows : rows.slice(0, collapsedLimit);
@@ -62,6 +66,7 @@ export function Leaderboard({
 
   return (
     <section
+      ref={containerRef}
       data-testid="dimension-leaderboard"
       data-dimension={dimension}
       data-expanded={expanded || undefined}

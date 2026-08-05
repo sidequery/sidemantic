@@ -24,6 +24,8 @@ and deep-linkable URL state.
   brush-zoom (sets the date range), double-click to clear.
 - **Period-over-period** — set a date range (or brush) and KPIs + the chart show a dashed previous
   period and percentage deltas.
+- **Lazy leaderboards** — each dimension panel issues its query when it comes near the viewport, so
+  the focused chart's queries go out first and panels far below the fold cost nothing until reached.
 - **Dark mode** — toggle in the top bar, persisted to localStorage (respects `prefers-color-scheme`).
 - **Live status** — a spinner shows while queries are in flight; **Reset** clears filters + range.
 

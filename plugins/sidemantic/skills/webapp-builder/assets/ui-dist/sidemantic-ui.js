@@ -2065,7 +2065,8 @@ function Leaderboard({
   onContextColumn,
   collapsedLimit = 6,
   expanded = false,
-  onExpandedChange
+  onExpandedChange,
+  containerRef
 }) {
   const selected = new Set(selectedValues);
   const visibleRows = expanded ? rows : rows.slice(0, collapsedLimit);
@@ -2074,6 +2075,7 @@ function Leaderboard({
   const showContext = contextColumn !== "none";
   const rowGrid = showContext ? "grid-cols-[minmax(0,1fr)_auto_auto]" : "grid-cols-[minmax(0,1fr)_auto]";
   return /* @__PURE__ */ jsxs13("section", {
+    ref: containerRef,
     "data-testid": "dimension-leaderboard",
     "data-dimension": dimension,
     "data-expanded": expanded || undefined,

@@ -1,8 +1,9 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { NULL_TOKEN, queryAlias, type CatalogDimension, type CatalogMetric, type CatalogModel } from "../data/types";
 import { formatCompact, formatDeltaAbs, formatDeltaPct, formatPercentOfTotal, sqlLiteral, type Tone } from "../lib/format";
 import { catalogDimTypes, composeFilters, dimensionLeaderboard } from "../lib/queries";
 import type { DateRange } from "../lib/time";
+import { whenNearViewport } from "../lib/viewport";
 import type { ContextColumn } from "../state/explorerState";
 import { useExplorer } from "../state/ExplorerContext";
 import { useQueryResult } from "../state/useQueryResult";
@@ -22,7 +23,11 @@ const EMPTY_SEGMENTS: string[] = [];
 
 /** A self-contained leaderboard: ranks one dimension by a metric, owning its own query so panels
  * load independently and crossfilter clicks toggle the dimension's filter. When a context column is
- * active it renders an extra compact figure per row (% of total, or the period-over-period delta). */
+ * active it renders an extra compact figure per row (% of total, or the period-over-period delta).
+ *
+ * The panel shows a skeleton and issues nothing until it is near the viewport, so a wide breakdown
+ * grid neither queries for panels the user may never scroll to nor lets its own queries overtake
+ * the view's chart queries (see lib/viewport). */
 export function LeaderboardPanel({
   dim,
   model,
@@ -58,6 +63,13 @@ export function LeaderboardPanel({
   onExpandedChange?: (expanded: boolean) => void;
 }) {
   const { state, dispatch, backend, catalog } = useExplorer();
+  // Hold the query until the panel is near the viewport; the skeleton is rendered meanwhile.
+  const panel = useRef<HTMLElement>(null);
+  const [near, setNear] = useState(false);
+  useEffect(() => {
+    if (near || !panel.current) return;
+    return whenNearViewport(panel.current, () => setNear(true));
+  }, [near]);
   const timeRef = timeDimensionRef ?? model.timeDimension?.ref;
   const types = useMemo(() => catalogDimTypes(catalog), [catalog]);
   const filters = useMemo(
@@ -67,7 +79,7 @@ export function LeaderboardPanel({
   );
   const { result, loading, error } = useQueryResult(
     backend,
-    dimensionLeaderboard(rankMetric.ref, dim.ref, filters, limit, baseSegments, usePreaggregations),
+    near ? dimensionLeaderboard(rankMetric.ref, dim.ref, filters, limit, baseSegments, usePreaggregations) : null,
   );
 
   // Only an include-mode selection is a "checked" row; exclude/contains filters don't highlight
@@ -170,7 +182,8 @@ export function LeaderboardPanel({
       title={dim.label}
       metricLabel={rankMetric.label}
       rows={rows}
-      loading={loading || stale}
+      containerRef={panel}
+      loading={!near || loading || stale}
       selectedValues={selectedValues}
       formatMetric={(value) => formatCompact(value, hint)}
       onToggle={(value) => dispatch({ type: "toggleFilter", dim: dim.ref, value })}

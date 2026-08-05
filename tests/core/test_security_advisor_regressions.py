@@ -6,8 +6,6 @@ Covers:
 - P1-1: enforce_visibility must also cover fields referenced only in filters/order_by.
 """
 
-import datetime
-
 import pytest
 
 from sidemantic import Dimension, Metric, Model, SemanticLayer

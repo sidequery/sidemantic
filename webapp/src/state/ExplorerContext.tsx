@@ -30,6 +30,23 @@ export function searchForState(state: ExplorerState): string {
   return query ? `?${query}` : "";
 }
 
+/** Decode `search` (with or without the leading "?") into a full explorer state, applying any
+ *  dashboard tab config it selects. Shared by the mount-time initializer and post-navigation
+ *  re-hydration so both land on identical state. */
+export function stateForSearch(
+  search: string,
+  catalog: Catalog,
+  dashboard: DashboardSpec | null | undefined,
+  initial: ExplorerState,
+): ExplorerState {
+  const decoded = decodeState(search, initial);
+  const configured = dashboardTabConfig(catalog, dashboard, decoded.dashboardTab);
+  if (!configured) return decoded;
+  return applyDashboardConfig(decoded, configured, search);
+}
+
+const withoutQuestionMark = (search: string) => (search.startsWith("?") ? search.slice(1) : search);
+
 export function ExplorerProvider({
   catalog,
   backend,
@@ -58,12 +75,20 @@ export function ExplorerProvider({
       // Without a host-supplied search, read the browser URL — and fall back to an empty query when
       // there is no window at all (a bare server render), so hydration lands on the default state.
       const search = initialSearch ?? (typeof window === "undefined" ? "" : window.location.search);
-      const decoded = decodeState(search, initial);
-      const configured = dashboardTabConfig(catalog, dashboard, decoded.dashboardTab);
-      if (!configured) return decoded;
-      return applyDashboardConfig(decoded, configured, search);
+      return stateForSearch(search, catalog, dashboard, initial);
     },
   );
+
+  // A host router that keeps this provider mounted can change `initialSearch` after mount (deep
+  // links, Back/Forward). Re-hydrate from it — unless it is our own `onSearchChange` echo arriving
+  // back through the host's URL, which already mirrors the current state.
+  const appliedSearchRef = useRef(initialSearch);
+  useEffect(() => {
+    if (initialSearch === undefined || initialSearch === appliedSearchRef.current) return;
+    appliedSearchRef.current = initialSearch;
+    if (withoutQuestionMark(initialSearch) === withoutQuestionMark(searchForState(state))) return;
+    dispatch({ type: "hydrate", state: stateForSearch(initialSearch, catalog, dashboard, initial) });
+  }, [initialSearch, state, catalog, dashboard, initial]);
 
   // Held in a ref so an inline host callback doesn't re-run the sync on every render.
   const onSearchChangeRef = useRef(onSearchChange);

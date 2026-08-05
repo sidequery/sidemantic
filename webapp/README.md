@@ -95,7 +95,9 @@ only falls back to the names-only `/graph` catalog against a backend that doesn'
 by default. A host app that renders on the server, or whose router owns history, can take both over:
 
 - `initialSearch` — the query string to hydrate from. Supplying it means the initial render never
-  touches `window`, so the explorer renders on a server without a client-only gate.
+  touches `window`, so the explorer renders on a server without a client-only gate. Changing it
+  after mount re-hydrates the explorer, so router navigation (deep links, Back/Forward) flows in;
+  the provider ignores changes that merely echo its own `onSearchChange` back.
 - `onSearchChange` — receives the mirrored query string (`"?view=explore&..."`) on every state
   change instead of `history.replaceState`, for the host router to apply.
 

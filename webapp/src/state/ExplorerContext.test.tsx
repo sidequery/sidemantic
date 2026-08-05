@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { SidemanticBackend } from "../data/backend";
 import type { Catalog } from "../data/types";
-import { ExplorerProvider, searchForState, useExplorer } from "./ExplorerContext";
+import { ExplorerProvider, searchForState, stateForSearch, useExplorer } from "./ExplorerContext";
 import { initialStateFromCatalog } from "./explorerState";
 
 // This suite runs without a DOM, so it is exactly the environment a host's server render sees:
@@ -61,4 +61,19 @@ describe("ExplorerProvider hydration", () => {
 
 test("searchForState mirrors state as a location.search-shaped string", () => {
   expect(searchForState(initialStateFromCatalog(catalog))).toBe("?view=home&model=orders&metric=orders.revenue&grain=month");
+});
+
+describe("stateForSearch", () => {
+  const initial = initialStateFromCatalog(catalog);
+
+  test("decodes a search into the state the provider would mount with", () => {
+    const state = stateForSearch("?view=pivot&grain=week", catalog, null, initial);
+    expect(state.view).toBe("pivot");
+    expect(state.grain).toBe("week");
+  });
+
+  test("round-trips through searchForState, so a navigation echo mirrors its own state", () => {
+    const search = "?view=explore&model=orders&metric=orders.revenue&grain=day";
+    expect(searchForState(stateForSearch(search, catalog, null, initial))).toBe(search);
+  });
 });

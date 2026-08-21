@@ -2,6 +2,7 @@
 
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlencode
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -13,6 +14,10 @@ class DuckDBConnection(BaseModel):
 
     type: Literal["duckdb"] = "duckdb"
     path: str = Field(..., description="Path to DuckDB database file or :memory:")
+    config: dict[str, str | bool | int | float] | None = Field(
+        default=None,
+        description="DuckDB startup configuration passed to duckdb.connect",
+    )
     init_sql: list[str] | None = Field(
         default=None,
         description="SQL statements to run after connecting (e.g., loading extensions, attaching catalogs)",
@@ -268,7 +273,12 @@ class SidemanticConfig(BaseModel):
             db_p = Path(connection.path)
             if not db_p.is_absolute():
                 db_p = (base / db_p).resolve()
-            connection = DuckDBConnection(type="duckdb", path=str(db_p), init_sql=connection.init_sql)
+            connection = DuckDBConnection(
+                type="duckdb",
+                path=str(db_p),
+                config=connection.config,
+                init_sql=connection.init_sql,
+            )
         elif connection and isinstance(connection, FilesConnection):
             connection = FilesConnection(type="files", paths=_expand_data_paths(connection.paths, base))
         elif connection is not None and getattr(connection, "password_file", None):
@@ -324,11 +334,13 @@ def load_config(config_path: Path) -> SidemanticConfig:
     suffix = config_path.suffix.lower()
 
     if suffix in {".yaml", ".yml"}:
-        with open(config_path) as f:
-            data = _yaml_safe_load(f)
+        from sidemantic.adapters.sidemantic import substitute_env_vars
+
+        data = _yaml_safe_load(substitute_env_vars(config_path.read_text()))
     elif suffix == ".json":
-        with open(config_path) as f:
-            data = json.load(f)
+        from sidemantic.adapters.sidemantic import substitute_env_vars
+
+        data = json.loads(substitute_env_vars(config_path.read_text()))
     else:
         raise ValueError(f"Unsupported config format: {suffix}. Use .yaml, .yml, or .json")
 
@@ -420,7 +432,10 @@ def build_connection_string(config: SidemanticConfig) -> str:
         return "duckdb:///:memory:"
 
     if isinstance(config.connection, DuckDBConnection):
-        return f"duckdb:///{config.connection.path}"
+        connection = f"duckdb:///{config.connection.path}"
+        if config.connection.config:
+            connection = f"{connection}?{urlencode(config.connection.config)}"
+        return connection
     elif isinstance(config.connection, FilesConnection):
         return "duckdb:///:memory:"
     elif isinstance(config.connection, PostgreSQLConnection):

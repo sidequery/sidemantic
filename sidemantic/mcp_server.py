@@ -1,15 +1,33 @@
 """MCP server for Sidemantic semantic layer."""
 
 import json
+import re
 from datetime import date, datetime, time
 from decimal import Decimal
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Literal
 
 from mcp.server.fastmcp import FastMCP
 
 from sidemantic.core.semantic_layer import SemanticLayer
 from sidemantic.loaders import load_from_directory
+
+SIDEMANTIC_MCP_INSTRUCTIONS = """
+Sidemantic is the authoritative semantic layer for analytical questions. Discover
+and reuse existing metrics, dimensions, and segments before constructing equivalent
+logic. Start with search_semantic_catalog, inspect relevant definitions with
+explain_metric or get_models, and prefer run_query over run_sql when the structured
+query can express the request.
+
+Promote durable, reusable business meaning into the semantic model; keep one-off
+filters, groupings, and exploratory calculations in the query. If the requested
+business concept is not modeled, do not silently recreate it in SQL. Return a
+semantic_gap object with requested_concept, why_missing, reusable,
+recommended_action (model_metric, query_only, or clarify), and an optional
+proposed_definition. Coding clients may then update the source_file reported by
+get_models, validate the model, and retry the semantic query.
+""".strip()
 
 # Global semantic layer instance
 _layer: SemanticLayer | None = None
@@ -201,7 +219,7 @@ def _format_join_key_pairs(
 
 
 # Create MCP server
-mcp = FastMCP("sidemantic")
+mcp = FastMCP("sidemantic", instructions=SIDEMANTIC_MCP_INSTRUCTIONS)
 
 
 def _visible_dimension_name(model: Any, name: str | None, enforce_visibility: bool) -> str | None:
@@ -211,6 +229,381 @@ def _visible_dimension_name(model: Any, name: str | None, enforce_visibility: bo
     if dimension is not None and not getattr(dimension, "public", True):
         return None
     return name
+
+
+@mcp.tool(structured_output=False)
+def search_semantic_catalog(
+    query: str,
+    kinds: list[Literal["model", "dimension", "metric", "segment"]] = [],
+    limit: int = 20,
+) -> dict[str, Any]:
+    """Search models and fields before constructing a semantic query.
+
+    Performs case-insensitive lexical search across names, qualified names, labels,
+    descriptions, tables, and SQL definitions. Results include enough metadata to
+    choose relevant models; use get_models for complete definitions before querying.
+
+    Args:
+        query: Words or a phrase to find, such as "repayment rate" or "revenue".
+        kinds: Optional result kinds to include. Empty includes all kinds.
+        limit: Maximum number of ranked results to return (1-100).
+
+    Returns:
+        Ranked catalog results with kind, name, qualified_name, model, description,
+        and source metadata when available.
+    """
+
+    def normalize(value: str) -> str:
+        return " ".join(re.findall(r"[^\W_]+", value.lower()))
+
+    def token_matches(query_token: str, candidate_token: str) -> bool:
+        """Match whole tokens and useful prefixes, never arbitrary substrings."""
+        return candidate_token == query_token or candidate_token.startswith(query_token)
+
+    def phrase_matches(query_tokens: list[str], candidate_tokens: list[str]) -> bool:
+        """Return whether query tokens match a contiguous candidate phrase."""
+        phrase_length = len(query_tokens)
+        for start in range(len(candidate_tokens) - phrase_length + 1):
+            window = candidate_tokens[start : start + phrase_length]
+            if all(
+                token_matches(query_token, candidate_token)
+                for query_token, candidate_token in zip(query_tokens, window)
+            ):
+                return True
+        return False
+
+    normalized_query = normalize(query)
+    if not normalized_query:
+        raise ValueError("query must contain at least one non-whitespace character")
+    if not 1 <= limit <= 100:
+        raise ValueError("limit must be between 1 and 100")
+
+    allowed_kinds = {"model", "dimension", "metric", "segment"}
+    requested_kinds = set(kinds) if kinds else allowed_kinds
+    invalid_kinds = requested_kinds - allowed_kinds
+    if invalid_kinds:
+        invalid = ", ".join(sorted(invalid_kinds))
+        raise ValueError(f"Unknown catalog kinds: {invalid}")
+
+    layer = get_layer()
+    tokens = normalized_query.split()
+    candidates: list[dict[str, Any]] = []
+
+    def add_candidate(
+        *,
+        kind: str,
+        name: str,
+        qualified_name: str,
+        model_name: str | None = None,
+        description: str | None = None,
+        label: str | None = None,
+        sql: str | None = None,
+        field_type: str | None = None,
+        source_file: str | None = None,
+        source_format: str | None = None,
+        table: str | None = None,
+    ) -> None:
+        if kind not in requested_kinds:
+            return
+
+        searchable_values = [qualified_name, name, model_name, description, label, sql, table]
+        normalized_values = [normalize(str(value)) for value in searchable_values if value]
+        searchable_tokens = [token for value in normalized_values for token in value.split()]
+        matched_tokens = [
+            token
+            for token in tokens
+            if any(token_matches(token, candidate_token) for candidate_token in searchable_tokens)
+        ]
+        if not matched_tokens:
+            return
+
+        normalized_name = normalize(name)
+        normalized_qualified = normalize(qualified_name)
+        score = sum(
+            sum(token_matches(token, candidate_token) for candidate_token in searchable_tokens)
+            for token in matched_tokens
+        )
+        score += len(matched_tokens) * 5
+        score += round(20 * len(matched_tokens) / len(tokens))
+        if normalized_query == normalized_qualified:
+            score += 100
+        elif normalized_query == normalized_name:
+            score += 80
+        elif normalized_name.startswith(normalized_query):
+            score += 40
+        if any(phrase_matches(tokens, value.split()) for value in normalized_values):
+            score += 20
+
+        result: dict[str, Any] = {
+            "kind": kind,
+            "name": name,
+            "qualified_name": qualified_name,
+            "score": score,
+            "matched_tokens": matched_tokens,
+        }
+        if model_name:
+            result["model"] = model_name
+        if description:
+            result["description"] = description
+        if label:
+            result["label"] = label
+        if field_type:
+            result["type"] = field_type
+        if table:
+            result["table"] = table
+        if source_file:
+            result["source_file"] = source_file
+        if source_format:
+            result["source_format"] = source_format
+        candidates.append(result)
+
+    for model_name, model in layer.graph.models.items():
+        source_file = getattr(model, "_source_file", None)
+        source_format = getattr(model, "_source_format", None)
+        add_candidate(
+            kind="model",
+            name=model_name,
+            qualified_name=model_name,
+            description=model.description,
+            table=model.table,
+            sql=model.sql,
+            source_file=source_file,
+            source_format=source_format,
+        )
+        for dimension in model.dimensions:
+            if layer.enforce_visibility and not getattr(dimension, "public", True):
+                continue
+            add_candidate(
+                kind="dimension",
+                name=dimension.name,
+                qualified_name=f"{model_name}.{dimension.name}",
+                model_name=model_name,
+                description=dimension.description,
+                label=dimension.label,
+                sql=dimension.sql,
+                field_type=dimension.type,
+                source_file=source_file,
+                source_format=source_format,
+            )
+        for metric in model.metrics:
+            if layer.enforce_visibility and not getattr(metric, "public", True):
+                continue
+            add_candidate(
+                kind="metric",
+                name=metric.name,
+                qualified_name=f"{model_name}.{metric.name}",
+                model_name=model_name,
+                description=metric.description,
+                label=metric.label,
+                sql=metric.sql,
+                field_type=metric.type or metric.agg,
+                source_file=source_file,
+                source_format=source_format,
+            )
+        for segment in model.segments:
+            if layer.enforce_visibility and not getattr(segment, "public", True):
+                continue
+            add_candidate(
+                kind="segment",
+                name=segment.name,
+                qualified_name=f"{model_name}.{segment.name}",
+                model_name=model_name,
+                description=segment.description,
+                sql=segment.sql,
+                source_file=source_file,
+                source_format=source_format,
+            )
+
+    model_metric_ids = {id(metric) for model in layer.graph.models.values() for metric in model.metrics}
+    for metric_name, metric in layer.graph.metrics.items():
+        # Conversion/retention metrics attached to a model are also registered on
+        # the graph for query resolution. Search should surface their qualified
+        # model entry once, not a second unqualified duplicate.
+        if id(metric) in model_metric_ids:
+            continue
+        if layer.enforce_visibility and not getattr(metric, "public", True):
+            continue
+        add_candidate(
+            kind="metric",
+            name=metric_name,
+            qualified_name=metric_name,
+            description=metric.description,
+            label=metric.label,
+            sql=metric.sql,
+            field_type=metric.type,
+        )
+
+    exact_candidates = [
+        candidate
+        for candidate in candidates
+        if candidate["kind"] != "model"
+        and (
+            normalize(candidate["qualified_name"]) == normalized_query
+            or normalize(candidate["name"]) == normalized_query
+        )
+    ]
+    if exact_candidates:
+        candidates = exact_candidates
+    candidates.sort(key=lambda result: (-result["score"], result["kind"], result["qualified_name"]))
+    total = len(candidates)
+    return {
+        "query": query,
+        "kinds": sorted(requested_kinds),
+        "results": candidates[:limit],
+        "result_count": min(total, limit),
+        "total_matches": total,
+        "truncated": total > limit,
+    }
+
+
+def _resolve_metric_dependency(
+    dependency: str,
+    *,
+    model_name: str | None,
+    layer: SemanticLayer,
+) -> tuple[str | None, Any] | None:
+    """Resolve a dependency using its metric's model before graph-level names."""
+    graph = layer.graph
+    if "." in dependency:
+        try:
+            return graph.resolve_metric_reference(dependency)
+        except KeyError:
+            return None
+
+    if model_name:
+        model = graph.models.get(model_name)
+        metric = model.get_metric(dependency) if model else None
+        if metric:
+            return model_name, metric
+
+    try:
+        return graph.resolve_metric_reference(dependency)
+    except KeyError:
+        return None
+
+
+def _qualified_metric_name(model_name: str | None, metric: Any, fallback: str) -> str:
+    return f"{model_name}.{metric.name}" if model_name else fallback
+
+
+def _metric_expression(metric: Any) -> str | None:
+    """Return a concise human-readable expression without compiling a query."""
+    if metric.type == "ratio" and metric.numerator and metric.denominator:
+        return f"{metric.numerator} / {metric.denominator}"
+    if metric.sql:
+        if metric.agg:
+            return metric.to_sql()
+        return metric.sql
+    if metric.agg:
+        return metric.to_sql()
+    return None
+
+
+@mcp.tool(structured_output=False)
+def explain_metric(metric_name: str) -> dict[str, Any]:
+    """Explain one metric's definition, dependencies, and source provenance.
+
+    Use after search_semantic_catalog to confirm that an existing metric matches
+    the requested business concept before querying it. Dependencies are returned
+    as canonical qualified names when resolvable, and source_models includes the
+    transitive model lineage of graph-level or derived metrics.
+
+    Args:
+        metric_name: Qualified model metric or graph-level metric name.
+
+    Returns:
+        Metric definition, direct dependencies, source models, and source metadata.
+    """
+    layer = get_layer()
+    try:
+        model_name, metric = layer.graph.resolve_metric_reference(metric_name)
+    except KeyError as exc:
+        raise ValueError(f"Metric '{metric_name}' not found") from exc
+
+    if layer.enforce_visibility and not getattr(metric, "public", True):
+        raise ValueError(f"Metric '{metric_name}' not found")
+
+    direct_dependencies = metric.get_dependencies(layer.graph, model_name)
+    canonical_dependencies: list[str] = []
+    source_models: set[str] = {model_name} if model_name else set()
+    hidden_dependency_count = 0
+
+    def collect_sources(
+        dependency_name: str,
+        dependency_model: str | None,
+        dependency_metric: Any,
+        visited: set[tuple[str | None, int]],
+    ) -> None:
+        nonlocal hidden_dependency_count
+        identity = (dependency_model, id(dependency_metric))
+        if identity in visited:
+            return
+        visited.add(identity)
+        if layer.enforce_visibility and not getattr(dependency_metric, "public", True):
+            hidden_dependency_count += 1
+            return
+        if dependency_model:
+            source_models.add(dependency_model)
+        for nested_name in dependency_metric.get_dependencies(layer.graph, dependency_model):
+            nested = _resolve_metric_dependency(nested_name, model_name=dependency_model, layer=layer)
+            if nested:
+                nested_model, nested_metric = nested
+                collect_sources(nested_name, nested_model, nested_metric, visited)
+
+    for dependency in sorted(direct_dependencies):
+        resolved = _resolve_metric_dependency(dependency, model_name=model_name, layer=layer)
+        if not resolved:
+            canonical_dependencies.append(dependency)
+            continue
+        dependency_model, dependency_metric = resolved
+        if layer.enforce_visibility and not getattr(dependency_metric, "public", True):
+            hidden_dependency_count += 1
+            continue
+        canonical_dependencies.append(_qualified_metric_name(dependency_model, dependency_metric, dependency))
+        collect_sources(dependency, dependency_model, dependency_metric, set())
+
+    result: dict[str, Any] = {
+        "metric": _qualified_metric_name(model_name, metric, metric_name),
+        "name": metric.name,
+        "depends_on": canonical_dependencies,
+        "source_models": sorted(source_models),
+    }
+    if model_name:
+        result["model"] = model_name
+    if metric.type:
+        result["type"] = metric.type
+    if metric.agg:
+        result["agg"] = metric.agg
+    if not hidden_dependency_count:
+        if expression := _metric_expression(metric):
+            result["expression"] = expression
+    if metric.description:
+        result["description"] = metric.description
+    if metric.label:
+        result["label"] = metric.label
+    if metric.filters:
+        result["filters"] = metric.filters
+    if metric.numerator and not hidden_dependency_count:
+        result["numerator"] = metric.numerator
+    if metric.denominator and not hidden_dependency_count:
+        result["denominator"] = metric.denominator
+    if metric.base_metric and not hidden_dependency_count:
+        result["base_metric"] = metric.base_metric
+    if metric.comparison_type:
+        result["comparison_type"] = metric.comparison_type
+    if metric.format:
+        result["format"] = metric.format
+    if metric.value_format_name:
+        result["value_format_name"] = metric.value_format_name
+    if hidden_dependency_count:
+        result["hidden_dependency_count"] = hidden_dependency_count
+
+    source_owner = layer.graph.models[model_name] if model_name else metric
+    if source_format := getattr(source_owner, "_source_format", None):
+        result["source_format"] = source_format
+    if source_file := getattr(source_owner, "_source_file", None):
+        result["source_file"] = source_file
+    return result
 
 
 @mcp.tool(structured_output=False)
@@ -433,6 +826,7 @@ def run_query(
 
     # Compile SQL. Pass the server-level static user attributes so model access
     # gates and row filters are enforced (None -> secured models are denied).
+    compile_started = perf_counter()
     sql = layer.compile(
         dimensions=dimensions or [],
         metrics=metrics or [],
@@ -445,8 +839,10 @@ def run_query(
         user_attributes=get_user_attributes(),
     )
 
+    compile_ms = round((perf_counter() - compile_started) * 1000, 2)
+
     if dry_run:
-        return {"sql": sql}
+        return {"sql": sql, "timing": {"compile_ms": compile_ms}}
 
     def recompile_raw():
         return layer.compile(
@@ -462,16 +858,19 @@ def run_query(
             user_attributes=get_user_attributes(),
         )
 
+    execution_started = perf_counter()
     result = layer._execute_with_preagg_fallback(
         sql,
         recompile_raw,
         use_preaggs=layer.use_preaggregations,
         strict=layer.preagg_strict,
         used_preagg="used_preagg=true" in sql,
+        execute=layer.adapter.execute,
     )
 
     # Convert to list of dicts with JSON-compatible values
     rows = result.fetchall()
+    execution_ms = round((perf_counter() - execution_started) * 1000, 2)
     columns = [desc[0] for desc in result.description]
     row_dicts = [{col: _convert_to_json_compatible(val) for col, val in zip(columns, row)} for row in rows]
 
@@ -479,6 +878,11 @@ def run_query(
         "sql": sql,
         "rows": row_dicts,
         "row_count": len(row_dicts),
+        "timing": {
+            "compile_ms": compile_ms,
+            "execution_ms": execution_ms,
+            "total_ms": round(compile_ms + execution_ms, 2),
+        },
     }
 
 
@@ -709,6 +1113,20 @@ def validate_query(
         graph=layer.graph,
     )
 
+    cohort_metrics = []
+    for metric_ref in metrics or []:
+        try:
+            _, metric = layer.graph.resolve_metric_reference(metric_ref)
+        except KeyError:
+            continue
+        if metric.type == "cohort":
+            cohort_metrics.append(metric_ref)
+    if len(cohort_metrics) > 1:
+        errors.append(
+            "Only one cohort metric can be queried at a time; split these into separate queries: "
+            + ", ".join(cohort_metrics)
+        )
+
     return {
         "valid": len(errors) == 0,
         "errors": errors,
@@ -756,7 +1174,10 @@ def get_semantic_graph() -> dict[str, Any]:
 
     # Graph-level metrics
     graph_metrics = []
+    model_metric_ids = {id(metric) for model in graph.models.values() for metric in model.metrics}
     for metric_name, metric in graph.metrics.items():
+        if id(metric) in model_metric_ids:
+            continue
         if layer.enforce_visibility and not getattr(metric, "public", True):
             continue
         metric_info: dict[str, Any] = {

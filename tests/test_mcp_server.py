@@ -3,6 +3,7 @@
 # ruff: noqa: E402
 
 import json
+import re
 import tempfile
 from datetime import date, datetime, time
 from decimal import Decimal
@@ -19,15 +20,18 @@ from sidemantic.core.pre_aggregation import PreAggregation
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_layer import PreaggregationStrictError
 from sidemantic.mcp_server import (
+    SIDEMANTIC_MCP_INSTRUCTIONS,
     _convert_to_json_compatible,
     _format_join_condition,
     catalog_resource,
     create_chart,
+    explain_metric,
     get_models,
     get_semantic_graph,
     initialize_layer,
     run_query,
     run_sql,
+    search_semantic_catalog,
     validate_query,
 )
 
@@ -200,6 +204,9 @@ def test_run_query_basic(demo_layer):
     assert "SUM" in result["sql"].upper()
     # Should have 2 rows (Alice and Bob)
     assert result["row_count"] == 2
+    assert result["timing"]["compile_ms"] >= 0
+    assert result["timing"]["execution_ms"] >= 0
+    assert result["timing"]["total_ms"] >= 0
     assert len(result["rows"]) == 2
 
 
@@ -214,6 +221,29 @@ def test_run_query_with_filter(demo_layer):
     assert result["sql"] is not None
     assert "WHERE" in result["sql"].upper()
     assert "Alice" in result["sql"]
+
+
+def test_run_query_base_time_filter_uses_raw_expression(demo_layer):
+    result = run_query(
+        metrics=["orders.total_revenue"],
+        where="orders.order_date >= TIMESTAMP '2024-01-02 12:34:56'",
+        dry_run=True,
+    )
+
+    where_clause = result["sql"].split("WHERE", 1)[1].split(")\nSELECT", 1)[0]
+    assert re.search(r"order_date\s*>=", where_clause)
+    assert "DATE_TRUNC" not in where_clause.upper()
+
+
+def test_run_query_explicit_time_grain_filter_truncates_expression(demo_layer):
+    result = run_query(
+        metrics=["orders.total_revenue"],
+        where="orders.order_date__day >= DATE '2024-01-02'",
+        dry_run=True,
+    )
+
+    where_clause = result["sql"].split("WHERE", 1)[1].split(")\nSELECT", 1)[0]
+    assert "DATE_TRUNC('DAY', ORDER_DATE)" in where_clause.upper()
 
 
 def test_run_query_with_order_by(demo_layer):
@@ -433,6 +463,7 @@ def test_run_query_dry_run(demo_layer):
     assert "LIMIT" in result["sql"].upper()
     # Should NOT have rows or row_count
     assert "rows" not in result
+    assert result["timing"]["compile_ms"] >= 0
     assert "row_count" not in result
 
 
@@ -523,6 +554,37 @@ def test_validate_query_invalid_metric(demo_layer):
     assert len(result["errors"]) > 0
 
 
+def test_validate_query_rejects_multiple_cohort_metrics(demo_layer):
+    orders = demo_layer.graph.models["orders"]
+    orders.metrics.extend(
+        [
+            Metric(
+                name="repeat_customers",
+                type="cohort",
+                entity="customer_name",
+                inner_metrics=[{"name": "orders", "agg": "count"}],
+                having="orders >= 2",
+                agg="count",
+            ),
+            Metric(
+                name="cross_channel_customers",
+                type="cohort",
+                entity="customer_name",
+                inner_metrics=[{"name": "orders", "agg": "count"}],
+                having="orders >= 2",
+                agg="count",
+            ),
+        ]
+    )
+
+    result = validate_query(
+        metrics=["orders.repeat_customers", "orders.cross_channel_customers"],
+    )
+
+    assert result["valid"] is False
+    assert any("Only one cohort metric" in error for error in result["errors"])
+
+
 def test_segments_via_get_models(demo_layer):
     """Test that segments are accessible via get_models (replaces list_segments)."""
     result = get_models(["orders"])
@@ -555,6 +617,171 @@ def test_get_semantic_graph(demo_layer):
     assert "segments" in model
     assert "completed_orders" in model["segments"]
     assert "primary_key" not in model
+
+
+def test_mcp_instructions_promote_semantic_first_analysis():
+    assert "authoritative semantic layer" in SIDEMANTIC_MCP_INSTRUCTIONS
+    assert "search_semantic_catalog" in SIDEMANTIC_MCP_INSTRUCTIONS
+    assert "explain_metric" in SIDEMANTIC_MCP_INSTRUCTIONS
+    assert "semantic_gap" in SIDEMANTIC_MCP_INSTRUCTIONS
+
+
+def test_search_semantic_catalog_ranks_and_filters_results(demo_layer):
+    result = search_semantic_catalog("orders.total_revenue", kinds=["metric"])
+
+    assert result["result_count"] == 1
+    assert result["results"][0]["kind"] == "metric"
+    assert result["results"][0]["qualified_name"] == "orders.total_revenue"
+
+
+def test_search_semantic_catalog_searches_descriptions_and_limits(demo_layer):
+    result = search_semantic_catalog("orders", limit=2)
+
+    assert result["result_count"] == 2
+    assert result["total_matches"] > result["result_count"]
+    assert result["truncated"] is True
+
+
+def test_search_semantic_catalog_ranks_partial_matches_for_broad_queries(demo_layer):
+    result = search_semantic_catalog("revenue status customer retention")
+
+    assert result["results"]
+    assert any(item["qualified_name"] == "orders.total_revenue" for item in result["results"])
+    revenue = next(item for item in result["results"] if item["qualified_name"] == "orders.total_revenue")
+    assert "revenue" in revenue["matched_tokens"]
+
+
+def test_search_semantic_catalog_matches_token_prefixes_not_internal_substrings(demo_layer):
+    orders = demo_layer.graph.models["orders"]
+    orders.dimensions.extend(
+        [
+            Dimension(name="longitude", sql="longitude", type="numeric"),
+            Dimension(name="github_repository", sql="github_repository", type="categorical"),
+        ]
+    )
+
+    result = search_semantic_catalog("git", kinds=["dimension"])
+
+    assert "orders.github_repository" in [item["qualified_name"] for item in result["results"]]
+    assert "orders.longitude" not in [item["qualified_name"] for item in result["results"]]
+
+
+def test_search_semantic_catalog_deduplicates_model_registered_graph_metrics(demo_layer):
+    orders = demo_layer.graph.models["orders"]
+    metric = orders.metrics[0]
+    demo_layer.graph.metrics[metric.name] = metric
+
+    result = search_semantic_catalog(metric.name, kinds=["metric"])
+
+    assert [item["qualified_name"] for item in result["results"]].count(f"orders.{metric.name}") == 1
+    assert metric.name not in [item["qualified_name"] for item in result["results"]]
+
+
+def test_search_semantic_catalog_rejects_invalid_input(demo_layer):
+    with pytest.raises(ValueError, match="non-whitespace"):
+        search_semantic_catalog("  ")
+    with pytest.raises(ValueError, match="between 1 and 100"):
+        search_semantic_catalog("revenue", limit=0)
+
+
+def test_search_semantic_catalog_respects_field_visibility(demo_layer):
+    orders = demo_layer.graph.models["orders"]
+    orders.dimensions.append(Dimension(name="secret_note", sql="secret_note", type="categorical", public=False))
+    demo_layer.enforce_visibility = True
+
+    result = search_semantic_catalog("secret note")
+
+    assert result["results"] == []
+
+
+def test_explain_metric_returns_definition_and_provenance(demo_layer):
+    result = explain_metric("orders.total_revenue")
+
+    assert result == {
+        "metric": "orders.total_revenue",
+        "name": "total_revenue",
+        "model": "orders",
+        "agg": "sum",
+        "expression": "SUM(amount)",
+        "description": "Total revenue from orders",
+        "depends_on": [],
+        "source_models": ["orders"],
+        "source_format": "Sidemantic",
+        "source_file": "orders.yml",
+    }
+
+
+def test_explain_metric_resolves_dependencies_and_transitive_sources(demo_layer):
+    orders = demo_layer.graph.models["orders"]
+    orders.metrics.extend(
+        [
+            Metric(name="refunded_revenue", agg="sum", sql="refunded_amount"),
+            Metric(
+                name="net_revenue",
+                type="derived",
+                sql="total_revenue - refunded_revenue",
+                filters=["status != 'failed'"],
+            ),
+        ]
+    )
+
+    result = explain_metric("orders.net_revenue")
+
+    assert result["expression"] == "total_revenue - refunded_revenue"
+    assert result["depends_on"] == ["orders.refunded_revenue", "orders.total_revenue"]
+    assert result["source_models"] == ["orders"]
+    assert result["filters"] == ["status != 'failed'"]
+
+
+def test_explain_metric_rejects_unknown_and_hidden_metrics(demo_layer):
+    with pytest.raises(ValueError, match="Metric 'orders.missing' not found"):
+        explain_metric("orders.missing")
+
+    orders = demo_layer.graph.models["orders"]
+    orders.metrics.append(Metric(name="secret_revenue", agg="sum", sql="amount", public=False))
+    demo_layer.enforce_visibility = True
+
+    with pytest.raises(ValueError, match="Metric 'orders.secret_revenue' not found"):
+        explain_metric("orders.secret_revenue")
+
+
+def test_explain_graph_metric_reports_cross_model_lineage(demo_layer):
+    customers = Model(
+        name="customers",
+        table="customers_table",
+        metrics=[Metric(name="customer_count", agg="count_distinct", sql="customer_id")],
+    )
+    demo_layer.add_model(customers)
+    demo_layer.add_metric(
+        Metric(
+            name="revenue_per_customer",
+            type="derived",
+            sql="orders.total_revenue / customers.customer_count",
+        )
+    )
+
+    result = explain_metric("revenue_per_customer")
+
+    assert result["metric"] == "revenue_per_customer"
+    assert result["depends_on"] == ["customers.customer_count", "orders.total_revenue"]
+    assert result["source_models"] == ["customers", "orders"]
+
+
+def test_explain_metric_does_not_leak_hidden_dependency(demo_layer):
+    orders = demo_layer.graph.models["orders"]
+    orders.metrics.extend(
+        [
+            Metric(name="internal_cost", agg="sum", sql="cost", public=False),
+            Metric(name="margin", type="derived", sql="total_revenue - internal_cost"),
+        ]
+    )
+    demo_layer.enforce_visibility = True
+
+    result = explain_metric("orders.margin")
+
+    assert result["depends_on"] == ["orders.total_revenue"]
+    assert result["hidden_dependency_count"] == 1
+    assert "internal_cost" not in json.dumps(result)
 
 
 def test_get_models_enriched(demo_layer):

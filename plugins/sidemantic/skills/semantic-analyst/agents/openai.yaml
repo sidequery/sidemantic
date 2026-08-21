@@ -1,0 +1,4 @@
+interface:
+  display_name: "Semantic Analyst"
+  short_description: "Answer business questions with trusted metrics"
+  default_prompt: "Use $semantic-analyst to answer this business question through the Sidemantic semantic layer."

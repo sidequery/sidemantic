@@ -18,12 +18,14 @@ var __toESM = (mod, isNodeMode, target) => {
   }
   target = mod != null ? __create(__getProtoOf(mod)) : {};
   const to = isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target;
-  for (let key of __getOwnPropNames(mod))
-    if (!__hasOwnProp.call(to, key))
-      __defProp(to, key, {
-        get: __accessProp.bind(mod, key),
-        enumerable: true
-      });
+  if (mod && typeof mod === "object" || typeof mod === "function") {
+    for (let key of __getOwnPropNames(mod))
+      if (!__hasOwnProp.call(to, key))
+        __defProp(to, key, {
+          get: __accessProp.bind(mod, key),
+          enumerable: true
+        });
+  }
   if (canCache)
     cache.set(mod, to);
   return to;
@@ -47,42 +49,42 @@ var __esm = (fn, res) => () => (fn && (res = fn(fn = 0)), res);
 // webapp/node_modules/react/cjs/react.production.min.js
 var exports_react_production_min = {};
 __export(exports_react_production_min, {
-  version: () => $version,
-  useTransition: () => $useTransition,
-  useSyncExternalStore: () => $useSyncExternalStore,
-  useState: () => $useState,
-  useRef: () => $useRef,
-  useReducer: () => $useReducer,
-  useMemo: () => $useMemo,
-  useLayoutEffect: () => $useLayoutEffect,
-  useInsertionEffect: () => $useInsertionEffect,
-  useImperativeHandle: () => $useImperativeHandle,
-  useId: () => $useId,
-  useEffect: () => $useEffect,
-  useDeferredValue: () => $useDeferredValue,
-  useDebugValue: () => $useDebugValue,
-  useContext: () => $useContext,
-  useCallback: () => $useCallback,
-  unstable_act: () => $unstable_act,
-  startTransition: () => $startTransition,
-  memo: () => $memo,
-  lazy: () => $lazy,
-  isValidElement: () => $isValidElement,
-  forwardRef: () => $forwardRef,
-  createRef: () => $createRef,
-  createFactory: () => $createFactory,
-  createElement: () => $createElement,
-  createContext: () => $createContext,
-  cloneElement: () => $cloneElement,
-  act: () => $act,
-  __SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED: () => $__SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED,
-  Suspense: () => $Suspense,
-  StrictMode: () => $StrictMode,
-  PureComponent: () => $PureComponent,
-  Profiler: () => $Profiler,
-  Fragment: () => $Fragment,
+  Children: () => $Children,
   Component: () => $Component,
-  Children: () => $Children
+  Fragment: () => $Fragment,
+  Profiler: () => $Profiler,
+  PureComponent: () => $PureComponent,
+  StrictMode: () => $StrictMode,
+  Suspense: () => $Suspense,
+  __SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED: () => $__SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED,
+  act: () => $act,
+  cloneElement: () => $cloneElement,
+  createContext: () => $createContext,
+  createElement: () => $createElement,
+  createFactory: () => $createFactory,
+  createRef: () => $createRef,
+  forwardRef: () => $forwardRef,
+  isValidElement: () => $isValidElement,
+  lazy: () => $lazy,
+  memo: () => $memo,
+  startTransition: () => $startTransition,
+  unstable_act: () => $unstable_act,
+  useCallback: () => $useCallback,
+  useContext: () => $useContext,
+  useDebugValue: () => $useDebugValue,
+  useDeferredValue: () => $useDeferredValue,
+  useEffect: () => $useEffect,
+  useId: () => $useId,
+  useImperativeHandle: () => $useImperativeHandle,
+  useInsertionEffect: () => $useInsertionEffect,
+  useLayoutEffect: () => $useLayoutEffect,
+  useMemo: () => $useMemo,
+  useReducer: () => $useReducer,
+  useRef: () => $useRef,
+  useState: () => $useState,
+  useSyncExternalStore: () => $useSyncExternalStore,
+  useTransition: () => $useTransition,
+  version: () => $version
 });
 function A(a) {
   if (a === null || typeof a !== "object")
@@ -352,7 +354,7 @@ var init_react_production_min = __esm(() => {
 });
 
 // webapp/node_modules/react/index.js
-var require_react = __commonJS((exports, module) => {
+var require_react = __commonJS(function(exports, module) {
   init_react_production_min();
   if (true) {
     module.exports = exports_react_production_min;
@@ -360,7 +362,7 @@ var require_react = __commonJS((exports, module) => {
 });
 
 // webapp/node_modules/scheduler/cjs/scheduler.production.min.js
-var require_scheduler_production_min = __commonJS((exports) => {
+var require_scheduler_production_min = __commonJS(function(exports) {
   function f(a, b) {
     var c = a.length;
     a.push(b);
@@ -626,7 +628,7 @@ var require_scheduler_production_min = __commonJS((exports) => {
 });
 
 // webapp/node_modules/scheduler/index.js
-var require_scheduler = __commonJS((exports, module) => {
+var require_scheduler = __commonJS(function(exports, module) {
   var scheduler_production_min = __toESM(require_scheduler_production_min());
   if (true) {
     module.exports = scheduler_production_min;
@@ -636,18 +638,18 @@ var require_scheduler = __commonJS((exports, module) => {
 // webapp/node_modules/react-dom/cjs/react-dom.production.min.js
 var exports_react_dom_production_min = {};
 __export(exports_react_dom_production_min, {
-  version: () => $version2,
-  unstable_renderSubtreeIntoContainer: () => $unstable_renderSubtreeIntoContainer,
-  unstable_batchedUpdates: () => $unstable_batchedUpdates,
-  unmountComponentAtNode: () => $unmountComponentAtNode,
-  render: () => $render,
-  hydrateRoot: () => $hydrateRoot,
-  hydrate: () => $hydrate,
-  flushSync: () => $flushSync,
-  findDOMNode: () => $findDOMNode,
-  createRoot: () => $createRoot,
+  __SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED: () => $__SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED2,
   createPortal: () => $createPortal,
-  __SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED: () => $__SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED2
+  createRoot: () => $createRoot,
+  findDOMNode: () => $findDOMNode,
+  flushSync: () => $flushSync,
+  hydrate: () => $hydrate,
+  hydrateRoot: () => $hydrateRoot,
+  render: () => $render,
+  unmountComponentAtNode: () => $unmountComponentAtNode,
+  unstable_batchedUpdates: () => $unstable_batchedUpdates,
+  unstable_renderSubtreeIntoContainer: () => $unstable_renderSubtreeIntoContainer,
+  version: () => $version2
 });
 function p2(a) {
   for (var b = "https://reactjs.org/docs/error-decoder.html?invariant=" + a, c = 1;c < arguments.length; c++)
@@ -7587,7 +7589,7 @@ var init_react_dom_production_min = __esm(() => {
 });
 
 // webapp/node_modules/react-dom/index.js
-var require_react_dom = __commonJS((exports, module) => {
+var require_react_dom = __commonJS(function(exports, module) {
   init_react_dom_production_min();
   function checkDCE() {
     if (typeof __REACT_DEVTOOLS_GLOBAL_HOOK__ === "undefined" || typeof __REACT_DEVTOOLS_GLOBAL_HOOK__.checkDCE !== "function") {
@@ -7607,7 +7609,7 @@ var require_react_dom = __commonJS((exports, module) => {
 });
 
 // webapp/node_modules/react-dom/client.js
-var require_client = __commonJS((exports) => {
+var require_client = __commonJS(function(exports) {
   var m = __toESM(require_react_dom());
   if (true) {
     exports.createRoot = m.createRoot;
@@ -7619,9 +7621,9 @@ var require_client = __commonJS((exports) => {
 // webapp/node_modules/react/cjs/react-jsx-runtime.production.min.js
 var exports_react_jsx_runtime_production_min = {};
 __export(exports_react_jsx_runtime_production_min, {
-  jsxs: () => $jsxs,
+  Fragment: () => $Fragment2,
   jsx: () => $jsx,
-  Fragment: () => $Fragment2
+  jsxs: () => $jsxs
 });
 function q2(c, a, g) {
   var b, d = {}, e = null, h = null;
@@ -7649,7 +7651,7 @@ var init_react_jsx_runtime_production_min = __esm(() => {
 });
 
 // webapp/node_modules/react/jsx-runtime.js
-var require_jsx_runtime = __commonJS((exports, module) => {
+var require_jsx_runtime = __commonJS(function(exports, module) {
   init_react_jsx_runtime_production_min();
   if (true) {
     module.exports = exports_react_jsx_runtime_production_min;
@@ -8191,7 +8193,6 @@ var COMPARISONS = new Set(["off", "previous", "year", "custom"]);
 var FILTER_MODES = new Set(["include", "exclude", "contains"]);
 
 // webapp/src/state/ExplorerContext.tsx
-var jsx_runtime2 = __toESM(require_jsx_runtime(), 1);
 var ExplorerContext = import_react2.createContext(null);
 function useExplorer() {
   const value = import_react2.useContext(ExplorerContext);
@@ -8249,7 +8250,7 @@ function useQueryResult(backend, query) {
 }
 
 // webapp/src/components/FilterEditor.tsx
-var jsx_runtime3 = __toESM(require_jsx_runtime(), 1);
+var jsx_runtime2 = __toESM(require_jsx_runtime(), 1);
 var MODES = [
   { mode: "include", label: "Include" },
   { mode: "exclude", label: "Exclude" },
@@ -8362,7 +8363,7 @@ function FilterEditor({
       first.focus();
     }
   }
-  return /* @__PURE__ */ jsx_runtime3.jsxs("div", {
+  return /* @__PURE__ */ jsx_runtime2.jsxs("div", {
     ref: panelRef,
     role: "dialog",
     "aria-modal": "true",
@@ -8370,15 +8371,15 @@ function FilterEditor({
     onKeyDown,
     className: "absolute left-0 z-50 mt-1 w-64 border border-line bg-surface p-2 text-2xs shadow-lg",
     children: [
-      /* @__PURE__ */ jsx_runtime3.jsxs("div", {
+      /* @__PURE__ */ jsx_runtime2.jsxs("div", {
         id: labelId,
         className: "mb-2 flex items-baseline justify-between gap-2",
         children: [
-          /* @__PURE__ */ jsx_runtime3.jsx("span", {
+          /* @__PURE__ */ jsx_runtime2.jsx("span", {
             className: "truncate font-semibold text-ink",
             children: dim.label
           }),
-          /* @__PURE__ */ jsx_runtime3.jsx("button", {
+          /* @__PURE__ */ jsx_runtime2.jsx("button", {
             type: "button",
             "aria-label": "Close filter editor",
             onClick: onClose,
@@ -8387,11 +8388,11 @@ function FilterEditor({
           })
         ]
       }),
-      /* @__PURE__ */ jsx_runtime3.jsx("div", {
+      /* @__PURE__ */ jsx_runtime2.jsx("div", {
         role: "group",
         "aria-label": "Filter mode",
         className: "mb-2 grid grid-cols-3 gap-px border border-line bg-line",
-        children: MODES.map(({ mode: m2, label }) => /* @__PURE__ */ jsx_runtime3.jsx("button", {
+        children: MODES.map(({ mode: m2, label }) => /* @__PURE__ */ jsx_runtime2.jsx("button", {
           type: "button",
           "aria-pressed": mode === m2,
           onClick: () => setMode(m2),
@@ -8399,7 +8400,7 @@ function FilterEditor({
           children: label
         }, m2))
       }),
-      mode === "contains" ? /* @__PURE__ */ jsx_runtime3.jsx("input", {
+      mode === "contains" ? /* @__PURE__ */ jsx_runtime2.jsx("input", {
         ref: searchRef,
         type: "text",
         "aria-label": `${dim.label} contains`,
@@ -8407,9 +8408,9 @@ function FilterEditor({
         value: patternDraft,
         onChange: (event) => setPatternDraft(event.target.value),
         className: "w-full border border-line bg-surface px-1.5 py-1 text-2xs text-ink placeholder:text-faint"
-      }) : /* @__PURE__ */ jsx_runtime3.jsxs(jsx_runtime3.Fragment, {
+      }) : /* @__PURE__ */ jsx_runtime2.jsxs(jsx_runtime2.Fragment, {
         children: [
-          /* @__PURE__ */ jsx_runtime3.jsx("input", {
+          /* @__PURE__ */ jsx_runtime2.jsx("input", {
             ref: searchRef,
             type: "text",
             "aria-label": `Search ${dim.label} values`,
@@ -8418,33 +8419,33 @@ function FilterEditor({
             onChange: (event) => setSearch(event.target.value),
             className: "w-full border border-line bg-surface px-1.5 py-1 text-2xs text-ink placeholder:text-faint"
           }),
-          /* @__PURE__ */ jsx_runtime3.jsx("div", {
+          /* @__PURE__ */ jsx_runtime2.jsx("div", {
             className: "mt-2 max-h-56 overflow-y-auto",
             role: "group",
             "aria-label": `${dim.label} values`,
-            children: error ? /* @__PURE__ */ jsx_runtime3.jsx("p", {
+            children: error ? /* @__PURE__ */ jsx_runtime2.jsx("p", {
               className: "px-1 py-2 text-danger",
               children: error
-            }) : showSkeleton ? /* @__PURE__ */ jsx_runtime3.jsx("div", {
+            }) : showSkeleton ? /* @__PURE__ */ jsx_runtime2.jsx("div", {
               className: "space-y-1.5 p-1",
-              children: [0, 1, 2, 3, 4].map((i) => /* @__PURE__ */ jsx_runtime3.jsx("div", {
+              children: [0, 1, 2, 3, 4].map((i) => /* @__PURE__ */ jsx_runtime2.jsx("div", {
                 className: "skeleton h-4 w-full"
               }, i))
-            }) : values.length === 0 ? /* @__PURE__ */ jsx_runtime3.jsx("p", {
+            }) : values.length === 0 ? /* @__PURE__ */ jsx_runtime2.jsx("p", {
               className: "px-1 py-2 text-faint",
               children: "No values"
             }) : values.map((value) => {
               const checked = selected.has(value);
-              return /* @__PURE__ */ jsx_runtime3.jsxs("label", {
+              return /* @__PURE__ */ jsx_runtime2.jsxs("label", {
                 className: "flex cursor-pointer items-center gap-2 px-1 py-1 hover:bg-surface-soft",
                 children: [
-                  /* @__PURE__ */ jsx_runtime3.jsx("input", {
+                  /* @__PURE__ */ jsx_runtime2.jsx("input", {
                     type: "checkbox",
                     checked,
                     onChange: () => dispatch({ type: "toggleFilter", dim: dim.ref, value, mode }),
                     className: "size-3 accent-[var(--accent)]"
                   }),
-                  /* @__PURE__ */ jsx_runtime3.jsx("span", {
+                  /* @__PURE__ */ jsx_runtime2.jsx("span", {
                     className: "min-w-0 truncate text-ink",
                     children: displayDimValue(value)
                   })
@@ -8454,16 +8455,16 @@ function FilterEditor({
           })
         ]
       }),
-      /* @__PURE__ */ jsx_runtime3.jsxs("div", {
+      /* @__PURE__ */ jsx_runtime2.jsxs("div", {
         className: "mt-2 flex items-center justify-between border-t border-line pt-2",
         children: [
-          /* @__PURE__ */ jsx_runtime3.jsx("button", {
+          /* @__PURE__ */ jsx_runtime2.jsx("button", {
             type: "button",
             onClick: () => dispatch({ type: "removeFilterDim", dim: dim.ref }),
             className: "text-muted underline-offset-2 hover:text-ink hover:underline",
             children: "Clear"
           }),
-          /* @__PURE__ */ jsx_runtime3.jsx("button", {
+          /* @__PURE__ */ jsx_runtime2.jsx("button", {
             type: "button",
             onClick: onClose,
             className: "border border-line px-2 py-1 text-muted hover:bg-surface-soft",
@@ -8476,19 +8477,19 @@ function FilterEditor({
 }
 
 // webapp/src/components/FilterPill.tsx
-var jsx_runtime4 = __toESM(require_jsx_runtime(), 1);
+var jsx_runtime3 = __toESM(require_jsx_runtime(), 1);
 function FilterPill(props) {
   const [open, setOpen] = import_react6.useState(false);
   if (!("dim" in props)) {
-    return /* @__PURE__ */ jsx_runtime4.jsxs("span", {
+    return /* @__PURE__ */ jsx_runtime3.jsxs("span", {
       "data-dimension": props.dimension,
       "data-value": props.value,
       className: "inline-flex max-w-full items-center gap-1 rounded-full bg-surface-soft px-2 py-0.5 text-2xs leading-4 text-muted",
       children: [
-        /* @__PURE__ */ jsx_runtime4.jsxs("span", {
+        /* @__PURE__ */ jsx_runtime3.jsxs("span", {
           className: "truncate",
           children: [
-            /* @__PURE__ */ jsx_runtime4.jsxs("span", {
+            /* @__PURE__ */ jsx_runtime3.jsxs("span", {
               className: "text-faint",
               children: [
                 props.dimensionLabel ?? props.dimension,
@@ -8499,7 +8500,7 @@ function FilterPill(props) {
             props.value
           ]
         }),
-        props.onRemove ? /* @__PURE__ */ jsx_runtime4.jsx("button", {
+        props.onRemove ? /* @__PURE__ */ jsx_runtime3.jsx("button", {
           type: "button",
           "aria-label": `Remove filter ${props.value}`,
           onClick: props.onRemove,
@@ -8510,15 +8511,15 @@ function FilterPill(props) {
     });
   }
   const { dim, model, filter, onRemove } = props;
-  return /* @__PURE__ */ jsx_runtime4.jsxs("span", {
+  return /* @__PURE__ */ jsx_runtime3.jsxs("span", {
     className: "relative inline-flex max-w-full items-center",
     "data-dimension": dim.ref,
     "data-mode": filter.mode,
     children: [
-      /* @__PURE__ */ jsx_runtime4.jsxs("span", {
+      /* @__PURE__ */ jsx_runtime3.jsxs("span", {
         className: "inline-flex max-w-full items-center gap-1 rounded-full bg-surface-soft px-2 py-0.5 text-2xs leading-4 text-muted",
         children: [
-          /* @__PURE__ */ jsx_runtime4.jsxs("button", {
+          /* @__PURE__ */ jsx_runtime3.jsxs("button", {
             type: "button",
             "aria-label": `Edit filter ${dim.label}`,
             "aria-haspopup": "dialog",
@@ -8526,7 +8527,7 @@ function FilterPill(props) {
             onClick: () => setOpen((v3) => !v3),
             className: "min-w-0 truncate text-left hover:text-ink",
             children: [
-              /* @__PURE__ */ jsx_runtime4.jsx("span", {
+              /* @__PURE__ */ jsx_runtime3.jsx("span", {
                 className: "text-faint",
                 children: dim.label
               }),
@@ -8534,7 +8535,7 @@ function FilterPill(props) {
               filterSummary(filter)
             ]
           }),
-          /* @__PURE__ */ jsx_runtime4.jsx("button", {
+          /* @__PURE__ */ jsx_runtime3.jsx("button", {
             type: "button",
             "aria-label": `Remove filter ${dim.label}`,
             onClick: onRemove,
@@ -8543,7 +8544,7 @@ function FilterPill(props) {
           })
         ]
       }),
-      open ? /* @__PURE__ */ jsx_runtime4.jsx(FilterEditor, {
+      open ? /* @__PURE__ */ jsx_runtime3.jsx(FilterEditor, {
         dim,
         model,
         onClose: () => setOpen(false)
@@ -8553,7 +8554,7 @@ function FilterPill(props) {
 }
 
 // webapp/src/components/Leaderboard.tsx
-var jsx_runtime5 = __toESM(require_jsx_runtime(), 1);
+var jsx_runtime4 = __toESM(require_jsx_runtime(), 1);
 var CONTEXT_TONE = {
   positive: "text-success",
   negative: "text-danger",
@@ -8573,7 +8574,8 @@ function Leaderboard({
   onContextColumn,
   collapsedLimit = 6,
   expanded = false,
-  onExpandedChange
+  onExpandedChange,
+  containerRef
 }) {
   const selected = new Set(selectedValues);
   const visibleRows = expanded ? rows : rows.slice(0, collapsedLimit);
@@ -8581,24 +8583,25 @@ function Leaderboard({
   const expandable = expanded || rows.length > collapsedLimit;
   const showContext = contextColumn !== "none";
   const rowGrid = showContext ? "grid-cols-[minmax(0,1fr)_auto_auto]" : "grid-cols-[minmax(0,1fr)_auto]";
-  return /* @__PURE__ */ jsx_runtime5.jsxs("section", {
+  return /* @__PURE__ */ jsx_runtime4.jsxs("section", {
+    ref: containerRef,
     "data-testid": "dimension-leaderboard",
     "data-dimension": dimension,
     "data-expanded": expanded || undefined,
     "aria-label": `${title}, ranked by ${metricLabel}`,
     className: "flex min-h-40 flex-col border-b border-r border-line bg-surface data-[expanded=true]:col-span-full",
     children: [
-      /* @__PURE__ */ jsx_runtime5.jsxs("header", {
+      /* @__PURE__ */ jsx_runtime4.jsxs("header", {
         className: "flex items-center justify-between gap-3 px-3 pb-2 pt-2.5",
         children: [
-          /* @__PURE__ */ jsx_runtime5.jsxs("div", {
+          /* @__PURE__ */ jsx_runtime4.jsxs("div", {
             className: "flex min-w-0 items-baseline gap-2",
             children: [
-              /* @__PURE__ */ jsx_runtime5.jsx("h3", {
+              /* @__PURE__ */ jsx_runtime4.jsx("h3", {
                 className: "truncate text-sm font-semibold text-ink",
                 children: title
               }),
-              /* @__PURE__ */ jsx_runtime5.jsxs("p", {
+              /* @__PURE__ */ jsx_runtime4.jsxs("p", {
                 className: "sr-only",
                 children: [
                   "Ranked by ",
@@ -8607,12 +8610,12 @@ function Leaderboard({
               })
             ]
           }),
-          contextOptions && onContextColumn ? /* @__PURE__ */ jsx_runtime5.jsx("div", {
+          contextOptions && onContextColumn ? /* @__PURE__ */ jsx_runtime4.jsx("div", {
             role: "group",
             "aria-label": "Context column",
             "data-testid": "leaderboard-context-toggle",
             className: "flex shrink-0 overflow-hidden border border-line text-2xs",
-            children: contextOptions.map((option) => /* @__PURE__ */ jsx_runtime5.jsx("button", {
+            children: contextOptions.map((option) => /* @__PURE__ */ jsx_runtime4.jsx("button", {
               type: "button",
               title: option.title,
               "aria-pressed": contextColumn === option.key,
@@ -8625,21 +8628,21 @@ function Leaderboard({
           }) : null
         ]
       }),
-      /* @__PURE__ */ jsx_runtime5.jsx("div", {
+      /* @__PURE__ */ jsx_runtime4.jsx("div", {
         "data-testid": "leaderboard-rows",
-        children: loading && rows.length === 0 ? /* @__PURE__ */ jsx_runtime5.jsx("div", {
+        children: loading && rows.length === 0 ? /* @__PURE__ */ jsx_runtime4.jsx("div", {
           className: "space-y-2 p-3",
-          children: [0, 1, 2, 3].map((i) => /* @__PURE__ */ jsx_runtime5.jsx("div", {
+          children: [0, 1, 2, 3].map((i) => /* @__PURE__ */ jsx_runtime4.jsx("div", {
             className: "skeleton h-5 w-full"
           }, i))
-        }) : rows.length === 0 ? /* @__PURE__ */ jsx_runtime5.jsx("p", {
+        }) : rows.length === 0 ? /* @__PURE__ */ jsx_runtime4.jsx("p", {
           className: "px-3 py-4 text-xs text-faint",
           children: "No values"
         }) : visibleRows.map((row) => {
           const tone = row.metric < 0 ? "negative" : "positive";
           const isSelected = selected.has(row.value);
           const width = `${Math.round(Math.abs(row.metric) / maxMagnitude * 100)}%`;
-          return /* @__PURE__ */ jsx_runtime5.jsxs("button", {
+          return /* @__PURE__ */ jsx_runtime4.jsxs("button", {
             type: "button",
             "data-dimension": dimension,
             "data-value": row.value,
@@ -8649,20 +8652,20 @@ function Leaderboard({
             "aria-pressed": isSelected,
             className: `leaderboard-row relative grid w-full ${rowGrid} items-center gap-3 overflow-hidden border-0 bg-transparent px-3 py-1 text-left text-xs text-ink data-[selected=true]:bg-chart-primary-selected`,
             children: [
-              /* @__PURE__ */ jsx_runtime5.jsx("span", {
+              /* @__PURE__ */ jsx_runtime4.jsx("span", {
                 "aria-hidden": "true",
                 className: `absolute inset-y-0 left-0 ${tone === "negative" ? "bg-danger-soft" : "bg-chart-primary-soft"}`,
                 style: { width }
               }),
-              /* @__PURE__ */ jsx_runtime5.jsx("span", {
+              /* @__PURE__ */ jsx_runtime4.jsx("span", {
                 className: "relative min-w-0 truncate text-muted",
                 children: displayDimValue(row.value)
               }),
-              /* @__PURE__ */ jsx_runtime5.jsx("strong", {
+              /* @__PURE__ */ jsx_runtime4.jsx("strong", {
                 className: "relative tnum font-semibold text-ink",
                 children: formatMetric(row.metric)
               }),
-              showContext ? /* @__PURE__ */ jsx_runtime5.jsx("span", {
+              showContext ? /* @__PURE__ */ jsx_runtime4.jsx("span", {
                 "data-testid": "leaderboard-context",
                 "data-tone": row.context?.tone ?? "neutral",
                 className: `relative w-14 text-right font-mono tnum text-2xs ${CONTEXT_TONE[row.context?.tone ?? "neutral"]}`,
@@ -8672,7 +8675,7 @@ function Leaderboard({
           }, `${dimension}:${row.value}`);
         })
       }),
-      expandable && !loading ? /* @__PURE__ */ jsx_runtime5.jsx("button", {
+      expandable && !loading ? /* @__PURE__ */ jsx_runtime4.jsx("button", {
         type: "button",
         "data-action": expanded ? "leaderboard-back" : "leaderboard-expand",
         "aria-expanded": expanded,
@@ -8692,7 +8695,7 @@ var import_react8 = __toESM(require_react(), 1);
 
 // webapp/src/components/ChartTooltip.tsx
 var import_react7 = __toESM(require_react(), 1);
-var jsx_runtime6 = __toESM(require_jsx_runtime(), 1);
+var jsx_runtime5 = __toESM(require_jsx_runtime(), 1);
 function ChartTooltip({
   tip,
   position = "fixed",
@@ -8702,7 +8705,7 @@ function ChartTooltip({
 }) {
   if (!tip)
     return null;
-  return /* @__PURE__ */ jsx_runtime6.jsx("div", {
+  return /* @__PURE__ */ jsx_runtime5.jsx("div", {
     role: "tooltip",
     style: { position, left: tip.x + offset, top: tip.y + offset, pointerEvents: "none", zIndex: 50, ...style },
     className: className || "rounded-lg border border-line bg-surface px-2.5 py-1.5 text-xs text-ink shadow-[var(--shadow)]",
@@ -8711,7 +8714,7 @@ function ChartTooltip({
 }
 
 // webapp/src/components/Sparkline.tsx
-var jsx_runtime7 = __toESM(require_jsx_runtime(), 1);
+var jsx_runtime6 = __toESM(require_jsx_runtime(), 1);
 function Sparkline({
   values,
   labels,
@@ -8742,7 +8745,7 @@ function Sparkline({
   }, []);
   const points = values.map((value, index) => ({ index, value })).filter((point) => Number.isFinite(point.value));
   if (points.length < 2) {
-    return /* @__PURE__ */ jsx_runtime7.jsx("svg", {
+    return /* @__PURE__ */ jsx_runtime6.jsx("svg", {
       ref: svgRef,
       role: "img",
       "aria-label": ariaLabel || "No trend data",
@@ -8814,11 +8817,11 @@ function Sparkline({
       setBrush(null);
   }
   const hovered = hover === null ? null : coordinates[hover];
-  return /* @__PURE__ */ jsx_runtime7.jsxs("span", {
+  return /* @__PURE__ */ jsx_runtime6.jsxs("span", {
     ref: containerRef,
     className: "relative block w-full",
     children: [
-      /* @__PURE__ */ jsx_runtime7.jsxs("svg", {
+      /* @__PURE__ */ jsx_runtime6.jsxs("svg", {
         ref: svgRef,
         role: "img",
         "aria-label": summary,
@@ -8832,20 +8835,20 @@ function Sparkline({
         onPointerLeave: leave,
         onDoubleClick: () => onBrush?.(null),
         children: [
-          /* @__PURE__ */ jsx_runtime7.jsx("defs", {
-            children: /* @__PURE__ */ jsx_runtime7.jsxs("linearGradient", {
+          /* @__PURE__ */ jsx_runtime6.jsx("defs", {
+            children: /* @__PURE__ */ jsx_runtime6.jsxs("linearGradient", {
               id: gradientId,
               x1: "0",
               y1: "0",
               x2: "0",
               y2: "1",
               children: [
-                /* @__PURE__ */ jsx_runtime7.jsx("stop", {
+                /* @__PURE__ */ jsx_runtime6.jsx("stop", {
                   offset: "0%",
                   stopColor: "currentColor",
                   stopOpacity: 0.16
                 }),
-                /* @__PURE__ */ jsx_runtime7.jsx("stop", {
+                /* @__PURE__ */ jsx_runtime6.jsx("stop", {
                   offset: "100%",
                   stopColor: "currentColor",
                   stopOpacity: 0
@@ -8853,18 +8856,18 @@ function Sparkline({
               ]
             })
           }),
-          /* @__PURE__ */ jsx_runtime7.jsx("path", {
+          /* @__PURE__ */ jsx_runtime6.jsx("path", {
             d: area,
             fill: `url(#${gradientId})`
           }),
-          /* @__PURE__ */ jsx_runtime7.jsx("path", {
+          /* @__PURE__ */ jsx_runtime6.jsx("path", {
             d: `M ${line}`,
             fill: "none",
             stroke: "currentColor",
             strokeWidth: 1.5,
             vectorEffect: "non-scaling-stroke"
           }),
-          brush ? /* @__PURE__ */ jsx_runtime7.jsx("rect", {
+          brush ? /* @__PURE__ */ jsx_runtime6.jsx("rect", {
             x: Math.min(brush.a, brush.b),
             y: 0,
             width: Math.abs(brush.b - brush.a),
@@ -8872,9 +8875,9 @@ function Sparkline({
             fill: "currentColor",
             opacity: 0.12
           }) : null,
-          hovered ? /* @__PURE__ */ jsx_runtime7.jsxs(jsx_runtime7.Fragment, {
+          hovered ? /* @__PURE__ */ jsx_runtime6.jsxs(jsx_runtime6.Fragment, {
             children: [
-              /* @__PURE__ */ jsx_runtime7.jsx("line", {
+              /* @__PURE__ */ jsx_runtime6.jsx("line", {
                 x1: hovered.x,
                 x2: hovered.x,
                 y1: 0,
@@ -8883,14 +8886,14 @@ function Sparkline({
                 strokeWidth: 1,
                 opacity: 0.45
               }),
-              /* @__PURE__ */ jsx_runtime7.jsx("circle", {
+              /* @__PURE__ */ jsx_runtime6.jsx("circle", {
                 cx: hovered.x,
                 cy: hovered.y,
                 r: 2.5,
                 fill: "currentColor"
               })
             ]
-          }) : /* @__PURE__ */ jsx_runtime7.jsx("circle", {
+          }) : /* @__PURE__ */ jsx_runtime6.jsx("circle", {
             cx: latest.x,
             cy: latest.y,
             r: 2.25,
@@ -8898,7 +8901,7 @@ function Sparkline({
           })
         ]
       }),
-      /* @__PURE__ */ jsx_runtime7.jsx(ChartTooltip, {
+      /* @__PURE__ */ jsx_runtime6.jsx(ChartTooltip, {
         tip
       })
     ]
@@ -8906,7 +8909,7 @@ function Sparkline({
 }
 
 // webapp/src/components/MetricCard.tsx
-var jsx_runtime8 = __toESM(require_jsx_runtime(), 1);
+var jsx_runtime7 = __toESM(require_jsx_runtime(), 1);
 var TONE_CLASS = {
   positive: "text-success",
   negative: "text-danger",
@@ -8930,35 +8933,35 @@ function MetricCard({
   onSparkBrush
 }) {
   const [sparkHover, setSparkHover] = import_react9.useState(null);
-  const summary = /* @__PURE__ */ jsx_runtime8.jsxs(jsx_runtime8.Fragment, {
+  const summary = /* @__PURE__ */ jsx_runtime7.jsxs(jsx_runtime7.Fragment, {
     children: [
-      /* @__PURE__ */ jsx_runtime8.jsxs("div", {
+      /* @__PURE__ */ jsx_runtime7.jsxs("div", {
         className: "flex items-baseline justify-between gap-2",
         children: [
-          /* @__PURE__ */ jsx_runtime8.jsx("span", {
+          /* @__PURE__ */ jsx_runtime7.jsx("span", {
             className: "truncate text-xs font-medium text-muted",
             children: label
           }),
-          sparkHover?.label ? /* @__PURE__ */ jsx_runtime8.jsx("span", {
+          sparkHover?.label ? /* @__PURE__ */ jsx_runtime7.jsx("span", {
             className: "shrink-0 font-mono text-2xs text-faint",
             children: sparkHover.label
           }) : null
         ]
       }),
-      /* @__PURE__ */ jsx_runtime8.jsx("div", {
+      /* @__PURE__ */ jsx_runtime7.jsx("div", {
         className: "font-mono tnum text-[19px] font-semibold leading-tight tracking-tight text-ink",
-        children: loading ? /* @__PURE__ */ jsx_runtime8.jsx("span", {
+        children: loading ? /* @__PURE__ */ jsx_runtime7.jsx("span", {
           className: "skeleton inline-block h-6 w-24 align-middle"
         }) : sparkHover ? formatValue(sparkHover.value, format) : valueText ?? formatValue(value, format)
       }),
-      delta || comparison ? /* @__PURE__ */ jsx_runtime8.jsxs("div", {
+      delta || comparison ? /* @__PURE__ */ jsx_runtime7.jsxs("div", {
         className: "flex items-baseline gap-1 text-2xs",
         children: [
-          delta ? /* @__PURE__ */ jsx_runtime8.jsxs("span", {
+          delta ? /* @__PURE__ */ jsx_runtime7.jsxs("span", {
             "data-tone": delta.tone,
             className: `font-mono tnum font-medium ${TONE_CLASS[delta.tone]}`,
             children: [
-              /* @__PURE__ */ jsx_runtime8.jsx("span", {
+              /* @__PURE__ */ jsx_runtime7.jsx("span", {
                 "aria-hidden": "true",
                 className: "mr-0.5 text-[8px]",
                 children: TONE_ARROW[delta.tone]
@@ -8966,7 +8969,7 @@ function MetricCard({
               delta.label
             ]
           }) : null,
-          comparison ? /* @__PURE__ */ jsx_runtime8.jsx("span", {
+          comparison ? /* @__PURE__ */ jsx_runtime7.jsx("span", {
             className: "truncate text-faint",
             children: comparison
           }) : null
@@ -8975,9 +8978,9 @@ function MetricCard({
     ]
   });
   const className = "group flex w-full flex-col gap-1.5 overflow-hidden rounded-xl border border-line bg-surface px-3.5 pt-3 text-left shadow-[var(--shadow-sm)] transition-colors hover:border-line-strong data-[selected=true]:border-accent";
-  const sparkline = /* @__PURE__ */ jsx_runtime8.jsx("div", {
+  const sparkline = /* @__PURE__ */ jsx_runtime7.jsx("div", {
     className: "-mx-3.5 mt-auto",
-    children: /* @__PURE__ */ jsx_runtime8.jsx(Sparkline, {
+    children: /* @__PURE__ */ jsx_runtime7.jsx(Sparkline, {
       values: sparkValues,
       labels: sparkLabels,
       onHover: (point) => {
@@ -8989,7 +8992,7 @@ function MetricCard({
     })
   });
   if (!onSelect) {
-    return /* @__PURE__ */ jsx_runtime8.jsxs("article", {
+    return /* @__PURE__ */ jsx_runtime7.jsxs("article", {
       "data-metric": metric,
       "data-selected": selected || undefined,
       className,
@@ -8999,12 +9002,12 @@ function MetricCard({
       ]
     });
   }
-  return /* @__PURE__ */ jsx_runtime8.jsxs("article", {
+  return /* @__PURE__ */ jsx_runtime7.jsxs("article", {
     "data-metric": metric,
     "data-selected": selected || undefined,
     className,
     children: [
-      /* @__PURE__ */ jsx_runtime8.jsx("button", {
+      /* @__PURE__ */ jsx_runtime7.jsx("button", {
         type: "button",
         "data-metric": metric,
         "aria-pressed": !!selected,
@@ -9018,7 +9021,7 @@ function MetricCard({
 }
 
 // webapp/src/components/QueryDebugPanel.tsx
-var jsx_runtime9 = __toESM(require_jsx_runtime(), 1);
+var jsx_runtime8 = __toESM(require_jsx_runtime(), 1);
 var SQL_KEYWORDS = new Set([
   "and",
   "as",
@@ -9087,20 +9090,20 @@ ${sql}`).join(`
 
 `);
   const tokens = tokenizeSql(text || "No queries yet.");
-  return /* @__PURE__ */ jsx_runtime9.jsxs("details", {
+  return /* @__PURE__ */ jsx_runtime8.jsxs("details", {
     className: "border border-line bg-surface",
     children: [
-      /* @__PURE__ */ jsx_runtime9.jsx("summary", {
+      /* @__PURE__ */ jsx_runtime8.jsx("summary", {
         className: "cursor-pointer px-3 py-2 text-xs font-medium text-muted",
         children: "Generated SQL"
       }),
-      Object.keys(inputs).length > 0 ? /* @__PURE__ */ jsx_runtime9.jsx("div", {
+      Object.keys(inputs).length > 0 ? /* @__PURE__ */ jsx_runtime8.jsx("div", {
         "data-testid": "query-inputs",
         className: "grid gap-px border-t border-line bg-line sm:grid-cols-2",
-        children: Object.entries(inputs).map(([name, input]) => input ? /* @__PURE__ */ jsx_runtime9.jsxs("section", {
+        children: Object.entries(inputs).map(([name, input]) => input ? /* @__PURE__ */ jsx_runtime8.jsxs("section", {
           className: "min-w-0 bg-surface px-3 py-2 text-2xs",
           children: [
-            /* @__PURE__ */ jsx_runtime9.jsx("h3", {
+            /* @__PURE__ */ jsx_runtime8.jsx("h3", {
               className: "mb-1 font-semibold text-ink",
               children: name
             }),
@@ -9108,11 +9111,11 @@ ${sql}`).join(`
               ["Metrics", input.metrics],
               ["Dimensions", input.dimensions],
               ["Filters", input.filters]
-            ].map(([label, values]) => values?.length ? /* @__PURE__ */ jsx_runtime9.jsxs("p", {
+            ].map(([label, values]) => values?.length ? /* @__PURE__ */ jsx_runtime8.jsxs("p", {
               className: "truncate text-muted",
               title: values.join(", "),
               children: [
-                /* @__PURE__ */ jsx_runtime9.jsxs("strong", {
+                /* @__PURE__ */ jsx_runtime8.jsxs("strong", {
                   className: "font-medium text-faint",
                   children: [
                     label,
@@ -9126,10 +9129,10 @@ ${sql}`).join(`
           ]
         }, name) : null)
       }) : null,
-      /* @__PURE__ */ jsx_runtime9.jsx("pre", {
+      /* @__PURE__ */ jsx_runtime8.jsx("pre", {
         "data-testid": "query-debug",
         className: "max-h-72 overflow-auto whitespace-pre-wrap border-t border-line px-3 py-2 font-mono text-2xs text-muted",
-        children: tokens.map((token, index) => TOKEN_CLASS[token.kind] ? /* @__PURE__ */ jsx_runtime9.jsx("span", {
+        children: tokens.map((token, index) => TOKEN_CLASS[token.kind] ? /* @__PURE__ */ jsx_runtime8.jsx("span", {
           className: TOKEN_CLASS[token.kind],
           "data-token": token.kind,
           children: token.value
@@ -9140,26 +9143,26 @@ ${sql}`).join(`
 }
 
 // webapp/src/components/States.tsx
-var jsx_runtime10 = __toESM(require_jsx_runtime(), 1);
+var jsx_runtime9 = __toESM(require_jsx_runtime(), 1);
 function StateBox({ tone, title, message }) {
   const danger = tone === "danger";
-  return /* @__PURE__ */ jsx_runtime10.jsx("div", {
+  return /* @__PURE__ */ jsx_runtime9.jsx("div", {
     className: `grid min-h-[200px] place-items-center border bg-surface p-6 text-center ${danger ? "border-danger/40" : "border-line"}`,
     "data-state": tone,
     role: danger ? "alert" : "status",
     "aria-live": danger ? "assertive" : "polite",
-    children: /* @__PURE__ */ jsx_runtime10.jsxs("div", {
+    children: /* @__PURE__ */ jsx_runtime9.jsxs("div", {
       className: "max-w-md",
       children: [
-        tone === "loading" ? /* @__PURE__ */ jsx_runtime10.jsx("span", {
+        tone === "loading" ? /* @__PURE__ */ jsx_runtime9.jsx("span", {
           "aria-hidden": "true",
           className: "motion-safe:animate-pulse inline-block size-2 rounded-full bg-accent"
         }) : null,
-        title ? /* @__PURE__ */ jsx_runtime10.jsx("h3", {
+        title ? /* @__PURE__ */ jsx_runtime9.jsx("h3", {
           className: `text-sm font-semibold ${danger ? "text-danger" : "text-ink"}`,
           children: title
         }) : null,
-        /* @__PURE__ */ jsx_runtime10.jsx("p", {
+        /* @__PURE__ */ jsx_runtime9.jsx("p", {
           className: `mt-1 text-xs ${danger ? "text-danger" : "text-muted"}`,
           children: message
         })
@@ -9168,21 +9171,21 @@ function StateBox({ tone, title, message }) {
   });
 }
 function LoadingState({ title = "Loading", message = "Loading metrics…" }) {
-  return /* @__PURE__ */ jsx_runtime10.jsx(StateBox, {
+  return /* @__PURE__ */ jsx_runtime9.jsx(StateBox, {
     tone: "loading",
     title,
     message
   });
 }
 function EmptyState({ title = "No results", message }) {
-  return /* @__PURE__ */ jsx_runtime10.jsx(StateBox, {
+  return /* @__PURE__ */ jsx_runtime9.jsx(StateBox, {
     tone: "muted",
     title,
     message
   });
 }
 function ErrorState({ title = "Query failed", message }) {
-  return /* @__PURE__ */ jsx_runtime10.jsx(StateBox, {
+  return /* @__PURE__ */ jsx_runtime9.jsx(StateBox, {
     tone: "danger",
     title,
     message
@@ -9423,35 +9426,35 @@ function setControlsDisabled(selector, disabled) {
   });
 }
 export {
-  toggleTheme,
-  toggleFilterValue,
-  toComponentResult,
-  toComponentQuery,
-  syncScrollPosition,
-  setControlsDisabled,
-  renderValidationState,
-  renderState,
-  renderSelectOptions,
-  renderQueryDebug,
-  renderMetricSummaryCards,
-  renderMetricCards,
-  renderLeaderboard,
-  renderHighlightedQueryDebug,
-  renderFilterPills,
-  renderDimensionLeaderboardCards,
-  renderDataPreview,
-  removeFilterValue,
-  removeFilterDimension,
-  normalizeFilterValue,
-  metricValueFormat,
-  metricConfigFor,
-  labelize,
-  highlightCode,
-  getTheme,
-  formatUiValue as formatValue,
-  formatUiCompact as formatCompact,
-  filterZeroMetricRows,
-  applyThemeTokens,
+  aliasForSemanticRef,
   applyTheme,
-  aliasForSemanticRef
+  applyThemeTokens,
+  filterZeroMetricRows,
+  formatUiCompact as formatCompact,
+  formatUiValue as formatValue,
+  getTheme,
+  highlightCode,
+  labelize,
+  metricConfigFor,
+  metricValueFormat,
+  normalizeFilterValue,
+  removeFilterDimension,
+  removeFilterValue,
+  renderDataPreview,
+  renderDimensionLeaderboardCards,
+  renderFilterPills,
+  renderHighlightedQueryDebug,
+  renderLeaderboard,
+  renderMetricCards,
+  renderMetricSummaryCards,
+  renderQueryDebug,
+  renderSelectOptions,
+  renderState,
+  renderValidationState,
+  setControlsDisabled,
+  syncScrollPosition,
+  toComponentQuery,
+  toComponentResult,
+  toggleFilterValue,
+  toggleTheme
 };

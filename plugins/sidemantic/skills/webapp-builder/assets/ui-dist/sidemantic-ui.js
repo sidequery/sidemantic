@@ -1488,7 +1488,6 @@ var COMPARISONS = new Set(["off", "previous", "year", "custom"]);
 var FILTER_MODES = new Set(["include", "exclude", "contains"]);
 
 // webapp/src/state/ExplorerContext.tsx
-import { jsx as jsx10 } from "react/jsx-runtime";
 var ExplorerContext = createContext(null);
 function useExplorer() {
   const value = useContext(ExplorerContext);
@@ -1546,7 +1545,7 @@ function useQueryResult(backend, query) {
 }
 
 // webapp/src/components/FilterEditor.tsx
-import { jsx as jsx11, jsxs as jsxs9, Fragment as Fragment3 } from "react/jsx-runtime";
+import { jsx as jsx10, jsxs as jsxs9, Fragment as Fragment3 } from "react/jsx-runtime";
 var MODES = [
   { mode: "include", label: "Include" },
   { mode: "exclude", label: "Exclude" },
@@ -1671,11 +1670,11 @@ function FilterEditor({
         id: labelId,
         className: "mb-2 flex items-baseline justify-between gap-2",
         children: [
-          /* @__PURE__ */ jsx11("span", {
+          /* @__PURE__ */ jsx10("span", {
             className: "truncate font-semibold text-ink",
             children: dim.label
           }),
-          /* @__PURE__ */ jsx11("button", {
+          /* @__PURE__ */ jsx10("button", {
             type: "button",
             "aria-label": "Close filter editor",
             onClick: onClose,
@@ -1684,11 +1683,11 @@ function FilterEditor({
           })
         ]
       }),
-      /* @__PURE__ */ jsx11("div", {
+      /* @__PURE__ */ jsx10("div", {
         role: "group",
         "aria-label": "Filter mode",
         className: "mb-2 grid grid-cols-3 gap-px border border-line bg-line",
-        children: MODES.map(({ mode: m, label }) => /* @__PURE__ */ jsx11("button", {
+        children: MODES.map(({ mode: m, label }) => /* @__PURE__ */ jsx10("button", {
           type: "button",
           "aria-pressed": mode === m,
           onClick: () => setMode(m),
@@ -1696,7 +1695,7 @@ function FilterEditor({
           children: label
         }, m))
       }),
-      mode === "contains" ? /* @__PURE__ */ jsx11("input", {
+      mode === "contains" ? /* @__PURE__ */ jsx10("input", {
         ref: searchRef,
         type: "text",
         "aria-label": `${dim.label} contains`,
@@ -1706,7 +1705,7 @@ function FilterEditor({
         className: "w-full border border-line bg-surface px-1.5 py-1 text-2xs text-ink placeholder:text-faint"
       }) : /* @__PURE__ */ jsxs9(Fragment3, {
         children: [
-          /* @__PURE__ */ jsx11("input", {
+          /* @__PURE__ */ jsx10("input", {
             ref: searchRef,
             type: "text",
             "aria-label": `Search ${dim.label} values`,
@@ -1715,19 +1714,19 @@ function FilterEditor({
             onChange: (event) => setSearch(event.target.value),
             className: "w-full border border-line bg-surface px-1.5 py-1 text-2xs text-ink placeholder:text-faint"
           }),
-          /* @__PURE__ */ jsx11("div", {
+          /* @__PURE__ */ jsx10("div", {
             className: "mt-2 max-h-56 overflow-y-auto",
             role: "group",
             "aria-label": `${dim.label} values`,
-            children: error ? /* @__PURE__ */ jsx11("p", {
+            children: error ? /* @__PURE__ */ jsx10("p", {
               className: "px-1 py-2 text-danger",
               children: error
-            }) : showSkeleton ? /* @__PURE__ */ jsx11("div", {
+            }) : showSkeleton ? /* @__PURE__ */ jsx10("div", {
               className: "space-y-1.5 p-1",
-              children: [0, 1, 2, 3, 4].map((i) => /* @__PURE__ */ jsx11("div", {
+              children: [0, 1, 2, 3, 4].map((i) => /* @__PURE__ */ jsx10("div", {
                 className: "skeleton h-4 w-full"
               }, i))
-            }) : values.length === 0 ? /* @__PURE__ */ jsx11("p", {
+            }) : values.length === 0 ? /* @__PURE__ */ jsx10("p", {
               className: "px-1 py-2 text-faint",
               children: "No values"
             }) : values.map((value) => {
@@ -1735,13 +1734,13 @@ function FilterEditor({
               return /* @__PURE__ */ jsxs9("label", {
                 className: "flex cursor-pointer items-center gap-2 px-1 py-1 hover:bg-surface-soft",
                 children: [
-                  /* @__PURE__ */ jsx11("input", {
+                  /* @__PURE__ */ jsx10("input", {
                     type: "checkbox",
                     checked,
                     onChange: () => dispatch({ type: "toggleFilter", dim: dim.ref, value, mode }),
                     className: "size-3 accent-[var(--accent)]"
                   }),
-                  /* @__PURE__ */ jsx11("span", {
+                  /* @__PURE__ */ jsx10("span", {
                     className: "min-w-0 truncate text-ink",
                     children: displayDimValue(value)
                   })
@@ -1754,13 +1753,13 @@ function FilterEditor({
       /* @__PURE__ */ jsxs9("div", {
         className: "mt-2 flex items-center justify-between border-t border-line pt-2",
         children: [
-          /* @__PURE__ */ jsx11("button", {
+          /* @__PURE__ */ jsx10("button", {
             type: "button",
             onClick: () => dispatch({ type: "removeFilterDim", dim: dim.ref }),
             className: "text-muted underline-offset-2 hover:text-ink hover:underline",
             children: "Clear"
           }),
-          /* @__PURE__ */ jsx11("button", {
+          /* @__PURE__ */ jsx10("button", {
             type: "button",
             onClick: onClose,
             className: "border border-line px-2 py-1 text-muted hover:bg-surface-soft",
@@ -1773,7 +1772,7 @@ function FilterEditor({
 }
 
 // webapp/src/components/FilterPill.tsx
-import { jsx as jsx12, jsxs as jsxs10 } from "react/jsx-runtime";
+import { jsx as jsx11, jsxs as jsxs10 } from "react/jsx-runtime";
 function FilterPill(props) {
   const [open, setOpen] = useState9(false);
   if (!("dim" in props)) {
@@ -1796,7 +1795,7 @@ function FilterPill(props) {
             props.value
           ]
         }),
-        props.onRemove ? /* @__PURE__ */ jsx12("button", {
+        props.onRemove ? /* @__PURE__ */ jsx11("button", {
           type: "button",
           "aria-label": `Remove filter ${props.value}`,
           onClick: props.onRemove,
@@ -1823,7 +1822,7 @@ function FilterPill(props) {
             onClick: () => setOpen((v) => !v),
             className: "min-w-0 truncate text-left hover:text-ink",
             children: [
-              /* @__PURE__ */ jsx12("span", {
+              /* @__PURE__ */ jsx11("span", {
                 className: "text-faint",
                 children: dim.label
               }),
@@ -1831,7 +1830,7 @@ function FilterPill(props) {
               filterSummary(filter)
             ]
           }),
-          /* @__PURE__ */ jsx12("button", {
+          /* @__PURE__ */ jsx11("button", {
             type: "button",
             "aria-label": `Remove filter ${dim.label}`,
             onClick: onRemove,
@@ -1840,7 +1839,7 @@ function FilterPill(props) {
           })
         ]
       }),
-      open ? /* @__PURE__ */ jsx12(FilterEditor, {
+      open ? /* @__PURE__ */ jsx11(FilterEditor, {
         dim,
         model,
         onClose: () => setOpen(false)
@@ -1850,7 +1849,7 @@ function FilterPill(props) {
 }
 // webapp/src/components/HeatmapChart.tsx
 import { useEffect as useEffect9, useRef as useRef8, useState as useState10 } from "react";
-import { jsx as jsx13, jsxs as jsxs11, Fragment as Fragment4 } from "react/jsx-runtime";
+import { jsx as jsx12, jsxs as jsxs11, Fragment as Fragment4 } from "react/jsx-runtime";
 var MARGIN3 = { top: 8, right: 8, bottom: 26, left: 76 };
 function orderedLabels(cells, key, explicit) {
   if (explicit?.length)
@@ -1869,7 +1868,7 @@ function HeatmapChart({ cells, xLabels, yLabels, height = 240, format = formatVa
   const xs = orderedLabels(cells, "x", xLabels);
   const ys = orderedLabels(cells, "y", yLabels);
   if (xs.length === 0 || ys.length === 0) {
-    return /* @__PURE__ */ jsx13("div", {
+    return /* @__PURE__ */ jsx12("div", {
       className: "grid h-[240px] place-items-center text-xs text-faint",
       children: "No cells to chart."
     });
@@ -1893,14 +1892,14 @@ function HeatmapChart({ cells, xLabels, yLabels, height = 240, format = formatVa
         style: { height },
         viewBox: `0 0 ${width} ${height}`,
         children: [
-          ys.map((yLabel, row) => /* @__PURE__ */ jsx13("text", {
+          ys.map((yLabel, row) => /* @__PURE__ */ jsx12("text", {
             x: MARGIN3.left - 6,
             y: MARGIN3.top + row * cellH + cellH / 2 + 3,
             textAnchor: "end",
             className: "fill-muted text-[10px]",
             children: yLabel.slice(0, 12)
           }, yLabel)),
-          xs.map((xLabel, col) => col % xLabelEvery === 0 ? /* @__PURE__ */ jsx13("text", {
+          xs.map((xLabel, col) => col % xLabelEvery === 0 ? /* @__PURE__ */ jsx12("text", {
             x: MARGIN3.left + col * cellW + cellW / 2,
             y: height - 8,
             textAnchor: "middle",
@@ -1911,7 +1910,7 @@ function HeatmapChart({ cells, xLabels, yLabels, height = 240, format = formatVa
             const value = byKey.get(`${xLabel}\x00${yLabel}`);
             const known = value != null && Number.isFinite(value);
             const intensity = known ? 0.06 + 0.94 * (Math.abs(value) / maxMagnitude) : 0;
-            return /* @__PURE__ */ jsx13("rect", {
+            return /* @__PURE__ */ jsx12("rect", {
               x: MARGIN3.left + col * cellW + 0.5,
               y: MARGIN3.top + row * cellH + 0.5,
               width: Math.max(1, cellW - 1),
@@ -1921,7 +1920,7 @@ function HeatmapChart({ cells, xLabels, yLabels, height = 240, format = formatVa
               "data-value": known ? value : undefined,
               className: known && value < 0 ? "fill-danger" : "fill-chart-primary",
               fillOpacity: known ? intensity : 0.03,
-              ...handlers(/* @__PURE__ */ jsx13(TooltipRows, {
+              ...handlers(/* @__PURE__ */ jsx12(TooltipRows, {
                 title: `${yLabel} / ${xLabel}`,
                 rows: [{ label: "Value", value: known ? format(value) : "no data" }]
               }))
@@ -1929,7 +1928,7 @@ function HeatmapChart({ cells, xLabels, yLabels, height = 240, format = formatVa
           }))
         ]
       }),
-      /* @__PURE__ */ jsx13(ChartTooltip, {
+      /* @__PURE__ */ jsx12(ChartTooltip, {
         tip
       })
     ]
@@ -1937,7 +1936,7 @@ function HeatmapChart({ cells, xLabels, yLabels, height = 240, format = formatVa
 }
 // webapp/src/components/HistogramChart.tsx
 import { useEffect as useEffect10, useRef as useRef9, useState as useState11 } from "react";
-import { jsx as jsx14, jsxs as jsxs12, Fragment as Fragment5 } from "react/jsx-runtime";
+import { jsx as jsx13, jsxs as jsxs12, Fragment as Fragment5 } from "react/jsx-runtime";
 function binValues(values, bins) {
   const finite = values.filter(Number.isFinite);
   if (finite.length === 0)
@@ -1967,7 +1966,7 @@ function HistogramChart({ values, bins, height = 200, format = formatCompact, ar
   useEffect10(() => observeWidth(ref.current, 160, setWidth), []);
   const data = binValues(values, bins);
   if (data.length === 0) {
-    return /* @__PURE__ */ jsx14("div", {
+    return /* @__PURE__ */ jsx13("div", {
       className: "grid h-[200px] place-items-center text-xs text-faint",
       children: "No numeric values to chart."
     });
@@ -1994,14 +1993,14 @@ function HistogramChart({ values, bins, height = 200, format = formatCompact, ar
             const y = yFor(tick);
             return /* @__PURE__ */ jsxs12("g", {
               children: [
-                /* @__PURE__ */ jsx14("line", {
+                /* @__PURE__ */ jsx13("line", {
                   x1: MARGIN4.left,
                   x2: width - MARGIN4.right,
                   y1: y,
                   y2: y,
                   className: "stroke-line"
                 }),
-                /* @__PURE__ */ jsx14("text", {
+                /* @__PURE__ */ jsx13("text", {
                   x: MARGIN4.left - 6,
                   y: y + 3,
                   textAnchor: "end",
@@ -2014,7 +2013,7 @@ function HistogramChart({ values, bins, height = 200, format = formatCompact, ar
           data.map((bin, index) => {
             const x = MARGIN4.left + slot * index;
             const y = yFor(bin.count);
-            return /* @__PURE__ */ jsx14("rect", {
+            return /* @__PURE__ */ jsx13("rect", {
               x: x + 0.5,
               y,
               width: Math.max(1, slot - 1),
@@ -2023,13 +2022,13 @@ function HistogramChart({ values, bins, height = 200, format = formatCompact, ar
               "data-x1": bin.x1,
               "data-count": bin.count,
               className: "fill-chart-primary",
-              ...handlers(/* @__PURE__ */ jsx14(TooltipRows, {
+              ...handlers(/* @__PURE__ */ jsx13(TooltipRows, {
                 title: `${format(bin.x0)} – ${format(bin.x1)}`,
                 rows: [{ label: "Count", value: bin.count.toLocaleString() }]
               }))
             }, index);
           }),
-          data.map((bin, index) => index % labelEvery === 0 ? /* @__PURE__ */ jsx14("text", {
+          data.map((bin, index) => index % labelEvery === 0 ? /* @__PURE__ */ jsx13("text", {
             x: MARGIN4.left + slot * index,
             y: height - 8,
             textAnchor: "middle",
@@ -2038,14 +2037,14 @@ function HistogramChart({ values, bins, height = 200, format = formatCompact, ar
           }, index) : null)
         ]
       }),
-      /* @__PURE__ */ jsx14(ChartTooltip, {
+      /* @__PURE__ */ jsx13(ChartTooltip, {
         tip
       })
     ]
   });
 }
 // webapp/src/components/Leaderboard.tsx
-import { jsx as jsx15, jsxs as jsxs13 } from "react/jsx-runtime";
+import { jsx as jsx14, jsxs as jsxs13 } from "react/jsx-runtime";
 var CONTEXT_TONE = {
   positive: "text-success",
   negative: "text-danger",
@@ -2088,7 +2087,7 @@ function Leaderboard({
           /* @__PURE__ */ jsxs13("div", {
             className: "flex min-w-0 items-baseline gap-2",
             children: [
-              /* @__PURE__ */ jsx15("h3", {
+              /* @__PURE__ */ jsx14("h3", {
                 className: "truncate text-sm font-semibold text-ink",
                 children: title
               }),
@@ -2101,12 +2100,12 @@ function Leaderboard({
               })
             ]
           }),
-          contextOptions && onContextColumn ? /* @__PURE__ */ jsx15("div", {
+          contextOptions && onContextColumn ? /* @__PURE__ */ jsx14("div", {
             role: "group",
             "aria-label": "Context column",
             "data-testid": "leaderboard-context-toggle",
             className: "flex shrink-0 overflow-hidden border border-line text-2xs",
-            children: contextOptions.map((option) => /* @__PURE__ */ jsx15("button", {
+            children: contextOptions.map((option) => /* @__PURE__ */ jsx14("button", {
               type: "button",
               title: option.title,
               "aria-pressed": contextColumn === option.key,
@@ -2119,14 +2118,14 @@ function Leaderboard({
           }) : null
         ]
       }),
-      /* @__PURE__ */ jsx15("div", {
+      /* @__PURE__ */ jsx14("div", {
         "data-testid": "leaderboard-rows",
-        children: loading && rows.length === 0 ? /* @__PURE__ */ jsx15("div", {
+        children: loading && rows.length === 0 ? /* @__PURE__ */ jsx14("div", {
           className: "space-y-2 p-3",
-          children: [0, 1, 2, 3].map((i) => /* @__PURE__ */ jsx15("div", {
+          children: [0, 1, 2, 3].map((i) => /* @__PURE__ */ jsx14("div", {
             className: "skeleton h-5 w-full"
           }, i))
-        }) : rows.length === 0 ? /* @__PURE__ */ jsx15("p", {
+        }) : rows.length === 0 ? /* @__PURE__ */ jsx14("p", {
           className: "px-3 py-4 text-xs text-faint",
           children: "No values"
         }) : visibleRows.map((row) => {
@@ -2143,20 +2142,20 @@ function Leaderboard({
             "aria-pressed": isSelected,
             className: `leaderboard-row relative grid w-full ${rowGrid} items-center gap-3 overflow-hidden border-0 bg-transparent px-3 py-1 text-left text-xs text-ink data-[selected=true]:bg-chart-primary-selected`,
             children: [
-              /* @__PURE__ */ jsx15("span", {
+              /* @__PURE__ */ jsx14("span", {
                 "aria-hidden": "true",
                 className: `absolute inset-y-0 left-0 ${tone === "negative" ? "bg-danger-soft" : "bg-chart-primary-soft"}`,
                 style: { width }
               }),
-              /* @__PURE__ */ jsx15("span", {
+              /* @__PURE__ */ jsx14("span", {
                 className: "relative min-w-0 truncate text-muted",
                 children: displayDimValue(row.value)
               }),
-              /* @__PURE__ */ jsx15("strong", {
+              /* @__PURE__ */ jsx14("strong", {
                 className: "relative tnum font-semibold text-ink",
                 children: formatMetric(row.metric)
               }),
-              showContext ? /* @__PURE__ */ jsx15("span", {
+              showContext ? /* @__PURE__ */ jsx14("span", {
                 "data-testid": "leaderboard-context",
                 "data-tone": row.context?.tone ?? "neutral",
                 className: `relative w-14 text-right font-mono tnum text-2xs ${CONTEXT_TONE[row.context?.tone ?? "neutral"]}`,
@@ -2166,7 +2165,7 @@ function Leaderboard({
           }, `${dimension}:${row.value}`);
         })
       }),
-      expandable && !loading ? /* @__PURE__ */ jsx15("button", {
+      expandable && !loading ? /* @__PURE__ */ jsx14("button", {
         type: "button",
         "data-action": expanded ? "leaderboard-back" : "leaderboard-expand",
         "aria-expanded": expanded,
@@ -2182,7 +2181,7 @@ import { useState as useState13 } from "react";
 
 // webapp/src/components/Sparkline.tsx
 import { useEffect as useEffect11, useId as useId2, useRef as useRef10, useState as useState12 } from "react";
-import { jsx as jsx16, jsxs as jsxs14, Fragment as Fragment6 } from "react/jsx-runtime";
+import { jsx as jsx15, jsxs as jsxs14, Fragment as Fragment6 } from "react/jsx-runtime";
 function Sparkline({
   values,
   labels,
@@ -2213,7 +2212,7 @@ function Sparkline({
   }, []);
   const points = values.map((value, index) => ({ index, value })).filter((point) => Number.isFinite(point.value));
   if (points.length < 2) {
-    return /* @__PURE__ */ jsx16("svg", {
+    return /* @__PURE__ */ jsx15("svg", {
       ref: svgRef,
       role: "img",
       "aria-label": ariaLabel || "No trend data",
@@ -2303,7 +2302,7 @@ function Sparkline({
         onPointerLeave: leave,
         onDoubleClick: () => onBrush?.(null),
         children: [
-          /* @__PURE__ */ jsx16("defs", {
+          /* @__PURE__ */ jsx15("defs", {
             children: /* @__PURE__ */ jsxs14("linearGradient", {
               id: gradientId,
               x1: "0",
@@ -2311,12 +2310,12 @@ function Sparkline({
               x2: "0",
               y2: "1",
               children: [
-                /* @__PURE__ */ jsx16("stop", {
+                /* @__PURE__ */ jsx15("stop", {
                   offset: "0%",
                   stopColor: "currentColor",
                   stopOpacity: 0.16
                 }),
-                /* @__PURE__ */ jsx16("stop", {
+                /* @__PURE__ */ jsx15("stop", {
                   offset: "100%",
                   stopColor: "currentColor",
                   stopOpacity: 0
@@ -2324,18 +2323,18 @@ function Sparkline({
               ]
             })
           }),
-          /* @__PURE__ */ jsx16("path", {
+          /* @__PURE__ */ jsx15("path", {
             d: area,
             fill: `url(#${gradientId})`
           }),
-          /* @__PURE__ */ jsx16("path", {
+          /* @__PURE__ */ jsx15("path", {
             d: `M ${line}`,
             fill: "none",
             stroke: "currentColor",
             strokeWidth: 1.5,
             vectorEffect: "non-scaling-stroke"
           }),
-          brush ? /* @__PURE__ */ jsx16("rect", {
+          brush ? /* @__PURE__ */ jsx15("rect", {
             x: Math.min(brush.a, brush.b),
             y: 0,
             width: Math.abs(brush.b - brush.a),
@@ -2345,7 +2344,7 @@ function Sparkline({
           }) : null,
           hovered ? /* @__PURE__ */ jsxs14(Fragment6, {
             children: [
-              /* @__PURE__ */ jsx16("line", {
+              /* @__PURE__ */ jsx15("line", {
                 x1: hovered.x,
                 x2: hovered.x,
                 y1: 0,
@@ -2354,14 +2353,14 @@ function Sparkline({
                 strokeWidth: 1,
                 opacity: 0.45
               }),
-              /* @__PURE__ */ jsx16("circle", {
+              /* @__PURE__ */ jsx15("circle", {
                 cx: hovered.x,
                 cy: hovered.y,
                 r: 2.5,
                 fill: "currentColor"
               })
             ]
-          }) : /* @__PURE__ */ jsx16("circle", {
+          }) : /* @__PURE__ */ jsx15("circle", {
             cx: latest.x,
             cy: latest.y,
             r: 2.25,
@@ -2369,7 +2368,7 @@ function Sparkline({
           })
         ]
       }),
-      /* @__PURE__ */ jsx16(ChartTooltip, {
+      /* @__PURE__ */ jsx15(ChartTooltip, {
         tip
       })
     ]
@@ -2377,7 +2376,7 @@ function Sparkline({
 }
 
 // webapp/src/components/MetricCard.tsx
-import { jsx as jsx17, jsxs as jsxs15, Fragment as Fragment7 } from "react/jsx-runtime";
+import { jsx as jsx16, jsxs as jsxs15, Fragment as Fragment7 } from "react/jsx-runtime";
 var TONE_CLASS = {
   positive: "text-success",
   negative: "text-danger",
@@ -2406,19 +2405,19 @@ function MetricCard({
       /* @__PURE__ */ jsxs15("div", {
         className: "flex items-baseline justify-between gap-2",
         children: [
-          /* @__PURE__ */ jsx17("span", {
+          /* @__PURE__ */ jsx16("span", {
             className: "truncate text-xs font-medium text-muted",
             children: label
           }),
-          sparkHover?.label ? /* @__PURE__ */ jsx17("span", {
+          sparkHover?.label ? /* @__PURE__ */ jsx16("span", {
             className: "shrink-0 font-mono text-2xs text-faint",
             children: sparkHover.label
           }) : null
         ]
       }),
-      /* @__PURE__ */ jsx17("div", {
+      /* @__PURE__ */ jsx16("div", {
         className: "font-mono tnum text-[19px] font-semibold leading-tight tracking-tight text-ink",
-        children: loading ? /* @__PURE__ */ jsx17("span", {
+        children: loading ? /* @__PURE__ */ jsx16("span", {
           className: "skeleton inline-block h-6 w-24 align-middle"
         }) : sparkHover ? formatValue(sparkHover.value, format) : valueText ?? formatValue(value, format)
       }),
@@ -2429,7 +2428,7 @@ function MetricCard({
             "data-tone": delta.tone,
             className: `font-mono tnum font-medium ${TONE_CLASS[delta.tone]}`,
             children: [
-              /* @__PURE__ */ jsx17("span", {
+              /* @__PURE__ */ jsx16("span", {
                 "aria-hidden": "true",
                 className: "mr-0.5 text-[8px]",
                 children: TONE_ARROW[delta.tone]
@@ -2437,7 +2436,7 @@ function MetricCard({
               delta.label
             ]
           }) : null,
-          comparison ? /* @__PURE__ */ jsx17("span", {
+          comparison ? /* @__PURE__ */ jsx16("span", {
             className: "truncate text-faint",
             children: comparison
           }) : null
@@ -2446,9 +2445,9 @@ function MetricCard({
     ]
   });
   const className = "group flex w-full flex-col gap-1.5 overflow-hidden rounded-xl border border-line bg-surface px-3.5 pt-3 text-left shadow-[var(--shadow-sm)] transition-colors hover:border-line-strong data-[selected=true]:border-accent";
-  const sparkline = /* @__PURE__ */ jsx17("div", {
+  const sparkline = /* @__PURE__ */ jsx16("div", {
     className: "-mx-3.5 mt-auto",
-    children: /* @__PURE__ */ jsx17(Sparkline, {
+    children: /* @__PURE__ */ jsx16(Sparkline, {
       values: sparkValues,
       labels: sparkLabels,
       onHover: (point) => {
@@ -2475,7 +2474,7 @@ function MetricCard({
     "data-selected": selected || undefined,
     className,
     children: [
-      /* @__PURE__ */ jsx17("button", {
+      /* @__PURE__ */ jsx16("button", {
         type: "button",
         "data-metric": metric,
         "aria-pressed": !!selected,
@@ -2489,7 +2488,7 @@ function MetricCard({
 }
 // webapp/src/components/NetworkChart.tsx
 import { useEffect as useEffect12, useMemo as useMemo4, useRef as useRef11, useState as useState14 } from "react";
-import { jsx as jsx18, jsxs as jsxs16, Fragment as Fragment8 } from "react/jsx-runtime";
+import { jsx as jsx17, jsxs as jsxs16, Fragment as Fragment8 } from "react/jsx-runtime";
 function hashSeed(text) {
   let hash = 2166136261;
   for (let index = 0;index < text.length; index += 1) {
@@ -2594,7 +2593,7 @@ function NetworkChart({ nodes, links, height = 320, ariaLabel }) {
   const groups = useMemo4(() => [...new Set(nodes.map((node) => node.group ?? ""))], [nodes]);
   const maxWeight = Math.max(...links.map((link) => link.weight ?? 1), 1);
   if (positioned.length === 0) {
-    return /* @__PURE__ */ jsx18("div", {
+    return /* @__PURE__ */ jsx17("div", {
       className: "grid h-[320px] place-items-center text-xs text-faint",
       children: "No nodes to chart."
     });
@@ -2602,12 +2601,12 @@ function NetworkChart({ nodes, links, height = 320, ariaLabel }) {
   const summary = ariaLabel || `Network graph, ${nodes.length} nodes and ${links.length} links`;
   return /* @__PURE__ */ jsxs16(Fragment8, {
     children: [
-      groups.length > 1 ? /* @__PURE__ */ jsx18("div", {
+      groups.length > 1 ? /* @__PURE__ */ jsx17("div", {
         className: "mb-1 flex flex-wrap items-center gap-3 text-2xs text-faint",
         children: groups.map((group, index) => /* @__PURE__ */ jsxs16("span", {
           className: "flex items-center gap-1",
           children: [
-            /* @__PURE__ */ jsx18("span", {
+            /* @__PURE__ */ jsx17("span", {
               "aria-hidden": "true",
               className: "inline-block size-2 rounded-full",
               style: { background: vizColor(index) }
@@ -2629,7 +2628,7 @@ function NetworkChart({ nodes, links, height = 320, ariaLabel }) {
             const target = byId.get(link.target);
             if (!source || !target)
               return null;
-            return /* @__PURE__ */ jsx18("line", {
+            return /* @__PURE__ */ jsx17("line", {
               x1: source.x,
               y1: source.y,
               x2: target.x,
@@ -2644,7 +2643,7 @@ function NetworkChart({ nodes, links, height = 320, ariaLabel }) {
             const radius = 5 + Math.min(9, node.degree * 1.5);
             return /* @__PURE__ */ jsxs16("g", {
               children: [
-                /* @__PURE__ */ jsx18("circle", {
+                /* @__PURE__ */ jsx17("circle", {
                   cx: node.x,
                   cy: node.y,
                   r: radius,
@@ -2653,7 +2652,7 @@ function NetworkChart({ nodes, links, height = 320, ariaLabel }) {
                   strokeWidth: 1.5,
                   "data-id": node.id,
                   "data-degree": node.degree,
-                  ...handlers(/* @__PURE__ */ jsx18(TooltipRows, {
+                  ...handlers(/* @__PURE__ */ jsx17(TooltipRows, {
                     title: node.label ?? node.id,
                     rows: [
                       { label: "Connections", value: String(node.degree) },
@@ -2661,7 +2660,7 @@ function NetworkChart({ nodes, links, height = 320, ariaLabel }) {
                     ]
                   }))
                 }),
-                /* @__PURE__ */ jsx18("text", {
+                /* @__PURE__ */ jsx17("text", {
                   x: node.x,
                   y: node.y - radius - 4,
                   textAnchor: "middle",
@@ -2673,14 +2672,14 @@ function NetworkChart({ nodes, links, height = 320, ariaLabel }) {
           })
         ]
       }),
-      /* @__PURE__ */ jsx18(ChartTooltip, {
+      /* @__PURE__ */ jsx17(ChartTooltip, {
         tip
       })
     ]
   });
 }
 // webapp/src/components/QueryDebugPanel.tsx
-import { jsx as jsx19, jsxs as jsxs17 } from "react/jsx-runtime";
+import { jsx as jsx18, jsxs as jsxs17 } from "react/jsx-runtime";
 var SQL_KEYWORDS = new Set([
   "and",
   "as",
@@ -2752,17 +2751,17 @@ ${sql}`).join(`
   return /* @__PURE__ */ jsxs17("details", {
     className: "border border-line bg-surface",
     children: [
-      /* @__PURE__ */ jsx19("summary", {
+      /* @__PURE__ */ jsx18("summary", {
         className: "cursor-pointer px-3 py-2 text-xs font-medium text-muted",
         children: "Generated SQL"
       }),
-      Object.keys(inputs).length > 0 ? /* @__PURE__ */ jsx19("div", {
+      Object.keys(inputs).length > 0 ? /* @__PURE__ */ jsx18("div", {
         "data-testid": "query-inputs",
         className: "grid gap-px border-t border-line bg-line sm:grid-cols-2",
         children: Object.entries(inputs).map(([name, input]) => input ? /* @__PURE__ */ jsxs17("section", {
           className: "min-w-0 bg-surface px-3 py-2 text-2xs",
           children: [
-            /* @__PURE__ */ jsx19("h3", {
+            /* @__PURE__ */ jsx18("h3", {
               className: "mb-1 font-semibold text-ink",
               children: name
             }),
@@ -2788,10 +2787,10 @@ ${sql}`).join(`
           ]
         }, name) : null)
       }) : null,
-      /* @__PURE__ */ jsx19("pre", {
+      /* @__PURE__ */ jsx18("pre", {
         "data-testid": "query-debug",
         className: "max-h-72 overflow-auto whitespace-pre-wrap border-t border-line px-3 py-2 font-mono text-2xs text-muted",
-        children: tokens.map((token, index) => TOKEN_CLASS[token.kind] ? /* @__PURE__ */ jsx19("span", {
+        children: tokens.map((token, index) => TOKEN_CLASS[token.kind] ? /* @__PURE__ */ jsx18("span", {
           className: TOKEN_CLASS[token.kind],
           "data-token": token.kind,
           children: token.value
@@ -2802,7 +2801,7 @@ ${sql}`).join(`
 }
 // webapp/src/components/ScatterChart.tsx
 import { useEffect as useEffect13, useRef as useRef12, useState as useState15 } from "react";
-import { jsx as jsx20, jsxs as jsxs18, Fragment as Fragment9 } from "react/jsx-runtime";
+import { jsx as jsx19, jsxs as jsxs18, Fragment as Fragment9 } from "react/jsx-runtime";
 var MARGIN5 = { top: 12, right: 14, bottom: 30, left: 48 };
 function ScatterChart({
   points,
@@ -2819,7 +2818,7 @@ function ScatterChart({
   useEffect13(() => observeWidth(ref.current, 200, setWidth), []);
   const finite = points.filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
   if (finite.length === 0) {
-    return /* @__PURE__ */ jsx20("div", {
+    return /* @__PURE__ */ jsx19("div", {
       className: "grid h-[240px] place-items-center text-xs text-faint",
       children: "No points to chart."
     });
@@ -2840,12 +2839,12 @@ function ScatterChart({
   const summary = ariaLabel || `Scatter plot, ${finite.length} points${xLabel && yLabel ? ` of ${yLabel} by ${xLabel}` : ""}`;
   return /* @__PURE__ */ jsxs18(Fragment9, {
     children: [
-      series.length > 1 ? /* @__PURE__ */ jsx20("div", {
+      series.length > 1 ? /* @__PURE__ */ jsx19("div", {
         className: "mb-1 flex flex-wrap items-center gap-3 text-2xs text-faint",
         children: series.map((name, index) => /* @__PURE__ */ jsxs18("span", {
           className: "flex items-center gap-1",
           children: [
-            /* @__PURE__ */ jsx20("span", {
+            /* @__PURE__ */ jsx19("span", {
               "aria-hidden": "true",
               className: "inline-block size-2 rounded-full",
               style: { background: vizColor(index) }
@@ -2866,14 +2865,14 @@ function ScatterChart({
             const y = yFor(tick);
             return /* @__PURE__ */ jsxs18("g", {
               children: [
-                /* @__PURE__ */ jsx20("line", {
+                /* @__PURE__ */ jsx19("line", {
                   x1: MARGIN5.left,
                   x2: width - MARGIN5.right,
                   y1: y,
                   y2: y,
                   className: "stroke-line"
                 }),
-                /* @__PURE__ */ jsx20("text", {
+                /* @__PURE__ */ jsx19("text", {
                   x: MARGIN5.left - 6,
                   y: y + 3,
                   textAnchor: "end",
@@ -2887,14 +2886,14 @@ function ScatterChart({
             const x = xFor(tick);
             return /* @__PURE__ */ jsxs18("g", {
               children: [
-                /* @__PURE__ */ jsx20("line", {
+                /* @__PURE__ */ jsx19("line", {
                   x1: x,
                   x2: x,
                   y1: MARGIN5.top,
                   y2: height - MARGIN5.bottom,
                   className: "stroke-line"
                 }),
-                /* @__PURE__ */ jsx20("text", {
+                /* @__PURE__ */ jsx19("text", {
                   x,
                   y: height - 14,
                   textAnchor: "middle",
@@ -2904,14 +2903,14 @@ function ScatterChart({
               ]
             }, `x${index}`);
           }),
-          xLabel ? /* @__PURE__ */ jsx20("text", {
+          xLabel ? /* @__PURE__ */ jsx19("text", {
             x: MARGIN5.left + plotW / 2,
             y: height - 2,
             textAnchor: "middle",
             className: "fill-muted text-[10px]",
             children: xLabel
           }) : null,
-          yLabel ? /* @__PURE__ */ jsx20("text", {
+          yLabel ? /* @__PURE__ */ jsx19("text", {
             x: 10,
             y: MARGIN5.top + plotH / 2,
             textAnchor: "middle",
@@ -2919,7 +2918,7 @@ function ScatterChart({
             className: "fill-muted text-[10px]",
             children: yLabel
           }) : null,
-          finite.map((point, index) => /* @__PURE__ */ jsx20("circle", {
+          finite.map((point, index) => /* @__PURE__ */ jsx19("circle", {
             cx: xFor(point.x),
             cy: yFor(point.y),
             r: 3.5,
@@ -2928,7 +2927,7 @@ function ScatterChart({
             "data-x": point.x,
             "data-y": point.y,
             "data-label": point.label,
-            ...handlers(/* @__PURE__ */ jsx20(TooltipRows, {
+            ...handlers(/* @__PURE__ */ jsx19(TooltipRows, {
               title: point.label ?? point.series,
               rows: [
                 { label: xLabel ?? "x", value: formatX(point.x) },
@@ -2938,7 +2937,7 @@ function ScatterChart({
           }, index))
         ]
       }),
-      /* @__PURE__ */ jsx20(ChartTooltip, {
+      /* @__PURE__ */ jsx19(ChartTooltip, {
         tip
       })
     ]
@@ -2946,7 +2945,7 @@ function ScatterChart({
 }
 // webapp/src/components/StackedAreaChart.tsx
 import { useEffect as useEffect14, useRef as useRef13, useState as useState16 } from "react";
-import { jsx as jsx21, jsxs as jsxs19 } from "react/jsx-runtime";
+import { jsx as jsx20, jsxs as jsxs19 } from "react/jsx-runtime";
 var MARGIN6 = { top: 12, right: 14, bottom: 26, left: 48 };
 function clamp2(value, min, max) {
   return Math.min(Math.max(value, min), max);
@@ -2965,7 +2964,7 @@ function StackedAreaChart({
   useEffect14(() => observeWidth(container.current, 240, setWidth), []);
   const count = labels.length;
   if (count < 2 || series.length === 0) {
-    return /* @__PURE__ */ jsx21("div", {
+    return /* @__PURE__ */ jsx20("div", {
       className: "grid h-[240px] place-items-center text-xs text-faint",
       children: "Not enough data to chart."
     });
@@ -3009,12 +3008,12 @@ function StackedAreaChart({
     ref: container,
     className: "relative w-full",
     children: [
-      /* @__PURE__ */ jsx21("div", {
+      /* @__PURE__ */ jsx20("div", {
         className: "mb-1 flex flex-wrap items-center gap-3 text-2xs text-faint",
         children: clamped.map((entry, index) => /* @__PURE__ */ jsxs19("span", {
           className: "flex items-center gap-1",
           children: [
-            /* @__PURE__ */ jsx21("span", {
+            /* @__PURE__ */ jsx20("span", {
               "aria-hidden": "true",
               className: "inline-block size-2",
               style: { background: vizColor(index) }
@@ -3036,14 +3035,14 @@ function StackedAreaChart({
             const y = yFor(tick);
             return /* @__PURE__ */ jsxs19("g", {
               children: [
-                /* @__PURE__ */ jsx21("line", {
+                /* @__PURE__ */ jsx20("line", {
                   x1: MARGIN6.left,
                   x2: width - MARGIN6.right,
                   y1: y,
                   y2: y,
                   className: "stroke-line"
                 }),
-                /* @__PURE__ */ jsx21("text", {
+                /* @__PURE__ */ jsx20("text", {
                   x: MARGIN6.left - 6,
                   y: y + 3,
                   textAnchor: "end",
@@ -3053,13 +3052,13 @@ function StackedAreaChart({
               ]
             }, index);
           }),
-          clamped.map((entry, index) => /* @__PURE__ */ jsx21("path", {
+          clamped.map((entry, index) => /* @__PURE__ */ jsx20("path", {
             d: bandPath(index),
             fill: vizColor(index),
             fillOpacity: 0.8,
             "data-series": entry.name
           }, entry.name)),
-          hover != null ? /* @__PURE__ */ jsx21("line", {
+          hover != null ? /* @__PURE__ */ jsx20("line", {
             x1: xFor(hover),
             x2: xFor(hover),
             y1: MARGIN6.top,
@@ -3067,7 +3066,7 @@ function StackedAreaChart({
             className: "stroke-faint",
             strokeDasharray: "3 3"
           }) : null,
-          labels.map((label, index) => index % labelEvery === 0 || index === count - 1 ? /* @__PURE__ */ jsx21("text", {
+          labels.map((label, index) => index % labelEvery === 0 || index === count - 1 ? /* @__PURE__ */ jsx20("text", {
             x: xFor(index),
             y: height - 8,
             textAnchor: "middle",
@@ -3080,7 +3079,7 @@ function StackedAreaChart({
         className: "pointer-events-none absolute top-8 z-20 -translate-x-1/2 whitespace-nowrap border border-line bg-surface px-2 py-1.5 text-2xs shadow-[var(--shadow)]",
         style: { left: tooltipLeft },
         children: [
-          /* @__PURE__ */ jsx21("div", {
+          /* @__PURE__ */ jsx20("div", {
             className: "mb-0.5 font-mono text-faint",
             children: formatLabel(labels[hover])
           }),
@@ -3090,7 +3089,7 @@ function StackedAreaChart({
               /* @__PURE__ */ jsxs19("span", {
                 className: "flex items-center gap-1 text-muted",
                 children: [
-                  /* @__PURE__ */ jsx21("span", {
+                  /* @__PURE__ */ jsx20("span", {
                     "aria-hidden": "true",
                     className: "inline-block size-2",
                     style: { background: vizColor(index) }
@@ -3098,7 +3097,7 @@ function StackedAreaChart({
                   entry.name
                 ]
               }),
-              /* @__PURE__ */ jsx21("span", {
+              /* @__PURE__ */ jsx20("span", {
                 className: "font-mono tnum text-ink",
                 children: format(entry.values[hover])
               })
@@ -3110,10 +3109,10 @@ function StackedAreaChart({
   });
 }
 // webapp/src/components/States.tsx
-import { jsx as jsx22, jsxs as jsxs20 } from "react/jsx-runtime";
+import { jsx as jsx21, jsxs as jsxs20 } from "react/jsx-runtime";
 function StateBox({ tone, title, message }) {
   const danger = tone === "danger";
-  return /* @__PURE__ */ jsx22("div", {
+  return /* @__PURE__ */ jsx21("div", {
     className: `grid min-h-[200px] place-items-center border bg-surface p-6 text-center ${danger ? "border-danger/40" : "border-line"}`,
     "data-state": tone,
     role: danger ? "alert" : "status",
@@ -3121,15 +3120,15 @@ function StateBox({ tone, title, message }) {
     children: /* @__PURE__ */ jsxs20("div", {
       className: "max-w-md",
       children: [
-        tone === "loading" ? /* @__PURE__ */ jsx22("span", {
+        tone === "loading" ? /* @__PURE__ */ jsx21("span", {
           "aria-hidden": "true",
           className: "motion-safe:animate-pulse inline-block size-2 rounded-full bg-accent"
         }) : null,
-        title ? /* @__PURE__ */ jsx22("h3", {
+        title ? /* @__PURE__ */ jsx21("h3", {
           className: `text-sm font-semibold ${danger ? "text-danger" : "text-ink"}`,
           children: title
         }) : null,
-        /* @__PURE__ */ jsx22("p", {
+        /* @__PURE__ */ jsx21("p", {
           className: `mt-1 text-xs ${danger ? "text-danger" : "text-muted"}`,
           children: message
         })
@@ -3138,21 +3137,21 @@ function StateBox({ tone, title, message }) {
   });
 }
 function LoadingState({ title = "Loading", message = "Loading metrics…" }) {
-  return /* @__PURE__ */ jsx22(StateBox, {
+  return /* @__PURE__ */ jsx21(StateBox, {
     tone: "loading",
     title,
     message
   });
 }
 function EmptyState({ title = "No results", message }) {
-  return /* @__PURE__ */ jsx22(StateBox, {
+  return /* @__PURE__ */ jsx21(StateBox, {
     tone: "muted",
     title,
     message
   });
 }
 function ErrorState({ title = "Query failed", message }) {
-  return /* @__PURE__ */ jsx22(StateBox, {
+  return /* @__PURE__ */ jsx21(StateBox, {
     tone: "danger",
     title,
     message
@@ -3160,14 +3159,14 @@ function ErrorState({ title = "Query failed", message }) {
 }
 function StatusDot({ status }) {
   const color = status === "ok" ? "bg-success" : status === "loading" ? "bg-faint animate-pulse" : "bg-line";
-  return /* @__PURE__ */ jsx22("span", {
+  return /* @__PURE__ */ jsx21("span", {
     "aria-hidden": "true",
     className: `inline-block size-2 rounded-full ${color}`
   });
 }
 // webapp/src/components/WaterfallChart.tsx
 import { useEffect as useEffect15, useRef as useRef14, useState as useState17 } from "react";
-import { jsx as jsx23, jsxs as jsxs21, Fragment as Fragment10 } from "react/jsx-runtime";
+import { jsx as jsx22, jsxs as jsxs21, Fragment as Fragment10 } from "react/jsx-runtime";
 function waterfallSteps(data) {
   let running = 0;
   return data.map((item) => {
@@ -3189,7 +3188,7 @@ function WaterfallChart({ data, height = 220, format = formatValue, ariaLabel })
   useEffect15(() => observeWidth(ref.current, 200, setWidth), []);
   const steps = waterfallSteps(data);
   if (steps.length === 0) {
-    return /* @__PURE__ */ jsx23("div", {
+    return /* @__PURE__ */ jsx22("div", {
       className: "grid h-[220px] place-items-center text-xs text-faint",
       children: "No steps to chart."
     });
@@ -3219,14 +3218,14 @@ function WaterfallChart({ data, height = 220, format = formatValue, ariaLabel })
             const y = yFor(tick);
             return /* @__PURE__ */ jsxs21("g", {
               children: [
-                /* @__PURE__ */ jsx23("line", {
+                /* @__PURE__ */ jsx22("line", {
                   x1: MARGIN7.left,
                   x2: width - MARGIN7.right,
                   y1: y,
                   y2: y,
                   className: "stroke-line"
                 }),
-                /* @__PURE__ */ jsx23("text", {
+                /* @__PURE__ */ jsx22("text", {
                   x: MARGIN7.left - 6,
                   y: y + 3,
                   textAnchor: "end",
@@ -3236,7 +3235,7 @@ function WaterfallChart({ data, height = 220, format = formatValue, ariaLabel })
               ]
             }, index);
           }),
-          /* @__PURE__ */ jsx23("line", {
+          /* @__PURE__ */ jsx22("line", {
             x1: MARGIN7.left,
             x2: width - MARGIN7.right,
             y1: yFor(0),
@@ -3252,7 +3251,7 @@ function WaterfallChart({ data, height = 220, format = formatValue, ariaLabel })
             const next = steps[index + 1];
             return /* @__PURE__ */ jsxs21("g", {
               children: [
-                /* @__PURE__ */ jsx23("rect", {
+                /* @__PURE__ */ jsx22("rect", {
                   x,
                   y: Math.min(y0, y1),
                   width: barWidth,
@@ -3261,7 +3260,7 @@ function WaterfallChart({ data, height = 220, format = formatValue, ariaLabel })
                   "data-value": step.value,
                   "data-tone": tone,
                   className: fill,
-                  ...handlers(/* @__PURE__ */ jsx23(TooltipRows, {
+                  ...handlers(/* @__PURE__ */ jsx22(TooltipRows, {
                     title: step.label,
                     rows: step.isTotal ? [{ label: "Total", value: format(step.end) }] : [
                       { label: "Change", value: format(step.value) },
@@ -3269,7 +3268,7 @@ function WaterfallChart({ data, height = 220, format = formatValue, ariaLabel })
                     ]
                   }))
                 }),
-                next ? /* @__PURE__ */ jsx23("line", {
+                next ? /* @__PURE__ */ jsx22("line", {
                   x1: x + barWidth,
                   x2: MARGIN7.left + slot * (index + 1) + (slot - barWidth) / 2,
                   y1,
@@ -3277,7 +3276,7 @@ function WaterfallChart({ data, height = 220, format = formatValue, ariaLabel })
                   className: "stroke-faint",
                   strokeDasharray: "3 3"
                 }) : null,
-                /* @__PURE__ */ jsx23("text", {
+                /* @__PURE__ */ jsx22("text", {
                   x: x + barWidth / 2,
                   y: height - 8,
                   textAnchor: "middle",
@@ -3289,14 +3288,14 @@ function WaterfallChart({ data, height = 220, format = formatValue, ariaLabel })
           })
         ]
       }),
-      /* @__PURE__ */ jsx23(ChartTooltip, {
+      /* @__PURE__ */ jsx22(ChartTooltip, {
         tip
       })
     ]
   });
 }
 // webapp/src/components/Button.tsx
-import { jsx as jsx24 } from "react/jsx-runtime";
+import { jsx as jsx23 } from "react/jsx-runtime";
 var VARIANT_CLASSES = {
   primary: "border-accent bg-accent-soft font-medium text-accent hover:bg-accent hover:text-surface",
   secondary: "border-line bg-surface text-ink hover:bg-surface-soft",
@@ -3305,7 +3304,7 @@ var VARIANT_CLASSES = {
 };
 function Button({ variant = "secondary", size = "md", type = "button", className, ...rest }) {
   const sizing = size === "sm" ? "h-6 px-2.5 text-2xs" : "h-7 px-3 text-xs";
-  return /* @__PURE__ */ jsx24("button", {
+  return /* @__PURE__ */ jsx23("button", {
     type,
     "data-variant": variant,
     className: `inline-flex items-center justify-center rounded-full border ${sizing} ${VARIANT_CLASSES[variant]} disabled:pointer-events-none disabled:opacity-50 ${className ?? ""}`,
@@ -3314,7 +3313,7 @@ function Button({ variant = "secondary", size = "md", type = "button", className
 }
 // webapp/src/components/Combobox.tsx
 import { useEffect as useEffect16, useId as useId3, useMemo as useMemo5, useRef as useRef15, useState as useState18 } from "react";
-import { jsx as jsx25, jsxs as jsxs22 } from "react/jsx-runtime";
+import { jsx as jsx24, jsxs as jsxs22 } from "react/jsx-runtime";
 function filterOptions(options, query) {
   const needle = query.trim().toLowerCase();
   if (!needle)
@@ -3388,11 +3387,11 @@ function Combobox(props) {
         "data-chip": value,
         className: "inline-flex items-center gap-1 rounded-full bg-surface-soft px-2 py-0.5 leading-4 text-muted",
         children: [
-          /* @__PURE__ */ jsx25("span", {
+          /* @__PURE__ */ jsx24("span", {
             className: "max-w-32 truncate",
             children: labelFor(value)
           }),
-          /* @__PURE__ */ jsx25("button", {
+          /* @__PURE__ */ jsx24("button", {
             type: "button",
             "aria-label": `Remove ${labelFor(value)}`,
             disabled,
@@ -3405,7 +3404,7 @@ function Combobox(props) {
       /* @__PURE__ */ jsxs22("span", {
         className: "relative min-w-28 flex-1",
         children: [
-          /* @__PURE__ */ jsx25("input", {
+          /* @__PURE__ */ jsx24("input", {
             type: "text",
             role: "combobox",
             "aria-expanded": open,
@@ -3425,7 +3424,7 @@ function Combobox(props) {
             onKeyDown,
             className: "h-7 w-full rounded-full border border-line bg-surface px-3 text-ink placeholder:text-faint disabled:opacity-50"
           }),
-          selectedValues.length > 0 ? /* @__PURE__ */ jsx25("button", {
+          selectedValues.length > 0 ? /* @__PURE__ */ jsx24("button", {
             type: "button",
             "aria-label": "Clear selection",
             disabled,
@@ -3441,7 +3440,7 @@ function Combobox(props) {
         "aria-multiselectable": props.multiple || undefined,
         className: "absolute left-0 top-full z-50 mt-1 max-h-56 w-full min-w-40 overflow-y-auto rounded-xl border border-line bg-surface p-1.5 shadow-[var(--shadow)]",
         children: [
-          matches.length === 0 ? /* @__PURE__ */ jsx25("li", {
+          matches.length === 0 ? /* @__PURE__ */ jsx24("li", {
             className: "px-1.5 py-1 text-faint",
             children: "No matches"
           }) : null,
@@ -3458,7 +3457,7 @@ function Combobox(props) {
             className: "cursor-pointer truncate rounded-md px-2 py-1 text-muted data-[active=true]:bg-surface-soft data-[active=true]:text-ink",
             children: [
               option.label ?? option.value,
-              selectedSet.has(option.value) ? /* @__PURE__ */ jsx25("span", {
+              selectedSet.has(option.value) ? /* @__PURE__ */ jsx24("span", {
                 className: "float-right text-accent",
                 children: "✓"
               }) : null
@@ -3471,7 +3470,7 @@ function Combobox(props) {
 }
 // webapp/src/components/DatePicker.tsx
 import { useRef as useRef16, useState as useState19 } from "react";
-import { jsx as jsx26, jsxs as jsxs23 } from "react/jsx-runtime";
+import { jsx as jsx25, jsxs as jsxs23 } from "react/jsx-runtime";
 var WEEKDAYS = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
 var MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 function toIso(year, monthIndex, day) {
@@ -3552,7 +3551,7 @@ function DatePicker(props) {
       /* @__PURE__ */ jsxs23("div", {
         className: "mb-1 flex items-center justify-between",
         children: [
-          /* @__PURE__ */ jsx26("button", {
+          /* @__PURE__ */ jsx25("button", {
             type: "button",
             "aria-label": "Previous month",
             onClick: () => shiftMonth(-1),
@@ -3567,7 +3566,7 @@ function DatePicker(props) {
               year
             ]
           }),
-          /* @__PURE__ */ jsx26("button", {
+          /* @__PURE__ */ jsx25("button", {
             type: "button",
             "aria-label": "Next month",
             onClick: () => shiftMonth(1),
@@ -3576,20 +3575,20 @@ function DatePicker(props) {
           })
         ]
       }),
-      /* @__PURE__ */ jsx26("div", {
+      /* @__PURE__ */ jsx25("div", {
         className: "grid grid-cols-7 text-center text-faint",
-        children: WEEKDAYS.map((weekday) => /* @__PURE__ */ jsx26("span", {
+        children: WEEKDAYS.map((weekday) => /* @__PURE__ */ jsx25("span", {
           className: "py-0.5",
           children: weekday
         }, weekday))
       }),
-      /* @__PURE__ */ jsx26("div", {
+      /* @__PURE__ */ jsx25("div", {
         role: "grid",
         "aria-label": `${MONTHS[monthIndex]} ${year}`,
-        children: monthGrid(year, monthIndex).map((week, weekIndex) => /* @__PURE__ */ jsx26("div", {
+        children: monthGrid(year, monthIndex).map((week, weekIndex) => /* @__PURE__ */ jsx25("div", {
           role: "row",
           className: "grid grid-cols-7",
-          children: week.map((cell) => /* @__PURE__ */ jsx26("button", {
+          children: week.map((cell) => /* @__PURE__ */ jsx25("button", {
             type: "button",
             role: "gridcell",
             "aria-selected": isSelected(cell.iso),
@@ -3608,7 +3607,7 @@ function DatePicker(props) {
           " — pick an end date."
         ]
       }) : null,
-      (isRange ? props.value : props.value) != null ? /* @__PURE__ */ jsx26("button", {
+      (isRange ? props.value : props.value) != null ? /* @__PURE__ */ jsx25("button", {
         type: "button",
         onClick: () => isRange ? props.onChange(null) : props.onChange(null),
         className: "mt-1 w-full rounded-lg border border-line px-2 py-1 text-left text-muted hover:bg-surface-soft",
@@ -3626,22 +3625,22 @@ function DatePicker(props) {
       /* @__PURE__ */ jsxs23("summary", {
         className: `flex cursor-pointer items-center h-7 gap-1.5 rounded-full border border-line bg-surface px-3 text-ink ${disabled ? "pointer-events-none opacity-50" : ""}`,
         children: [
-          /* @__PURE__ */ jsx26("span", {
+          /* @__PURE__ */ jsx25("span", {
             className: "text-faint",
             children: ariaLabel ?? "Date"
           }),
-          /* @__PURE__ */ jsx26("span", {
+          /* @__PURE__ */ jsx25("span", {
             className: "tnum",
             children: summary
           }),
-          /* @__PURE__ */ jsx26("span", {
+          /* @__PURE__ */ jsx25("span", {
             "aria-hidden": "true",
             className: "text-faint",
             children: "▾"
           })
         ]
       }),
-      /* @__PURE__ */ jsx26("div", {
+      /* @__PURE__ */ jsx25("div", {
         className: "absolute left-0 z-50 mt-1 shadow-[var(--shadow)]",
         children: calendar
       })
@@ -3650,7 +3649,7 @@ function DatePicker(props) {
 }
 // webapp/src/components/DateRangeControl.tsx
 import { useRef as useRef17, useState as useState20 } from "react";
-import { jsx as jsx27, jsxs as jsxs24 } from "react/jsx-runtime";
+import { jsx as jsx26, jsxs as jsxs24 } from "react/jsx-runtime";
 var COMPARISON_OPTIONS = [
   { key: "off", label: "Off" },
   { key: "previous", label: "Previous period" },
@@ -3704,15 +3703,15 @@ function DateRangeControl({
         },
         className: `flex h-7 cursor-pointer items-center gap-1.5 rounded-full border border-line bg-surface px-3 text-ink ${disabled ? "cursor-not-allowed opacity-50" : ""}`,
         children: [
-          /* @__PURE__ */ jsx27("span", {
+          /* @__PURE__ */ jsx26("span", {
             className: "text-faint",
             children: "Range"
           }),
-          /* @__PURE__ */ jsx27("span", {
+          /* @__PURE__ */ jsx26("span", {
             className: "tnum",
             children: summary
           }),
-          /* @__PURE__ */ jsx27("span", {
+          /* @__PURE__ */ jsx26("span", {
             "aria-hidden": "true",
             className: "text-faint",
             children: "▾"
@@ -3722,15 +3721,15 @@ function DateRangeControl({
       /* @__PURE__ */ jsxs24("div", {
         className: "absolute right-0 z-50 mt-1 w-64 rounded-xl border border-line bg-surface p-1.5 shadow-[var(--shadow)]",
         children: [
-          /* @__PURE__ */ jsx27("button", {
+          /* @__PURE__ */ jsx26("button", {
             type: "button",
             onClick: () => apply(undefined),
             className: "w-full rounded-lg px-2.5 py-1.5 text-left text-xs text-muted hover:bg-surface-soft hover:text-ink",
             children: "All time"
           }),
-          /* @__PURE__ */ jsx27("div", {
+          /* @__PURE__ */ jsx26("div", {
             className: "grid grid-cols-2",
-            children: DATE_PRESETS.map((preset) => /* @__PURE__ */ jsx27("button", {
+            children: DATE_PRESETS.map((preset) => /* @__PURE__ */ jsx26("button", {
               type: "button",
               onClick: () => apply(presetRange(preset.days)),
               className: "rounded-lg px-2.5 py-1.5 text-left text-xs text-muted hover:bg-surface-soft hover:text-ink",
@@ -3743,18 +3742,18 @@ function DateRangeControl({
               /* @__PURE__ */ jsxs24("div", {
                 className: "flex items-center gap-1.5",
                 children: [
-                  /* @__PURE__ */ jsx27("input", {
+                  /* @__PURE__ */ jsx26("input", {
                     type: "date",
                     "aria-label": "From date",
                     value: from,
                     onChange: (event) => setFrom(event.target.value),
                     className: "h-7 min-w-0 flex-1 rounded-lg border border-line bg-surface px-2 text-xs text-ink"
                   }),
-                  /* @__PURE__ */ jsx27("span", {
+                  /* @__PURE__ */ jsx26("span", {
                     className: "text-faint",
                     children: "→"
                   }),
-                  /* @__PURE__ */ jsx27("input", {
+                  /* @__PURE__ */ jsx26("input", {
                     type: "date",
                     "aria-label": "To date",
                     value: to,
@@ -3763,7 +3762,7 @@ function DateRangeControl({
                   })
                 ]
               }),
-              /* @__PURE__ */ jsx27("button", {
+              /* @__PURE__ */ jsx26("button", {
                 type: "button",
                 disabled: !from || !to,
                 onClick: () => apply({ from, to }),
@@ -3776,13 +3775,13 @@ function DateRangeControl({
             className: "mt-1 px-1 pb-1",
             "data-testid": "comparison-picker",
             children: [
-              /* @__PURE__ */ jsx27("p", {
+              /* @__PURE__ */ jsx26("p", {
                 className: "mb-1 px-1.5 text-2xs text-faint",
                 children: "Compare to"
               }),
-              /* @__PURE__ */ jsx27("div", {
+              /* @__PURE__ */ jsx26("div", {
                 className: `grid grid-cols-2 ${comparisonDisabled ? "opacity-50" : ""}`,
-                children: COMPARISON_OPTIONS.map((option) => /* @__PURE__ */ jsx27("button", {
+                children: COMPARISON_OPTIONS.map((option) => /* @__PURE__ */ jsx26("button", {
                   type: "button",
                   disabled: comparisonDisabled,
                   "data-comparison": option.key,
@@ -3798,18 +3797,18 @@ function DateRangeControl({
                   /* @__PURE__ */ jsxs24("div", {
                     className: "flex items-center gap-1.5",
                     children: [
-                      /* @__PURE__ */ jsx27("input", {
+                      /* @__PURE__ */ jsx26("input", {
                         type: "date",
                         "aria-label": "Comparison from date",
                         value: cmpFrom,
                         onChange: (event) => setCmpFrom(event.target.value),
                         className: "h-7 min-w-0 flex-1 rounded-lg border border-line bg-surface px-2 text-xs text-ink"
                       }),
-                      /* @__PURE__ */ jsx27("span", {
+                      /* @__PURE__ */ jsx26("span", {
                         className: "text-faint",
                         children: "→"
                       }),
-                      /* @__PURE__ */ jsx27("input", {
+                      /* @__PURE__ */ jsx26("input", {
                         type: "date",
                         "aria-label": "Comparison to date",
                         value: cmpTo,
@@ -3818,7 +3817,7 @@ function DateRangeControl({
                       })
                     ]
                   }),
-                  /* @__PURE__ */ jsx27("button", {
+                  /* @__PURE__ */ jsx26("button", {
                     type: "button",
                     disabled: !cmpFrom || !cmpTo,
                     onClick: () => onComparisonChange("custom", { from: cmpFrom, to: cmpTo }),
@@ -3835,22 +3834,22 @@ function DateRangeControl({
   });
 }
 // webapp/src/components/GrainSelect.tsx
-import { jsx as jsx28, jsxs as jsxs25 } from "react/jsx-runtime";
+import { jsx as jsx27, jsxs as jsxs25 } from "react/jsx-runtime";
 function GrainSelect({ grain, options, disabled, onChange }) {
   return /* @__PURE__ */ jsxs25("label", {
     className: "flex items-center gap-1.5 text-xs text-faint",
     children: [
-      /* @__PURE__ */ jsx28("span", {
+      /* @__PURE__ */ jsx27("span", {
         className: "hidden sm:inline",
         children: "Grain"
       }),
-      /* @__PURE__ */ jsx28("select", {
+      /* @__PURE__ */ jsx27("select", {
         "aria-label": "Time grain",
         value: grain,
         disabled,
         onChange: (event) => onChange(event.target.value),
         className: "h-7 rounded-full border border-line bg-surface px-2.5 text-xs text-ink disabled:opacity-50",
-        children: options.map((option) => /* @__PURE__ */ jsx28("option", {
+        children: options.map((option) => /* @__PURE__ */ jsx27("option", {
           value: option,
           children: labelize2(option)
         }, option))
@@ -3859,12 +3858,12 @@ function GrainSelect({ grain, options, disabled, onChange }) {
   });
 }
 // webapp/src/components/Select.tsx
-import { jsx as jsx29, jsxs as jsxs26 } from "react/jsx-runtime";
+import { jsx as jsx28, jsxs as jsxs26 } from "react/jsx-runtime";
 function Select({ value, options, onChange, label, ariaLabel, placeholder, disabled }) {
   return /* @__PURE__ */ jsxs26("label", {
     className: "flex items-center gap-1.5 text-xs text-faint",
     children: [
-      label ? /* @__PURE__ */ jsx29("span", {
+      label ? /* @__PURE__ */ jsx28("span", {
         className: "hidden sm:inline",
         children: label
       }) : null,
@@ -3875,12 +3874,12 @@ function Select({ value, options, onChange, label, ariaLabel, placeholder, disab
         onChange: (event) => onChange(event.target.value),
         className: "h-7 rounded-full border border-line bg-surface px-2.5 text-xs text-ink disabled:opacity-50",
         children: [
-          placeholder ? /* @__PURE__ */ jsx29("option", {
+          placeholder ? /* @__PURE__ */ jsx28("option", {
             value: "",
             disabled: true,
             children: placeholder
           }) : null,
-          options.map((option) => /* @__PURE__ */ jsx29("option", {
+          options.map((option) => /* @__PURE__ */ jsx28("option", {
             value: option.value,
             children: option.label ?? option.value
           }, option.value))
@@ -3890,12 +3889,12 @@ function Select({ value, options, onChange, label, ariaLabel, placeholder, disab
   });
 }
 // webapp/src/components/Switch.tsx
-import { jsx as jsx30, jsxs as jsxs27 } from "react/jsx-runtime";
+import { jsx as jsx29, jsxs as jsxs27 } from "react/jsx-runtime";
 function Switch({ checked, onChange, label, ariaLabel, disabled }) {
   return /* @__PURE__ */ jsxs27("label", {
     className: `flex items-center gap-1.5 text-xs ${disabled ? "opacity-50" : ""}`,
     children: [
-      /* @__PURE__ */ jsx30("button", {
+      /* @__PURE__ */ jsx29("button", {
         type: "button",
         role: "switch",
         "aria-checked": checked,
@@ -3904,12 +3903,12 @@ function Switch({ checked, onChange, label, ariaLabel, disabled }) {
         onClick: () => onChange(!checked),
         "data-checked": checked || undefined,
         className: `relative h-4 w-7 shrink-0 rounded-full border transition-colors ${checked ? "border-accent bg-accent" : "border-line bg-surface-soft"}`,
-        children: /* @__PURE__ */ jsx30("span", {
+        children: /* @__PURE__ */ jsx29("span", {
           "aria-hidden": "true",
           className: `absolute top-1/2 size-3 -translate-y-1/2 rounded-full bg-surface shadow transition-[left] ${checked ? "left-[14px]" : "left-[2px]"}`
         })
       }),
-      label ? /* @__PURE__ */ jsx30("span", {
+      label ? /* @__PURE__ */ jsx29("span", {
         className: "text-muted",
         children: label
       }) : null
@@ -3917,13 +3916,13 @@ function Switch({ checked, onChange, label, ariaLabel, disabled }) {
   });
 }
 // webapp/src/components/Tabs.tsx
-import { jsx as jsx31 } from "react/jsx-runtime";
+import { jsx as jsx30 } from "react/jsx-runtime";
 function Tabs({ tabs, active, onChange, ariaLabel = "Tabs" }) {
-  return /* @__PURE__ */ jsx31("div", {
+  return /* @__PURE__ */ jsx30("div", {
     role: "tablist",
     "aria-label": ariaLabel,
     className: "inline-flex items-center gap-0.5 rounded-full border border-line bg-surface p-px",
-    children: tabs.map((tab) => /* @__PURE__ */ jsx31("button", {
+    children: tabs.map((tab) => /* @__PURE__ */ jsx30("button", {
       role: "tab",
       type: "button",
       "aria-selected": active === tab.key,
@@ -3993,7 +3992,7 @@ function timezoneOffsetLabel(zone, at = new Date) {
 }
 
 // webapp/src/components/TimezoneSelect.tsx
-import { jsx as jsx32, jsxs as jsxs28 } from "react/jsx-runtime";
+import { jsx as jsx31, jsxs as jsxs28 } from "react/jsx-runtime";
 var SEARCH_SENTINEL = "__search__";
 function TimezoneSelect({ timezone, disabled, onChange }) {
   const listId = useId4();
@@ -4018,11 +4017,11 @@ function TimezoneSelect({ timezone, disabled, onChange }) {
     return /* @__PURE__ */ jsxs28("label", {
       className: "flex items-center gap-1.5 text-2xs text-faint",
       children: [
-        /* @__PURE__ */ jsx32("span", {
+        /* @__PURE__ */ jsx31("span", {
           className: "hidden sm:inline",
           children: "Zone"
         }),
-        /* @__PURE__ */ jsx32("input", {
+        /* @__PURE__ */ jsx31("input", {
           type: "text",
           list: listId,
           autoFocus: true,
@@ -4049,9 +4048,9 @@ function TimezoneSelect({ timezone, disabled, onChange }) {
           },
           className: "h-7 w-36 rounded-full border border-line bg-surface px-2.5 text-xs text-ink disabled:opacity-50"
         }),
-        /* @__PURE__ */ jsx32("datalist", {
+        /* @__PURE__ */ jsx31("datalist", {
           id: listId,
-          children: zones.map((zone) => /* @__PURE__ */ jsx32("option", {
+          children: zones.map((zone) => /* @__PURE__ */ jsx31("option", {
             value: zone
           }, zone))
         })
@@ -4062,7 +4061,7 @@ function TimezoneSelect({ timezone, disabled, onChange }) {
   return /* @__PURE__ */ jsxs28("label", {
     className: "flex items-center gap-1.5 text-2xs text-faint",
     children: [
-      /* @__PURE__ */ jsx32("span", {
+      /* @__PURE__ */ jsx31("span", {
         className: "hidden sm:inline",
         children: "Zone"
       }),
@@ -4085,7 +4084,7 @@ function TimezoneSelect({ timezone, disabled, onChange }) {
               zone === "UTC" ? "" : offset && zone === timezone ? ` (${offset})` : ""
             ]
           }, zone)),
-          /* @__PURE__ */ jsx32("option", {
+          /* @__PURE__ */ jsx31("option", {
             value: SEARCH_SENTINEL,
             children: "Search…"
           })
@@ -4095,17 +4094,17 @@ function TimezoneSelect({ timezone, disabled, onChange }) {
   });
 }
 // webapp/src/components/Tooltip.tsx
-import { jsx as jsx33, jsxs as jsxs29, Fragment as Fragment11 } from "react/jsx-runtime";
+import { jsx as jsx32, jsxs as jsxs29, Fragment as Fragment11 } from "react/jsx-runtime";
 function Tooltip({ content, children, className }) {
   const { tip, handlers } = useChartTooltip();
   return /* @__PURE__ */ jsxs29(Fragment11, {
     children: [
-      /* @__PURE__ */ jsx33("span", {
+      /* @__PURE__ */ jsx32("span", {
         className: className ?? "inline-flex",
         ...handlers(content),
         children
       }),
-      /* @__PURE__ */ jsx33(ChartTooltip, {
+      /* @__PURE__ */ jsx32(ChartTooltip, {
         tip
       })
     ]
@@ -4113,7 +4112,7 @@ function Tooltip({ content, children, className }) {
 }
 // webapp/src/components/ViewSwitcher.tsx
 import { useRef as useRef18 } from "react";
-import { jsx as jsx34 } from "react/jsx-runtime";
+import { jsx as jsx33 } from "react/jsx-runtime";
 var SEGMENTS = [
   { key: "explore", label: "Explore" },
   { key: "pivot", label: "Pivot" }
@@ -4126,12 +4125,12 @@ function ViewSwitcher({ view, onChange }) {
     onChange(next.key);
     window.requestAnimationFrame(() => list.current?.querySelector(`[data-view="${next.key}"]`)?.focus());
   }
-  return /* @__PURE__ */ jsx34("div", {
+  return /* @__PURE__ */ jsx33("div", {
     ref: list,
     role: "tablist",
     "aria-label": "View",
     className: "inline-flex items-center gap-0.5 rounded-full border border-line bg-surface p-px",
-    children: SEGMENTS.map((segment) => /* @__PURE__ */ jsx34("button", {
+    children: SEGMENTS.map((segment) => /* @__PURE__ */ jsx33("button", {
       role: "tab",
       type: "button",
       "aria-selected": view === segment.key,
@@ -4288,73 +4287,73 @@ function rowsToSeries(rows, fields) {
   };
 }
 export {
-  waterfallSteps,
-  vizColor,
-  useChartTooltip,
-  tokenizeSql,
-  toggleTheme,
-  toggleFilterValue,
-  rowsToTimeSeries,
-  rowsToSeries,
-  rowsToPoints,
-  rowsToCells,
-  rowsToCategories,
-  rowsToBarLine,
-  removeFilterValue,
-  removeFilterDimension,
-  parseTemporal,
-  paginateRows,
-  normalizeFilterValue,
-  monthGrid,
-  layoutNetwork,
-  labelize2 as labelize,
-  getTheme,
-  formatValue,
-  formatCompact,
-  filterOptions,
-  donutSegments,
-  columnTotal,
-  binValues,
-  axisTicks,
-  applyThemeTokens,
-  applyTheme,
-  aliasForSemanticRef,
-  WaterfallChart,
-  ViewSwitcher,
-  VIZ_COLOR_COUNT,
-  TooltipRows,
-  Tooltip,
-  TimezoneSelect,
-  TimeSeriesChart,
-  Tabs,
-  Switch,
-  StatusDot,
-  StackedAreaChart,
-  Sparkline,
-  Select,
-  ScatterChart,
-  QueryDebugPanel,
-  NetworkChart,
-  MetricCard,
-  LoadingState,
-  LineChart,
-  Leaderboard,
-  HistogramChart,
-  HeatmapChart,
-  GrainSelect,
-  FilterPill,
-  ErrorState,
-  ErrorBoundary,
-  EmptyState,
-  DonutChart,
-  DateRangeControl,
-  DatePicker,
-  DataTable,
-  DataPreviewTable,
-  DashboardShell,
-  Combobox,
-  ColumnChart,
-  ChartTooltip,
+  BarLineCombo,
   Button,
-  BarLineCombo
+  ChartTooltip,
+  ColumnChart,
+  Combobox,
+  DashboardShell,
+  DataPreviewTable,
+  DataTable,
+  DatePicker,
+  DateRangeControl,
+  DonutChart,
+  EmptyState,
+  ErrorBoundary,
+  ErrorState,
+  FilterPill,
+  GrainSelect,
+  HeatmapChart,
+  HistogramChart,
+  Leaderboard,
+  LineChart,
+  LoadingState,
+  MetricCard,
+  NetworkChart,
+  QueryDebugPanel,
+  ScatterChart,
+  Select,
+  Sparkline,
+  StackedAreaChart,
+  StatusDot,
+  Switch,
+  Tabs,
+  TimeSeriesChart,
+  TimezoneSelect,
+  Tooltip,
+  TooltipRows,
+  VIZ_COLOR_COUNT,
+  ViewSwitcher,
+  WaterfallChart,
+  aliasForSemanticRef,
+  applyTheme,
+  applyThemeTokens,
+  axisTicks,
+  binValues,
+  columnTotal,
+  donutSegments,
+  filterOptions,
+  formatCompact,
+  formatValue,
+  getTheme,
+  labelize2 as labelize,
+  layoutNetwork,
+  monthGrid,
+  normalizeFilterValue,
+  paginateRows,
+  parseTemporal,
+  removeFilterDimension,
+  removeFilterValue,
+  rowsToBarLine,
+  rowsToCategories,
+  rowsToCells,
+  rowsToPoints,
+  rowsToSeries,
+  rowsToTimeSeries,
+  toggleFilterValue,
+  toggleTheme,
+  tokenizeSql,
+  useChartTooltip,
+  vizColor,
+  waterfallSteps
 };

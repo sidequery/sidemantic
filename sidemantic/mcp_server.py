@@ -161,10 +161,10 @@ def _freeze_current_timestamp(filter_str: str, dialect: str | None = None) -> st
         return filter_str
 
     parsed = sqlglot.parse_one(filter_str, dialect=dialect)
-    frozen_at = datetime.now(UTC).replace(tzinfo=None)
+    frozen_at = datetime.now(UTC)
     literal = exp.cast(
         exp.Literal.string(frozen_at.isoformat(sep=" ", timespec="microseconds")),
-        exp.DataType.Type.TIMESTAMP,
+        exp.DataType.Type.TIMESTAMPTZ,
     )
     rewritten = parsed.transform(lambda node: literal.copy() if isinstance(node, exp.CurrentTimestamp) else node)
     return rewritten.sql(dialect=dialect)

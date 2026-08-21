@@ -255,7 +255,7 @@ def test_run_query_freezes_current_timestamp_for_partition_pruning(demo_layer):
 
     sql = result["sql"].upper()
     assert "CURRENT_TIMESTAMP" not in sql
-    assert re.search(r"CAST\('.*' AS TIMESTAMP\) - INTERVAL '24' HOURS", sql)
+    assert re.search(r"CAST\('.*\+00:00' AS TIMESTAMPTZ\) - INTERVAL '24' HOURS", sql)
 
 
 def test_run_query_with_order_by(demo_layer):

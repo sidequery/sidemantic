@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from sidemantic.config import SidemanticConfig, build_connection_string, find_config, get_init_sql, load_config
 
@@ -233,9 +234,10 @@ class ProjectContext:
             database_path = None
             connection_string = build_connection_string(self.config)
             if connection_string.startswith("duckdb:///"):
-                raw_path = connection_string.removeprefix("duckdb:///")
+                raw_path = urlparse(connection_string).path.lstrip("/")
                 if raw_path != ":memory:":
-                    database_path = Path(raw_path)
+                    configured_path = self.config.connection.path
+                    database_path = Path(configured_path)
             return ResolvedConnection(
                 connection=connection_string,
                 database=database_path,

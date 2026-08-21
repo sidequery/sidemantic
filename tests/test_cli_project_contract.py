@@ -98,6 +98,21 @@ def test_query_uses_project_models_and_connection(monkeypatch: pytest.MonkeyPatc
     assert "2" in result.output
 
 
+def test_project_duckdb_config_does_not_become_part_of_database_filename(
+    monkeypatch: pytest.MonkeyPatch, project: Path
+):
+    (project / "sidemantic.yaml").write_text(
+        "models_dir: models\nconnection:\n  type: duckdb\n  path: data/warehouse.duckdb\n  config:\n    threads: 1\n"
+    )
+    monkeypatch.chdir(project)
+
+    result = runner.invoke(app, ["query", "SELECT order_count FROM orders"])
+
+    assert result.exit_code == 0, result.output
+    assert "2" in result.output
+    assert not (project / "data" / "warehouse.duckdb?threads=1").exists()
+
+
 def test_migrate_query_path_is_relative_to_selected_project(
     monkeypatch: pytest.MonkeyPatch,
     project: Path,

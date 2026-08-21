@@ -579,11 +579,13 @@ class SQLGenerator:
 
             self._ensure_sql_dimension(model_name, dimension)
             replacement_sql = self._dimension_base_expr(dimension)
-            effective_granularity = granularity
-            if dimension.type == "time" and effective_granularity is None:
-                effective_granularity = dimension.granularity
-            if effective_granularity:
-                replacement_sql = self._date_trunc(effective_granularity, replacement_sql)
+            # A time dimension's default granularity controls how it is projected,
+            # not the precision of predicates on the base semantic field. Keeping
+            # base filters on the raw expression preserves exact rolling windows
+            # and lets databases push timestamp predicates into the source. Only
+            # an explicit suffix such as ``created_at__day`` requests truncation.
+            if granularity:
+                replacement_sql = self._date_trunc(granularity, replacement_sql)
             if source_alias:
                 replacement_sql = replacement_sql.replace("{model}", source_alias)
             else:

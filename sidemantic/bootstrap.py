@@ -63,20 +63,18 @@ def introspect_connection(
     """
 
     if connection.startswith("duckdb://"):
-        import duckdb
+        from sidemantic.db.duckdb import DuckDBAdapter
 
-        db_path = connection.removeprefix("duckdb:///") or ":memory:"
-        con = duckdb.connect(db_path, read_only=db_path != ":memory:" and not init_sql)
+        adapter = DuckDBAdapter.from_url(connection, init_sql=init_sql)
+        con = adapter.raw_connection
         try:
-            for statement in init_sql or []:
-                con.execute(statement)
             tables = _introspect_information_schema(con)
             if profile:
                 for table in tables:
                     _profile_table(con, table)
             return tables
         finally:
-            con.close()
+            adapter.close()
 
     from sidemantic import SemanticLayer
 

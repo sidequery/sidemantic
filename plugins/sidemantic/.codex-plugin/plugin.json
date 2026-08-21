@@ -1,6 +1,6 @@
 {
   "name": "sidemantic",
-  "description": "Build, validate, and query Sidemantic semantic models, and generate analytics webapps from them.",
+  "description": "Build, validate, and query Sidemantic semantic models, answer business questions with trusted metrics, and generate analytics webapps.",
   "version": "1.0.0",
   "author": {
     "name": "Sidemantic",
@@ -19,12 +19,13 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "Sidemantic",
-    "shortDescription": "Model metrics and build analytics webapps from semantic SQL.",
-    "longDescription": "Sidemantic helps Codex build, validate, query, and migrate SQL-first semantic models, then turn those models into analytics dashboards and app surfaces.",
+    "shortDescription": "Analyze trusted metrics and build semantic analytics.",
+    "longDescription": "Sidemantic helps Codex answer business questions with trusted metrics; build, validate, query, and migrate SQL-first semantic models; and turn those models into analytics dashboards and app surfaces.",
     "developerName": "Sidemantic",
     "category": "Data & Analytics",
     "capabilities": [
       "Semantic modeling",
+      "Semantic analysis",
       "SQL generation",
       "Analytics webapps"
     ],
@@ -32,6 +33,7 @@
     "defaultPrompt": [
       "Create a Sidemantic model from my schema.",
       "Validate these metrics and dimensions.",
+      "Explain why revenue changed using our trusted metrics.",
       "Build a dashboard from my Sidemantic models."
     ],
     "brandColor": "#2563EB"

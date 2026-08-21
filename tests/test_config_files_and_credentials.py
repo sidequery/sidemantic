@@ -8,6 +8,7 @@ import pytest
 
 from sidemantic.config import (
     ClickHouseConnection,
+    DuckDBConnection,
     FilesConnection,
     PostgreSQLConnection,
     SidemanticConfig,
@@ -87,6 +88,64 @@ def test_files_connection_loads_from_yaml(tmp_path: Path):
     assert isinstance(config.connection, FilesConnection)
     assert build_connection_string(config) == "duckdb:///:memory:"
     assert len(get_init_sql(config)) == 1
+
+
+def test_duckdb_connection_config_round_trips_through_url(tmp_path: Path):
+    config = SidemanticConfig(
+        connection=DuckDBConnection(
+            path=":memory:",
+            config={"allow_unsigned_extensions": True, "threads": 4},
+        )
+    )
+
+    assert build_connection_string(config) == "duckdb:///:memory:?allow_unsigned_extensions=True&threads=4"
+
+
+def test_load_config_substitutes_environment_in_duckdb_config_and_init_sql(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    monkeypatch.setenv("TEST_DUCKDB_UNSIGNED", "true")
+    monkeypatch.setenv("TEST_ICEBERG_INIT", "load '/tmp/iceberg.duckdb_extension'")
+    config_path = tmp_path / "sidemantic.yaml"
+    config_path.write_text(
+        """
+connection:
+  type: duckdb
+  path: ":memory:"
+  config:
+    allow_unsigned_extensions: "${TEST_DUCKDB_UNSIGNED:-false}"
+  init_sql:
+    - "${TEST_ICEBERG_INIT:-install iceberg; load iceberg}"
+"""
+    )
+
+    config = load_config(config_path)
+
+    assert config.connection.config == {"allow_unsigned_extensions": "true"}
+    assert get_init_sql(config) == ["load '/tmp/iceberg.duckdb_extension'"]
+
+
+@pytest.mark.parametrize("suffix", ["yaml", "json"])
+def test_load_config_preserves_serialization_characters_in_environment_values(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, suffix: str
+):
+    password = 'quote" backslash\\ and\nnewline'
+    monkeypatch.setenv("TEST_CONFIG_PASSWORD", password)
+    config_path = tmp_path / f"sidemantic.{suffix}"
+    if suffix == "json":
+        config_path.write_text(
+            '{"connection":{"type":"postgres","host":"h","database":"db",'
+            '"username":"u","password":"${TEST_CONFIG_PASSWORD}"}}'
+        )
+    else:
+        config_path.write_text(
+            "connection:\n  type: postgres\n  host: h\n  database: db\n  username: u\n"
+            '  password: "${TEST_CONFIG_PASSWORD}"\n'
+        )
+
+    config = load_config(config_path)
+
+    assert config.connection.password == password
 
 
 # --- password_file credentials ------------------------------------------------

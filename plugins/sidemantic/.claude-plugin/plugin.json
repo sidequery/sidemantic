@@ -1,6 +1,6 @@
 {
   "name": "sidemantic",
-  "description": "Build, validate, and query Sidemantic semantic models, and generate analytics webapps from them. Ships the modeler and webapp-builder skills.",
+  "description": "Build, validate, and query Sidemantic semantic models, answer business questions with trusted metrics, and generate analytics webapps. Ships modeler, semantic-analyst, and webapp-builder skills.",
   "version": "1.0.0",
   "author": {
     "name": "Sidemantic"

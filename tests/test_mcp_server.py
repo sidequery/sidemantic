@@ -733,6 +733,21 @@ def test_explain_metric_resolves_dependencies_and_transitive_sources(demo_layer)
     assert result["filters"] == ["status != 'failed'"]
 
 
+def test_explain_metric_recovers_auto_registered_model_metric_owner(demo_layer):
+    orders = demo_layer.graph.models["orders"]
+    metric = Metric(name="revenue_yoy", type="time_comparison", base_metric="total_revenue", comparison_type="yoy")
+    orders.metrics.append(metric)
+    demo_layer.graph.metrics[metric.name] = metric
+
+    result = explain_metric("revenue_yoy")
+
+    assert result["metric"] == "orders.revenue_yoy"
+    assert result["model"] == "orders"
+    assert result["depends_on"] == ["orders.total_revenue"]
+    assert result["source_models"] == ["orders"]
+    assert result["source_file"] == "orders.yml"
+
+
 def test_explain_metric_rejects_unknown_and_hidden_metrics(demo_layer):
     with pytest.raises(ValueError, match="Metric 'orders.missing' not found"):
         explain_metric("orders.missing")

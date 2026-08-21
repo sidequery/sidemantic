@@ -486,6 +486,14 @@ def _qualified_metric_name(model_name: str | None, metric: Any, fallback: str) -
     return f"{model_name}.{metric.name}" if model_name else fallback
 
 
+def _recover_model_metric_owner(metric: Any, layer: SemanticLayer) -> str | None:
+    """Return the model that owns a graph-registered model metric, if any."""
+    for candidate_model_name, model in layer.graph.models.items():
+        if any(candidate is metric for candidate in model.metrics):
+            return candidate_model_name
+    return None
+
+
 def _metric_expression(metric: Any) -> str | None:
     """Return a concise human-readable expression without compiling a query."""
     if metric.type == "ratio" and metric.numerator and metric.denominator:
@@ -519,6 +527,9 @@ def explain_metric(metric_name: str) -> dict[str, Any]:
         model_name, metric = layer.graph.resolve_metric_reference(metric_name)
     except KeyError as exc:
         raise ValueError(f"Metric '{metric_name}' not found") from exc
+
+    if model_name is None:
+        model_name = _recover_model_metric_owner(metric, layer)
 
     if layer.enforce_visibility and not getattr(metric, "public", True):
         raise ValueError(f"Metric '{metric_name}' not found")

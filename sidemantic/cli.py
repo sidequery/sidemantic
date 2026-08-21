@@ -3017,10 +3017,10 @@ def refresh(
 
         # Connect to database
         if connection_str.startswith("duckdb://"):
-            import duckdb
+            from sidemantic.db.duckdb import DuckDBAdapter
 
-            db_path = connection_str.replace("duckdb:///", "")
-            conn = duckdb.connect(db_path)
+            duckdb_adapter = DuckDBAdapter.from_url(connection_str, init_sql=resolved_connection.init_sql)
+            conn = duckdb_adapter.raw_connection
 
             # Create schema if it doesn't exist (DuckDB only)
             if preagg_sch:

@@ -125,6 +125,29 @@ connection:
     assert get_init_sql(config) == ["load '/tmp/iceberg.duckdb_extension'"]
 
 
+@pytest.mark.parametrize("suffix", ["yaml", "json"])
+def test_load_config_preserves_serialization_characters_in_environment_values(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, suffix: str
+):
+    password = 'quote" backslash\\ and\nnewline'
+    monkeypatch.setenv("TEST_CONFIG_PASSWORD", password)
+    config_path = tmp_path / f"sidemantic.{suffix}"
+    if suffix == "json":
+        config_path.write_text(
+            '{"connection":{"type":"postgres","host":"h","database":"db",'
+            '"username":"u","password":"${TEST_CONFIG_PASSWORD}"}}'
+        )
+    else:
+        config_path.write_text(
+            "connection:\n  type: postgres\n  host: h\n  database: db\n  username: u\n"
+            '  password: "${TEST_CONFIG_PASSWORD}"\n'
+        )
+
+    config = load_config(config_path)
+
+    assert config.connection.password == password
+
+
 # --- password_file credentials ------------------------------------------------
 
 

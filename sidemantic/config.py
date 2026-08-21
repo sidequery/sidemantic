@@ -334,20 +334,33 @@ def load_config(config_path: Path) -> SidemanticConfig:
     suffix = config_path.suffix.lower()
 
     if suffix in {".yaml", ".yml"}:
-        from sidemantic.adapters.sidemantic import substitute_env_vars
-
-        data = _yaml_safe_load(substitute_env_vars(config_path.read_text()))
+        data = _yaml_safe_load(config_path.read_text())
     elif suffix == ".json":
-        from sidemantic.adapters.sidemantic import substitute_env_vars
-
-        data = json.loads(substitute_env_vars(config_path.read_text()))
+        data = json.loads(config_path.read_text())
     else:
         raise ValueError(f"Unsupported config format: {suffix}. Use .yaml, .yml, or .json")
 
-    config = SidemanticConfig(**data)
+    config = SidemanticConfig(**_substitute_config_env_values(data))
 
     # Resolve relative paths relative to config file directory
     return config.resolve_paths(config_path.parent)
+
+
+def _substitute_config_env_values(value):
+    """Substitute environment placeholders after parsing YAML or JSON.
+
+    Substituting parsed string scalars keeps quotes, backslashes, and newlines in
+    environment values from changing the surrounding serialization syntax.
+    """
+    from sidemantic.adapters.sidemantic import substitute_env_vars
+
+    if isinstance(value, str):
+        return substitute_env_vars(value)
+    if isinstance(value, list):
+        return [_substitute_config_env_values(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _substitute_config_env_values(item) for key, item in value.items()}
+    return value
 
 
 def find_config(start_dir: Path | None = None) -> Path | None:

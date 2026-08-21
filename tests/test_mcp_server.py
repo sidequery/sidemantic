@@ -246,6 +246,18 @@ def test_run_query_explicit_time_grain_filter_truncates_expression(demo_layer):
     assert "DATE_TRUNC('DAY', ORDER_DATE)" in where_clause.upper()
 
 
+def test_run_query_freezes_current_timestamp_for_partition_pruning(demo_layer):
+    result = run_query(
+        metrics=["orders.total_revenue"],
+        where="orders.order_date >= current_timestamp - interval '24 hours'",
+        dry_run=True,
+    )
+
+    sql = result["sql"].upper()
+    assert "CURRENT_TIMESTAMP" not in sql
+    assert re.search(r"CAST\('.*' AS TIMESTAMP\) - INTERVAL '24' HOURS", sql)
+
+
 def test_run_query_with_order_by(demo_layer):
     """Test running a query with ORDER BY."""
     result = run_query(

@@ -2,7 +2,7 @@
 
 import json
 import re
-from datetime import date, datetime, time
+from datetime import UTC, date, datetime, time
 from decimal import Decimal
 from pathlib import Path
 from time import perf_counter
@@ -143,6 +143,31 @@ def _validate_filter(filter_str: str, dialect: str | None = None) -> None:
     for node in parsed.walk():
         if disallowed_types and isinstance(node, disallowed_types):
             raise ValueError(f"Filter contains disallowed SQL: {type(node).__name__}")
+
+
+def _freeze_current_timestamp(filter_str: str, dialect: str | None = None) -> str:
+    """Replace CURRENT_TIMESTAMP in an MCP filter with one UTC timestamp literal.
+
+    Iceberg readers can prune timestamp partitions when the boundary is a literal,
+    while some readers plan ``CURRENT_TIMESTAMP - INTERVAL ...`` as a runtime
+    expression and scan every manifest. Freezing the stable function at request
+    compilation time preserves query-start semantics and exposes a constant to the
+    storage planner.
+    """
+    import sqlglot
+    from sqlglot import exp
+
+    if "current_timestamp" not in filter_str.lower():
+        return filter_str
+
+    parsed = sqlglot.parse_one(filter_str, dialect=dialect)
+    frozen_at = datetime.now(UTC).replace(tzinfo=None)
+    literal = exp.cast(
+        exp.Literal.string(frozen_at.isoformat(sep=" ", timespec="microseconds")),
+        exp.DataType.Type.TIMESTAMP,
+    )
+    rewritten = parsed.transform(lambda node: literal.copy() if isinstance(node, exp.CurrentTimestamp) else node)
+    return rewritten.sql(dialect=dialect)
 
 
 def _format_join_condition(model_name: str, rel, models: dict[str, Any]) -> str | None:
@@ -834,6 +859,7 @@ def run_query(
     # Validate filter to prevent SQL injection
     if where:
         _validate_filter(where, dialect=layer.dialect)
+        where = _freeze_current_timestamp(where, dialect=layer.dialect)
 
     # Compile SQL. Pass the server-level static user attributes so model access
     # gates and row filters are enforced (None -> secured models are denied).
@@ -947,6 +973,7 @@ def create_chart(
     # Validate filter to prevent SQL injection
     if where:
         _validate_filter(where, dialect=layer.dialect)
+        where = _freeze_current_timestamp(where, dialect=layer.dialect)
 
     # Compile and execute query (same as run_query)
     sql = layer.compile(

@@ -1580,7 +1580,7 @@ impl Parser {
             let mut groups = Vec::new();
             while self.eat_kw("group") {
                 let mut columns = vec![self.parse_visual_shape_column()?];
-                while self.eat(TokenKind::Comma).is_some() {
+                while self.eat_separator() {
                     columns.push(self.parse_visual_shape_column()?);
                 }
                 self.expect_kw("total")?;
@@ -1591,7 +1591,7 @@ impl Parser {
             self.expect_kw("order")?;
             self.expect_kw("by")?;
             let mut order_by = vec![self.parse_visual_shape_column()?];
-            while self.eat(TokenKind::Comma).is_some() {
+            while self.eat_separator() {
                 order_by.push(self.parse_visual_shape_column()?);
             }
 

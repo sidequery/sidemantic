@@ -451,7 +451,10 @@ fn expression_precedence(x: &Expr) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{parse_expression, parse_expression_with_dialect, parse_query, Dialect};
+    use crate::{
+        parse_expression, parse_expression_with_dialect, parse_query, parse_query_with_dialect,
+        Dialect,
+    };
     #[test]
     fn precedence_round_trips() {
         for s in [
@@ -495,6 +498,24 @@ mod tests {
         let reparsed = parse_expression_with_dialect(&f, d).unwrap();
         // Number nodes preserve their original spelling, so compare canonical output.
         assert_eq!(format_expression(&reparsed), format_expression(&x));
+    }
+    #[test]
+    fn localized_visual_shape_round_trip() {
+        let q = parse_query(
+            "DEFINE TABLE shaped = T WITH VISUAL SHAPE AXIS rows \
+             GROUP [Year], [Month] TOTAL [DateTotal] \
+             ORDER BY [Year], [Month] EVALUATE shaped",
+        )
+        .unwrap();
+        let formatted = format_query_with_options(&q, FormatOptions::localized());
+        assert!(formatted.contains("GROUP [Year]; [Month]"), "{formatted}");
+        assert!(
+            formatted.contains("ORDER BY [Year]; [Month]"),
+            "{formatted}"
+        );
+
+        let reparsed = parse_query_with_dialect(&formatted, Dialect::default()).unwrap();
+        assert_eq!(reparsed, q, "{formatted}");
     }
     #[test]
     fn datatable_round_trip() {

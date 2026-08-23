@@ -27,7 +27,7 @@ LOAD '/absolute/path/to/sidemantic.duckdb_extension';
 For local development:
 
 ```bash
-make deps DUCKDB_VERSION=v1.5.3
+make deps DUCKDB_VERSION=v1.5.5
 make
 make test
 ./build/release/duckdb -unsigned
@@ -382,8 +382,8 @@ SELECT sidemantic_rewrite_sql('SELECT orders.revenue FROM orders');
 cd sidemantic-duckdb
 
 # Fetch the DuckDB source version used by CI.
-# extension-ci-tools is vendored in this directory and pinned to v1.5.3.
-make deps DUCKDB_VERSION=v1.5.3
+# extension-ci-tools is vendored in this directory and pinned to v1.5.5.
+make deps DUCKDB_VERSION=v1.5.5
 
 # Build the extension. CMake builds the sibling sidemantic-rs static library automatically.
 make

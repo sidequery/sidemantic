@@ -663,7 +663,7 @@ def parse_query(text: str, *, dialect: Dialect | None = None) -> Query:
 
 def lex(text: str, *, dialect: Dialect | None = None) -> list[Token]:
     raw = _native_lex(text, dialect)
-    return from_raw_tokens(raw)
+    return from_raw_tokens(raw, source=text)
 
 
 def format_expression(
@@ -713,7 +713,7 @@ def recover_expression(
 ) -> RecoveryResult:
     native = _native_module()
     raw = json.loads(native.recover_expression(text, *(dialect or Dialect()).native_args()))
-    return _from_raw_recovery(raw, query=False)
+    return _from_raw_recovery(raw, query=False, source=text)
 
 
 def recover_query(
@@ -723,7 +723,7 @@ def recover_query(
 ) -> RecoveryResult:
     native = _native_module()
     raw = json.loads(native.recover_query(text, *(dialect or Dialect()).native_args()))
-    return _from_raw_recovery(raw, query=True)
+    return _from_raw_recovery(raw, query=True, source=text)
 
 
 def validate_expression(
@@ -875,10 +875,11 @@ def from_raw_query(raw: Any) -> Query:
     return Query(define=defines, evaluates=evaluates)
 
 
-def from_raw_tokens(raw: Any) -> list[Token]:
+def from_raw_tokens(raw: Any, *, source: str | None = None) -> list[Token]:
     if not isinstance(raw, Iterable):
         raise ValueError(f"Invalid token list: {raw!r}")
-    return [_from_raw_token(token) for token in raw]
+    byte_to_codepoint = _utf8_byte_to_codepoint_offsets(source) if source is not None else None
+    return [_from_raw_token(token, byte_to_codepoint=byte_to_codepoint) for token in raw]
 
 
 def _native_parse_expression(text: str, dialect: Dialect | None = None) -> Any:
@@ -917,25 +918,49 @@ def _from_raw_validation_issues(raw: Any) -> list[ValidationIssue]:
     ]
 
 
-def _span(raw: Any) -> Span:
+def _utf8_byte_to_codepoint_offsets(source: str) -> dict[int, int]:
+    offsets = {0: 0}
+    byte_offset = 0
+    for codepoint_offset, character in enumerate(source, start=1):
+        byte_offset += len(character.encode("utf-8"))
+        offsets[byte_offset] = codepoint_offset
+    return offsets
+
+
+def _span(raw: Any, *, byte_to_codepoint: dict[int, int] | None = None) -> Span:
     if not isinstance(raw, dict):
         raise ValueError(f"Invalid span payload: {raw!r}")
-    return Span(start=int(raw["start"]), end=int(raw["end"]))
+    start = int(raw["start"])
+    end = int(raw["end"])
+    if byte_to_codepoint is None:
+        return Span(start=start, end=end)
+    try:
+        return Span(start=byte_to_codepoint[start], end=byte_to_codepoint[end])
+    except KeyError as exc:
+        raise ValueError(f"Span offset is not a UTF-8 character boundary: {exc.args[0]}") from exc
 
 
 def _from_raw_lossless(raw: Any, *, query: bool) -> LosslessParse:
     if not isinstance(raw, dict):
         raise ValueError(f"Invalid lossless parse payload: {raw!r}")
     ast = from_raw_query(raw["ast"]) if query else from_raw_expr(raw["ast"])
+    source = raw["source"]
+    byte_to_codepoint = _utf8_byte_to_codepoint_offsets(source)
     return LosslessParse(
         ast=ast,
-        source=raw["source"],
-        span=_span(raw["span"]),
-        nodes=[AstNodeSpan(kind=AstNodeKind(node["kind"]), span=_span(node["span"])) for node in raw.get("nodes", [])],
+        source=source,
+        span=_span(raw["span"], byte_to_codepoint=byte_to_codepoint),
+        nodes=[
+            AstNodeSpan(
+                kind=AstNodeKind(node["kind"]),
+                span=_span(node["span"], byte_to_codepoint=byte_to_codepoint),
+            )
+            for node in raw.get("nodes", [])
+        ],
         comments=[
             SourceComment(
                 kind=CommentKind(comment["kind"]),
-                span=_span(comment["span"]),
+                span=_span(comment["span"], byte_to_codepoint=byte_to_codepoint),
                 text=comment["text"],
                 previous_node=comment.get("previous_node"),
                 next_node=comment.get("next_node"),
@@ -957,14 +982,15 @@ def _from_raw_recovered_query_item(raw: Any) -> RecoveredQueryItem:
     raise ValueError(f"Unknown recovered query item: {key}")
 
 
-def _from_raw_recovery(raw: Any, *, query: bool) -> RecoveryResult:
+def _from_raw_recovery(raw: Any, *, query: bool, source: str) -> RecoveryResult:
     if not isinstance(raw, dict):
         raise ValueError(f"Invalid recovery payload: {raw!r}")
+    byte_to_codepoint = _utf8_byte_to_codepoint_offsets(source)
     return RecoveryResult(
         items=[
             RecoveredItem(
                 value=(_from_raw_recovered_query_item(item["value"]) if query else from_raw_expr(item["value"])),
-                span=_span(item["span"]),
+                span=_span(item["span"], byte_to_codepoint=byte_to_codepoint),
             )
             for item in raw.get("items", [])
         ],
@@ -972,7 +998,7 @@ def _from_raw_recovery(raw: Any, *, query: bool) -> RecoveryResult:
             RecoveryDiagnostic(
                 phase=RecoveryPhase(diagnostic["phase"]),
                 message=diagnostic["message"],
-                span=_span(diagnostic["span"]),
+                span=_span(diagnostic["span"], byte_to_codepoint=byte_to_codepoint),
             )
             for diagnostic in raw.get("diagnostics", [])
         ],
@@ -1121,16 +1147,17 @@ def _from_raw_order_key(raw: Any) -> OrderKey:
     return OrderKey(expr=from_raw_expr(raw["expr"]), direction=_to_sort_direction(raw["direction"]))
 
 
-def _from_raw_token(raw: Any) -> Token:
+def _from_raw_token(raw: Any, *, byte_to_codepoint: dict[int, int] | None = None) -> Token:
     if not isinstance(raw, dict):
         raise ValueError(f"Invalid token payload: {raw!r}")
-    return Token(kind=_from_raw_token_kind(raw["kind"]), span=_from_raw_span(raw["span"]))
+    return Token(
+        kind=_from_raw_token_kind(raw["kind"]),
+        span=_from_raw_span(raw["span"], byte_to_codepoint=byte_to_codepoint),
+    )
 
 
-def _from_raw_span(raw: Any) -> Span:
-    if not isinstance(raw, dict):
-        raise ValueError(f"Invalid span payload: {raw!r}")
-    return Span(start=int(raw["start"]), end=int(raw["end"]))
+def _from_raw_span(raw: Any, *, byte_to_codepoint: dict[int, int] | None = None) -> Span:
+    return _span(raw, byte_to_codepoint=byte_to_codepoint)
 
 
 def _from_raw_token_kind(raw: Any) -> TokenKind:

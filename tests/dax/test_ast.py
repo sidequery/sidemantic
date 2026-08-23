@@ -516,6 +516,23 @@ def test_lossless_native_spans_and_comments_round_trip():
     assert query.nodes[-1].kind is dax_ast.AstNodeKind.query
 
 
+def test_native_spans_use_python_string_indices_after_unicode():
+    source = "/*é*/SUM(1)"
+    parsed = dax_ast.parse_expression_lossless(source)
+
+    assert source[parsed.span.start : parsed.span.end] == "SUM(1)"
+    assert source[parsed.comments[0].span.start : parsed.comments[0].span.end] == "/*é*/"
+    assert {source[node.span.start : node.span.end] for node in parsed.nodes} == {"1", "SUM(1)"}
+
+    assert [source[token.span.start : token.span.end] for token in dax_ast.lex(source)] == [
+        "SUM",
+        "(",
+        "1",
+        ")",
+        "",
+    ]
+
+
 def test_recovery_native_returns_typed_items_and_diagnostics():
     expression = dax_ast.recover_expression("SUM(1 +, 2) #, 3")
     assert not expression.is_clean
@@ -529,6 +546,18 @@ def test_recovery_native_returns_typed_items_and_diagnostics():
     query = dax_ast.recover_query("DEFINE MEASURE [Bad] = 1 + ; MEASURE [Good] = 2; EVALUATE {1, }; EVALUATE {2}")
     assert any(isinstance(item.value, dax_ast.MeasureDef) and item.value.name == "Good" for item in query.items)
     assert any(isinstance(item.value, dax_ast.EvaluateStmt) for item in query.items)
+
+
+def test_recovery_spans_use_python_string_indices_after_unicode():
+    source = "/*é*/SUM(1 +, 2) #, 3"
+    recovered = dax_ast.recover_expression(source)
+
+    assert [source[item.span.start : item.span.end] for item in recovered.items] == ["2", "3"]
+    assert {source[diagnostic.span.start : diagnostic.span.end] for diagnostic in recovered.diagnostics} == {
+        ",",
+        ")",
+        "#",
+    }
 
 
 def test_model_validation_native_uses_typed_metadata_and_issues():

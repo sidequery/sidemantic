@@ -1478,17 +1478,19 @@ class SQLGenerator:
 
         return filters
 
-    def _extract_models_from_sql(self, sql_expr: str) -> set[str]:
-        """Extract referenced model names from qualified column references."""
-        models: set[str] = set()
+    def _extract_models_from_sql(self, sql_expr: str) -> list[str]:
+        """Extract referenced model names in first-reference order."""
+        models: list[str] = []
+        seen: set[str] = set()
         try:
             parsed = _parse_fragment(sql_expr, self.dialect)
             for column in parsed.find_all(exp.Column):
                 if not column.table:
                     continue
                 model_name = column.table.replace("_cte", "")
-                if model_name in self.graph.models:
-                    models.add(model_name)
+                if model_name in self.graph.models and model_name not in seen:
+                    models.append(model_name)
+                    seen.add(model_name)
         except SqlglotError:
             pass
         return models

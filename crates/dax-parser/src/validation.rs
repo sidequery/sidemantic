@@ -37,19 +37,11 @@ pub struct ValidationIssue {
     pub path: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ValidationOptions {
     /// Report calls absent from the bundled function-name catalog and query-scoped UDFs.
     /// This is a compatibility diagnostic, not proof that a future engine rejects the name.
     pub report_unrecognized_functions: bool,
-}
-
-impl Default for ValidationOptions {
-    fn default() -> Self {
-        Self {
-            report_unrecognized_functions: false,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -438,13 +430,15 @@ fn signature_argument(
     if signature.name == "LOOKUPVALUE" {
         return match index {
             0 => Some(ArgumentCategory::Column),
-            last if arg_count % 2 == 0 && last + 1 == arg_count => Some(ArgumentCategory::Scalar),
+            last if arg_count.is_multiple_of(2) && last + 1 == arg_count => {
+                Some(ArgumentCategory::Scalar)
+            }
             position if position % 2 == 1 => Some(ArgumentCategory::Column),
             _ => Some(ArgumentCategory::Scalar),
         };
     }
     if signature.name == "TOPN" && index >= 2 {
-        return Some(if index % 2 == 0 {
+        return Some(if index.is_multiple_of(2) {
             ArgumentCategory::OrderBy
         } else {
             ArgumentCategory::Enum
@@ -689,7 +683,7 @@ fn validate_call_arity(
     let invalid_repeat = signature.repeat.is_some_and(|repeat| {
         let start = usize::from(repeat.start);
         let width = usize::from(repeat.width);
-        width > 0 && args.len() > start && (args.len() - start) % width != 0
+        width > 0 && args.len() > start && !(args.len() - start).is_multiple_of(width)
     });
     if too_few || too_many || invalid_repeat {
         let expected = match (signature.min_args, signature.max_args) {

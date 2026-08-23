@@ -4509,7 +4509,7 @@ mod tests {
         }
         !signature.repeat.is_some_and(|pattern| {
             let start = usize::from(pattern.start);
-            count > start && (count - start) % usize::from(pattern.width) != 0
+            count > start && !(count - start).is_multiple_of(usize::from(pattern.width))
         })
     }
 

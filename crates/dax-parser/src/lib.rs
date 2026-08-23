@@ -6,7 +6,7 @@
 //! - Supports numeric literals starting with `.` (e.g. `.20`)
 //! - Adds `@param` tokens/AST (needed for START AT params)
 //! - Enforces START AT rules: requires ORDER BY, args must be constant or @param, count <= order keys
-//! - Adds DEFINE FUNCTION (UDF) parsing: `FUNCTION f = (a : type ...) => body` + `///` doc comments
+//! - Adds DEFINE FUNCTION (UDF) parsing, including parameter defaults and `///` doc comments
 //! - Accepts optional semicolon statement terminators (between DEFINE entities / EVALUATE statements)
 //!
 //! Drop into `src/lib.rs` (or any module) and `cargo test`.
@@ -14,6 +14,17 @@
 
 use serde::Serialize;
 use std::fmt;
+
+mod formatter;
+mod function_catalog;
+mod model_validation;
+mod recovery;
+mod validation;
+pub use formatter::*;
+pub use function_catalog::*;
+pub use model_validation::*;
+pub use recovery::*;
+pub use validation::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct Span {
@@ -24,6 +35,60 @@ impl Span {
     pub fn new(start: usize, end: usize) -> Self {
         Self { start, end }
     }
+}
+
+/// The kind of AST construct identified by an entry in [`LosslessParse::nodes`].
+///
+/// Entries are emitted in parser construction order (children before parents where
+/// applicable). Together with their byte spans this is an intentionally lightweight,
+/// non-breaking alternative to storing source locations on every existing AST variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum AstNodeKind {
+    Expression,
+    Definition,
+    DefineBlock,
+    Evaluate,
+    Query,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct AstNodeSpan {
+    pub kind: AstNodeKind,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum CommentKind {
+    DashLine,
+    SlashLine,
+    Block,
+    DocLine,
+}
+
+/// A source comment retained by the lossless parsing APIs.
+///
+/// `previous_node` and `next_node` index [`LosslessParse::nodes`] and provide stable
+/// neighbouring anchors without forcing a formatter to adopt one attachment policy.
+/// The exact spelling and whitespace remain recoverable from `source[span]`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SourceComment {
+    pub kind: CommentKind,
+    pub span: Span,
+    pub text: String,
+    pub previous_node: Option<usize>,
+    pub next_node: Option<usize>,
+    pub containing_node: Option<usize>,
+}
+
+/// Parsed AST plus source locations and comments, while leaving the established AST and
+/// parsing entrypoints source-compatible.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct LosslessParse<T> {
+    pub ast: T,
+    pub source: String,
+    pub span: Span,
+    pub nodes: Vec<AstNodeSpan>,
+    pub comments: Vec<SourceComment>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -114,6 +179,7 @@ pub enum TokenKind {
     Param(String),        // @paramName (START AT)
     Number(String),       // raw numeric literal text
     String(String),       // decoded double-quoted literal
+    DateTime(String),     // decoded `dt"YYYY-MM-DDThh:mm:ss"` literal
     QuotedIdent(String),  // decoded single-quoted identifier (e.g. 'Sales')
     BracketIdent(String), // decoded bracket identifier (e.g. [Total Sales])
 
@@ -327,6 +393,31 @@ impl<'a> Lexer<'a> {
                     continue;
                 }
                 _ => {}
+            }
+
+            // ISO 8601 datetime literal: dt"YYYY-MM-DDThh:mm:ss". DAX is
+            // case-insensitive, so accept any casing of the `dt` prefix.
+            if matches!(self.peek_byte(), Some(b'd' | b'D'))
+                && matches!(self.peek_byte_n(1), Some(b't' | b'T'))
+                && self.peek_byte_n(2) == Some(b'"')
+            {
+                self.bump_char(); // d
+                self.bump_char(); // t
+                let (value, end) = self.lex_string_literal().map_err(|err| LexError {
+                    message: "unterminated datetime literal".into(),
+                    span: Span::new(start, err.span.end),
+                })?;
+                if !is_valid_datetime_literal(&value) {
+                    return Err(LexError {
+                        message: "invalid datetime literal; expected dt\"YYYY-M-D\", dt\"YYYY-M-DThh:mm:ss\", or dt\"YYYY-M-D hh:mm:ss\""
+                            .into(),
+                        span: Span::new(start, end),
+                    });
+                }
+                return Ok(Token {
+                    kind: TokenKind::DateTime(value),
+                    span: Span::new(start, end),
+                });
             }
 
             // punctuation/operators (prefer 2-char where relevant)
@@ -735,6 +826,73 @@ fn is_ident_continue(ch: char) -> bool {
     ch.is_alphanumeric() || ch == '_' || ch == '.'
 }
 
+fn parse_fixed_digits(value: &str, width: usize) -> Option<u32> {
+    if value.len() != width || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    value.parse().ok()
+}
+
+fn parse_one_or_two_digits(value: &str) -> Option<u32> {
+    if !(1..=2).contains(&value.len()) || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    value.parse().ok()
+}
+
+fn is_valid_datetime_literal(value: &str) -> bool {
+    let (date, time) = if let Some((date, time)) = value.split_once('T') {
+        (date, Some(time))
+    } else if let Some((date, time)) = value.split_once(' ') {
+        (date, Some(time))
+    } else {
+        (value, None)
+    };
+
+    let mut date_parts = date.split('-');
+    let (Some(year), Some(month), Some(day), None) = (
+        date_parts.next(),
+        date_parts.next(),
+        date_parts.next(),
+        date_parts.next(),
+    ) else {
+        return false;
+    };
+    let Some(_year) = parse_fixed_digits(year, 4) else {
+        return false;
+    };
+    let Some(month) = parse_one_or_two_digits(month) else {
+        return false;
+    };
+    let Some(day) = parse_one_or_two_digits(day) else {
+        return false;
+    };
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return false;
+    }
+
+    let Some(time) = time else {
+        return true;
+    };
+    let mut time_parts = time.split(':');
+    let (Some(hour), Some(minute), Some(second), None) = (
+        time_parts.next(),
+        time_parts.next(),
+        time_parts.next(),
+        time_parts.next(),
+    ) else {
+        return false;
+    };
+    let (Some(hour), Some(minute), Some(second)) = (
+        parse_fixed_digits(hour, 2),
+        parse_fixed_digits(minute, 2),
+        parse_fixed_digits(second, 2),
+    ) else {
+        return false;
+    };
+    hour <= 23 && minute <= 59 && second <= 59
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TableName {
     pub name: String,
@@ -829,8 +987,10 @@ impl BinaryOp {
 pub enum Expr {
     Number(String),
     String(String),
+    DateTime(String),
     Boolean(bool),
     Blank,
+    Omitted,
 
     Parameter(String), // @param (START AT)
 
@@ -850,6 +1010,11 @@ pub enum Expr {
     FunctionCall {
         name: String,
         args: Vec<Expr>,
+    },
+
+    DataTable {
+        columns: Vec<DataTableColumn>,
+        rows: Vec<Vec<Expr>>,
     },
 
     Unary {
@@ -872,6 +1037,23 @@ pub enum Expr {
     TableConstructor(Vec<Vec<Expr>>),
 
     Paren(Box<Expr>),
+    Tuple(Vec<Expr>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub enum DataTableType {
+    Boolean,
+    Currency,
+    DateTime,
+    Double,
+    Integer,
+    String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DataTableColumn {
+    pub name: String,
+    pub data_type: DataTableType,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -879,6 +1061,32 @@ pub struct FuncParam {
     pub name: String,
     /// Raw type-hint tokens after `:` (0..N identifiers), e.g. `NUMERIC`, or `Scalar Numeric expr`.
     pub type_hints: Vec<String>,
+    /// Optional default expression after `=`.
+    pub default: Option<Expr>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct VisualShapeColumn {
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct VisualShapeGroup {
+    pub columns: Vec<VisualShapeColumn>,
+    pub total: VisualShapeColumn,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct VisualShapeAxis {
+    pub name: String,
+    pub groups: Vec<VisualShapeGroup>,
+    pub order_by: Vec<VisualShapeColumn>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct VisualShape {
+    pub axes: Vec<VisualShapeAxis>,
+    pub densify: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -909,6 +1117,7 @@ pub enum Definition {
         doc: Option<String>,
         name: String,
         expr: Expr,
+        visual_shape: Option<VisualShape>,
     },
     Column {
         doc: Option<String>,
@@ -958,6 +1167,7 @@ pub struct Parser {
     i: usize,
     dialect: Dialect,
     depth: usize,
+    node_spans: Vec<AstNodeSpan>,
 }
 impl Parser {
     pub fn new(tokens: Vec<Token>, dialect: Dialect) -> Self {
@@ -966,7 +1176,27 @@ impl Parser {
             i: 0,
             dialect,
             depth: 0,
+            node_spans: Vec::new(),
         }
+    }
+
+    fn consumed_end(&self, fallback: usize) -> usize {
+        self.i
+            .checked_sub(1)
+            .and_then(|i| self.tokens.get(i))
+            .map_or(fallback, |token| token.span.end)
+    }
+
+    fn record_node(&mut self, kind: AstNodeKind, start: usize) {
+        self.node_spans.push(AstNodeSpan {
+            kind,
+            span: Span::new(start, self.consumed_end(start)),
+        });
+    }
+
+    fn record_expr(&mut self, start: usize, expr: Expr) -> Expr {
+        self.record_node(AstNodeKind::Expression, start);
+        expr
     }
 
     fn peek(&self) -> &Token {
@@ -1139,6 +1369,7 @@ impl Parser {
 
     pub fn parse_query(&mut self) -> Result<Query, ParseError> {
         self.skip_doc_comments();
+        let start = self.peek().span.start;
 
         let define = if self.peek_kw("define") {
             Some(self.parse_define_block()?)
@@ -1167,12 +1398,15 @@ impl Parser {
         self.consume_stmt_terminators();
         self.skip_doc_comments();
         self.expect_eof()?;
-        Ok(Query { define, evaluates })
+        let query = Query { define, evaluates };
+        self.record_node(AstNodeKind::Query, start);
+        Ok(query)
     }
 
     // ---- query parsing ----
 
     fn parse_define_block(&mut self) -> Result<DefineBlock, ParseError> {
+        let start = self.peek().span.start;
         self.expect_kw("define")?;
         let mut defs = Vec::new();
 
@@ -1217,10 +1451,13 @@ impl Parser {
             });
         }
 
-        Ok(DefineBlock { defs })
+        let block = DefineBlock { defs };
+        self.record_node(AstNodeKind::DefineBlock, start);
+        Ok(block)
     }
 
     fn parse_define_measure(&mut self, doc: Option<String>) -> Result<Definition, ParseError> {
+        let start = self.peek().span.start;
         self.expect_kw("measure")?;
 
         // Typically: MEASURE 'Table'[Measure] = <expr>
@@ -1245,15 +1482,18 @@ impl Parser {
         self.consume_stmt_terminators();
         self.ensure_stmt_follower(&["measure", "function", "var", "table", "column", "evaluate"])?;
 
-        Ok(Definition::Measure {
+        let definition = Definition::Measure {
             doc,
             table,
             name,
             expr,
-        })
+        };
+        self.record_node(AstNodeKind::Definition, start);
+        Ok(definition)
     }
 
     fn parse_define_var(&mut self, doc: Option<String>) -> Result<Definition, ParseError> {
+        let start = self.peek().span.start;
         self.expect_kw("var")?;
         let name = self.expect_ident("variable name")?;
         self.expect(TokenKind::Eq, "`=`")?;
@@ -1262,10 +1502,13 @@ impl Parser {
         self.consume_stmt_terminators();
         self.ensure_stmt_follower(&["measure", "function", "var", "table", "column", "evaluate"])?;
 
-        Ok(Definition::Var { doc, name, expr })
+        let definition = Definition::Var { doc, name, expr };
+        self.record_node(AstNodeKind::Definition, start);
+        Ok(definition)
     }
 
     fn parse_define_table(&mut self, doc: Option<String>) -> Result<Definition, ParseError> {
+        let start = self.peek().span.start;
         self.expect_kw("table")?;
         // Spec uses `<table name>` — allow identifier or single-quoted identifier.
         let name = match self.peek().kind.clone() {
@@ -1287,14 +1530,100 @@ impl Parser {
 
         self.expect(TokenKind::Eq, "`=`")?;
         let expr = self.parse_expr_bp(0)?;
+        let visual_shape = if self.peek_kw("with") {
+            Some(self.parse_visual_shape()?)
+        } else {
+            None
+        };
 
         self.consume_stmt_terminators();
         self.ensure_stmt_follower(&["measure", "function", "var", "table", "column", "evaluate"])?;
 
-        Ok(Definition::Table { doc, name, expr })
+        let definition = Definition::Table {
+            doc,
+            name,
+            expr,
+            visual_shape,
+        };
+        self.record_node(AstNodeKind::Definition, start);
+        Ok(definition)
+    }
+
+    fn parse_visual_shape_column(&mut self) -> Result<VisualShapeColumn, ParseError> {
+        Ok(VisualShapeColumn {
+            name: self.expect_bracket_ident("visual shape column like [Year]")?,
+        })
+    }
+
+    fn parse_visual_shape(&mut self) -> Result<VisualShape, ParseError> {
+        self.expect_kw("with")?;
+        self.expect_kw("visual")?;
+        self.expect_kw("shape")?;
+
+        if !self.peek_kw("axis") {
+            return Err(ParseError {
+                message: "WITH VISUAL SHAPE requires at least one AXIS".into(),
+                span: self.peek().span,
+            });
+        }
+
+        let mut axes = Vec::new();
+        while self.eat_kw("axis") {
+            let name = self.expect_ident("visual shape axis name")?;
+            if !self.peek_kw("group") {
+                return Err(ParseError {
+                    message: "visual shape AXIS requires at least one GROUP".into(),
+                    span: self.peek().span,
+                });
+            }
+
+            let mut groups = Vec::new();
+            while self.eat_kw("group") {
+                let mut columns = vec![self.parse_visual_shape_column()?];
+                while self.eat(TokenKind::Comma).is_some() {
+                    columns.push(self.parse_visual_shape_column()?);
+                }
+                self.expect_kw("total")?;
+                let total = self.parse_visual_shape_column()?;
+                groups.push(VisualShapeGroup { columns, total });
+            }
+
+            self.expect_kw("order")?;
+            self.expect_kw("by")?;
+            let mut order_by = vec![self.parse_visual_shape_column()?];
+            while self.eat(TokenKind::Comma).is_some() {
+                order_by.push(self.parse_visual_shape_column()?);
+            }
+
+            axes.push(VisualShapeAxis {
+                name,
+                groups,
+                order_by,
+            });
+        }
+
+        let densify = if self.eat_kw("densify") {
+            match self.peek().kind.clone() {
+                TokenKind::String(value) => {
+                    self.bump();
+                    Some(value)
+                }
+                _ => {
+                    return Err(ParseError {
+                        message: "expected string literal after DENSIFY".into(),
+                        span: self.peek().span,
+                    })
+                }
+            }
+        } else {
+            None
+        };
+
+        Ok(VisualShape { axes, densify })
     }
 
     fn parse_define_column(&mut self, doc: Option<String>) -> Result<Definition, ParseError> {
+        let start = self.peek().span.start;
         self.expect_kw("column")?;
 
         // Common: COLUMN 'Table'[Column] = <expr>
@@ -1315,16 +1644,19 @@ impl Parser {
         self.consume_stmt_terminators();
         self.ensure_stmt_follower(&["measure", "function", "var", "table", "column", "evaluate"])?;
 
-        Ok(Definition::Column {
+        let definition = Definition::Column {
             doc,
             table,
             name,
             expr,
-        })
+        };
+        self.record_node(AstNodeKind::Definition, start);
+        Ok(definition)
     }
 
     fn parse_define_function(&mut self, doc: Option<String>) -> Result<Definition, ParseError> {
-        // FUNCTION <function name> = ([parameter name]: [parameter type], ...) => <function body>
+        let start = self.peek().span.start;
+        // FUNCTION <name> = (<parameter>: <type> [= <default>], ...) => <body>
         self.expect_kw("function")?;
         let name = self.expect_ident("function name")?;
 
@@ -1353,9 +1685,16 @@ impl Parser {
                     }
                 }
 
+                let default = if self.eat(TokenKind::Eq).is_some() {
+                    Some(self.parse_expr_bp(0)?)
+                } else {
+                    None
+                };
+
                 params.push(FuncParam {
                     name: pname,
                     type_hints,
+                    default,
                 });
 
                 if self.eat_separator() {
@@ -1380,15 +1719,18 @@ impl Parser {
         self.consume_stmt_terminators();
         self.ensure_stmt_follower(&["measure", "function", "var", "table", "column", "evaluate"])?;
 
-        Ok(Definition::Function {
+        let definition = Definition::Function {
             doc,
             name,
             params,
             body,
-        })
+        };
+        self.record_node(AstNodeKind::Definition, start);
+        Ok(definition)
     }
 
     fn parse_evaluate_stmt(&mut self) -> Result<EvaluateStmt, ParseError> {
+        let start = self.peek().span.start;
         self.expect_kw("evaluate")?;
 
         let expr = self.parse_expr_bp(0)?;
@@ -1423,11 +1765,13 @@ impl Parser {
         self.consume_stmt_terminators();
         self.ensure_stmt_follower(&["evaluate"])?;
 
-        Ok(EvaluateStmt {
+        let evaluate = EvaluateStmt {
             expr,
             order_by,
             start_at,
-        })
+        };
+        self.record_node(AstNodeKind::Evaluate, start);
+        Ok(evaluate)
     }
 
     fn parse_order_by_clause(&mut self) -> Result<Vec<OrderKey>, ParseError> {
@@ -1465,7 +1809,15 @@ impl Parser {
 
         let mut values = Vec::new();
         loop {
-            values.push(self.parse_expr_bp(0)?);
+            let span = self.peek().span;
+            let value = self.parse_expr_bp(0)?;
+            if !Self::is_start_at_value(&value) {
+                return Err(ParseError {
+                    message: "START AT value must be a literal constant or @parameter".into(),
+                    span,
+                });
+            }
+            values.push(value);
             if self.eat_separator() {
                 continue;
             }
@@ -1473,6 +1825,23 @@ impl Parser {
         }
 
         Ok(values)
+    }
+
+    fn is_start_at_value(expr: &Expr) -> bool {
+        match expr {
+            Expr::Number(_)
+            | Expr::String(_)
+            | Expr::DateTime(_)
+            | Expr::Boolean(_)
+            | Expr::Parameter(_) => true,
+            Expr::Unary {
+                op: UnaryOp::Plus | UnaryOp::Minus,
+                expr,
+            } => matches!(expr.as_ref(), Expr::Number(_)),
+            // BLANK is produced by the BLANK() function in documented DAX syntax,
+            // making it an expression rather than a START AT literal constant.
+            _ => false,
+        }
     }
 
     fn ensure_stmt_follower(&self, allowed_keywords: &[&str]) -> Result<(), ParseError> {
@@ -1523,6 +1892,7 @@ impl Parser {
     }
 
     fn parse_expr_bp_impl(&mut self, min_bp: u8) -> Result<Expr, ParseError> {
+        let start = self.peek().span.start;
         let mut lhs = self.parse_prefix()?;
 
         while let Some((op, lbp, rbp)) = self.peek_infix_op() {
@@ -1542,11 +1912,12 @@ impl Parser {
             }
 
             let rhs = self.parse_expr_bp(rbp)?;
-            lhs = Expr::Binary {
+            let binary = Expr::Binary {
                 op,
                 left: Box::new(lhs),
                 right: Box::new(rhs),
             };
+            lhs = self.record_expr(start, binary);
         }
 
         Ok(lhs)
@@ -1562,30 +1933,33 @@ impl Parser {
         //
         // IMPORTANT: precedence per MS docs: exponentiation (^) happens before unary sign.
         // So unary sign must bind *less tightly* than '^' but tighter than '* /'.
-        if self.eat(TokenKind::Plus).is_some() {
+        if let Some(token) = self.eat(TokenKind::Plus) {
             let expr = self.parse_expr_bp(8)?;
-            return Ok(Expr::Unary {
+            let unary = Expr::Unary {
                 op: UnaryOp::Plus,
                 expr: Box::new(expr),
-            });
+            };
+            return Ok(self.record_expr(token.span.start, unary));
         }
-        if self.eat(TokenKind::Minus).is_some() {
+        if let Some(token) = self.eat(TokenKind::Minus) {
             let expr = self.parse_expr_bp(8)?;
-            return Ok(Expr::Unary {
+            let unary = Expr::Unary {
                 op: UnaryOp::Minus,
                 expr: Box::new(expr),
-            });
+            };
+            return Ok(self.record_expr(token.span.start, unary));
         }
 
         // IMPORTANT: precedence per MS docs: comparisons bind tighter than NOT, but NOT binds
         // tighter than && / ||.
         if self.peek_kw("not") {
-            self.bump();
+            let token = self.bump();
             let expr = self.parse_expr_bp(3)?;
-            return Ok(Expr::Unary {
+            let unary = Expr::Unary {
                 op: UnaryOp::Not,
                 expr: Box::new(expr),
-            });
+            };
+            return Ok(self.record_expr(token.span.start, unary));
         }
 
         self.parse_primary()
@@ -1623,11 +1997,13 @@ impl Parser {
 
     fn parse_hierarchy_tail(
         &mut self,
+        start: usize,
         table: TableName,
         column: String,
     ) -> Result<Expr, ParseError> {
         if !self.peek_is(TokenKind::Dot) {
-            return Ok(Expr::TableColumnRef { table, column });
+            let expr = Expr::TableColumnRef { table, column };
+            return Ok(self.record_expr(start, expr));
         }
 
         let mut levels = Vec::new();
@@ -1636,30 +2012,36 @@ impl Parser {
             levels.push(level);
         }
 
-        Ok(Expr::HierarchyRef {
+        let expr = Expr::HierarchyRef {
             table,
             column,
             levels,
-        })
+        };
+        Ok(self.record_expr(start, expr))
     }
 
     fn parse_primary(&mut self) -> Result<Expr, ParseError> {
+        let start = self.peek().span.start;
         match self.peek().kind.clone() {
             TokenKind::Number(n) => {
                 self.bump();
-                Ok(Expr::Number(n))
+                Ok(self.record_expr(start, Expr::Number(n)))
             }
             TokenKind::String(s) => {
                 self.bump();
-                Ok(Expr::String(s))
+                Ok(self.record_expr(start, Expr::String(s)))
+            }
+            TokenKind::DateTime(value) => {
+                self.bump();
+                Ok(self.record_expr(start, Expr::DateTime(value)))
             }
             TokenKind::Param(p) => {
                 self.bump();
-                Ok(Expr::Parameter(p))
+                Ok(self.record_expr(start, Expr::Parameter(p)))
             }
             TokenKind::BracketIdent(name) => {
                 self.bump();
-                Ok(Expr::BracketRef(name))
+                Ok(self.record_expr(start, Expr::BracketRef(name)))
             }
             TokenKind::QuotedIdent(name) => {
                 self.bump();
@@ -1668,9 +2050,9 @@ impl Parser {
                 // 'Table'[Column]
                 if let TokenKind::BracketIdent(col) = self.peek().kind.clone() {
                     self.bump();
-                    self.parse_hierarchy_tail(table, col)
+                    self.parse_hierarchy_tail(start, table, col)
                 } else {
-                    Ok(Expr::TableRef(table))
+                    Ok(self.record_expr(start, Expr::TableRef(table)))
                 }
             }
             TokenKind::Ident(id) => {
@@ -1682,35 +2064,64 @@ impl Parser {
 
                 if self.peek_is(TokenKind::LParen) {
                     self.bump(); // (
+                    if id.eq_ignore_ascii_case("datatable") {
+                        return self.parse_datatable(start);
+                    }
                     let args = self.parse_arg_list()?;
-                    return Ok(Expr::FunctionCall { name: id, args });
+                    let expr = Expr::FunctionCall { name: id, args };
+                    return Ok(self.record_expr(start, expr));
                 }
 
                 let table = TableName::unquoted(id.clone());
                 if let TokenKind::BracketIdent(col) = self.peek().kind.clone() {
                     self.bump();
-                    return self.parse_hierarchy_tail(table, col);
+                    return self.parse_hierarchy_tail(start, table, col);
                 }
 
                 // contextual literals (after call/column checks so TRUE() / BLANK() parse)
                 if id.eq_ignore_ascii_case("true") {
-                    return Ok(Expr::Boolean(true));
+                    return Ok(self.record_expr(start, Expr::Boolean(true)));
                 }
                 if id.eq_ignore_ascii_case("false") {
-                    return Ok(Expr::Boolean(false));
+                    return Ok(self.record_expr(start, Expr::Boolean(false)));
                 }
                 // DAX's "blank" is usually BLANK(), but some tooling treats BLANK as a literal-ish value.
                 if id.eq_ignore_ascii_case("blank") {
-                    return Ok(Expr::Blank);
+                    return Ok(self.record_expr(start, Expr::Blank));
                 }
 
-                Ok(Expr::Identifier(id))
+                Ok(self.record_expr(start, Expr::Identifier(id)))
             }
             TokenKind::LParen => {
                 self.bump();
-                let inner = self.parse_expr_bp(0)?;
+                let first = self.parse_expr_bp(0)?;
+                if self.eat_separator() {
+                    let mut elements = vec![first];
+                    if self.peek_is(TokenKind::RParen) {
+                        return Err(ParseError {
+                            message: "trailing separator in tuple expression".into(),
+                            span: self.peek().span,
+                        });
+                    }
+                    loop {
+                        elements.push(self.parse_expr_bp(0)?);
+                        if !self.eat_separator() {
+                            break;
+                        }
+                        if self.peek_is(TokenKind::RParen) {
+                            return Err(ParseError {
+                                message: "trailing separator in tuple expression".into(),
+                                span: self.peek().span,
+                            });
+                        }
+                    }
+                    self.expect(TokenKind::RParen, "`)`")?;
+                    let expr = Expr::Tuple(elements);
+                    return Ok(self.record_expr(start, expr));
+                }
                 self.expect(TokenKind::RParen, "`)`")?;
-                Ok(Expr::Paren(Box::new(inner)))
+                let expr = Expr::Paren(Box::new(first));
+                Ok(self.record_expr(start, expr))
             }
             TokenKind::LBrace => self.parse_table_constructor(),
             TokenKind::DocComment(_) => {
@@ -1738,7 +2149,16 @@ impl Parser {
 
         let mut args = Vec::new();
         loop {
-            let expr = self.parse_expr_bp(0)?;
+            // Empty positional slots are distinct from BLANK() in DAX. They are
+            // valid only within function argument lists (for example INDEX(1, , -1)).
+            let expr = if self.peek_is(TokenKind::Comma)
+                || (self.dialect.allow_semicolon_separators && self.peek_is(TokenKind::Semicolon))
+            {
+                let position = self.peek().span.start;
+                self.record_expr(position, Expr::Omitted)
+            } else {
+                self.parse_expr_bp(0)?
+            };
             args.push(expr);
 
             if self.eat_separator() {
@@ -1759,8 +2179,175 @@ impl Parser {
         Ok(args)
     }
 
+    fn parse_datatable_type(&mut self) -> Result<DataTableType, ParseError> {
+        let span = self.peek().span;
+        let TokenKind::Ident(name) = self.peek().kind.clone() else {
+            return Err(ParseError {
+                message: "expected DATATABLE column type".into(),
+                span,
+            });
+        };
+        self.bump();
+        match name.to_ascii_uppercase().as_str() {
+            "BOOLEAN" | "LOGICAL" => Ok(DataTableType::Boolean),
+            "CURRENCY" | "DECIMAL" => Ok(DataTableType::Currency),
+            "DATETIME" => Ok(DataTableType::DateTime),
+            "DOUBLE" => Ok(DataTableType::Double),
+            "INTEGER" | "INT64" => Ok(DataTableType::Integer),
+            "STRING" | "TEXT" => Ok(DataTableType::String),
+            _ => Err(ParseError {
+                message: format!("unsupported DATATABLE column type `{name}`"),
+                span,
+            }),
+        }
+    }
+
+    fn is_datatable_constant(expr: &Expr) -> bool {
+        match expr {
+            Expr::Number(_)
+            | Expr::String(_)
+            | Expr::DateTime(_)
+            | Expr::Boolean(_)
+            | Expr::Blank
+            | Expr::Omitted => true,
+            Expr::Paren(inner) => Self::is_datatable_constant(inner),
+            Expr::Unary {
+                op: UnaryOp::Plus | UnaryOp::Minus,
+                expr,
+            } => matches!(expr.as_ref(), Expr::Number(_)),
+            Expr::FunctionCall { name, args }
+                if name.eq_ignore_ascii_case("date") || name.eq_ignore_ascii_case("time") =>
+            {
+                args.iter().all(Self::is_datatable_constant)
+            }
+            Expr::FunctionCall { name, args }
+                if name.eq_ignore_ascii_case("blank") && args.is_empty() =>
+            {
+                true
+            }
+            Expr::Binary {
+                op: BinaryOp::Add,
+                left,
+                right,
+            } => {
+                let is_date_or_time = |value: &Expr| {
+                    matches!(value, Expr::FunctionCall { name, .. }
+                        if name.eq_ignore_ascii_case("date") || name.eq_ignore_ascii_case("time"))
+                };
+                is_date_or_time(left)
+                    && is_date_or_time(right)
+                    && Self::is_datatable_constant(left)
+                    && Self::is_datatable_constant(right)
+            }
+            _ => false,
+        }
+    }
+
+    /// Parse DATATABLE's dedicated schema-and-array grammar after `DATATABLE(`.
+    /// This cannot use the generic function/table-constructor grammar because
+    /// its nested `{ { ... }, { ... } }` rows permit missing values as BLANKs.
+    fn parse_datatable(&mut self, start: usize) -> Result<Expr, ParseError> {
+        let mut columns = Vec::new();
+
+        loop {
+            let span = self.peek().span;
+            let TokenKind::String(name) = self.peek().kind.clone() else {
+                return Err(ParseError {
+                    message: "expected DATATABLE column name string".into(),
+                    span,
+                });
+            };
+            self.bump();
+            if !self.eat_separator() {
+                return Err(ParseError {
+                    message: "expected separator after DATATABLE column name".into(),
+                    span: self.peek().span,
+                });
+            }
+            let data_type = self.parse_datatable_type()?;
+            columns.push(DataTableColumn { name, data_type });
+
+            if !self.eat_separator() {
+                return Err(ParseError {
+                    message: "expected separator after DATATABLE column type".into(),
+                    span: self.peek().span,
+                });
+            }
+            if self.peek_is(TokenKind::LBrace) {
+                break;
+            }
+        }
+
+        self.expect(TokenKind::LBrace, "`{`")?;
+        let mut rows = Vec::new();
+        if !self.peek_is(TokenKind::RBrace) {
+            loop {
+                self.expect(TokenKind::LBrace, "DATATABLE row opening `{`")?;
+                let mut row = Vec::new();
+                loop {
+                    let value_span = self.peek().span;
+                    let value = if self.peek_is(TokenKind::Comma)
+                        || (self.dialect.allow_semicolon_separators
+                            && self.peek_is(TokenKind::Semicolon))
+                    {
+                        let position = self.peek().span.start;
+                        self.record_expr(position, Expr::Omitted)
+                    } else {
+                        self.parse_expr_bp(0)?
+                    };
+                    if !Self::is_datatable_constant(&value) {
+                        return Err(ParseError {
+                            message: "DATATABLE values must be constant expressions".into(),
+                            span: value_span,
+                        });
+                    }
+                    row.push(value);
+                    if self.eat_separator() {
+                        if self.peek_is(TokenKind::RBrace) {
+                            // DATATABLE treats a missing value as BLANK(), including
+                            // the final field in a fixed-width row.
+                            let position = self.peek().span.start;
+                            let omitted = self.record_expr(position, Expr::Omitted);
+                            row.push(omitted);
+                            break;
+                        }
+                        continue;
+                    }
+                    break;
+                }
+                self.expect(TokenKind::RBrace, "DATATABLE row closing `}`")?;
+                if row.len() != columns.len() {
+                    return Err(ParseError {
+                        message: format!(
+                            "DATATABLE row has {} values but schema defines {} columns",
+                            row.len(),
+                            columns.len()
+                        ),
+                        span: self.peek().span,
+                    });
+                }
+                rows.push(row);
+                if self.eat_separator() {
+                    if self.peek_is(TokenKind::RBrace) {
+                        return Err(ParseError {
+                            message: "trailing separator in DATATABLE row list".into(),
+                            span: self.peek().span,
+                        });
+                    }
+                    continue;
+                }
+                break;
+            }
+        }
+        self.expect(TokenKind::RBrace, "DATATABLE values closing `}`")?;
+        self.expect(TokenKind::RParen, "`)`")?;
+        let expr = Expr::DataTable { columns, rows };
+        Ok(self.record_expr(start, expr))
+    }
+
     fn parse_var_block(&mut self) -> Result<Expr, ParseError> {
         // VAR <name> = <expr> [VAR ...] RETURN <expr>
+        let start = self.peek().span.start;
         let mut decls = Vec::new();
 
         if !self.peek_kw("var") {
@@ -1780,20 +2367,24 @@ impl Parser {
         self.expect_kw("return")?;
         let body = self.parse_expr_bp(0)?;
 
-        Ok(Expr::VarBlock {
+        let expr = Expr::VarBlock {
             decls,
             body: Box::new(body),
-        })
+        };
+        Ok(self.record_expr(start, expr))
     }
 
     fn parse_table_constructor(&mut self) -> Result<Expr, ParseError> {
         // { row (, row)* }
         // row := scalar_expr | '(' expr (, expr)* ')'
+        let start = self.peek().span.start;
         self.expect(TokenKind::LBrace, "`{`")?;
 
         if self.peek_is(TokenKind::RBrace) {
-            self.bump();
-            return Ok(Expr::TableConstructor(Vec::new()));
+            return Err(ParseError {
+                message: "table constructor must contain at least one row".into(),
+                span: self.peek().span,
+            });
         }
 
         let mut rows: Vec<Vec<Expr>> = Vec::new();
@@ -1829,6 +2420,17 @@ impl Parser {
                 vec![self.parse_expr_bp(0)?]
             };
 
+            if let Some(expected) = rows.first().map(Vec::len) {
+                if row.len() != expected {
+                    return Err(ParseError {
+                        message: format!(
+                            "table constructor row has {} values; expected {expected}",
+                            row.len()
+                        ),
+                        span: self.peek().span,
+                    });
+                }
+            }
             rows.push(row);
 
             if self.eat_separator() {
@@ -1845,7 +2447,8 @@ impl Parser {
         }
 
         self.expect(TokenKind::RBrace, "`}`")?;
-        Ok(Expr::TableConstructor(rows))
+        let expr = Expr::TableConstructor(rows);
+        Ok(self.record_expr(start, expr))
     }
 }
 
@@ -1881,6 +2484,165 @@ pub fn parse_query_with_dialect(input: &str, dialect: Dialect) -> Result<Query, 
         .map_err(DaxError::Lex)?;
     let mut p = Parser::new(tokens, dialect);
     p.parse_query().map_err(DaxError::Parse)
+}
+
+fn scan_source_comments(input: &str, dialect: Dialect) -> Vec<SourceComment> {
+    let bytes = input.as_bytes();
+    let mut comments = Vec::new();
+    let mut i = 0;
+
+    while i < bytes.len() {
+        // DAX escapes quote delimiters by doubling them. Skip quoted regions so comment
+        // starters embedded in strings, table names, or bracket identifiers stay data.
+        let (delimiter, doubled) = match bytes[i] {
+            b'"' => (Some(b'"'), true),
+            b'\'' => (Some(b'\''), true),
+            b'[' => (Some(b']'), true),
+            _ => (None, false),
+        };
+        if let Some(delimiter) = delimiter {
+            i += 1;
+            while i < bytes.len() {
+                if bytes[i] == delimiter {
+                    if doubled && bytes.get(i + 1) == Some(&delimiter) {
+                        i += 2;
+                    } else {
+                        i += 1;
+                        break;
+                    }
+                } else {
+                    i += 1;
+                }
+            }
+            continue;
+        }
+
+        let comment = if dialect.allow_dash_dash_comments && bytes[i..].starts_with(b"--") {
+            Some((CommentKind::DashLine, false, 2))
+        } else if dialect.allow_double_slash_comments && bytes[i..].starts_with(b"///") {
+            Some((CommentKind::DocLine, false, 3))
+        } else if dialect.allow_double_slash_comments && bytes[i..].starts_with(b"//") {
+            Some((CommentKind::SlashLine, false, 2))
+        } else if dialect.allow_block_comments && bytes[i..].starts_with(b"/*") {
+            Some((CommentKind::Block, true, 2))
+        } else {
+            None
+        };
+
+        let Some((kind, block, prefix_len)) = comment else {
+            i += 1;
+            continue;
+        };
+        let start = i;
+        i += prefix_len;
+        if block {
+            while i < bytes.len() && !bytes[i..].starts_with(b"*/") {
+                i += 1;
+            }
+            i = (i + 2).min(bytes.len());
+        } else {
+            while i < bytes.len() && bytes[i] != b'\n' && bytes[i] != b'\r' {
+                i += 1;
+            }
+        }
+        comments.push(SourceComment {
+            kind,
+            span: Span::new(start, i),
+            text: input[start..i].to_string(),
+            previous_node: None,
+            next_node: None,
+            containing_node: None,
+        });
+    }
+
+    comments
+}
+
+fn attach_comments(comments: &mut [SourceComment], nodes: &[AstNodeSpan]) {
+    for comment in comments {
+        comment.previous_node = nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, node)| node.span.end <= comment.span.start)
+            .max_by_key(|(_, node)| (node.span.end, node.span.start))
+            .map(|(index, _)| index);
+        comment.next_node = nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, node)| node.span.start >= comment.span.end)
+            .min_by_key(|(_, node)| (node.span.start, node.span.end))
+            .map(|(index, _)| index);
+        // Prefer the narrowest enclosing node; this makes an inline comment inside a call
+        // attach to that call rather than only to the full query.
+        comment.containing_node = nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, node)| {
+                node.span.start <= comment.span.start && node.span.end >= comment.span.end
+            })
+            .min_by_key(|(_, node)| node.span.end - node.span.start)
+            .map(|(index, _)| index);
+    }
+}
+
+pub fn parse_expression_lossless(input: &str) -> Result<LosslessParse<Expr>, DaxError> {
+    parse_expression_lossless_with_dialect(input, Dialect::default())
+}
+
+pub fn parse_expression_lossless_with_dialect(
+    input: &str,
+    dialect: Dialect,
+) -> Result<LosslessParse<Expr>, DaxError> {
+    let tokens = Lexer::new(input, dialect)
+        .lex_all()
+        .map_err(DaxError::Lex)?;
+    let mut parser = Parser::new(tokens, dialect);
+    let ast = parser.parse_formula_expression().map_err(DaxError::Parse)?;
+    let nodes = parser.node_spans;
+    let span = nodes
+        .iter()
+        .rev()
+        .find(|node| node.kind == AstNodeKind::Expression)
+        .map_or(Span::new(0, 0), |node| node.span);
+    let mut comments = scan_source_comments(input, dialect);
+    attach_comments(&mut comments, &nodes);
+    Ok(LosslessParse {
+        ast,
+        source: input.to_string(),
+        span,
+        nodes,
+        comments,
+    })
+}
+
+pub fn parse_query_lossless(input: &str) -> Result<LosslessParse<Query>, DaxError> {
+    parse_query_lossless_with_dialect(input, Dialect::default())
+}
+
+pub fn parse_query_lossless_with_dialect(
+    input: &str,
+    dialect: Dialect,
+) -> Result<LosslessParse<Query>, DaxError> {
+    let tokens = Lexer::new(input, dialect)
+        .lex_all()
+        .map_err(DaxError::Lex)?;
+    let mut parser = Parser::new(tokens, dialect);
+    let ast = parser.parse_query().map_err(DaxError::Parse)?;
+    let nodes = parser.node_spans;
+    let span = nodes
+        .iter()
+        .rev()
+        .find(|node| node.kind == AstNodeKind::Query)
+        .map_or(Span::new(0, 0), |node| node.span);
+    let mut comments = scan_source_comments(input, dialect);
+    attach_comments(&mut comments, &nodes);
+    Ok(LosslessParse {
+        ast,
+        source: input.to_string(),
+        span,
+        nodes,
+        comments,
+    })
 }
 
 // ---- tests ----
@@ -1959,6 +2721,87 @@ mod tests {
             TokenKind::String(s) => assert_eq!(s, r#"a"b"#),
             _ => panic!("expected string"),
         }
+    }
+
+    #[test]
+    fn lex_datetime_literal() {
+        let input = r#"dt"2020-12-15T12:30:59""#;
+        let toks = lex(input).unwrap();
+        assert_eq!(toks[0].span, Span::new(0, input.len()));
+        assert_eq!(
+            toks[0].kind,
+            TokenKind::DateTime("2020-12-15T12:30:59".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_datetime_literal_case_insensitively() {
+        for prefix in ["dt", "DT", "Dt", "dT"] {
+            let input = format!(r#"{prefix}"2020-12-15T12:30:59""#);
+            assert_eq!(
+                parse_expression(&input).unwrap(),
+                Expr::DateTime("2020-12-15T12:30:59".to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn datetime_literal_accepts_documented_forms() {
+        for value in [
+            "2015-1-9",
+            "2015-1-9T02:30:00",
+            "2015-1-9 02:30:00",
+            "2020-02-31",
+        ] {
+            assert_eq!(
+                parse_expression(&format!(r#"dt"{value}""#)).unwrap(),
+                Expr::DateTime(value.into())
+            );
+        }
+    }
+
+    #[test]
+    fn datetime_literal_rejects_invalid_lexical_forms_with_full_span() {
+        for source in [
+            r#"dt"""#,
+            r#"dt"not-a-date""#,
+            r#"dt"2020-1""#,
+            r#"dt"2020-13-1""#,
+            r#"dt"2020-1-32""#,
+            r#"dt"2020-1-1T2:30:00""#,
+            r#"dt"2020-1-1T02:30""#,
+            r#"dt"2020-1-1T24:00:00""#,
+            r#"dt"2020-1-1T02:30:00.123""#,
+            r#"dt"2020-1-1T02:30:00Z""#,
+        ] {
+            let DaxError::Lex(err) = lex(source).unwrap_err() else {
+                panic!("expected lexical error for {source}");
+            };
+            assert!(
+                err.message.contains("invalid datetime literal"),
+                "got: {err}"
+            );
+            assert_eq!(err.span, Span::new(0, source.len()), "source: {source}");
+        }
+
+        let source = r#"dt"2020-1-1"#;
+        let DaxError::Lex(err) = lex(source).unwrap_err() else {
+            panic!("expected lexical error");
+        };
+        assert_eq!(err.message, "unterminated datetime literal");
+        assert_eq!(err.span, Span::new(0, source.len()));
+    }
+
+    #[test]
+    fn datetime_literal_participates_in_expressions() {
+        assert_eq!(
+            parse_expression(r#"[CreatedAt] >= dt"2020-12-15T12:30:59""#).unwrap(),
+            bin!(
+                BinaryOp::Gte,
+                br!("CreatedAt"),
+                Expr::DateTime("2020-12-15T12:30:59".to_string())
+            )
+        );
     }
 
     #[test]
@@ -2181,6 +3024,70 @@ mod tests {
     }
 
     #[test]
+    fn function_calls_parse_official_omitted_argument_examples() {
+        assert_eq!(
+            parse_expression("index(1, , -1)").unwrap(),
+            Expr::FunctionCall {
+                name: "index".into(),
+                args: vec![num!("1"), Expr::Omitted, un!(UnaryOp::Minus, num!("1"))],
+            }
+        );
+        assert_eq!(
+            parse_expression("window(0, ABS, 0, REL,, -1)").unwrap(),
+            Expr::FunctionCall {
+                name: "window".into(),
+                args: vec![
+                    num!("0"),
+                    ident!("ABS"),
+                    num!("0"),
+                    ident!("REL"),
+                    Expr::Omitted,
+                    un!(UnaryOp::Minus, num!("1")),
+                ],
+            }
+        );
+    }
+
+    #[test]
+    fn udf_call_preserves_omitted_middle_default_position() {
+        let q = parse_query(
+            "define function f = (a: numeric, b: numeric = 2, c: numeric = 3) => a + b + c
+             evaluate { f(1,,3) }",
+        )
+        .unwrap();
+
+        let Expr::TableConstructor(rows) = &q.evaluates[0].expr else {
+            panic!("expected table constructor");
+        };
+        assert_eq!(
+            rows[0][0],
+            Expr::FunctionCall {
+                name: "f".into(),
+                args: vec![num!("1"), Expr::Omitted, num!("3")],
+            }
+        );
+    }
+
+    #[test]
+    fn omitted_expressions_remain_confined_to_function_arguments() {
+        for source in ["1 + , 2", "{1,,3}"] {
+            let err = parse_expression(source).unwrap_err();
+            assert!(
+                err.to_string().contains("expected expression"),
+                "got: {err}"
+            );
+        }
+
+        for source in ["f(1,)", "f(,)"] {
+            let err = parse_expression(source).unwrap_err();
+            assert!(
+                err.to_string().contains("trailing argument separator"),
+                "got: {err}"
+            );
+        }
+    }
+
+    #[test]
     fn table_constructor_scalar_rows() {
         let e = parse_expression("{1, 2, 3}").unwrap();
         assert_eq!(
@@ -2196,6 +3103,100 @@ mod tests {
             e,
             Expr::TableConstructor(vec![vec![num!("1"), num!("2")], vec![num!("3"), num!("4")]])
         );
+    }
+
+    #[test]
+    fn table_constructor_requires_rows_with_equal_width() {
+        for source in ["{}", "{(1, 2), (3)}", "{(1), (2, 3)}"] {
+            let err = parse_expression(source).unwrap_err();
+            assert!(
+                err.to_string().contains("table constructor"),
+                "{source}: got {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn datatable_parses_schema_constants_and_missing_values() {
+        let expr = parse_expression(
+            r#"DATATABLE(
+                "Name", STRING,
+                "When", DATETIME,
+                "Amount", CURRENCY,
+                {
+                    {"A", DATE(2024, 1, 2) + TIME(3, 4, 5), -1.5},
+                    {"B", "2024-01-03", }
+                }
+            )"#,
+        )
+        .unwrap();
+        let Expr::DataTable { columns, rows } = expr else {
+            panic!("expected DATATABLE AST");
+        };
+        assert_eq!(columns.len(), 3);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[1][2], Expr::Omitted);
+
+        let expr = parse_expression(
+            r#"DATATABLE(
+                "A", INTEGER,
+                "B", LOGICAL,
+                {{1, TRUE}, {, FALSE}}
+            )"#,
+        )
+        .unwrap();
+        assert_eq!(
+            expr,
+            Expr::DataTable {
+                columns: vec![
+                    DataTableColumn {
+                        name: "A".into(),
+                        data_type: DataTableType::Integer,
+                    },
+                    DataTableColumn {
+                        name: "B".into(),
+                        data_type: DataTableType::Boolean,
+                    },
+                ],
+                rows: vec![
+                    vec![num!("1"), Expr::Boolean(true)],
+                    vec![Expr::Omitted, Expr::Boolean(false)],
+                ],
+            }
+        );
+    }
+
+    #[test]
+    fn datatable_rejects_bad_schema_rows_and_non_constants() {
+        for (source, expected) in [
+            (
+                r#"DATATABLE("A", UUID, {{1}})"#,
+                "unsupported DATATABLE column type",
+            ),
+            (
+                r#"DATATABLE("A", INTEGER, "B", STRING, {{1}})"#,
+                "schema defines 2 columns",
+            ),
+            (
+                r#"DATATABLE("A", INTEGER, {{[Measure]}})"#,
+                "must be constant expressions",
+            ),
+            (
+                r#"DATATABLE("A", INTEGER, {{RAND()}})"#,
+                "must be constant expressions",
+            ),
+            (
+                r#"DATATABLE("A", DATETIME, {{DATE([Year], 1, 1) + TIME(0, 0, 0)}})"#,
+                "must be constant expressions",
+            ),
+            (
+                r#"DATATABLE("A", DATETIME, {{DATE(RAND(), 1, 1) + TIME(0, 0, 0)}})"#,
+                "must be constant expressions",
+            ),
+        ] {
+            let err = parse_expression(source).unwrap_err();
+            assert!(err.to_string().contains(expected), "{source}: got {err}");
+        }
     }
 
     #[test]
@@ -2285,15 +3286,51 @@ mod tests {
     }
 
     #[test]
-    fn start_at_allows_expression_args() {
-        let q = parse_query("evaluate 't' order by [a] start at [x]").unwrap();
-        assert_eq!(q.evaluates[0].start_at, Some(vec![br!("x")]));
+    fn start_at_allows_literal_constants() {
+        let q = parse_query(
+            r#"evaluate 't'
+               order by [a], [b], [c], [d], [e], [f]
+               start at -1, +2.5, "abc", dt"2020-12-15T12:30:59", true, false"#,
+        )
+        .unwrap();
+        assert_eq!(
+            q.evaluates[0].start_at,
+            Some(vec![
+                un!(UnaryOp::Minus, num!("1")),
+                un!(UnaryOp::Plus, num!("2.5")),
+                strlit!("abc"),
+                Expr::DateTime("2020-12-15T12:30:59".into()),
+                Expr::Boolean(true),
+                Expr::Boolean(false),
+            ])
+        );
     }
 
     #[test]
     fn start_at_allows_at_param() {
         let q = parse_query("evaluate 't' order by [a] start at @p").unwrap();
         assert_eq!(q.evaluates[0].start_at, Some(vec![param!("p")]));
+    }
+
+    #[test]
+    fn start_at_rejects_non_constant_expressions() {
+        for value in [
+            "1 + 2",
+            "[x]",
+            "x",
+            "abs(1)",
+            "blank()",
+            "blank",
+            "{1}",
+            "var x = 1 return x",
+        ] {
+            let query = format!("evaluate 't' order by [a] start at {value}");
+            let err = parse_query(&query).unwrap_err();
+            assert!(
+                err.to_string().contains("literal constant or @parameter"),
+                "{value}: got {err}"
+            );
+        }
     }
 
     #[test]
@@ -2316,15 +3353,163 @@ mod tests {
                     FuncParam {
                         name: "a".into(),
                         type_hints: vec![],
+                        default: None,
                     },
                     FuncParam {
                         name: "b".into(),
                         type_hints: vec!["numeric".into()],
+                        default: None,
                     }
                 ],
                 body: bin!(BinaryOp::Add, ident!("a"), ident!("b")),
             }
         );
+    }
+
+    #[test]
+    fn define_function_udf_parses_parameter_defaults() {
+        let q = parse_query(
+            "define
+                function addtax = (
+                    amount : numeric,
+                    taxrate : numeric = 0.1,
+                    scale = divide(1 + 2, 3) * 4
+                ) => amount + amount * taxrate * scale
+             evaluate { addtax(100) }",
+        )
+        .unwrap();
+
+        let Definition::Function { params, .. } = &q.define.unwrap().defs[0] else {
+            panic!("expected function definition");
+        };
+        assert_eq!(params.len(), 3);
+        assert_eq!(params[0].default, None);
+        assert_eq!(params[1].type_hints, vec!["numeric"]);
+        assert_eq!(params[1].default, Some(num!("0.1")));
+        assert_eq!(
+            params[2].default,
+            Some(bin!(
+                BinaryOp::Mul,
+                Expr::FunctionCall {
+                    name: "divide".into(),
+                    args: vec![bin!(BinaryOp::Add, num!("1"), num!("2")), num!("3")],
+                },
+                num!("4")
+            ))
+        );
+    }
+
+    #[test]
+    fn define_function_udf_rejects_missing_default_expression() {
+        for query in [
+            "define function f = (x: numeric =) => x evaluate { f() }",
+            "define function f = (x: numeric =, y: numeric) => x evaluate { f() }",
+        ] {
+            let err = parse_query(query).unwrap_err();
+            assert!(
+                err.to_string().contains("expected expression"),
+                "got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn define_table_parses_official_visual_shape_example() {
+        let q = parse_query(
+            r#"
+            define table data = summarizecolumns(
+                rollupaddissubtotal(T[Year], "IsYearTotal"),
+                rollupaddissubtotal(T[Product], "IsProductTotal"),
+                "Measure", sum(T[SalesAmount])
+            )
+            with visual shape
+                axis rows group [Year] total [IsYearTotal] order by [Year]
+                axis columns group [Product] total [IsProductTotal] order by [Product]
+                densify "IsDensified"
+            evaluate data
+            "#,
+        )
+        .unwrap();
+
+        let Definition::Table { visual_shape, .. } = &q.define.unwrap().defs[0] else {
+            panic!("expected table definition");
+        };
+        let shape = visual_shape
+            .as_ref()
+            .expect("visual shape should be present");
+        assert_eq!(shape.axes.len(), 2);
+        assert_eq!(shape.axes[0].name, "rows");
+        assert_eq!(shape.axes[0].groups.len(), 1);
+        assert_eq!(shape.axes[0].groups[0].columns[0].name, "Year");
+        assert_eq!(shape.axes[0].groups[0].total.name, "IsYearTotal");
+        assert_eq!(shape.axes[0].order_by[0].name, "Year");
+        assert_eq!(shape.axes[1].name, "columns");
+        assert_eq!(shape.axes[1].groups[0].columns[0].name, "Product");
+        assert_eq!(shape.densify.as_deref(), Some("IsDensified"));
+    }
+
+    #[test]
+    fn define_table_visual_shape_supports_multiple_groups_and_columns() {
+        let q = parse_query(
+            r#"
+            define table data = T
+            with visual shape
+                axis rows
+                    group [Year], [Month] total [IsDateTotal]
+                    group [Product] total [IsProductTotal]
+                    order by [Year], [Month], [Product]
+            evaluate data
+            "#,
+        )
+        .unwrap();
+
+        let Definition::Table { visual_shape, .. } = &q.define.unwrap().defs[0] else {
+            panic!("expected table definition");
+        };
+        let axis = &visual_shape.as_ref().unwrap().axes[0];
+        assert_eq!(axis.groups.len(), 2);
+        assert_eq!(axis.groups[0].columns.len(), 2);
+        assert_eq!(axis.order_by.len(), 3);
+    }
+
+    #[test]
+    fn ordinary_define_table_has_no_visual_shape() {
+        let q = parse_query("define table data = T evaluate data").unwrap();
+        let Definition::Table { visual_shape, .. } = &q.define.unwrap().defs[0] else {
+            panic!("expected table definition");
+        };
+        assert_eq!(*visual_shape, None);
+    }
+
+    #[test]
+    fn define_table_visual_shape_rejects_malformed_clauses() {
+        let cases = [
+            (
+                "define table data = T with visual shape densify \"d\" evaluate data",
+                "requires at least one AXIS",
+            ),
+            (
+                "define table data = T with visual shape axis rows order by [Year] evaluate data",
+                "requires at least one GROUP",
+            ),
+            (
+                "define table data = T with visual shape axis rows group [Year] order by [Year] evaluate data",
+                "expected keyword total",
+            ),
+            (
+                "define table data = T with visual shape axis rows group [Year] total [IsTotal] evaluate data",
+                "expected keyword order",
+            ),
+            (
+                "define table data = T with visual shape axis rows group [Year] total [IsTotal] order by [Year] densify IsDensified evaluate data",
+                "expected string literal after DENSIFY",
+            ),
+        ];
+
+        for (query, expected) in cases {
+            let err = parse_query(query).unwrap_err();
+            assert!(err.to_string().contains(expected), "got: {err}");
+        }
     }
 
     #[test]
@@ -2338,6 +3523,41 @@ mod tests {
                 Expr::TableConstructor(vec![vec![num!("1")], vec![num!("2")], vec![num!("3")]])
             )
         );
+    }
+
+    #[test]
+    fn multi_column_in_uses_tuple_expression() {
+        let expr =
+            parse_expression(r#"('Product'[Color], 'Product'[Brand]) in {("Red", "Contoso")}"#)
+                .unwrap();
+        assert_eq!(
+            expr,
+            bin!(
+                BinaryOp::In,
+                Expr::Tuple(vec![
+                    Expr::TableColumnRef {
+                        table: qtbl!("Product"),
+                        column: "Color".into(),
+                    },
+                    Expr::TableColumnRef {
+                        table: qtbl!("Product"),
+                        column: "Brand".into(),
+                    },
+                ]),
+                Expr::TableConstructor(vec![vec![strlit!("Red"), strlit!("Contoso")]])
+            )
+        );
+    }
+
+    #[test]
+    fn tuple_expression_requires_multiple_complete_elements() {
+        assert_eq!(
+            parse_expression("(1)").unwrap(),
+            Expr::Paren(Box::new(num!("1")))
+        );
+        for source in ["(1,)", "(1,,2)"] {
+            assert!(parse_expression(source).is_err(), "accepted: {source}");
+        }
     }
 
     #[test]
@@ -2471,6 +3691,101 @@ mod tests {
                 table: utbl!("t"),
                 column: "amount".into()
             }
+        );
+    }
+
+    fn expression_node_count(expr: &Expr) -> usize {
+        let children = match expr {
+            Expr::FunctionCall { args, .. } => args.iter().map(expression_node_count).sum(),
+            Expr::DataTable { rows, .. } | Expr::TableConstructor(rows) => {
+                rows.iter().flatten().map(expression_node_count).sum()
+            }
+            Expr::Unary { expr, .. } | Expr::Paren(expr) => expression_node_count(expr),
+            Expr::Binary { left, right, .. } => {
+                expression_node_count(left) + expression_node_count(right)
+            }
+            Expr::VarBlock { decls, body } => {
+                decls
+                    .iter()
+                    .map(|decl| expression_node_count(&decl.expr))
+                    .sum::<usize>()
+                    + expression_node_count(body)
+            }
+            Expr::Tuple(elements) => elements.iter().map(expression_node_count).sum(),
+            _ => 0,
+        };
+        1 + children
+    }
+
+    #[test]
+    fn lossless_expression_locates_every_expression_node_and_comment() {
+        let source = "/// measure docs\nSUM(/* inside */ 1, -- next\n 2 + 3) // tail";
+        let parsed = parse_expression_lossless(source).unwrap();
+        let expression_spans: Vec<_> = parsed
+            .nodes
+            .iter()
+            .filter(|node| node.kind == AstNodeKind::Expression)
+            .collect();
+
+        assert_eq!(expression_spans.len(), expression_node_count(&parsed.ast));
+        assert_eq!(
+            &source[parsed.span.start..parsed.span.end],
+            "SUM(/* inside */ 1, -- next\n 2 + 3)"
+        );
+        assert_eq!(
+            parsed
+                .comments
+                .iter()
+                .map(|comment| (comment.kind, comment.text.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                (CommentKind::DocLine, "/// measure docs"),
+                (CommentKind::Block, "/* inside */"),
+                (CommentKind::DashLine, "-- next"),
+                (CommentKind::SlashLine, "// tail"),
+            ]
+        );
+        assert!(parsed.comments[1].containing_node.is_some());
+        assert!(parsed.comments[3].previous_node.is_some());
+    }
+
+    #[test]
+    fn lossless_comments_ignore_comment_markers_inside_literals() {
+        let source = r#"CONCATENATE("// text", '/* table */'[-- column]) /* real */"#;
+        let parsed = parse_expression_lossless(source).unwrap();
+        assert_eq!(parsed.comments.len(), 1);
+        assert_eq!(parsed.comments[0].text, "/* real */");
+    }
+
+    #[test]
+    fn lossless_query_locates_query_definitions_and_evaluates() {
+        let source = "/// docs\nDEFINE MEASURE 'T'[M] = 1 + 2\n-- between\nEVALUATE { [M] }";
+        let parsed = parse_query_lossless(source).unwrap();
+
+        assert_eq!(
+            parsed
+                .nodes
+                .iter()
+                .filter(|node| node.kind == AstNodeKind::Definition)
+                .count(),
+            1
+        );
+        assert_eq!(
+            parsed
+                .nodes
+                .iter()
+                .filter(|node| node.kind == AstNodeKind::Evaluate)
+                .count(),
+            1
+        );
+        assert_eq!(
+            parsed.nodes.last().map(|node| node.kind),
+            Some(AstNodeKind::Query)
+        );
+        assert_eq!(parsed.comments.len(), 2);
+        assert_eq!(
+            &source[parsed.span.start..parsed.span.end],
+            "DEFINE MEASURE 'T'[M] = 1 + 2\n-- between\nEVALUATE { [M] }"
         );
     }
 }

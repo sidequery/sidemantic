@@ -91,6 +91,19 @@
           "description": "DAX expression source text",
           "title": "Dax"
         },
+        "declared_is_time": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Source-declared temporal role; None preserves an omitted declaration",
+          "title": "Declared Is Time"
+        },
         "description": {
           "anyOf": [
             {
@@ -169,6 +182,19 @@
           "default": null,
           "description": "Display label",
           "title": "Label"
+        },
+        "logical_data_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Source logical data type, independent of the effective runtime dimension type",
+          "title": "Logical Data Type"
         },
         "meta": {
           "anyOf": [
@@ -968,6 +994,19 @@
           "description": "Display label",
           "title": "Label"
         },
+        "logical_data_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Source logical result type, independent of aggregation and runtime metric type",
+          "title": "Logical Data Type"
+        },
         "meta": {
           "anyOf": [
             {
@@ -1674,6 +1713,19 @@
           "description": "Whether the relationship is active by default",
           "title": "Active",
           "type": "boolean"
+        },
+        "edge_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Stable identity of the declared edge, independent of the related model name",
+          "title": "Edge Id"
         },
         "foreign_key": {
           "anyOf": [
@@ -2565,6 +2617,19 @@
             "description": "Display label",
             "title": "Label"
           },
+          "logical_data_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Source logical result type, independent of aggregation and runtime metric type",
+            "title": "Logical Data Type"
+          },
           "meta": {
             "anyOf": [
               {
@@ -3005,6 +3070,19 @@
                 "description": "DAX expression source text",
                 "title": "Dax"
               },
+              "declared_is_time": {
+                "anyOf": [
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Source-declared temporal role; None preserves an omitted declaration",
+                "title": "Declared Is Time"
+              },
               "description": {
                 "anyOf": [
                   {
@@ -3083,6 +3161,19 @@
                 "default": null,
                 "description": "Display label",
                 "title": "Label"
+              },
+              "logical_data_type": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Source logical data type, independent of the effective runtime dimension type",
+                "title": "Logical Data Type"
               },
               "meta": {
                 "anyOf": [
@@ -3770,6 +3861,19 @@
                 "description": "Display label",
                 "title": "Label"
               },
+              "logical_data_type": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Source logical result type, independent of aggregation and runtime metric type",
+                "title": "Logical Data Type"
+              },
               "meta": {
                 "anyOf": [
                   {
@@ -4397,6 +4501,19 @@
                 "description": "Whether the relationship is active by default",
                 "title": "Active",
                 "type": "boolean"
+              },
+              "edge_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Stable identity of the declared edge, independent of the related model name",
+                "title": "Edge Id"
               },
               "foreign_key": {
                 "anyOf": [

@@ -1527,12 +1527,12 @@ function useQueryResult(backend, query) {
       return;
     }
     const current = ++token.current;
-    setState((prev) => ({ result: prev.result, loading: true }));
+    setState((prev) => ({ result: prev.result, resultKey: prev.resultKey, loading: true }));
     const timer = setTimeout(() => {
       beginQuery();
       backend.runQuery(query).then((result) => {
         if (current === token.current)
-          setState({ result, loading: false });
+          setState({ result, resultKey: key ?? undefined, loading: false });
       }).catch((err) => {
         if (current === token.current) {
           setState({ loading: false, error: err instanceof Error ? err.message : String(err) });
@@ -1541,7 +1541,7 @@ function useQueryResult(backend, query) {
     }, DEBOUNCE_MS);
     return () => clearTimeout(timer);
   }, [key, backend]);
-  return state;
+  return { ...state, queryKey: key ?? undefined };
 }
 
 // webapp/src/components/FilterEditor.tsx

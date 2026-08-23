@@ -31,7 +31,7 @@ def test_graph_metric_sql_reference_order_determines_one_to_one_join_anchor():
         Metric(
             name="total_amount",
             agg="sum",
-            sql="COALESCE(shifts.amount, shift_finances.amount) + shifts.adjustment",
+            sql="COALESCE(shifts.amount + shifts.adjustment, shift_finances.amount)",
         )
     )
 

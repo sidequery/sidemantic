@@ -1484,7 +1484,7 @@ class SQLGenerator:
         seen: set[str] = set()
         try:
             parsed = _parse_fragment(sql_expr, self.dialect)
-            for column in parsed.find_all(exp.Column):
+            for column in parsed.find_all(exp.Column, bfs=False):
                 if not column.table:
                     continue
                 model_name = column.table.replace("_cte", "")

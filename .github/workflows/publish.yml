@@ -6,11 +6,16 @@ on:
       bump:
         description: 'Version bump type'
         required: true
+        default: patch
         type: choice
         options:
           - patch
           - minor
           - major
+      release_tag:
+        description: 'Existing version tag to publish without creating a new version'
+        required: false
+        type: string
 
 jobs:
   publish:
@@ -25,6 +30,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+          ref: ${{ inputs.release_tag || github.ref }}
 
       - name: Install bun
         uses: oven-sh/setup-bun@v2
@@ -68,31 +74,43 @@ jobs:
 
       - name: Calculate new version
         id: version
+        env:
+          BUMP: ${{ inputs.bump }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           CURRENT="${{ steps.get_version.outputs.current_version }}"
-          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+          if [[ -n "$RELEASE_TAG" ]]; then
+            NEW_VERSION="${RELEASE_TAG#v}"
+            if [[ "v$NEW_VERSION" != "$RELEASE_TAG" || "$CURRENT" != "$NEW_VERSION" ]]; then
+              echo "Release tag $RELEASE_TAG does not match source version $CURRENT" >&2
+              exit 1
+            fi
+          else
+            IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
 
-          case "${{ inputs.bump }}" in
-            major)
-              MAJOR=$((MAJOR + 1))
-              MINOR=0
-              PATCH=0
-              ;;
-            minor)
-              MINOR=$((MINOR + 1))
-              PATCH=0
-              ;;
-            patch)
-              PATCH=$((PATCH + 1))
-              ;;
-          esac
+            case "$BUMP" in
+              major)
+                MAJOR=$((MAJOR + 1))
+                MINOR=0
+                PATCH=0
+                ;;
+              minor)
+                MINOR=$((MINOR + 1))
+                PATCH=0
+                ;;
+              patch)
+                PATCH=$((PATCH + 1))
+                ;;
+            esac
 
-          NEW_VERSION="$MAJOR.$MINOR.$PATCH"
+            NEW_VERSION="$MAJOR.$MINOR.$PATCH"
+          fi
           echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
           echo "tag=v$NEW_VERSION" >> $GITHUB_OUTPUT
           echo "VERSION=$NEW_VERSION" >> $GITHUB_ENV
 
       - name: Update version in pyproject.toml, DAX package, and __init__.py
+        if: ${{ inputs.release_tag == '' }}
         env:
           NEW_VERSION: ${{ steps.version.outputs.new_version }}
         run: |
@@ -141,6 +159,7 @@ jobs:
           echo "Updated version to $NEW_VERSION"
 
       - name: Update lock files
+        if: ${{ inputs.release_tag == '' }}
         run: |
           cargo generate-lockfile
           uv lock
@@ -175,6 +194,7 @@ jobs:
           PY
 
       - name: Commit version bump and create tag
+        if: ${{ inputs.release_tag == '' }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -203,7 +223,7 @@ jobs:
             target: x86_64
           - os: ubuntu-latest
             target: aarch64
-          - os: macos-13
+          - os: macos-15-intel
             target: x86_64
           - os: macos-14
             target: aarch64

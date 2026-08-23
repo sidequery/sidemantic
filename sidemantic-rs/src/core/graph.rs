@@ -18,6 +18,8 @@ pub struct JoinStep {
     pub from_keys: Vec<String>,
     pub to_keys: Vec<String>,
     pub relationship_type: RelationshipType,
+    /// Stable identity of the declared relationship edge.
+    pub edge_id: Option<String>,
     /// Custom SQL join condition (overrides FK/PK join)
     pub custom_condition: Option<String>,
 }
@@ -68,12 +70,13 @@ impl JoinPath {
     }
 }
 
-/// Edge in the adjacency list: (target_model, from_keys, to_keys, relationship_type, custom_sql)
+/// Edge in the adjacency list: target, keys, relationship type, custom SQL, edge identity.
 type AdjacencyEdge = (
     String,
     Vec<String>,
     Vec<String>,
     RelationshipType,
+    Option<String>,
     Option<String>,
 );
 
@@ -547,6 +550,7 @@ impl SemanticGraph {
                             source_fks.clone(),
                             RelationshipType::OneToMany,
                             None,
+                            rel.edge_id.clone(),
                         ));
                         // through -> source (many_to_one)
                         self.adjacency
@@ -558,6 +562,7 @@ impl SemanticGraph {
                                 source_pk,
                                 RelationshipType::ManyToOne,
                                 None,
+                                rel.edge_id.clone(),
                             ));
 
                         // through -> target (many_to_one)
@@ -570,6 +575,7 @@ impl SemanticGraph {
                                 target_pk.clone(),
                                 RelationshipType::ManyToOne,
                                 None,
+                                rel.edge_id.clone(),
                             ));
                         // target -> through (one_to_many)
                         self.adjacency.entry(rel.name.clone()).or_default().push((
@@ -578,6 +584,7 @@ impl SemanticGraph {
                             target_fks,
                             RelationshipType::OneToMany,
                             None,
+                            rel.edge_id.clone(),
                         ));
                         continue;
                     }
@@ -608,6 +615,7 @@ impl SemanticGraph {
                     to_keys.clone(),
                     rel.r#type.clone(),
                     rel.sql.clone(),
+                    rel.edge_id.clone(),
                 ));
             }
 
@@ -668,6 +676,7 @@ impl SemanticGraph {
                     reverse_to_keys,
                     reverse_type,
                     reverse_sql,
+                    rel.edge_id.clone(),
                 ));
             }
         }
@@ -697,7 +706,7 @@ impl SemanticGraph {
 
         while let Some((current, path)) = queue.pop_front() {
             if let Some(edges) = self.adjacency.get(&current) {
-                for (target, from_keys, to_keys, rel_type, custom_sql) in edges {
+                for (target, from_keys, to_keys, rel_type, custom_sql, edge_id) in edges {
                     if !visited.contains(target) {
                         let mut new_path = path.clone();
                         let from_key = from_keys.first().cloned().unwrap_or_default();
@@ -710,6 +719,7 @@ impl SemanticGraph {
                             from_keys: from_keys.clone(),
                             to_keys: to_keys.clone(),
                             relationship_type: rel_type.clone(),
+                            edge_id: edge_id.clone(),
                             custom_condition: custom_sql.clone(),
                         });
 
@@ -959,6 +969,25 @@ mod tests {
     }
 
     #[test]
+    fn test_edge_id_survives_direct_and_reverse_paths() {
+        let mut graph = SemanticGraph::new();
+        let mut relationship = Relationship::many_to_one("customers");
+        relationship.edge_id = Some("orders_customer".to_string());
+        let orders = Model::new("orders", "order_id")
+            .with_table("orders")
+            .with_relationship(relationship);
+        let customers = Model::new("customers", "id").with_table("customers");
+
+        graph.add_model(orders).unwrap();
+        graph.add_model(customers).unwrap();
+
+        let forward = graph.find_join_path("orders", "customers").unwrap();
+        let reverse = graph.find_join_path("customers", "orders").unwrap();
+        assert_eq!(forward.steps[0].edge_id.as_deref(), Some("orders_customer"));
+        assert_eq!(reverse.steps[0].edge_id.as_deref(), Some("orders_customer"));
+    }
+
+    #[test]
     fn test_one_to_many_omitted_key_defaults_to_id() {
         let mut graph = SemanticGraph::new();
 
@@ -1083,6 +1112,7 @@ mod tests {
             .with_table("orders")
             .with_relationship(Relationship {
                 name: "customers".to_string(),
+                edge_id: None,
                 r#type: RelationshipType::ManyToOne,
                 foreign_key: Some("customer_id".to_string()),
                 foreign_key_columns: None,
@@ -1118,6 +1148,7 @@ mod tests {
             .with_table("orders")
             .with_relationship(Relationship {
                 name: "products".to_string(),
+                edge_id: Some("orders_products".to_string()),
                 r#type: RelationshipType::ManyToMany,
                 foreign_key: None,
                 foreign_key_columns: None,
@@ -1149,6 +1180,7 @@ mod tests {
         assert_eq!(path.steps[0].from_keys, vec!["order_id".to_string()]);
         assert_eq!(path.steps[0].to_keys, vec!["order_id".to_string()]);
         assert_eq!(path.steps[0].relationship_type, RelationshipType::OneToMany);
+        assert_eq!(path.steps[0].edge_id.as_deref(), Some("orders_products"));
 
         // order_items -> products
         assert_eq!(path.steps[1].from_model, "order_items");
@@ -1158,6 +1190,14 @@ mod tests {
         assert_eq!(path.steps[1].from_keys, vec!["product_id".to_string()]);
         assert_eq!(path.steps[1].to_keys, vec!["product_id".to_string()]);
         assert_eq!(path.steps[1].relationship_type, RelationshipType::ManyToOne);
+        assert_eq!(path.steps[1].edge_id.as_deref(), Some("orders_products"));
+
+        let reverse_path = graph.find_join_path("products", "orders").unwrap();
+        assert_eq!(reverse_path.steps.len(), 2);
+        assert!(reverse_path
+            .steps
+            .iter()
+            .all(|step| step.edge_id.as_deref() == Some("orders_products")));
     }
 
     #[test]
@@ -1169,6 +1209,7 @@ mod tests {
             .with_table("orders")
             .with_relationship(Relationship {
                 name: "products".to_string(),
+                edge_id: None,
                 r#type: RelationshipType::ManyToMany,
                 foreign_key: None,
                 foreign_key_columns: None,

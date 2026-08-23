@@ -48,7 +48,11 @@ pub mod sql;
 pub mod wasm;
 
 // Re-export commonly used types
-pub use adapters::{Adapter, CubeAdapter, OsiAdapter, ParsedDocument};
+pub use adapters::{
+    Adapter, CubeAdapter, OsiAdapter, OssieCatalog, OssieCompiledScope, OssieConsumerProfile,
+    OssieDiagnostic, OssieForwardAdapter, OssieProfile, OssieSerialization, OssieStatus,
+    OssieTarget, ParsedDocument,
+};
 pub use config::{
     load_from_directory, load_from_directory_with_metadata, load_from_file, load_from_string,
 };
@@ -66,16 +70,17 @@ pub use runtime::{
     dimension_sql_expr_with_yaml, dimension_with_granularity_with_yaml,
     evaluate_table_calculation_expression, extract_column_references,
     extract_metric_dependencies_from_yaml, extract_preaggregation_patterns, find_models_for_query,
-    find_relationship_path_with_yaml, format_parameter_value_with_yaml,
-    generate_catalog_metadata_with_yaml, generate_preaggregation_definition,
-    generate_preaggregation_materialization_sql_with_yaml, generate_preaggregation_name,
-    generate_time_comparison_sql, interpolate_sql_with_parameters_with_yaml, is_relative_date,
-    is_sql_template, load_graph_from_directory, load_graph_with_yaml, metric_is_simple_aggregation,
-    metric_sql_expr, metric_to_sql, model_find_dimension_index_with_yaml,
-    model_find_metric_index_with_yaml, model_find_pre_aggregation_index_with_yaml,
-    model_find_segment_index_with_yaml, model_get_drill_down_with_yaml,
-    model_get_drill_up_with_yaml, model_get_hierarchy_path_with_yaml, parse_reference_with_yaml,
-    parse_relative_date, parse_simple_metric_aggregation, parse_sql_definitions_payload,
+    find_relationship_path_payload_with_yaml, find_relationship_path_with_yaml,
+    format_parameter_value_with_yaml, generate_catalog_metadata_with_yaml,
+    generate_preaggregation_definition, generate_preaggregation_materialization_sql_with_yaml,
+    generate_preaggregation_name, generate_time_comparison_sql,
+    interpolate_sql_with_parameters_with_yaml, is_relative_date, is_sql_template,
+    load_graph_from_directory, load_graph_with_yaml, metric_is_simple_aggregation, metric_sql_expr,
+    metric_to_sql, model_find_dimension_index_with_yaml, model_find_metric_index_with_yaml,
+    model_find_pre_aggregation_index_with_yaml, model_find_segment_index_with_yaml,
+    model_get_drill_down_with_yaml, model_get_drill_up_with_yaml,
+    model_get_hierarchy_path_with_yaml, parse_reference_with_yaml, parse_relative_date,
+    parse_simple_metric_aggregation, parse_sql_definitions_payload,
     parse_sql_graph_definitions_payload, parse_sql_model_payload,
     plan_preaggregation_refresh_execution, recommend_preaggregation_patterns,
     relationship_foreign_key_columns_with_yaml, relationship_primary_key_columns_with_yaml,
@@ -89,7 +94,7 @@ pub use runtime::{
     validate_query_references, validate_query_with_yaml, validate_table_calculation_payload,
     validate_table_formula_expression, LoadedGraphPayload, PreaggregationRefreshExecutionPlan,
     PreaggregationRefreshResultShape, QueryValidationContext, RelationshipPathError,
-    RelationshipPathStep, SidemanticRuntime,
+    RelationshipPathPayloadStep, RelationshipPathStep, SidemanticRuntime,
 };
 pub use sql::{QueryRewriter, SemanticQuery, SqlGenerator};
 #[cfg(feature = "wasm")]

@@ -5441,6 +5441,7 @@ models:
             .with_metric(Metric::sum("revenue", "amount"))
             .with_relationship(Relationship {
                 name: "products".to_string(),
+                edge_id: None,
                 r#type: RelationshipType::ManyToMany,
                 foreign_key: None,
                 foreign_key_columns: None,

@@ -258,3 +258,24 @@ sidemantic convert models/orders.yml \
 ```
 
 Use `--force` only when intentionally replacing an existing output file.
+
+## Rust forward-import status
+
+The experimental Rust runtime now has a strict forward Ossie import subset in
+its dedicated `ossie` adapter. It supports explicit consumer profiles,
+including `ossie-core` (`0.1.1` and `0.2.0.dev0`) and `dbt-1.12` compatibility
+profiles. It preserves separate semantic-model scopes and uses
+exact-target-then-`ANSI_SQL` expression selection for its supported runtime
+targets: `ANSI_SQL`, `DUCKDB`, `POSTGRES`, `SNOWFLAKE`, `DATABRICKS`, and
+`BIGQUERY`. Its import gate also checks scalar SQL structure, identifiers,
+declared primary and unique keys, relationship identity and endpoints, key
+arity, and target-key uniqueness. Invalid or unsupported input fails closed;
+the legacy `osi` adapter remains a separate compatibility surface.
+
+This is a forward import subset, not full parity with the Python contract. Rust
+does not yet provide the Python implementation's complete pinned JSON Schema
+validation, preserved source-document and exact-byte model, ontology
+preservation/reasoning boundary, permissive lowering mode, or Ossie export and
+graph-synthesis path. Rust checks therefore establish strict structural import
+coverage only; they are not live warehouse execution tests and do not claim
+runtime coverage for every target database.

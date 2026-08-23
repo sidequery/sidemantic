@@ -99,6 +99,18 @@ pub struct LoadedGraphPayload {
 /// Tuple shape returned to Python bridge for graph path steps.
 pub type RelationshipPathStep = (String, String, Vec<String>, Vec<String>, String);
 
+/// Edge-aware relationship path payload. The legacy tuple API remains available.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelationshipPathPayloadStep {
+    pub from_model: String,
+    pub to_model: String,
+    pub from_columns: Vec<String>,
+    pub to_columns: Vec<String>,
+    pub relationship: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edge_id: Option<String>,
+}
+
 /// Relationship path discovery errors that preserve Python-compatible exception semantics.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum RelationshipPathError {
@@ -140,6 +152,8 @@ struct GraphPathModelPayload {
 #[derive(Debug, Deserialize)]
 struct GraphPathRelationshipPayload {
     name: String,
+    #[serde(default)]
+    edge_id: Option<String>,
     #[serde(default, rename = "type")]
     relationship_type: Option<String>,
     #[serde(default)]
@@ -5566,6 +5580,28 @@ pub fn find_relationship_path_with_yaml(
     from_model: &str,
     to_model: &str,
 ) -> std::result::Result<Vec<RelationshipPathStep>, RelationshipPathError> {
+    Ok(
+        find_relationship_path_payload_with_yaml(graph_yaml, from_model, to_model)?
+            .into_iter()
+            .map(|step| {
+                (
+                    step.from_model,
+                    step.to_model,
+                    step.from_columns,
+                    step.to_columns,
+                    step.relationship,
+                )
+            })
+            .collect(),
+    )
+}
+
+/// Find an edge-aware join path while preserving the legacy five-field API above.
+pub fn find_relationship_path_payload_with_yaml(
+    graph_yaml: &str,
+    from_model: &str,
+    to_model: &str,
+) -> std::result::Result<Vec<RelationshipPathPayloadStep>, RelationshipPathError> {
     if from_model == to_model {
         return Ok(Vec::new());
     }
@@ -5585,7 +5621,7 @@ fn relationship_path_with_runtime(
     runtime: &SidemanticRuntime,
     from_model: &str,
     to_model: &str,
-) -> std::result::Result<Vec<RelationshipPathStep>, RelationshipPathError> {
+) -> std::result::Result<Vec<RelationshipPathPayloadStep>, RelationshipPathError> {
     let join_path = runtime
         .find_join_path(from_model, to_model)
         .map_err(|err| match err {
@@ -5602,14 +5638,13 @@ fn relationship_path_with_runtime(
     Ok(join_path
         .steps
         .into_iter()
-        .map(|step| {
-            (
-                step.from_model,
-                step.to_model,
-                step.from_keys,
-                step.to_keys,
-                relationship_type_label(&step.relationship_type).to_string(),
-            )
+        .map(|step| RelationshipPathPayloadStep {
+            from_model: step.from_model,
+            to_model: step.to_model,
+            from_columns: step.from_keys,
+            to_columns: step.to_keys,
+            relationship: relationship_type_label(&step.relationship_type).to_string(),
+            edge_id: step.edge_id,
         })
         .collect())
 }
@@ -5627,7 +5662,7 @@ fn relationship_path_with_graph(
     graph: &SemanticGraph,
     from_model: &str,
     to_model: &str,
-) -> std::result::Result<Vec<RelationshipPathStep>, RelationshipPathError> {
+) -> std::result::Result<Vec<RelationshipPathPayloadStep>, RelationshipPathError> {
     let join_path = graph
         .find_join_path(from_model, to_model)
         .map_err(|err| match err {
@@ -5644,14 +5679,13 @@ fn relationship_path_with_graph(
     Ok(join_path
         .steps
         .into_iter()
-        .map(|step| {
-            (
-                step.from_model,
-                step.to_model,
-                step.from_keys,
-                step.to_keys,
-                relationship_type_label(&step.relationship_type).to_string(),
-            )
+        .map(|step| RelationshipPathPayloadStep {
+            from_model: step.from_model,
+            to_model: step.to_model,
+            from_columns: step.from_keys,
+            to_columns: step.to_keys,
+            relationship: relationship_type_label(&step.relationship_type).to_string(),
+            edge_id: step.edge_id,
         })
         .collect())
 }
@@ -5696,6 +5730,7 @@ fn semantic_graph_from_graph_path_payload(
 
             model.relationships.push(Relationship {
                 name: relationship_payload.name.clone(),
+                edge_id: relationship_payload.edge_id.clone(),
                 r#type: normalized_type,
                 foreign_key: foreign_key_columns
                     .as_ref()
@@ -8314,6 +8349,35 @@ models:
         assert_eq!(path[0].2, vec!["customer_id".to_string()]);
         assert_eq!(path[0].3, vec!["id".to_string()]);
         assert_eq!(path[0].4, "many_to_one");
+    }
+
+    #[test]
+    fn test_runtime_edge_aware_path_preserves_identity_without_changing_legacy_shape() {
+        let graph_yaml = r#"
+models:
+  - name: customers
+    table: customers
+    primary_key: id
+  - name: orders
+    table: orders
+    primary_key: order_id
+    relationships:
+      - name: customers
+        edge_id: orders_customer
+        type: many_to_one
+        foreign_key: customer_id
+        primary_key: id
+"#;
+
+        let payload =
+            find_relationship_path_payload_with_yaml(graph_yaml, "orders", "customers").unwrap();
+        assert_eq!(payload.len(), 1);
+        assert_eq!(payload[0].edge_id.as_deref(), Some("orders_customer"));
+
+        let legacy = find_relationship_path_with_yaml(graph_yaml, "orders", "customers").unwrap();
+        assert_eq!(legacy.len(), 1);
+        assert_eq!(legacy[0].0, "orders");
+        assert_eq!(legacy[0].4, "many_to_one");
     }
 
     #[test]

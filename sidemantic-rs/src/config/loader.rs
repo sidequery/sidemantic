@@ -1178,6 +1178,7 @@ fn infer_relationships(models: &mut HashMap<String, Model>, skip: &HashSet<Strin
                         model_name.clone(),
                         Relationship {
                             name: actual_target.clone(),
+                            edge_id: None,
                             r#type: RelationshipType::ManyToOne,
                             foreign_key: Some(dim.name.clone()),
                             foreign_key_columns: Some(vec![dim.name.clone()]),
@@ -1198,6 +1199,7 @@ fn infer_relationships(models: &mut HashMap<String, Model>, skip: &HashSet<Strin
                         actual_target,
                         Relationship {
                             name: model_name.clone(),
+                            edge_id: None,
                             r#type: RelationshipType::OneToMany,
                             foreign_key: Some(dim.name.clone()),
                             foreign_key_columns: Some(vec![dim.name.clone()]),

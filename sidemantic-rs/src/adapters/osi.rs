@@ -360,6 +360,8 @@ fn parse_field(field_def: &Json) -> Option<Dimension> {
         } else {
             DimensionType::Categorical
         },
+        logical_data_type: None,
+        declared_is_time: None,
         sql,
         granularity: if is_time {
             Some("day".to_string())
@@ -480,6 +482,7 @@ fn add_relationship_to_model(rel_def: &Json, models: &mut [Model]) {
 
     let relationship = Relationship {
         name: to_model.to_string(),
+        edge_id: None,
         r#type: RelationshipType::ManyToOne,
         foreign_key: foreign_key_columns.first().cloned(),
         foreign_key_columns: Some(foreign_key_columns),

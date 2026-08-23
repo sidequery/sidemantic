@@ -19,7 +19,7 @@ Detailed compatibility documents describe field-level limitations where they exi
 | `malloy` | — | `file_or_directory` | `.malloy` | Registered | Yes | 18 | [Detailed guide](malloy.md) |
 | `metricflow` | `dbt`, `dbt-semantic-layer` | `file_or_directory` | `.yml`, `.yaml` | Registered | Yes | 6 | Registry summary only |
 | `omni` | — | `file_or_directory` | `.yml`, `.yaml` | Registered | Yes | 4 | Registry summary only |
-| `ossie` | `apache-ossie`, `osi`, `open-semantic-interchange` | `file_or_directory` | `.yml`, `.yaml`, `.json` | Registered | Yes | 4 | [Detailed guide](ossie.md) |
+| `ossie` | `apache-ossie`, `osi`, `open-semantic-interchange` | `file_or_directory` | `.yml`, `.yaml`, `.json` | Registered | Yes | 5 | [Detailed guide](ossie.md) |
 | `rill` | — | `file_or_directory` | `.yml`, `.yaml` | Registered | Yes | 8 | Registry summary only |
 | `sidemantic` | `native` | `file` | `.yml`, `.yaml`, `.sql` | Registered | Yes | 1 | Registry summary only |
 | `snowflake` | `cortex`, `snowflake-cortex` | `file_or_directory` | `.yml`, `.yaml` | Registered | Yes | 8 | Registry summary only |

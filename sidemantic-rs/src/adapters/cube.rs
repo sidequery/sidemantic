@@ -175,6 +175,8 @@ impl CubeDimension {
         Dimension {
             name: self.name,
             r#type: dim_type,
+            logical_data_type: None,
+            declared_is_time: None,
             sql,
             granularity: None,
             supported_granularities: None,
@@ -224,6 +226,7 @@ impl CubeMeasure {
         Metric {
             name: self.name,
             extends: None,
+            logical_data_type: None,
             r#type: metric_type,
             agg,
             sql,

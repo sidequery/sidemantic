@@ -21,6 +21,12 @@ pub struct Dimension {
     pub name: String,
     #[serde(default)]
     pub r#type: DimensionType,
+    /// Source logical data type, independent of the effective runtime type.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logical_data_type: Option<String>,
+    /// Source-declared temporal role. `None` preserves an omitted declaration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub declared_is_time: Option<bool>,
     /// SQL expression (defaults to name if not provided)
     pub sql: Option<String>,
     /// Time granularity (for time dimensions)
@@ -60,6 +66,8 @@ impl Dimension {
         Self {
             name: name.into(),
             r#type: DimensionType::Categorical,
+            logical_data_type: None,
+            declared_is_time: None,
             sql: None,
             granularity: None,
             supported_granularities: None,
@@ -221,6 +229,9 @@ pub struct Metric {
     /// Parent metric to inherit from.
     #[serde(default)]
     pub extends: Option<String>,
+    /// Source logical result type, independent of aggregation/runtime type.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logical_data_type: Option<String>,
     #[serde(default)]
     pub r#type: MetricType,
     /// Aggregation function (for simple metrics)
@@ -347,6 +358,7 @@ impl Metric {
         Self {
             name: name.into(),
             extends: None,
+            logical_data_type: None,
             r#type: MetricType::Simple,
             agg: Some(Aggregation::Sum),
             sql: None,
@@ -611,6 +623,9 @@ pub enum RelationshipType {
 pub struct Relationship {
     /// Target model name
     pub name: String,
+    /// Stable identity of the declared edge, independent of target model name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edge_id: Option<String>,
     #[serde(default)]
     pub r#type: RelationshipType,
     /// Foreign key column.
@@ -652,6 +667,7 @@ impl Relationship {
     pub fn new(target: impl Into<String>) -> Self {
         Self {
             name: target.into(),
+            edge_id: None,
             r#type: RelationshipType::ManyToOne,
             foreign_key: None,
             foreign_key_columns: None,
@@ -1024,7 +1040,11 @@ impl Model {
 
     pub fn primary_keys(&self) -> Vec<String> {
         if self.primary_key_columns.is_empty() {
-            vec![self.primary_key.clone()]
+            if self.primary_key.is_empty() {
+                Vec::new()
+            } else {
+                vec![self.primary_key.clone()]
+            }
         } else {
             self.primary_key_columns.clone()
         }
@@ -1147,5 +1167,14 @@ mod tests {
         assert!(model.get_dimension("status").is_some());
         assert!(model.get_metric("revenue").is_some());
         assert!(model.get_relationship("customers").is_some());
+    }
+
+    #[test]
+    fn unknown_primary_key_stays_unknown() {
+        let mut model = Model::new("orders", "id");
+        model.primary_key.clear();
+        model.primary_key_columns.clear();
+
+        assert!(model.primary_keys().is_empty());
     }
 }

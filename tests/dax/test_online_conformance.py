@@ -17,7 +17,7 @@ pytestmark = pytest.mark.skipif(
 _FORMATTER_URL = "https://api.daxformatter.com/api/daxtextformat"
 
 
-def _formatter_errors(dax: str) -> list[dict[str, object]]:
+def _formatter_result(dax: str) -> dict[str, object]:
     payload = json.dumps(
         {
             "Dax": dax,
@@ -34,8 +34,45 @@ def _formatter_errors(dax: str) -> list[dict[str, object]]:
         method="POST",
     )
     with urllib.request.urlopen(request, timeout=20) as response:
-        result = json.load(response)
-    return list(result.get("errors", []))
+        return dict(json.load(response))
+
+
+def _normalized(text: str) -> str:
+    return text.replace("\r\n", "\n").rstrip("\n")
+
+
+@pytest.mark.parametrize(
+    ("kind", "dax"),
+    [
+        (
+            "expression",
+            "=sumx(filter('Sales','Sales'[Amount]>100),'Sales'[Amount])",
+        ),
+        ("query", "EVALUATE {(1,2),(3,4)}"),
+        (
+            "query",
+            "DEFINE MEASURE 'S'[M]=SUM('S'[A]) VAR threshold=10 EVALUATE ROW(\"m\",[M])",
+        ),
+        (
+            "query",
+            "DEFINE FUNCTION myUdf=(x:NUMERIC)=>x EVALUATE {myUdf(1)}",
+        ),
+        (
+            "query",
+            'DEFINE TABLE data=ROW("Year",2000,"IsTotal",FALSE()) '
+            "WITH VISUAL SHAPE AXIS ROWS GROUP [Year] TOTAL [IsTotal] "
+            'ORDER BY [Year] DENSIFY "IsDensified" EVALUATE data',
+        ),
+    ],
+)
+def test_stable_syntax_matches_dax_formatter(kind: str, dax: str):
+    if kind == "expression":
+        local = dax_ast.format_expression(dax, sqlbi=True)
+    else:
+        local = dax_ast.format_query(dax, sqlbi=True)
+    result = _formatter_result(dax)
+    assert result.get("errors") == []
+    assert _normalized(str(result["formatted"])) == local
 
 
 @pytest.mark.parametrize(
@@ -54,12 +91,26 @@ def _formatter_errors(dax: str) -> list[dict[str, object]]:
         """,
     ],
 )
-def test_stable_syntax_matches_dax_formatter(dax: str):
+def test_stable_syntax_is_accepted_by_dax_formatter(dax: str):
     if dax.lstrip().startswith("="):
         dax_ast.parse_expression(dax)
     else:
         dax_ast.parse_query(dax)
-    assert _formatter_errors(dax) == []
+    assert _formatter_result(dax).get("errors") == []
+
+
+def test_udf_defaults_are_known_sqlbi_lag():
+    dax = "DEFINE FUNCTION AddTax=(amount:NUMERIC,taxRate:NUMERIC=0.1)=>amount*(1+taxRate) EVALUATE {AddTax(10)}"
+    local = dax_ast.format_query(dax, sqlbi=True)
+    assert "taxRate : NUMERIC = 0.1" in local
+
+    # Microsoft compatibility level 1702 supports defaults, while SQLBI's
+    # formatter still rejects the default-expression `=`.
+    result = _formatter_result(dax)
+    assert result.get("formatted") == ""
+    errors = list(result.get("errors", []))
+    assert len(errors) == 1
+    assert "Syntax error" in str(errors[0].get("message"))
 
 
 def test_local_semantic_checks_are_stricter_than_formatter():
@@ -69,4 +120,4 @@ def test_local_semantic_checks_are_stricter_than_formatter():
 
     # SQLBI currently accepts this structurally invalid row width. Keep this
     # probe explicit so the service is never mistaken for a semantic oracle.
-    assert _formatter_errors(dax) == []
+    assert _formatter_result(dax).get("errors") == []

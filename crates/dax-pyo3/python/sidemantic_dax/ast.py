@@ -670,20 +670,32 @@ def format_expression(
     text: str,
     *,
     localized: bool = False,
+    sqlbi: bool = False,
     dialect: Dialect | None = None,
 ) -> str:
     native = _native_module()
-    return native.format_expression(text, localized, *(dialect or Dialect()).native_args())
+    return native.format_expression(
+        text,
+        localized,
+        *(dialect or Dialect()).native_args(),
+        sqlbi,
+    )
 
 
 def format_query(
     text: str,
     *,
     localized: bool = False,
+    sqlbi: bool = False,
     dialect: Dialect | None = None,
 ) -> str:
     native = _native_module()
-    return native.format_query(text, localized, *(dialect or Dialect()).native_args())
+    return native.format_query(
+        text,
+        localized,
+        *(dialect or Dialect()).native_args(),
+        sqlbi,
+    )
 
 
 def parse_expression_lossless(

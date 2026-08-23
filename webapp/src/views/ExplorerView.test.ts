@@ -1,5 +1,18 @@
 import { describe, expect, test } from "bun:test";
-import { brushDateRange, chronologicalSeriesRows, resolveExpandedLeaderboard } from "./ExplorerView";
+import { brushDateRange, canBatchMetric, chronologicalSeriesRows, resolveExpandedLeaderboard } from "./ExplorerView";
+
+describe("canBatchMetric", () => {
+  test.each(["cohort", "conversion", "retention"])("keeps %s metrics out of aggregate strip queries", (type) => {
+    expect(canBatchMetric({ type })).toBe(false);
+  });
+
+  test.each([undefined, "ratio", "derived", "cumulative", "time_comparison"])(
+    "allows composable metric type %s in aggregate strip queries",
+    (type) => {
+      expect(canBatchMetric({ type })).toBe(true);
+    },
+  );
+});
 
 describe("resolveExpandedLeaderboard", () => {
   test("clears an expansion that is not available on the active dashboard tab", () => {

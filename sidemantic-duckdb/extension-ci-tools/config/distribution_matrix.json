@@ -39,6 +39,7 @@
     "include": [
       {
         "duckdb_arch": "osx_amd64",
+        "runner": "macos-15",
         "osx_build_arch": "x86_64",
         "vcpkg_target_triplet": "x64-osx-release",
         "vcpkg_host_triplet": "arm64-osx-release",
@@ -47,6 +48,7 @@
       },
       {
         "duckdb_arch": "osx_arm64",
+        "runner": "macos-15",
         "osx_build_arch": "arm64",
         "vcpkg_target_triplet": "arm64-osx-release",
         "vcpkg_host_triplet": "arm64-osx-release",

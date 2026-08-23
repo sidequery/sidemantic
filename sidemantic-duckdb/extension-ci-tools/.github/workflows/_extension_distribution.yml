@@ -500,7 +500,7 @@ jobs:
 
   macos:
     name: MacOS
-    runs-on: macos-latest
+    runs-on: ${{ matrix.runner }}
     needs:
       - generate_matrix
       - linux
@@ -1119,7 +1119,7 @@ jobs:
         run: |
           DUCKDB_TAG=${{ inputs.duckdb_tag }} make set_duckdb_tag
 
-      - uses: mymindstorm/setup-emsdk@v13
+      - uses: emscripten-core/setup-emsdk@v13
         with:
           version: 3.1.71
 

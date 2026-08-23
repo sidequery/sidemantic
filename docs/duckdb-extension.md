@@ -26,12 +26,12 @@ The extension build needs Rust, DuckDB extension build tooling, and Ninja.
 
 ```bash
 cd sidemantic-duckdb
-make deps DUCKDB_VERSION=v1.5.3
+make deps DUCKDB_VERSION=v1.5.5
 make
 make test
 ```
 
-`DUCKDB_VERSION` is intentionally guarded to `v1.5.3` because the repository
+`DUCKDB_VERSION` is intentionally guarded to `v1.5.5` because the repository
 vendors a matching `extension-ci-tools` checkout. Update both together before
 building against a different DuckDB tag.
 
@@ -143,7 +143,7 @@ The workflow is source-package oriented. It does not publish to the DuckDB commu
 | Native format | `1` |
 | Rust runtime crate | `0.1.0` |
 | DuckDB extension source package | `0.1.0` |
-| DuckDB build target | `1.5.3` |
+| DuckDB build target | `1.5.5` |
 
 DuckDB extension artifacts are ABI-sensitive. Rebuild the extension when changing the DuckDB target version or the Rust native runtime version.
 

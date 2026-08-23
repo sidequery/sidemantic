@@ -4,7 +4,7 @@ PROJ_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 # Configuration of extension
 EXT_NAME=sidemantic
 EXT_CONFIG=${PROJ_DIR}extension_config.cmake
-SUPPORTED_DUCKDB_VERSION := v1.5.3
+SUPPORTED_DUCKDB_VERSION := v1.5.5
 DUCKDB_VERSION ?= $(SUPPORTED_DUCKDB_VERSION)
 
 .PHONY: deps

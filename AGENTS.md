@@ -29,9 +29,17 @@ Update BOTH when releasing:
 - `pyproject.toml`: `version = "X.Y.Z"`
 - `sidemantic/__init__.py`: `__version__ = "X.Y.Z"`
 
-## CRITICAL: Before Every Commit
+## Validation Before Commits
 
-**ALWAYS run the EXACT same commands CI runs before committing:**
+Match validation scope to the change instead of running the entire suite automatically.
+
+- For small, localized changes, run ruff on the changed Python files and the narrowest relevant tests. This is the default.
+- Expand to the affected package or subsystem when shared code, planners, adapters, or fixtures may have broader impact.
+- Run the full CI-equivalent sequence only when explicitly requested, preparing a release, changing dependencies/CI/tooling, making a broad cross-cutting refactor, or when targeted checks cannot bound the blast radius.
+- Do not rerun the full suite for a small follow-up on a branch that already had a green full run when targeted tests cover the follow-up.
+- Before handoff, report exactly what ran and what was left to CI.
+
+When full CI parity is warranted, run these commands in order:
 
 ```bash
 # Run these in order:
@@ -60,13 +68,11 @@ uv run ruff check --fix . --exclude docs/_extensions --exclude sidemantic-duckdb
 uv run ruff format . --exclude docs/_extensions --exclude sidemantic-duckdb/extension-ci-tools --exclude sidemantic-duckdb/scripts --exclude sidemantic-duckdb/duckdb --exclude sidemantic/adapters/malloy_grammar --exclude sidemantic/adapters/holistics_grammar
 ```
 
-This is NON-NEGOTIABLE. You MUST run these BEFORE every commit.
-
 **PRs:** Do not include test commands in PR bodies unless explicitly requested.
 
 **Why this matters:**
-- CI runs these exact commands and will fail if they don't pass
-- You keep pushing broken code because you don't run these locally
+- Targeted checks keep small changes fast while still covering the affected behavior
+- CI runs the full matrix and remains the final integration gate
 - Ruff must be in `[project.optional-dependencies] dev` for CI
 - NOT in `[dependency-groups]` (that's uv-specific, CI uses optional-dependencies)
 
@@ -113,10 +119,7 @@ This is NON-NEGOTIABLE. You MUST run these BEFORE every commit.
 
 ## Testing
 
-Run tests before committing significant changes:
-```bash
-uv run pytest -v
-```
+Use the validation scope above. Prefer focused test paths or test names for localized changes; reserve `uv run pytest -v` for cases that warrant full CI parity.
 
 ## Publishing to PyPI
 

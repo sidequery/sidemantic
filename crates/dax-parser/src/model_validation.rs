@@ -156,16 +156,21 @@ impl ModelIndex {
     fn columns(&self, table: &str, column: &str) -> &[NamedSymbol] {
         let table_key = key(table);
         let column_key = key(column);
-        self.query_columns
-            .get(&table_key)
-            .and_then(|columns| columns.get(&column_key))
-            .or_else(|| {
-                self.model_columns
-                    .get(&table_key)
-                    .and_then(|columns| columns.get(&column_key))
-            })
-            .map(Vec::as_slice)
-            .unwrap_or_default()
+        let columns = if self.query_tables.contains_key(&table_key) {
+            self.query_columns
+                .get(&table_key)
+                .and_then(|columns| columns.get(&column_key))
+        } else {
+            self.query_columns
+                .get(&table_key)
+                .and_then(|columns| columns.get(&column_key))
+                .or_else(|| {
+                    self.model_columns
+                        .get(&table_key)
+                        .and_then(|columns| columns.get(&column_key))
+                })
+        };
+        columns.map(Vec::as_slice).unwrap_or_default()
     }
 
     fn measures(&self, name: &str) -> &[MeasureSymbol] {
@@ -812,6 +817,21 @@ mod tests {
         )
         .unwrap();
         assert!(validate_query_against_model(&query, &model()).is_empty());
+    }
+
+    #[test]
+    fn query_table_shadow_does_not_fall_through_to_model_columns() {
+        let query = parse_query(
+            "define
+             table Product = DATATABLE(\"Name\", STRING, {{\"Widget\"}})
+             evaluate { Product[Color] }",
+        )
+        .unwrap();
+
+        let issues = validate_query_against_model(&query, &model());
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].code, ModelValidationCode::UnknownMember);
+        assert!(issues[0].message.contains("[Color]"));
     }
 
     #[test]

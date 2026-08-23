@@ -73,6 +73,7 @@ class JoinPath:
     custom_condition: str | None = None
     from_target_model: str | None = None
     to_target_model: str | None = None
+    edge_id: str | None = None
 
     @property
     def from_instance(self) -> str:
@@ -119,7 +120,7 @@ class SemanticGraph:
         self.metadata: dict[str, Any] = {}
         self._version = 0
         self._adjacency_dirty = True
-        self._adjacency: dict[str, list[tuple[str, list[str], list[str], str, str | None]]] = {}
+        self._adjacency: dict[str, list[tuple[str, list[str], list[str], str, str | None, str | None]]] = {}
         self._role_models: dict[str, str] = {}
         self._role_owners: dict[str, str] = {}
         self._relationship_instances: dict[tuple[str, str], str] = {}
@@ -352,6 +353,7 @@ class SemanticGraph:
             to_keys: list[str],
             relationship_type: str,
             custom_condition: str | None = None,
+            edge_id: str | None = None,
         ) -> None:
             # Invalid/unknown key pairs are not graph edges. Structural validation reports the
             # actionable cause; omitting the edge prevents compilation from producing ``JOIN ON``
@@ -361,7 +363,9 @@ class SemanticGraph:
                     return
             if from_model not in self._adjacency:
                 self._adjacency[from_model] = []
-            self._adjacency[from_model].append((to_model, from_keys, to_keys, relationship_type, custom_condition))
+            self._adjacency[from_model].append(
+                (to_model, from_keys, to_keys, relationship_type, custom_condition, edge_id)
+            )
 
         def invert_relationship(relationship_type: str) -> str:
             if relationship_type == "many_to_one":
@@ -407,6 +411,7 @@ class SemanticGraph:
                     continue
 
                 related_model = relationship.related_model
+                edge_id = relationship.edge_id
                 if related_model not in self.models:
                     continue  # Skip if related model doesn't exist yet
 
@@ -427,8 +432,8 @@ class SemanticGraph:
                 self._relationship_instances[(model_name, relationship.name)] = related_instance
 
                 if relationship.type == "cross":
-                    add_edge(model_name, related_instance, [], [], "cross")
-                    add_edge(related_instance, model_name, [], [], "cross")
+                    add_edge(model_name, related_instance, [], [], "cross", edge_id=edge_id)
+                    add_edge(related_instance, model_name, [], [], "cross", edge_id=edge_id)
                     continue
 
                 if relationship.type == "many_to_many":
@@ -450,7 +455,15 @@ class SemanticGraph:
                             local_keys = model.primary_key_columns
                             remote_keys = relationship.foreign_key_columns
                         custom_condition = _custom_join_condition(relationship.sql)
-                        add_edge(model_name, related_instance, local_keys, remote_keys, "one_to_many", custom_condition)
+                        add_edge(
+                            model_name,
+                            related_instance,
+                            local_keys,
+                            remote_keys,
+                            "one_to_many",
+                            custom_condition,
+                            edge_id,
+                        )
                         add_edge(
                             related_instance,
                             model_name,
@@ -458,6 +471,7 @@ class SemanticGraph:
                             local_keys,
                             "many_to_one",
                             _reverse_custom_join_condition(custom_condition),
+                            edge_id,
                         )
                         continue
 
@@ -472,11 +486,25 @@ class SemanticGraph:
                         else self.models[related_model].primary_key_columns
                     )
 
-                    add_edge(model_name, junction_model, base_pk, junction_self_fks, "one_to_many")
-                    add_edge(junction_model, model_name, junction_self_fks, base_pk, "many_to_one")
+                    add_edge(model_name, junction_model, base_pk, junction_self_fks, "one_to_many", edge_id=edge_id)
+                    add_edge(junction_model, model_name, junction_self_fks, base_pk, "many_to_one", edge_id=edge_id)
 
-                    add_edge(junction_model, related_instance, junction_related_fks, related_pk, "many_to_one")
-                    add_edge(related_instance, junction_model, related_pk, junction_related_fks, "one_to_many")
+                    add_edge(
+                        junction_model,
+                        related_instance,
+                        junction_related_fks,
+                        related_pk,
+                        "many_to_one",
+                        edge_id=edge_id,
+                    )
+                    add_edge(
+                        related_instance,
+                        junction_model,
+                        related_pk,
+                        junction_related_fks,
+                        "one_to_many",
+                        edge_id=edge_id,
+                    )
                     continue
 
                 # Get the join key names
@@ -496,7 +524,15 @@ class SemanticGraph:
                     remote_keys = relationship.foreign_key_columns  # [customer_id] (in orders)
 
                 custom_condition = _custom_join_condition(relationship.sql)
-                add_edge(model_name, related_instance, local_keys, remote_keys, relationship.type, custom_condition)
+                add_edge(
+                    model_name,
+                    related_instance,
+                    local_keys,
+                    remote_keys,
+                    relationship.type,
+                    custom_condition,
+                    edge_id,
+                )
                 add_edge(
                     related_instance,
                     model_name,
@@ -504,6 +540,7 @@ class SemanticGraph:
                     local_keys,
                     invert_relationship(relationship.type),
                     _reverse_custom_join_condition(custom_condition),
+                    edge_id,
                 )
 
         # Role instances inherit the canonical target's explicitly role-aliased
@@ -529,8 +566,8 @@ class SemanticGraph:
                 register_role_instance(nested_instance, related_model, source_instance)
                 self._relationship_instances[(source_instance, relationship.name)] = nested_instance
                 if relationship.type == "cross":
-                    add_edge(source_instance, nested_instance, [], [], "cross")
-                    add_edge(nested_instance, source_instance, [], [], "cross")
+                    add_edge(source_instance, nested_instance, [], [], "cross", edge_id=relationship.edge_id)
+                    add_edge(nested_instance, source_instance, [], [], "cross", edge_id=relationship.edge_id)
                 elif relationship.type in {"many_to_one", "one_to_one", "one_to_many"}:
                     if relationship.type == "many_to_one":
                         local_keys = relationship.foreign_key_columns
@@ -550,6 +587,7 @@ class SemanticGraph:
                         remote_keys,
                         relationship.type,
                         custom_condition,
+                        relationship.edge_id,
                     )
                     add_edge(
                         nested_instance,
@@ -558,6 +596,7 @@ class SemanticGraph:
                         local_keys,
                         invert_relationship(relationship.type),
                         _reverse_custom_join_condition(custom_condition),
+                        relationship.edge_id,
                     )
                 elif relationship.type == "many_to_many":
                     if relationship.through:
@@ -583,6 +622,7 @@ class SemanticGraph:
                         remote_keys,
                         "one_to_many",
                         custom_condition,
+                        relationship.edge_id,
                     )
                     add_edge(
                         nested_instance,
@@ -591,6 +631,7 @@ class SemanticGraph:
                         local_keys,
                         "many_to_one",
                         _reverse_custom_join_condition(custom_condition),
+                        relationship.edge_id,
                     )
                 pending.append((nested_instance, related_model, depth + 1))
 
@@ -606,7 +647,9 @@ class SemanticGraph:
             self.build_adjacency()
         return any(
             target in query_instances and relationship_type != "cross"
-            for target, _from_keys, _to_keys, relationship_type, _condition in self._adjacency.get(instance, [])
+            for target, _from_keys, _to_keys, relationship_type, _condition, _edge_id in self._adjacency.get(
+                instance, []
+            )
         )
 
     def find_relationship_path(
@@ -657,8 +700,15 @@ class SemanticGraph:
         candidates: dict[tuple[object, ...], tuple[JoinPath, ...]] = {}
 
         def edge_sort_key(edge):
-            next_model, from_keys, to_keys, relationship_type, custom_condition = edge
-            return next_model, tuple(from_keys), tuple(to_keys), relationship_type, custom_condition or ""
+            next_model, from_keys, to_keys, relationship_type, custom_condition, edge_id = edge
+            return (
+                next_model,
+                tuple(from_keys),
+                tuple(to_keys),
+                relationship_type,
+                custom_condition or "",
+                edge_id or "",
+            )
 
         def path_signature(path: tuple[JoinPath, ...]) -> tuple[object, ...]:
             return tuple(
@@ -669,6 +719,7 @@ class SemanticGraph:
                     tuple(hop.to_columns) if hop.custom_condition is None else (),
                     hop.relationship,
                     _normalized_join_condition(hop.custom_condition),
+                    hop.edge_id,
                 )
                 for hop in path
             )
@@ -678,7 +729,7 @@ class SemanticGraph:
             if shortest_length is not None and len(path) >= shortest_length:
                 continue
 
-            for next_model, from_keys, to_keys, relationship_type, custom_condition in sorted(
+            for next_model, from_keys, to_keys, relationship_type, custom_condition, edge_id in sorted(
                 self._adjacency.get(current, []), key=edge_sort_key
             ):
                 if next_model in visited:
@@ -693,6 +744,7 @@ class SemanticGraph:
                         custom_condition=custom_condition,
                         from_target_model=self._role_models.get(current, current),
                         to_target_model=self._role_models.get(next_model, next_model),
+                        edge_id=edge_id,
                     ),
                 )
 
@@ -722,7 +774,15 @@ class SemanticGraph:
             ordered_candidates = preferred
 
         if len(ordered_candidates) > 1:
-            routes = [" -> ".join([from_model, *(hop.to_model for hop in path)]) for path in ordered_candidates]
+            routes = []
+            for path in ordered_candidates:
+                if any(hop.edge_id is not None for hop in path):
+                    route = from_model + "".join(
+                        f" -[{hop.edge_id}]-> {hop.to_model}" if hop.edge_id else f" -> {hop.to_model}" for hop in path
+                    )
+                else:
+                    route = " -> ".join([from_model, *(hop.to_model for hop in path)])
+                routes.append(route)
             message = (
                 f"Ambiguous join paths between {from_model} and {to_model}: "
                 + "; ".join(routes)

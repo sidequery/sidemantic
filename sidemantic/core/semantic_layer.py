@@ -144,6 +144,10 @@ class SemanticLayer:
                 raise ValueError("engine must be one of: python, rust, auto")
 
         self.graph = SemanticGraph()
+        # Populated by ``from_catalog`` when this layer is bound to one explicit
+        # compiled semantic scope. Ordinary/native layers remain catalog-free.
+        self.catalog = None
+        self.compiled_scope = None
         self._sql_rewrite_cache: dict[tuple[object, ...], str] = {}
         self._sql_rewrite_cache_limit = 256
         # Monotonic counter bumped whenever the model/metric graph or query-affecting
@@ -1873,6 +1877,74 @@ class SemanticLayer:
         from sidemantic.core.catalog import get_catalog_metadata
 
         return get_catalog_metadata(self.graph, schema=schema, enforce_visibility=self.enforce_visibility)
+
+    @classmethod
+    def from_catalog(
+        cls,
+        catalog,
+        *,
+        scope_id: str | None = None,
+        connection: str | BaseDatabaseAdapter = "duckdb:///:memory:",  # type: ignore # noqa: F821
+        dialect: str | None = None,
+        allow_invalid: bool = False,
+        **layer_options,
+    ) -> SemanticLayer:
+        """Bind a layer to one explicitly resolved compiled semantic scope.
+
+        A catalog never merges namespaces. Omitting ``scope_id`` is accepted
+        only when the catalog contains exactly one scope. The compiled target
+        dialect must match the runtime connection dialect so a projection can
+        never be executed against a different backend by accident.
+        """
+        from sidemantic.core.semantic_catalog import SemanticCatalog
+
+        if not isinstance(catalog, SemanticCatalog):
+            raise TypeError("catalog must be a SemanticCatalog")
+
+        compiled_scope = catalog.resolve_scope(scope_id)
+        if not compiled_scope.valid and not allow_invalid:
+            raise ValueError(
+                f"Compiled semantic scope '{compiled_scope.scope_id}' contains validation errors; "
+                "pass allow_invalid=True only for an explicit permissive/unsafe runtime binding"
+            )
+
+        # Defer registry mutation until the catalog binding and dialect guard
+        # have both succeeded. Constructing with the caller's default
+        # ``auto_register=True`` would otherwise leave a rejected layer as the
+        # current layer when target/runtime dialects do not match.
+        auto_register = layer_options.pop("auto_register", True)
+        layer = cls(connection=connection, dialect=dialect, auto_register=False, **layer_options)
+
+        normalized_target = cls._normalize_catalog_dialect(compiled_scope.target_dialect)
+        normalized_runtime = cls._normalize_catalog_dialect(layer.dialect)
+        if normalized_target != normalized_runtime:
+            close_adapter = getattr(layer.adapter, "close", None)
+            if close_adapter:
+                close_adapter()
+            raise ValueError(
+                f"Compiled semantic scope '{compiled_scope.scope_id}' targets "
+                f"'{compiled_scope.target_dialect}', but the runtime dialect is '{layer.dialect}'"
+            )
+
+        layer.catalog = catalog
+        layer.compiled_scope = compiled_scope
+        # Runtime layers receive isolated clones. Query-time or user mutation
+        # in one layer must not mutate the compiled catalog or another layer.
+        layer.graph = compiled_scope.clone_runtime()
+        if auto_register:
+            from .registry import set_current_layer
+
+            layer._registration_token = set_current_layer(layer)
+        return layer
+
+    @staticmethod
+    def _normalize_catalog_dialect(dialect: str) -> str:
+        normalized = dialect.strip().lower().replace("-", "_")
+        aliases = {
+            "postgresql": "postgres",
+            "google_bigquery": "bigquery",
+        }
+        return aliases.get(normalized, normalized)
 
     @classmethod
     def from_yaml(

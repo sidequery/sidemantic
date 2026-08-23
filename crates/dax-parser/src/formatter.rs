@@ -1,10 +1,16 @@
 //! Deterministic offline formatting for the DAX AST.
 
 use crate::{
-    BinaryOp, DataTableColumn, DataTableType, DefineBlock, Definition, EvaluateStmt, Expr,
+    lookup, BinaryOp, DataTableColumn, DataTableType, DefineBlock, Definition, EvaluateStmt, Expr,
     FuncParam, OrderKey, Query, SortDirection, TableName, UnaryOp, VisualShape, VisualShapeAxis,
     VisualShapeColumn,
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FormatStyle {
+    Canonical,
+    Sqlbi,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FormatOptions {
@@ -37,6 +43,7 @@ impl Default for FormatOptions {
 #[derive(Debug, Clone, Copy)]
 pub struct DaxFormatter {
     options: FormatOptions,
+    style: FormatStyle,
 }
 impl Default for DaxFormatter {
     fn default() -> Self {
@@ -45,7 +52,14 @@ impl Default for DaxFormatter {
 }
 impl DaxFormatter {
     pub const fn new(options: FormatOptions) -> Self {
-        Self { options }
+        Self {
+            options,
+            style: FormatStyle::Canonical,
+        }
+    }
+    pub const fn with_style(mut self, style: FormatStyle) -> Self {
+        self.style = style;
+        self
     }
     pub const fn options(&self) -> FormatOptions {
         self.options
@@ -66,6 +80,9 @@ impl DaxFormatter {
     }
     fn sep(&self) -> String {
         format!("{} ", self.options.list_separator)
+    }
+    fn is_sqlbi(&self) -> bool {
+        self.style == FormatStyle::Sqlbi
     }
     fn pad(&self, n: usize) -> String {
         " ".repeat(n * self.options.indent_width)
@@ -100,8 +117,13 @@ impl DaxFormatter {
             Expr::Number(x) => self.number(x),
             Expr::String(x) => string(x),
             Expr::DateTime(x) => format!("dt{}", string(x)),
-            Expr::Boolean(x) => if *x { "TRUE" } else { "FALSE" }.into(),
-            Expr::Blank => "BLANK".into(),
+            Expr::Boolean(x) => match (*x, self.is_sqlbi()) {
+                (true, true) => "TRUE ()".into(),
+                (false, true) => "FALSE ()".into(),
+                (true, false) => "TRUE".into(),
+                (false, false) => "FALSE".into(),
+            },
+            Expr::Blank => if self.is_sqlbi() { "BLANK ()" } else { "BLANK" }.into(),
             Expr::Omitted => String::new(),
             Expr::Parameter(x) => format!("@{x}"),
             Expr::Identifier(x) => x.clone(),
@@ -120,7 +142,18 @@ impl DaxFormatter {
                 }
                 x
             }
-            Expr::FunctionCall { name, args } => format!("{name}({})", self.join(args)),
+            Expr::FunctionCall { name, args } => {
+                if self.is_sqlbi() {
+                    let name = lookup(name).map_or(name.as_str(), |function| function.name);
+                    if args.is_empty() {
+                        format!("{name} ()")
+                    } else {
+                        format!("{name} ( {} )", self.join(args))
+                    }
+                } else {
+                    format!("{name}({})", self.join(args))
+                }
+            }
             Expr::DataTable { columns, rows } => self.datatable(columns, rows),
             Expr::Unary { op, expr } => {
                 let x = self.expr(expr, unary_precedence(op));
@@ -145,27 +178,57 @@ impl DaxFormatter {
                 )
             }
             Expr::VarBlock { decls, body } => {
-                let mut lines = decls
-                    .iter()
-                    .map(|d| format!("VAR {} = {}", d.name, self.expr(&d.expr, 0)))
-                    .collect::<Vec<_>>();
-                lines.push("RETURN".into());
-                lines.push(self.indent(&self.expr(body, 0), 1));
-                lines.join("\n")
+                if self.is_sqlbi() {
+                    let mut parts = decls
+                        .iter()
+                        .map(|d| format!("VAR {} = {}", d.name, self.expr(&d.expr, 0)))
+                        .collect::<Vec<_>>();
+                    parts.push(format!("RETURN {}", self.expr(body, 0)));
+                    parts.join(" ")
+                } else {
+                    let mut lines = decls
+                        .iter()
+                        .map(|d| format!("VAR {} = {}", d.name, self.expr(&d.expr, 0)))
+                        .collect::<Vec<_>>();
+                    lines.push("RETURN".into());
+                    lines.push(self.indent(&self.expr(body, 0), 1));
+                    lines.join("\n")
+                }
             }
-            Expr::TableConstructor(rows) => format!(
-                "{{{}}}",
-                rows.iter()
-                    .map(|r| if r.len() == 1 {
-                        self.expr(&r[0], 0)
-                    } else {
-                        format!("({})", self.join(r))
+            Expr::TableConstructor(rows) => {
+                let rows = rows
+                    .iter()
+                    .map(|r| {
+                        if r.len() == 1 {
+                            self.expr(&r[0], 0)
+                        } else if self.is_sqlbi() {
+                            format!("( {} )", self.join(r))
+                        } else {
+                            format!("({})", self.join(r))
+                        }
                     })
                     .collect::<Vec<_>>()
-                    .join(&self.sep())
-            ),
-            Expr::Paren(x) => format!("({})", self.expr(x, 0)),
-            Expr::Tuple(xs) => format!("({})", self.join(xs)),
+                    .join(&self.sep());
+                if self.is_sqlbi() {
+                    format!("{{ {rows} }}")
+                } else {
+                    format!("{{{rows}}}")
+                }
+            }
+            Expr::Paren(x) => {
+                if self.is_sqlbi() {
+                    format!("( {} )", self.expr(x, 0))
+                } else {
+                    format!("({})", self.expr(x, 0))
+                }
+            }
+            Expr::Tuple(xs) => {
+                if self.is_sqlbi() {
+                    format!("( {} )", self.join(xs))
+                } else {
+                    format!("({})", self.join(xs))
+                }
+            }
         };
         if prec < parent && !matches!(e, Expr::Paren(_)) {
             format!("({s})")
@@ -178,14 +241,27 @@ impl DaxFormatter {
             .iter()
             .flat_map(|c| [string(&c.name), datatype(&c.data_type).into()])
             .collect::<Vec<_>>();
-        args.push(format!(
-            "{{{}}}",
-            rows.iter()
-                .map(|r| format!("{{{}}}", self.join(r)))
-                .collect::<Vec<_>>()
-                .join(&self.sep())
-        ));
-        format!("DATATABLE({})", args.join(&self.sep()))
+        let rows = rows
+            .iter()
+            .map(|r| {
+                if self.is_sqlbi() {
+                    format!("{{ {} }}", self.join(r))
+                } else {
+                    format!("{{{}}}", self.join(r))
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(&self.sep());
+        args.push(if self.is_sqlbi() {
+            format!("{{ {rows} }}")
+        } else {
+            format!("{{{rows}}}")
+        });
+        if self.is_sqlbi() {
+            format!("DATATABLE ( {} )", args.join(&self.sep()))
+        } else {
+            format!("DATATABLE({})", args.join(&self.sep()))
+        }
     }
     fn define_block(&self, b: &DefineBlock) -> String {
         format!(
@@ -204,15 +280,19 @@ impl DaxFormatter {
                 table: t,
                 name,
                 expr,
-            } => (
-                doc,
-                format!(
-                    "MEASURE {}{} = {}",
+            } => {
+                let head = format!(
+                    "MEASURE {}{} =",
                     t.as_ref().map(table).unwrap_or_default(),
-                    bracket(name),
-                    self.expr(expr, 0)
-                ),
-            ),
+                    bracket(name)
+                );
+                let stmt = if self.is_sqlbi() {
+                    format!("{head}\n{}", self.indent(&self.expr(expr, 0), 1))
+                } else {
+                    format!("{head} {}", self.expr(expr, 0))
+                };
+                (doc, stmt)
+            }
             Definition::Var { doc, name, expr } => {
                 (doc, format!("VAR {name} = {}", self.expr(expr, 0)))
             }
@@ -222,10 +302,23 @@ impl DaxFormatter {
                 expr,
                 visual_shape,
             } => {
-                let mut s = format!("TABLE {} = {}", quoted(name), self.expr(expr, 0));
+                let name = if self.is_sqlbi() {
+                    sqlbi_table_name(name)
+                } else {
+                    quoted(name)
+                };
+                let mut s = if self.is_sqlbi() {
+                    format!("TABLE {name} =\n{}", self.indent(&self.expr(expr, 0), 1))
+                } else {
+                    format!("TABLE {name} = {}", self.expr(expr, 0))
+                };
                 if let Some(v) = visual_shape {
                     s.push('\n');
-                    s.push_str(&self.visual_shape(v));
+                    if self.is_sqlbi() {
+                        s.push_str(&self.indent(&self.visual_shape(v), 1));
+                    } else {
+                        s.push_str(&self.visual_shape(v));
+                    }
                 }
                 (doc, s)
             }
@@ -248,18 +341,39 @@ impl DaxFormatter {
                 name,
                 params,
                 body,
-            } => (
-                doc,
-                format!(
-                    "FUNCTION {name} = ({}) => {}",
-                    params
+            } => {
+                let stmt = if self.is_sqlbi() {
+                    let params = params
                         .iter()
-                        .map(|p| self.param(p))
+                        .enumerate()
+                        .map(|(index, p)| {
+                            let suffix = if index + 1 == params.len() {
+                                String::new()
+                            } else {
+                                self.options.list_separator.to_string()
+                            };
+                            format!("{}{}", self.indent(&self.param(p), 2), suffix)
+                        })
                         .collect::<Vec<_>>()
-                        .join(&self.sep()),
-                    self.expr(body, 0)
-                ),
-            ),
+                        .join("\n");
+                    format!(
+                        "FUNCTION {name} = (\n{params}\n{}) =>\n{}",
+                        self.pad(1),
+                        self.indent(&self.expr(body, 0), 1)
+                    )
+                } else {
+                    format!(
+                        "FUNCTION {name} = ({}) => {}",
+                        params
+                            .iter()
+                            .map(|p| self.param(p))
+                            .collect::<Vec<_>>()
+                            .join(&self.sep()),
+                        self.expr(body, 0)
+                    )
+                };
+                (doc, stmt)
+            }
         };
         match doc {
             Some(x) => format!("{}\n{stmt}", document(x)),
@@ -269,7 +383,7 @@ impl DaxFormatter {
     fn param(&self, p: &FuncParam) -> String {
         let mut s = p.name.clone();
         if !p.type_hints.is_empty() {
-            s.push_str(": ");
+            s.push_str(if self.is_sqlbi() { " : " } else { ": " });
             s.push_str(&p.type_hints.join(" "));
         }
         if let Some(x) = &p.default {
@@ -295,6 +409,19 @@ impl DaxFormatter {
             .join(&self.sep())
     }
     fn axis(&self, a: &VisualShapeAxis) -> Vec<String> {
+        if self.is_sqlbi() {
+            let mut x = vec![format!("AXIS {}", a.name)];
+            for g in &a.groups {
+                x.push(format!("{}GROUP {}", self.pad(1), self.columns(&g.columns)));
+                x.push(format!("{}TOTAL {}", self.pad(2), bracket(&g.total.name)));
+            }
+            x.push(format!(
+                "{}ORDER BY {}",
+                self.pad(1),
+                self.columns(&a.order_by)
+            ));
+            return x;
+        }
         let mut x = vec![format!("{}AXIS {}", self.pad(1), a.name)];
         for g in &a.groups {
             x.push(format!(
@@ -312,6 +439,21 @@ impl DaxFormatter {
         x
     }
     fn evaluate(&self, e: &EvaluateStmt) -> String {
+        if self.is_sqlbi() {
+            let mut x = vec![format!("EVALUATE\n{}", self.expr(&e.expr, 0))];
+            if e.order_by.len() == 1 {
+                x.push(format!("ORDER BY {}", self.order(&e.order_by)));
+            } else if !e.order_by.is_empty() {
+                x.push(format!(
+                    "ORDER BY\n{}",
+                    self.indent(&self.order(&e.order_by), 1)
+                ));
+            }
+            if let Some(s) = &e.start_at {
+                x.push(format!("START AT {}", self.join(s)));
+            }
+            return x.join("\n");
+        }
         let mut x = vec![format!(
             "EVALUATE\n{}",
             self.indent(&self.expr(&e.expr, 0), 1)
@@ -328,6 +470,11 @@ impl DaxFormatter {
         x.join("\n")
     }
     fn order(&self, xs: &[OrderKey]) -> String {
+        let separator = if self.is_sqlbi() && xs.len() > 1 {
+            format!("{}\n", self.options.list_separator)
+        } else {
+            self.sep()
+        };
         xs.iter()
             .map(|x| {
                 format!(
@@ -340,7 +487,7 @@ impl DaxFormatter {
                 )
             })
             .collect::<Vec<_>>()
-            .join(&self.sep())
+            .join(&separator)
     }
 }
 
@@ -350,11 +497,17 @@ pub fn format_expression(e: &Expr) -> String {
 pub fn format_expression_with_options(e: &Expr, o: FormatOptions) -> String {
     DaxFormatter::new(o).format_expression(e)
 }
+pub fn format_expression_with_style(e: &Expr, o: FormatOptions, style: FormatStyle) -> String {
+    DaxFormatter::new(o).with_style(style).format_expression(e)
+}
 pub fn format_query(q: &Query) -> String {
     DaxFormatter::default().format_query(q)
 }
 pub fn format_query_with_options(q: &Query, o: FormatOptions) -> String {
     DaxFormatter::new(o).format_query(q)
+}
+pub fn format_query_with_style(q: &Query, o: FormatOptions, style: FormatStyle) -> String {
+    DaxFormatter::new(o).with_style(style).format_query(q)
 }
 
 fn string(x: &str) -> String {
@@ -362,6 +515,45 @@ fn string(x: &str) -> String {
 }
 fn quoted(x: &str) -> String {
     format!("'{}'", x.replace('\'', "''"))
+}
+fn sqlbi_table_name(x: &str) -> String {
+    let reserved = matches!(
+        x.to_ascii_uppercase().as_str(),
+        "DEFINE"
+            | "EVALUATE"
+            | "ORDER"
+            | "BY"
+            | "START"
+            | "AT"
+            | "RETURN"
+            | "VAR"
+            | "IN"
+            | "ASC"
+            | "DESC"
+            | "MEASURE"
+            | "COLUMN"
+            | "TABLE"
+            | "FUNCTION"
+            | "WITH"
+            | "VISUAL"
+            | "SHAPE"
+            | "AXIS"
+            | "GROUP"
+            | "TOTAL"
+            | "DENSIFY"
+            | "TRUE"
+            | "FALSE"
+            | "NOT"
+    );
+    if !reserved
+        && !x.is_empty()
+        && x.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && x.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+    {
+        x.into()
+    } else {
+        quoted(x)
+    }
 }
 fn bracket(x: &str) -> String {
     format!("[{}]", x.replace(']', "]]"))
@@ -540,5 +732,80 @@ MEASURE 'S'[M] = SUM('S'[X]) VAR threshold = 10 TABLE shaped = SUMMARIZE('S', 'S
         let x = parse_expression(s).unwrap();
         let f = format_expression(&x);
         assert_eq!(parse_expression(&f).unwrap(), x, "{f}");
+    }
+
+    #[test]
+    fn sqlbi_builtin_casing_and_function_spacing() {
+        let expr =
+            parse_expression("sumx(filter('Sales','Sales'[Amount]>100),'Sales'[Amount])").unwrap();
+        assert_eq!(
+            format_expression_with_style(&expr, FormatOptions::canonical(), FormatStyle::Sqlbi),
+            "SUMX ( FILTER ( 'Sales', 'Sales'[Amount] > 100 ), 'Sales'[Amount] )"
+        );
+    }
+
+    #[test]
+    fn sqlbi_table_constructor_and_query_clauses() {
+        let constructor = parse_query("EVALUATE {(1,2),(3,4)}").unwrap();
+        assert_eq!(
+            format_query_with_style(&constructor, FormatOptions::canonical(), FormatStyle::Sqlbi),
+            "EVALUATE\n{ ( 1, 2 ), ( 3, 4 ) }"
+        );
+
+        let clauses = parse_query("EVALUATE ROW(\"x\",1) ORDER BY [x] START AT 1").unwrap();
+        assert_eq!(
+            format_query_with_style(&clauses, FormatOptions::canonical(), FormatStyle::Sqlbi),
+            "EVALUATE\nROW ( \"x\", 1 )\nORDER BY [x] ASC\nSTART AT 1"
+        );
+    }
+
+    #[test]
+    fn sqlbi_define_measure_var_and_udf_layout() {
+        let definitions = parse_query(
+            "DEFINE MEASURE 'S'[M]=SUM('S'[A]) VAR threshold=10 EVALUATE ROW(\"m\",[M])",
+        )
+        .unwrap();
+        assert_eq!(
+            format_query_with_style(&definitions, FormatOptions::canonical(), FormatStyle::Sqlbi),
+            "DEFINE\n    MEASURE 'S'[M] =\n        SUM ( 'S'[A] )\n    VAR threshold = 10\n\nEVALUATE\nROW ( \"m\", [M] )"
+        );
+
+        let udf = parse_query(
+            "DEFINE FUNCTION AddTax=(amount:NUMERIC,taxRate:NUMERIC=0.1)=>amount*(1+taxRate) EVALUATE {AddTax(10)}",
+        )
+        .unwrap();
+        assert_eq!(
+            format_query_with_style(&udf, FormatOptions::canonical(), FormatStyle::Sqlbi),
+            "DEFINE\n    FUNCTION AddTax = (\n            amount : NUMERIC,\n            taxRate : NUMERIC = 0.1\n        ) =>\n        amount * ( 1 + taxRate )\n\nEVALUATE\n{ AddTax ( 10 ) }"
+        );
+    }
+
+    #[test]
+    fn sqlbi_visual_shape_layout() {
+        let query = parse_query(
+            "DEFINE TABLE data=ROW(\"Year\",2000,\"IsTotal\",FALSE()) WITH VISUAL SHAPE AXIS ROWS GROUP [Year] TOTAL [IsTotal] ORDER BY [Year] DENSIFY \"IsDensified\" EVALUATE data",
+        )
+        .unwrap();
+        assert_eq!(
+            format_query_with_style(&query, FormatOptions::canonical(), FormatStyle::Sqlbi),
+            "DEFINE\n    TABLE data =\n        ROW ( \"Year\", 2000, \"IsTotal\", FALSE () )\n        WITH VISUAL SHAPE\n        AXIS ROWS\n            GROUP [Year]\n                TOTAL [IsTotal]\n            ORDER BY [Year]\n        DENSIFY \"IsDensified\"\n\nEVALUATE\ndata"
+        );
+    }
+
+    #[test]
+    fn sqlbi_quotes_table_names_only_when_required() {
+        assert_eq!(sqlbi_table_name("data2"), "data2");
+        assert_eq!(sqlbi_table_name("TABLE"), "'TABLE'");
+        assert_eq!(sqlbi_table_name("Sales Data"), "'Sales Data'");
+    }
+
+    #[test]
+    fn format_options_preserves_three_field_struct_literals() {
+        let options = FormatOptions {
+            list_separator: ',',
+            decimal_separator: '.',
+            indent_width: 2,
+        };
+        assert_eq!(DaxFormatter::new(options).options(), options);
     }
 }

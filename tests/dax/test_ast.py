@@ -495,6 +495,73 @@ def test_formatter_native_canonical_and_localized_round_trip():
     assert dax_ast.parse_query(query) == dax_ast.parse_query("EVALUATE {1,2}")
 
 
+def test_formatter_native_sqlbi_profile_exact_goldens():
+    assert (
+        dax_ast.format_expression(
+            "=sumx(filter('Sales','Sales'[Amount]>100),'Sales'[Amount])",
+            sqlbi=True,
+        )
+        == "=\nSUMX ( FILTER ( 'Sales', 'Sales'[Amount] > 100 ), 'Sales'[Amount] )"
+    )
+    assert dax_ast.format_query("EVALUATE {(1,2),(3,4)}", sqlbi=True) == ("EVALUATE\n{ ( 1, 2 ), ( 3, 4 ) }")
+    assert dax_ast.format_query('EVALUATE ROW("x",1) ORDER BY [x] START AT 1', sqlbi=True) == (
+        # The AST currently records the effective direction, not whether ASC was omitted.
+        'EVALUATE\nROW ( "x", 1 )\nORDER BY [x] ASC\nSTART AT 1'
+    )
+    assert dax_ast.format_query(
+        "DEFINE MEASURE 'S'[M]=SUM('S'[A]) VAR threshold=10 EVALUATE ROW(\"m\",[M])",
+        sqlbi=True,
+    ) == (
+        "DEFINE\n    MEASURE 'S'[M] =\n        SUM ( 'S'[A] )\n    VAR threshold = 10\n\nEVALUATE\nROW ( \"m\", [M] )"
+    )
+    assert dax_ast.format_query(
+        "DEFINE FUNCTION AddTax=(amount:NUMERIC,taxRate:NUMERIC=0.1)=>amount*(1+taxRate) EVALUATE {AddTax(10)}",
+        sqlbi=True,
+    ) == (
+        "DEFINE\n"
+        "    FUNCTION AddTax = (\n"
+        "            amount : NUMERIC,\n"
+        "            taxRate : NUMERIC = 0.1\n"
+        "        ) =>\n"
+        "        amount * ( 1 + taxRate )\n\n"
+        "EVALUATE\n"
+        "{ AddTax ( 10 ) }"
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "/* note */ = SUM(1)",
+        "-- note\n= SUM(1)",
+        "// note\n= SUM(1)",
+    ],
+)
+def test_formatter_native_sqlbi_preserves_formula_marker_after_comments(source: str):
+    assert dax_ast.format_expression(source, sqlbi=True) == "=\nSUM ( 1 )"
+
+
+def test_formatter_native_sqlbi_visual_shape_golden():
+    source = (
+        'DEFINE TABLE data=ROW("Year",2000,"IsTotal",FALSE()) '
+        "WITH VISUAL SHAPE AXIS ROWS GROUP [Year] TOTAL [IsTotal] "
+        'ORDER BY [Year] DENSIFY "IsDensified" EVALUATE data'
+    )
+    assert dax_ast.format_query(source, sqlbi=True) == (
+        "DEFINE\n"
+        "    TABLE data =\n"
+        '        ROW ( "Year", 2000, "IsTotal", FALSE () )\n'
+        "        WITH VISUAL SHAPE\n"
+        "        AXIS ROWS\n"
+        "            GROUP [Year]\n"
+        "                TOTAL [IsTotal]\n"
+        "            ORDER BY [Year]\n"
+        '        DENSIFY "IsDensified"\n\n'
+        "EVALUATE\n"
+        "data"
+    )
+
+
 def test_lossless_native_spans_and_comments_round_trip():
     source = "/// docs\nSUM(/* inside */ 1, -- next\n 2 + 3) // tail"
     parsed = dax_ast.parse_expression_lossless(source)

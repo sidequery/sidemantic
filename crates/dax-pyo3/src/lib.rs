@@ -1,10 +1,10 @@
 use dax_parser::{
-    format_expression_with_options, format_query_with_options, lex_with_dialect,
-    parse_expression_lossless_with_dialect, parse_expression_with_dialect,
-    parse_query_lossless_with_dialect, parse_query_with_dialect, recover_expression_with_dialect,
-    recover_query_with_dialect, validate_expression, validate_expression_against_model,
-    validate_query, validate_query_against_model, Dialect, FormatOptions, ModelMetadata,
-    ModelTable, ValidationOptions,
+    format_expression_with_options, format_expression_with_style, format_query_with_options,
+    format_query_with_style, lex_with_dialect, parse_expression_lossless_with_dialect,
+    parse_expression_with_dialect, parse_query_lossless_with_dialect, parse_query_with_dialect,
+    recover_expression_with_dialect, recover_query_with_dialect, validate_expression,
+    validate_expression_against_model, validate_query, validate_query_against_model, Dialect,
+    FormatOptions, FormatStyle, ModelMetadata, ModelTable, TokenKind, ValidationOptions,
 };
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -266,9 +266,11 @@ fn validate_query_py(
         allow_decimal_comma=false,
         allow_dash_dash_comments=true,
         allow_double_slash_comments=true,
-        allow_block_comments=true
+        allow_block_comments=true,
+        sqlbi=false
     )
 )]
+#[allow(clippy::too_many_arguments)]
 fn format_expression_py(
     input: &str,
     localized: bool,
@@ -277,22 +279,34 @@ fn format_expression_py(
     allow_dash_dash_comments: bool,
     allow_double_slash_comments: bool,
     allow_block_comments: bool,
+    sqlbi: bool,
 ) -> PyResult<String> {
-    let expr = parse_expression_with_dialect(
-        input,
-        dialect(
-            allow_semicolon_separators,
-            allow_decimal_comma,
-            allow_dash_dash_comments,
-            allow_double_slash_comments,
-            allow_block_comments,
-        ),
-    )
-    .map_err(|err| PyValueError::new_err(err.to_string()))?;
-    Ok(format_expression_with_options(
-        &expr,
-        format_options(localized),
-    ))
+    let dialect = dialect(
+        allow_semicolon_separators,
+        allow_decimal_comma,
+        allow_dash_dash_comments,
+        allow_double_slash_comments,
+        allow_block_comments,
+    );
+    let has_formula_marker = sqlbi
+        && lex_with_dialect(input, dialect)
+            .map_err(|err| PyValueError::new_err(err.to_string()))?
+            .iter()
+            .find(|token| !matches!(token.kind, TokenKind::DocComment(_)))
+            .is_some_and(|token| matches!(token.kind, TokenKind::Eq));
+    let expr = parse_expression_with_dialect(input, dialect)
+        .map_err(|err| PyValueError::new_err(err.to_string()))?;
+    let options = format_options(localized);
+    let formatted = if sqlbi {
+        format_expression_with_style(&expr, options, FormatStyle::Sqlbi)
+    } else {
+        format_expression_with_options(&expr, options)
+    };
+    if has_formula_marker {
+        Ok(format!("=\n{formatted}"))
+    } else {
+        Ok(formatted)
+    }
 }
 
 #[pyfunction(
@@ -304,9 +318,11 @@ fn format_expression_py(
         allow_decimal_comma=false,
         allow_dash_dash_comments=true,
         allow_double_slash_comments=true,
-        allow_block_comments=true
+        allow_block_comments=true,
+        sqlbi=false
     )
 )]
+#[allow(clippy::too_many_arguments)]
 fn format_query_py(
     input: &str,
     localized: bool,
@@ -315,6 +331,7 @@ fn format_query_py(
     allow_dash_dash_comments: bool,
     allow_double_slash_comments: bool,
     allow_block_comments: bool,
+    sqlbi: bool,
 ) -> PyResult<String> {
     let query = parse_query_with_dialect(
         input,
@@ -327,7 +344,12 @@ fn format_query_py(
         ),
     )
     .map_err(|err| PyValueError::new_err(err.to_string()))?;
-    Ok(format_query_with_options(&query, format_options(localized)))
+    let options = format_options(localized);
+    Ok(if sqlbi {
+        format_query_with_style(&query, options, FormatStyle::Sqlbi)
+    } else {
+        format_query_with_options(&query, options)
+    })
 }
 
 #[pyfunction(

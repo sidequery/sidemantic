@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { brushDateRange, canBatchMetric, chronologicalSeriesRows, resolveExpandedLeaderboard } from "./ExplorerView";
+import {
+  brushDateRange,
+  canBatchMetric,
+  chronologicalSeriesRows,
+  isCurrentQueryResult,
+  resolveExpandedLeaderboard,
+} from "./ExplorerView";
 
 describe("canBatchMetric", () => {
   test.each(["cohort", "conversion", "retention"])("keeps %s metrics out of aggregate strip queries", (type) => {
@@ -12,6 +18,17 @@ describe("canBatchMetric", () => {
       expect(canBatchMetric({ type })).toBe(true);
     },
   );
+});
+
+describe("isCurrentQueryResult", () => {
+  test("rejects rows produced by the previously selected dedicated metric", () => {
+    expect(isCurrentQueryResult('{"metrics":["events.retention"]}', '{"metrics":["events.conversion"]}')).toBe(false);
+  });
+
+  test("accepts rows produced by the active dedicated metric", () => {
+    const key = '{"metrics":["events.retention"]}';
+    expect(isCurrentQueryResult(key, key)).toBe(true);
+  });
 });
 
 describe("resolveExpandedLeaderboard", () => {

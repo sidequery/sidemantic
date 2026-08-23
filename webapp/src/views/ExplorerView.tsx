@@ -5,7 +5,7 @@ import { LeaderboardPanel } from "../components/LeaderboardPanel";
 import { MetricCard } from "../components/MetricCard";
 import { MetricTimeSeries } from "../components/MetricTimeSeries";
 import { QueryDebugPanel } from "../components/QueryDebugPanel";
-import { EmptyState, ErrorState } from "../components/States";
+import { EmptyState, ErrorState, LoadingState } from "../components/States";
 import type { BrushRange } from "../components/TimeSeriesChart";
 import { formatDelta, formatValue, labelize } from "../lib/format";
 import { graphMetricsForModel } from "../lib/catalog";
@@ -32,6 +32,10 @@ const SINGLE_METRIC_QUERY_TYPES = new Set(["cohort", "conversion", "retention"])
 /** These metric types compile to dedicated result shapes and cannot share one query with other metrics. */
 export function canBatchMetric(metric: Pick<CatalogMetric, "type">): boolean {
   return !metric.type || !SINGLE_METRIC_QUERY_TYPES.has(metric.type);
+}
+
+export function isCurrentQueryResult(resultKey?: string, queryKey?: string): boolean {
+  return Boolean(resultKey && resultKey === queryKey);
 }
 
 export function resolveExpandedLeaderboard(
@@ -151,15 +155,14 @@ export function ExplorerView() {
   const singleMetricResult = useQueryResult(
     backend,
     singleQueryMetric
-      ? withTz({
-          ...metricTotals(
+      ? withTz(
+          metricTotals(
             [singleQueryMetric.ref],
             baseFilters,
             configured?.segments,
             configured?.usePreaggregations,
           ),
-          limit: 500,
-        })
+        )
       : null,
   );
   // The single extra query the chart needs: the focused metric over the *previous* period (the
@@ -240,10 +243,17 @@ export function ExplorerView() {
         })()
       : [];
 
-  const singleMetricColumns: Column[] = (singleMetricResult.result?.columns ?? []).map((column) => ({
+  // Unlike cards and charts, dedicated result shapes cannot safely retain the previous query's
+  // rows: the heading changes immediately when the selected metric changes. The hook's query
+  // provenance lets this surface show a loading table until the active query itself completes.
+  const singleMetricFresh = isCurrentQueryResult(singleMetricResult.resultKey, singleMetricResult.queryKey);
+  const singleMetricRows = singleMetricFresh ? (singleMetricResult.result?.rows ?? []) : [];
+  const singleMetricColumns: Column[] = (
+    singleMetricFresh ? (singleMetricResult.result?.columns ?? []) : []
+  ).map((column) => ({
     key: column,
     label: labelize(column),
-    numeric: (singleMetricResult.result?.rows ?? []).some((row) => typeof row[column] === "number"),
+    numeric: singleMetricRows.some((row) => typeof row[column] === "number"),
   }));
 
   function onBrush(range: BrushRange | null) {
@@ -294,13 +304,16 @@ export function ExplorerView() {
               <p className="mt-0.5 text-xs text-muted">{singleQueryMetric.description}</p>
             ) : null}
           </div>
-          <DataTable
-            columns={singleMetricColumns}
-            rows={singleMetricResult.result?.rows ?? []}
-            loading={singleMetricResult.loading}
-            searchable
-            renderCell={(_column, value) => value === null || value === undefined || value === "" ? "—" : String(value)}
-          />
+          {singleMetricResult.error ? null : singleMetricFresh ? (
+            <DataTable
+              columns={singleMetricColumns}
+              rows={singleMetricRows}
+              searchable
+              renderCell={(_column, value) => value === null || value === undefined || value === "" ? "—" : String(value)}
+            />
+          ) : (
+            <LoadingState message={`Loading ${singleQueryMetric.label}…`} />
+          )}
         </section>
       ) : rankMetric ? (
         <MetricTimeSeries

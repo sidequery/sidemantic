@@ -132,6 +132,9 @@ Examples: sidemantic info sidemantic info ./models
 .TP
 \fB\-\-json\fR
 Emit semantic\-layer metadata as JSON
+.TP
+\fB\-\-ossie\-scope TEXT\fR
+Explicit Apache Ossie semantic\-model scope
 .SH "SIDEMANTIC REWRITE"
 .SS SYNOPSIS
 .B
@@ -181,6 +184,24 @@ File extension for stdin input when a format supports multiple syntaxes (for exa
 \fB\-\-to TEXT\fR
 Destination format
 .TP
+\fB\-\-ossie\-scope TEXT\fR
+Explicit semantic\-model scope to select on Ossie import or name on Ossie export
+.TP
+\fB\-\-ossie\-target\-dialect TEXT\fR
+Execution dialect used when lowering an Ossie source (for example duckdb or bigquery)
+.TP
+\fB\-\-ossie\-expression\-dialect TEXT\fR
+Exact dialect label for SQL synthesized into an Ossie output
+.TP
+\fB\-\-ossie\-schema\-version TEXT\fR
+Explicit pinned Ossie schema version for synthesized output
+.TP
+\fB\-\-ossie\-consumer\-profile TEXT\fR
+Ossie import or export consumer profile (ossie\-core or dbt\-1.12)
+.TP
+\fB\-\-ossie\-permissive\fR
+Preserve invalid Ossie source while lowering only independently safe constructs
+.TP
 \fB\-\-force\fR
 Allow writing to an existing destination
 .SH "SIDEMANTIC QUERY"
@@ -217,6 +238,9 @@ Allow Rust engine fallback to Python
 .TP
 \fB\-\-use\-preaggregations\fR
 Enable automatic pre\-aggregation routing
+.TP
+\fB\-\-ossie\-scope TEXT\fR
+Explicit Apache Ossie semantic\-model scope
 .SH "SIDEMANTIC EXPLAIN"
 .SS SYNOPSIS
 .B
@@ -320,6 +344,9 @@ DuckDB database or data file for \-\-live
 .TP
 \fB\-\-json\fR
 Emit the validation report as JSON
+.TP
+\fB\-\-ossie\-scope TEXT\fR
+Explicit Apache Ossie semantic\-model scope
 .SH "SIDEMANTIC WORKBENCH"
 .SS SYNOPSIS
 .B

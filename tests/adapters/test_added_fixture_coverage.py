@@ -20,7 +20,7 @@ from sidemantic.adapters.lookml import LookMLAdapter
 from sidemantic.adapters.malloy import MalloyAdapter
 from sidemantic.adapters.metricflow import MetricFlowAdapter
 from sidemantic.adapters.omni import OmniAdapter
-from sidemantic.adapters.osi import OSIAdapter
+from sidemantic.adapters.osi import LegacyOSIAdapter as OSIAdapter
 from sidemantic.adapters.rill import RillAdapter
 from sidemantic.adapters.snowflake import SnowflakeAdapter
 from sidemantic.adapters.superset import SupersetAdapter

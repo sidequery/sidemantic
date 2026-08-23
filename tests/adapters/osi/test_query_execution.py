@@ -6,7 +6,7 @@ import duckdb
 import pytest
 
 from sidemantic import SemanticLayer
-from sidemantic.adapters.osi import OSIAdapter
+from sidemantic.adapters.osi import LegacyOSIAdapter as OSIAdapter
 
 
 def _load_layer_from_graph(graph, conn: duckdb.DuckDBPyConnection) -> SemanticLayer:

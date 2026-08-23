@@ -2,7 +2,7 @@
 
 Sidemantic is an open-source semantic runtime. Define governed metrics once—or import the semantic models you already have—and query them consistently from SQL, the CLI, Python, HTTP, PostgreSQL clients, notebooks, BI tools, and AI agents.
 
-- **Bring existing models:** Power BI TMDL/DAX, Cube, dbt MetricFlow, LookML, Hex, Rill, Superset, Omni, BSL, GoodData LDM, Snowflake Cortex, Malloy, OSI, AtScale SML, and ThoughtSpot TML
+- **Bring existing models:** Power BI TMDL/DAX, Cube, dbt MetricFlow, LookML, Hex, Rill, Superset, Omni, BSL, GoodData LDM, Snowflake Cortex, Malloy, Apache Ossie, AtScale SML, and ThoughtSpot TML
 - **Or author natively:** concise YAML, semantic SQL DDL, or Python
 - **Run on your warehouse:** DuckDB, MotherDuck, PostgreSQL, BigQuery, Snowflake, ClickHouse, Databricks, Spark SQL, and ADBC sources
 - **Consume metrics anywhere:** semantic SQL, CLI, Python, HTTP/Arrow, PostgreSQL wire protocol, MCP, notebooks, TypeScript/WASM, and embedded analytics
@@ -245,13 +245,13 @@ git clone https://github.com/sidequery/sidemantic.git && cd sidemantic
 uv run examples/rill_demo/run_demo.py
 ```
 
-**OSI (complex adtech semantic model):**
+**Apache Ossie (complex adtech semantic model):**
 ```bash
 git clone https://github.com/sidequery/sidemantic.git && cd sidemantic
 uv run examples/osi_demo/run_demo.py
 ```
 
-**OSI widget notebook (percent-cell Python notebook):**
+**Apache Ossie widget notebook (percent-cell Python notebook):**
 ```bash
 git clone https://github.com/sidequery/sidemantic.git && cd sidemantic
 uv run examples/osi_demo/osi_widget_notebook.py
@@ -263,7 +263,7 @@ See `examples/` for more.
 
 - SQL query interface with automatic rewriting
 - Automatic joins across models
-- Multi-format adapters (Cube, MetricFlow, LookML, Hex, Rill, Superset, Omni, BSL, GoodData LDM, OSI, AtScale SML, ThoughtSpot TML, Graphene GSQL)
+- Multi-format adapters (Cube, MetricFlow, LookML, Hex, Rill, Superset, Omni, BSL, GoodData LDM, Apache Ossie, AtScale SML, ThoughtSpot TML, Graphene GSQL)
 - SQLGlot-based SQL generation and transpilation
 - Pydantic validation and type safety
 - Pre-aggregations with explicit routing
@@ -275,7 +275,7 @@ See `examples/` for more.
 
 ## Multi-Format Support
 
-Auto-detects: Sidemantic (SQL/YAML), Power BI TMDL, Cube, MetricFlow (dbt), LookML, Hex, Rill, Superset, Omni, BSL, GoodData LDM, OSI, AtScale SML, ThoughtSpot TML, Graphene GSQL
+Auto-detects: Sidemantic (SQL/YAML), Power BI TMDL, Cube, MetricFlow (dbt), LookML, Hex, Rill, Superset, Omni, BSL, GoodData LDM, Apache Ossie, AtScale SML, ThoughtSpot TML, Graphene GSQL
 
 ```bash
 sidemantic query "SELECT revenue FROM orders" --models ./my_models
@@ -287,6 +287,23 @@ from sidemantic import SemanticLayer, load_from_directory
 layer = SemanticLayer(connection="duckdb:///data.duckdb")
 load_from_directory(layer, "my_models/")  # Auto-detects formats
 ```
+
+Apache Ossie is registered as format `ossie`; `osi`, `apache-ossie`, and
+`open-semantic-interchange` remain accepted aliases. Use an explicit format when
+selecting an Ossie scope or execution dialect:
+
+```bash
+sidemantic convert commerce.ossie.yaml \
+  --from ossie --to sidemantic --output models.yml \
+  --ossie-scope commerce --ossie-target-dialect bigquery
+
+sidemantic convert models/orders.yml \
+  --from sidemantic --to ossie --output commerce.ossie.yaml \
+  --ossie-scope commerce --ossie-expression-dialect BIGQUERY
+```
+
+See the [Apache Ossie compatibility guide](docs/compatibility/ossie.md) for the
+pinned schema profiles, validation policies, scope rules, and round-trip limits.
 
 ## Databases
 

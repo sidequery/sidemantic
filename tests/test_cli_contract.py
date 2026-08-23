@@ -491,6 +491,147 @@ def test_file_promotion_failure_preserves_existing_destination(tmp_path, monkeyp
     assert not list(destination_root.glob(".sidemantic-promote-*"))
 
 
+def test_convert_to_ossie_requires_explicit_scope_and_expression_dialect(tmp_path: Path):
+    source = tmp_path / "source.yml"
+    output = tmp_path / "output.yml"
+    source.write_text(
+        """version: 1
+models:
+  - name: orders
+    table: analytics.orders
+"""
+    )
+
+    missing = runner.invoke(
+        app,
+        ["convert", str(source), "--from", "sidemantic", "--to", "ossie", "--output", str(output)],
+    )
+    assert missing.exit_code == 2
+    assert "--ossie-scope is required" in missing.stderr
+
+    converted = runner.invoke(
+        app,
+        [
+            "convert",
+            str(source),
+            "--from",
+            "sidemantic",
+            "--to",
+            "ossie",
+            "--output",
+            str(output),
+            "--ossie-scope",
+            "commerce",
+            "--ossie-expression-dialect",
+            "BIGQUERY",
+        ],
+    )
+    assert converted.exit_code == 0, converted.output
+    assert "name: commerce" in output.read_text()
+
+
+def test_convert_to_dbt_alias_carries_explicit_consumer_profile(tmp_path: Path):
+    source = tmp_path / "source.yml"
+    output = tmp_path / "output.json"
+    source.write_text(
+        """version: 1
+models:
+  - name: orders
+    table: analytics.orders
+"""
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "convert",
+            str(source),
+            "--from",
+            "sidemantic",
+            "--to",
+            "ossie",
+            "--output",
+            str(output),
+            "--ossie-scope",
+            "commerce",
+            "--ossie-expression-dialect",
+            "ANSI_SQL",
+            "--ossie-schema-version",
+            "0.1.0",
+            "--ossie-consumer-profile",
+            "dbt-1.12",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(output.read_text())["version"] == "0.1.0"
+
+
+def test_convert_from_ossie_selects_scope_and_target_dialect(tmp_path: Path):
+    source = tmp_path / "source.ossie.yaml"
+    output = tmp_path / "output.yml"
+    source.write_text(
+        """version: 0.2.0.dev0
+semantic_model:
+  - name: finance
+    datasets:
+      - name: orders
+        source: finance.orders
+  - name: marketing
+    datasets:
+      - name: orders
+        source: marketing.orders
+"""
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "convert",
+            str(source),
+            "--from",
+            "ossie",
+            "--to",
+            "sidemantic",
+            "--output",
+            str(output),
+            "--ossie-scope",
+            "marketing",
+            "--ossie-target-dialect",
+            "duckdb",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "marketing.orders" in output.read_text()
+
+
+def test_info_and_validate_can_select_a_multi_scope_ossie_document(tmp_path: Path):
+    source = tmp_path / "multiple.ossie.yaml"
+    source.write_text(
+        """version: 0.2.0.dev0
+semantic_model:
+  - name: finance
+    datasets:
+      - {name: orders, source: finance.orders}
+  - name: marketing
+    datasets:
+      - {name: orders, source: marketing.orders}
+"""
+    )
+
+    ambiguous = runner.invoke(app, ["info", str(tmp_path), "--json"])
+    assert ambiguous.exit_code == 1
+    assert "ambiguous" in ambiguous.stderr
+
+    selected = runner.invoke(app, ["info", str(tmp_path), "--json", "--ossie-scope", "marketing"])
+    assert selected.exit_code == 0, selected.output
+    assert json.loads(selected.stdout)["models"][0]["table"] == "marketing.orders"
+
+    validated = runner.invoke(app, ["validate", str(tmp_path), "--json", "--ossie-scope", "marketing"])
+    assert validated.exit_code == 0, validated.output
+
+
 def test_generated_output_dash_writes_stdout(tmp_path: Path):
     models = tmp_path / "models"
     _write_model(models)

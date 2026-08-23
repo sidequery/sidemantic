@@ -95,6 +95,10 @@ def render_runtime_matrix(contract: dict) -> str:
 def _adapter_test_directory(name: str) -> str:
     if name == "sidemantic":
         return "sidemantic_adapter"
+    if name == "ossie":
+        # Keep counting the established adapter suite while ``ossie`` replaces
+        # the historical public format name ``osi``.
+        return "osi"
     return name.replace("-", "_")
 
 

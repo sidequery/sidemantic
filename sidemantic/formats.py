@@ -7,6 +7,7 @@ does not pull optional parser dependencies into core Sidemantic imports.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
 from importlib import import_module
@@ -53,11 +54,11 @@ class SemanticFormat:
     def supports_export(self) -> bool:
         return self.output_kind is not None
 
-    def create_adapter(self) -> Any:
+    def create_adapter(self, **options: object) -> Any:
         """Construct this format's adapter without eagerly importing others."""
         module = import_module(self.adapter_module)
         adapter_type = getattr(module, self.adapter_class)
-        return adapter_type()
+        return adapter_type(**options)
 
 
 class UnknownFormatError(ValueError):
@@ -153,10 +154,10 @@ _FORMATS = (
         output_kind=OutputKind.DIRECTORY,
     ),
     SemanticFormat(
-        "osi",
-        "sidemantic.adapters.osi",
-        "OSIAdapter",
-        aliases=("open-semantic-interchange",),
+        "ossie",
+        "sidemantic.adapters.ossie",
+        "OssieAdapter",
+        aliases=("apache-ossie", "osi", "open-semantic-interchange"),
         extensions=(".yml", ".yaml", ".json"),
         output_kind=OutputKind.FILE,
     ),
@@ -254,6 +255,7 @@ def load_semantic_source(
     source: str | Path,
     *,
     source_format: str = "auto",
+    adapter_options: Mapping[str, object] | None = None,
 ) -> SemanticGraph:
     """Load one semantic source using auto-discovery or an explicit adapter.
 
@@ -266,6 +268,8 @@ def load_semantic_source(
         raise FileNotFoundError(f"Semantic source does not exist: {source_path}")
 
     if source_format.strip().lower() == "auto":
+        if adapter_options:
+            raise ValueError("adapter_options require an explicit source_format")
         from sidemantic.core.semantic_layer import SemanticLayer
         from sidemantic.loaders import load_from_directory, load_from_file
 
@@ -280,7 +284,7 @@ def load_semantic_source(
     _validate_source_kind(source_path, spec)
     from sidemantic.loaders import parse_with_adapter
 
-    return parse_with_adapter(spec.create_adapter(), source_path)
+    return parse_with_adapter(spec.create_adapter(**dict(adapter_options or {})), source_path)
 
 
 def export_semantic_graph(
@@ -288,10 +292,12 @@ def export_semantic_graph(
     output: str | Path,
     *,
     target_format: str = "sidemantic",
+    adapter_options: Mapping[str, object] | None = None,
+    export_options: Mapping[str, object] | None = None,
 ) -> None:
     """Export a graph through a registered format adapter."""
     spec = get_semantic_format(target_format, operation="export")
-    spec.create_adapter().export(graph, Path(output))
+    spec.create_adapter(**dict(adapter_options or {})).export(graph, Path(output), **dict(export_options or {}))
 
 
 def convert_semantic_source(
@@ -300,10 +306,19 @@ def convert_semantic_source(
     *,
     source_format: str = "auto",
     target_format: str = "sidemantic",
+    source_adapter_options: Mapping[str, object] | None = None,
+    target_adapter_options: Mapping[str, object] | None = None,
+    target_export_options: Mapping[str, object] | None = None,
 ) -> SemanticGraph:
     """Load an exact source, export it, and return the intermediate graph."""
-    graph = load_semantic_source(source, source_format=source_format)
-    export_semantic_graph(graph, output, target_format=target_format)
+    graph = load_semantic_source(source, source_format=source_format, adapter_options=source_adapter_options)
+    export_semantic_graph(
+        graph,
+        output,
+        target_format=target_format,
+        adapter_options=target_adapter_options,
+        export_options=target_export_options,
+    )
     return graph
 
 

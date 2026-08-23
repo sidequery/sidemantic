@@ -221,6 +221,7 @@ def _load_query_layer(
     use_preaggregations: bool = False,
     engine: str | None = None,
     fallback: bool | None = None,
+    ossie_scope: str | None = None,
 ) -> SemanticLayer:
     """Load a semantic layer for CLI query/explain commands."""
     engine, resolved_fallback = _resolve_engine_options(engine, fallback)
@@ -250,9 +251,15 @@ def _load_query_layer(
         # sibling model or an unrelated broken draft must not pollute or fail the load.
         from sidemantic.loaders import load_from_file
 
-        load_from_file(layer, models)
+        if ossie_scope is None:
+            load_from_file(layer, models)
+        else:
+            load_from_file(layer, models, ossie_scope_id=ossie_scope)
     else:
-        load_from_directory(layer, str(models))
+        if ossie_scope is None:
+            load_from_directory(layer, str(models))
+        else:
+            load_from_directory(layer, str(models), ossie_scope_id=ossie_scope)
     if not layer.graph.models:
         raise ValueError("No models found")
     return layer
@@ -1150,6 +1157,7 @@ def info(
         None, help="Directory containing semantic layer files (defaults to project models)"
     ),
     json_output: bool = typer.Option(False, "--json", help="Emit semantic-layer metadata as JSON"),
+    ossie_scope: str = typer.Option(None, "--ossie-scope", help="Explicit Apache Ossie semantic-model scope"),
 ):
     """
     Show quick info about the semantic layer.
@@ -1163,7 +1171,10 @@ def info(
         structured = json_output or cli_state().requested_format is not None or cli_state().plain
         directory = _models_path(directory)
         layer = SemanticLayer()
-        load_from_directory(layer, str(directory))
+        if ossie_scope is None:
+            load_from_directory(layer, str(directory))
+        else:
+            load_from_directory(layer, str(directory), ossie_scope_id=ossie_scope)
 
         models_payload = [
             {
@@ -1452,6 +1463,36 @@ def convert(
     target_format: str = typer.Option(
         "sidemantic", "--to", help="Destination format", autocompletion=complete_target_format
     ),
+    ossie_scope: str = typer.Option(
+        None,
+        "--ossie-scope",
+        help="Explicit semantic-model scope to select on Ossie import or name on Ossie export",
+    ),
+    ossie_target_dialect: str = typer.Option(
+        None,
+        "--ossie-target-dialect",
+        help="Execution dialect used when lowering an Ossie source (for example duckdb or bigquery)",
+    ),
+    ossie_expression_dialect: str = typer.Option(
+        None,
+        "--ossie-expression-dialect",
+        help="Exact dialect label for SQL synthesized into an Ossie output",
+    ),
+    ossie_schema_version: str = typer.Option(
+        None,
+        "--ossie-schema-version",
+        help="Explicit pinned Ossie schema version for synthesized output",
+    ),
+    ossie_consumer_profile: str = typer.Option(
+        None,
+        "--ossie-consumer-profile",
+        help="Ossie import or export consumer profile (ossie-core or dbt-1.12)",
+    ),
+    ossie_permissive: bool = typer.Option(
+        False,
+        "--ossie-permissive",
+        help="Preserve invalid Ossie source while lowering only independently safe constructs",
+    ),
     force: bool = typer.Option(False, "--force", help="Allow writing to an existing destination"),
 ):
     """Convert semantic definitions through the shared format registry."""
@@ -1499,6 +1540,36 @@ def convert(
                 converted_output = temp_root / output.name
             from sidemantic.fidelity import capture_import_report
 
+            source_adapter_options = None
+            if source_format != "auto" and get_semantic_format(source_format, operation="import").name == "ossie":
+                source_adapter_options = {}
+                if ossie_scope is not None:
+                    source_adapter_options["scope_id"] = ossie_scope
+                if ossie_target_dialect is not None:
+                    source_adapter_options["target_dialect"] = ossie_target_dialect
+                if ossie_consumer_profile is not None:
+                    source_adapter_options["consumer_profile"] = ossie_consumer_profile
+                if ossie_permissive:
+                    source_adapter_options["import_policy"] = "permissive"
+
+            target_adapter_options = None
+            target_export_options = None
+            if target_spec.name == "ossie":
+                if ossie_scope is None:
+                    raise InvocationError("--ossie-scope is required when exporting a runtime graph to Ossie")
+                if ossie_expression_dialect is None:
+                    raise InvocationError(
+                        "--ossie-expression-dialect is required so Sidemantic never relabels SQL as another dialect"
+                    )
+                target_export_options = {
+                    "scope_name": ossie_scope,
+                    "expression_dialect": ossie_expression_dialect,
+                }
+                if ossie_consumer_profile is not None:
+                    target_adapter_options = {"consumer_profile": ossie_consumer_profile}
+                if ossie_schema_version is not None:
+                    target_export_options["schema_version"] = ossie_schema_version
+
             with progress(f"Converting semantic definitions to {target_format}"):
                 with capture_import_report() as fidelity_report:
                     graph = convert_semantic_source(
@@ -1506,6 +1577,9 @@ def convert(
                         converted_output,
                         source_format=source_format,
                         target_format=target_format,
+                        source_adapter_options=source_adapter_options,
+                        target_adapter_options=target_adapter_options,
+                        target_export_options=target_export_options,
                     )
             if fidelity_report.has_losses:
                 counts = fidelity_report.loss_counts()
@@ -1676,6 +1750,7 @@ def query(
     use_preaggregations: bool = typer.Option(
         False, "--use-preaggregations", help="Enable automatic pre-aggregation routing"
     ),
+    ossie_scope: str = typer.Option(None, "--ossie-scope", help="Explicit Apache Ossie semantic-model scope"),
 ):
     """
     Execute a SQL query and output results as CSV.
@@ -1699,6 +1774,7 @@ def query(
             use_preaggregations=use_preaggregations,
             engine=engine,
             fallback=fallback,
+            ossie_scope=ossie_scope,
         )
 
         # Dry run: show generated SQL without executing
@@ -2512,6 +2588,7 @@ def validate(
     connection: str = typer.Option(None, "--connection", help="Database connection string for --live"),
     db: Path = typer.Option(None, "--db", help="DuckDB database or data file for --live"),
     json_output: bool = typer.Option(False, "--json", help="Emit the validation report as JSON"),
+    ossie_scope: str = typer.Option(None, "--ossie-scope", help="Explicit Apache Ossie semantic-model scope"),
 ):
     """
     Validate semantic layer definitions.
@@ -2584,7 +2661,10 @@ def validate(
             # below; the stdlib warning would print a second, uglier copy.
             warnings_module.simplefilter("ignore")
             with capture_import_report() as fidelity_report:
-                report = validate_directory(directory)
+                if ossie_scope is None:
+                    report = validate_directory(directory)
+                else:
+                    report = validate_directory(directory, ossie_scope_id=ossie_scope)
         for note in fidelity_report.notes:
             message = f"Import fidelity ({note.severity}) {note.construct}: {note.detail}"
             if note.severity in {"dropped", "approximated"}:
@@ -2633,7 +2713,7 @@ def validate(
     if live:
         try:
             _resolve_connection(connection=connection, database=db, models=directory, required=True)
-            layer = _load_query_layer(directory, connection=connection, db=db)
+            layer = _load_query_layer(directory, connection=connection, db=db, ossie_scope=ossie_scope)
             from sidemantic.testing import check_schema_drift
 
             with progress("Checking live database schema"):

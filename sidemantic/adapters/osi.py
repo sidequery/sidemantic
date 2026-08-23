@@ -26,6 +26,7 @@ from typing import Any
 import yaml
 
 from sidemantic.adapters.base import BaseAdapter
+from sidemantic.adapters.ossie import OssieAdapter as _CanonicalOssieAdapter
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
@@ -53,8 +54,13 @@ def _is_generated_artifact(file_path: Path, directory: Path) -> bool:
     return any(part in _GENERATED_ARTIFACT_DIRS for part in relative_parts[:-1])
 
 
-class OSIAdapter(BaseAdapter):
-    """Adapter for importing/exporting OSI (Open Semantic Interchange) YAML files.
+class LegacyOSIAdapter(BaseAdapter):
+    """Legacy pre-Apache OSI adapter retained for migration compatibility.
+
+    New integrations must use :class:`OSIAdapter`, which is the compatibility
+    spelling for the schema-validated :class:`~sidemantic.adapters.ossie.OssieAdapter`.
+    This implementation remains available only so callers can migrate source
+    documents that depended on the historical, pre-profile behavior.
 
     Transforms OSI definitions into Sidemantic format:
     - OSI semantic_model → SemanticGraph
@@ -1027,3 +1033,24 @@ class OSIAdapter(BaseAdapter):
 
         # No aggregation, just SQL
         return metric.sql
+
+
+# ``osi`` was Sidemantic's public spelling before the project became Apache
+# Ossie. Keep the import path, but route it through the canonical implementation
+# so direct imports cannot bypass profiles, schema/semantic validation, scoped
+# catalogs, target-aware expression selection, or fail-closed synthesis.
+
+
+class OSIAdapter(_CanonicalOssieAdapter):
+    """Backward-compatible class spelling for the canonical Apache Ossie adapter."""
+
+    OSI_VERSION = LegacyOSIAdapter.OSI_VERSION
+    RELEASED_OSI_VERSION = LegacyOSIAdapter.RELEASED_OSI_VERSION
+    RELEASED_OSI_VERSIONS = LegacyOSIAdapter.RELEASED_OSI_VERSIONS
+    RELEASED_OSI_VENDORS = LegacyOSIAdapter.RELEASED_OSI_VENDORS
+    SUPPORTED_EXPORT_FORMATS = LegacyOSIAdapter.SUPPORTED_EXPORT_FORMATS
+    DIALECT_PREFERENCE = LegacyOSIAdapter.DIALECT_PREFERENCE
+    SUPPORTED_EXPORT_DIALECTS = ["ANSI_SQL", "BIGQUERY", "SNOWFLAKE", "DATABRICKS"]
+
+
+__all__ = ["LegacyOSIAdapter", "OSIAdapter"]

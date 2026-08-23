@@ -1,5 +1,7 @@
 """Tests for auto-discovery loaders."""
 
+import pytest
+
 from sidemantic import SemanticLayer
 from sidemantic.loaders import load_from_directory
 
@@ -494,8 +496,26 @@ def test_load_from_directory_detects_released_osi_json(tmp_path):
     assert "orders" in layer.graph.models
     orders = layer.graph.models["orders"]
     assert orders.table.endswith("fct_orders")
-    assert getattr(orders, "_source_format", None) == "OSI"
+    assert getattr(orders, "_source_format", None) == "Ossie"
     assert "order_count" in layer.graph.metrics
+
+
+def test_auto_loader_rejects_multi_scope_ossie_instead_of_flattening_namespaces(tmp_path):
+    source = tmp_path / "multiple.yaml"
+    source.write_text(
+        """version: 0.2.0.dev0
+semantic_model:
+  - name: finance
+    datasets:
+      - {name: orders, source: finance.orders}
+  - name: marketing
+    datasets:
+      - {name: orders, source: marketing.orders}
+"""
+    )
+
+    with pytest.raises(ValueError, match="ambiguous.*Select one explicitly"):
+        load_from_directory(SemanticLayer(), tmp_path)
 
 
 def test_load_from_directory_accepts_osi_dir_as_loader_root(tmp_path):
@@ -547,7 +567,7 @@ def test_load_from_directory_accepts_osi_dir_as_loader_root(tmp_path):
     assert "orders" in layer.graph.models
     orders = layer.graph.models["orders"]
     assert orders.table.endswith("fct_orders")
-    assert getattr(orders, "_source_format", None) == "OSI"
+    assert getattr(orders, "_source_format", None) == "Ossie"
     assert "order_count" in layer.graph.metrics
 
 
@@ -601,7 +621,7 @@ def test_load_from_directory_accepts_osi_dir_as_cwd_loader_root(tmp_path, monkey
     assert "orders" in layer.graph.models
     orders = layer.graph.models["orders"]
     assert orders.table.endswith("fct_orders")
-    assert getattr(orders, "_source_format", None) == "OSI"
+    assert getattr(orders, "_source_format", None) == "Ossie"
     assert "order_count" in layer.graph.metrics
 
 

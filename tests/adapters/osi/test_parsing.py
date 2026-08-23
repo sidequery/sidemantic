@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from sidemantic.adapters.osi import OSIAdapter
+from sidemantic.adapters.osi import LegacyOSIAdapter as OSIAdapter
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model

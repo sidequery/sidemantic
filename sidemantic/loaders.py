@@ -172,6 +172,7 @@ def load_from_directory(
     *,
     strict: bool = True,
     only_file: "Path | None" = None,
+    ossie_scope_id: str | None = None,
 ) -> None:
     """Load all semantic layer definitions from a directory.
 
@@ -200,7 +201,7 @@ def load_from_directory(
     from sidemantic.adapters.lookml import LookMLAdapter
     from sidemantic.adapters.metricflow import MetricFlowAdapter
     from sidemantic.adapters.omni import OmniAdapter
-    from sidemantic.adapters.osi import OSIAdapter
+    from sidemantic.adapters.ossie import OssieAdapter
     from sidemantic.adapters.rill import RillAdapter
     from sidemantic.adapters.sidemantic import SidemanticAdapter
     from sidemantic.adapters.snowflake import SnowflakeAdapter
@@ -441,7 +442,11 @@ def load_from_directory(
                     _handle_parse_error(file_path, e, strict=strict)
                     continue
                 if is_osi:
-                    adapter = OSIAdapter()
+                    adapter = OssieAdapter(
+                        target_dialect=layer.dialect or "duckdb",
+                        consumer_profile="dbt-1.12",
+                        scope_id=ossie_scope_id,
+                    )
         elif suffix == ".aml":
             from sidemantic.adapters.holistics import HolisticsAdapter
 
@@ -477,10 +482,13 @@ def load_from_directory(
                 pass
             elif _yaml_has_top_level_key(yaml_data, "semantic_models"):
                 adapter = MetricFlowAdapter()
-            elif _yaml_has_top_level_key(yaml_data, "semantic_model") and _yaml_has_top_level_key(
-                yaml_data, "datasets"
-            ):
-                adapter = OSIAdapter()
+            elif _yaml_has_top_level_key(yaml_data, "semantic_model") and _contains_yaml_key(yaml_data, "datasets"):
+                consumer_profile = "dbt-1.12" if yaml_data.get("version") == "0.1.0" else "ossie-core"
+                adapter = OssieAdapter(
+                    target_dialect=layer.dialect or "duckdb",
+                    consumer_profile=consumer_profile,
+                    scope_id=ossie_scope_id,
+                )
             elif _yaml_has_top_level_key(yaml_data, "cubes") or (
                 _yaml_has_top_level_key(yaml_data, "views") and _contains_yaml_key(yaml_data, "measures")
             ):
@@ -630,7 +638,13 @@ def load_from_directory(
     layer.graph.build_adjacency()
 
 
-def load_from_file(layer: "SemanticLayer", file: str | Path, *, strict: bool = True) -> None:
+def load_from_file(
+    layer: "SemanticLayer",
+    file: str | Path,
+    *,
+    strict: bool = True,
+    ossie_scope_id: str | None = None,
+) -> None:
     """Load semantic definitions from a single file, ignoring sibling files.
 
     Parses only ``file`` (so an unrelated broken file beside it cannot fail the
@@ -648,7 +662,7 @@ def load_from_file(layer: "SemanticLayer", file: str | Path, *, strict: bool = T
     file = Path(file)
     if not file.is_file():
         raise ValueError(f"File {file} does not exist")
-    load_from_directory(layer, file.parent, strict=strict, only_file=file)
+    load_from_directory(layer, file.parent, strict=strict, only_file=file, ossie_scope_id=ossie_scope_id)
 
 
 def _load_graphene_project(

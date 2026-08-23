@@ -1,0 +1,7 @@
+version: 0.2.0.dev0
+semantic_model:
+  - name: commerce
+    datasets:
+      - name: orders
+        source: analytics.orders
+unsupported: true

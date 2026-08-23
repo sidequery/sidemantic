@@ -1,0 +1,91 @@
+manifest_version: 1
+
+equivalence_groups:
+  logical-0.1.1:
+    - logical-0.1.1-yaml
+    - logical-0.1.1-json
+  logical-0.2.0.dev0:
+    - logical-0.2.0.dev0-yaml
+    - logical-0.2.0.dev0-json
+
+cases:
+  - id: logical-0.1.1-yaml
+    input: cases/logical-0.1.1-valid/document.yaml
+    serialization: yaml
+    profile: logical-0.1.1
+    expected:
+      valid: true
+      diagnostics: []
+
+  - id: logical-0.1.1-json
+    input: cases/logical-0.1.1-valid/document.json
+    serialization: json
+    profile: logical-0.1.1
+    expected:
+      valid: true
+      diagnostics: []
+
+  - id: logical-0.2.0.dev0-yaml
+    input: cases/logical-0.2.0.dev0-valid/document.yaml
+    serialization: yaml
+    profile: logical-0.2.0.dev0
+    expected:
+      valid: true
+      diagnostics: []
+
+  - id: logical-0.2.0.dev0-json
+    input: cases/logical-0.2.0.dev0-valid/document.json
+    serialization: json
+    profile: logical-0.2.0.dev0
+    expected:
+      valid: true
+      diagnostics: []
+
+  - id: logical-0.1.0-not-upstream-valid
+    input: cases/logical-0.1.0-invalid/document.json
+    serialization: json
+    profile: logical-0.1.1
+    expected:
+      valid: false
+      profile: null
+      diagnostics:
+        - code: ossie.schema.profile_context_required
+          instance_path: /version
+
+  - id: logical-0.2-semantic-model-wrong-type
+    input: cases/logical-0.2-semantic-model-wrong-type/document.yaml
+    serialization: yaml
+    profile: logical-0.2.0.dev0
+    expected:
+      valid: false
+      diagnostics:
+        - code: ossie.schema.type
+          instance_path: /semantic_model
+
+  - id: logical-0.2-dataset-missing-name
+    input: cases/logical-0.2-dataset-missing-name/document.json
+    serialization: json
+    profile: logical-0.2.0.dev0
+    expected:
+      valid: false
+      diagnostics:
+        - code: ossie.schema.required
+          instance_path: /semantic_model/0/datasets/0
+
+  - id: logical-0.2-additional-root-property
+    input: cases/logical-0.2-additional-root-property/document.yaml
+    serialization: yaml
+    profile: logical-0.2.0.dev0
+    expected:
+      valid: false
+      diagnostics:
+        - code: ossie.schema.additional_properties
+          instance_path: ""
+
+  - id: ontology-0.2.0.dev0-offline-refs
+    input: cases/ontology-0.2.0.dev0-valid/document.yaml
+    serialization: yaml
+    profile: ontology-0.2.0.dev0
+    expected:
+      valid: true
+      diagnostics: []

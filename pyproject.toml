@@ -30,6 +30,7 @@ dev = [
     "playwright>=1.50.0",
     "fastapi>=0.115.0",
     "httpx>=0.28.0",
+    "jsonschema>=4.23,<5",
     "pyarrow>=14.0.0",
     "uvicorn>=0.34.0",
     # fakesnow pinned out until it supports sqlglot 30.x
@@ -60,6 +61,9 @@ charts = [
 ]
 fast = [
     "sqlglot[c]>=30.1.0",
+]
+ossie = [
+    "jsonschema>=4.23,<5",
 ]
 serve = [
     "riffq>=0.1.0",
@@ -126,7 +130,7 @@ all-databases = [
     "sidemantic[postgres,bigquery,snowflake,clickhouse,databricks,spark,adbc]",
 ]
 full = [
-    "sidemantic[workbench,mcp,apps,charts,lsp,dax,lookml,malloy,metricflow,widget,api]",
+    "sidemantic[workbench,mcp,apps,charts,lsp,dax,lookml,malloy,metricflow,widget,api,ossie]",
 ]
 
 [build-system]
@@ -193,6 +197,7 @@ force-exclude = true
 exclude = [
     "sidemantic/adapters/malloy_grammar",  # ANTLR-generated files
     "sidemantic/adapters/holistics_grammar",  # ANTLR-generated files
+    "tests/ossie-fixtures/upstream/validation/validate.py",  # Exact pinned Apache validator fixture
 ]
 
 [tool.ruff.lint]

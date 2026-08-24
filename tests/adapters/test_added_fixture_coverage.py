@@ -458,6 +458,47 @@ def _extract_plain_sql_column(sql_expr: str | None) -> str | None:
     return None
 
 
+def _invariant_filter_column_types(filters: list[str]) -> dict[str, str]:
+    """Infer physical columns needed to execute imported source invariants.
+
+    The fixture harness builds synthetic tables from the selected query field.
+    Source invariants execute before that field and therefore need their own
+    physical columns even when the query does not project them.
+    """
+    column_types: dict[str, str] = {}
+    comparison_types = (exp.EQ, exp.NEQ, exp.GT, exp.GTE, exp.LT, exp.LTE, exp.Between)
+
+    for filter_sql in filters:
+        normalized = _normalize_sql_expr_for_analysis(filter_sql)
+        if not normalized or "${" in normalized or "{%" in normalized or "{" in normalized:
+            continue
+        try:
+            parsed = sqlglot.parse_one(normalized, read="duckdb")
+        except Exception:
+            continue
+
+        for column in parsed.find_all(exp.Column):
+            if not column.name or column.name == "*":
+                continue
+
+            column_type = "BOOLEAN"
+            ancestor = column.parent
+            while ancestor is not None:
+                if isinstance(ancestor, comparison_types):
+                    literals = list(ancestor.find_all(exp.Literal))
+                    if any(literal.is_string for literal in literals):
+                        column_type = "VARCHAR"
+                    elif literals:
+                        column_type = "DOUBLE"
+                    break
+                if isinstance(ancestor, (exp.And, exp.Or)):
+                    break
+                ancestor = ancestor.parent
+            column_types.setdefault(column.name, column_type)
+
+    return column_types
+
+
 def _parse_table_reference(table_name: str) -> tuple[str | None, str | None, str] | None:
     if not table_name or "{" in table_name or "(" in table_name:
         return None
@@ -553,6 +594,8 @@ def _pick_execution_query(graph):
         # Isolated model queries do not require an entity key. Unknown identity is represented by
         # an empty list rather than inventing an ``id`` column for execution fixtures.
         base_column_types = {pk: "INTEGER" for pk in model.primary_key_columns}
+        for column, column_type in _invariant_filter_column_types(model.invariant_filters).items():
+            base_column_types.setdefault(column, column_type)
 
         def pick_metric_candidate():
             for metric in model.metrics:

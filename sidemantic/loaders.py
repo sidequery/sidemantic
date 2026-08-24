@@ -185,8 +185,8 @@ def load_from_directory(
             False, log parse errors and continue loading other files.
         only_file: If set, parse just this one file (which must live under
             ``directory``) instead of scanning the whole tree, while still using
-            ``directory`` as the discovery root so Python files keep their parent
-            context. See :func:`load_from_file`.
+            ``directory`` as the discovery root. Malloy additionally resolves the
+            entry's reachable local imports. See :func:`load_from_file`.
 
     Example:
         >>> layer = SemanticLayer()
@@ -329,6 +329,52 @@ def load_from_directory(
             strict=strict,
         )
 
+    # Malloy is a module graph, not a collection of independent source files.
+    # Resolve the project once so imports share one module cache, collisions use
+    # Malloy's binding rules, and every emitted model retains its defining-file
+    # provenance. Single-file mode starts from only that entry while allowing its
+    # reachable imports within the directory boundary.
+    malloy_source = None
+    if only_file is not None and only_file.suffix.lower() == ".malloy":
+        malloy_source = only_file
+    elif only_file is None and any(file.suffix.lower() == ".malloy" for file in project_files):
+        malloy_source = directory
+
+    if malloy_source is not None:
+        from sidemantic.adapters.malloy import MalloyAdapter
+
+        adapter = MalloyAdapter(strict=strict, import_root=directory)
+        try:
+            graph = _parse_adapter_without_auto_registration(adapter, malloy_source)
+            _merge_graph_passthrough_metadata(layer.graph, graph)
+            _extend_import_warnings(import_warnings, graph)
+            for model in graph.models.values():
+                if not hasattr(model, "_source_format"):
+                    model._source_format = "Malloy"
+                if not hasattr(model, "_source_file"):
+                    model._source_file = str(malloy_source)
+            template_target_names |= {n for n, m in graph.models.items() if not _is_registerable_model(m)}
+            # The adapter has already resolved all intra-Malloy conflicts. This
+            # merge only arbitrates names against other semantic formats.
+            _merge_models(all_models, graph.models)
+            all_metrics.update(graph.metrics)
+            all_parameters.update(graph.parameters)
+        except Exception as e:
+            error_source = malloy_source
+            location = getattr(e, "location", None)
+            if location is not None:
+                error_source = location.path
+            elif adapter.errors:
+                error_source = Path(adapter.errors[0][0])
+            _append_import_warning(
+                import_warnings,
+                code="adapter_parse_error",
+                message=str(e),
+                source_format="Malloy",
+                source_file=str(error_source.relative_to(directory)),
+            )
+            _handle_parse_error(error_source, e, strict=strict)
+
     # Find and parse all files (just the requested one in single-file mode).
     scan_files = [only_file] if only_file is not None else project_files
     for file_path in scan_files:
@@ -351,9 +397,8 @@ def load_from_directory(
                 continue  # already parsed as one project above (cross-file refinements)
             adapter = LookMLAdapter()
         elif suffix == ".malloy":
-            from sidemantic.adapters.malloy import MalloyAdapter
-
-            adapter = MalloyAdapter()
+            # Parsed once as a project/module graph above.
+            continue
         elif suffix == ".gsql":
             continue
         elif suffix == ".sql":
@@ -590,10 +635,10 @@ def load_from_file(layer: "SemanticLayer", file: str | Path, *, strict: bool = T
 
     Parses only ``file`` (so an unrelated broken file beside it cannot fail the
     load and sibling models are not pulled in), but keeps the file's real parent
-    directory as the discovery root so a Python semantic file can still import
-    sibling helpers and resolve paths relative to its own location. Multi-file
-    projects (TMDL/SML/Graphene) need their directory layout — pass the project
-    directory to :func:`load_from_directory` for those.
+    directory as the discovery root so Python and Malloy files can resolve local
+    imports relative to their own location. Malloy loads only reachable imports.
+    Other multi-file projects (TMDL/SML/Graphene) need their directory layout —
+    pass the project directory to :func:`load_from_directory` for those.
 
     Args:
         layer: SemanticLayer to add models to

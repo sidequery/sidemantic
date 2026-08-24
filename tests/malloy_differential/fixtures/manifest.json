@@ -1,0 +1,97 @@
+{
+  "$schema": "./schema.json",
+  "version": 1,
+  "fixtures": [
+    {
+      "id": "core_measure",
+      "family": "core-measures",
+      "status": "compatible",
+      "reason": "Deterministic DuckDB SQL-over-Parquet source with a count measure and one dimension.",
+      "source": "core_measure.malloy",
+      "seed": "core_measure.sql",
+      "model": "orders",
+      "malloy_query": "run: orders -> { group_by: order_status aggregate: order_count order_by: order_status }",
+      "sidemantic": {
+        "metrics": ["orders.order_count"],
+        "dimensions": ["orders.order_status"],
+        "order_by": ["orders.order_status"]
+      },
+      "expected_schema": ["order_status", "order_count"],
+      "expected_rows": [
+        {"order_status": "cancelled", "order_count": 1},
+        {"order_status": "completed", "order_count": 2},
+        {"order_status": "pending", "order_count": 1}
+      ]
+    },
+    {
+      "id": "core_measure_empty",
+      "family": "core-measures",
+      "status": "compatible",
+      "reason": "Zero-row results retain deterministic result schema on both runtimes.",
+      "source": "core_measure.malloy",
+      "seed": "core_measure.sql",
+      "model": "orders",
+      "malloy_query": "run: orders -> { where: order_status = 'missing' group_by: order_status aggregate: order_count order_by: order_status }",
+      "sidemantic": {
+        "metrics": ["orders.order_count"],
+        "dimensions": ["orders.order_status"],
+        "filters": ["orders.order_status = 'missing'"],
+        "order_by": ["orders.order_status"]
+      },
+      "expected_schema": ["order_status", "order_count"],
+      "expected_rows": []
+    },
+    {
+      "id": "typed_scalar_dimension",
+      "family": "typed-expressions",
+      "status": "compatible",
+      "reason": "A scalar arithmetic dimension lowers through the typed SQL expression path in both runtimes.",
+      "source": "core_measure.malloy",
+      "seed": "core_measure.sql",
+      "model": "orders",
+      "malloy_query": "run: orders -> { group_by: adjusted_amount order_by: adjusted_amount }",
+      "sidemantic": {
+        "metrics": [],
+        "dimensions": ["orders.adjusted_amount"],
+        "order_by": ["orders.adjusted_amount"]
+      },
+      "expected_schema": ["adjusted_amount"],
+      "expected_rows": [
+        {"adjusted_amount": 45},
+        {"adjusted_amount": 80},
+        {"adjusted_amount": 105},
+        {"adjusted_amount": 255}
+      ]
+    },
+    {
+      "id": "source_filters",
+      "family": "source-filters",
+      "status": "planned",
+      "reason": "Python import, invariant execution, and roundtrip coverage exist; no official-Malloy differential fixture and row oracle are registered yet."
+    },
+    {
+      "id": "arbitrary_and_composite_joins",
+      "family": "joins",
+      "status": "planned",
+      "reason": "Python execution covers ordered composite keys and exact custom predicates; no official-Malloy differential fixture and row oracle are registered yet."
+    },
+    {
+      "id": "intrinsic_physical_fields",
+      "family": "intrinsic-fields",
+      "status": "planned",
+      "reason": "Python schema-introspection coverage includes intrinsic fields and absent primary keys; deterministic cross-runtime schema fixtures are not registered yet."
+    },
+    {
+      "id": "query_view_and_nesting_ir",
+      "family": "query-view-ir",
+      "status": "unsupported",
+      "reason": "Direct-source single-stage top-level queries import as Explore and SavedQuery, but source-local views, pipelines, refinements, and nesting remain unsupported."
+    },
+    {
+      "id": "module_topology",
+      "family": "imports-exports",
+      "status": "unsupported",
+      "reason": "Import binding, aliasing, exports, path safety, and cycle detection are supported, but Malloy export intentionally flattens the graph instead of reconstructing module topology."
+    }
+  ]
+}

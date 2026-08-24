@@ -1,0 +1,10 @@
+source: orders is duckdb.sql("""
+  SELECT * FROM read_parquet('data/orders.parquet')
+""") extend {
+  primary_key: id
+
+  dimension: order_status is status
+  dimension: adjusted_amount is amount + 5
+
+  measure: order_count is count()
+}

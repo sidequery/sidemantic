@@ -476,3 +476,35 @@ models:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+def test_validate_directory_resolves_relationship_role_target_without_orphan_warning(tmp_path):
+    (tmp_path / "semantic.yml").write_text(
+        """version: 1
+models:
+  - name: flights
+    table: flights
+    primary_key: id
+    dimensions:
+      - name: id
+        type: categorical
+        sql: id
+    relationships:
+      - name: origin
+        target_model: airports
+        type: many_to_one
+        foreign_key: origin_id
+  - name: airports
+    table: airports
+    primary_key: id
+    dimensions:
+      - name: id
+        type: categorical
+        sql: id
+"""
+    )
+
+    report = validate_directory(tmp_path)
+
+    assert not any("which doesn't exist" in error for error in report.errors)
+    assert not any("airports" in warning and "Orphaned models" in warning for warning in report.warnings)

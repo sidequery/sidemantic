@@ -7,6 +7,8 @@ through MalloyAdapter end-to-end so the assertions exercise the real visitor.
 import tempfile
 from pathlib import Path
 
+import pytest
+
 from sidemantic.adapters.malloy import MalloyAdapter, MalloyModelVisitor
 
 
@@ -189,7 +191,8 @@ def test_join_many_on_condition_uses_related_key():
 
 
 def test_join_many_unqualified_related_key():
-    # Related FK unqualified, source PK qualified by the source name.
+    # Both operands resolve to the current source, so this cannot establish an
+    # exact source-to-target relationship and must be omitted.
     g = _parse(
         "source: items is duckdb.table('i') extend { measure: ic is count() }\n"
         "source: orders is duckdb.table('o') extend {\n"
@@ -197,9 +200,7 @@ def test_join_many_unqualified_related_key():
         "  join_many: items is duckdb.table('i') on order_id = orders.id\n"
         "}\n"
     )
-    rel = {r.name: r for r in g.get_model("orders").relationships}["items"]
-    assert rel.type == "one_to_many"
-    assert rel.foreign_key == "order_id"
+    assert g.get_model("orders").relationships == []
 
 
 def test_join_composite_keys_reverse_direction():
@@ -211,11 +212,15 @@ def test_join_composite_keys_reverse_direction():
         "}\n"
     )
     rel = {r.name: r for r in g.get_model("orders").relationships}["cohort"]
-    assert rel.foreign_key == "gender"
-    assert rel.metadata.get("composite_keys") == ["gender", "state"]
+    assert rel.foreign_key == ["gender", "state"]
+    assert rel.primary_key == ["gender", "state"]
+    assert rel.metadata.get("join_key_pairs") == [
+        {"source": "gender", "target": "gender"},
+        {"source": "state", "target": "state"},
+    ]
 
 
-def test_join_both_unqualified_keeps_first_identifier():
+def test_join_both_unqualified_is_rejected_as_ambiguous():
     g = _parse(
         "source: customers is duckdb.table('c') extend { primary_key: id }\n"
         "source: orders is duckdb.table('o') extend {\n"
@@ -223,8 +228,74 @@ def test_join_both_unqualified_keeps_first_identifier():
         "  join_one: customers is duckdb.table('c') on customer_id = id\n"
         "}\n"
     )
-    rel = {r.name: r for r in g.get_model("orders").relationships}["customers"]
-    assert rel.foreign_key == "customer_id"
+    assert g.get_model("orders").relationships == []
+
+
+def test_undeclared_primary_key_stays_unknown_through_export_roundtrip():
+    g = _parse("source: facts is duckdb.table('facts') extend { dimension: value is value }\n")
+    facts = g.get_model("facts")
+    assert facts.primary_key is None
+
+    text = _export_text(g)
+    assert "primary_key:" not in text
+
+    reparsed = _parse(text)
+    assert reparsed.get_model("facts").primary_key is None
+
+
+def test_explicit_id_primary_key_is_exported_and_roundtrips():
+    g = _parse("source: facts is duckdb.table('facts') extend { primary_key: id }\n")
+    assert g.get_model("facts").primary_key == "id"
+
+    text = _export_text(g)
+    assert "primary_key: id" in text
+
+    reparsed = _parse(text)
+    assert reparsed.get_model("facts").primary_key == "id"
+
+
+def test_child_without_primary_key_inherits_parent_key_through_export_roundtrip():
+    from sidemantic.core.inheritance import resolve_model_inheritance
+
+    g = _parse(
+        "source: base is duckdb.table('base') extend { primary_key: base_id }\n"
+        "source: child is base extend { dimension: value is value }\n"
+    )
+    child = g.get_model("child")
+    assert child.primary_key is None
+    assert "primary_key" not in child.model_fields_set
+
+    resolved = resolve_model_inheritance(g.models)
+    assert resolved["child"].primary_key == "base_id"
+
+    text = _export_text(g)
+    assert text.count("primary_key: base_id") == 2
+
+    reparsed = _parse(text)
+    assert reparsed.get_model("child").primary_key == "base_id"
+
+
+def test_inline_source_without_primary_key_stays_unknown():
+    g = _parse(
+        "source: orders is duckdb.table('orders') extend {\n"
+        "  join_one: customers is duckdb.table('customers') extend { dimension: name is name } with customer_id\n"
+        "}\n"
+    )
+    assert g.get_model("orders").primary_key is None
+    assert g.get_model("customers").primary_key is None
+
+
+def test_join_to_source_without_primary_key_has_no_relationship_path():
+    g = _parse(
+        "source: customers is duckdb.table('customers') extend { dimension: name is name }\n"
+        "source: orders is duckdb.table('orders') extend {\n"
+        "  primary_key: id\n"
+        "  join_one: customers with customer_id\n"
+        "}\n"
+    )
+    assert g.get_model("customers").primary_key is None
+    with pytest.raises(ValueError):
+        g.find_relationship_path("orders", "customers")
 
 
 def test_export_agg_rewrite_ignores_string_literals():
@@ -499,7 +570,9 @@ def test_named_import_in_chain_not_dropped(tmp_path):
     (tmp_path / "base.malloy").write_text(_src("alpha") + _src("beta"))
     (tmp_path / "x.malloy").write_text("import { alpha } from 'base.malloy'\n" + _src("x_src"))
     (tmp_path / "y.malloy").write_text("import 'x.malloy'\nimport { beta } from 'base.malloy'\n" + _src("y_src"))
-    assert _models(tmp_path / "y.malloy") == {"alpha", "beta", "x_src", "y_src"}
+    # alpha is private to x.malloy: it is neither re-exported nor needed by a
+    # visible source dependency.
+    assert _models(tmp_path / "y.malloy") == {"beta", "x_src", "y_src"}
 
 
 def test_narrow_import_then_import_all(tmp_path):
@@ -515,7 +588,7 @@ def test_source_imported_under_two_aliases(tmp_path):
         "source: customers is duckdb.table('c.parquet') extend { primary_key: cid  dimension: cid is cid }\n"
     )
     (tmp_path / "dual.malloy").write_text(
-        "import { customers is c1, customers is c2 } from 'base.malloy'\n" + _src("local_src")
+        "import { c1 is customers, c2 is customers } from 'base.malloy'\n" + _src("local_src")
     )
     assert _models(tmp_path / "dual.malloy") == {"c1", "c2", "local_src"}
 
@@ -773,4 +846,6 @@ def test_join_on_condition_skips_literal_predicate():
     rel = {r.name: r for r in g.get_model("orders").relationships}["customers"]
     # The `customers.active = true` filter must not become the foreign key.
     assert rel.foreign_key == "customer_id"
-    assert rel.metadata.get("composite_keys") is None
+    assert rel.primary_key == "id"
+    assert rel.metadata.get("join_key_pairs") == [{"source": "customer_id", "target": "id"}]
+    assert rel.sql == "{to}.active = true and {from}.customer_id = {to}.id"

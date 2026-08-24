@@ -278,6 +278,219 @@ def test_convert_preserves_or_infers_sql_extension_for_stdin(extension_arguments
     assert not result.stderr
 
 
+def test_convert_renders_feature_only_fidelity_counts_details_and_readiness(tmp_path, monkeypatch):
+    from sidemantic.fidelity import record_import_feature
+
+    source = _write_model(tmp_path / "source")
+    output = tmp_path / "converted.yml"
+
+    class FakeGraph:
+        models = {"orders": object()}
+
+    def fake_convert(source_path, output_path, **kwargs):
+        del source_path, kwargs
+        Path(output_path).write_text("models: []\n")
+        record_import_feature(
+            "measure.percentile",
+            "partial",
+            detail="Imported as an approximate aggregate",
+            source="orders.malloy",
+            location="12",
+        )
+        return FakeGraph()
+
+    monkeypatch.setattr("sidemantic.formats.convert_semantic_source", fake_convert)
+
+    result = runner.invoke(app, ["convert", str(source), "--output", str(output), "--to", "sidemantic"])
+
+    assert result.exit_code == 0, result.output
+    assert "Import fidelity: 1 construct(s)" in result.stderr
+    assert "1 partial" in result.stderr
+    assert "measure.percentile: Imported as an approximate aggregate (orders.malloy:12)" in result.stderr
+    assert "Import readiness: review_required" in result.stderr
+    assert "0 construct" not in result.stderr
+
+
+def test_convert_blocked_fidelity_preserves_forced_destination_and_exits_nonzero(tmp_path, monkeypatch):
+    from sidemantic.fidelity import record_import_feature, record_import_note
+
+    source = _write_model(tmp_path / "source")
+    output = tmp_path / "converted.yml"
+    output.write_text("known-good\n")
+
+    class FakeGraph:
+        models = {"orders": object()}
+
+    def fake_convert(source_path, output_path, **kwargs):
+        del source_path, kwargs
+        Path(output_path).write_text("blocked-output\n")
+        record_import_feature("query.nesting", "unsupported", detail="Cannot execute nested query")
+        record_import_feature("source.filter", "rejected", detail="Unsafe to omit")
+        record_import_note("future_construct", "Unknown compatibility state", severity="future_status")
+        return FakeGraph()
+
+    monkeypatch.setattr("sidemantic.formats.convert_semantic_source", fake_convert)
+
+    result = runner.invoke(
+        app,
+        ["convert", str(source), "--output", str(output), "--to", "sidemantic", "--force"],
+    )
+
+    assert result.exit_code == 1, result.output
+    assert output.read_text() == "known-good\n"
+    assert "query.nesting: Cannot execute nested query" in result.stderr
+    assert "source.filter: Unsafe to omit" in result.stderr
+    assert "future_construct: Unknown compatibility state" in result.stderr
+    assert "Import readiness: blocked" in result.stderr
+    assert "Converted 1 model" not in result.stderr
+
+
+def test_convert_legacy_review_only_note_still_writes_output(tmp_path, monkeypatch):
+    from sidemantic.fidelity import record_import_note
+
+    source = _write_model(tmp_path / "source")
+    output = tmp_path / "converted.yml"
+
+    class FakeGraph:
+        models = {"orders": object()}
+
+    def fake_convert(source_path, output_path, **kwargs):
+        del source_path, kwargs
+        Path(output_path).write_text("reviewed-output\n")
+        record_import_note("legacy_case", "Dropped optional case", severity="dropped")
+        return FakeGraph()
+
+    monkeypatch.setattr("sidemantic.formats.convert_semantic_source", fake_convert)
+
+    result = runner.invoke(app, ["convert", str(source), "--output", str(output), "--to", "sidemantic"])
+
+    assert result.exit_code == 0, result.output
+    assert output.read_text() == "reviewed-output\n"
+    assert "legacy_case: Dropped optional case" in result.stderr
+    assert "Import readiness: review_required" in result.stderr
+
+
+def test_convert_force_directory_replaces_tree_without_stale_files(tmp_path, monkeypatch):
+    source = _write_model(tmp_path / "source")
+    output = tmp_path / "converted"
+    output.mkdir()
+    (output / "stale.yml").write_text("stale\n")
+    (output / "replaced.yml").write_text("old\n")
+
+    class FakeGraph:
+        models = {"orders": object()}
+
+    def fake_convert(source_path, output_path, **kwargs):
+        del source_path, kwargs
+        staged = Path(output_path)
+        staged.mkdir()
+        (staged / "replaced.yml").write_text("new\n")
+        (staged / "fresh.yml").write_text("fresh\n")
+        return FakeGraph()
+
+    monkeypatch.setattr("sidemantic.formats.convert_semantic_source", fake_convert)
+
+    result = runner.invoke(
+        app,
+        ["convert", str(source), "--output", str(output), "--to", "rill", "--force"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert sorted(path.name for path in output.iterdir()) == ["fresh.yml", "replaced.yml"]
+    assert (output / "replaced.yml").read_text() == "new\n"
+    assert not list(tmp_path.glob(".sidemantic-promote-*"))
+
+
+def test_convert_force_directory_promotion_failure_restores_exact_prior_tree(tmp_path, monkeypatch):
+    source = _write_model(tmp_path / "source")
+    output = tmp_path / "converted"
+    (output / "nested").mkdir(parents=True)
+    (output / "old.yml").write_text("old\n")
+    (output / "nested" / "kept.yml").write_text("kept\n")
+    before = {path.relative_to(output): path.read_text() for path in output.rglob("*") if path.is_file()}
+
+    class FakeGraph:
+        models = {"orders": object()}
+
+    def fake_convert(source_path, output_path, **kwargs):
+        del source_path, kwargs
+        staged = Path(output_path)
+        staged.mkdir()
+        (staged / "new.yml").write_text("new\n")
+        return FakeGraph()
+
+    original_replace = Path.replace
+
+    def fail_new_tree_promotion(path, target):
+        if path.name == "next" and Path(target) == output:
+            raise OSError("injected directory promotion failure")
+        return original_replace(path, target)
+
+    monkeypatch.setattr("sidemantic.formats.convert_semantic_source", fake_convert)
+    monkeypatch.setattr(Path, "replace", fail_new_tree_promotion)
+
+    result = runner.invoke(
+        app,
+        ["convert", str(source), "--output", str(output), "--to", "rill", "--force"],
+    )
+
+    after = {path.relative_to(output): path.read_text() for path in output.rglob("*") if path.is_file()}
+    assert result.exit_code == 1, result.output
+    assert "injected directory promotion failure" in result.stderr
+    assert after == before
+    assert not (output / "new.yml").exists()
+    assert not list(tmp_path.glob(".sidemantic-promote-*"))
+
+
+def test_file_promotion_prepares_on_destination_filesystem_before_atomic_replace(tmp_path, monkeypatch):
+    staged_root = tmp_path / "system-temp"
+    staged_root.mkdir()
+    staged = staged_root / "converted.yml"
+    staged.write_text("new\n")
+    destination_root = tmp_path / "destination"
+    destination_root.mkdir()
+    output = destination_root / "converted.yml"
+    output.write_text("old\n")
+    original_replace = Path.replace
+
+    def reject_direct_cross_filesystem_replace(path, target):
+        if path == staged:
+            raise OSError("simulated EXDEV")
+        return original_replace(path, target)
+
+    monkeypatch.setattr(Path, "replace", reject_direct_cross_filesystem_replace)
+
+    cli_module._promote_converted_output(staged, output)
+
+    assert output.read_text() == "new\n"
+    assert staged.read_text() == "new\n"
+    assert not list(destination_root.glob(".sidemantic-promote-*"))
+
+
+def test_file_promotion_failure_preserves_existing_destination(tmp_path, monkeypatch):
+    staged = tmp_path / "staged.yml"
+    staged.write_text("new\n")
+    destination_root = tmp_path / "destination"
+    destination_root.mkdir()
+    output = destination_root / "converted.yml"
+    output.write_text("old\n")
+    original_replace = Path.replace
+
+    def fail_prepared_file_replace(path, target):
+        if path.name == "next" and Path(target) == output:
+            raise OSError("injected file promotion failure")
+        return original_replace(path, target)
+
+    monkeypatch.setattr(Path, "replace", fail_prepared_file_replace)
+
+    with pytest.raises(OSError, match="injected file promotion failure"):
+        cli_module._promote_converted_output(staged, output)
+
+    assert output.read_text() == "old\n"
+    assert staged.read_text() == "new\n"
+    assert not list(destination_root.glob(".sidemantic-promote-*"))
+
+
 def test_generated_output_dash_writes_stdout(tmp_path: Path):
     models = tmp_path / "models"
     _write_model(models)

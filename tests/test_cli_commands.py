@@ -560,6 +560,36 @@ def test_validate_engine_rust_uses_rust_loader(monkeypatch, tmp_path):
     assert "orders" in result.stdout
 
 
+def test_validate_routes_fidelity_features_and_unknown_legacy_notes_fail_closed(monkeypatch, tmp_path):
+    from sidemantic.fidelity import record_import_feature, record_import_note
+
+    _write_min_model(tmp_path)
+
+    class FakeReport:
+        def __init__(self):
+            self.errors = []
+            self.warnings = []
+            self.info = []
+
+    def fake_validate_directory(directory):
+        del directory
+        record_import_feature("measure.percentile", "partial", detail="Approximate")
+        record_import_feature("source.filter", "rejected", detail="Unsafe to omit")
+        record_import_note("future_construct", "Unknown fidelity severity", severity="future_status")
+        return FakeReport()
+
+    monkeypatch.setattr("sidemantic.validation_runner.validate_directory", fake_validate_directory)
+
+    result = runner.invoke(app, ["validate", str(tmp_path), "--engine", "python", "--json"])
+
+    assert result.exit_code == 1, result.output
+    payload = json.loads(result.stdout)
+    assert payload["warnings"] == ["Import fidelity (partial) measure.percentile: Approximate"]
+    assert "Import fidelity (rejected) source.filter: Unsafe to omit" in payload["errors"]
+    assert "Import fidelity (future_status) future_construct: Unknown fidelity severity" in payload["errors"]
+    assert "Import readiness: blocked" in payload["info"]
+
+
 def test_lsp_command_calls_main(monkeypatch):
     called = {"count": 0}
 

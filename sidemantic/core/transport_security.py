@@ -21,8 +21,13 @@ def has_enforced_column_restrictions(layer: Any) -> bool:
     return bool(getattr(layer, "enforce_visibility", False))
 
 
+def has_invariant_filters(layer: Any) -> bool:
+    """Return whether any model requires unconditional row scoping."""
+    return any(bool(getattr(model, "invariant_filters", [])) for model in layer.graph.models.values())
+
+
 def controls_are_active(layer: Any) -> bool:
-    return has_declared_security(layer) or has_enforced_column_restrictions(layer)
+    return has_declared_security(layer) or has_enforced_column_restrictions(layer) or has_invariant_filters(layer)
 
 
 def _reads_from_source(sql: str, dialect: str) -> bool:
@@ -190,6 +195,8 @@ def deny_raw_sql(layer: Any, *, transport: str) -> None:
         controls.append("model access/row policies")
     if has_enforced_column_restrictions(layer):
         controls.append("column visibility restrictions")
+    if has_invariant_filters(layer):
+        controls.append("model invariant filters")
     if controls:
         raise SecurityError(
             f"{transport} is disabled because {' and '.join(controls)} are active and raw SQL "

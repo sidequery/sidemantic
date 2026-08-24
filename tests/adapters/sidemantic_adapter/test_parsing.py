@@ -101,6 +101,79 @@ models:
     assert "orders" in graph.models
 
 
+def test_native_yaml_round_trip_preserves_explicit_id_primary_key(tmp_path):
+    adapter = SidemanticAdapter()
+    source = tmp_path / "source.yml"
+    source.write_text(
+        """
+version: 1
+models:
+  - name: orders
+    table: orders
+    primary_key: id
+"""
+    )
+
+    graph = adapter.parse(source)
+    exported_path = tmp_path / "exported.yml"
+    adapter.export(graph, exported_path)
+    exported = yaml.safe_load(exported_path.read_text())
+
+    assert exported["models"][0]["primary_key"] == "id"
+    assert adapter.parse(exported_path).models["orders"].primary_key == "id"
+
+
+def test_native_yaml_round_trip_omits_absent_primary_key(tmp_path):
+    adapter = SidemanticAdapter()
+    source = tmp_path / "source.yml"
+    source.write_text(
+        """
+version: 1
+models:
+  - name: events
+    table: events
+"""
+    )
+
+    graph = adapter.parse(source)
+    assert graph.models["events"].primary_key is None
+
+    exported_path = tmp_path / "exported.yml"
+    adapter.export(graph, exported_path)
+    exported = yaml.safe_load(exported_path.read_text())
+
+    assert "primary_key" not in exported["models"][0]
+    assert adapter.parse(exported_path).models["events"].primary_key is None
+
+
+def test_native_yaml_round_trip_preserves_inherited_primary_key(tmp_path):
+    adapter = SidemanticAdapter()
+    source = tmp_path / "source.yml"
+    source.write_text(
+        """
+version: 1
+models:
+  - name: base_orders
+    table: orders
+    primary_key: id
+  - name: completed_orders
+    extends: base_orders
+    sql: select * from orders where status = 'completed'
+"""
+    )
+
+    graph = adapter.parse(source)
+    assert graph.models["completed_orders"].primary_key == "id"
+
+    exported_path = tmp_path / "exported.yml"
+    adapter.export(graph, exported_path)
+    exported = yaml.safe_load(exported_path.read_text())
+    exported_models = {model["name"]: model for model in exported["models"]}
+
+    assert exported_models["completed_orders"]["primary_key"] == "id"
+    assert adapter.parse(exported_path).models["completed_orders"].primary_key == "id"
+
+
 def test_parse_native_yaml_round_trips_model_freshness(tmp_path):
     """Model-level freshness is a first-class native YAML field."""
     adapter = SidemanticAdapter()

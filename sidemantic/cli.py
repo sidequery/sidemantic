@@ -1470,11 +1470,11 @@ def convert(
 
         source = source if source_from_stdin else _models_path(source)
         output = output or (_project().root / f"converted.{target_format}.yml")
+        target_spec = get_semantic_format(target_format, operation="export")
         if output_to_stdout:
-            target = get_semantic_format(target_format, operation="export")
-            if target.output_kind != OutputKind.FILE:
+            if target_spec.output_kind != OutputKind.FILE:
                 raise InvocationError(
-                    f"Format '{target.name}' produces multiple or shape-dependent files and cannot use --output -"
+                    f"Format '{target_spec.name}' produces multiple or shape-dependent files and cannot use --output -"
                 )
         if str(output) != "-" and output.exists() and not force:
             raise ValueError(f"Destination already exists: {output}; pass --force to replace it")
@@ -1489,11 +1489,14 @@ def convert(
                 suffix = _stdin_source_extension(source_spec, content, requested=source_extension)
                 source = temp_root / f"stdin{suffix}"
                 source.write_text(content)
-            converted_output = output
             if output_to_stdout:
-                target_spec = get_semantic_format(target_format, operation="export")
                 suffix = target_spec.extensions[0] if target_spec.extensions else ".txt"
                 converted_output = temp_root / f"stdout{suffix}"
+            else:
+                # Always export to staging first. Import fidelity is only known
+                # after parsing, so writing directly could publish a blocked
+                # conversion or overwrite a valid --force destination.
+                converted_output = temp_root / output.name
             from sidemantic.fidelity import capture_import_report
 
             with progress(f"Converting semantic definitions to {target_format}"):
@@ -1504,21 +1507,25 @@ def convert(
                         source_format=source_format,
                         target_format=target_format,
                     )
-            if output_to_stdout:
-                write_text_output("-", converted_output.read_text())
-            else:
-                emit_diagnostic(f"Converted {len(graph.models)} model(s) to {target_format}: {output}")
             if fidelity_report.has_losses:
-                counts = fidelity_report.counts()
+                counts = fidelity_report.loss_counts()
                 total = sum(counts.values())
-                emit_warning(
+                emit_fidelity = emit_error if fidelity_report.is_blocked else emit_warning
+                emit_fidelity(
                     f"Import fidelity: {total} construct(s) were not fully translated "
                     f"({', '.join(f'{count} {severity}' for severity, count in sorted(counts.items()))}):"
                 )
-                for line in fidelity_report.summary_lines():
-                    emit_warning(f"  {line}")
-            elif not output_to_stdout:
-                # Streamed conversions promise a silent stderr on success.
+                for line in (*fidelity_report.summary_lines(), *fidelity_report.feature_summary_lines()):
+                    emit_fidelity(f"  {line}")
+                emit_fidelity(f"Import readiness: {fidelity_report.readiness}")
+                if fidelity_report.is_blocked:
+                    raise typer.Exit(1)
+            if output_to_stdout:
+                write_text_output("-", converted_output.read_text())
+            else:
+                _promote_converted_output(converted_output, output)
+                emit_diagnostic(f"Converted {len(graph.models)} model(s) to {target_format}: {output}")
+            if not fidelity_report.has_losses and not output_to_stdout:
                 emit_diagnostic("Import fidelity: all recognized constructs translated")
         emit_next_step(
             "convert",
@@ -1529,6 +1536,59 @@ def convert(
         raise
     except Exception as e:
         fail(e)
+
+
+def _promote_converted_output(staged: Path, output: Path) -> None:
+    """Publish a fidelity-approved staged conversion to its destination."""
+    import shutil
+    import tempfile
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    if staged.is_dir():
+        if output.exists() and not output.is_dir():
+            raise ValueError(f"Cannot replace file destination with directory output: {output}")
+
+        # Prepare the complete replacement on the destination filesystem before
+        # touching the current output. Renames below are then atomic, stale files
+        # cannot survive, and a failed promotion can restore the old tree.
+        transaction = Path(tempfile.mkdtemp(prefix=".sidemantic-promote-", dir=output.parent))
+        prepared = transaction / "next"
+        backup = transaction / "previous"
+        had_output = output.exists()
+        cleanup_transaction = True
+        try:
+            shutil.copytree(staged, prepared)
+            if had_output:
+                output.replace(backup)
+            try:
+                prepared.replace(output)
+            except Exception as promotion_error:
+                if had_output and backup.exists():
+                    try:
+                        backup.replace(output)
+                    except Exception as rollback_error:
+                        cleanup_transaction = False
+                        raise RuntimeError(
+                            f"Directory promotion failed and rollback also failed; "
+                            f"previous output is preserved at {backup}: {rollback_error}"
+                        ) from promotion_error
+                raise
+        finally:
+            if cleanup_transaction:
+                shutil.rmtree(transaction, ignore_errors=True)
+        return
+    if output.exists() and output.is_dir():
+        raise ValueError(f"Cannot replace directory destination with file output: {output}")
+    transaction = Path(tempfile.mkdtemp(prefix=".sidemantic-promote-", dir=output.parent))
+    prepared = transaction / "next"
+    try:
+        # The conversion staging directory may be on another filesystem. Copy
+        # beside the destination first, then use one same-filesystem atomic
+        # replacement so EXDEV cannot corrupt or remove an existing file.
+        shutil.copy2(staged, prepared)
+        prepared.replace(output)
+    finally:
+        shutil.rmtree(transaction, ignore_errors=True)
 
 
 def _stdin_source_extension(source_spec, content: str, *, requested: str | None) -> str:
@@ -2526,7 +2586,27 @@ def validate(
             with capture_import_report() as fidelity_report:
                 report = validate_directory(directory)
         for note in fidelity_report.notes:
-            report.warnings.append(f"Import fidelity ({note.severity}): {note.detail}")
+            message = f"Import fidelity ({note.severity}) {note.construct}: {note.detail}"
+            if note.severity in {"dropped", "approximated"}:
+                report.warnings.append(message)
+            else:
+                report.errors.append(message)
+        for feature in fidelity_report.features:
+            if feature.status == "exact":
+                continue
+            detail = f": {feature.detail}" if feature.detail else ""
+            location = f" ({feature.source}:{feature.location})" if feature.source and feature.location else ""
+            if not location and feature.source:
+                location = f" ({feature.source})"
+            elif not location and feature.location:
+                location = f" ({feature.location})"
+            message = f"Import fidelity ({feature.status}) {feature.feature}{detail}{location}"
+            if feature.status == "partial":
+                report.warnings.append(message)
+            else:
+                report.errors.append(message)
+        if fidelity_report.notes or fidelity_report.features:
+            report.info.append(f"Import readiness: {fidelity_report.readiness}")
     except Exception as e:
         if cli_state().debug:
             raise

@@ -34,6 +34,14 @@ def merge_model(child: Model, parent: Model) -> Model:
     child_fields = child.model_fields_set - {"extends"}
     child_data = child.model_dump(include=child_fields, exclude_unset=True)
 
+    # Invariant filters are refinements, not an overrideable named collection.
+    # A child may narrow its parent further, but cannot silently remove the
+    # parent's row scope.
+    merged_data["invariant_filters"] = [
+        *merged_data.get("invariant_filters", []),
+        *child_data.get("invariant_filters", []),
+    ]
+
     # Merge lists (dimensions, metrics, relationships, segments)
     # Child's items are added to parent's items
     for field in ["dimensions", "metrics", "relationships", "segments", "pre_aggregations"]:
@@ -61,6 +69,7 @@ def merge_model(child: Model, parent: Model) -> Model:
         "freshness",
         "metadata",
         "auto_dimensions",
+        "schema_exposure",
         "meta",
     ]:
         if field in child_data:

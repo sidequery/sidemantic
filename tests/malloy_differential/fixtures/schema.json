@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Sidemantic Malloy differential fixture manifest",
+  "type": "object",
+  "required": ["version", "fixtures"],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "fixtures": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/fixture"
+      }
+    }
+  },
+  "$defs": {
+    "fixture": {
+      "type": "object",
+      "required": ["id", "family", "status", "reason"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9_-]*$"
+        },
+        "family": {
+          "type": "string"
+        },
+        "status": {
+          "enum": ["compatible", "unsupported", "planned"]
+        },
+        "reason": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "seed": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "malloy_query": {
+          "type": "string"
+        },
+        "sidemantic": {
+          "$ref": "#/$defs/query"
+        },
+        "expected_rows": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "expected_schema": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "compatible"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "source",
+              "seed",
+              "model",
+              "malloy_query",
+              "sidemantic",
+              "expected_schema",
+              "expected_rows"
+            ]
+          }
+        }
+      ]
+    },
+    "query": {
+      "type": "object",
+      "required": ["metrics", "dimensions", "order_by"],
+      "properties": {
+        "metrics": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "dimensions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "filters": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "segments": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "order_by": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}

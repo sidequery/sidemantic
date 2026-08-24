@@ -951,6 +951,10 @@ class SQLGenerator:
                     for arg in node.args.values():
                         if isinstance(arg, exp.Expression):
                             _qualify_outer(arg)
+                        elif isinstance(arg, list):
+                            for item in arg:
+                                if isinstance(item, exp.Expression):
+                                    _qualify_outer(item)
 
                 _qualify_outer(parsed)
                 rendered_filters.append(parsed.sql(dialect=self.dialect))
@@ -959,6 +963,41 @@ class SQLGenerator:
                 row_filters_by_model[model_name] = rendered_filters
 
         return row_filters_by_model
+
+    def _invariant_filters(self, models_in_query: set[str]) -> dict[str, list[str]]:
+        """Parse and qualify model predicates that must scope every query."""
+        filters_by_model: dict[str, list[str]] = {}
+        for model_name in sorted(models_in_query):
+            model = self.graph.get_model(model_name)
+            if model is None or not model.invariant_filters:
+                continue
+            qualified: list[str] = []
+            for predicate in model.invariant_filters:
+                rendered = predicate.replace("{model}", model_name)
+                try:
+                    parsed = _parse_fragment(rendered, self.dialect)
+                except SqlglotError as exc:
+                    raise ValueError(
+                        f"Invariant filter for model '{model_name}' failed to parse as SQL: {rendered!r}"
+                    ) from exc
+
+                def _qualify_outer(node: exp.Expression) -> None:
+                    if isinstance(node, exp.Subquery):
+                        return
+                    if isinstance(node, exp.Column) and not node.table:
+                        node.set("table", model_name)
+                    for arg in node.args.values():
+                        if isinstance(arg, exp.Expression):
+                            _qualify_outer(arg)
+                        elif isinstance(arg, list):
+                            for item in arg:
+                                if isinstance(item, exp.Expression):
+                                    _qualify_outer(item)
+
+                _qualify_outer(parsed)
+                qualified.append(parsed.sql(dialect=self.dialect))
+            filters_by_model[model_name] = qualified
+        return filters_by_model
 
     def generate(
         self,
@@ -1114,6 +1153,10 @@ class SQLGenerator:
                 processed_filters.append(f)
 
         filters = processed_filters
+        # Caller filters determine whether an already-scoped rollup can answer
+        # the query. Invariant filters are instead baked into every materialized
+        # rollup and must not be required as physical rollup columns.
+        routing_filters = list(filters)
 
         # Enforce model security policies once per compile, BEFORE any SQL is assembled or any
         # query-shape early-return path (window functions, symmetric-aggregate fanout, pre-agg
@@ -1126,9 +1169,12 @@ class SQLGenerator:
         security_model_names = self._find_required_models(metrics, dimensions, filters)
         if security_model_names:
             participating_models = self._participating_models(security_model_names)
+            for model_name, predicates in self._invariant_filters(participating_models).items():
+                filters = filters + predicates
             security_row_filters = self._enforce_security(participating_models, user_attributes)
             for model_name in sorted(security_row_filters):
                 filters = filters + security_row_filters[model_name]
+                routing_filters = routing_filters + security_row_filters[model_name]
 
         # Check if any metrics need window functions (cumulative or time_comparison)
         def metric_needs_window(m):
@@ -1221,7 +1267,7 @@ class SQLGenerator:
             join_key_preagg_sql = self._try_use_join_key_preaggregation(
                 metrics=metrics,
                 dimensions=dimensions,
-                filters=filters,
+                filters=routing_filters,
                 order_by=order_by,
                 limit=limit,
                 offset=offset,
@@ -1262,7 +1308,7 @@ class SQLGenerator:
                 model_name=model_names[0],
                 metrics=metrics,
                 parsed_dims=parsed_dims,
-                filters=filters,
+                filters=routing_filters,
                 order_by=order_by,
                 limit=limit,
                 offset=offset,
@@ -2059,6 +2105,7 @@ class SQLGenerator:
 
         # Include local relationship keys if we're joining OR if they're explicitly requested as dimensions
         for relationship in model.relationships:
+            target_instance = self.graph.relationship_target_instance(model_name, relationship)
             # Custom-SQL joins ({from}/{to}) supply their own key columns via
             # _custom_join_columns_by_model; skip the default FK/PK passthrough so we
             # don't inject a non-existent "{name}_id" column for composite/custom joins.
@@ -2068,14 +2115,14 @@ class SQLGenerator:
                 # Handle multi-column foreign keys
                 for fk in relationship.foreign_key_columns:
                     # Add FK if: (1) we're joining to this related model, OR (2) FK is requested as dimension
-                    should_include = (needs_keyed_joins and relationship.name in all_models) or fk in needed_dimensions
+                    should_include = (needs_keyed_joins and target_instance in all_models) or fk in needed_dimensions
                     if should_include and fk not in columns_added:
                         add_passthrough_column(fk)
                         # Mark FK as "needed" so it's not duplicated as a dimension
                         needed_dimensions.discard(fk)
             elif (
                 needs_keyed_joins
-                and relationship.name in all_models
+                and target_instance in all_models
                 and relationship.type in ("one_to_one", "one_to_many")
             ):
                 # Project the SAME local key the join uses (build_adjacency calls this helper too):
@@ -2086,7 +2133,7 @@ class SQLGenerator:
                     add_passthrough_column(pk)
             elif (
                 needs_keyed_joins
-                and relationship.name in all_models
+                and target_instance in all_models
                 and relationship.type == "many_to_many"
                 and relationship.primary_key
                 and (not relationship.through or relationship.through not in self.graph.models)
@@ -2104,11 +2151,12 @@ class SQLGenerator:
                 if other_model_name not in all_models:
                     continue
                 for other_join in other_model.relationships:
+                    target_instance = self.graph.relationship_target_instance(other_model_name, other_join)
                     # Custom-SQL joins supply their key columns via the custom-join
                     # column extraction; don't inject default FK/PK columns for them.
                     if other_join.sql and ("{from}" in other_join.sql or "{to}" in other_join.sql):
                         continue
-                    if other_join.name == model_name and other_join.type in (
+                    if target_instance == model_name and other_join.type in (
                         "one_to_one",
                         "one_to_many",
                     ):
@@ -2116,14 +2164,14 @@ class SQLGenerator:
                         # For has_many/has_one, foreign_key is the FK column in THIS model
                         for fk in other_join.foreign_key_columns:
                             add_passthrough_column(fk)
-                    elif other_join.name == model_name and other_join.type == "many_to_one":
+                    elif target_instance == model_name and other_join.type == "many_to_one":
                         target_keys = (
                             other_join.primary_key_columns if other_join.primary_key else model.primary_key_columns
                         )
                         for pk in target_keys:
                             add_passthrough_column(pk)
                     elif (
-                        other_join.name == model_name
+                        target_instance == model_name
                         and other_join.type == "many_to_many"
                         and (not other_join.through or other_join.through not in self.graph.models)
                     ):
@@ -2465,16 +2513,21 @@ class SQLGenerator:
         if len(all_models) <= 1:
             return False
 
+        if self.graph.instance_has_keyed_relationship(model_name, all_models):
+            return True
+
         model = self.graph.get_model(model_name)
         for relationship in model.relationships:
-            if relationship.name in all_models and relationship.type != "cross":
+            target_instance = self.graph.relationship_target_instance(model_name, relationship)
+            if target_instance in all_models and relationship.type != "cross":
                 return True
 
         for other_model_name, other_model in self.graph.models.items():
             if other_model_name not in all_models:
                 continue
             for relationship in other_model.relationships:
-                if relationship.name == model_name and relationship.type != "cross":
+                target_instance = self.graph.relationship_target_instance(other_model_name, relationship)
+                if target_instance == model_name and relationship.type != "cross":
                     return True
                 if (
                     relationship.type == "many_to_many"
@@ -2491,11 +2544,14 @@ class SQLGenerator:
             return False
 
         model = self.graph.get_model(model_name)
-        if any(rel.name in all_models and rel.type == "cross" for rel in model.relationships):
+        if any(
+            self.graph.relationship_target_instance(model_name, rel) in all_models and rel.type == "cross"
+            for rel in model.relationships
+        ):
             return True
 
         return any(
-            rel.name == model_name and rel.type == "cross"
+            self.graph.relationship_target_instance(other_model_name, rel) == model_name and rel.type == "cross"
             for other_model_name, other_model in self.graph.models.items()
             if other_model_name in all_models
             for rel in other_model.relationships
@@ -2557,14 +2613,28 @@ class SQLGenerator:
 
         try:
             from_model = self.graph.get_model(join_path.from_model)
-            relation = next((rel for rel in from_model.relationships if rel.name == join_path.to_model), None)
+            relation = next(
+                (
+                    rel
+                    for rel in from_model.relationships
+                    if self.graph.relationship_target_instance(join_path.from_model, rel) == join_path.to_model
+                ),
+                None,
+            )
         except KeyError:
             relation = None
 
         if relation is None:
             try:
                 to_model = self.graph.get_model(join_path.to_model)
-                relation = next((rel for rel in to_model.relationships if rel.name == join_path.from_model), None)
+                relation = next(
+                    (
+                        rel
+                        for rel in to_model.relationships
+                        if self.graph.relationship_target_instance(join_path.to_model, rel) == join_path.from_model
+                    ),
+                    None,
+                )
                 reverse = relation is not None
             except KeyError:
                 relation = None

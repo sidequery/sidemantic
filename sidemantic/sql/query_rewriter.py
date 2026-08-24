@@ -152,10 +152,14 @@ class QueryRewriter:
         self._use_rust_rewriter = (
             os.getenv("SIDEMANTIC_RS_REWRITER", "0") == "1" if use_rust_rewriter is None else use_rust_rewriter
         )
+        if self._use_rust_rewriter and any(model.invariant_filters for model in graph.models.values()):
+            self._use_rust_rewriter = False
+            self.rust_fallback_reason = "model invariant filters require the Python rewriter"
         self._rust_no_fallback = os.getenv("SIDEMANTIC_RS_NO_FALLBACK", "0") == "1"
         self._rust_module = None
         self._rust_models_yaml: str | None = None
-        self.rust_fallback_reason: str | None = None
+        if not hasattr(self, "rust_fallback_reason"):
+            self.rust_fallback_reason: str | None = None
 
         if self._use_rust_rewriter:
             try:

@@ -13,6 +13,7 @@ from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.parameter import Parameter
 from sidemantic.core.relationship import Relationship
+from sidemantic.core.schema_exposure import SchemaExposure
 from sidemantic.core.segment import Segment
 from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.core.sql_definitions import (
@@ -50,11 +51,13 @@ MODEL_FIELDS = {
     "metadata",
     "meta",
     "auto_dimensions",
+    "schema_exposure",
     "dimensions",
     "metrics",
     "measures",
     "relationships",
     "segments",
+    "invariant_filters",
     "pre_aggregations",
     "security",
     "default_time_dimension",
@@ -66,6 +69,13 @@ MODEL_FIELDS = {
 SECURITY_FIELDS = {
     "access",
     "row_filters",
+}
+SCHEMA_EXPOSURE_FIELDS = {
+    "strict",
+    "include_primary_key",
+    "accept",
+    "except",
+    "private",
 }
 FRESHNESS_FIELDS = {
     "watermark",
@@ -149,6 +159,7 @@ METRIC_FIELDS = {
 }
 RELATIONSHIP_FIELDS = {
     "name",
+    "target_model",
     "type",
     "foreign_key",
     "foreign_key_columns",
@@ -557,6 +568,7 @@ class SidemanticAdapter(BaseAdapter):
                 )
             join = Relationship(
                 name=relationship_def.get("name"),
+                target_model=relationship_def.get("target_model"),
                 type=relationship_def.get("type"),
                 foreign_key=relationship_def.get("foreign_key_columns") or relationship_def.get("foreign_key"),
                 primary_key=relationship_def.get("primary_key_columns") or relationship_def.get("primary_key"),
@@ -718,9 +730,26 @@ class SidemanticAdapter(BaseAdapter):
             "metadata",
             "auto_dimensions",
             "meta",
+            "invariant_filters",
         ]:
             if field in model_def:
                 model_kwargs[field] = model_def.get(field)
+
+        if "schema_exposure" in model_def:
+            exposure_def = model_def.get("schema_exposure")
+            if exposure_def is None:
+                model_kwargs["schema_exposure"] = None
+            elif not isinstance(exposure_def, dict):
+                location = f"{source_path}: " if source_path else ""
+                raise ValueError(f"{location}model '{name}' schema_exposure must be a mapping")
+            else:
+                reject_unknown_fields(
+                    exposure_def,
+                    SCHEMA_EXPOSURE_FIELDS,
+                    f"model '{name}' schema_exposure",
+                    source_path=source_path,
+                )
+                model_kwargs["schema_exposure"] = SchemaExposure(**exposure_def)
 
         if "freshness" in model_def:
             freshness_def = model_def.get("freshness")
@@ -922,12 +951,23 @@ class SidemanticAdapter(BaseAdapter):
             result["metadata"] = model.metadata
         if model.meta:
             result["meta"] = model.meta
+        if model.invariant_filters:
+            result["invariant_filters"] = model.invariant_filters
+        if model.auto_dimensions:
+            result["auto_dimensions"] = True
+        if model.schema_exposure is not None:
+            result["schema_exposure"] = model.schema_exposure.model_dump(
+                by_alias=True,
+                exclude_none=True,
+                exclude_defaults=True,
+            )
 
         # Export joins
         if model.relationships:
             result["relationships"] = [
                 {
                     "name": relationship.name,
+                    **({"target_model": relationship.target_model} if relationship.target_model else {}),
                     "type": relationship.type,
                     **({"foreign_key": relationship.foreign_key} if relationship.foreign_key else {}),
                     **({"primary_key": relationship.primary_key} if relationship.primary_key else {}),
@@ -962,7 +1002,7 @@ class SidemanticAdapter(BaseAdapter):
             ]
 
         # Export primary key
-        if model.primary_key != "id":  # Only export if non-default
+        if model.primary_key is not None:
             result["primary_key"] = model.primary_key
 
         # Export dimensions

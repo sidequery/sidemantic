@@ -1,0 +1,12 @@
+{
+  "name": "sidemantic-malloy-duckdb-differential",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "bun run runner.ts"
+  },
+  "dependencies": {
+    "@malloydata/db-duckdb": "0.0.332",
+    "@malloydata/malloy": "0.0.332"
+  }
+}

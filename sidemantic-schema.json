@@ -1728,7 +1728,7 @@
           "title": "Metadata"
         },
         "name": {
-          "description": "Name of the related model",
+          "description": "Relationship role name; also the target model for legacy declarations",
           "title": "Name",
           "type": "string"
         },
@@ -1812,6 +1812,19 @@
           "description": "Custom join SQL using {from} and {to} runtime placeholders",
           "title": "Sql"
         },
+        "target_model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Canonical related model when the relationship name is a role alias. When omitted, name remains the target model for backwards compatibility.",
+          "title": "Target Model"
+        },
         "through": {
           "anyOf": [
             {
@@ -1872,6 +1885,58 @@
         "type"
       ],
       "title": "Relationship",
+      "type": "object"
+    },
+    "SchemaExposure": {
+      "additionalProperties": false,
+      "description": "Controls which physical columns become auto-discovered dimensions.\n\nThis is intentionally opt-in. Models without ``schema_exposure`` retain the\nhistorical ``auto_dimensions`` behavior, including excluding primary keys\nand recovering from unavailable schema introspection.",
+      "properties": {
+        "accept": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional allowlist of physical columns eligible for auto-discovery",
+          "title": "Accept"
+        },
+        "except": {
+          "description": "Physical columns excluded from auto-discovery",
+          "items": {
+            "type": "string"
+          },
+          "title": "Except",
+          "type": "array"
+        },
+        "include_primary_key": {
+          "default": false,
+          "description": "Expose declared primary-key columns as dimensions when otherwise visible",
+          "title": "Include Primary Key",
+          "type": "boolean"
+        },
+        "private": {
+          "description": "Private physical columns excluded before dimensions become queryable",
+          "items": {
+            "type": "string"
+          },
+          "title": "Private",
+          "type": "array"
+        },
+        "strict": {
+          "default": false,
+          "description": "Raise when backing-source schema introspection fails or returns no columns",
+          "title": "Strict",
+          "type": "boolean"
+        }
+      },
+      "title": "SchemaExposure",
       "type": "object"
     },
     "SecurityPolicy": {
@@ -4386,7 +4451,7 @@
                 "title": "Metadata"
               },
               "name": {
-                "description": "Name of the related model",
+                "description": "Relationship role name; also the target model for legacy declarations",
                 "title": "Name",
                 "type": "string"
               },
@@ -4470,6 +4535,19 @@
                 "description": "Custom join SQL using {from} and {to} runtime placeholders",
                 "title": "Sql"
               },
+              "target_model": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Canonical related model when the relationship name is a role alias. When omitted, name remains the target model for backwards compatibility.",
+                "title": "Target Model"
+              },
               "through": {
                 "anyOf": [
                   {
@@ -4530,6 +4608,58 @@
               "type"
             ],
             "title": "Relationship",
+            "type": "object"
+          },
+          "SchemaExposure": {
+            "additionalProperties": false,
+            "description": "Controls which physical columns become auto-discovered dimensions.\n\nThis is intentionally opt-in. Models without ``schema_exposure`` retain the\nhistorical ``auto_dimensions`` behavior, including excluding primary keys\nand recovering from unavailable schema introspection.",
+            "properties": {
+              "accept": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Optional allowlist of physical columns eligible for auto-discovery",
+                "title": "Accept"
+              },
+              "except": {
+                "description": "Physical columns excluded from auto-discovery",
+                "items": {
+                  "type": "string"
+                },
+                "title": "Except",
+                "type": "array"
+              },
+              "include_primary_key": {
+                "default": false,
+                "description": "Expose declared primary-key columns as dimensions when otherwise visible",
+                "title": "Include Primary Key",
+                "type": "boolean"
+              },
+              "private": {
+                "description": "Private physical columns excluded before dimensions become queryable",
+                "items": {
+                  "type": "string"
+                },
+                "title": "Private",
+                "type": "array"
+              },
+              "strict": {
+                "default": false,
+                "description": "Raise when backing-source schema introspection fails or returns no columns",
+                "title": "Strict",
+                "type": "boolean"
+              }
+            },
+            "title": "SchemaExposure",
             "type": "object"
           },
           "SecurityPolicy": {
@@ -4777,6 +4907,14 @@
             "default": null,
             "description": "Expected data freshness policy"
           },
+          "invariant_filters": {
+            "description": "SQL predicates that always constrain this model before joins and aggregation",
+            "items": {
+              "type": "string"
+            },
+            "title": "Invariant Filters",
+            "type": "array"
+          },
           "meta": {
             "anyOf": [
               {
@@ -4865,6 +5003,18 @@
             },
             "title": "Relationships",
             "type": "array"
+          },
+          "schema_exposure": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/SchemaExposure"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional strict schema-introspection and physical-column visibility controls"
           },
           "security": {
             "anyOf": [

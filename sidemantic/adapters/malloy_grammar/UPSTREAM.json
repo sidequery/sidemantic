@@ -1,0 +1,30 @@
+{
+  "repository": "https://github.com/malloydata/malloy",
+  "version": "v0.0.407",
+  "commit": "cf1f6a6449562bd9b74fc14936f47af294c3a325",
+  "antlr_version": "4.13.2",
+  "grammar_files": {
+    "MalloyLexer.g4": {
+      "upstream_path": "packages/malloy/src/lang/grammar/MalloyLexer.g4",
+      "upstream_sha256": "a6f9c71026f8c0eda68fd7f8789442a46f826804dc0b233e699592a28d5dc83d",
+      "vendored_sha256": "0b972995eb55dfa5871c1ecfc45fcad9f6fbd7b9d3a25f27a1ab21fae4848e2b",
+      "adaptation": "Python-target members and embedded lexer actions."
+    },
+    "MalloyParser.g4": {
+      "upstream_path": "packages/malloy/src/lang/grammar/MalloyParser.g4",
+      "upstream_sha256": "f0441cda85caa6578401271973e7715a9204fa3556282c3f98f5aeb83ffde1a4",
+      "vendored_sha256": "f0441cda85caa6578401271973e7715a9204fa3556282c3f98f5aeb83ffde1a4",
+      "adaptation": "none"
+    }
+  },
+  "generated_files": {
+    "MalloyLexer.py": "5bb687abdf1151d0837929850fefce1acc0a5ba257fee7d62f00e899611433de",
+    "MalloyLexer.tokens": "777d5b1a2648b16bd591b6699f4ccf4386b02742b471e28893191d920fe108f7",
+    "MalloyLexer.interp": "77cf35f32da30dca11e3af65f0908ab9891226a1dcc6ce038cbfd7d7e601f333",
+    "MalloyParser.py": "5c4443b814b138c92a9b572eeb5d9be6dc8d41cd63d759f8fd94753e2a3fe404",
+    "MalloyParser.tokens": "777d5b1a2648b16bd591b6699f4ccf4386b02742b471e28893191d920fe108f7",
+    "MalloyParser.interp": "6871528893fdb1ec7b2a3301dd52484553a7b671a2d6a63fcfc5bfcfb93e89d5",
+    "MalloyParserListener.py": "ccb4b6d99952d7ef21e490637e593a640b1d18423e0a66578daa05aeb639ac30",
+    "MalloyParserVisitor.py": "7361578509c5fc5cdf15e197302a60e724ba109779050c748bbf17ebef440218"
+  }
+}

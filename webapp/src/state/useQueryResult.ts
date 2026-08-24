@@ -5,6 +5,10 @@ import { beginQuery, endQuery } from "./queryActivity";
 
 export type QueryResultState = {
   result?: QueryResult;
+  /** Serialized query that produced `result`, used by callers that cannot display stale shapes. */
+  resultKey?: string;
+  /** Serialized query currently requested by the caller. */
+  queryKey?: string;
   loading: boolean;
   error?: string;
 };
@@ -32,13 +36,13 @@ export function useQueryResult(backend: SidemanticBackend, query: StructuredQuer
       return;
     }
     const current = ++token.current;
-    setState((prev) => ({ result: prev.result, loading: true }));
+    setState((prev) => ({ result: prev.result, resultKey: prev.resultKey, loading: true }));
     const timer = setTimeout(() => {
       beginQuery();
       backend
         .runQuery(query)
         .then((result) => {
-          if (current === token.current) setState({ result, loading: false });
+          if (current === token.current) setState({ result, resultKey: key ?? undefined, loading: false });
         })
         .catch((err: unknown) => {
           if (current === token.current) {
@@ -53,5 +57,5 @@ export function useQueryResult(backend: SidemanticBackend, query: StructuredQuer
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, backend]);
 
-  return state;
+  return { ...state, queryKey: key ?? undefined };
 }

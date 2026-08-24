@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { queryAlias, type CatalogMetric, type Grain, type StructuredQuery } from "../data/types";
+import { DataTable, type Column } from "../components/DataTable";
 import { LeaderboardPanel } from "../components/LeaderboardPanel";
 import { MetricCard } from "../components/MetricCard";
 import { MetricTimeSeries } from "../components/MetricTimeSeries";
 import { QueryDebugPanel } from "../components/QueryDebugPanel";
-import { EmptyState, ErrorState } from "../components/States";
+import { EmptyState, ErrorState, LoadingState } from "../components/States";
 import type { BrushRange } from "../components/TimeSeriesChart";
-import { formatDelta, formatValue } from "../lib/format";
+import { formatDelta, formatValue, labelize } from "../lib/format";
 import { graphMetricsForModel } from "../lib/catalog";
 import { dashboardTabConfig } from "../lib/dashboard";
 import { catalogDimTypes, composeFilters, metricSeries, metricTotals } from "../lib/queries";
@@ -24,6 +25,17 @@ import { useQueryResult } from "../state/useQueryResult";
 
 function metricHint(metric?: CatalogMetric) {
   return { format: metric?.format, type: metric?.type };
+}
+
+const SINGLE_METRIC_QUERY_TYPES = new Set(["cohort", "conversion", "retention"]);
+
+/** These metric types compile to dedicated result shapes and cannot share one query with other metrics. */
+export function canBatchMetric(metric: Pick<CatalogMetric, "type">): boolean {
+  return !metric.type || !SINGLE_METRIC_QUERY_TYPES.has(metric.type);
+}
+
+export function isCurrentQueryResult(resultKey?: string, queryKey?: string): boolean {
+  return Boolean(resultKey && resultKey === queryKey);
 }
 
 export function resolveExpandedLeaderboard(
@@ -59,6 +71,7 @@ export function ExplorerView() {
   }, [state.dashboardTab, state.model]);
 
   const metrics = configured?.metrics ?? model?.metrics ?? [];
+  const stripMetrics = metrics.filter(canBatchMetric);
   const configuredMetricRefs = new Set(metrics.map((metric) => metric.ref));
   const graphMetrics = graphMetricsForModel(catalog, state.model).filter(
     (metric) => !configured || configuredMetricRefs.has(metric.ref),
@@ -71,13 +84,14 @@ export function ExplorerView() {
     metrics.find((m) => m.ref === state.selectedMetric) ??
     graphMetrics.find((m) => m.ref === state.selectedMetric) ??
     metrics[0];
-  const focusedInStrip = !!rankMetric && metrics.some((m) => m.ref === rankMetric.ref);
+  const singleQueryMetric = rankMetric && !canBatchMetric(rankMetric) ? rankMetric : undefined;
+  const focusedInStrip = !!rankMetric && stripMetrics.some((m) => m.ref === rankMetric.ref);
   // Make sure the focused metric is a column in the strip queries so the chart can reuse those
   // aggregates instead of issuing its own total/series queries.
   const stripMetricRefs = useMemo(() => {
-    const refs = metrics.map((m) => m.ref);
-    return rankMetric && !focusedInStrip ? [...refs, rankMetric.ref] : refs;
-  }, [metrics, rankMetric, focusedInStrip]);
+    const refs = stripMetrics.map((m) => m.ref);
+    return rankMetric && canBatchMetric(rankMetric) && !focusedInStrip ? [...refs, rankMetric.ref] : refs;
+  }, [stripMetrics, rankMetric, focusedInStrip]);
 
   const types = useMemo(() => catalogDimTypes(catalog), [catalog]);
   const baseFilters = useMemo(
@@ -110,13 +124,13 @@ export function ExplorerView() {
   // Strip queries — one aggregate per shape, covering every metric at once.
   const totals = useQueryResult(
     backend,
-    stripMetricRefs.length
+    !singleQueryMetric && stripMetricRefs.length
       ? withTz(metricTotals(stripMetricRefs, baseFilters, configured?.segments, configured?.usePreaggregations))
       : null,
   );
   const series = useQueryResult(
     backend,
-    stripMetricRefs.length && timeRef
+    !singleQueryMetric && stripMetricRefs.length && timeRef
       ? withTz(
           metricSeries(
             stripMetricRefs,
@@ -132,15 +146,30 @@ export function ExplorerView() {
   );
   const comparison = useQueryResult(
     backend,
-    stripMetricRefs.length && prevFilters
+    !singleQueryMetric && stripMetricRefs.length && prevFilters
       ? withTz(metricTotals(stripMetricRefs, prevFilters, configured?.segments, configured?.usePreaggregations))
+      : null,
+  );
+  // Cohort, conversion, and retention metrics compile to dedicated result shapes. Query the
+  // focused one alone and render its native rows instead of poisoning the aggregate strip query.
+  const singleMetricResult = useQueryResult(
+    backend,
+    singleQueryMetric
+      ? withTz(
+          metricTotals(
+            [singleQueryMetric.ref],
+            baseFilters,
+            configured?.segments,
+            configured?.usePreaggregations,
+          ),
+        )
       : null,
   );
   // The single extra query the chart needs: the focused metric over the *previous* period (the
   // dashed overlay). Everything else is reused from the strip results above.
   const prevSeries = useQueryResult(
     backend,
-    rankMetric && timeRef && prevFilters
+    !singleQueryMetric && rankMetric && timeRef && prevFilters
       ? withTz(
           metricSeries(
             [rankMetric.ref],
@@ -157,7 +186,7 @@ export function ExplorerView() {
 
   // Surface a failure from any strip query (totals/series/comparison/prev), not just totals, so a
   // backend error on the chart queries isn't silently shown as an empty chart.
-  const queryError = totals.error ?? series.error ?? comparison.error ?? prevSeries.error;
+  const queryError = totals.error ?? series.error ?? comparison.error ?? prevSeries.error ?? singleMetricResult.error;
 
   if (!model) return <div className="p-4"><EmptyState message="No model available in this semantic layer." /></div>;
 
@@ -170,8 +199,8 @@ export function ExplorerView() {
   const seriesTimeRef = timeRef ? `${timeRef}__${state.grain}` : "";
   const seriesFields = seriesTimeRef ? [...stripMetricRefs, seriesTimeRef] : stripMetricRefs;
   const prevSeriesFields = rankMetric && seriesTimeRef ? [rankMetric.ref, seriesTimeRef] : [];
-  const shapeAlias = metrics[0]
-    ? queryAlias(metrics[0].ref, stripMetricRefs)
+  const shapeAlias = stripMetrics[0]
+    ? queryAlias(stripMetrics[0].ref, stripMetricRefs)
     : rankMetric
       ? queryAlias(rankMetric.ref, stripMetricRefs)
       : null;
@@ -214,6 +243,19 @@ export function ExplorerView() {
         })()
       : [];
 
+  // Unlike cards and charts, dedicated result shapes cannot safely retain the previous query's
+  // rows: the heading changes immediately when the selected metric changes. The hook's query
+  // provenance lets this surface show a loading table until the active query itself completes.
+  const singleMetricFresh = isCurrentQueryResult(singleMetricResult.resultKey, singleMetricResult.queryKey);
+  const singleMetricRows = singleMetricFresh ? (singleMetricResult.result?.rows ?? []) : [];
+  const singleMetricColumns: Column[] = (
+    singleMetricFresh ? (singleMetricResult.result?.columns ?? []) : []
+  ).map((column) => ({
+    key: column,
+    label: labelize(column),
+    numeric: singleMetricRows.some((row) => typeof row[column] === "number"),
+  }));
+
   function onBrush(range: BrushRange | null) {
     if (!range) dispatch({ type: "setDateRange", range: undefined });
     else dispatch({ type: "setDateRange", range: brushDateRange(range, state.grain) });
@@ -223,36 +265,57 @@ export function ExplorerView() {
     <div className="flex flex-col gap-4 p-4">
       {queryError ? <ErrorState message={queryError} /> : null}
 
-      {/* KPI scorecard strip */}
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6" data-testid="metric-totals">
-        {metrics.length === 0 ? (
-          <div className="col-span-full"><EmptyState message="This model has no metrics." /></div>
-        ) : (
-          metrics.map((metric) => {
-            const totalsAlias = queryAlias(metric.ref, stripMetricRefs);
-            const seriesAlias = queryAlias(metric.ref, seriesFields);
-            const value = totalsRow ? Number(totalsRow[totalsAlias]) : NaN;
-            const prev = prevRow ? Number(prevRow[totalsAlias]) : undefined;
-            const sparkValues = seriesRows.map((row) => Number(row[seriesAlias])).filter(Number.isFinite);
-            return (
-              <MetricCard
-                key={metric.ref}
-                metric={metric.ref}
-                label={metric.label}
-                valueText={formatValue(value, metricHint(metric))}
-                delta={prev !== undefined ? formatDelta(value, prev) : null}
-                sparkValues={sparkValues}
-                selected={state.selectedMetric === metric.ref}
-                loading={totals.loading && !totalsRow}
-                onSelect={(ref) => dispatch({ type: "setMetric", metric: ref })}
-              />
-            );
-          })
-        )}
-      </div>
+      {/* KPI scorecard strip. Dedicated-shape metrics own this surface while selected. */}
+      {!singleQueryMetric ? (
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6" data-testid="metric-totals">
+          {stripMetrics.length === 0 ? (
+            <div className="col-span-full"><EmptyState message="This model has no metrics." /></div>
+          ) : (
+            stripMetrics.map((metric) => {
+              const totalsAlias = queryAlias(metric.ref, stripMetricRefs);
+              const seriesAlias = queryAlias(metric.ref, seriesFields);
+              const value = totalsRow ? Number(totalsRow[totalsAlias]) : NaN;
+              const prev = prevRow ? Number(prevRow[totalsAlias]) : undefined;
+              const sparkValues = seriesRows.map((row) => Number(row[seriesAlias])).filter(Number.isFinite);
+              return (
+                <MetricCard
+                  key={metric.ref}
+                  metric={metric.ref}
+                  label={metric.label}
+                  valueText={formatValue(value, metricHint(metric))}
+                  delta={prev !== undefined ? formatDelta(value, prev) : null}
+                  sparkValues={sparkValues}
+                  selected={state.selectedMetric === metric.ref}
+                  loading={totals.loading && !totalsRow}
+                  onSelect={(ref) => dispatch({ type: "setMetric", metric: ref })}
+                />
+              );
+            })
+          )}
+        </div>
+      ) : null}
 
       {/* Time series for the focused metric — fed from the strip queries + one prev-period query */}
-      {rankMetric ? (
+      {singleQueryMetric ? (
+        <section className="flex flex-col gap-2" data-testid="single-metric-result">
+          <div>
+            <h2 className="text-sm font-semibold text-ink">{singleQueryMetric.label}</h2>
+            {singleQueryMetric.description ? (
+              <p className="mt-0.5 text-xs text-muted">{singleQueryMetric.description}</p>
+            ) : null}
+          </div>
+          {singleMetricResult.error ? null : singleMetricFresh ? (
+            <DataTable
+              columns={singleMetricColumns}
+              rows={singleMetricRows}
+              searchable
+              renderCell={(_column, value) => value === null || value === undefined || value === "" ? "—" : String(value)}
+            />
+          ) : (
+            <LoadingState message={`Loading ${singleQueryMetric.label}…`} />
+          )}
+        </section>
+      ) : rankMetric ? (
         <MetricTimeSeries
           metric={rankMetric}
           points={chartPoints}
@@ -269,31 +332,33 @@ export function ExplorerView() {
       ) : null}
 
       {/* Dimension leaderboards */}
-      <div className="grid grid-cols-[repeat(auto-fit,minmax(220px,1fr))] gap-0 border-l border-t border-line">
-        {rankMetric && leaderboardDims.length ? (
-          leaderboardDims
-            .filter((dim) => activeExpandedLeaderboard === null || activeExpandedLeaderboard === dim.ref)
-            .map((dim) => (
-              <LeaderboardPanel
-                key={dim.ref}
-                dim={dim}
-                model={model}
-                timeDimensionRef={timeRef}
-                rankMetric={rankMetric}
-                contextColumn={state.contextColumn}
-                metricTotal={Number.isFinite(chartTotal) ? chartTotal : undefined}
-                comparisonRange={prevRange ?? undefined}
-                baseFilters={configured?.filters}
-                baseSegments={configured?.segments}
-                usePreaggregations={configured?.usePreaggregations}
-                expanded={activeExpandedLeaderboard === dim.ref}
-                onExpandedChange={(expanded) => setExpandedLeaderboard(expanded ? dim.ref : null)}
-              />
-            ))
-        ) : (
-          <EmptyState message="No categorical dimensions to break down." />
-        )}
-      </div>
+      {!singleQueryMetric ? (
+        <div className="grid grid-cols-[repeat(auto-fit,minmax(220px,1fr))] gap-0 border-l border-t border-line">
+          {rankMetric && leaderboardDims.length ? (
+            leaderboardDims
+              .filter((dim) => activeExpandedLeaderboard === null || activeExpandedLeaderboard === dim.ref)
+              .map((dim) => (
+                <LeaderboardPanel
+                  key={dim.ref}
+                  dim={dim}
+                  model={model}
+                  timeDimensionRef={timeRef}
+                  rankMetric={rankMetric}
+                  contextColumn={state.contextColumn}
+                  metricTotal={Number.isFinite(chartTotal) ? chartTotal : undefined}
+                  comparisonRange={prevRange ?? undefined}
+                  baseFilters={configured?.filters}
+                  baseSegments={configured?.segments}
+                  usePreaggregations={configured?.usePreaggregations}
+                  expanded={activeExpandedLeaderboard === dim.ref}
+                  onExpandedChange={(expanded) => setExpandedLeaderboard(expanded ? dim.ref : null)}
+                />
+              ))
+          ) : (
+            <EmptyState message="No categorical dimensions to break down." />
+          )}
+        </div>
+      ) : null}
 
       <QueryDebugPanel
         queries={{
@@ -301,6 +366,7 @@ export function ExplorerView() {
           Series: series.result?.sql,
           Comparison: comparison.result?.sql,
           "Prev series": prevSeries.result?.sql,
+          "Focused metric": singleMetricResult.result?.sql,
         }}
       />
     </div>

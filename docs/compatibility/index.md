@@ -16,7 +16,7 @@ Detailed compatibility documents describe field-level limitations where they exi
 | `hex` | — | `file_or_directory` | `.yml`, `.yaml` | Registered | Yes | 6 | Registry summary only |
 | `holistics` | `aml` | `file_or_directory` | `.aml` | Registered | Yes | 4 | Registry summary only |
 | `lookml` | `looker` | `file_or_directory` | `.lkml` | Registered | Yes | 10 | [Detailed guide](lookml.md) |
-| `malloy` | — | `file_or_directory` | `.malloy` | Registered | Yes | 17 | [Detailed guide](malloy.md) |
+| `malloy` | — | `file_or_directory` | `.malloy` | Registered | Yes | 18 | [Detailed guide](malloy.md) |
 | `metricflow` | `dbt`, `dbt-semantic-layer` | `file_or_directory` | `.yml`, `.yaml` | Registered | Yes | 6 | Registry summary only |
 | `omni` | — | `file_or_directory` | `.yml`, `.yaml` | Registered | Yes | 4 | Registry summary only |
 | `osi` | `open-semantic-interchange` | `file_or_directory` | `.yml`, `.yaml`, `.json` | Registered | Yes | 3 | [Detailed guide](osi.md) |

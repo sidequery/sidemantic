@@ -56,14 +56,16 @@ def _run_query(workspace: Path, source_file: Path, query: dict[str, Any]) -> dic
     while explore_name in graph.explores:
         explore_name = f"__malloy_differential_root_{model_name}_{suffix}"
         suffix += 1
-    graph.add_explore(Explore(name=explore_name, model=model_name))
-
     layer = SemanticLayer(
         connection=f"duckdb:///{workspace / 'fixture.duckdb'}",
         auto_register=False,
         engine="python",
     )
-    layer.graph = graph
+    # Exercise the normal public registration path so intrinsic physical
+    # dimensions are discovered before the differential query is validated.
+    for model in graph.models.values():
+        layer.add_model(model)
+    layer.add_explore(Explore(name=explore_name, model=model_name))
     result = layer.query(
         metrics=query["metrics"],
         dimensions=query["dimensions"],

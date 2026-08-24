@@ -1,0 +1,3 @@
+source: orders is duckdb.table('orders') extend {
+  measure: revenue is sum(amount)
+}

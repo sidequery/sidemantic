@@ -1,9 +1,14 @@
 # Malloy/DuckDB differential harness
 
 This opt-in harness runs the official Malloy compiler/runtime and the local
-Sidemantic DuckDB query path against the same deterministic fixture. The
+Sidemantic DuckDB query path against the same deterministic fixtures. The
 manifest is declarative: `compatible` fixtures execute, while `unsupported`
 and `planned` fixture families are reported without creating per-test xfails.
+
+The executable matrix covers core and empty aggregations, typed scalar
+dimensions, conjunctive source filters, exact joins with additional predicates,
+ordered composite joins with fanout-safe aggregation, and intrinsic physical
+fields on a source without a declared primary key.
 
 ## Setup and run
 

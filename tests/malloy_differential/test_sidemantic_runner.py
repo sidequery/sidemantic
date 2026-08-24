@@ -52,3 +52,45 @@ insert into orders values (10, 1), (11, 3);
         "schema": ["name"],
         "rows": [{"name": None}, {"name": "kept"}],
     }
+
+
+def test_runner_introspects_physical_fields_without_inventing_primary_key(tmp_path):
+    from sidemantic.adapters.malloy import MalloyAdapter
+
+    runner = _runner_module()
+    source_file = tmp_path / "intrinsic.malloy"
+    source_file.write_text(
+        """source: orders is duckdb.table('orders') extend {
+  measure: revenue is sum(amount)
+}
+"""
+    )
+    seed_file = tmp_path / "seed.sql"
+    seed_file.write_text(
+        """create table orders (order_id integer, region varchar, amount integer);
+insert into orders values (1, 'west', 10), (2, 'east', 20);
+"""
+    )
+    runner._seed(tmp_path, seed_file)
+
+    imported = MalloyAdapter(strict=True).parse(source_file).get_model("orders")
+    assert imported.primary_key is None
+
+    result = runner._run_query(
+        tmp_path,
+        source_file,
+        {
+            "model": "orders",
+            "metrics": [],
+            "dimensions": ["orders.order_id", "orders.region"],
+            "order_by": ["orders.order_id"],
+        },
+    )
+
+    assert result == {
+        "schema": ["order_id", "region"],
+        "rows": [
+            {"order_id": 1, "region": "west"},
+            {"order_id": 2, "region": "east"},
+        ],
+    }

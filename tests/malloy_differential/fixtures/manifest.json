@@ -66,20 +66,83 @@
     {
       "id": "source_filters",
       "family": "source-filters",
-      "status": "planned",
-      "reason": "Python import, invariant execution, and roundtrip coverage exist; no official-Malloy differential fixture and row oracle are registered yet."
+      "status": "compatible",
+      "reason": "Conjunctive source where clauses exclude inactive and cross-tenant rows before aggregation in both runtimes.",
+      "source": "source_filters.malloy",
+      "seed": "source_filters.sql",
+      "model": "orders",
+      "malloy_query": "run: orders -> { group_by: order_status aggregate: revenue order_by: order_status }",
+      "sidemantic": {
+        "metrics": ["orders.revenue"],
+        "dimensions": ["orders.order_status"],
+        "order_by": ["orders.order_status"]
+      },
+      "expected_schema": ["order_status", "revenue"],
+      "expected_rows": [
+        {"order_status": "also_kept", "revenue": 15},
+        {"order_status": "kept", "revenue": 10}
+      ]
     },
     {
-      "id": "arbitrary_and_composite_joins",
+      "id": "exact_custom_join",
       "family": "joins",
-      "status": "planned",
-      "reason": "Python execution covers ordered composite keys and exact custom predicates; no official-Malloy differential fixture and row oracle are registered yet."
+      "status": "compatible",
+      "reason": "An exact key plus an additional target-side predicate preserves unmatched source rows in both runtimes.",
+      "source": "exact_custom_join.malloy",
+      "seed": "exact_custom_join.sql",
+      "model": "orders",
+      "malloy_query": "run: orders -> { group_by: customer_name is customers.customer_name aggregate: revenue order_by: revenue }",
+      "sidemantic": {
+        "metrics": ["orders.revenue"],
+        "dimensions": ["customers.customer_name"],
+        "order_by": ["orders.revenue"]
+      },
+      "expected_schema": ["customer_name", "revenue"],
+      "expected_rows": [
+        {"customer_name": "kept", "revenue": 20},
+        {"customer_name": null, "revenue": 70}
+      ]
+    },
+    {
+      "id": "composite_join_fanout",
+      "family": "joins",
+      "status": "compatible",
+      "reason": "Ordered composite join keys isolate tenants and symmetric aggregation prevents duplicate child rows from inflating base revenue.",
+      "source": "composite_join_fanout.malloy",
+      "seed": "composite_join_fanout.sql",
+      "model": "orders",
+      "malloy_query": "run: orders -> { group_by: item_category is items.item_category aggregate: revenue order_by: revenue }",
+      "sidemantic": {
+        "metrics": ["orders.revenue"],
+        "dimensions": ["items.item_category"],
+        "order_by": ["orders.revenue"]
+      },
+      "expected_schema": ["item_category", "revenue"],
+      "expected_rows": [
+        {"item_category": null, "revenue": 30},
+        {"item_category": "retail", "revenue": 150}
+      ]
     },
     {
       "id": "intrinsic_physical_fields",
       "family": "intrinsic-fields",
-      "status": "planned",
-      "reason": "Python schema-introspection coverage includes intrinsic fields and absent primary keys; deterministic cross-runtime schema fixtures are not registered yet."
+      "status": "compatible",
+      "reason": "Physical columns remain queryable without declarations and the importer does not invent a primary key.",
+      "source": "intrinsic_fields.malloy",
+      "seed": "intrinsic_fields.sql",
+      "model": "orders",
+      "malloy_query": "run: orders -> { group_by: order_id, region order_by: order_id }",
+      "sidemantic": {
+        "metrics": [],
+        "dimensions": ["orders.order_id", "orders.region"],
+        "order_by": ["orders.order_id"]
+      },
+      "expected_schema": ["order_id", "region"],
+      "expected_rows": [
+        {"order_id": 1, "region": "west"},
+        {"order_id": 2, "region": "east"},
+        {"order_id": 3, "region": "west"}
+      ]
     },
     {
       "id": "query_view_and_nesting_ir",

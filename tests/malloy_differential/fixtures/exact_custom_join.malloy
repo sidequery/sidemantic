@@ -1,0 +1,10 @@
+source: customers is duckdb.table('customers') extend {
+  primary_key: id
+  dimension: customer_name is name
+}
+
+source: orders is duckdb.table('orders') extend {
+  primary_key: id
+  measure: revenue is sum(amount)
+  join_one: customers on customer_id = customers.id and customers.active = true
+}

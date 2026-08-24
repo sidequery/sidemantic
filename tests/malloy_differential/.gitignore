@@ -1,0 +1,6 @@
+# The repository-level ignore intentionally excludes most package manifests.
+# This harness is self-contained and must commit its pinned Bun manifest.
+!package.json
+
+# Installed dependencies remain local setup artifacts.
+node_modules/

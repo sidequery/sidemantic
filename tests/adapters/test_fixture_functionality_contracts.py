@@ -34,6 +34,25 @@ from tests.adapters.test_added_fixture_coverage import (
     _prepare_graph_for_execution,
 )
 
+
+def test_execution_candidate_materializes_invariant_filter_columns():
+    graph = MalloyAdapter().parse("tests/fixtures/malloy/the_met.malloy")
+
+    query_spec = _pick_execution_query(graph)
+
+    assert query_spec is not None
+    assert query_spec["column_types"]["object_begin_date"] == "DOUBLE"
+    conn = duckdb.connect(":memory:")
+    try:
+        _materialize_execution_table(conn, query_spec)
+        columns = {
+            row[1] for row in conn.execute(f"pragma table_info('{query_spec['execution_table_ref']}')").fetchall()
+        }
+        assert "object_begin_date" in columns
+    finally:
+        conn.close()
+
+
 ALLOWED_RELATIONSHIP_TYPES = {"many_to_one", "one_to_many", "one_to_one", "many_to_many", "cross"}
 
 ADAPTER_FIXTURE_ROOTS = [

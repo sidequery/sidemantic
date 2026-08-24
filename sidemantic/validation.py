@@ -673,7 +673,10 @@ def validate_metric(measure: "Metric", graph: "SemanticGraph") -> list[str]:
         )
         if is_direct_ref:
             model_name, measure_name = sql_ref.split(".", 1)
-            model = graph.models.get(model_name)
+            try:
+                model = graph.get_model(model_name)
+            except KeyError:
+                model = None
             if not model:
                 errors.append(f"Metric '{measure.name}': model '{model_name}' not found")
             elif not model.get_metric(measure_name):
@@ -847,7 +850,10 @@ def validate_query(metrics: list[str], dimensions: list[str], graph: "SemanticGr
         if "." in metric_ref:
             # Direct measure reference
             model_name, measure_name = metric_ref.split(".", 1)
-            model = graph.models.get(model_name)
+            try:
+                model = graph.get_model(model_name)
+            except KeyError:
+                model = None
             if not model:
                 errors.append(f"Model '{model_name}' not found (referenced in '{metric_ref}')")
             else:
@@ -882,7 +888,10 @@ def validate_query(metrics: list[str], dimensions: list[str], graph: "SemanticGr
 
         if "." in dim_ref:
             model_name, dim_name = dim_ref.split(".", 1)
-            model = graph.models.get(model_name)
+            try:
+                model = graph.get_model(model_name)
+            except KeyError:
+                model = None
             if not model:
                 errors.append(f"Model '{model_name}' not found (referenced in '{dim_ref}')")
             else:
@@ -919,7 +928,13 @@ def validate_query(metrics: list[str], dimensions: list[str], graph: "SemanticGr
     # Only check models that exist in the graph (errors for missing models already reported above)
     from sidemantic.core.semantic_graph import AmbiguousJoinPathError
 
-    model_list = sorted(m for m in model_names if m in graph.models)
+    model_list = []
+    for model_name in sorted(model_names):
+        try:
+            graph.get_model(model_name)
+        except KeyError:
+            continue
+        model_list.append(model_name)
     query_model_set = frozenset(model_list)
     for i, model_a in enumerate(model_list):
         for model_b in model_list[i + 1 :]:

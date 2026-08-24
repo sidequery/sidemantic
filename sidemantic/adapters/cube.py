@@ -1780,6 +1780,12 @@ class CubeAdapter(BaseAdapter):
         # Export joins (all relationship types)
         joins = []
         for relationship in model.relationships:
+            if relationship.name != relationship.related_model:
+                raise ValueError(
+                    "Cube export cannot represent relationship role "
+                    f"'{relationship.name}' independently of target cube "
+                    f"'{relationship.related_model}'"
+                )
             # Cube has no representation for many_to_many (needs a junction) or cross
             # joins; omit them with a warning rather than emitting an invalid join.
             if relationship.type in ("many_to_many", "cross"):
@@ -1792,7 +1798,7 @@ class CubeAdapter(BaseAdapter):
                 continue
 
             # Find target model from resolved models (inheritance-applied)
-            target_model = resolved_models.get(relationship.name)
+            target_model = resolved_models.get(relationship.related_model)
             if target_model:
                 if relationship.sql:
                     # Custom predicate (composite keys, one_to_one, non-equality):

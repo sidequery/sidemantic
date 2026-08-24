@@ -111,6 +111,9 @@ PRE_RUN_XFAILS = {
 
 
 EXPECTED_GAPS = {
+    "tests.test_catalog::test_foreign_key_catalog_uses_canonical_target_for_role_alias": (
+        "Rust catalog metadata does not yet preserve a relationship's canonical target_model for role aliases"
+    ),
     "tests.test_validation::test_query_validation_reports_ambiguous_join_routes": (
         "Rust query validation does not yet reject ambiguous join routes"
     ),

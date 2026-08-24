@@ -1,0 +1,10 @@
+source: items is duckdb.table('items') extend {
+  primary_key: id
+  dimension: item_category is category
+}
+
+source: orders is duckdb.table('orders') extend {
+  primary_key: id
+  measure: revenue is sum(amount)
+  join_many: items on items.tenant_ref = tenant_id and order_number = items.order_ref
+}

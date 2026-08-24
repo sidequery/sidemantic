@@ -22,10 +22,10 @@ class ValidationReport:
 def _find_orphaned_models(models: dict[str, object]) -> list[str]:
     """Return models with neither outgoing nor incoming relationships in O(V+E)."""
     incoming_targets = {
-        relationship.name
+        getattr(relationship, "related_model", relationship.name)
         for source_name, source in models.items()
         for relationship in source.relationships
-        if relationship.name != source_name
+        if getattr(relationship, "related_model", relationship.name) != source_name
     }
     return [
         model_name
@@ -61,8 +61,9 @@ def validate_directory(directory: str | Path) -> ValidationReport:
             report.errors.extend(validate_metric(metric, layer.graph))
 
         for rel in model.relationships:
-            if rel.name not in layer.graph.models:
-                report.errors.append(f"Model '{model_name}' has relationship to '{rel.name}' which doesn't exist")
+            if rel.related_model not in layer.graph.models:
+                role_detail = f" role '{rel.name}' targeting" if rel.target_model else " relationship to"
+                report.errors.append(f"Model '{model_name}' has{role_detail} '{rel.related_model}' which doesn't exist")
 
         # Hex ``view`` resources reference a base model by name and carry their
         # own ``contents``. Both are required by the Hex spec, but views are

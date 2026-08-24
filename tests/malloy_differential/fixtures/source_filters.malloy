@@ -1,0 +1,7 @@
+source: orders is duckdb.table('orders') extend {
+  where: tenant_id = 1
+  where: active
+
+  dimension: order_status is status
+  measure: revenue is sum(amount)
+}

@@ -703,7 +703,7 @@ class OmniAdapter(BaseAdapter):
             parent_model = graph.models.get(parent)
             if parent_model is None:
                 continue
-            if any(rel.name == joined_view for rel in parent_model.relationships):
+            if any(rel.related_model == joined_view for rel in parent_model.relationships):
                 continue
             parent_model.relationships.append(
                 Relationship(
@@ -721,12 +721,21 @@ class OmniAdapter(BaseAdapter):
             output_path: Path to output directory
         """
         output_path = Path(output_path)
-        output_path.mkdir(parents=True, exist_ok=True)
 
         # Resolve inheritance first
         from sidemantic.core.inheritance import resolve_model_inheritance
 
         resolved_models = resolve_model_inheritance(graph.models)
+
+        for model in resolved_models.values():
+            for rel in model.relationships:
+                if rel.name != rel.related_model:
+                    raise ValueError(
+                        "Omni export cannot represent relationship role "
+                        f"'{rel.name}' independently of target view '{rel.related_model}'"
+                    )
+
+        output_path.mkdir(parents=True, exist_ok=True)
 
         # Create views directory
         views_dir = output_path / "views"

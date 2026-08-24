@@ -741,7 +741,7 @@ class BSLAdapter(BaseAdapter):
 
         metadata = rel.metadata or {}
         join_def = {
-            "model": metadata.get("bsl_model", rel.name),
+            "model": metadata.get("bsl_model", rel.related_model),
             "type": metadata.get("bsl_join_type", type_mapping.get(rel.type, "one")),
         }
         if "bsl_how" in metadata:

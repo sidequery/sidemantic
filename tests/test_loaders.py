@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from sidemantic import Dimension, Model, Relationship, SemanticLayer
-from sidemantic.loaders import _infer_relationships, load_from_directory
+from sidemantic.loaders import _infer_relationships, load_from_directory, load_from_file
 
 
 def test_load_from_directory_does_not_require_antlr4_without_antlr_formats(tmp_path, monkeypatch):
@@ -64,6 +64,53 @@ def test_inference_respects_reverse_relationship_on_non_primary_key():
     assert accounts.relationships[0].primary_key == "external_id"
 
 
+def test_inference_respects_aliased_relationship_target_without_duplicates():
+    orders = Model(
+        name="orders",
+        table="orders",
+        primary_key="id",
+        dimensions=[Dimension(name="customer_id", type="categorical")],
+        relationships=[
+            Relationship(
+                name="billing_customer",
+                target_model="customers",
+                type="many_to_one",
+                foreign_key="customer_id",
+            )
+        ],
+    )
+    customers = Model(name="customers", table="customers", primary_key="id")
+
+    _infer_relationships({"orders": orders, "customers": customers})
+
+    assert [(rel.name, rel.related_model) for rel in orders.relationships] == [("billing_customer", "customers")]
+    assert customers.relationships == []
+
+
+def test_directory_loader_does_not_infer_joins_over_malloy_role_alias(tmp_path):
+    (tmp_path / "models.malloy").write_text(
+        """source: customers is duckdb.table('customers') extend {
+  primary_key: id
+}
+source: orders is duckdb.table('orders') extend {
+  primary_key: id
+  dimension: customer_id is customer_id
+  join_one: buyer is customers on customer_id = buyer.id
+}
+"""
+    )
+    layer = SemanticLayer(auto_register=False, engine="python")
+    layer.adapter.execute("create table customers (id integer)")
+    layer.adapter.execute("create table orders (id integer, customer_id integer)")
+
+    load_from_directory(layer, tmp_path)
+
+    orders = layer.graph.models["orders"]
+    customers = layer.graph.models["customers"]
+    assert [(rel.name, rel.related_model) for rel in orders.relationships] == [("buyer", "customers")]
+    assert all(rel.related_model != "orders" for rel in customers.relationships)
+
+
 def test_load_from_directory_strict_raises_on_detected_parse_error(tmp_path):
     """Strict loading fails instead of returning a partial graph."""
     (tmp_path / "good.yml").write_text(
@@ -111,6 +158,134 @@ models:
     load_from_directory(layer, tmp_path, strict=False)
 
     assert set(layer.graph.models) == {"orders"}
+
+
+def test_load_from_directory_strict_raises_on_malloy_syntax_error(tmp_path):
+    """Strict directory loading must propagate Malloy syntax failures."""
+    fixture = Path(__file__).parent / "fixtures" / "malloy" / "syntax_error.malloy"
+    malformed = fixture.read_text().replace("source: broken_source is table('legacy')", "not valid")
+    (tmp_path / fixture.name).write_text(malformed)
+
+    layer = SemanticLayer()
+    with pytest.raises(ValueError, match=r"Could not parse .*syntax_error\.malloy.*Malloy syntax error"):
+        load_from_directory(layer, tmp_path)
+
+    assert not layer.graph.models
+
+
+def test_load_from_directory_lenient_malloy_recovers_with_warning(tmp_path):
+    """Lenient Malloy loading remains an explicit recovery path."""
+    fixture = Path(__file__).parent / "fixtures" / "malloy" / "syntax_error.malloy"
+    malformed = fixture.read_text().replace("source: broken_source is table('legacy')", "not valid")
+    (tmp_path / fixture.name).write_text(malformed)
+
+    layer = SemanticLayer()
+    with pytest.warns(UserWarning, match="Malloy syntax error"):
+        load_from_directory(layer, tmp_path, strict=False)
+
+    # ANTLR recovery retains the valid source despite the malformed statement.
+    assert "ok_source" in layer.graph.models
+
+
+def _malloy_source(name: str, table: str | None = None) -> str:
+    return f"source: {name} is duckdb.table('{table or name}') extend {{ dimension: id is id }}\n"
+
+
+def _malloy_layer() -> SemanticLayer:
+    layer = SemanticLayer()
+    layer.adapter.get_columns = lambda *args, **kwargs: [{"column_name": "id", "data_type": "INTEGER"}]
+    return layer
+
+
+def test_load_from_directory_resolves_malloy_project_once_with_defining_provenance(tmp_path, monkeypatch):
+    from sidemantic.adapters.malloy import MalloyAdapter
+
+    base = tmp_path / "base.malloy"
+    base.write_text(_malloy_source("customers"))
+    root = tmp_path / "root.malloy"
+    root.write_text("import { customer_copy is customers } from 'base.malloy'\n" + _malloy_source("orders"))
+
+    calls = []
+    original = MalloyAdapter._parse_module
+
+    def counting_parse(self, path):
+        calls.append(path)
+        return original(self, path)
+
+    monkeypatch.setattr(MalloyAdapter, "_parse_module", counting_parse)
+    layer = _malloy_layer()
+    load_from_directory(layer, tmp_path)
+
+    assert calls.count(base.resolve()) == 1
+    assert calls.count(root.resolve()) == 1
+    assert layer.graph.get_model("customer_copy")._source_file == str(base.resolve())
+    assert set(layer.graph.models) == {"customers", "customer_copy", "orders"}
+
+
+def test_load_from_directory_uses_deterministic_sorted_malloy_roots(tmp_path, monkeypatch):
+    from sidemantic.adapters.malloy import MalloyAdapter
+
+    (tmp_path / "z.malloy").write_text(_malloy_source("z_model"))
+    (tmp_path / "a.malloy").write_text(_malloy_source("a_model"))
+    calls = []
+    original = MalloyAdapter._parse_module
+
+    def recording_parse(self, path):
+        calls.append(path.name)
+        return original(self, path)
+
+    monkeypatch.setattr(MalloyAdapter, "_parse_module", recording_parse)
+    load_from_directory(_malloy_layer(), tmp_path)
+
+    assert calls == ["a.malloy", "z.malloy"]
+
+
+def test_load_from_file_malloy_loads_only_entry_and_reachable_imports(tmp_path):
+    dependency = tmp_path / "dependency.malloy"
+    dependency.write_text(_malloy_source("customers"))
+    entry = tmp_path / "entry.malloy"
+    entry.write_text("import { customers } from 'dependency.malloy'\n" + _malloy_source("orders"))
+    (tmp_path / "unrelated.malloy").write_text(_malloy_source("unrelated"))
+
+    layer = _malloy_layer()
+    load_from_file(layer, entry)
+
+    assert set(layer.graph.models) == {"customers", "orders"}
+    assert layer.graph.get_model("customers")._source_file == str(dependency.resolve())
+
+
+def test_load_from_directory_strict_malloy_missing_import_reports_location(tmp_path):
+    root = tmp_path / "root.malloy"
+    root.write_text("import { missing } from 'missing.malloy'\n" + _malloy_source("orders"))
+
+    with pytest.raises(ValueError, match=r"root\.malloy:1:\d+: imported Malloy file does not exist"):
+        load_from_directory(SemanticLayer(), tmp_path)
+
+
+def test_load_from_directory_lenient_malloy_missing_import_preserves_diagnostic(tmp_path):
+    root = tmp_path / "root.malloy"
+    root.write_text("import { missing } from 'missing.malloy'\n" + _malloy_source("orders"))
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path, strict=False)
+
+    assert set(layer.graph.models) == {"orders"}
+    warning = next(w for w in layer.graph.import_warnings if w["code"] == "malloy_import_missing")
+    assert warning["source_file"] == str(root.resolve())
+    assert warning["location"].startswith("1:")
+
+
+def test_load_from_directory_malloy_duplicate_is_resolver_error_not_shadowing(tmp_path):
+    (tmp_path / "a.malloy").write_text(_malloy_source("same", "first"))
+    (tmp_path / "b.malloy").write_text(_malloy_source("same", "second"))
+
+    with pytest.raises(ValueError, match="distinct Malloy sources both require graph name 'same'"):
+        load_from_directory(SemanticLayer(), tmp_path)
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path, strict=False)
+    assert "same" not in layer.graph.models
+    assert any(w["code"] == "malloy_flat_name_conflict" for w in layer.graph.import_warnings)
 
 
 def test_load_from_directory_resolves_native_inheritance_across_files(tmp_path):

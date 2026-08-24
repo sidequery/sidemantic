@@ -71,6 +71,18 @@ class JoinPath:
     to_columns: list[str]  # Primary/unique key column(s) in to_model
     relationship: str  # many_to_one, one_to_many, one_to_one
     custom_condition: str | None = None
+    from_target_model: str | None = None
+    to_target_model: str | None = None
+
+    @property
+    def from_instance(self) -> str:
+        """SQL/query identity for the source side of this relationship hop."""
+        return self.from_model
+
+    @property
+    def to_instance(self) -> str:
+        """SQL/query identity for the target side of this relationship hop."""
+        return self.to_model
 
     # Backwards compatibility properties (return first column)
     @property
@@ -108,6 +120,9 @@ class SemanticGraph:
         self._version = 0
         self._adjacency_dirty = True
         self._adjacency: dict[str, list[tuple[str, list[str], list[str], str, str | None]]] = {}
+        self._role_models: dict[str, str] = {}
+        self._role_owners: dict[str, str] = {}
+        self._relationship_instances: dict[tuple[str, str], str] = {}
         self._relationship_path_cache: dict[tuple[str, str, frozenset[str] | None], tuple[JoinPath, ...] | str] = {}
 
     def _mark_dirty(self) -> None:
@@ -265,9 +280,12 @@ class SemanticGraph:
         Raises:
             KeyError: If model not found
         """
-        if name not in self.models:
+        if name not in self.models and getattr(self, "_adjacency_dirty", True):
+            self.build_adjacency()
+        canonical_name = self._role_models.get(name, name)
+        if canonical_name not in self.models:
             raise KeyError(f"Model {name} not found")
-        return self.models[name]
+        return self.models[canonical_name]
 
     def get_metric(self, name: str) -> Metric:
         """Get measure by name.
@@ -299,7 +317,10 @@ class SemanticGraph:
 
         if "." in reference:
             model_name, metric_name = reference.split(".", 1)
-            model = self.models.get(model_name)
+            try:
+                model = self.get_model(model_name)
+            except KeyError:
+                model = None
             if model:
                 metric = model.get_metric(metric_name)
                 if metric:
@@ -318,6 +339,9 @@ class SemanticGraph:
         if not hasattr(self, "_adjacency"):
             self._adjacency = {}
         self._adjacency.clear()
+        self._role_models.clear()
+        self._role_owners.clear()
+        self._relationship_instances.clear()
         self._relationship_path_cache.clear()
         self._adjacency_dirty = False
 
@@ -346,19 +370,65 @@ class SemanticGraph:
                 return "many_to_one"
             return relationship_type
 
+        role_counts: dict[str, int] = {}
+        for candidate_model in self.models.values():
+            for candidate_relationship in candidate_model.relationships:
+                if (
+                    candidate_relationship.active
+                    and candidate_relationship.target_model
+                    and candidate_relationship.related_model in self.models
+                ):
+                    role_counts[candidate_relationship.name] = role_counts.get(candidate_relationship.name, 0) + 1
+
+        if role_counts:
+            reserved_models = sorted(name for name in self.models if "$" in name)
+            if reserved_models:
+                raise ValueError(
+                    "Model names cannot contain '$' when relationship roles are used; '$' is reserved for "
+                    f"scoped role paths: {', '.join(reserved_models)}"
+                )
+
+        def register_role_instance(instance: str, target: str, owner: str) -> None:
+            if instance in self.models:
+                raise ValueError(f"Relationship role instance '{instance}' collides with canonical model '{instance}'")
+            existing_target = self._role_models.get(instance)
+            existing_owner = self._role_owners.get(instance)
+            if existing_target is not None and (existing_target != target or existing_owner != owner):
+                raise ValueError(
+                    f"Relationship role instance '{instance}' is declared by both '{existing_owner}' and '{owner}'"
+                )
+            self._role_models[instance] = target
+            self._role_owners[instance] = owner
+
         # Build adjacency from join relationships
         for model_name, model in self.models.items():
             for relationship in model.relationships:
                 if not relationship.active:
                     continue
 
-                related_model = relationship.name
+                related_model = relationship.related_model
                 if related_model not in self.models:
                     continue  # Skip if related model doesn't exist yet
 
+                # A role alias is a distinct query/SQL instance of its canonical target.
+                # Keep the legacy node identity unchanged when no target_model is declared.
+                related_instance = related_model
+                if relationship.target_model:
+                    related_instance = relationship.name
+                if relationship.target_model and role_counts.get(relationship.name, 0) > 1:
+                    # Same role under different parents is addressable by its scoped identity.
+                    related_instance = f"{model_name}${relationship.name}"
+                if relationship.target_model:
+                    register_role_instance(related_instance, related_model, model_name)
+                    if (model_name, relationship.name) in self._relationship_instances:
+                        raise ValueError(
+                            f"Model '{model_name}' declares relationship role '{relationship.name}' more than once"
+                        )
+                self._relationship_instances[(model_name, relationship.name)] = related_instance
+
                 if relationship.type == "cross":
-                    add_edge(model_name, related_model, [], [], "cross")
-                    add_edge(related_model, model_name, [], [], "cross")
+                    add_edge(model_name, related_instance, [], [], "cross")
+                    add_edge(related_instance, model_name, [], [], "cross")
                     continue
 
                 if relationship.type == "many_to_many":
@@ -380,9 +450,9 @@ class SemanticGraph:
                             local_keys = model.primary_key_columns
                             remote_keys = relationship.foreign_key_columns
                         custom_condition = _custom_join_condition(relationship.sql)
-                        add_edge(model_name, related_model, local_keys, remote_keys, "one_to_many", custom_condition)
+                        add_edge(model_name, related_instance, local_keys, remote_keys, "one_to_many", custom_condition)
                         add_edge(
-                            related_model,
+                            related_instance,
                             model_name,
                             remote_keys,
                             local_keys,
@@ -405,8 +475,8 @@ class SemanticGraph:
                     add_edge(model_name, junction_model, base_pk, junction_self_fks, "one_to_many")
                     add_edge(junction_model, model_name, junction_self_fks, base_pk, "many_to_one")
 
-                    add_edge(junction_model, related_model, junction_related_fks, related_pk, "many_to_one")
-                    add_edge(related_model, junction_model, related_pk, junction_related_fks, "one_to_many")
+                    add_edge(junction_model, related_instance, junction_related_fks, related_pk, "many_to_one")
+                    add_edge(related_instance, junction_model, related_pk, junction_related_fks, "one_to_many")
                     continue
 
                 # Get the join key names
@@ -426,15 +496,118 @@ class SemanticGraph:
                     remote_keys = relationship.foreign_key_columns  # [customer_id] (in orders)
 
                 custom_condition = _custom_join_condition(relationship.sql)
-                add_edge(model_name, related_model, local_keys, remote_keys, relationship.type, custom_condition)
+                add_edge(model_name, related_instance, local_keys, remote_keys, relationship.type, custom_condition)
                 add_edge(
-                    related_model,
+                    related_instance,
                     model_name,
                     remote_keys,
                     local_keys,
                     invert_relationship(relationship.type),
                     _reverse_custom_join_condition(custom_condition),
                 )
+
+        # Role instances inherit the canonical target's explicitly role-aliased
+        # outgoing relationships. Scope nested roles by their parent instance so
+        # two identical role names below different parents remain distinct.
+        pending = [(instance, target, 1) for instance, target in self._role_models.items()]
+        expanded: set[str] = set()
+        while pending:
+            source_instance, source_model_name, depth = pending.pop(0)
+            if source_instance in expanded:
+                continue
+            expanded.add(source_instance)
+            if depth >= len(self.models):
+                continue
+            source_model = self.models[source_model_name]
+            for relationship in source_model.relationships:
+                if not relationship.active:
+                    continue
+                related_model = relationship.related_model
+                if related_model not in self.models:
+                    continue
+                nested_instance = f"{source_instance}${relationship.name}"
+                register_role_instance(nested_instance, related_model, source_instance)
+                self._relationship_instances[(source_instance, relationship.name)] = nested_instance
+                if relationship.type == "cross":
+                    add_edge(source_instance, nested_instance, [], [], "cross")
+                    add_edge(nested_instance, source_instance, [], [], "cross")
+                elif relationship.type in {"many_to_one", "one_to_one", "one_to_many"}:
+                    if relationship.type == "many_to_one":
+                        local_keys = relationship.foreign_key_columns
+                        remote_keys = (
+                            relationship.primary_key_columns
+                            if relationship.primary_key
+                            else self.models[related_model].primary_key_columns
+                        )
+                    else:
+                        local_keys = _relationship_local_key_columns(source_model, relationship)
+                        remote_keys = relationship.foreign_key_columns
+                    custom_condition = _custom_join_condition(relationship.sql)
+                    add_edge(
+                        source_instance,
+                        nested_instance,
+                        local_keys,
+                        remote_keys,
+                        relationship.type,
+                        custom_condition,
+                    )
+                    add_edge(
+                        nested_instance,
+                        source_instance,
+                        remote_keys,
+                        local_keys,
+                        invert_relationship(relationship.type),
+                        _reverse_custom_join_condition(custom_condition),
+                    )
+                elif relationship.type == "many_to_many":
+                    if relationship.through:
+                        raise ValueError(
+                            f"Nested role path '{nested_instance}' uses a many_to_many relationship through "
+                            f"'{relationship.through}', which is not supported for role instances"
+                        )
+                    if not relationship.foreign_key:
+                        raise ValueError(
+                            f"Nested role path '{nested_instance}' has no keys for its many_to_many relationship"
+                        )
+                    if relationship.primary_key:
+                        local_keys = relationship.foreign_key_columns
+                        remote_keys = relationship.primary_key_columns
+                    else:
+                        local_keys = source_model.primary_key_columns
+                        remote_keys = relationship.foreign_key_columns
+                    custom_condition = _custom_join_condition(relationship.sql)
+                    add_edge(
+                        source_instance,
+                        nested_instance,
+                        local_keys,
+                        remote_keys,
+                        "one_to_many",
+                        custom_condition,
+                    )
+                    add_edge(
+                        nested_instance,
+                        source_instance,
+                        remote_keys,
+                        local_keys,
+                        "many_to_one",
+                        _reverse_custom_join_condition(custom_condition),
+                    )
+                pending.append((nested_instance, related_model, depth + 1))
+
+    def relationship_target_instance(self, source_instance: str, relationship: Relationship) -> str:
+        """Return the query/SQL instance reached by a relationship from a source instance."""
+        if getattr(self, "_adjacency_dirty", True):
+            self.build_adjacency()
+        return self._relationship_instances.get((source_instance, relationship.name), relationship.related_model)
+
+    def instance_has_keyed_relationship(self, instance: str, query_instances: set[str]) -> bool:
+        """Return whether an instance has a non-cross graph edge used by this query."""
+        if getattr(self, "_adjacency_dirty", True):
+            self.build_adjacency()
+        return any(
+            target in query_instances and relationship_type != "cross"
+            for target, _from_keys, _to_keys, relationship_type, _condition in self._adjacency.get(instance, [])
+        )
 
     def find_relationship_path(
         self, from_model: str, to_model: str, query_models: set[str] | frozenset[str] | None = None
@@ -462,9 +635,9 @@ class SemanticGraph:
             self.build_adjacency()
             self._adjacency_dirty = False
 
-        if from_model not in self.models:
+        if from_model not in self.models and from_model not in self._role_models:
             raise KeyError(f"Model {from_model} not found")
-        if to_model not in self.models:
+        if to_model not in self.models and to_model not in self._role_models:
             raise KeyError(f"Model {to_model} not found")
 
         context = frozenset(query_models) if query_models else None
@@ -518,6 +691,8 @@ class SemanticGraph:
                         to_columns=to_keys,
                         relationship=relationship_type,
                         custom_condition=custom_condition,
+                        from_target_model=self._role_models.get(current, current),
+                        to_target_model=self._role_models.get(next_model, next_model),
                     ),
                 )
 

@@ -1,5 +1,5 @@
-// Aliased import - import customers as crm_customers
-import { customers is crm_customers } from 'base.malloy'
+// Aliased import - bind exported customers locally as crm_customers
+import { crm_customers is customers } from 'base.malloy'
 
 source: sales is duckdb.table('sales.parquet') extend {
   primary_key: sale_id

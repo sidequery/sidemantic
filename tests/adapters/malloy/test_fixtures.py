@@ -128,12 +128,13 @@ class TestIMDB:
         """Movies source has join_many relationships (one_to_many)."""
         movies = self.graph.get_model("movies")
 
-        # Should have 3 join_many relationships
-        assert len(movies.relationships) == 3
+        # The physical source and its role alias remain; the relationship to a
+        # query-backed source is omitted rather than treated as a physical source.
+        assert len(movies.relationships) == 2
         rel_names = {r.name for r in movies.relationships}
         assert "principals" in rel_names
         assert "principals2" in rel_names
-        assert "genre_movie_map" in rel_names
+        assert "genre_movie_map" not in rel_names
 
         # All should be one_to_many (join_many)
         for rel in movies.relationships:
@@ -209,10 +210,10 @@ class TestNames:
         assert self.graph is not None
 
     def test_source_count(self):
-        """Three sources: names, cohort, names_with_cohort."""
-        assert len(self.graph.models) == 3
+        """The unsafe pipeline source is omitted; independent sources remain."""
+        assert len(self.graph.models) == 2
         assert "names" in self.graph.models
-        assert "cohort" in self.graph.models
+        assert "cohort" not in self.graph.models
         assert "names_with_cohort" in self.graph.models
 
     def test_names_model_basics(self):
@@ -275,21 +276,8 @@ class TestNames:
         assert births.type == "derived"
 
     def test_cohort_source_from_pipeline(self):
-        """cohort is defined as names -> { ... } extend { ... }.
-
-        This is a pipeline source. The adapter handles SQArrowContext
-        partially: it creates a model but without a table reference.
-        """
-        cohort = self.graph.get_model("cohort")
-        assert cohort is not None
-        # Pipeline source has no table
-        assert cohort.table is None
-
-    def test_cohort_has_measure(self):
-        """Cohort source should have population measure from extend block."""
-        cohort = self.graph.get_model("cohort")
-        metric_names = {m.name for m in cohort.metrics}
-        assert "population" in metric_names
+        """A source-definition pipeline is omitted instead of degraded to its base."""
+        assert "cohort" not in self.graph.models
 
     def test_names_with_cohort_extends_names(self):
         """names_with_cohort extends names via SQIDContext reference."""
@@ -299,12 +287,9 @@ class TestNames:
         assert nwc.table is None
 
     def test_names_with_cohort_join(self):
-        """names_with_cohort has a join_one to cohort."""
+        """A relationship to the rejected pipeline source is omitted."""
         nwc = self.graph.get_model("names_with_cohort")
-        assert len(nwc.relationships) == 1
-        cohort_rel = nwc.relationships[0]
-        assert cohort_rel.name == "cohort"
-        assert cohort_rel.type == "many_to_one"
+        assert nwc.relationships == []
 
     def test_names_with_cohort_dimensions(self):
         """names_with_cohort has its own dimensions."""

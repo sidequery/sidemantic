@@ -1,0 +1,160 @@
+{
+  "$schema": "./schema.json",
+  "version": 1,
+  "fixtures": [
+    {
+      "id": "core_measure",
+      "family": "core-measures",
+      "status": "compatible",
+      "reason": "Deterministic DuckDB SQL-over-Parquet source with a count measure and one dimension.",
+      "source": "core_measure.malloy",
+      "seed": "core_measure.sql",
+      "model": "orders",
+      "malloy_query": "run: orders -> { group_by: order_status aggregate: order_count order_by: order_status }",
+      "sidemantic": {
+        "metrics": ["orders.order_count"],
+        "dimensions": ["orders.order_status"],
+        "order_by": ["orders.order_status"]
+      },
+      "expected_schema": ["order_status", "order_count"],
+      "expected_rows": [
+        {"order_status": "cancelled", "order_count": 1},
+        {"order_status": "completed", "order_count": 2},
+        {"order_status": "pending", "order_count": 1}
+      ]
+    },
+    {
+      "id": "core_measure_empty",
+      "family": "core-measures",
+      "status": "compatible",
+      "reason": "Zero-row results retain deterministic result schema on both runtimes.",
+      "source": "core_measure.malloy",
+      "seed": "core_measure.sql",
+      "model": "orders",
+      "malloy_query": "run: orders -> { where: order_status = 'missing' group_by: order_status aggregate: order_count order_by: order_status }",
+      "sidemantic": {
+        "metrics": ["orders.order_count"],
+        "dimensions": ["orders.order_status"],
+        "filters": ["orders.order_status = 'missing'"],
+        "order_by": ["orders.order_status"]
+      },
+      "expected_schema": ["order_status", "order_count"],
+      "expected_rows": []
+    },
+    {
+      "id": "typed_scalar_dimension",
+      "family": "typed-expressions",
+      "status": "compatible",
+      "reason": "A scalar arithmetic dimension lowers through the typed SQL expression path in both runtimes.",
+      "source": "core_measure.malloy",
+      "seed": "core_measure.sql",
+      "model": "orders",
+      "malloy_query": "run: orders -> { group_by: adjusted_amount order_by: adjusted_amount }",
+      "sidemantic": {
+        "metrics": [],
+        "dimensions": ["orders.adjusted_amount"],
+        "order_by": ["orders.adjusted_amount"]
+      },
+      "expected_schema": ["adjusted_amount"],
+      "expected_rows": [
+        {"adjusted_amount": 45},
+        {"adjusted_amount": 80},
+        {"adjusted_amount": 105},
+        {"adjusted_amount": 255}
+      ]
+    },
+    {
+      "id": "source_filters",
+      "family": "source-filters",
+      "status": "compatible",
+      "reason": "Conjunctive source where clauses exclude inactive and cross-tenant rows before aggregation in both runtimes.",
+      "source": "source_filters.malloy",
+      "seed": "source_filters.sql",
+      "model": "orders",
+      "malloy_query": "run: orders -> { group_by: order_status aggregate: revenue order_by: order_status }",
+      "sidemantic": {
+        "metrics": ["orders.revenue"],
+        "dimensions": ["orders.order_status"],
+        "order_by": ["orders.order_status"]
+      },
+      "expected_schema": ["order_status", "revenue"],
+      "expected_rows": [
+        {"order_status": "also_kept", "revenue": 15},
+        {"order_status": "kept", "revenue": 10}
+      ]
+    },
+    {
+      "id": "exact_custom_join",
+      "family": "joins",
+      "status": "compatible",
+      "reason": "An exact key plus an additional target-side predicate preserves unmatched source rows in both runtimes.",
+      "source": "exact_custom_join.malloy",
+      "seed": "exact_custom_join.sql",
+      "model": "orders",
+      "malloy_query": "run: orders -> { group_by: customer_name is customers.customer_name aggregate: revenue order_by: revenue }",
+      "sidemantic": {
+        "metrics": ["orders.revenue"],
+        "dimensions": ["customers.customer_name"],
+        "order_by": ["orders.revenue"]
+      },
+      "expected_schema": ["customer_name", "revenue"],
+      "expected_rows": [
+        {"customer_name": "kept", "revenue": 20},
+        {"customer_name": null, "revenue": 70}
+      ]
+    },
+    {
+      "id": "composite_join_fanout",
+      "family": "joins",
+      "status": "compatible",
+      "reason": "Ordered composite join keys isolate tenants and symmetric aggregation prevents duplicate child rows from inflating base revenue.",
+      "source": "composite_join_fanout.malloy",
+      "seed": "composite_join_fanout.sql",
+      "model": "orders",
+      "malloy_query": "run: orders -> { group_by: item_category is items.item_category aggregate: revenue order_by: revenue }",
+      "sidemantic": {
+        "metrics": ["orders.revenue"],
+        "dimensions": ["items.item_category"],
+        "order_by": ["orders.revenue"]
+      },
+      "expected_schema": ["item_category", "revenue"],
+      "expected_rows": [
+        {"item_category": null, "revenue": 30},
+        {"item_category": "retail", "revenue": 150}
+      ]
+    },
+    {
+      "id": "intrinsic_physical_fields",
+      "family": "intrinsic-fields",
+      "status": "compatible",
+      "reason": "Physical columns remain queryable without declarations and the importer does not invent a primary key.",
+      "source": "intrinsic_fields.malloy",
+      "seed": "intrinsic_fields.sql",
+      "model": "orders",
+      "malloy_query": "run: orders -> { group_by: order_id, region order_by: order_id }",
+      "sidemantic": {
+        "metrics": [],
+        "dimensions": ["orders.order_id", "orders.region"],
+        "order_by": ["orders.order_id"]
+      },
+      "expected_schema": ["order_id", "region"],
+      "expected_rows": [
+        {"order_id": 1, "region": "west"},
+        {"order_id": 2, "region": "east"},
+        {"order_id": 3, "region": "west"}
+      ]
+    },
+    {
+      "id": "query_view_and_nesting_ir",
+      "family": "query-view-ir",
+      "status": "unsupported",
+      "reason": "Direct-source single-stage top-level queries import as Explore and SavedQuery, but source-local views, pipelines, refinements, and nesting remain unsupported."
+    },
+    {
+      "id": "module_topology",
+      "family": "imports-exports",
+      "status": "unsupported",
+      "reason": "Import binding, aliasing, exports, path safety, and cycle detection are supported, but Malloy export intentionally flattens the graph instead of reconstructing module topology."
+    }
+  ]
+}

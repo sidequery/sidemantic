@@ -66,7 +66,10 @@ class TestNewStatements:
     """New upstream statements parse without error and expose useful metadata."""
 
     def setup_method(self):
-        self.adapter = MalloyAdapter(strict=True)
+        # virtual() is connection-resolved and cannot be safely schema-introspected
+        # by this adapter. Lenient import preserves its explicit fields and reports
+        # that limitation; strict schema exposure is covered separately.
+        self.adapter = MalloyAdapter(warn_on_errors=False)
         self.graph = self.adapter.parse(FIXTURES / "new_statements.malloy")
 
     def test_fixture_parses_cleanly(self):

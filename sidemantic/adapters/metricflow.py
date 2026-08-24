@@ -308,6 +308,7 @@ class MetricFlowAdapter(BaseAdapter):
 
         # Parse entities to extract primary key and relationships
         primary_key = "id"  # default
+        primary_entity_name = name
         relationships = []
         # Map entity name -> backing SQL column, so semi-additive window_groupings that name an
         # entity (e.g. `user`, backed by `user_id`) resolve to the real column the generator can
@@ -324,6 +325,7 @@ class MetricFlowAdapter(BaseAdapter):
             if entity_type == "primary":
                 # Use this as the primary key
                 primary_key = entity_expr
+                primary_entity_name = entity_name or name
             elif entity_type == "foreign":
                 # Create a many_to_one relationship
                 relationships.append(Relationship(name=entity_name, type="many_to_one", foreign_key=entity_expr))
@@ -389,6 +391,7 @@ class MetricFlowAdapter(BaseAdapter):
             extends=extends,
             default_time_dimension=default_time_dimension,
             default_grain=default_grain,
+            metadata={"metricflow_primary_entity": primary_entity_name},
         )
 
     def _parse_model_spec(self, model_def: dict) -> Model | None:
@@ -423,6 +426,7 @@ class MetricFlowAdapter(BaseAdapter):
         table = model_def.get("name")
 
         primary_key = "id"
+        primary_entity_name = name
         relationships = []
         dimensions = []
 
@@ -442,6 +446,7 @@ class MetricFlowAdapter(BaseAdapter):
                 entity_expr = entity_def.get("expr") or column_name
                 if entity_type == "primary":
                     primary_key = entity_expr
+                    primary_entity_name = entity_name or name
                 elif entity_type == "foreign":
                     relationships.append(Relationship(name=entity_name, type="many_to_one", foreign_key=entity_expr))
 
@@ -483,6 +488,7 @@ class MetricFlowAdapter(BaseAdapter):
             dimensions=dimensions,
             metrics=measures,
             default_time_dimension=default_time_dimension,
+            metadata={"metricflow_primary_entity": primary_entity_name},
         )
 
     def _parse_dimension(self, dim_def: dict) -> Dimension | None:
@@ -983,7 +989,7 @@ class MetricFlowAdapter(BaseAdapter):
         # Add primary entity
         result["entities"].append(
             {
-                "name": model.name,  # Use model name as entity name
+                "name": (model.metadata or {}).get("metricflow_primary_entity", model.name),
                 "type": "primary",
                 "expr": model.primary_key,
             }
@@ -1188,11 +1194,12 @@ class MetricFlowAdapter(BaseAdapter):
         for model in graph.models.values():
             for rel in model.relationships:
                 # If the relationship name doesn't match any model, try to resolve it
-                if rel.name not in model_names:
-                    resolved_name = self._resolve_entity_to_model(rel.name, model_names)
+                if rel.related_model not in model_names:
+                    resolved_name = self._resolve_entity_to_model(rel.related_model, model_names)
                     if resolved_name:
-                        # Update the relationship name to the actual model name
-                        rel.name = resolved_name
+                        # Preserve the entity/role identifier while recording the
+                        # canonical model used by graph traversal.
+                        rel.target_model = resolved_name if resolved_name != rel.name else None
 
     def _resolve_entity_to_model(self, entity_name: str, model_names: set[str]) -> str | None:
         """Attempt to resolve an entity name to an actual model name.

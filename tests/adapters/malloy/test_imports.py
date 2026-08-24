@@ -74,10 +74,10 @@ def test_multi_level_import():
     adapter = MalloyAdapter()
     graph = adapter.parse(Path("tests/fixtures/malloy/imports/multi_level.malloy"))
 
-    # Should have all models from the import chain:
+    # Should have entry-visible models plus required relationship dependencies:
     # multi_level.malloy -> orders.malloy -> base.malloy
     assert "customers" in graph.models  # From base.malloy
-    assert "products" in graph.models  # From base.malloy
+    assert "products" not in graph.models  # Imported privately and unused
     assert "orders" in graph.models  # From orders.malloy
     assert "order_analytics" in graph.models  # From multi_level.malloy
 

@@ -2,7 +2,7 @@
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class Relationship(BaseModel):
@@ -16,7 +16,14 @@ class Relationship(BaseModel):
     - cross: This model should be cross joined to another
     """
 
-    name: str = Field(description="Name of the related model")
+    name: str = Field(description="Relationship role name; also the target model for legacy declarations")
+    target_model: str | None = Field(
+        default=None,
+        description=(
+            "Canonical related model when the relationship name is a role alias. "
+            "When omitted, name remains the target model for backwards compatibility."
+        ),
+    )
     type: Literal["many_to_one", "one_to_one", "one_to_many", "many_to_many", "cross"] = Field(
         description="Type of relationship"
     )
@@ -45,6 +52,17 @@ class Relationship(BaseModel):
     )
     sql: str | None = Field(default=None, description="Custom join SQL using {from} and {to} runtime placeholders")
     metadata: dict[str, Any] | None = Field(None, description="Adapter-specific metadata payload")
+
+    @model_validator(mode="after")
+    def _validate_role_namespace(self) -> "Relationship":
+        if self.target_model is not None and "$" in self.name:
+            raise ValueError("Relationship role names cannot contain '$'; it is reserved for scoped role paths")
+        return self
+
+    @property
+    def related_model(self) -> str:
+        """Return the canonical target model independently of the relationship role."""
+        return self.target_model or self.name
 
     @property
     def sql_expr(self) -> str | None:

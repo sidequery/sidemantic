@@ -49,6 +49,10 @@ class UnsupportedMetricError(RuntimeError):
     """
 
 
+class SchemaIntrospectionError(RuntimeError):
+    """Raised when strict model schema exposure cannot inspect its backing source."""
+
+
 # Substrings that identify a "missing relation/table" execution error across
 # database adapters (DuckDB, Postgres, BigQuery, Snowflake, ClickHouse, ...).
 # Used to decide whether a routed-but-unbuilt pre-aggregation table should fall
@@ -502,27 +506,33 @@ class SemanticLayer:
 
         existing_dim_names = {dim.name for dim in model.dimensions}
         pk_columns = set(model.primary_key_columns)
+        exposure = model.schema_exposure
 
-        columns = self._get_model_columns(model)
+        columns = self._get_model_columns(model, strict=bool(exposure and exposure.strict))
         if not columns:
             return
 
         for col in columns:
             col_name = col["column_name"]
 
+            # Imported semantic sources may constrain wildcard/schema exposure.
+            # Apply those rules before creating a queryable Dimension object.
+            if exposure is not None and not exposure.allows(col_name):
+                continue
+
             # Skip columns that already have explicit dimensions
             if col_name in existing_dim_names:
                 continue
 
             # Skip primary key columns
-            if col_name in pk_columns:
+            if col_name in pk_columns and not (exposure and exposure.include_primary_key):
                 continue
 
             dim_type, granularity = self._map_db_type(col["data_type"])
             dim = Dimension(name=col_name, type=dim_type, granularity=granularity)
             model.dimensions.append(dim)
 
-    def _get_model_columns(self, model: Model) -> list[dict]:
+    def _get_model_columns(self, model: Model, *, strict: bool = False) -> list[dict]:
         """Get column metadata for a model's backing table or SQL.
 
         Returns:
@@ -539,9 +549,18 @@ class SemanticLayer:
             else:
                 schema, table_name = None, parts[-1]
             try:
-                return self.adapter.get_columns(table_name, schema=schema)
-            except Exception:
+                columns = self.adapter.get_columns(table_name, schema=schema)
+            except Exception as exc:
+                if strict:
+                    raise SchemaIntrospectionError(
+                        f"Could not introspect schema for model '{model.name}' from table '{model.table}'"
+                    ) from exc
                 return []
+            if strict and not columns:
+                raise SchemaIntrospectionError(
+                    f"Could not introspect schema for model '{model.name}' from table '{model.table}': no columns returned"
+                )
+            return columns
         elif model.sql:
             # For SQL-based models, run a LIMIT 0 query to get column types
             try:
@@ -555,8 +574,20 @@ class SemanticLayer:
                         }
                         for desc in result.description
                     ]
-            except Exception:
+            except Exception as exc:
+                if strict:
+                    raise SchemaIntrospectionError(
+                        f"Could not introspect schema for model '{model.name}' from its SQL source"
+                    ) from exc
                 return []
+            if strict:
+                raise SchemaIntrospectionError(
+                    f"Could not introspect schema for model '{model.name}' from its SQL source: no columns returned"
+                )
+        elif strict:
+            raise SchemaIntrospectionError(
+                f"Could not introspect schema for model '{model.name}': model has no table or SQL source"
+            )
         return []
 
     @staticmethod
@@ -1190,10 +1221,22 @@ class SemanticLayer:
 
         # The Rust SQL generator does not enforce security policies or column visibility,
         # so any active control keeps compilation on the policy-aware Python path.
+        role_forces_python = self._graph_has_relationship_roles()
+        if (
+            role_forces_python
+            and self._use_rust_sql_generator
+            and (self._strict_rust_sql_generator_entrypoint or self._rust_no_fallback)
+        ):
+            raise ValueError(
+                "Rust SQL generation does not support relationship role aliases; use engine='python' or enable fallback"
+            )
+
         security_forces_python = (
             self.enforce_visibility
             or user_attributes is not None
             or self._query_touches_secured_model(metrics, dimensions, filters, segments)
+            or self._query_touches_invariant_model(metrics, dimensions, filters, segments)
+            or role_forces_python
         )
 
         inner_sql = None
@@ -1273,6 +1316,14 @@ class SemanticLayer:
         python_validate_query: Callable[[list[str], list[str], SemanticGraph], list[str]],
     ) -> list[str]:
         from sidemantic.validation import QueryValidationError
+
+        if self._graph_has_relationship_roles():
+            if self._use_rust_query_validation and (self._strict_rust_query_validation or self._rust_no_fallback):
+                raise QueryValidationError(
+                    "Rust query validation does not support relationship role aliases; use engine='python' "
+                    "or enable fallback"
+                )
+            return python_validate_query(metrics, dimensions, self.graph)
 
         if self._use_rust_query_validation:
             try:
@@ -1366,6 +1417,28 @@ class SemanticLayer:
             if model is not None and model.security is not None:
                 return True
         return False
+
+    def _query_touches_invariant_model(
+        self,
+        metrics: list[str] | None,
+        dimensions: list[str] | None,
+        filters: list[str] | None,
+        segments: list[str] | None = None,
+    ) -> bool:
+        """Whether any participating model declares an invariant row scope."""
+        return any(
+            bool(self.graph.models[model_name].invariant_filters)
+            for model_name in self._security_participating_models(metrics, dimensions, filters, segments)
+            if model_name in self.graph.models
+        )
+
+    def _graph_has_relationship_roles(self) -> bool:
+        """Whether the graph requires role-aware Python validation and SQL generation."""
+        return any(
+            relationship.target_model is not None
+            for model in self.graph.models.values()
+            for relationship in model.relationships
+        )
 
     def _query_has_active_row_filters(
         self,

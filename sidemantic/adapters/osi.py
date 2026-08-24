@@ -803,7 +803,7 @@ class OSIAdapter(BaseAdapter):
 
         # Use the related model's actual primary key when rel.primary_key is unset
         if rel.primary_key is None:
-            related_model = models.get(rel.name)
+            related_model = models.get(rel.related_model)
             to_columns = related_model.primary_key_columns if related_model else ["id"]
         else:
             to_columns = rel.primary_key_columns
@@ -811,7 +811,7 @@ class OSIAdapter(BaseAdapter):
         result: dict[str, Any] = {
             "name": (rel.metadata or {}).get("osi_name") or f"{from_model}_to_{rel.name}",
             "from": from_model,
-            "to": rel.name,
+            "to": rel.related_model,
             "from_columns": rel.foreign_key_columns,
             "to_columns": to_columns,
         }

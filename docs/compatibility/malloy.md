@@ -1,332 +1,165 @@
-# Malloy Compatibility
+# Malloy compatibility
 
-Sidemantic's Malloy adapter parses `.malloy` files using an ANTLR4-generated parser built from the official Malloy grammar (lexer and parser `.g4` files from the malloydata/malloy repository). It maps Malloy sources to Sidemantic's semantic model (Model, Dimension, Metric, Segment, Relationship) and supports exporting back to Malloy for roundtrip workflows.
+Sidemantic imports `.malloy` files with the bundled ANTLR grammar and maps the supported subset into native `Model`, `Dimension`, `Metric`, `Relationship`, `Explore`, and `SavedQuery` objects. It can also export semantic models back to Malloy.
 
-Features are marked **supported**, **partial support**, or **unsupported**. Partial support entries include notes explaining the limitation. Properties that parse without error but have no Sidemantic equivalent are grouped together per section rather than listed individually.
+The statuses below describe the Python adapter and query engine:
 
----
+- **Supported** means the behavior has a native representation and regression coverage.
+- **Partial** means only the stated subset is represented; unsupported shapes are omitted or rejected rather than approximated.
+- **Unsupported** means no faithful native representation is currently emitted.
 
-## Sources
+Lenient import records blocked or unsupported features and omits unsafe partial objects. `MalloyAdapter(strict=True)` raises at the same safety boundary. Syntax errors remain a separate `MalloySyntaxError` boundary.
 
-| Feature | Status |
-|---------|--------|
-| `source: name is connection.table('path') extend { ... }` | Supported |
-| `source: name is connection.sql("""...""") extend { ... }` | Supported (SQL stored in `Model.sql`, `Model.table = None`) |
-| `source: name is connection.sql('...')` (short string) | Supported |
-| Multiple sources per file | Supported |
-| Comma-separated source definitions in one `source:` statement | Supported |
-| Directory parsing (recursive `.malloy` discovery) | Supported |
-| Empty/minimal sources (no dimensions or measures) | Supported |
-| Connection identifier (`duckdb`, `bigquery`, etc.) | Supported (stored in `Model.metadata["connection"]`; export uses the original connection name) |
-| `source: name is other_source extend { ... }` (ID reference) | Supported (sets `Model.extends` to the base source name; inheritance resolved via `resolve_model_inheritance()`) |
-| `source: name is base -> { ... } extend { ... }` (pipeline source) | Supported (base source's table/extends preserved; pipeline query not evaluated; extend block processed) |
-| `source: name is compose(...)` (composite sources) | Partial support: parses without error; first composed source processed for table/extends. Composition logic not evaluated. |
-| `source()` (parameterized sources) | Partial support: parameters are parsed by the grammar but parameter values are not stored or substituted. |
-| Old `+` syntax for extending (`base + { ... }`) | Supported (base source processed; refinement block processed best-effort for dimension:, measure:, join:, where:, primary_key: statements) |
-| `from()` (source-from-query) | Unsupported (grammar-level construct not handled by the visitor). |
+## Sources and physical schema
 
-Not mapped: `connection:` statement-level declarations (source-level connection identifiers are captured).
+| Feature | Status and boundary |
+|---|---|
+| `source: name is connection.table('path')` | **Supported.** The table and connection identifier are retained. Physical columns are exposed as intrinsic dimensions when the model is added to a `SemanticLayer`. |
+| `source: name is connection.sql(...)` | **Supported without interpolation.** Static short and triple-quoted SQL is stored in `Model.sql`. SQL containing `%{ ... }` interpolation is rejected atomically because retaining it as raw SQL would not preserve Malloy substitution semantics. |
+| Multiple sources and recursive directory discovery | **Supported.** Conflicting flat graph names are rejected in strict mode and omitted with diagnostics in lenient mode. |
+| `source: child is base extend { ... }` | **Supported.** The raw child retains `Model.extends`; effective inheritance, including schema exposure controls, is resolved for consumption and export. Forward source references are rejected. |
+| Explicit `primary_key:` | **Supported.** The declared physical key is retained and exported. |
+| Source without `primary_key:` | **Supported.** The key remains unknown (`None`); the adapter does not manufacture an `id` key. A `with` join that requires an undeclared target key is rejected. |
+| Intrinsic physical fields | **Supported for introspectable table/SQL sources.** `auto_dimensions` plus `SchemaExposure` expose physical columns without requiring passthrough `dimension: x is x` declarations. |
+| Pipeline source (`base -> { ... } extend { ... }`) | **Unsupported/rejected.** A source-definition pipeline is omitted atomically in lenient mode and raises in strict mode; neither its base nor its descendants are retained as an approximation. |
+| Old source refinement syntax (`base + { ... }`) | **Partial.** Supported source-level fields and properties in the refinement block are imported; query/view refinements are not. |
+| `compose(...)` | **Unsupported/rejected.** Composition is omitted atomically rather than retaining only its first source. |
+| Parameterized source declarations and invocations | **Unsupported/rejected.** `sourceParameters` and `sourceArguments` are not substituted; the affected source is omitted atomically. |
+| Source-from-query (`from(...)`) | **Unsupported/rejected.** Query-backed source expressions are not degraded to their first or base source. This does not affect the bounded top-level `query:` mapping described below. |
+| Virtual or otherwise non-introspectable sources | **Unsupported for intrinsic schema exposure.** Lenient mode keeps only safely declared structure and records a blocked feature; strict mode rejects the source shape. |
 
----
+## Source governance and access
 
-## Dimensions
+| Feature | Status and boundary |
+|---|---|
+| Source `where:` | **Supported as an invariant filter.** Ordered predicates populate `Model.invariant_filters`, are conjoined before joins and aggregation, execute on every query path, and round-trip as separate `where:` clauses. They are not reusable `Segment` objects. |
+| Multiple source filters | **Supported.** All predicates are retained in declaration order and combined conjunctively. |
+| Unsafe source filter expression | **Rejected atomically.** Lenient mode omits the affected source; strict mode raises. |
+| `accept:` | **Supported.** The allowlist is enforced during physical schema introspection, before excluded columns can become public dimensions. |
+| `except:` | **Supported.** Exclusions compose with inherited controls. When both `accept` and `except` are present, the effective allowlist is narrowed. |
+| Primary-key exposure | **Supported.** `SchemaExposure.include_primary_key` keeps an explicitly declared physical key available even when schema controls are active. No key is inferred when absent. |
+| `private` / `internal` dimensions, measures, and renames | **Supported with native visibility.** Fields are non-public; metric visibility and Malloy access metadata are retained and exported. Internal and private both enforce a non-public runtime boundary, although Sidemantic cannot reproduce every Malloy-internal visibility nuance. |
+| Private renamed physical columns | **Supported.** Both the public alias and underlying physical name are excluded from intrinsic public exposure. |
+| Inherited exposure controls | **Supported.** Child `accept`, `except`, and private fields narrow or compose with the parent; flattened export/reparse preserves the effective boundary. |
+| `include { ... }` blocks | **Unsupported/rejected.** Include projection and access modifiers are not applied. The limitation is reported in lenient mode and rejected in strict mode rather than silently broadening or narrowing inherited fields. |
+| Non-public joins | **Unsupported.** `Relationship` has no equivalent field-access boundary, so private/internal joins are omitted in lenient mode and rejected in strict mode. |
+| Strict physical introspection failure | **Fail closed at model registration.** A strict, introspectable source may parse before a connection is available, but adding it to a layer raises if its physical schema cannot be read. |
 
-| Feature | Status |
-|---------|--------|
-| `dimension: name is expression` | Supported |
-| Comma-separated dimension lists | Supported |
-| Column references (`column_name`) | Supported |
-| Arithmetic expressions (`(revenue - cost) / revenue * 100`) | Supported (type inferred as `numeric`) |
-| String concatenation (`concat(a, '-', b)`) | Supported |
-| Comparison expressions (`value > 0`, `status = 'active'`) | Supported (type inferred as `boolean`) |
-| `::date`, `::timestamp`, `::timestamptz` casts | Supported (type inferred as `time`) |
-| `DATE_TRUNC('granularity', field)` | Supported (type inferred as `time`, granularity extracted) |
-| `field.granularity` (Malloy time truncation: `.day`, `.month`, `.year`, etc.) | Supported (granularity extracted from trailing `.timeframe` pattern) |
-| `pick ... when ... else ...` (conditional bucketing) | Supported (transformed to SQL `CASE WHEN ... THEN ... ELSE ... END`) |
-| `field ? pick ... when ...` (apply-pick) | Supported (the `?` apply operator is detected; partial comparisons like `when < 5` are expanded to `WHEN field < 5`, and value matches like `when 'ASW'` become `WHEN field = 'ASW'`) |
-| `case ... when ... then ... end` (SQL-style CASE) | Supported (grammar parses it; expression preserved as-is) |
-| `floor()`, `substr()`, `regexp_extract()` and other functions | Supported (expression preserved verbatim) |
-| `??` (null coalescing) | Supported (transformed to `COALESCE(a, b, ...)`) |
-| Cross-source field references (`joined_source.field`) | Supported (preserved as-is in SQL) |
-| Struct navigation (`event_params.value.int_value`) | Partial support: preserved as-is in the expression text. Works if the database supports dot notation for structs. |
+## Dimensions and expressions
 
-### Type Inference
+| Feature | Status and boundary |
+|---|---|
+| Direct field paths, literals, parentheses, unary operators | **Supported.** Qualified semantic paths are retained. |
+| Arithmetic, comparison, logical, and null predicates | **Supported through typed lowering.** Precedence and non-associative tree shape are preserved; null equality becomes `IS NULL`/`IS NOT NULL`, while ordered null comparisons are rejected. |
+| Casts | **Supported for the bounded neutral type set.** Malloy `number`, `string`, boolean, date/time, and timestamp-family casts render for DuckDB, PostgreSQL, BigQuery, or Snowflake. Unsupported target types are rejected. |
+| Time truncation and fixed duration arithmetic | **Supported for the validated dialect/type matrix.** For example, BigQuery date plus a sub-day duration is rejected rather than approximated. |
+| Regex comparison | **Supported.** Rendering is dialect-aware (`REGEXP_MATCHES`, PostgreSQL operators, `REGEXP_CONTAINS`, or `REGEXP_LIKE`). Established DuckDB dimension spellings retain their exact legacy-compatible form. |
+| Standard scalar functions | **Partial.** A bounded, arity-checked set such as `abs`, `concat`, `coalesce`, `length`, `lower`, `replace`, `round`, `substring`, and `upper` is supported. Unknown/vendor functions are rejected. |
+| `pick`, SQL-style `case`, apply-pick, coalesce, date literals, and supported partial match trees | **Supported on the established exact compatibility path.** Every descendant is recursively validated before legacy transformation. |
+| Backtick identifiers | **Supported.** Quoting is rendered for the target dialect, including BigQuery escaping rules. |
+| Unknown functions, parameters/given references, safe-cast forms, filter strings, ranges, record literals, locality, `all`, and `exclude` | **Unsupported in typed fields.** A rejected descendant blocks the complete dimension, metric, aggregate argument, or filter; raw Malloy text is not passed through as SQL. |
+| Cross-source/relationship field paths | **Partial.** Paths are retained only when reachable through the source's relationship roles; arbitrary qualifiers and ambiguous unqualified leaves are rejected in query mapping. |
 
-The adapter infers dimension types heuristically from the SQL expression and field name:
+Dimension types and granularities are inferred from the lowered expression. Time-like casts, truncations, literals, durations, and time-oriented names produce time dimensions; comparisons produce booleans; arithmetic produces numeric dimensions; categorical is the fallback.
 
-| Inferred Type | Detection Rule |
-|---------------|----------------|
-| `time` | Expression contains `date_trunc`, `::date`, `::timestamp`, `extract`, `strftime`, `to_date`, `to_timestamp`, or name contains `date`, `time`, `timestamp`, `_at`, `created`, `updated` |
-| `boolean` | Expression contains comparison operators (`=`, `!=`, `>`, `<`, `>=`, `<=`) unless inside a `pick`/`case` block |
-| `numeric` | Expression contains arithmetic operators (`+`, `-`, `*`, `/`) but not string concatenation (`\|\|`) |
-| `categorical` | Default fallback |
-
-### Granularity Extraction
-
-| Pattern | Extracted Granularity |
-|---------|----------------------|
-| `DATE_TRUNC('minute', ...)` | `minute` |
-| `DATE_TRUNC('hour', ...)` | `hour` |
-| `DATE_TRUNC('day', ...)` | `day` |
-| `DATE_TRUNC('week', ...)` | `week` |
-| `DATE_TRUNC('month', ...)` | `month` |
-| `DATE_TRUNC('quarter', ...)` | `quarter` |
-| `DATE_TRUNC('year', ...)` | `year` |
-| `field.second` through `field.year` | Corresponding granularity |
-| `::date` cast | `day` |
-
-Not mapped: `access` modifiers (`public`, `private`, `internal`). Malloy's declared types (`::type`, `:::type`) are not used for type assignment; types are inferred heuristically (see tables above).
-
----
+Dialect-sensitive expressions use the source connection's resolved SQL dialect. Built-in DuckDB, PostgreSQL, BigQuery, and Snowflake connection identifiers are known. Custom connection identifiers require an explicit `connection_dialects={connection_id: dialect}` mapping. Without one, dialect-sensitive fields, aggregate arguments, and filters are omitted with a diagnostic in lenient mode and rejected in strict mode.
 
 ## Measures
 
-| Feature | Status |
-|---------|--------|
-| `count()` | Supported |
-| `count(field)` | Supported (mapped to `count_distinct` per Malloy semantics) |
-| `count_distinct(field)` | Supported |
-| `sum(field)` | Supported |
-| `avg(field)` | Supported |
-| `min(field)` | Supported |
-| `max(field)` | Supported |
-| `sum(expression)` (e.g., `sum(quantity * price)`) | Supported (expression preserved as the `sql` of the metric) |
-| Derived/computed measures (no aggregation function) | Supported (mapped to `type="derived"`) |
-| Filtered measures: `count() { where: condition }` | Supported (filter expressions extracted and stored) |
-| Filtered measures: `sum(x) { where: condition }` | Supported |
-| Comma-separated measure lists | Supported |
-| `field.sum()`, `field.avg()`, `field.count()` (dot-method aggregation) | Supported (e.g., `cost.sum()` -> `agg="sum", sql="cost"`; handles dotted paths like `event_params.value.double_value.sum()`) |
-| Backtick-quoted field with dot-method (`` `number`.sum() ``) | Supported (backtick-quoted fields handled correctly in dot-method pattern) |
-| `all(measure)` (ungrouped aggregate) | Partial support: parses without error, expression preserved as-is, but `all()` is not recognized as an aggregation wrapper. Measures using `all()` become derived. |
-| `exclude(measure, dimension)` (symmetric aggregate) | Partial support: expression preserved as-is but not interpreted. |
-| Measure references in derived measures | Partial support: referenced by name in the SQL expression but not resolved to their definitions. |
-| `source.count()` (cross-source symmetric aggregation) | Partial support: expression preserved verbatim but not recognized as a count aggregation. |
+| Feature | Status and boundary |
+|---|---|
+| `count()`, `count(field)`, `count_distinct(field)` | **Supported.** Malloy `count(field)` maps to distinct count. |
+| `sum`, `avg`, `min`, `max` | **Supported**, including expression arguments and established dot-method forms such as `cost.sum()`. |
+| Derived measures and aggregate arithmetic | **Supported** when every referenced expression is safely lowerable. Aggregate functions in a compound expression are retained as executable derived SQL. |
+| Filtered measures and chained filter refinements | **Supported.** Filters are lowered separately, kept in source order, and conjoined. |
+| Dialect-sensitive aggregate arguments and filters | **Supported with a resolved dialect.** The aggregate root remains a native metric while casts, date truncation, and regex predicates render for the target dialect. |
+| Rejected aggregate descendant | **Rejected atomically.** No partial metric or unsafe raw fallback is produced. |
+| Measure references inside derived SQL | **Partial.** Native derived metric references are supported by the Sidemantic compiler, but Malloy symmetric/ungroup locality semantics are not inferred. |
+| `all`, `exclude`, `source.count()` locality/symmetric semantics | **Unsupported.** These require Malloy query semantics not represented by a native metric. |
 
-Not mapped: `access` modifiers (`public`, `private`, `internal`), `order_by:` within field properties, `partition_by:`, `grouped_by:`.
+## Joins and relationship roles
 
----
+| Feature | Status and boundary |
+|---|---|
+| `join_one: target with source_column` | **Supported** when `source_column` is one physical column and the target has exactly one declared/inherited primary key. The local foreign key and target primary key are both retained. |
+| `join_many: target on ...` | **Supported** as `one_to_many`, with source and related key orientation retained. |
+| Equality `on` predicates | **Supported exactly.** Differently named keys, either operand order, alternate keys, and ordered composite key pairs populate both relationship key sides. Explicit `on` keys never fall back to the model primary key. |
+| Additional SQL-compatible predicates | **Supported.** Equality key metadata is retained and the complete predicate is stored as executable `Relationship.sql` with `{from}` / `{to}` placeholders. Range predicates and predicates referencing both sides execute in either traversal direction. |
+| Arbitrary or Malloy-only predicate | **Unsupported.** Conditions that cannot be conservatively lowered to a validated SQL predicate are omitted/rejected. |
+| Relationship alias (`role is source`) | **Supported.** The role name and canonical related model remain distinct, so multiple roles to one model compile, execute, export, and reparse independently. Module dependency emission follows the canonical related model. |
+| Inline table/SQL source in a join | **Supported when the inline source is valid.** An invalid inline invariant omits only the inline model and relationship in lenient mode; it does not contaminate the outer source. Strict mode raises. |
+| Bare `join_cross` | **Supported**, including a role alias. Conditional cross joins are rejected. |
+| Join direction | **Partial.** Default/explicit `left` is supported. `inner`, `right`, and `full` are reported and omitted/rejected until the core relationship engine represents those semantics. |
+| Non-column `with` expression or missing/composite target key | **Unsupported.** It is rejected rather than guessed. |
 
-## Annotations and Descriptions
+Native custom join SQL export is placeholder-aware. `{from}` and `{to}` are rewritten only in executable SQL regions; placeholders inside literals, quoted identifiers, or comments cause export to fail closed. The rendered predicate is validated before it is written.
 
-| Feature | Status |
-|---------|--------|
-| `## Description text` (doc annotation) | Supported (extracted as `description` on source, dimension, or measure) |
-| `# desc: value` tag annotation | Supported (extracted as `description`) |
-| `# description: value` tag annotation | Supported (extracted as `description`) |
-| Multiple `##` lines on one entity | Supported (joined with spaces) |
-| Statement-level `#` tags (before `source:`) | Supported (applied as source description if the source itself has none) |
-| `# tag_name` (non-description tags) | Supported (stored in `metadata["tags"]` on dimensions, measures, and models; includes `line_chart`, `bar_chart`, `percent`, `currency`, etc.) |
-| `#@ persist` and `#@ persist name=...` | Supported (stored in `Model.metadata["persist"]` and `metadata["persist_name"]`) |
-| Standalone `#` annotations in extend blocks | Supported (stored in `Model.metadata["tags"]` via `DefExploreAnnotationContext`) |
+## Modules, imports, and exports
 
-Not mapped: `--! styles` directives, `##! experimental` pragmas.
+| Feature | Status and boundary |
+|---|---|
+| Import-all and selective imports | **Supported.** Only exported symbols are visible to importing modules. |
+| `import { local_name is exported_name }` | **Supported.** Malloy's local binding comes first; aliases retain defining-file provenance. |
+| Explicit `export { ... }` | **Supported as an allowlist.** Multiple exports compose, and imported bindings can be re-exported. Exporting a symbol before it is defined/imported is rejected. |
+| Transitive imports | **Supported.** Source dependencies required by inheritance, relationships, and imported queries are emitted under the correct local binding. |
+| Query-only import | **Supported for a supported top-level query.** Its source remains bound in the query's defining module; it is not rebound to a same-named source in the entry file. |
+| Project-relative paths | **Supported with containment checks.** Absolute paths, `file:`/network URLs, and paths escaping `import_root` are rejected. |
+| Missing import | **Fail closed.** Strict mode raises; lenient mode retains independent declarations and records a blocked diagnostic. |
+| Import cycle | **Detected and rejected** with the complete path chain. Relationship dependency cycles terminate without repeatedly emitting the same symbol. |
+| Duplicate or ambiguous bindings/flat graph names | **Rejected.** Lenient mode removes the ambiguous binding and dependent models instead of selecting a winner. |
+| Module-preserving Malloy export | **Unsupported.** Export writes a flattened semantic graph; it does not reconstruct the original file/import/export topology. |
 
----
+## Top-level queries and consumption objects
 
-## Joins
+Direct-source, single-stage top-level `query:` definitions are **supported** for the following bounded mapping:
 
-| Feature | Status |
-|---------|--------|
-| `join_one: target with foreign_key` | Supported (maps to `Relationship(type="many_to_one")`) |
-| `join_many: target on condition` | Supported (maps to `Relationship(type="one_to_many")`) |
-| `join_cross: target` | Supported (maps to `Relationship(type="cross")`, generating a `CROSS JOIN`) |
-| `join_one: alias is source with fk` (aliased join) | Supported (relationship name is the alias) |
-| `join_one: alias is source on condition` | Supported (FK extracted from first identifier before `=` in the on-expression) |
-| Multiple joins in comma-separated list | Supported |
-| Inline source definition in join (`join_one: name is connection.table(...) extend { ... } with fk`) | Supported (inline source extracted as a separate model; relationship created with correct FK) |
-| Matrix operations (`left`, `right`, `full`, `inner`) | Supported (stored in `metadata["join_direction"]`) |
-| Multi-condition `on` clause (`a = b.a and c = b.c`) | Supported (first equality used as FK; all equality FKs stored in `metadata["composite_keys"]`; full condition stored in `metadata["on_condition"]`) |
-| Cross-source join conditions (e.g., `gender = cohort.gender and state = cohort.state`) | Supported (all FKs extracted; full condition preserved in metadata) |
+| Malloy query operation | Native representation |
+|---|---|
+| Named source | Generated `Explore.model`; the source binding is preserved across module aliases/imports. |
+| `group_by:` | `SavedQuery.dimensions` |
+| `aggregate:` | `SavedQuery.metrics` |
+| Dimension-only `where:` | `SavedQuery.filters`, compiled as `WHERE` |
+| Metric-bearing `having:` | `SavedQuery.filters`, classified by the native compiler as `HAVING` |
+| `order_by:` | `SavedQuery.order_by`; ordered fields must be selected and uniquely resolvable. |
+| `limit:` | `SavedQuery.limit` |
 
-Not mapped: `access` modifiers on joins.
+The adapter inserts the generated `Explore` and `SavedQuery` only after both validate against a staging graph. Field catalogs are restricted to the query source and bounded reachable relationship-role paths; unrelated models, wrong roles, wrong qualifiers, ambiguous leaves, duplicate selections, and invalid WHERE/HAVING classification produce diagnostics and no partial consumption object. Self and two-model relationship cycles terminate while sibling roles remain independently addressable.
 
----
+Query field validation uses declared semantic dimensions, metrics, and keys. Intrinsic physical columns discovered later during `SemanticLayer` registration are not available to top-level query mapping unless they are also declared in the Malloy source.
 
-## Imports
+The following remain **unsupported** in adapter integration:
 
-| Feature | Status |
-|---------|--------|
-| `import 'path/to/file.malloy'` (import all sources) | Supported |
-| `import { source1, source2 } from 'file.malloy'` (named imports) | Supported (only listed sources are added to the graph) |
-| `import { source is alias } from 'file.malloy'` (aliased imports) | Supported (model is renamed to the alias) |
-| Relative path resolution | Supported (import paths resolved relative to the importing file) |
-| Transitive imports (A imports B which imports C) | Supported (depth-first resolution) |
-| Circular import detection | Supported (each file parsed at most once per resolution chain) |
-| Missing import file handling | Supported (silently skipped, remaining sources still parsed) |
-| Directory-level deduplication | Supported (first model with a given name wins; duplicates skipped) |
+- source-local `view:` definitions (the standalone mapper exists, but source-local views are not retained and inserted by `MalloyAdapter`);
+- multi-stage pipelines;
+- query/view refinements;
+- nesting;
+- calculations, query-local joins/extensions, sampling, indexing, timezones, wildcards, output renames, and source arguments;
+- `run:` as a retained named consumption contract.
 
----
+## Rename, annotations, and source metadata
 
-## Source-Level Where (Segments)
+| Feature | Status and boundary |
+|---|---|
+| `rename: new is old` | **Supported**, including backtick identifiers and access modifiers. It becomes a dimension whose SQL points at the old physical field. |
+| `##` descriptions and `# desc:` / `# description:` | **Supported** on models and fields and emitted on export. |
+| Other `#` tags | **Supported as metadata** on models and fields. |
+| `timezone:` | **Supported as model metadata.** It does not enable unsupported query-local timezone semantics. |
+| Persist annotations | **Supported as model metadata**, not as a materialization executor. |
+| Experimental pragmas, styles, sampling | **Parsed but not represented.** |
 
-| Feature | Status |
-|---------|--------|
-| `where: condition` in source extend block | Supported (mapped to `Segment`) |
-| Multiple filter conditions (comma-separated) | Supported (each becomes a separate segment) |
-| Filter expressions with comparisons, `and`, `or` | Supported (expression preserved as-is) |
-| Malloy partial application (`field ? pick ... when ...`) | Supported in dimension context (expanded to CASE); partial in filter context |
-| Malloy value matching (`field ? 'a' \| 'b'`) | Supported (transformed to `field IN ('a', 'b')`) |
+## Export and round-trip boundaries
 
-Segment naming: first filter is named `default_filter`, subsequent filters are named `default_filter_1`, `default_filter_2`, etc.
+| Feature | Status and boundary |
+|---|---|
+| Table/SQL sources, descriptions, keys, dimensions, measures, invariant filters | **Supported.** |
+| Arbitrary model/field tags | **Import metadata only.** Non-description tags may be retained in native metadata during import, but export does not emit them, so they do not round-trip. |
+| `accept`, `except`, private/internal fields and renames | **Supported.** Effective inherited schema exposure is preserved when export flattens a child. |
+| Keyed, custom-predicate, role-aliased, and cross relationships | **Supported** within the join boundaries above. Composite joins require an exact retained predicate for export. |
+| Passthrough physical dimensions | Intentionally omitted because Malloy exposes physical table columns intrinsically; re-import reconstructs them through schema introspection. |
+| Unknown primary key | Preserved as unknown. An explicit `primary_key: id` is exported; `id` is not treated as an implicit default. |
+| Top-level queries / saved queries | **Import-only.** Generated native consumption contracts are not exported back into Malloy query syntax. |
+| Source-local views and module topology | **Unsupported**, because they are not retained in the semantic graph. |
 
----
+## Differential coverage
 
-## Rename
-
-| Feature | Status |
-|---------|--------|
-| `rename: new_name is old_name` | Supported (mapped to `Dimension(name=new_name, sql=old_name)`) |
-| Backtick-quoted renames (`` rename: year_born is `year` ``) | Supported |
-| Comma-separated rename lists | Supported |
-
----
-
-## Views (Named Queries Within Sources)
-
-Unsupported. `view:` definitions inside sources are query definitions, not semantic model structure. All view content (`group_by:`, `aggregate:`, `nest:`, `order_by:`, `limit:`, etc.) parses without error but is not extracted.
-
----
-
-## Top-Level Queries
-
-Unsupported. `query:` and `run:` statements parse without error but are not extracted.
-
----
-
-## Query Pipelines
-
-| Feature | Status |
-|---------|--------|
-| `->` in source definitions (`source: cohort is names -> { ... } extend { ... }`) | Partial support: base source preserved, extend block processed, pipeline query body not evaluated |
-| `->` in queries/views | Unsupported (queries not extracted) |
-
----
-
-## Refinements
-
-| Feature | Status |
-|---------|--------|
-| `+` in source context (old extend syntax: `base + { ... }`) | Supported (dimension:, measure:, join:, where:, primary_key: processed) |
-| `+` in view/query context | Unsupported (views/queries not extracted) |
-
----
-
-## Nesting
-
-Unsupported. `nest:` is a query-level construct; since views and queries are not extracted, nesting has no effect on the semantic model.
-
----
-
-## Grouping and Aggregation (Query-Level)
-
-Unsupported. `group_by:`, `aggregate:`, `calculate:`, `project:`/`select:`, `index:`, and `declare:` are query-time operations, not semantic model definitions.
-
----
-
-## Accept/Except (Field Visibility)
-
-| Feature | Status |
-|---------|--------|
-| `accept:` field lists in source extend blocks | Partial support (field names parsed, filtering best-effort) |
-| `except:` field lists in source extend blocks | Partial support (field names parsed, filtering best-effort) |
-
----
-
-## Include Blocks
-
-Partial support. Base source expression is processed, but include block contents and field visibility restrictions are not applied.
-
----
-
-## Expressions
-
-### Supported Expression Patterns
-
-| Pattern | Status |
-|---------|--------|
-| Arithmetic (`+`, `-`, `*`, `/`, `%`) | Supported (preserved in expression text) |
-| Comparison (`=`, `!=`, `>`, `<`, `>=`, `<=`) | Supported |
-| Logical (`and`, `or`, `not`) | Supported |
-| `is null`, `is not null` | Supported |
-| String literals (`'value'`, `"value"`) | Supported |
-| Numeric literals | Supported |
-| `true`, `false` | Supported |
-| `null` | Supported |
-| `pick ... when ... else ...` | Supported (transformed to CASE) |
-| `case ... when ... then ... else ... end` | Supported |
-| Parenthesized expressions | Supported |
-| Function calls (`floor()`, `concat()`, `regexp_extract()`, etc.) | Supported |
-| Backtick-quoted identifiers (`` `year` ``) | Supported |
-| Type casts (`::date`, `::number`, `::string`) | Supported (preserved in text) |
-
-### Partially Supported Expression Patterns
-
-| Pattern | Status |
-|---------|--------|
-| `??` (null coalescing) | Supported: transformed to `COALESCE(a, b, ...)` |
-| `?` (apply/partial comparison) in dimensions | Supported: `field ? pick ... when ...` is expanded to proper CASE with base field prepended to partial conditions |
-| `?` (apply/partial comparison) in filters | Partial support: preserved as-is in segment/filter expressions |
-| `~` and `!~` (regex match) | Supported: `expr ~ r'pattern'` transformed to `REGEXP_MATCHES(expr, 'pattern')` |
-| `\|` (alternative/or-tree) | Supported: `field ? 'a' \| 'b'` transformed to `field IN ('a', 'b')` |
-| `&` (and-tree/partial filter) | Supported: `field < X & > Y` transformed to `field < X AND field > Y`; `field != 'A' & 'B'` transformed to `field != 'A' AND field != 'B'` |
-| `!` (type assertion, e.g., `timestamp_seconds!timestamp(x)`) | Supported: `func!type(args)` stripped to `func(args)` |
-| `field ? pick ... when ...` (apply-pick) | Supported in dimensions: base field prepended to partial comparisons, transformed to CASE |
-| Date literals (`@2024-01-01`, `@2024-Q1`, `@2024`) | Supported: `@YYYY-MM-DD` -> `DATE 'YYYY-MM-DD'`, `@YYYY-MM` -> `DATE 'YYYY-MM-01'`, `@YYYY` -> `DATE 'YYYY-01-01'` |
-| Range expressions (`x to y`, `x for y days`) | Partial support: parsed by grammar, preserved as-is |
-| Array literals (`[1, 2, 3]`) | Partial support: parsed by grammar, preserved as-is |
-| Record literals (`{key: value}`) | Partial support: parsed by grammar, preserved as-is |
-| `now` | Supported: standalone `now` transformed to `CURRENT_TIMESTAMP` |
-| Filter strings (`f'...'`, `f"..."`) | Partial support: parsed by grammar, preserved as-is |
-| `ungroup()` / `all()` / `exclude()` | Partial support: parsed but not interpreted semantically |
-
----
-
-## SQL Interpolation
-
-SQL strings with `%{ expression }` interpolation (used in `connection.sql("""...""")` sources) are parsed by the grammar. The SQL content between `"""` delimiters is extracted, but `%{ }` interpolation blocks are not evaluated. The raw SQL including any `%{ }` markers is stored as the model's SQL.
-
----
-
-## Malloy Export (Roundtrip)
-
-Sidemantic can export its semantic model back to Malloy format.
-
-| Feature | Status |
-|---------|--------|
-| Sources with `connection.table('path')` | Supported (uses the original connection name from parsing, defaults to `duckdb`) |
-| Sources with `connection.sql("""...""")` | Supported (SQL preserved in triple-quoted string) |
-| Source descriptions as `# desc:` annotations | Supported |
-| Dimension descriptions as `# desc:` annotations | Supported |
-| Measure descriptions as `# desc:` annotations | Supported |
-| Non-passthrough dimensions | Supported (passthrough dimensions where `sql == name` are skipped since Malloy auto-exposes table columns) |
-| Time dimensions with granularity | Supported (Malloy `.granularity` suffix appended when not already present in SQL) |
-| Standard aggregation measures | Supported (`count()`, `sum(x)`, `avg(x)`, `min(x)`, `max(x)`) |
-| Filtered measures | Supported (exported as `agg(x) { where: filter }`) |
-| Derived measures | Supported (expression exported as-is) |
-| Ratio metrics | Supported (exported as `numerator / denominator`) |
-| `primary_key:` | Supported (exported when not the default `id`) |
-| `join_one:` / `join_many:` with `with` clause | Supported |
-| `join_one:` / `join_many:` with `on` condition | Supported (full `on` condition exported from `metadata["on_condition"]` when available) |
-| `where:` (segments) | Supported (source-level where clauses exported) |
-| Roundtrip fidelity (parse -> export -> re-parse) | Supported (semantically equivalent graphs; passthrough dimensions intentionally dropped) |
-| `join_cross:` export | Supported (`cross` relationships exported as `join_cross:` with no key clause) |
-| `rename:` export | Supported (simple identifier dimensions detected and exported as `rename: new is old`) |
-| `view:` export | Unsupported (views are not captured during parsing) |
-
----
-
-## Experimental and Advanced Features
-
-| Feature | Status |
-|---------|--------|
-| `timezone: 'zone'` | Supported (stored in `Model.metadata["timezone"]`) |
-| `declare:` field declarations in old `+` syntax blocks | Supported (processed as dimensions) |
-| `compose()` sources | Partial support (first composed source processed) |
-| `##! experimental{...}` pragma | Parsed without error, not stored |
-| `sample:` | Parsed without error, not stored |
-
----
-
-## Liquid / Templating
-
-Not applicable. Malloy does not use Liquid templating. SQL interpolation via `%{ }` is the closest equivalent and is handled as described above.
+The opt-in harness under `tests/malloy_differential/` compares the official Malloy DuckDB runtime with the Python Sidemantic path for manifest entries marked `compatible`. Executable fixtures cover core measures, empty results, a typed arithmetic dimension, conjunctive source filters, exact joins with additional predicates, ordered composite joins with fanout-safe aggregation, and intrinsic physical fields on a source without a declared primary key. Unsupported families remain declarative in the manifest and are reported without claiming runtime equivalence.

@@ -119,7 +119,7 @@ class TestEdgeCases:
         """Test that join direction modifiers (LEFT, INNER, etc.) are stored in metadata."""
         directed = self.graph.get_model("directed_joins")
         assert directed is not None
-        assert len(directed.relationships) == 2
+        assert len(directed.relationships) == 1
 
         rels = {r.name: r for r in directed.relationships}
 
@@ -129,11 +129,8 @@ class TestEdgeCases:
         assert rels["join_target_a"].metadata is not None
         assert rels["join_target_a"].metadata.get("join_direction") == "left"
 
-        # join_many with inner
-        assert "join_target_b" in rels
-        assert rels["join_target_b"].type == "one_to_many"
-        assert rels["join_target_b"].metadata is not None
-        assert rels["join_target_b"].metadata.get("join_direction") == "inner"
+        # Non-default INNER semantics cannot be represented and are omitted.
+        assert "join_target_b" not in rels
 
     def test_bare_minimum_source(self):
         """Test source with only primary_key (no dimensions/measures)."""
@@ -144,17 +141,14 @@ class TestEdgeCases:
         assert len(bare.dimensions) == 0
         assert len(bare.metrics) == 0
 
-    def test_filtered_source_creates_segment(self):
-        """Test that source-level where creates a segment."""
+    def test_filtered_source_creates_invariant_filters(self):
+        """Source-level where predicates are intrinsic, not opt-in segments."""
         filtered = self.graph.get_model("filtered_source")
         assert filtered is not None
 
-        # Should have segments from where clause
-        assert len(filtered.segments) >= 1
-        # Check segment content
-        segment_sqls = [s.sql for s in filtered.segments]
-        # At least one segment should mention status or deleted_at
-        has_filter = any("status" in sql or "deleted" in sql for sql in segment_sqls)
+        assert filtered.segments == []
+        assert len(filtered.invariant_filters) >= 1
+        has_filter = any("status" in sql or "deleted" in sql for sql in filtered.invariant_filters)
         assert has_filter
 
     def test_time_granularities(self):

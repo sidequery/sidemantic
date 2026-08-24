@@ -835,6 +835,11 @@ class GoodDataAdapter(BaseAdapter):
         for rel in model.relationships:
             if rel.type not in ("many_to_one", "many_to_many", "one_to_one"):
                 continue
+            if rel.name != rel.related_model:
+                raise ValueError(
+                    "GoodData export cannot represent relationship role "
+                    f"'{rel.name}' independently of target dataset '{rel.related_model}'"
+                )
 
             rel_meta = (rel.metadata or {}).get(GOODDATA_METADATA_KEY, {})
             ref: dict[str, Any] = {
@@ -914,7 +919,7 @@ class GoodDataAdapter(BaseAdapter):
             for relationship in model.relationships:
                 if relationship.primary_key:
                     continue
-                target = graph.models.get(relationship.name)
+                target = graph.models.get(relationship.related_model)
                 if target and target.primary_key:
                     relationship.primary_key = target.primary_key
 

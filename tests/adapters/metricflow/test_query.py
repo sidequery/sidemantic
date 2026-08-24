@@ -27,15 +27,10 @@ def test_query_imported_metricflow_example():
     assert "GROUP BY" in sql.upper()
     assert "status" in sql.lower()
 
-    # Test cross-model query (only if join path exists)
-    # Note: MetricFlow entities may not map 1:1 to model names
-    try:
-        sql = layer.compile(metrics=["orders.revenue"], dimensions=["customers.region"])
-        assert "JOIN" in sql.upper()
-        assert "customers" in sql.lower()
-    except Exception:
-        # Join path not configured, which is expected for some imports
-        pass
+    # Cross-model queries use the entity role while joining the canonical model.
+    sql = layer.compile(metrics=["orders.revenue"], dimensions=["customer.region"])
+    assert "JOIN" in sql.upper()
+    assert "customers" in sql.lower()
 
     # Test graph-level ratio metric (if it exists and is queryable)
     if "average_order_value" in graph.metrics:
@@ -239,11 +234,13 @@ def test_inline_metric_filter_qualified_in_join():
     layer.graph = graph
 
     # The filter column is qualified to the orders CTE (not the ambiguous bare name).
-    sql = layer.compile(metrics=["completed_revenue"], dimensions=["customers.status"])
+    sql = layer.compile(metrics=["completed_revenue"], dimensions=["customer.status"])
     assert "orders_cte.status" in sql
+    assert "JOIN" in sql.upper()
+    assert "customers" in sql.lower()
 
     # The join query binds and returns the filtered total.
-    rows = fetch_dicts(layer.query(metrics=["completed_revenue"], dimensions=["customers.status"]))
+    rows = fetch_dicts(layer.query(metrics=["completed_revenue"], dimensions=["customer.status"]))
     assert {r["status"]: r["completed_revenue"] for r in rows} == {"active": 125.0}
 
 

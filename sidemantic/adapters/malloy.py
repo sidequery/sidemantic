@@ -7,15 +7,38 @@ from __future__ import annotations
 
 import re
 import warnings
+from decimal import Decimal
 from pathlib import Path
 
 from sidemantic.adapters.base import BaseAdapter
+from sidemantic.adapters.malloy_expressions import MalloyExpressionBuilder, MalloyExpressionLoweringError
+from sidemantic.adapters.malloy_modules import (
+    MalloyExportStatement,
+    MalloyImportItem,
+    MalloyImportStatement,
+    MalloyLocation,
+    MalloyModule,
+    MalloyModuleResolver,
+    MalloyNamedStatement,
+    MalloySourceStatement,
+    MalloyStatement,
+)
+from sidemantic.adapters.malloy_queries import MalloyQueryDiagnostic, map_malloy_query
 from sidemantic.core.dimension import Dimension
+from sidemantic.core.inheritance import merge_model
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.relationship import Relationship
+from sidemantic.core.schema_exposure import SchemaExposure
 from sidemantic.core.segment import Segment
 from sidemantic.core.semantic_graph import SemanticGraph
+from sidemantic.fidelity import record_import_feature
+from sidemantic.sql.fragment import (
+    mask_sql_literals_comments_and_quoted_identifiers,
+    parse_sql_fragment,
+    protected_sql_spans,
+    replace_outside_sql_protected,
+)
 
 try:
     from antlr4 import CommonTokenStream, InputStream
@@ -346,6 +369,14 @@ class MalloySyntaxError(ValueError):
         self.errors = errors
 
 
+class MalloySchemaExposureError(ValueError):
+    """Raised when strict import cannot safely discover a Malloy source schema."""
+
+
+class _UnsupportedTypedShapeError(ValueError):
+    """Expression belongs to an established non-scalar compatibility path."""
+
+
 class _CollectingErrorListener(ErrorListener):  # type: ignore[misc]
     """ANTLR error listener that collects lexer/parser syntax errors.
 
@@ -367,11 +398,19 @@ class _CollectingErrorListener(ErrorListener):  # type: ignore[misc]
 class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
     """Visitor that extracts semantic model information from Malloy AST."""
 
-    def __init__(self):
+    def __init__(
+        self,
+        strict_schema_exposure: bool = False,
+        source_path: Path | None = None,
+        connection_dialects: dict[str, str] | None = None,
+    ):
+        self.strict_schema_exposure = strict_schema_exposure
+        self.source_path = source_path or Path("<malloy>")
+        self.connection_dialects = dict(connection_dialects or {})
         self.models: list[Model] = []
-        # Imports: list of (file_path, items) where items is list of (name, alias) or None for import-all
+        self.statements: list[MalloyStatement] = []
+        # Compatibility introspection for callers which inspect the visitor directly.
         self.imports: list[tuple[str, list[tuple[str, str | None]] | None]] = []
-        # Exports: top-level `export { a, b }` source names re-exported from this file.
         self.exports: list[str] = []
         # User-defined types: top-level `type: name is ...` definitions (name -> definition text).
         self.user_types: dict[str, str] = {}
@@ -380,7 +419,9 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         self.current_model_name: str | None = None
         self.current_table: str | None = None
         self.current_sql: str | None = None
-        self.current_primary_key: str = "id"
+        # Malloy does not infer a primary key for every source. Keep an unknown
+        # key as ``None`` until an explicit ``primary_key:`` statement is seen.
+        self.current_primary_key: str | None = None
         self.current_description: str | None = None
         self.current_extends: str | None = None
         self.current_connection: str | None = None
@@ -388,13 +429,18 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         self.current_metrics: list[Metric] = []
         self.current_relationships: list[Relationship] = []
         self.current_segments: list[Segment] = []
+        self.current_invariant_filters: list[str] = []
+        self.unsupported_features: list[str] = []
+        self.expression_diagnostics: list[tuple[str, str, str]] = []
+        self.source_diagnostics: list[tuple[str, str, str]] = []
+        self._source_invalid = False
 
     def _reset_current(self):
         """Reset current model state."""
         self.current_model_name = None
         self.current_table = None
         self.current_sql = None
-        self.current_primary_key = "id"
+        self.current_primary_key = None
         self.current_description = None
         self.current_extends = None
         self.current_connection = None
@@ -402,12 +448,170 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         self.current_metrics = []
         self.current_relationships = []
         self.current_segments = []
+        self.current_invariant_filters = []
         self._timezone = None
         self._model_tags = []
         self._accept_fields = []
         self._except_fields = []
         self._virtual = None
         self._source_type_constraints = []
+        self._source_invalid = False
+
+    @staticmethod
+    def _deduplicate(names: list[str]) -> list[str]:
+        """Deduplicate field names without changing Malloy declaration order."""
+        return list(dict.fromkeys(names))
+
+    def _schema_exposure_options(self) -> dict:
+        """Build runtime schema exposure for an introspectable physical source.
+
+        Malloy table and SQL sources expose their physical fields intrinsically.
+        Source governance is applied during introspection, before those fields can
+        become Sidemantic dimensions. Explicit declarations remain on the model and
+        therefore continue to take precedence over auto-discovered fields.
+        """
+        if self.current_extends and not self.current_table and not self.current_sql:
+            # Inherited sources receive their base model's exposure during model
+            # inheritance resolution; retain only child-authored narrowing edits.
+            private = self._deduplicate(
+                [field.name for field in (*self.current_dimensions, *self.current_metrics) if not field.public]
+                + [
+                    field.metadata["malloy_rename_source"]
+                    for field in self.current_dimensions
+                    if field.metadata and field.metadata.get("malloy_rename_source")
+                ]
+            )
+            if not (self._accept_fields or self._except_fields or private):
+                return {}
+            private_set = set(private)
+            excluded = set(self._except_fields)
+            exposure_data: dict = {
+                "strict": self.strict_schema_exposure,
+                "include_primary_key": True,
+                "private": private,
+            }
+            if self._accept_fields:
+                exposure_data["accept"] = [
+                    name
+                    for name in self._deduplicate(self._accept_fields)
+                    if name not in excluded and name not in private_set
+                ]
+            else:
+                exposure_data["except"] = [
+                    name for name in self._deduplicate(self._except_fields) if name not in private_set
+                ]
+            return {
+                "auto_dimensions": True,
+                "schema_exposure": SchemaExposure.model_validate(exposure_data),
+            }
+
+        if self._virtual or not (self.current_table or self.current_sql):
+            source_kind = "virtual source" if self._virtual else "source expression"
+            issue = (
+                f"source '{self.current_model_name}' uses a {source_kind} whose physical schema "
+                "cannot be safely introspected by the Malloy adapter"
+            )
+            if self.strict_schema_exposure:
+                raise MalloySchemaExposureError(issue)
+            self.unsupported_features.append(issue)
+            return {}
+
+        private = self._deduplicate(
+            [field.name for field in (*self.current_dimensions, *self.current_metrics) if not field.public]
+            + [
+                field.metadata["malloy_rename_source"]
+                for field in self.current_dimensions
+                if field.metadata and field.metadata.get("malloy_rename_source")
+            ]
+        )
+        private_set = set(private)
+        excluded = set(self._except_fields)
+
+        exposure_data: dict = {
+            "strict": self.strict_schema_exposure,
+            "include_primary_key": True,
+            "private": private,
+        }
+        if self._accept_fields:
+            # Malloy permits field edits to compose. Collapse accept+except into
+            # one exact allowlist because SchemaExposure deliberately rejects
+            # ambiguous overlapping controls.
+            exposure_data["accept"] = [
+                name
+                for name in self._deduplicate(self._accept_fields)
+                if name not in excluded and name not in private_set
+            ]
+        else:
+            exposure_data["except"] = [
+                name for name in self._deduplicate(self._except_fields) if name not in private_set
+            ]
+
+        return {
+            "auto_dimensions": True,
+            "schema_exposure": SchemaExposure.model_validate(exposure_data),
+        }
+
+    def _record_unsupported(self, issue: str, *, fail_strict: bool = False) -> None:
+        """Record an unsupported Malloy shape, rejecting unsafe strict imports."""
+        if fail_strict and self.strict_schema_exposure:
+            raise MalloySchemaExposureError(issue)
+        self.unsupported_features.append(issue)
+
+    def _reject_source_shape(self, ctx, feature: str, detail: str) -> None:
+        """Reject a source expression before any lossy partial model is emitted."""
+        self._source_invalid = True
+        self.source_diagnostics.append((feature, detail, self._location(ctx).display))
+        self._record_unsupported(detail, fail_strict=True)
+
+    def _unsupported_source_shape(self, ctx) -> tuple[str, str] | None:
+        """Return the first source shape that cannot be represented faithfully.
+
+        This walks the complete source-expression subtree before extraction begins,
+        so wrappers such as ``extend`` and parentheses cannot leave a processed base
+        source behind when an unsupported descendant is encountered.
+        """
+        source_name = self.current_model_name
+        if isinstance(ctx, MalloyParser.SQArrowContext):
+            return (
+                "malloy_source_pipeline_rejected",
+                f"source '{source_name}' uses a query pipeline; source-definition pipelines cannot be "
+                "represented faithfully",
+            )
+        if isinstance(ctx, MalloyParser.SQComposeContext):
+            return (
+                "malloy_source_compose_rejected",
+                f"source '{source_name}' uses compose(...); composite-source semantics cannot be represented faithfully",
+            )
+        if isinstance(ctx, MalloyParser.SQIDContext) and ctx.sourceArguments() is not None:
+            source_id = self._get_text(ctx.id_()).strip("`").lower()
+            if source_id == "from":
+                return (
+                    "malloy_source_from_query_rejected",
+                    f"source '{source_name}' is defined from a query; query-backed sources cannot be represented "
+                    "faithfully",
+                )
+            return (
+                "malloy_source_arguments_rejected",
+                f"source '{source_name}' invokes a source with arguments; parameter substitution and "
+                "source-from-query semantics cannot be represented faithfully",
+            )
+        if isinstance(ctx, MalloyParser.SQSQLContext):
+            sql_source = ctx.sqlSource()
+            sql_string = sql_source.sqlString() if sql_source else None
+            if sql_string is not None and sql_string.sqlInterpolation():
+                return (
+                    "malloy_sql_interpolation_rejected",
+                    f"source '{source_name}' contains SQL interpolation; interpolated SQL cannot be retained safely",
+                )
+
+        get_children = getattr(ctx, "getChildren", None)
+        if get_children is None:
+            return None
+        for child in get_children():
+            unsupported = self._unsupported_source_shape(child)
+            if unsupported is not None:
+                return unsupported
+        return None
 
     def _parse_annotations(self, tags_ctx) -> str | None:
         """Parse annotations from tags context, returning description text.
@@ -464,7 +668,7 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         Malloy import syntax:
             import 'path/to/file.malloy'                    # Import all sources
             import { source1, source2 } from 'file.malloy'  # Named imports
-            import { source1 is alias1 } from 'file.malloy' # Aliased imports
+            import { alias1 is source1 } from 'file.malloy' # Aliased imports
         """
         import_url = ctx.importURL()
         if not import_url:
@@ -480,19 +684,32 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         # Check for selective imports: import { x, y } from 'file'
         import_select = ctx.importSelect()
         if import_select:
+            compatibility_items = []
             items = []
             for import_item in import_select.importItem():
                 # Grammar uses id_() method (underscore to avoid Python keyword)
                 ids = import_item.id_()
                 if ids:
-                    # First id is the source name, second (if present) is the alias
-                    name = self._get_text(ids[0])
-                    alias = self._get_text(ids[1]) if len(ids) > 1 else None
-                    items.append((name, alias))
-            self.imports.append((file_path, items))
+                    # Malloy names the local binding first and the exported source
+                    # second: ``import { local_name is exported_name }``.
+                    local_name = self._get_text(ids[0])
+                    exported_name = self._get_text(ids[1]) if len(ids) > 1 else local_name
+                    compatibility_items.append((local_name, exported_name if exported_name != local_name else None))
+                    items.append(MalloyImportItem(local_name=local_name, exported_name=exported_name))
+            self.imports.append((file_path, compatibility_items))
+            resolved_items: tuple[MalloyImportItem, ...] | None = tuple(items)
         else:
             # Import all sources from file
             self.imports.append((file_path, None))
+            resolved_items = None
+
+        self.statements.append(
+            MalloyImportStatement(
+                specifier=file_path,
+                items=resolved_items,
+                location=self._location(ctx),
+            )
+        )
 
         return self.visitChildren(ctx)
 
@@ -509,7 +726,20 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
                 name = self._get_text(id_ctx)
                 if name:
                     self.exports.append(name)
+        self.statements.append(
+            MalloyExportStatement(
+                names=tuple(self._get_text(item.id_()) for item in ctx.exportItem()), location=self._location(ctx)
+            )
+        )
         return self.visitChildren(ctx)
+
+    def _location(self, ctx) -> MalloyLocation:
+        token = getattr(ctx, "start", None)
+        return MalloyLocation(
+            path=self.source_path,
+            line=getattr(token, "line", 1),
+            column=getattr(token, "column", 0),
+        )
 
     def visitDefineUserTypeStatement(self, ctx: MalloyParser.DefineUserTypeStatementContext):  # noqa: N802
         """Visit top-level `type: name is <type>` user-defined type statement.
@@ -521,6 +751,7 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         prop_list = ctx.userTypePropertyList()
         if not prop_list:
             return self.visitChildren(ctx)
+        values = []
         for type_def in prop_list.userTypeDefinition():
             name_def = type_def.userTypeNameDef()
             type_expr = type_def.userTypeExpr()
@@ -529,6 +760,9 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
                 definition = self._get_text(type_expr) if type_expr else ""
                 if name:
                     self.user_types[name] = definition
+                    values.append((name, definition))
+        if values:
+            self.statements.append(MalloyNamedStatement("type", tuple(values), self._location(ctx)))
         return self.visitChildren(ctx)
 
     def visitDefineGivenStatement(self, ctx: MalloyParser.DefineGivenStatementContext):  # noqa: N802
@@ -540,6 +774,7 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         given_list = ctx.givenDefList()
         if not given_list:
             return self.visitChildren(ctx)
+        values = []
         for given_def in given_list.givenDef():
             name_def = given_def.givenNameDef()
             given_type = given_def.givenType()
@@ -548,6 +783,24 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
                 type_text = self._get_text(given_type) if given_type else ""
                 if name:
                     self.given[name] = type_text
+                    values.append((name, type_text))
+        if values:
+            self.statements.append(MalloyNamedStatement("given", tuple(values), self._location(ctx)))
+        return self.visitChildren(ctx)
+
+    def visitUse_top_level_query_defs(self, ctx):  # noqa: N802
+        """Retain query names for module visibility while execution stays unsupported."""
+        values = []
+        query_defs = ctx.topLevelQueryDefs()
+        if query_defs:
+            for query_def in query_defs.topLevelQueryDef():
+                query_name = query_def.queryName()
+                if query_name:
+                    name = self._get_text(query_name)
+                    if name:
+                        values.append((name, self._get_text(query_def)))
+        if values:
+            self.statements.append(MalloyNamedStatement("query", tuple(values), self._location(ctx)))
         return self.visitChildren(ctx)
 
     def _get_text(self, ctx) -> str:
@@ -634,6 +887,8 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         # Duration arithmetic (created_at + 1 day, ts - 7 days) yields a time
         # value. Check before numeric so the operator is not read as numeric.
         if re.search(r"\b\d+\s+(?:second|minute|hour|day|week|month|quarter|year)s?\b", sql_lower):
+            return "time"
+        if re.search(r"\binterval\s+'?\d+'?\s+(?:second|minute|hour|day)\b", sql_lower):
             return "time"
 
         # Numeric detection
@@ -1315,6 +1570,7 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
 
     def visitDefineSourceStatement(self, ctx: MalloyParser.DefineSourceStatementContext):  # noqa: N802
         """Visit source: name is ... statement."""
+        model_start = len(self.models)
         # Get statement-level tags (before 'source:' keyword)
         # These apply to all sources in the statement if there's only one,
         # or can be overridden by source-specific tags
@@ -1346,7 +1602,7 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
                 if self.current_description is None and stmt_description is not None:
                     self.current_description = stmt_description
 
-                if self.current_model_name:
+                if self.current_model_name and not self._source_invalid:
                     metadata = {}
                     if self.current_connection:
                         metadata["connection"] = self.current_connection
@@ -1360,20 +1616,38 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
                         metadata["virtual"] = self._virtual
                     if self._source_type_constraints:
                         metadata["source_type_constraints"] = list(self._source_type_constraints)
+                    if self._accept_fields:
+                        metadata["malloy_accept"] = list(self._accept_fields)
+                    if self._except_fields:
+                        metadata["malloy_except"] = list(self._except_fields)
+                    self._apply_explicit_field_visibility()
+                    source_scalar_data = {
+                        field: value
+                        for field, value in {
+                            "table": self.current_table,
+                            "sql": self.current_sql,
+                            "extends": self.current_extends,
+                            "primary_key": self.current_primary_key,
+                            "description": self.current_description,
+                            "metadata": metadata if metadata else None,
+                        }.items()
+                        if value is not None
+                    }
                     model = Model(
                         name=self.current_model_name,
-                        table=self.current_table,
-                        sql=self.current_sql,
-                        extends=self.current_extends,
-                        primary_key=self.current_primary_key,
-                        description=self.current_description,
                         dimensions=self.current_dimensions,
                         metrics=self.current_metrics,
                         relationships=self.current_relationships,
                         segments=self.current_segments,
-                        metadata=metadata if metadata else None,
+                        invariant_filters=self.current_invariant_filters,
+                        **self._schema_exposure_options(),
+                        **source_scalar_data,
                     )
                     self.models.append(model)
+
+        statement_models = tuple(self.models[model_start:])
+        if statement_models:
+            self.statements.append(MalloySourceStatement(models=statement_models, location=self._location(ctx)))
 
         return self.visitChildren(ctx)
 
@@ -1389,6 +1663,30 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         if name_def:
             self.current_model_name = self._get_text(name_def)
 
+        # ``from(...)`` is a reserved-token spelling in the bundled grammar and
+        # may arrive through ANTLR error recovery rather than SQIDContext. Detect
+        # that recovered source definition before its inner query can be mistaken
+        # for a physical source.
+        compact_definition = re.sub(r"\s+", "", self._get_text(ctx)).lower()
+        source_from_query = name_def is not None and f"{self._get_text(name_def).lower()}isfrom(" in compact_definition
+        if source_from_query:
+            self._reject_source_shape(
+                ctx,
+                "malloy_source_from_query_rejected",
+                f"source '{self.current_model_name}' is defined from a query; query-backed sources cannot be "
+                "represented faithfully",
+            )
+            return
+
+        if ctx.sourceParameters() is not None:
+            self._reject_source_shape(
+                ctx.sourceParameters(),
+                "malloy_source_parameters_rejected",
+                f"source '{self.current_model_name}' declares parameters; parameterized sources cannot be "
+                "represented faithfully",
+            )
+            return
+
         # Process the source expression (sqExplore -> sqExpr)
         sq_explore = ctx.sqExplore()
         if sq_explore:
@@ -1398,6 +1696,11 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
     def _process_sq_expr(self, ctx: MalloyParser.SqExprContext):
         """Process source expression - table, sql, or extended source."""
         if ctx is None:
+            return
+
+        unsupported = self._unsupported_source_shape(ctx)
+        if unsupported is not None:
+            self._reject_source_shape(ctx, *unsupported)
             return
 
         # Check for table reference: connection.table('path')
@@ -1466,6 +1769,12 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
             base_sq_expr = ctx.sqExpr()
             if base_sq_expr:
                 self._process_sq_expr(base_sq_expr)
+            if ctx.includeBlock():
+                self._record_unsupported(
+                    f"source '{self.current_model_name}' uses an include block; inherited-field selection and "
+                    "include access modifiers cannot be represented without resolved source schemas",
+                    fail_strict=True,
+                )
 
             # Then process the extend block
             explore_props = ctx.exploreProperties()
@@ -1478,6 +1787,11 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
             base_sq_expr = ctx.sqExpr()
             if base_sq_expr:
                 self._process_sq_expr(base_sq_expr)
+            self._record_unsupported(
+                f"source '{self.current_model_name}' uses an include block; inherited-field selection and "
+                "include access modifiers cannot be represented without resolved source schemas",
+                fail_strict=True,
+            )
             return
 
         # Check for ID reference (another source name) -> set extends
@@ -1487,12 +1801,15 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
                 self.current_extends = self._get_text(id_ctx)
             return
 
-        # Check for arrow/pipeline source: base -> { ... }
+        # Unsupported source shapes are rejected by the whole-subtree preflight
+        # above. Keep these guards fail-closed if the traversal changes later.
         if isinstance(ctx, MalloyParser.SQArrowContext):
-            # Process the base source expression (sets table/extends)
-            base_sq_expr = ctx.sqExpr()
-            if base_sq_expr:
-                self._process_sq_expr(base_sq_expr)
+            self._reject_source_shape(
+                ctx,
+                "malloy_source_pipeline_rejected",
+                f"source '{self.current_model_name}' uses a query pipeline; source-definition pipelines cannot be "
+                "represented faithfully",
+            )
             return
 
         # Check for refined query (old + syntax): base + { ... }
@@ -1509,12 +1826,12 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
 
         # Check for compose() sources
         if isinstance(ctx, MalloyParser.SQComposeContext):
-            # Extract composed source names for metadata
-            # compose(src1, src2, ...) - just note the first source as extends
-            sq_exprs = ctx.sqExpr()
-            if sq_exprs and len(sq_exprs) > 0:
-                first = sq_exprs[0] if isinstance(sq_exprs, list) else sq_exprs
-                self._process_sq_expr(first)
+            self._reject_source_shape(
+                ctx,
+                "malloy_source_compose_rejected",
+                f"source '{self.current_model_name}' uses compose(...); composite-source semantics cannot be "
+                "represented faithfully",
+            )
             return
 
         # Check for parenthesized expression
@@ -1600,7 +1917,7 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
             elif isinstance(stmt, MalloyParser.DefExploreWhere_stubContext):
                 where_stmt = stmt.whereStatement()
                 if where_stmt:
-                    self._process_where_as_segment(where_stmt)
+                    self._process_source_where(where_stmt)
             elif isinstance(stmt, MalloyParser.DeclareStatementContext):
                 # declare: creates fields accessible within the source
                 def_list = stmt.defList()
@@ -1642,29 +1959,17 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         if isinstance(ctx, MalloyParser.DefExploreWhere_stubContext):
             where_stmt = ctx.whereStatement()
             if where_stmt:
-                self._process_where_as_segment(where_stmt)
+                self._process_source_where(where_stmt)
             return
 
         # Accept/except field visibility
         if isinstance(ctx, MalloyParser.DefExploreEditFieldContext):
-            # Store accept/except in metadata; we'll filter after model creation
-            # The grammar has includeExceptList with field names
-            edit_field = ctx.editField() if hasattr(ctx, "editField") else None
-            if edit_field is None:
-                # Try to get the text and parse accept/except manually
-                text = self._get_text(ctx).strip()
-                if text.startswith("except:"):
-                    fields_text = text[7:].strip()
-                    field_names = [f.strip().strip("`") for f in fields_text.split(",")]
-                    if not hasattr(self, "_except_fields"):
-                        self._except_fields = []
-                    self._except_fields.extend(field_names)
-                elif text.startswith("accept:"):
-                    fields_text = text[7:].strip()
-                    field_names = [f.strip().strip("`") for f in fields_text.split(",")]
-                    if not hasattr(self, "_accept_fields"):
-                        self._accept_fields = []
-                    self._accept_fields.extend(field_names)
+            field_list = ctx.fieldNameList()
+            field_names = [self._get_text(field).strip().strip("`") for field in field_list.fieldName()]
+            if ctx.EXCEPT():
+                self._except_fields.extend(field_names)
+            else:
+                self._accept_fields.extend(field_names)
             return
 
         # Timezone statement: timezone: 'US/Pacific'
@@ -1697,6 +2002,7 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
 
         # Rename statements: rename: new_name is old_name
         if isinstance(ctx, MalloyParser.DefExploreRenameContext):
+            access = self._access_label(ctx)
             rename_list = ctx.renameList()
             if rename_list:
                 for rename_entry in rename_list.renameEntry():
@@ -1705,14 +2011,29 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
                         new_name = self._get_text(field_names[0])
                         old_name = self._get_text(field_names[1])
                         dim_type = self._infer_dimension_type(old_name, new_name)
+                        metadata = {"malloy_rename_source": old_name}
+                        if access != "public":
+                            metadata["malloy_access"] = access
+                        if access == "internal":
+                            self.unsupported_features.append(
+                                f"internal renamed dimension '{new_name}' is enforced as non-public; "
+                                "Sidemantic cannot distinguish Malloy internal from private field access"
+                            )
                         self.current_dimensions.append(
                             Dimension(
                                 name=new_name,
                                 sql=old_name,
                                 type=dim_type,
+                                metadata=metadata,
+                                public=access == "public",
                             )
                         )
             return
+
+    @staticmethod
+    def _access_label(ctx) -> str:
+        access = ctx.accessLabel() if hasattr(ctx, "accessLabel") else None
+        return access.getText().strip().lower() if access else "public"
 
     def _process_def_dimensions(self, ctx: MalloyParser.DefDimensionsContext):
         """Process dimension: statements."""
@@ -1720,10 +2041,11 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         if not def_list:
             return
 
+        access = self._access_label(ctx)
         for field_def in def_list.fieldDef():
-            self._process_dimension_def(field_def)
+            self._process_dimension_def(field_def, access=access)
 
-    def _process_dimension_def(self, ctx: MalloyParser.FieldDefContext):
+    def _process_dimension_def(self, ctx: MalloyParser.FieldDefContext, access: str = "public"):
         """Process a single dimension definition."""
         name_def = ctx.fieldNameDef()
         if not name_def:
@@ -1739,12 +2061,27 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
             description, tag_list = self._parse_annotations_full(tags_ctx)
             if tag_list:
                 dim_metadata = {"tags": tag_list}
+        if access != "public":
+            dim_metadata = dict(dim_metadata or {})
+            dim_metadata["malloy_access"] = access
+            if access == "internal":
+                self.unsupported_features.append(
+                    f"internal dimension '{name}' is enforced as non-public; Sidemantic cannot distinguish "
+                    "Malloy internal from private field access"
+                )
 
         # Get the expression
         field_expr = ctx.fieldExpr()
-        sql = self._get_text(field_expr) if field_expr else name
+        if field_expr is None:
+            sql = name
+        else:
+            sql = self._lower_scalar_field_expression(field_expr, name, "dimension")
+            if sql is None:
+                return
 
-        # Transform pick/when to CASE first (with apply-pick support) so the
+        # Legacy pick/when is deliberately outside the typed subset. Keep this
+        # code reachable only for already-lowered SQL for backward-compatible
+        # inference; raw Malloy text never enters it.
         # expression transforms below operate on real field references inside the
         # WHEN clauses rather than on raw `pick ... when ...` text.
         if "pick" in sql.lower():
@@ -1757,11 +2094,14 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
             else:
                 sql = self._transform_pick_to_case(sql)
 
-        # Transform remaining Malloy-specific expression syntax to SQL
-        sql = self._transform_malloy_expr(sql)
+            sql = self._transform_malloy_expr(sql)
 
         # Infer type
         dim_type = self._infer_dimension_type(sql, name)
+        if field_expr is not None and any(
+            isinstance(node, MalloyParser.ExprDurationContext) for node in self._walk_expression_context(field_expr)
+        ):
+            dim_type = "time"
 
         # Extract granularity for time dimensions
         granularity = None
@@ -1776,6 +2116,7 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
                 granularity=granularity,
                 description=description,
                 metadata=dim_metadata,
+                public=access == "public",
             )
         )
 
@@ -1785,10 +2126,300 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         if not def_list:
             return
 
+        access = self._access_label(ctx)
         for field_def in def_list.fieldDef():
-            self._process_measure_def(field_def)
+            self._process_measure_def(field_def, access=access)
 
-    def _process_measure_def(self, ctx: MalloyParser.FieldDefContext):
+    def _expression_dialect(self) -> str | None:
+        connection = self.current_connection or "duckdb"
+        return self.connection_dialects.get(connection)
+
+    def _field_semantic_type(self, path: str) -> str:
+        name = path.rsplit(".", 1)[-1].strip("`")
+        dimension = next((item for item in self.current_dimensions if item.name == name), None)
+        if dimension is not None:
+            return {
+                "number": "number",
+                "boolean": "boolean",
+                "string": "string",
+                "date": "date",
+                "time": "timestamp",
+            }.get(dimension.type, "unknown")
+        if any(item.name == name for item in self.current_metrics):
+            return "number"
+        return "unknown"
+
+    @staticmethod
+    def _walk_expression_context(ctx):
+        yield ctx
+        for child in ctx.getChildren():
+            if hasattr(child, "getChildren"):
+                yield from MalloyModelVisitor._walk_expression_context(child)
+
+    def _typed_scalar_expression(self, ctx, builder: MalloyExpressionBuilder):
+        if isinstance(ctx, MalloyParser.ExprExprContext):
+            return self._typed_scalar_expression(ctx.fieldExpr(), builder)
+        if isinstance(ctx, MalloyParser.ExprFieldPathContext):
+            parts = tuple(self._get_text(part).strip("`") for part in ctx.fieldPath().fieldName())
+            path = ".".join(parts)
+            return builder.field(*parts, semantic_type=self._field_semantic_type(path))
+        if isinstance(ctx, MalloyParser.ExprLiteralContext):
+            literal = ctx.literal()
+            text = self._get_text(literal)
+            if isinstance(literal, MalloyParser.ExprNULLContext):
+                return builder.literal(None)
+            if isinstance(literal, MalloyParser.ExprBoolContext):
+                return builder.literal(text.lower() == "true")
+            if isinstance(literal, MalloyParser.ExprNumberContext):
+                return builder.literal(Decimal(text))
+            if isinstance(literal, MalloyParser.ExprStringContext):
+                return builder.literal(self._extract_string(text))
+            raise _UnsupportedTypedShapeError(f"Unsupported Malloy literal {text!r}")
+        binary_contexts = (
+            MalloyParser.ExprAddSubContext,
+            MalloyParser.ExprMulDivContext,
+            MalloyParser.ExprCompareContext,
+            MalloyParser.ExprLogicalAndContext,
+            MalloyParser.ExprLogicalOrContext,
+        )
+        if isinstance(ctx, binary_contexts):
+            operands = ctx.fieldExpr()
+            if len(operands) != 2:
+                raise ValueError("Binary expression must have two operands")
+            if isinstance(ctx, MalloyParser.ExprAddSubContext) and isinstance(
+                operands[1], MalloyParser.ExprDurationContext
+            ):
+                duration_text = self._get_text(operands[1].fieldExpr())
+                if not re.fullmatch(r"\d+", duration_text):
+                    raise ValueError("duration amount must be a non-negative integer")
+                return builder.duration(
+                    self._typed_scalar_expression(operands[0], builder),
+                    "+" if ctx.PLUS() else "-",
+                    int(duration_text),
+                    self._get_text(operands[1].timeframe()),
+                )
+            if isinstance(ctx, MalloyParser.ExprCompareContext):
+                operator = self._get_text(ctx.compareOp())
+                if operator in {"~", "!~"}:
+                    right = operands[1]
+                    literal = right.literal() if isinstance(right, MalloyParser.ExprLiteralContext) else None
+                    if not isinstance(literal, MalloyParser.ExprRegexContext):
+                        raise ValueError("regex comparison requires a regex literal on the right")
+                    pattern = self._get_text(literal)
+                    if not pattern.startswith("r"):
+                        raise ValueError("regex literal is malformed")
+                    return builder.regex(
+                        self._typed_scalar_expression(operands[0], builder),
+                        self._extract_string(pattern[1:]),
+                        negated=operator == "!~",
+                    )
+                if operator not in {"=", "!=", "<>", "<", "<=", ">", ">="}:
+                    raise _UnsupportedTypedShapeError(f"Unsupported typed comparison {operator!r}")
+            elif isinstance(ctx, MalloyParser.ExprLogicalAndContext):
+                operator = "and"
+            elif isinstance(ctx, MalloyParser.ExprLogicalOrContext):
+                operator = "or"
+            elif getattr(ctx, "PLUS", lambda: None)():
+                operator = "+"
+            elif getattr(ctx, "MINUS", lambda: None)():
+                operator = "-"
+            elif getattr(ctx, "STAR", lambda: None)():
+                operator = "*"
+            elif getattr(ctx, "SLASH", lambda: None)():
+                operator = "/"
+            else:
+                operator = "%"
+            return builder.binary(
+                self._typed_scalar_expression(operands[0], builder),
+                operator,
+                self._typed_scalar_expression(operands[1], builder),
+            )
+        if isinstance(ctx, MalloyParser.ExprMinusContext):
+            return builder.unary("-", self._typed_scalar_expression(ctx.fieldExpr(), builder))
+        if isinstance(ctx, MalloyParser.ExprNotContext):
+            return builder.unary("not", self._typed_scalar_expression(ctx.fieldExpr(), builder))
+        if isinstance(ctx, MalloyParser.ExprNullCheckContext):
+            return builder.binary(
+                self._typed_scalar_expression(ctx.fieldExpr(), builder),
+                "!=" if ctx.NOT() else "=",
+                builder.literal(None),
+            )
+        if isinstance(ctx, MalloyParser.ExprTimeTruncContext):
+            return builder.date_trunc(
+                self._get_text(ctx.timeframe()), self._typed_scalar_expression(ctx.fieldExpr(), builder)
+            )
+        if isinstance(ctx, MalloyParser.ExprCastContext):
+            target = self._get_text(ctx.malloyOrSQLType()).lower()
+            target = {
+                "bool": "boolean",
+                "number": "decimal",
+                "string": "text",
+                "timestamptz": "timestamp",
+            }.get(target, target)
+            return builder.cast(self._typed_scalar_expression(ctx.fieldExpr(), builder), target)
+        if isinstance(ctx, MalloyParser.ExprCoalesceContext):
+            if any(isinstance(item, MalloyParser.ExprCoalesceContext) for item in ctx.fieldExpr()):
+                raise _UnsupportedTypedShapeError("coalesce chain uses legacy flattening")
+            return builder.coalesce(*(self._typed_scalar_expression(item, builder) for item in ctx.fieldExpr()))
+        if isinstance(ctx, MalloyParser.ExprFuncContext):
+            args = ctx.argumentList()
+            expressions = args.fieldExpr() if args is not None else []
+            if self._get_text(ctx.id_()).lower() == "date_trunc" and len(expressions) == 2:
+                unit = self._get_text(expressions[0]).strip("'\"")
+                return builder.date_trunc(unit, self._typed_scalar_expression(expressions[1], builder))
+            return builder.function(
+                self._get_text(ctx.id_()), *(self._typed_scalar_expression(item, builder) for item in expressions)
+            )
+        if isinstance(
+            ctx,
+            (
+                MalloyParser.ExprPickContext,
+                MalloyParser.ExprApplyContext,
+                MalloyParser.ExprAndTreeContext,
+                MalloyParser.ExprOrTreeContext,
+                MalloyParser.ExprCaseContext,
+            ),
+        ):
+            raise _UnsupportedTypedShapeError(type(ctx).__name__)
+        raise ValueError(f"Unsupported Malloy scalar expression {type(ctx).__name__}")
+
+    def _validate_legacy_expression_tree(self, ctx, *, allow_aggregates: bool = False) -> None:
+        """Reject unsafe descendants before an exact legacy root transform."""
+        rejected = (
+            MalloyParser.ExprGivenRefContext,
+            MalloyParser.ExprInGivenContext,
+            MalloyParser.ExprSafeCastContext,
+            MalloyParser.ExprLiteralRecordContext,
+            MalloyParser.ExprRangeContext,
+            MalloyParser.ExprForRangeContext,
+        )
+        aggregate_nodes = (
+            MalloyParser.ExprAggregateContext,
+            MalloyParser.ExprAggFuncContext,
+            MalloyParser.ExprPathlessAggregateContext,
+            MalloyParser.ExprUngroupContext,
+        )
+        scalar_functions = {
+            "abs",
+            "ceil",
+            "coalesce",
+            "concat",
+            "date_trunc",
+            "exp",
+            "floor",
+            "greatest",
+            "least",
+            "length",
+            "ln",
+            "lower",
+            "nullif",
+            "power",
+            "replace",
+            "round",
+            "sqrt",
+            "substring",
+            "trim",
+            "upper",
+        }
+        aggregate_functions = {"avg", "average", "count", "count_distinct", "max", "min", "sum"}
+        allowed_field_nodes = (
+            MalloyParser.ExprExprContext,
+            MalloyParser.ExprFieldPathContext,
+            MalloyParser.ExprLiteralContext,
+            MalloyParser.ExprMinusContext,
+            MalloyParser.ExprAddSubContext,
+            MalloyParser.ExprNullCheckContext,
+            MalloyParser.ExprLogicalOrContext,
+            MalloyParser.ExprCompareContext,
+            MalloyParser.ExprFuncContext,
+            MalloyParser.ExprCastContext,
+            MalloyParser.ExprTimeTruncContext,
+            MalloyParser.ExprLogicalAndContext,
+            MalloyParser.ExprMulDivContext,
+            MalloyParser.ExprNotContext,
+            MalloyParser.ExprDurationContext,
+            MalloyParser.ExprApplyContext,
+            MalloyParser.ExprAndTreeContext,
+            MalloyParser.ExprOrTreeContext,
+            MalloyParser.ExprPickContext,
+            MalloyParser.ExprCaseContext,
+            MalloyParser.ExprCoalesceContext,
+        )
+        for node in self._walk_expression_context(ctx):
+            if isinstance(node, rejected):
+                raise ValueError(f"unsupported descendant {type(node).__name__}")
+            if isinstance(node, aggregate_nodes) and not allow_aggregates:
+                raise ValueError(f"aggregate descendant {type(node).__name__} is invalid in a scalar expression")
+            if isinstance(node, MalloyParser.FieldExprContext) and not isinstance(
+                node, allowed_field_nodes + (aggregate_nodes if allow_aggregates else ())
+            ):
+                raise ValueError(f"unsupported descendant {type(node).__name__}")
+            if isinstance(node, MalloyParser.ExprFuncContext):
+                function = self._get_text(node.id_()).lower()
+                allowed = scalar_functions | (aggregate_functions if allow_aggregates else set())
+                if function not in allowed:
+                    raise ValueError(f"function {function!r} is not safe for legacy lowering")
+
+    def _requires_resolved_expression_dialect(self, ctx) -> bool:
+        sensitive = (
+            MalloyParser.ExprArrayLiteralContext,
+            MalloyParser.ExprCastContext,
+            MalloyParser.ExprDurationContext,
+            MalloyParser.ExprTimeTruncContext,
+        )
+        for node in self._walk_expression_context(ctx):
+            if isinstance(node, sensitive):
+                return True
+            if isinstance(node, MalloyParser.ExprCompareContext) and self._get_text(node.compareOp()) in {"~", "!~"}:
+                return True
+            if isinstance(node, MalloyParser.ExprFuncContext) and self._get_text(node.id_()).lower() == "date_trunc":
+                return True
+        return False
+
+    def _lower_scalar_field_expression(self, ctx, name: str, kind: str) -> str | None:
+        try:
+            # DuckDB regex dimensions are an established exact legacy path whose
+            # spelling and quoting are part of the adapter's export contract.
+            # Filters still use the typed builder so connection dialects affect
+            # their executable predicate syntax.
+            if (
+                kind == "dimension"
+                and self._expression_dialect() == "duckdb"
+                and any(
+                    isinstance(node, MalloyParser.ExprCompareContext)
+                    and self._get_text(node.compareOp()) in {"~", "!~"}
+                    for node in self._walk_expression_context(ctx)
+                )
+            ):
+                self._validate_legacy_expression_tree(ctx)
+                return self._transform_malloy_expr(self._get_text(ctx))
+            dialect = self._expression_dialect()
+            if dialect is None and self._requires_resolved_expression_dialect(ctx):
+                raise ValueError(
+                    f"connection '{self.current_connection}' has no resolved SQL dialect for this expression"
+                )
+            builder = MalloyExpressionBuilder(dialect=dialect)
+            return builder.lower(self._typed_scalar_expression(ctx, builder)).sql
+        except _UnsupportedTypedShapeError:
+            try:
+                self._validate_legacy_expression_tree(ctx)
+            except ValueError as exc:
+                self.expression_diagnostics.append(
+                    ("malloy_expression_legacy_descendant", str(exc), self._location(ctx).display)
+                )
+                self._record_unsupported(f"{kind} '{name}' contains a rejected descendant: {exc}", fail_strict=True)
+                return None
+            return self._transform_malloy_expr(self._get_text(ctx))
+        except (MalloyExpressionLoweringError, ValueError) as exc:
+            feature = exc.diagnostic.feature if isinstance(exc, MalloyExpressionLoweringError) else "expression_shape"
+            detail = exc.diagnostic.detail if isinstance(exc, MalloyExpressionLoweringError) else str(exc)
+            self.expression_diagnostics.append((f"malloy_expression_{feature}", detail, self._location(ctx).display))
+            self._record_unsupported(
+                f"{kind} '{name}' uses an expression that cannot be lowered safely: {exc}", fail_strict=True
+            )
+            return None
+
+    def _process_measure_def(self, ctx: MalloyParser.FieldDefContext, access: str = "public"):
         """Process a single measure definition."""
         name_def = ctx.fieldNameDef()
         if not name_def:
@@ -1814,6 +2445,8 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         # nested ExprFieldProps; Malloy ANDs them, so unwrap every level and
         # collect all filters rather than only the outermost one.
         filters = None
+        filter_contexts: list = []
+        scalar_node = field_expr
         if isinstance(field_expr, MalloyParser.ExprFieldPropsContext):
             collected_filters: list[str] = []
             node = field_expr
@@ -1832,16 +2465,161 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
                             if where_stmt:
                                 filter_list = where_stmt.filterClauseList()
                                 if filter_list:
-                                    collected_filters.extend(self._get_text(f) for f in filter_list.fieldExpr())
+                                    expressions = list(filter_list.fieldExpr())
+                                    collected_filters.extend(self._get_text(f) for f in expressions)
+                                    filter_contexts.extend(expressions)
                 node = node.fieldExpr()
 
             expr_text = self._get_text(node) if node is not None else ""
+            scalar_node = node
             if collected_filters:
                 # Collected outermost-first; reverse to restore source order.
                 filters = list(reversed(collected_filters))
+                filter_contexts.reverse()
 
-        # Transform Malloy-specific expression syntax to SQL
-        expr_text = self._transform_malloy_expr(expr_text)
+        if filter_contexts:
+            lowered_filters: list[str] = []
+            for filter_ctx in filter_contexts:
+                lowered_filter = self._lower_scalar_field_expression(filter_ctx, name, "measure filter")
+                if lowered_filter is None:
+                    return
+                lowered_filters.append(lowered_filter)
+            filters = lowered_filters
+
+        aggregate_contexts = (
+            MalloyParser.ExprAggregateContext,
+            MalloyParser.ExprAggFuncContext,
+            MalloyParser.ExprPathlessAggregateContext,
+            MalloyParser.ExprUngroupContext,
+        )
+
+        def has_aggregate(node) -> bool:
+            if isinstance(node, aggregate_contexts):
+                return True
+            if isinstance(node, MalloyParser.ExprFuncContext) and self._get_text(node.id_()).lower() in {
+                "avg",
+                "average",
+                "count",
+                "count_distinct",
+                "max",
+                "min",
+                "sum",
+            }:
+                return True
+            return any(has_aggregate(child) for child in node.getChildren() if hasattr(child, "getChildren"))
+
+        def lower_aggregate_tree(node) -> tuple[bool, str]:
+            if isinstance(node, MalloyParser.ExprExprContext):
+                handled, inner = lower_aggregate_tree(node.fieldExpr())
+                return handled, f"({inner})" if handled else ""
+            if isinstance(node, MalloyParser.ExprPathlessAggregateContext):
+                argument = node.fieldExpr()
+                lowered_argument = ""
+                if argument is not None:
+                    lowered = self._lower_scalar_field_expression(argument, name, "aggregate argument")
+                    if lowered is None:
+                        return True, ""
+                    lowered_argument = lowered
+                return True, f"{self._get_text(node.aggregate())}({lowered_argument})"
+            if isinstance(node, MalloyParser.ExprAggregateContext):
+                field_path = self._get_text(node.fieldPath())
+                argument = node.fieldExpr()
+                if argument is not None:
+                    # Malloy permits a refinement argument on relationship-scoped
+                    # aggregates. Validate and lower it even though the native
+                    # metric stores the aggregate's scoped field as its SQL input.
+                    if self._lower_scalar_field_expression(argument, name, "aggregate argument") is None:
+                        return True, ""
+                return True, f"{field_path}.{self._get_text(node.aggregate())}()"
+            if isinstance(node, MalloyParser.ExprAggFuncContext):
+                arguments = node.argumentList()
+                lowered_arguments: list[str] = []
+                for argument in arguments.fieldExpr() if arguments is not None else []:
+                    lowered = self._lower_scalar_field_expression(argument, name, "aggregate argument")
+                    if lowered is None:
+                        return True, ""
+                    lowered_arguments.append(lowered)
+                return True, (
+                    f"{self._get_text(node.fieldPath())}.{self._get_text(node.id_())}({', '.join(lowered_arguments)})"
+                )
+            if isinstance(node, MalloyParser.ExprFuncContext) and self._get_text(node.id_()).lower() in {
+                "avg",
+                "average",
+                "count",
+                "count_distinct",
+                "max",
+                "min",
+                "sum",
+            }:
+                arguments = node.argumentList()
+                lowered_arguments: list[str] = []
+                for argument in arguments.fieldExpr() if arguments is not None else []:
+                    lowered = self._lower_scalar_field_expression(argument, name, "aggregate argument")
+                    if lowered is None:
+                        return True, ""
+                    lowered_arguments.append(lowered)
+                return True, f"{self._get_text(node.id_())}({', '.join(lowered_arguments)})"
+            if isinstance(node, (MalloyParser.ExprAddSubContext, MalloyParser.ExprMulDivContext)):
+                operands = node.fieldExpr()
+                if len(operands) != 2 or not any(has_aggregate(operand) for operand in operands):
+                    return False, ""
+                rendered: list[str] = []
+                for operand in operands:
+                    if has_aggregate(operand):
+                        handled, sql = lower_aggregate_tree(operand)
+                        if not handled or not sql:
+                            return handled, ""
+                    else:
+                        sql = self._lower_scalar_field_expression(operand, name, "aggregate expression")
+                        if sql is None:
+                            return True, ""
+                    rendered.append(sql)
+                if isinstance(node, MalloyParser.ExprAddSubContext):
+                    operator = "+" if node.PLUS() else "-"
+                elif node.STAR():
+                    operator = "*"
+                elif node.SLASH():
+                    operator = "/"
+                else:
+                    operator = "%"
+                return True, f"{rendered[0]} {operator} {rendered[1]}"
+            return False, ""
+
+        if scalar_node is not None and not filters and not has_aggregate(scalar_node):
+            lowered = self._lower_scalar_field_expression(scalar_node, name, "measure")
+            if lowered is None:
+                return
+            expr_text = lowered
+        else:
+            # Aggregate roots retain their specialized Malloy lowering.
+            if scalar_node is not None:
+                try:
+                    self._validate_legacy_expression_tree(scalar_node, allow_aggregates=True)
+                except ValueError as exc:
+                    self.expression_diagnostics.append(
+                        ("malloy_expression_aggregate_descendant", str(exc), self._location(scalar_node).display)
+                    )
+                    self._record_unsupported(
+                        f"measure '{name}' contains a rejected aggregate descendant: {exc}", fail_strict=True
+                    )
+                    return
+            dialect_sensitive = scalar_node is not None and self._requires_resolved_expression_dialect(scalar_node)
+            handled, lowered_aggregate = (
+                lower_aggregate_tree(scalar_node) if dialect_sensitive and scalar_node is not None else (False, "")
+            )
+            if handled:
+                if not lowered_aggregate:
+                    return
+                expr_text = lowered_aggregate
+            else:
+                if scalar_node is not None and self._expression_dialect() is None and dialect_sensitive:
+                    self._record_unsupported(
+                        f"measure '{name}' uses a dialect-sensitive aggregate expression on unresolved connection "
+                        f"'{self.current_connection}'",
+                        fail_strict=True,
+                    )
+                    return
+                expr_text = self._transform_malloy_expr(expr_text)
 
         # Handle .granularity suffix on aggregated expressions (3.7)
         # e.g., min(post_time).day -> strip .day, parse agg, store granularity
@@ -1887,6 +2665,8 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
             metric_metadata["granularity"] = measure_granularity
         if measure_tags:
             metric_metadata["tags"] = measure_tags
+        if access != "public":
+            metric_metadata["malloy_access"] = access
 
         self.current_metrics.append(
             Metric(
@@ -1897,11 +2677,22 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
                 filters=filters,
                 description=description,
                 metadata=metric_metadata if metric_metadata else None,
+                visibility=access,
+                public=access == "public",
             )
         )
 
     def _process_join_statement(self, ctx: MalloyParser.JoinStatementContext):
         """Process join_one/join_many statements."""
+        access = self._access_label(ctx)
+        if access != "public":
+            self._record_unsupported(
+                f"source '{self.current_model_name}' uses a {access} join; Relationship has no field-access "
+                "boundary, so the join is omitted rather than imported as public",
+                fail_strict=True,
+            )
+            return
+
         # Determine join type
         if isinstance(ctx, MalloyParser.DefJoinOneContext):
             rel_type = "many_to_one"
@@ -1934,58 +2725,349 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         if not name:
             return
 
-        # Check if there's an isExplore (alias is source)
-        # Note: We could use this to track the target model for extended support
-        # is_explore = join_from.isExplore()
-        # if is_explore:
-        #     sq_expr = is_explore.sqExpr()
-        #     target_model = self._get_text(sq_expr) if sq_expr else name
-
         # Check if there's an isExplore (alias is source with inline definition)
         # Only extract inline sources that define a table/sql, not simple ID references
         is_explore = join_from.isExplore()
+        target_name = name
+        aliased_reference = False
         if is_explore:
             sq_expr = is_explore.sqExpr()
             if sq_expr and not isinstance(sq_expr, MalloyParser.SQIDContext):
-                self._extract_inline_join_source(name, sq_expr)
+                if not self._extract_inline_join_source(name, sq_expr):
+                    return
+            elif sq_expr:
+                target_name = self._get_text(sq_expr)
+                aliased_reference = target_name != name
 
-        # Store join direction (LEFT, RIGHT, FULL, INNER) if specified
-        foreign_key = None
         join_metadata = None
         matrix_op = ctx.matrixOperation() if hasattr(ctx, "matrixOperation") else None
         if matrix_op:
             direction = self._get_text(matrix_op).lower()
+            if direction != "left":
+                self._record_unsupported(
+                    f"source '{self.current_model_name}' join '{name}' uses unsupported {direction} join direction",
+                    fail_strict=True,
+                )
+                return
             join_metadata = {"join_direction": direction}
 
-        # Get foreign key from 'with' clause
+        if rel_type == "cross":
+            has_condition = isinstance(ctx, MalloyParser.JoinWithContext) or (
+                isinstance(ctx, MalloyParser.JoinOnContext) and ctx.joinExpression() is not None
+            )
+            if has_condition or matrix_op:
+                self._record_unsupported(
+                    f"source '{self.current_model_name}' join_cross '{name}' must be an unconditional bare cross join",
+                    fail_strict=True,
+                )
+                return
+            self.current_relationships.append(
+                Relationship(
+                    name=name,
+                    target_model=target_name if aliased_reference else None,
+                    type="cross",
+                )
+            )
+            return
+
         if isinstance(ctx, MalloyParser.JoinWithContext):
             field_expr = ctx.fieldExpr()
-            if field_expr:
-                foreign_key = self._get_text(field_expr)
-        elif isinstance(ctx, MalloyParser.JoinOnContext):
-            join_expr = ctx.joinExpression()
-            if join_expr:
-                expr_text = self._get_text(join_expr)
-                # Store full condition in metadata
-                if join_metadata is None:
-                    join_metadata = {}
-                join_metadata["on_condition"] = expr_text
-                # Extract FK column(s), handling either ordering of each equality
-                # and keys qualified by the source or target name.
-                fk_keys = self._extract_on_condition_keys(expr_text, name, rel_type)
-                if fk_keys:
-                    foreign_key = fk_keys[0]
-                    if len(fk_keys) > 1:
-                        join_metadata["composite_keys"] = fk_keys
-
-        self.current_relationships.append(
-            Relationship(
-                name=name,
-                type=rel_type,
-                foreign_key=foreign_key,
-                metadata=join_metadata,
+            field_text = self._get_text(field_expr) if field_expr else ""
+            with_column = self._physical_with_column(field_text)
+            if with_column is None:
+                self._record_unsupported(
+                    f"source '{self.current_model_name}' join '{name}' with clause must name one physical column",
+                    fail_strict=True,
+                )
+                return
+            join_metadata = join_metadata or {}
+            join_metadata["malloy_with"] = with_column
+            if rel_type == "many_to_one":
+                foreign_key = with_column
+                primary_key = None  # resolved against the target source after module binding
+            else:
+                foreign_key = with_column
+                primary_key = with_column
+            self.current_relationships.append(
+                Relationship(
+                    name=name,
+                    target_model=target_name if aliased_reference else None,
+                    type=rel_type,
+                    foreign_key=foreign_key,
+                    primary_key=primary_key,
+                    metadata=join_metadata,
+                )
             )
+            return
+
+        if isinstance(ctx, MalloyParser.JoinOnContext):
+            join_expr = ctx.joinExpression()
+            if not join_expr:
+                self._record_unsupported(
+                    f"source '{self.current_model_name}' join '{name}' has no join condition",
+                    fail_strict=True,
+                )
+                return
+            expr_text = self._get_text(join_expr)
+            lowered = self._lower_join_condition(expr_text, name)
+            if lowered is None:
+                self._record_unsupported(
+                    f"source '{self.current_model_name}' join '{name}' uses a condition that cannot be lowered safely",
+                    fail_strict=True,
+                )
+                return
+            source_keys, target_keys, join_sql, pure_key_equality = lowered
+            if not source_keys and pure_key_equality:
+                self._record_unsupported(
+                    f"source '{self.current_model_name}' join '{name}' has no source-to-target equality",
+                    fail_strict=True,
+                )
+                return
+            join_metadata = join_metadata or {}
+            join_metadata["on_condition"] = expr_text
+            if source_keys:
+                join_metadata["join_key_pairs"] = [
+                    {"source": source_key, "target": target_key}
+                    for source_key, target_key in zip(source_keys, target_keys, strict=True)
+                ]
+            foreign_keys = source_keys if rel_type == "many_to_one" else target_keys
+            primary_keys = target_keys if rel_type == "many_to_one" else source_keys
+            self.current_relationships.append(
+                Relationship(
+                    name=name,
+                    target_model=target_name if aliased_reference else None,
+                    type=rel_type,
+                    foreign_key=self._collapse_join_keys(foreign_keys),
+                    primary_key=self._collapse_join_keys(primary_keys),
+                    sql=None if pure_key_equality else join_sql,
+                    metadata=join_metadata,
+                )
+            )
+            return
+
+        self._record_unsupported(
+            f"source '{self.current_model_name}' join '{name}' has an unsupported declaration shape",
+            fail_strict=True,
         )
+
+    @staticmethod
+    def _collapse_join_keys(keys: list[str]) -> str | list[str] | None:
+        if not keys:
+            return None
+        return keys[0] if len(keys) == 1 else keys
+
+    def _physical_with_column(self, expr_text: str) -> str | None:
+        """Return a conservative physical source column used by Malloy ``with``."""
+        match = re.fullmatch(
+            r"\s*(?:(?P<qualifier>[A-Za-z_]\w*|`[^`]+`)\s*\.\s*)?(?P<column>[A-Za-z_]\w*|`[^`]+`)\s*",
+            expr_text,
+        )
+        if not match:
+            return None
+        qualifier = match.group("qualifier")
+        if qualifier is not None and qualifier.strip("`") != self.current_model_name:
+            return None
+        return match.group("column").strip("`")
+
+    @staticmethod
+    def _strip_join_parens(expr: str) -> str:
+        text = expr.strip()
+        while text.startswith("(") and text.endswith(")"):
+            depth = 0
+            quote = None
+            wraps = True
+            for index, char in enumerate(text):
+                if quote is not None:
+                    if char == quote and (index == 0 or text[index - 1] != "\\"):
+                        quote = None
+                    continue
+                if char in ("'", '"', "`"):
+                    quote = char
+                elif char == "(":
+                    depth += 1
+                elif char == ")":
+                    depth -= 1
+                    if depth == 0 and index != len(text) - 1:
+                        wraps = False
+                        break
+            if not wraps:
+                break
+            text = text[1:-1].strip()
+        return text
+
+    @classmethod
+    def _split_join_conjunctions(cls, expr: str) -> list[str]:
+        text = cls._strip_join_parens(expr)
+        parts: list[str] = []
+        start = 0
+        depth = 0
+        quote = None
+        index = 0
+        while index < len(text):
+            char = text[index]
+            if quote is not None:
+                if char == "\\":
+                    index += 2
+                    continue
+                if char == quote:
+                    quote = None
+                index += 1
+                continue
+            if char in ("'", '"', "`"):
+                quote = char
+            elif char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+            elif depth == 0:
+                match = re.match(r"(?i)and\b", text[index:])
+                before_ok = index == 0 or not (text[index - 1].isalnum() or text[index - 1] == "_")
+                if match and before_ok:
+                    parts.append(text[start:index].strip())
+                    index += match.end()
+                    start = index
+                    continue
+            index += 1
+        parts.append(text[start:].strip())
+        return [part for part in parts if part]
+
+    def _join_field_side(self, expression: str, target_name: str) -> tuple[str, str] | None:
+        match = re.fullmatch(
+            r"\s*(?:(?P<qualifier>[A-Za-z_]\w*|`[^`]+`)\s*\.\s*)?(?P<column>[A-Za-z_]\w*|`[^`]+`)\s*",
+            self._strip_join_parens(expression),
+        )
+        if not match:
+            return None
+        qualifier = match.group("qualifier")
+        qualifier = qualifier.strip("`") if qualifier else None
+        column = match.group("column").strip("`")
+        if qualifier is None and column.lower() in {
+            "true",
+            "false",
+            "null",
+            "current_date",
+            "current_timestamp",
+        }:
+            return None
+        if qualifier == target_name:
+            return "target", column
+        if qualifier is None or qualifier == self.current_model_name:
+            return "source", column
+        return None
+
+    def _lower_join_condition(self, expr_text: str, target_name: str) -> tuple[list[str], list[str], str, bool] | None:
+        """Lower one unaliased Malloy join predicate to exact native semantics."""
+        if re.search(r"(?i)\b(?:pick|when)\b|[?&|~]", expr_text) or "::" in expr_text:
+            return None
+
+        source_keys: list[str] = []
+        target_keys: list[str] = []
+        pure_key_equality = True
+        for conjunct in self._split_join_conjunctions(expr_text):
+            comparison = re.fullmatch(r"\s*(.+?)\s*=\s*(.+?)\s*", self._strip_join_parens(conjunct))
+            if comparison and not re.search(r"(?:!=|<=|>=|<>)", conjunct):
+                left = self._join_field_side(comparison.group(1), target_name)
+                right = self._join_field_side(comparison.group(2), target_name)
+                if left and right and left[0] != right[0]:
+                    source, target = (left, right) if left[0] == "source" else (right, left)
+                    source_keys.append(source[1])
+                    target_keys.append(target[1])
+                    continue
+            pure_key_equality = False
+
+        lowered_sql = self._lower_join_sql(expr_text, target_name)
+        if lowered_sql is None or "{from}" not in lowered_sql or "{to}" not in lowered_sql:
+            return None
+        return source_keys, target_keys, lowered_sql, pure_key_equality
+
+    def _lower_join_sql(self, expr_text: str, target_name: str) -> str | None:
+        """Convert a conservative SQL-compatible Malloy predicate to placeholders."""
+        transformed = self._transform_malloy_expr(expr_text)
+        if re.search(r"[;{}]", transformed) or "--" in transformed or "/*" in transformed:
+            return None
+
+        keywords = {
+            "and",
+            "or",
+            "not",
+            "is",
+            "null",
+            "true",
+            "false",
+            "like",
+            "ilike",
+            "in",
+            "between",
+            "date",
+            "timestamp",
+            "interval",
+            "current_date",
+            "current_timestamp",
+        }
+        token_pattern = re.compile(r"(?:(?P<qualifier>[A-Za-z_]\w*|`[^`]+`)\s*\.\s*)?(?P<column>[A-Za-z_]\w*|`[^`]+`)")
+        output: list[str] = []
+        position = 0
+        quote = None
+        index = 0
+        while index < len(transformed):
+            char = transformed[index]
+            if quote is not None:
+                if char == "\\":
+                    index += 2
+                    continue
+                if char == quote:
+                    quote = None
+                index += 1
+                continue
+            if char in ("'", '"'):
+                quote = char
+                index += 1
+                continue
+            match = token_pattern.match(transformed, index)
+            if not match:
+                index += 1
+                continue
+            output.append(transformed[position : match.start()])
+            qualifier = match.group("qualifier")
+            qualifier_name = qualifier.strip("`") if qualifier else None
+            column_text = match.group("column")
+            column_name = column_text.strip("`")
+            next_nonspace = transformed[match.end() :].lstrip()[:1]
+            if qualifier_name == target_name:
+                replacement = f"{{to}}.{column_text}"
+            elif qualifier_name == self.current_model_name:
+                replacement = f"{{from}}.{column_text}"
+            elif qualifier_name is not None:
+                return None
+            elif column_name.lower() in keywords or next_nonspace == "(":
+                replacement = column_text
+            else:
+                replacement = f"{{from}}.{column_text}"
+            output.append(replacement)
+            position = match.end()
+            index = match.end()
+        output.append(transformed[position:])
+        result = "".join(output).strip()
+        if quote is not None or not result:
+            return None
+        return result
+
+    def _apply_explicit_field_visibility(self) -> None:
+        """Apply Malloy accept/except to explicitly declared semantic fields."""
+        if not self._accept_fields and not self._except_fields:
+            return
+
+        accepted = set(self._accept_fields)
+        excluded = set(self._except_fields)
+        for field in (*self.current_dimensions, *self.current_metrics):
+            if accepted and field.name not in accepted:
+                field.public = False
+                if isinstance(field, Metric):
+                    field.visibility = "private"
+            if field.name in excluded:
+                field.public = False
+                if isinstance(field, Metric):
+                    field.visibility = "private"
 
     @staticmethod
     def _extract_on_condition_keys(expr_text: str, target_name: str, rel_type: str) -> list[str]:
@@ -2079,19 +3161,21 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
             list(self.current_metrics),
             list(self.current_relationships),
             list(self.current_segments),
+            list(self.current_invariant_filters),
             self._timezone,
             list(self._model_tags),
             list(self._accept_fields),
             list(self._except_fields),
             self._virtual,
             list(self._source_type_constraints),
+            self._source_invalid,
         )
 
         # Reset and process the inline source
         self.current_model_name = join_name
         self.current_table = None
         self.current_sql = None
-        self.current_primary_key = "id"
+        self.current_primary_key = None
         self.current_description = None
         self.current_extends = None
         self.current_connection = None
@@ -2099,17 +3183,20 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         self.current_metrics = []
         self.current_relationships = []
         self.current_segments = []
+        self.current_invariant_filters = []
         self._timezone = None
         self._model_tags = []
         self._accept_fields = []
         self._except_fields = []
         self._virtual = None
         self._source_type_constraints = []
+        self._source_invalid = False
 
         self._process_sq_expr(sq_expr)
 
         # Only create model if we found something useful
-        if self.current_table or self.current_sql or self.current_extends:
+        inline_created = False
+        if not self._source_invalid and (self.current_table or self.current_sql or self.current_extends):
             metadata = {}
             if self.current_connection:
                 metadata["connection"] = self.current_connection
@@ -2121,20 +3208,61 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
                 metadata["virtual"] = self._virtual
             if self._source_type_constraints:
                 metadata["source_type_constraints"] = list(self._source_type_constraints)
+            if self._accept_fields:
+                metadata["malloy_accept"] = list(self._accept_fields)
+            if self._except_fields:
+                metadata["malloy_except"] = list(self._except_fields)
+            self._apply_explicit_field_visibility()
+            source_scalar_data = {
+                field: value
+                for field, value in {
+                    "table": self.current_table,
+                    "sql": self.current_sql,
+                    "extends": self.current_extends,
+                    "primary_key": self.current_primary_key,
+                    "description": self.current_description,
+                    "metadata": metadata if metadata else None,
+                }.items()
+                if value is not None
+            }
             inline_model = Model(
                 name=join_name,
-                table=self.current_table,
-                sql=self.current_sql,
-                extends=self.current_extends,
-                primary_key=self.current_primary_key,
-                description=self.current_description,
                 dimensions=self.current_dimensions,
                 metrics=self.current_metrics,
                 relationships=self.current_relationships,
                 segments=self.current_segments,
-                metadata=metadata if metadata else None,
+                invariant_filters=self.current_invariant_filters,
+                **self._schema_exposure_options(),
+                **source_scalar_data,
             )
-            self.models.append(inline_model)
+            existing_model = next((model for model in reversed(self.models) if model.name == join_name), None)
+            if existing_model is None:
+                self.models.append(inline_model)
+                inline_created = True
+            else:
+                existing_connection = (existing_model.metadata or {}).get("connection")
+                inline_connection = (inline_model.metadata or {}).get("connection")
+                same_physical_source = (
+                    existing_model.table == inline_model.table
+                    and existing_model.sql == inline_model.sql
+                    and existing_model.extends == inline_model.extends
+                    and existing_connection == inline_connection
+                )
+                bare_inline_source = isinstance(
+                    sq_expr,
+                    (MalloyParser.SQTableContext, MalloyParser.SQSQLContext),
+                )
+                if same_physical_source and bare_inline_source:
+                    # Malloy commonly repeats the physical source inline even when
+                    # a canonical source of the same name already exists. Reuse the
+                    # canonical model only for a bare source reference. An inline
+                    # wrapper could carry semantic edits which reuse would erase.
+                    inline_created = True
+                else:
+                    self._record_unsupported(
+                        f"inline join source '{join_name}' conflicts with an existing source of the same name",
+                        fail_strict=True,
+                    )
 
         # Restore state (including metadata accumulators)
         (
@@ -2149,29 +3277,32 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
             self.current_metrics,
             self.current_relationships,
             self.current_segments,
+            self.current_invariant_filters,
             self._timezone,
             self._model_tags,
             self._accept_fields,
             self._except_fields,
             self._virtual,
             self._source_type_constraints,
+            self._source_invalid,
         ) = saved
+        return inline_created
 
-    def _process_where_as_segment(self, ctx: MalloyParser.WhereStatementContext):
-        """Process source-level where clause as a segment."""
+    def _process_source_where(self, ctx: MalloyParser.WhereStatementContext):
+        """Process source-level where clauses as always-on model invariants."""
         filter_list = ctx.filterClauseList()
         if not filter_list:
             return
 
-        for i, filter_expr in enumerate(filter_list.fieldExpr()):
-            sql = self._get_text(filter_expr)
-            sql = self._transform_malloy_expr(sql)
-            self.current_segments.append(
-                Segment(
-                    name=f"default_filter_{i}" if i > 0 else "default_filter",
-                    sql=sql,
-                )
+        for filter_expr in filter_list.fieldExpr():
+            sql = self._lower_scalar_field_expression(
+                filter_expr, self.current_model_name or "<source>", "source filter"
             )
+            if sql is None:
+                self._source_invalid = True
+                self.current_invariant_filters = []
+                return
+            self.current_invariant_filters.append(sql)
 
 
 class MalloyAdapter(BaseAdapter):
@@ -2182,7 +3313,7 @@ class MalloyAdapter(BaseAdapter):
     - Dimensions -> Dimensions
     - Measures -> Metrics
     - join_one/join_many -> Relationships
-    - Source-level where -> Segments
+    - Source-level where -> Model invariant filters
 
     Note: Views and queries are skipped as they are not part of
     the semantic model definition.
@@ -2196,7 +3327,13 @@ class MalloyAdapter(BaseAdapter):
         ``MalloySyntaxError``.
     """
 
-    def __init__(self, strict: bool = False, warn_on_errors: bool = True):
+    def __init__(
+        self,
+        strict: bool = False,
+        warn_on_errors: bool = True,
+        import_root: str | Path | None = None,
+        connection_dialects: dict[str, str] | None = None,
+    ):
         """Create a Malloy adapter.
 
         Args:
@@ -2205,9 +3342,21 @@ class MalloyAdapter(BaseAdapter):
                 ANTLR's recovered parse (backward-compatible behavior).
             warn_on_errors: If True (default) and not strict, emit a ``UserWarning``
                 summarizing collected syntax errors so they are not silent.
+            import_root: Optional filesystem boundary for project-relative imports.
+                When omitted, :meth:`parse` uses the parsed directory or the entry
+                file's parent directory.
         """
         self.strict = strict
         self.warn_on_errors = warn_on_errors
+        self.import_root = Path(import_root).resolve() if import_root is not None else None
+        builtin_dialects = {
+            "duckdb": "duckdb",
+            "postgres": "postgres",
+            "postgresql": "postgres",
+            "bigquery": "bigquery",
+            "snowflake": "snowflake",
+        }
+        self.connection_dialects = {**builtin_dialects, **(connection_dialects or {})}
         # Collected (file_path, line, column, message) syntax errors from the last parse.
         self.errors: list[tuple[str, int, int, str]] = []
         # Newer top-level Malloy constructs collected during the last parse. These are
@@ -2218,12 +3367,82 @@ class MalloyAdapter(BaseAdapter):
         self.user_types: dict[str, str] = {}
         self.given: dict[str, str] = {}
         self.exports: list[str] = []
+        self.unsupported_features: list[tuple[str, str]] = []
+
+    @staticmethod
+    def _resolved_models_for_consumption(models: dict[str, Model]) -> dict[str, Model]:
+        resolved: dict[str, Model] = {}
+
+        def resolve(name: str, active: frozenset[str] = frozenset()) -> Model:
+            if name in resolved:
+                return resolved[name]
+            model = models[name]
+            if not model.extends or model.extends not in models or name in active:
+                resolved[name] = model
+                return model
+            flattened = merge_model(model, resolve(model.extends, active | {name}))
+            resolved[name] = flattened
+            return flattened
+
+        for model_name in models:
+            resolve(model_name)
+        return resolved
+
+    @staticmethod
+    def _query_field_catalog(models: dict[str, Model], source_model: str) -> tuple[set[str], set[str]]:
+        """Return only fields reachable from the query's resolved source and role paths."""
+        resolved = MalloyAdapter._resolved_models_for_consumption(models)
+        dimensions: set[str] = set()
+        metrics: set[str] = set()
+        edge_budget = max(1, sum(len(model.relationships) for model in resolved.values()))
+
+        def visit(
+            model_name: str,
+            prefix: str,
+            branch_edges: frozenset[tuple[str, str, str]],
+        ) -> None:
+            if model_name not in resolved or len(branch_edges) > edge_budget:
+                return
+            model = resolved[model_name]
+            dimensions.update(f"{prefix}{field.name}" for field in model.dimensions)
+            dimensions.update(f"{prefix}{name}" for name in model.primary_key_columns)
+            metrics.update(f"{prefix}{field.name}" for field in model.metrics)
+            for relationship in model.relationships:
+                edge = (model_name, relationship.name, relationship.related_model)
+                if edge in branch_edges:
+                    continue
+                visit(
+                    relationship.related_model,
+                    f"{prefix}{relationship.name}.",
+                    branch_edges | {edge},
+                )
+
+        visit(source_model, "", frozenset())
+        return dimensions, metrics
+
+    @staticmethod
+    def _validate_consumption_pair(graph: SemanticGraph, explore, saved_query) -> list[str]:
+        """Validate both contracts against a resolved staging graph before mutating the result."""
+        from sidemantic.validation import validate_explore, validate_saved_query
+
+        staging = SemanticGraph()
+        for model in MalloyAdapter._resolved_models_for_consumption(graph.models).values():
+            staging.add_model(model)
+        staging.metrics = dict(graph.metrics)
+        staging.parameters = dict(graph.parameters)
+        staging.explores = dict(graph.explores)
+        staging.saved_queries = dict(graph.saved_queries)
+        explore_errors, _ = validate_explore(explore, staging)
+        if explore_errors:
+            return explore_errors
+        staging.add_explore(explore)
+        saved_errors, _ = validate_saved_query(saved_query, staging)
+        return saved_errors
 
     def parse(self, source: str | Path) -> SemanticGraph:
         """Parse Malloy files into semantic graph.
 
-        Handles imports by recursively parsing imported files first (depth-first).
-        Detects and prevents circular imports.
+        Resolves project-relative imports using Malloy's ordered module semantics.
 
         Args:
             source: Path to .malloy file or directory
@@ -2243,55 +3462,237 @@ class MalloyAdapter(BaseAdapter):
         self.user_types = {}
         self.given = {}
         self.exports = []
+        self.unsupported_features = []
         graph = SemanticGraph()
-        source_path = Path(source)
-
+        source_path = Path(source).resolve()
         if source_path.is_dir():
-            # Parse all .malloy files in directory
-            # When parsing a directory, each file is treated as a "root" file,
-            # meaning all of its models are added (no import filter).
-            # We use a separate parsed_files set per root file to handle imports,
-            # but we track which models have been added to avoid duplicates.
-            for malloy_file in source_path.rglob("*.malloy"):
-                parsed_files: set = set()
-                self._parse_file(malloy_file, graph, parsed_files, import_filter=None)
+            entries = sorted(source_path.rglob("*.malloy"))
+            default_root = source_path
         else:
-            parsed_files: set = set()
-            self._parse_file(source_path, graph, parsed_files)
+            entries = [source_path]
+            default_root = source_path.parent
 
+        resolver = MalloyModuleResolver(
+            self._parse_module,
+            strict=self.strict,
+            import_root=self.import_root or default_root,
+        )
+        resolution = resolver.resolve(entries)
+        resolved_join_diagnostics = self._finalize_resolved_joins(resolution.models)
+        for model in resolution.models.values():
+            graph.add_model(model)
+        for name, resolved_query in resolution.queries.items():
+            raw_definition = resolved_query.raw_definition
+            location = resolved_query.location
+            source_model = resolved_query.source_model
+            if source_model is not None and source_model in resolution.models:
+                known_dimensions, known_metrics = self._query_field_catalog(resolution.models, source_model)
+            else:
+                known_dimensions, known_metrics = set(), set()
+            declared_name = raw_definition.split(" is", 1)[0].strip()
+            try:
+                mapping = map_malloy_query(
+                    name,
+                    raw_definition,
+                    declared_name=declared_name,
+                    source_model_override=source_model,
+                    dimensions=known_dimensions,
+                    metrics=known_metrics,
+                )
+            except Exception as exc:
+                mapping = None
+                diagnostics = [
+                    MalloyQueryDiagnostic(
+                        "malloy_query_syntax_error", f"query '{name}' could not be reparsed safely: {exc}"
+                    )
+                ]
+            else:
+                diagnostics = list(mapping.diagnostics)
+            if mapping is not None and mapping.supported and mapping.explore.model not in graph.models:
+                diagnostics.append(
+                    MalloyQueryDiagnostic(
+                        "malloy_query_source_unknown",
+                        f"query '{name}' references unknown source '{mapping.explore.model}'",
+                    )
+                )
+            if diagnostics:
+                for diagnostic in diagnostics:
+                    record_import_feature(
+                        diagnostic.code,
+                        "rejected",
+                        detail=diagnostic.message,
+                        source=str(location.path),
+                        location=location.display,
+                    )
+                if self.strict:
+                    raise MalloySchemaExposureError(diagnostics[0].message)
+                graph.import_warnings.extend(
+                    {
+                        "code": diagnostic.code,
+                        "message": diagnostic.message,
+                        "severity": diagnostic.status,
+                        "source_file": str(location.path),
+                        "location": {"line": location.line, "column": location.column},
+                    }
+                    for diagnostic in diagnostics
+                )
+                continue
+            assert mapping is not None and mapping.explore is not None and mapping.saved_query is not None
+            if mapping.explore.name in graph.explores or mapping.saved_query.name in graph.saved_queries:
+                message = f"query '{name}' conflicts with an existing consumption contract"
+                record_import_feature(
+                    "malloy_query_contract_conflict",
+                    "rejected",
+                    detail=message,
+                    source=str(location.path),
+                    location=location.display,
+                )
+                if self.strict:
+                    raise MalloySchemaExposureError(message)
+                graph.import_warnings.append(
+                    {
+                        "code": "malloy_query_contract_conflict",
+                        "message": message,
+                        "severity": "rejected",
+                        "source_file": str(location.path),
+                        "location": {"line": location.line, "column": location.column},
+                    }
+                )
+                continue
+            validation_errors = self._validate_consumption_pair(graph, mapping.explore, mapping.saved_query)
+            if validation_errors:
+                message = f"query '{name}' is not a valid native consumption contract: {validation_errors[0]}"
+                record_import_feature(
+                    "malloy_query_contract_invalid",
+                    "rejected",
+                    detail=message,
+                    source=str(location.path),
+                    location=location.display,
+                )
+                if self.strict:
+                    raise MalloySchemaExposureError(message)
+                graph.import_warnings.append(
+                    {
+                        "code": "malloy_query_contract_invalid",
+                        "message": message,
+                        "severity": "rejected",
+                        "source_file": str(location.path),
+                        "location": {"line": location.line, "column": location.column},
+                    }
+                )
+                continue
+            graph.add_explore(mapping.explore)
+            graph.add_saved_query(mapping.saved_query)
+        graph.import_warnings.extend(
+            {
+                "code": diagnostic["feature"],
+                "message": diagnostic["detail"],
+                "severity": diagnostic["status"],
+                "source_file": diagnostic["source"],
+                "location": diagnostic["location"],
+            }
+            for diagnostic in resolution.diagnostics
+        )
+        graph.import_warnings.extend(resolved_join_diagnostics)
+        self.exports = list(
+            dict.fromkeys(name for entry in entries for name in resolution.exports_by_file.get(entry.resolve(), ()))
+        )
+        self.user_types = resolution.user_types
+        self.given = resolution.given
         return graph
 
-    def _parse_file(
-        self,
-        file_path: Path,
-        graph: SemanticGraph,
-        parsed_files: set,
-        import_filter: list[tuple[str, str | None]] | None = None,
-    ) -> None:
-        """Parse a single Malloy file with import resolution.
+    def _finalize_resolved_joins(self, models: dict[str, Model]) -> list[dict[str, object]]:
+        """Resolve Malloy ``with`` joins which depend on the target source key."""
+        diagnostics: list[dict[str, object]] = []
 
-        Args:
-            file_path: Path to .malloy file
-            graph: Semantic graph to add models to
-            parsed_files: Set of already-parsed file paths (for cycle detection)
-            import_filter: If set, only import these sources (name, alias) pairs.
-                          None means import all sources from the file.
-        """
-        resolved_path = file_path.resolve()
+        def target_primary_keys(name: str, seen: set[str] | None = None) -> list[str]:
+            target = models.get(name)
+            if target is None:
+                return []
+            if "primary_key" in target.model_fields_set:
+                return target.primary_key_columns
+            if target.extends:
+                visited = seen or set()
+                if name in visited:
+                    return []
+                return target_primary_keys(target.extends, {*visited, name})
+            return target.primary_key_columns
 
-        # Dedup/cycle detection keyed on (path, filter): a file imported under a
-        # narrow named-import filter must still be parseable for a later, broader
-        # (or differently-named) import of the same file, while an identical
-        # request is parsed at most once so circular imports still terminate.
-        filter_key = None if import_filter is None else frozenset(import_filter)
-        cache_key = (resolved_path, filter_key)
-        if cache_key in parsed_files:
-            return
+        for model in models.values():
+            relationships: list[Relationship] = []
+            for relationship in model.relationships:
+                if relationship.related_model not in models:
+                    issue = (
+                        f"source '{model.name}' join '{relationship.name}' is rejected because target source "
+                        f"'{relationship.related_model}' is unavailable"
+                    )
+                    if self.strict:
+                        raise MalloySchemaExposureError(issue)
+                    source_file = model._source_file or "<malloy>"
+                    self.unsupported_features.append((source_file, issue))
+                    record_import_feature(
+                        "malloy_join_target_unavailable",
+                        "rejected",
+                        detail=issue,
+                        source=source_file,
+                    )
+                    diagnostics.append(
+                        {
+                            "code": "malloy_join_target_unavailable",
+                            "message": issue,
+                            "severity": "rejected",
+                            "source_file": source_file,
+                            "location": None,
+                        }
+                    )
+                    continue
 
-        parsed_files.add(cache_key)
+                metadata = relationship.metadata or {}
+                with_column = metadata.get("malloy_with")
+                if not with_column or relationship.type != "many_to_one":
+                    relationships.append(relationship)
+                    continue
 
-        if not file_path.exists():
-            return
+                target = models.get(relationship.related_model)
+                target_keys = target_primary_keys(relationship.related_model)
+                if len(target_keys) == 1:
+                    relationship.primary_key = target_keys[0]
+                    relationships.append(relationship)
+                    continue
+
+                if target is None:
+                    reason = "the target source is unavailable"
+                elif not target_keys:
+                    reason = "the target source has no declared primary key"
+                else:
+                    reason = "the target source has a composite primary key which cannot match one with column"
+                issue = (
+                    f"source '{model.name}' join '{relationship.name}' with {with_column} is rejected because {reason}"
+                )
+                if self.strict:
+                    raise MalloySchemaExposureError(issue)
+                source_file = model._source_file or "<malloy>"
+                self.unsupported_features.append((source_file, issue))
+                record_import_feature(
+                    "malloy_join_with_unresolved_key",
+                    "rejected",
+                    detail=issue,
+                    source=source_file,
+                )
+                diagnostics.append(
+                    {
+                        "code": "malloy_join_with_unresolved_key",
+                        "message": issue,
+                        "severity": "rejected",
+                        "source_file": source_file,
+                        "location": None,
+                    }
+                )
+            model.relationships = relationships
+        return diagnostics
+
+    def _parse_module(self, file_path: Path) -> MalloyModule:
+        """Parse one canonical file without resolving any of its imports."""
 
         with open(file_path) as f:
             content = f.read()
@@ -2339,39 +3740,53 @@ class MalloyAdapter(BaseAdapter):
                 )
 
         # Visit the tree to extract models and imports
-        visitor = MalloyModelVisitor()
+        visitor = MalloyModelVisitor(
+            strict_schema_exposure=self.strict,
+            source_path=file_path,
+            connection_dialects=self.connection_dialects,
+        )
         visitor.visit(tree)
 
-        # Surface newer top-level constructs (type:/given:/export) as adapter metadata.
-        self.user_types.update(visitor.user_types)
-        self.given.update(visitor.given)
-        for export_name in visitor.exports:
-            if export_name not in self.exports:
-                self.exports.append(export_name)
+        if visitor.unsupported_features:
+            self.unsupported_features.extend((str(file_path), issue) for issue in visitor.unsupported_features)
+            for issue in visitor.unsupported_features:
+                record_import_feature(
+                    "malloy_unsupported_feature",
+                    "unsupported",
+                    detail=issue,
+                    source=str(file_path),
+                )
+            if self.warn_on_errors:
+                count = len(visitor.unsupported_features)
+                more = f" (+{count - 1} more; inspect adapter.unsupported_features)" if count > 1 else ""
+                warnings.warn(
+                    f"Malloy compatibility limitation(s) in {file_path}: {visitor.unsupported_features[0]}{more}",
+                    UserWarning,
+                    stacklevel=2,
+                )
+        for feature, detail, location in visitor.expression_diagnostics:
+            record_import_feature(
+                feature,
+                "rejected",
+                detail=detail,
+                source=str(file_path),
+                location=location,
+            )
+        for feature, detail, location in visitor.source_diagnostics:
+            record_import_feature(
+                feature,
+                "rejected",
+                detail=detail,
+                source=str(file_path),
+                location=location,
+            )
 
-        # Process imports first (depth-first) so imported sources are available
-        for import_path, import_items in visitor.imports:
-            # Resolve import path relative to current file
-            import_file = (file_path.parent / import_path).resolve()
-            if import_file.exists():
-                self._parse_file(import_file, graph, parsed_files, import_items)
-
-        # Add models to graph (with optional filtering/aliasing for selective imports).
-        for model in visitor.models:
-            if import_filter is None:
-                if model.name not in graph.models:
-                    graph.add_model(model)
-                continue
-
-            # A source may be selected under several names in a single import
-            # (e.g. `import { s is a, s is b }`), so emit one model per matching
-            # entry rather than only the first.
-            for name, alias in import_filter:
-                if model.name != name:
-                    continue
-                target = model if not alias else model.model_copy(update={"name": alias})
-                if target.name not in graph.models:
-                    graph.add_model(target)
+        return MalloyModule(
+            path=file_path,
+            statements=tuple(visitor.statements),
+            user_types=dict(visitor.user_types),
+            given=dict(visitor.given),
+        )
 
     def export(self, graph: SemanticGraph, output_path: str | Path) -> None:
         """Export semantic graph to Malloy format.
@@ -2390,7 +3805,11 @@ class MalloyAdapter(BaseAdapter):
         # Generate Malloy content
         lines = []
         for model in resolved_models.values():
-            source_lines = self._export_source(model)
+            raw_model = graph.models.get(model.name)
+            source_lines = self._export_source(
+                model,
+                inherited=bool(raw_model and raw_model.extends),
+            )
             lines.extend(source_lines)
             lines.append("")  # Empty line between sources
 
@@ -2413,11 +3832,12 @@ class MalloyAdapter(BaseAdapter):
         """
         return sql.replace("{model}.", "")
 
-    def _export_source(self, model: Model) -> list[str]:
+    def _export_source(self, model: Model, *, inherited: bool = False) -> list[str]:
         """Export a model to Malloy source definition.
 
         Args:
             model: Model to export
+            inherited: Whether this model was flattened from an inherited source
 
         Returns:
             List of lines for the source definition
@@ -2442,45 +3862,73 @@ class MalloyAdapter(BaseAdapter):
             lines.append(f"source: {model.name} extend {{")
 
         # Primary key
-        if model.primary_key and model.primary_key != "id":
+        if model.primary_key:
             lines.append(f"  primary_key: {model.primary_key}")
 
-        # Segments (source-level where clauses) - Tier 4.1
-        if model.segments:
-            for segment in model.segments:
-                lines.append(f"  where: {self._strip_model_prefix(segment.sql)}")
+        # Malloy source-level where clauses are intrinsic filters, not reusable
+        # named segments. Emit every predicate separately; repeated where clauses
+        # are conjunctive in Malloy and reparse to the same ordered list.
+        for predicate in model.invariant_filters:
+            lines.append(f"  where: {self._strip_model_prefix(predicate)}")
+
+        # Preserve source field-edit declarations when they came from Malloy.
+        # Runtime schema exposure reconstructs their effective physical-column
+        # visibility when the exported source is parsed again.
+        malloy_accept = (model.metadata or {}).get("malloy_accept")
+        malloy_except = (model.metadata or {}).get("malloy_except")
+        if model.schema_exposure is not None and (inherited or (malloy_accept is None and malloy_except is None)):
+            # Resolved child sources may inherit effective schema governance while
+            # retaining only child-authored Malloy syntax metadata. Export their
+            # effective controls so flattening cannot broaden the reparsed source.
+            malloy_accept = model.schema_exposure.accept
+            malloy_except = model.schema_exposure.except_fields
+        if malloy_accept:
+            lines.append(f"  accept: {', '.join(malloy_accept)}")
+        if malloy_except:
+            lines.append(f"  except: {', '.join(malloy_except)}")
 
         # Separate renames from computed dimensions for proper export
-        renames_to_export: list[tuple[str, str]] = []
-        dims_to_export: list[tuple[Dimension, str]] = []
+        renames_to_export: list[tuple[str, str, str]] = []
+        dims_to_export: list[tuple[Dimension, str, str]] = []
         for dim in model.dimensions:
             if dim.name == model.primary_key:
                 continue
             sql = self._strip_model_prefix(dim.sql or dim.name).strip()
-            # Skip passthrough dimensions - Malloy auto-exposes table columns
-            if sql == dim.name:
+            access = (dim.metadata or {}).get("malloy_access") or ("public" if dim.public else "private")
+            # Public passthrough dimensions are intrinsic Malloy source fields.
+            # Keep non-public passthrough declarations because they carry the
+            # access boundary needed to reconstruct schema exposure on reparse.
+            if sql == dim.name and access == "public":
                 continue
             # Tier 4.5: detect renames (simple identifier, no operators/functions).
             # A time dimension with a granularity is NOT a rename: it must keep its
             # `.granularity` suffix below so the time type survives the roundtrip.
             is_time_with_grain = dim.type == "time" and dim.granularity
             if re.match(r"^[`\w]+$", sql) and sql != dim.name and not is_time_with_grain:
-                renames_to_export.append((dim.name, sql))
+                renames_to_export.append((dim.name, sql, access))
             else:
-                dims_to_export.append((dim, sql))
+                dims_to_export.append((dim, sql, access))
 
         # Export renames
-        if renames_to_export:
+        for access in ("public", "internal", "private"):
+            access_renames = [(new, old) for new, old, item_access in renames_to_export if item_access == access]
+            if not access_renames:
+                continue
             lines.append("")
-            lines.append("  rename:")
-            for new_name, old_name in renames_to_export:
+            prefix = "" if access == "public" else f"{access} "
+            lines.append(f"  {prefix}rename:")
+            for new_name, old_name in access_renames:
                 lines.append(f"    {new_name} is {old_name}")
 
         # Export computed dimensions
-        if dims_to_export:
+        for access in ("public", "internal", "private"):
+            access_dims = [(dim, sql) for dim, sql, item_access in dims_to_export if item_access == access]
+            if not access_dims:
+                continue
             lines.append("")
-            lines.append("  dimension:")
-            for dim, sql in dims_to_export:
+            prefix = "" if access == "public" else f"{access} "
+            lines.append(f"  {prefix}dimension:")
+            for dim, sql in access_dims:
                 if dim.description:
                     lines.append(f"    # desc: {self._one_line(dim.description)}")
                 if dim.type == "time" and dim.granularity:
@@ -2496,45 +3944,90 @@ class MalloyAdapter(BaseAdapter):
                     lines.append(f"    {dim.name} is {sql}")
 
         # Measures
-        measure_lines: list[str] = []
-        has_real_measure = False
+        measure_lines: dict[str, list[str]] = {"public": [], "internal": [], "private": []}
         for metric in model.metrics:
             measure_expr = self._format_measure(metric)
             if measure_expr is None:
                 # No faithful Malloy representation (e.g. cumulative/derived with
                 # no sql); skip it rather than silently emitting a bogus count().
-                measure_lines.append(f"    // {metric.name}: unsupported metric type, not exported")
+                measure_lines["public"].append(f"    // {metric.name}: unsupported metric type, not exported")
                 continue
-            has_real_measure = True
+            access = (metric.metadata or {}).get("malloy_access") or metric.visibility
             if metric.description:
-                measure_lines.append(f"    # desc: {self._one_line(metric.description)}")
-            measure_lines.append(f"    {metric.name} is {measure_expr}")
-        if has_real_measure:
+                measure_lines[access].append(f"    # desc: {self._one_line(metric.description)}")
+            measure_lines[access].append(f"    {metric.name} is {measure_expr}")
+        for access in ("public", "internal", "private"):
+            access_lines = measure_lines[access]
+            if not any(not line.lstrip().startswith("//") for line in access_lines):
+                continue
             lines.append("")
-            lines.append("  measure:")
-            lines.extend(measure_lines)
+            prefix = "" if access == "public" else f"{access} "
+            lines.append(f"  {prefix}measure:")
+            lines.extend(access_lines)
 
         # Joins - Tier 4.4: use on condition from metadata when available
         for rel in model.relationships:
             lines.append("")
+            join_reference = f"{rel.name} is {rel.related_model}" if rel.target_model else rel.name
             if rel.type == "cross":
                 # A cross join takes no key clause in Malloy.
-                lines.append(f"  join_cross: {rel.name}")
+                lines.append(f"  join_cross: {join_reference}")
                 continue
             # one_to_many and many_to_many fan out -> join_many; many_to_one and
             # one_to_one collapse to at most one match -> join_one.
             join_type = "join_many" if rel.type in ("one_to_many", "many_to_many") else "join_one"
             on_condition = (rel.metadata or {}).get("on_condition")
             if on_condition:
-                lines.append(f"  {join_type}: {rel.name} on {on_condition}")
+                lines.append(f"  {join_type}: {join_reference} on {on_condition}")
+            elif rel.sql:
+                rendered_condition = self._native_join_sql_to_malloy(rel, model.name)
+                lines.append(f"  {join_type}: {join_reference} on {rendered_condition}")
             elif rel.foreign_key:
-                lines.append(f"  {join_type}: {rel.name} with {rel.foreign_key}")
+                if isinstance(rel.foreign_key, list):
+                    raise ValueError(
+                        f"Cannot export relationship '{rel.name}' with composite keys and no exact SQL predicate"
+                    )
+                lines.append(f"  {join_type}: {join_reference} with {rel.foreign_key}")
             else:
-                lines.append(f"  {join_type}: {rel.name}")
+                lines.append(f"  {join_type}: {join_reference}")
 
         lines.append("}")
 
         return lines
+
+    @staticmethod
+    def _native_join_sql_to_malloy(relationship: Relationship, source_model_name: str) -> str:
+        """Render the native placeholder join contract without weakening its predicate."""
+        condition = relationship.sql or ""
+        protected_placeholders = [
+            condition[start:end]
+            for start, end, _kind in protected_sql_spans(condition)
+            if "{from}." in condition[start:end] or "{to}." in condition[start:end]
+        ]
+        if protected_placeholders:
+            raise ValueError(
+                f"Cannot export relationship '{relationship.name}': custom SQL contains protected placeholders "
+                "inside a literal, quoted identifier, or comment"
+            )
+
+        executable = mask_sql_literals_comments_and_quoted_identifiers(condition)
+        if "{from}." not in executable or "{to}." not in executable:
+            raise ValueError(
+                f"Cannot export relationship '{relationship.name}': custom SQL must qualify both sides with "
+                "{from}. and {to}. placeholders"
+            )
+        rendered = replace_outside_sql_protected(condition, "{from}", source_model_name)
+        rendered = replace_outside_sql_protected(rendered, "{to}", relationship.name)
+        if "{" in rendered or "}" in rendered:
+            raise ValueError(
+                f"Cannot export relationship '{relationship.name}': custom SQL contains protected placeholders "
+                "or unsupported placeholders"
+            )
+        if parse_sql_fragment(rendered) is None:
+            raise ValueError(
+                f"Cannot export relationship '{relationship.name}': rendered custom SQL is not a valid predicate"
+            )
+        return rendered
 
     @staticmethod
     def _one_line(text: str) -> str:

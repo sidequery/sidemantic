@@ -9,6 +9,7 @@ from sidemantic.core.governance import GovernedObject
 from sidemantic.core.metric import Metric
 from sidemantic.core.pre_aggregation import PreAggregation
 from sidemantic.core.relationship import Relationship
+from sidemantic.core.schema_exposure import SchemaExposure
 from sidemantic.core.security import SecurityPolicy
 from sidemantic.core.segment import Segment
 
@@ -46,6 +47,10 @@ class Model(GovernedObject):
     dimensions: list[Dimension] = Field(default_factory=list, description="Dimension definitions")
     metrics: list[Metric] = Field(default_factory=list, description="Measure definitions")
     segments: list[Segment] = Field(default_factory=list, description="Segment (named filter) definitions")
+    invariant_filters: list[str] = Field(
+        default_factory=list,
+        description="SQL predicates that always constrain this model before joins and aggregation",
+    )
     pre_aggregations: list[PreAggregation] = Field(
         default_factory=list, description="Pre-aggregation definitions for query optimization"
     )
@@ -61,6 +66,10 @@ class Model(GovernedObject):
     auto_dimensions: bool = Field(
         default=False,
         description="Auto-discover dimensions from database schema when added to a SemanticLayer",
+    )
+    schema_exposure: SchemaExposure | None = Field(
+        default=None,
+        description="Optional strict schema-introspection and physical-column visibility controls",
     )
 
     # Arbitrary metadata (ai_context, custom_extensions, etc.)

@@ -32,9 +32,10 @@ def test_metricflow_adapter():
 
     # Check relationships
     assert len(orders.relationships) > 0
-    # Should have a many_to_one relationship to customers (resolved from entity name "customer")
-    customer_rel = next((r for r in orders.relationships if r.name == "customers"), None)
+    # The entity remains the role while resolution records its canonical model.
+    customer_rel = next((r for r in orders.relationships if r.name == "customer"), None)
     assert customer_rel is not None
+    assert customer_rel.related_model == "customers"
     assert customer_rel.type == "many_to_one"
 
     # Check dimensions
@@ -78,9 +79,11 @@ def test_metricflow_adapter_join_discovery():
     orders = graph.get_model("orders")
     assert len(orders.relationships) > 0
 
-    # After resolution, the relationship should point to "customers" (not "customer")
-    customer_rel = next((r for r in orders.relationships if r.name == "customers"), None)
-    assert customer_rel is not None, "Relationship should be resolved from 'customer' to 'customers'"
+    # Resolution preserves the MetricFlow entity as the relationship role while
+    # recording the canonical model used for graph traversal.
+    customer_rel = next((r for r in orders.relationships if r.name == "customer"), None)
+    assert customer_rel is not None
+    assert customer_rel.related_model == "customers"
     assert customer_rel.type == "many_to_one"
 
     # Verify that queries can now build join paths
@@ -89,7 +92,7 @@ def test_metricflow_adapter_join_discovery():
     # This query should work now that relationships are resolved
     sql = generator.generate(
         metrics=["orders.revenue"],
-        dimensions=["customers.region"],  # Cross-model dimension
+        dimensions=["customer.region"],  # Cross-model dimension through the entity role
     )
 
     # Should contain a join to customers
@@ -257,13 +260,15 @@ def test_metricflow_multi_model():
     assert orders.primary_key == "order_id"
     assert len(orders.relationships) == 2
 
-    # Verify relationships (resolved from entity names "customer" and "product")
-    customer_rel = next((r for r in orders.relationships if r.name == "customers"), None)
+    # Entity names remain roles while plural semantic-model names are canonical targets.
+    customer_rel = next((r for r in orders.relationships if r.name == "customer"), None)
     assert customer_rel is not None
+    assert customer_rel.related_model == "customers"
     assert customer_rel.type == "many_to_one"
 
-    product_rel = next((r for r in orders.relationships if r.name == "products"), None)
+    product_rel = next((r for r in orders.relationships if r.name == "product"), None)
     assert product_rel is not None
+    assert product_rel.related_model == "products"
     assert product_rel.type == "many_to_one"
 
     # Check time dimensions with different expressions
@@ -283,9 +288,10 @@ def test_metricflow_multi_model():
     assert line_items.primary_key == "line_item_id"
     assert len(line_items.relationships) == 2
 
-    # Check line_items relationships (should be resolved from entity names)
-    order_rel = next((r for r in line_items.relationships if r.name == "orders"), None)
+    # Check line_items relationship role and canonical target.
+    order_rel = next((r for r in line_items.relationships if r.name == "order"), None)
     assert order_rel is not None
+    assert order_rel.related_model == "orders"
     assert order_rel.type == "many_to_one"
 
     # Check graph-level metrics
@@ -849,10 +855,11 @@ def test_import_real_metricflow_example():
     assert "revenue" in measure_names
     assert "avg_order_value" in measure_names
 
-    # Verify relationships were created from entities (resolved to model names)
+    # Verify the entity role and separately resolved canonical model.
     rel_names = [r.name for r in orders.relationships]
-    assert "customers" in rel_names
-    customer_rel = next(r for r in orders.relationships if r.name == "customers")
+    assert "customer" in rel_names
+    customer_rel = next(r for r in orders.relationships if r.name == "customer")
+    assert customer_rel.related_model == "customers"
     assert customer_rel.type == "many_to_one"
     assert customer_rel.foreign_key == "customer_id"
 
@@ -886,10 +893,11 @@ def test_metricflow_latest_spec_models():
     # agg_time_dimension promoted to top level
     assert orders.default_time_dimension == "ordered_at"
 
-    # Column-based foreign entity becomes a relationship (resolved to model name)
+    # Column-based foreign entity remains the role while resolving to the model.
     rel_names = {r.name for r in orders.relationships}
-    assert "customers" in rel_names
-    customer_rel = next(r for r in orders.relationships if r.name == "customers")
+    assert "customer" in rel_names
+    customer_rel = next(r for r in orders.relationships if r.name == "customer")
+    assert customer_rel.related_model == "customers"
     assert customer_rel.type == "many_to_one"
     assert customer_rel.foreign_key == "customer_id"
 

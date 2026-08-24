@@ -1419,14 +1419,14 @@ class AtScaleSMLAdapter(BaseAdapter):
             relationships = []
             for rel in model.relationships:
                 join_column = rel.foreign_key or f"{rel.name}_id"
-                related_model = models.get(rel.name)
+                related_model = models.get(rel.related_model)
                 related_level = self._resolve_relationship_level(related_model, rel, join_column)
 
                 relationships.append(
                     {
                         "unique_name": f"{model.name}_{rel.name}",
                         "from": {"dataset": model.name, "join_columns": [join_column]},
-                        "to": {"dimension": rel.name, "level": related_level},
+                        "to": {"dimension": rel.related_model, "level": related_level},
                         "type": rel.type,
                     }
                 )
@@ -1436,8 +1436,8 @@ class AtScaleSMLAdapter(BaseAdapter):
 
         dimension_names = [model.name]
         for rel in model.relationships:
-            if rel.name not in dimension_names:
-                dimension_names.append(rel.name)
+            if rel.related_model not in dimension_names:
+                dimension_names.append(rel.related_model)
 
         if dimension_names:
             model_def["dimensions"] = dimension_names

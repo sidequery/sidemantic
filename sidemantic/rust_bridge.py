@@ -14,7 +14,11 @@ from sidemantic.yaml_compat import safe_load as _yaml_safe_load
 # Lambda-only PreAggregation fields absent from the sidemantic-rs YAML schema
 # (which uses deny_unknown_fields). Exclude them when dumping a model so Rust
 # deserialization does not reject a model carrying a lambda pre-aggregation.
-_RUST_MODEL_DUMP_EXCLUDE = {"pre_aggregations": {"__all__": {"rollups", "union_with_source_data"}}}
+_RUST_MODEL_DUMP_EXCLUDE = {
+    "invariant_filters": True,
+    "schema_exposure": True,
+    "pre_aggregations": {"__all__": {"rollups", "union_with_source_data"}},
+}
 
 
 def _model_dump_for_rust(model_obj) -> dict:
@@ -496,7 +500,7 @@ def models_to_rust_yaml(
             rel_payload = _serialize_relationship(
                 relationship,
                 source_model=model,
-                target_model=models_by_name.get(relationship.name),
+                target_model=models_by_name.get(relationship.related_model),
             )
             if rel_payload:
                 model_data["relationships"].append(rel_payload)

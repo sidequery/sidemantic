@@ -1130,7 +1130,7 @@ class SnowflakeAdapter(BaseAdapter):
         """
         rel_def = {
             "left_table": model.name,
-            "right_table": rel.name,
+            "right_table": rel.related_model,
             "relationship_columns": [
                 {
                     "left_column": rel.sql_expr,
@@ -1146,5 +1146,7 @@ class SnowflakeAdapter(BaseAdapter):
         snowflake_name = (rel.metadata or {}).get("snowflake", {}).get("name")
         if snowflake_name:
             rel_def = {"name": snowflake_name, **rel_def}
+        elif rel.name != rel.related_model:
+            rel_def = {"name": rel.name, **rel_def}
 
         return rel_def

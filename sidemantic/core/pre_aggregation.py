@@ -159,6 +159,12 @@ class PreAggregation(BaseModel):
             # FROM orders
             # GROUP BY 1, 2
         """
+        invariant_filters = [
+            predicate.replace("{model}.", "").replace("{model}", "").strip()
+            for predicate in getattr(model, "invariant_filters", [])
+            if predicate.strip()
+        ]
+
         # original_sql pre-aggregations stage the cube's base query verbatim (no
         # GROUP BY) so heavier rollups or ad-hoc queries can build on a
         # materialized base instead of re-running it. They are not aggregation
@@ -169,19 +175,28 @@ class PreAggregation(BaseModel):
                 # used both as a FROM source and as a column qualifier ({model}.col). A custom
                 # query with no placeholder is staged verbatim.
                 if "{model}" not in self.sql:
+                    if invariant_filters:
+                        raise ValueError(
+                            f"Pre-aggregation '{self.name}' has custom original_sql without a {{model}} "
+                            "source placeholder, so model invariant filters cannot be proven to apply"
+                        )
                     return self.sql
-                if getattr(model, "sql", None):
-                    # sql-backed model: expose its query as an aliased CTE and point {model} at
-                    # that alias. Inlining a bare "(SELECT ...)" instead would produce invalid
-                    # "(SELECT ...).col" column qualifiers in DuckDB/Postgres-style dialects.
-                    alias = f"{model.name}__base"
-                    return f"WITH {alias} AS (\n{model.sql}\n)\n{self.sql.replace('{model}', alias)}"
-                # table-backed model: {model} resolves directly to the table name.
-                return self.sql.replace("{model}", model.table)
+                if not invariant_filters:
+                    if getattr(model, "sql", None):
+                        alias = f"{model.name}__base"
+                        return f"WITH {alias} AS (\n{model.sql}\n)\n{self.sql.replace('{model}', alias)}"
+                    return self.sql.replace("{model}", model.table)
+                source = f"({model.sql}) AS t" if getattr(model, "sql", None) else model.table
+                where = " AND ".join(f"({predicate})" for predicate in invariant_filters)
+                scoped_source = f"SELECT * FROM {source}" + (f"\nWHERE {where}" if where else "")
+                alias = f"{model.name}__base"
+                return f"WITH {alias} AS (\n{scoped_source}\n)\n{self.sql.replace('{model}', alias)}"
             base_sql = getattr(model, "sql", None)
-            if base_sql:
+            if base_sql and not invariant_filters:
                 return base_sql
-            return f"SELECT * FROM {model.table}"
+            source = f"({base_sql}) AS t" if base_sql else model.table
+            where = " AND ".join(f"({predicate})" for predicate in invariant_filters)
+            return f"SELECT * FROM {source}" + (f"\nWHERE {where}" if where else "")
 
         select_exprs = []
         group_by_positions = []
@@ -282,7 +297,12 @@ class PreAggregation(BaseModel):
         # bucket so partitioned builds materialize one table per partition.
         select_str = ",\n  ".join(select_exprs)
         group_by_str = ", ".join(group_by_positions)
-        where_clause = f"\nWHERE {partition_filter}" if partition_filter else ""
+        source_filters = [*invariant_filters]
+        if partition_filter:
+            source_filters.append(partition_filter)
+        where_clause = (
+            "\nWHERE " + " AND ".join(f"({predicate})" for predicate in source_filters) if source_filters else ""
+        )
 
         sql = f"""SELECT
   {select_str}
@@ -353,7 +373,11 @@ FROM {from_clause}{where_clause}"""
         elif lookback is None and self.refresh_key and self.refresh_key.update_window:
             lookback = self.refresh_key.update_window
 
-        range_preds = []
+        range_preds = [
+            predicate.replace("{model}.", "").replace("{model}", "").strip()
+            for predicate in getattr(model, "invariant_filters", [])
+            if predicate.strip()
+        ]
         if build_range_start is not None:
             range_preds.append(f"{time_expr} >= '{build_range_start}'")
         if build_range_end is not None:

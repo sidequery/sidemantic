@@ -232,11 +232,11 @@ class TestModelStructure:
         # Time with Malloy dot syntax
         reg_month = customers.get_dimension("registered_month")
         assert reg_month is not None
-        assert "month" in reg_month.sql
+        assert "month" in reg_month.sql.lower()
 
         reg_year = customers.get_dimension("registered_year")
         assert reg_year is not None
-        assert "year" in reg_year.sql
+        assert "year" in reg_year.sql.lower()
 
         # ::date cast
         reg_date = customers.get_dimension("registered_date")
@@ -296,11 +296,10 @@ class TestModelStructure:
         assert "DATE" in is_recent.sql.upper()
         assert "2024-02-01" in is_recent.sql
 
-    def test_orders_segment(self, kitchen_sink_graph):
+    def test_orders_invariant_filter(self, kitchen_sink_graph):
         orders = kitchen_sink_graph.get_model("orders")
-        assert len(orders.segments) >= 1
-        segment_sqls = [s.sql for s in orders.segments]
-        assert any("status" in sql for sql in segment_sqls)
+        assert orders.segments == []
+        assert any("status" in sql for sql in orders.invariant_filters)
 
     def test_orders_derived_measure(self, kitchen_sink_graph):
         orders = kitchen_sink_graph.get_model("orders")
@@ -527,19 +526,18 @@ class TestJoinQueries:
 
 
 # =============================================================================
-# SEGMENT TESTS
+# INVARIANT FILTER TESTS
 # =============================================================================
 
 
-class TestSegments:
-    """Test source-level where clauses applied as segments."""
+class TestInvariantFilters:
+    """Test source-level where clauses applied unconditionally."""
 
-    def test_orders_default_segment(self, kitchen_sink_layer):
+    def test_orders_source_invariant(self, kitchen_sink_layer):
         """The orders source has where: status != 'test', which should
         already be applied (no test orders in our data anyway)."""
         result = kitchen_sink_layer.query(
             metrics=["orders.order_count"],
-            segments=["orders.default_filter"],
         )
         records = fetch_dicts(result)
         assert len(records) == 1

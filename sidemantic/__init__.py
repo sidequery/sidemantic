@@ -15,6 +15,7 @@ from sidemantic.core.pre_aggregation import PreAggregation, RefreshKey, RefreshR
 from sidemantic.core.preagg_recommender import PreAggRecommendation, PreAggregationRecommender, QueryPattern
 from sidemantic.core.query_plan import PreaggCandidate, PreaggCheck, QueryPlan
 from sidemantic.core.relationship import Relationship
+from sidemantic.core.schema_exposure import SchemaExposure
 from sidemantic.core.security import SecurityPolicy
 from sidemantic.core.segment import Segment
 
@@ -44,6 +45,7 @@ __all__ = [
     "Relationship",
     "SecurityError",
     "SecurityPolicy",
+    "SchemaExposure",
     "Segment",
     "SavedQuery",
     "SemanticLayer",

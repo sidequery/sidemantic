@@ -1015,6 +1015,26 @@ def test_format_join_condition_handles_composite_one_to_many_keys():
     )
 
 
+def test_format_join_condition_looks_up_canonical_target_and_renders_role():
+    models = {
+        "orders": Model(name="orders", table="orders", primary_key="id"),
+        "customers": Model(name="customers", table="customers", primary_key="id"),
+    }
+
+    condition = _format_join_condition(
+        "orders",
+        Relationship(
+            name="buyer",
+            target_model="customers",
+            type="many_to_one",
+            foreign_key="customer_id",
+        ),
+        models,
+    )
+
+    assert condition == "orders.customer_id = buyer.id"
+
+
 def test_get_models_includes_join_conditions_and_source_metadata():
     tmpdir = Path(tempfile.mkdtemp())
     try:

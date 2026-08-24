@@ -172,7 +172,7 @@ def _freeze_current_timestamp(filter_str: str, dialect: str | None = None) -> st
 
 def _format_join_condition(model_name: str, rel, models: dict[str, Any]) -> str | None:
     related_name = rel.name
-    related_model = models.get(related_name)
+    related_model = models.get(rel.related_model)
     if not related_model:
         return None
 

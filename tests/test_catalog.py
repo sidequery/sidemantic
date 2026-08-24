@@ -137,6 +137,32 @@ def test_foreign_key_constraints(layer):
     assert customer_id_col["is_foreign_key"] is True
 
 
+def test_foreign_key_catalog_uses_canonical_target_for_role_alias(layer):
+    layer.add_model(
+        Model(
+            name="orders",
+            table="orders",
+            primary_key="id",
+            relationships=[
+                Relationship(
+                    name="buyer",
+                    target_model="customers",
+                    type="many_to_one",
+                    foreign_key="customer_id",
+                )
+            ],
+            dimensions=[Dimension(name="customer_id", sql="customer_id", type="numeric")],
+        )
+    )
+    layer.add_model(Model(name="customers", table="customers", primary_key="id"))
+
+    catalog = layer.get_catalog_metadata()
+
+    usage = next(item for item in catalog["key_column_usage"] if item["column_name"] == "customer_id")
+    assert usage["referenced_table_name"] == "customers"
+    assert usage["referenced_column_name"] == "id"
+
+
 def test_type_mappings(layer):
     """Test all type mappings."""
     test_model = Model(

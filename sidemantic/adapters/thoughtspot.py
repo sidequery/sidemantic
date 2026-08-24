@@ -1671,25 +1671,25 @@ class ThoughtSpotAdapter(BaseAdapter):
         table_paths: list[dict[str, Any]] = [{"id": base_table, "table": base_table}]
 
         for rel in model.relationships:
-            tables.append({"name": rel.name})
+            tables.append({"name": rel.related_model})
             join_name = f"{base_table}_{rel.name}"
             join_type = "LEFT_OUTER" if rel.type in {"many_to_one", "one_to_one"} else "OUTER"
             if rel.type in {"one_to_many", "one_to_one"}:
-                left_table = rel.name
+                left_table = rel.related_model
                 left_key = rel.sql_expr
                 right_table = base_table
                 right_key = model.primary_key
             else:
                 left_table = base_table
                 left_key = rel.sql_expr
-                right_table = rel.name
+                right_table = rel.related_model
                 right_key = rel.related_key
             on_expr = f"[{left_table}::{left_key}] = [{right_table}::{right_key}]"
             joins.append(
                 {
                     "name": join_name,
                     "source": base_table,
-                    "destination": rel.name,
+                    "destination": rel.related_model,
                     "type": join_type,
                     "on": on_expr,
                     "is_one_to_one": rel.type == "one_to_one",
@@ -1698,7 +1698,7 @@ class ThoughtSpotAdapter(BaseAdapter):
             table_paths.append(
                 {
                     "id": rel.name,
-                    "table": rel.name,
+                    "table": rel.related_model,
                     "join_path": [{"join": [join_name]}],
                 }
             )

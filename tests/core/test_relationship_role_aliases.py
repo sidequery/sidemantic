@@ -210,6 +210,52 @@ def test_role_alias_cannot_hijack_canonical_model_name():
         graph.build_adjacency()
 
 
+def test_many_to_many_through_column_check_uses_scoped_target_instance(monkeypatch):
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="orders",
+            table="orders",
+            primary_key="id",
+            relationships=[
+                Relationship(
+                    name="buyer",
+                    target_model="customers",
+                    type="many_to_many",
+                    through="order_customers",
+                    through_foreign_key="order_id",
+                    related_foreign_key="customer_id",
+                )
+            ],
+        )
+    )
+    graph.add_model(
+        Model(
+            name="returns",
+            table="returns",
+            primary_key="id",
+            relationships=[
+                Relationship(
+                    name="buyer",
+                    target_model="customers",
+                    type="many_to_one",
+                    foreign_key="customer_id",
+                )
+            ],
+        )
+    )
+    graph.add_model(Model(name="customers", table="customers", primary_key="id"))
+    graph.add_model(Model(name="order_customers", table="order_customers", primary_key="id"))
+    graph.build_adjacency()
+    relationship = graph.models["orders"].relationships[0]
+    assert graph.relationship_target_instance("orders", relationship) == "orders$buyer"
+    monkeypatch.setattr(graph, "instance_has_keyed_relationship", lambda *_args: False)
+
+    generator = SQLGenerator(graph)
+
+    assert generator._model_needs_keyed_join_columns("order_customers", {"orders", "order_customers", "orders$buyer"})
+
+
 def test_reserved_scoped_role_namespace_is_rejected():
     with pytest.raises(ValueError, match="reserved for scoped role paths"):
         Relationship(

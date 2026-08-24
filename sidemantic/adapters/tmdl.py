@@ -1831,7 +1831,7 @@ def _export_relationships(graph: SemanticGraph, warnings: list[TmdlExportWarning
     lines: list[str] = []
     for model in graph.models.values():
         for rel in model.relationships:
-            related = graph.models.get(rel.name)
+            related = graph.models.get(rel.related_model)
             if not related:
                 if warnings is not None:
                     _append_export_warning(
@@ -1839,10 +1839,11 @@ def _export_relationships(graph: SemanticGraph, warnings: list[TmdlExportWarning
                         code="relationship_export_skip",
                         context="relationship",
                         message=(
-                            f"Skipping relationship export: related model not found from='{model.name}' to='{rel.name}'"
+                            "Skipping relationship export: related model not found "
+                            f"from='{model.name}' role='{rel.name}' to='{rel.related_model}'"
                         ),
                         from_model=model.name,
-                        to_model=rel.name,
+                        to_model=rel.related_model,
                     )
                 continue
 
@@ -2188,7 +2189,7 @@ def _export_relationship_refs(graph: SemanticGraph) -> list[tuple[str, str | Non
     refs_by_key: dict[str, tuple[str, str | None]] = {}
     for model in graph.models.values():
         for rel in model.relationships:
-            related = graph.models.get(rel.name)
+            related = graph.models.get(rel.related_model)
             if not related:
                 continue
             rel_name = _relationship_export_name(model.name, related.name, rel)
@@ -2241,6 +2242,8 @@ def _relationship_export_name(from_table: str, to_table: str, rel: Relationship)
     explicit_name = getattr(rel, "_tmdl_relationship_name", None)
     if isinstance(explicit_name, str) and explicit_name.strip():
         return explicit_name
+    if rel.name != rel.related_model:
+        return _relationship_name(from_table, rel.name)
     return _relationship_name(from_table, to_table)
 
 

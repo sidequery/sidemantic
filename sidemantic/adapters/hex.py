@@ -443,10 +443,10 @@ class HexAdapter(BaseAdapter):
                 foreign_key = parts[0].strip()
 
         return Relationship(
-            name=target,
+            name=relation_id,
+            target_model=target if target != relation_id else None,
             type=sidemantic_type,
             foreign_key=foreign_key,
-            sql_expr=join_sql if join_sql else None,
         )
 
     def export(self, graph: SemanticGraph, output_path: str | Path) -> None:
@@ -641,13 +641,13 @@ class HexAdapter(BaseAdapter):
                 "id": rel.name,
                 "type": rel.type,
             }
+            if rel.name != rel.related_model:
+                relation_def["target"] = rel.related_model
 
             # Build join_sql
-            if rel.sql_expr:
-                relation_def["join_sql"] = rel.sql_expr
-            elif rel.foreign_key:
+            if rel.foreign_key:
                 # Construct join condition
-                relation_def["join_sql"] = f"{rel.foreign_key} = ${{{rel.name}}}.id"
+                relation_def["join_sql"] = f"{rel.foreign_key} = ${{{rel.name}}}.{rel.primary_key or 'id'}"
 
             relations.append(relation_def)
 

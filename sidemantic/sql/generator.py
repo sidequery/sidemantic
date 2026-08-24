@@ -2532,7 +2532,7 @@ class SQLGenerator:
                 if (
                     relationship.type == "many_to_many"
                     and relationship.through == model_name
-                    and relationship.name in all_models
+                    and target_instance in all_models
                 ):
                     return True
 

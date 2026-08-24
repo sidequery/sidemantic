@@ -410,11 +410,11 @@ class HolisticsAdapter(BaseAdapter):
 
     def _export_relationships(self, models: dict[str, Model]) -> list[str]:
         blocks: list[str] = []
-        seen: set[tuple[str, str, str, str, str]] = set()
+        seen: set[tuple[str, str, str, str, str, str]] = set()
 
         for model in models.values():
             for relationship in model.relationships:
-                target = models.get(relationship.name)
+                target = models.get(relationship.related_model)
                 if target is None:
                     continue
 
@@ -425,7 +425,14 @@ class HolisticsAdapter(BaseAdapter):
                     from_field = relationship.primary_key or model.primary_key
                     to_field = relationship.foreign_key or relationship.sql_expr
 
-                signature = (model.name, relationship.name, relationship.type, from_field, to_field)
+                signature = (
+                    model.name,
+                    relationship.name,
+                    relationship.related_model,
+                    relationship.type,
+                    from_field,
+                    to_field,
+                )
                 if signature in seen:
                     continue
                 seen.add(signature)
@@ -433,7 +440,7 @@ class HolisticsAdapter(BaseAdapter):
                 block = [f"Relationship {model.name}_{relationship.name} {{"]
                 block.append(f"  type: '{relationship.type}'")
                 block.append(f"  from: r({model.name}.{from_field})")
-                block.append(f"  to: r({relationship.name}.{to_field})")
+                block.append(f"  to: r({relationship.related_model}.{to_field})")
                 block.append("}")
                 blocks.append("\n".join(block))
 

@@ -1610,8 +1610,8 @@ def _infer_relationships(models: dict) -> None:
                     # particular, the target may join on a non-primary key, while
                     # convention-based inference would fabricate a conflicting
                     # edge to the target's primary key.
-                    existing = [r for r in model.relationships if r.name == target]
-                    declared_reverse = [r for r in models[target].relationships if r.name == model_name]
+                    existing = [r for r in model.relationships if r.related_model == target]
+                    declared_reverse = [r for r in models[target].relationships if r.related_model == model_name]
                     if not existing and not declared_reverse:
                         # Add many_to_one relationship
                         model.relationships.append(
@@ -1620,7 +1620,7 @@ def _infer_relationships(models: dict) -> None:
 
                         # Add reverse one_to_many relationship
                         target_model = models[target]
-                        reverse_existing = [r for r in target_model.relationships if r.name == model_name]
+                        reverse_existing = [r for r in target_model.relationships if r.related_model == model_name]
                         if not reverse_existing:
                             target_model.relationships.append(
                                 Relationship(name=model_name, type="one_to_many", foreign_key=dimension.name)

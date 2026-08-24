@@ -64,6 +64,53 @@ def test_inference_respects_reverse_relationship_on_non_primary_key():
     assert accounts.relationships[0].primary_key == "external_id"
 
 
+def test_inference_respects_aliased_relationship_target_without_duplicates():
+    orders = Model(
+        name="orders",
+        table="orders",
+        primary_key="id",
+        dimensions=[Dimension(name="customer_id", type="categorical")],
+        relationships=[
+            Relationship(
+                name="billing_customer",
+                target_model="customers",
+                type="many_to_one",
+                foreign_key="customer_id",
+            )
+        ],
+    )
+    customers = Model(name="customers", table="customers", primary_key="id")
+
+    _infer_relationships({"orders": orders, "customers": customers})
+
+    assert [(rel.name, rel.related_model) for rel in orders.relationships] == [("billing_customer", "customers")]
+    assert customers.relationships == []
+
+
+def test_directory_loader_does_not_infer_joins_over_malloy_role_alias(tmp_path):
+    (tmp_path / "models.malloy").write_text(
+        """source: customers is duckdb.table('customers') extend {
+  primary_key: id
+}
+source: orders is duckdb.table('orders') extend {
+  primary_key: id
+  dimension: customer_id is customer_id
+  join_one: buyer is customers on customer_id = buyer.id
+}
+"""
+    )
+    layer = SemanticLayer(auto_register=False, engine="python")
+    layer.adapter.execute("create table customers (id integer)")
+    layer.adapter.execute("create table orders (id integer, customer_id integer)")
+
+    load_from_directory(layer, tmp_path)
+
+    orders = layer.graph.models["orders"]
+    customers = layer.graph.models["customers"]
+    assert [(rel.name, rel.related_model) for rel in orders.relationships] == [("buyer", "customers")]
+    assert all(rel.related_model != "orders" for rel in customers.relationships)
+
+
 def test_load_from_directory_strict_raises_on_detected_parse_error(tmp_path):
     """Strict loading fails instead of returning a partial graph."""
     (tmp_path / "good.yml").write_text(

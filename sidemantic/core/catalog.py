@@ -247,7 +247,7 @@ def get_catalog_metadata(graph: SemanticGraph, schema: str = "public", enforce_v
             if rel.type in ("many_to_one", "one_to_one"):
                 # This model has a foreign key to another model
                 fk_column = rel.foreign_key
-                referenced_table = rel.name
+                referenced_table = rel.related_model
                 referenced_column = graph.get_model(referenced_table).primary_key
 
                 constraint_name = f"{model.name}_{fk_column}_fkey"

@@ -15,38 +15,22 @@ from sidemantic.adapters.sidemantic import SidemanticAdapter
 # =============================================================================
 
 
-def test_metricflow_to_cube_conversion():
-    """Test converting MetricFlow format to Cube format."""
+def test_metricflow_to_cube_conversion_rejects_entity_role_alias(tmp_path):
+    """Cube cannot encode MetricFlow's entity role separately from its target."""
     # Import from MetricFlow
     mf_adapter = MetricFlowAdapter()
     graph = mf_adapter.parse("tests/fixtures/metricflow/semantic_models.yml")
 
-    # Export to Cube
     cube_adapter = CubeAdapter()
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
-        temp_path = Path(f.name)
+    output = tmp_path / "cube.yml"
 
-    try:
-        cube_adapter.export(graph, temp_path)
+    with pytest.raises(
+        ValueError,
+        match="Cube export cannot represent relationship role 'customer'.*target cube 'customers'",
+    ):
+        cube_adapter.export(graph, output)
 
-        # Re-import as Cube and verify structure
-        graph2 = cube_adapter.parse(temp_path)
-
-        assert "orders" in graph2.models
-        assert "customers" in graph2.models
-
-        orders = graph2.models["orders"]
-
-        # Verify dimensions converted
-        dim_names = [d.name for d in orders.dimensions]
-        assert "status" in dim_names
-
-        # Verify measures converted
-        measure_names = [m.name for m in orders.metrics]
-        assert "revenue" in measure_names
-
-    finally:
-        temp_path.unlink(missing_ok=True)
+    assert not output.exists()
 
 
 # =============================================================================

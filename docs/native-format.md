@@ -112,7 +112,7 @@ At least one of `table`, `sql`, or `source_uri` should be present unless the mod
 | `sql` | Conditional | SQL subquery used as the model source. |
 | `source_uri` | Conditional | Source URI for external data discovery or file-backed sources. Native loaders preserve it; execution is adapter/runtime-specific until a concrete backend maps URI sources. |
 | `extends` | No | Parent model name. Child fields override or extend parent fields. |
-| `primary_key` | No | Single primary key string or list of columns. Defaults to `id`. |
+| `primary_key` | No | Single primary key string or list of columns. Omitted, null, or empty means no known primary key; no `id` is inferred. |
 | `primary_key_columns` | No | Explicit list form for primary keys. |
 | `unique_keys` | No | List of unique key column lists. |
 | `description` | No | Human-readable description. |

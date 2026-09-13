@@ -1,0 +1,20 @@
+version: 1
+models:
+- name: restricted
+  table: restricted
+  primary_key: id
+  dimensions:
+  - name: tenant
+    type: numeric
+  metrics:
+  - name: revenue
+    agg: sum
+    sql: amount
+  security:
+    row_filters:
+    - tenant = {{ user.tenant }}
+  pre_aggregations:
+  - name: total
+    type: rollup
+    measures:
+    - revenue

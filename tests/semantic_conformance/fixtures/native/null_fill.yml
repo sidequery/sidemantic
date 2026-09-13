@@ -1,0 +1,11 @@
+version: 1
+models:
+  - name: collisions
+    table: collisions
+    primary_key: id
+    metrics:
+      - name: empty_revenue
+        agg: sum
+        sql: amount
+        filters: ['false']
+        fill_nulls_with: 0

@@ -1,0 +1,22 @@
+version: 0.2.0.dev0
+semantic_model:
+  - name: commerce
+    datasets:
+      - name: orders
+        source: orders
+        primary_key: [id]
+        fields:
+          - name: id
+            expression:
+              dialects:
+                - {dialect: ANSI_SQL, expression: id}
+          - name: amount
+            expression:
+              dialects:
+                - {dialect: ANSI_SQL, expression: amount}
+    metrics:
+      - name: large_revenue
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: 'SUM(CASE WHEN orders.amount >= 100 THEN orders.amount ELSE 0 END)'

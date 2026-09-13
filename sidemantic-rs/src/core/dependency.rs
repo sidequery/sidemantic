@@ -9,6 +9,167 @@ use polyglot_sql::{parse, traversal, DialectType, Expression};
 use super::model::{Metric, MetricType};
 use super::SemanticGraph;
 
+/// A SQL column reference, distinguished from literals, comments and function names.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SemanticColumnReference {
+    pub model: Option<String>,
+    pub field: String,
+    pub aggregate_input: bool,
+}
+
+impl SemanticColumnReference {
+    pub fn name(&self) -> String {
+        self.model.as_ref().map_or_else(
+            || self.field.clone(),
+            |model| format!("{model}.{}", self.field),
+        )
+    }
+}
+
+/// Parse one scalar expression in the handoff's declared DuckDB dialect.
+/// Unlike legacy helpers, failure never falls back to scanning source text.
+pub fn parse_semantic_expression(sql: &str) -> crate::error::Result<Expression> {
+    let statement = polyglot_sql::parse_one(&format!("SELECT {sql}"), DialectType::DuckDB)
+        .map_err(|error| crate::error::SidemanticError::SqlParse(error.to_string()))?;
+    let Expression::Select(mut select) = statement else {
+        return Err(crate::error::SidemanticError::SqlParse(
+            "expected scalar expression".into(),
+        ));
+    };
+    if select.expressions.len() != 1 || select.from.is_some() || select.where_clause.is_some() {
+        return Err(crate::error::SidemanticError::SqlParse(
+            "expected one scalar expression".into(),
+        ));
+    }
+    Ok(select.expressions.remove(0))
+}
+
+pub fn semantic_column_references(sql: &str) -> crate::error::Result<Vec<SemanticColumnReference>> {
+    let expression = parse_semantic_expression(sql)?;
+    // polyglot 0.1.15's public traversal omits typed aggregate/scalar children
+    // (including Sum.this). Its serialized AST covers those children faithfully.
+    // Walk that structure; strings/comments are never parsed as references.
+    let ast = serde_json::to_value(expression)
+        .map_err(|error| crate::error::SidemanticError::SqlParse(error.to_string()))?;
+    let mut references = Vec::new();
+    let mut stack = vec![(&ast, false)];
+    while let Some((node, aggregate_input)) = stack.pop() {
+        match node {
+            serde_json::Value::Object(fields) => {
+                let kind = (fields.len() == 1).then(|| fields.keys().next().unwrap().as_str());
+                if matches!(kind, Some("select" | "subquery" | "raw")) {
+                    return Err(crate::error::SidemanticError::UnsupportedSemanticFeatures {
+                        capabilities: vec!["expression.subquery_or_raw_scope".into()],
+                    });
+                }
+                let aggregate_input = aggregate_input
+                    || matches!(
+                        kind,
+                        Some(
+                            "count"
+                                | "sum"
+                                | "avg"
+                                | "min"
+                                | "max"
+                                | "median"
+                                | "mode"
+                                | "stddev"
+                                | "stddev_pop"
+                                | "stddev_samp"
+                                | "variance"
+                                | "var_pop"
+                                | "var_samp"
+                                | "aggregate_function"
+                                | "group_concat"
+                                | "string_agg"
+                                | "list_agg"
+                                | "array_agg"
+                                | "count_if"
+                                | "sum_if"
+                                | "first"
+                                | "last"
+                                | "any_value"
+                                | "approx_distinct"
+                                | "approx_count_distinct"
+                                | "approx_percentile"
+                                | "percentile"
+                                | "logical_and"
+                                | "logical_or"
+                                | "skewness"
+                                | "array_concat_agg"
+                                | "array_unique_agg"
+                                | "bool_xor_agg"
+                        )
+                    );
+                if kind == Some("column") {
+                    let column: polyglot_sql::expressions::Column =
+                        serde_json::from_value(fields["column"].clone()).map_err(|error| {
+                            crate::error::SidemanticError::SqlParse(error.to_string())
+                        })?;
+                    references.push(SemanticColumnReference {
+                        model: column.table.map(|table| table.name),
+                        field: column.name.name,
+                        aggregate_input,
+                    });
+                } else {
+                    stack.extend(fields.values().map(|child| (child, aggregate_input)));
+                }
+            }
+            serde_json::Value::Array(children) => {
+                stack.extend(children.iter().map(|child| (child, aggregate_input)))
+            }
+            _ => {}
+        }
+    }
+    Ok(references)
+}
+
+/// Replace column nodes in every AST child, including typed functions that the
+/// pinned polyglot transform visitor does not descend into.
+pub fn replace_semantic_columns(
+    expression: Expression,
+    replacements: &std::collections::HashMap<(Option<String>, String), String>,
+) -> crate::error::Result<Expression> {
+    use crate::error::SidemanticError;
+    fn replace(
+        value: &mut serde_json::Value,
+        replacements: &std::collections::HashMap<(Option<String>, String), String>,
+    ) -> crate::error::Result<()> {
+        match value {
+            serde_json::Value::Object(fields) => {
+                if fields.len() == 1 && fields.contains_key("column") {
+                    let column: polyglot_sql::expressions::Column =
+                        serde_json::from_value(fields["column"].clone())
+                            .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))?;
+                    let key = (column.table.map(|table| table.name), column.name.name);
+                    if let Some(sql) = replacements.get(&key) {
+                        *value =
+                            serde_json::to_value(Expression::Raw(polyglot_sql::expressions::Raw {
+                                sql: sql.clone(),
+                            }))
+                            .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))?;
+                    }
+                } else {
+                    for child in fields.values_mut() {
+                        replace(child, replacements)?;
+                    }
+                }
+            }
+            serde_json::Value::Array(children) => {
+                for child in children {
+                    replace(child, replacements)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+    let mut value = serde_json::to_value(expression)
+        .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))?;
+    replace(&mut value, replacements)?;
+    serde_json::from_value(value).map_err(|error| SidemanticError::SqlGeneration(error.to_string()))
+}
+
 /// Extract all metric/measure dependencies from a metric definition
 ///
 /// Returns a set of metric names that this metric depends on.

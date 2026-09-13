@@ -92,11 +92,35 @@ pub struct SemanticGraph {
     adjacency: HashMap<String, Vec<AdjacencyEdge>>,
     /// Graph-level metadata payload (e.g. format-specific import/export state).
     metadata: Option<serde_json::Value>,
+    /// Explicit scope supplied by a semantic handoff, independent of SQL references.
+    metric_owners: HashMap<String, String>,
+    strict_metric_scope: bool,
 }
 
 impl SemanticGraph {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn set_metric_scopes(&mut self, owners: HashMap<String, String>) -> Result<()> {
+        for (metric, owner) in &owners {
+            if !self.metrics.contains_key(metric) || !self.models.contains_key(owner) {
+                return Err(SidemanticError::InvalidConfig(format!(
+                    "Invalid metric owner: {metric} -> {owner}"
+                )));
+            }
+        }
+        self.metric_owners = owners;
+        self.strict_metric_scope = true;
+        Ok(())
+    }
+
+    pub fn metric_owner(&self, metric: &str) -> Option<&str> {
+        self.metric_owners.get(metric).map(String::as_str)
+    }
+
+    pub fn has_strict_metric_scope(&self) -> bool {
+        self.strict_metric_scope
     }
 
     fn validate_model(model: &Model) -> Result<()> {
@@ -1112,6 +1136,8 @@ mod tests {
             .with_table("orders")
             .with_relationship(Relationship {
                 name: "customers".to_string(),
+                target_model: None,
+                active: true,
                 edge_id: None,
                 r#type: RelationshipType::ManyToOne,
                 foreign_key: Some("customer_id".to_string()),
@@ -1148,6 +1174,8 @@ mod tests {
             .with_table("orders")
             .with_relationship(Relationship {
                 name: "products".to_string(),
+                target_model: None,
+                active: true,
                 edge_id: Some("orders_products".to_string()),
                 r#type: RelationshipType::ManyToMany,
                 foreign_key: None,
@@ -1209,6 +1237,8 @@ mod tests {
             .with_table("orders")
             .with_relationship(Relationship {
                 name: "products".to_string(),
+                target_model: None,
+                active: true,
                 edge_id: None,
                 r#type: RelationshipType::ManyToMany,
                 foreign_key: None,

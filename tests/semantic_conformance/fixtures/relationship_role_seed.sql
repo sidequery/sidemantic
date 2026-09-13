@@ -1,0 +1,12 @@
+create table nested_countries(id integer, name varchar);
+insert into nested_countries values (1, 'US'), (2, 'Canada'), (3, 'France');
+create table nested_airports(id integer, country_id integer);
+insert into nested_airports values (1, 1), (2, 2), (3, 3);
+create table nested_flights(id integer, origin_id integer, destination_id integer);
+insert into nested_flights values (10, 1, 2), (11, 2, 3), (12, 1, null);
+create table role_addresses(id integer, city varchar);
+insert into role_addresses values (1, 'shipping'), (2, 'billing'), (3, 'alternate');
+create table role_customers(id integer, address_id integer);
+insert into role_customers values (1, 2), (2, 3);
+create table role_orders(id integer, customer_id integer, address_id integer, amount integer);
+insert into role_orders values (10, 1, 1, 100), (11, 1, 3, 50), (12, 2, null, 20);

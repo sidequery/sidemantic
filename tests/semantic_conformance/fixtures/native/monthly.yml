@@ -1,0 +1,19 @@
+version: 1
+models:
+- name: monthly
+  table: monthly
+  primary_key: sale_date
+  dimensions:
+  - name: sale_date
+    type: time
+    granularity: day
+  metrics:
+  - name: revenue
+    agg: sum
+    sql: amount
+metrics:
+- name: revenue_mom
+  type: time_comparison
+  base_metric: monthly.revenue
+  comparison_type: mom
+  calculation: difference

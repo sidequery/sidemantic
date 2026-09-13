@@ -43,6 +43,7 @@ pub mod ffi;
 #[cfg(feature = "python")]
 mod python;
 pub mod runtime;
+pub mod semantic_input;
 pub mod sql;
 #[cfg(feature = "wasm")]
 pub mod wasm;

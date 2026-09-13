@@ -27,7 +27,11 @@ impl<'a> QueryRewriter<'a> {
 
     /// Rewrite a SQL query using semantic layer definitions
     pub fn rewrite(&self, sql: &str) -> Result<String> {
-        let statements = parse_sql_with_large_stack(sql)?;
+        self.rewrite_with_dialect(sql, DialectType::Generic)
+    }
+
+    pub fn rewrite_with_dialect(&self, sql: &str, dialect: DialectType) -> Result<String> {
+        let statements = parse_sql_with_dialect(sql, dialect)?;
 
         if statements.is_empty() {
             return Err(SidemanticError::SqlParse("Empty SQL".into()));
@@ -36,7 +40,10 @@ impl<'a> QueryRewriter<'a> {
         let mut rewritten_statements = Vec::new();
         for statement in statements {
             let rewritten = self.rewrite_statement(statement)?;
-            rewritten_statements.push(expr_to_sql(&rewritten)?);
+            rewritten_statements.push(
+                polyglot_generate(&rewritten, dialect)
+                    .map_err(|e| SidemanticError::SqlGeneration(e.to_string()))?,
+            );
         }
 
         Ok(rewritten_statements.join(";\n"))
@@ -1021,9 +1028,13 @@ impl<'a> QueryRewriter<'a> {
 }
 
 pub(super) fn parse_sql_with_large_stack(sql: &str) -> Result<Vec<Expression>> {
+    parse_sql_with_dialect(sql, DialectType::Generic)
+}
+
+fn parse_sql_with_dialect(sql: &str, dialect: DialectType) -> Result<Vec<Expression>> {
     #[cfg(target_arch = "wasm32")]
     {
-        let _ = sql;
+        let _ = (sql, dialect);
         return Err(SidemanticError::SqlParse(
             "operation not supported on this platform".to_string(),
         ));
@@ -1034,9 +1045,7 @@ pub(super) fn parse_sql_with_large_stack(sql: &str) -> Result<Vec<Expression>> {
         let sql_owned = sql.to_string();
         let handle = std::thread::Builder::new()
             .stack_size(16 * 1024 * 1024)
-            .spawn(move || {
-                polyglot_parse(&sql_owned, DialectType::Generic).map_err(|e| e.to_string())
-            })
+            .spawn(move || polyglot_parse(&sql_owned, dialect).map_err(|e| e.to_string()))
             .map_err(|e| SidemanticError::SqlParse(e.to_string()))?;
 
         let parse_result = handle
@@ -1061,11 +1070,6 @@ fn parse_where_expr(condition_sql: &str) -> Option<Expression> {
     let statement = statements.first()?;
     let select = statement.as_select()?;
     select.where_clause.as_ref().map(|w| w.this.clone())
-}
-
-fn expr_to_sql(expr: &Expression) -> Result<String> {
-    polyglot_generate(expr, DialectType::Generic)
-        .map_err(|e| SidemanticError::SqlGeneration(e.to_string()))
 }
 
 fn resolve_model_ref<'a>(

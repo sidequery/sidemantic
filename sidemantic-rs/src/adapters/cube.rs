@@ -230,6 +230,7 @@ impl CubeMeasure {
             r#type: metric_type,
             agg,
             sql,
+            sql_is_complete: false,
             numerator: None,
             denominator: None,
             offset_window: None,

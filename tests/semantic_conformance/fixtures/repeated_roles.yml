@@ -1,0 +1,19 @@
+version: 1
+models:
+  - name: orders
+    table: role_orders
+    primary_key: id
+    dimensions: [{name: id, type: numeric}]
+    metrics: [{name: revenue, agg: sum, sql: amount}]
+    relationships:
+      - {name: address, target_model: addresses, type: many_to_one, foreign_key: address_id}
+      - {name: customers, type: many_to_one, foreign_key: customer_id}
+  - name: customers
+    table: role_customers
+    primary_key: id
+    relationships:
+      - {name: address, target_model: addresses, type: many_to_one, foreign_key: address_id}
+  - name: addresses
+    table: role_addresses
+    primary_key: id
+    dimensions: [{name: city, type: categorical}]

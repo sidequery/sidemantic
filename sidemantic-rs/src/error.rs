@@ -4,6 +4,10 @@ use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum SidemanticError {
+    #[error("Unsupported semantic features: {capabilities:?}")]
+    UnsupportedSemanticFeatures { capabilities: Vec<String> },
+    #[error("{0}")]
+    Security(String),
     // Model errors
     #[error("Model not found: '{0}'. Available models: {1}")]
     ModelNotFound(String, String),
@@ -58,10 +62,14 @@ pub enum SidemanticError {
     ConnectionUrl(String),
 
     // Reference errors
-    #[error("Invalid reference: '{reference}'. Expected format: model.field or model.field__granularity")]
+    #[error(
+        "Invalid reference: '{reference}'. Expected format: model.field or model.field__granularity"
+    )]
     InvalidReference { reference: String },
 
-    #[error("Ambiguous reference: '{field}' exists in multiple models: {models}. Use model.field syntax.")]
+    #[error(
+        "Ambiguous reference: '{field}' exists in multiple models: {models}. Use model.field syntax."
+    )]
     AmbiguousReference { field: String, models: String },
 
     // Configuration errors
@@ -97,7 +105,9 @@ pub enum SidemanticError {
     MissingField { field: String, context: String },
 
     // Metric-specific errors
-    #[error("Invalid metric type: '{metric}' is a {metric_type} metric but was used as a simple aggregation")]
+    #[error(
+        "Invalid metric type: '{metric}' is a {metric_type} metric but was used as a simple aggregation"
+    )]
     InvalidMetricUsage { metric: String, metric_type: String },
 
     #[error(

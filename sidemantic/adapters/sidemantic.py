@@ -86,6 +86,8 @@ FRESHNESS_FIELDS = {
 DIMENSION_FIELDS = {
     "name",
     "type",
+    "logical_data_type",
+    "declared_is_time",
     "sql",
     "expr",
     "dax",
@@ -108,6 +110,8 @@ DIMENSION_FIELDS = {
 }
 METRIC_FIELDS = {
     "name",
+    "logical_data_type",
+    "sql_is_complete",
     "extends",
     "type",
     "agg",
@@ -159,6 +163,8 @@ METRIC_FIELDS = {
 }
 RELATIONSHIP_FIELDS = {
     "name",
+    "edge_id",
+    "active",
     "target_model",
     "type",
     "foreign_key",
@@ -568,6 +574,7 @@ class SidemanticAdapter(BaseAdapter):
                 )
             join = Relationship(
                 name=relationship_def.get("name"),
+                edge_id=relationship_def.get("edge_id"),
                 target_model=relationship_def.get("target_model"),
                 type=relationship_def.get("type"),
                 foreign_key=relationship_def.get("foreign_key_columns") or relationship_def.get("foreign_key"),
@@ -595,6 +602,8 @@ class SidemanticAdapter(BaseAdapter):
             dimension = Dimension(
                 name=dim_def.get("name"),
                 type=dim_def.get("type", "categorical"),  # Default to categorical
+                logical_data_type=dim_def.get("logical_data_type"),
+                declared_is_time=dim_def.get("declared_is_time"),
                 sql=dim_def.get("sql") or dim_def.get("expr"),
                 dax=dim_def.get("dax"),
                 expression_language=dim_def.get("expression_language"),
@@ -835,6 +844,8 @@ class SidemanticAdapter(BaseAdapter):
 
         metric_kwargs = {"name": name}
         for field in [
+            "logical_data_type",
+            "sql_is_complete",
             "extends",
             "type",
             "description",
@@ -968,6 +979,7 @@ class SidemanticAdapter(BaseAdapter):
                 {
                     "name": relationship.name,
                     **({"target_model": relationship.target_model} if relationship.target_model else {}),
+                    **({"edge_id": relationship.edge_id} if relationship.edge_id is not None else {}),
                     "type": relationship.type,
                     **({"foreign_key": relationship.foreign_key} if relationship.foreign_key else {}),
                     **({"primary_key": relationship.primary_key} if relationship.primary_key else {}),
@@ -1014,6 +1026,10 @@ class SidemanticAdapter(BaseAdapter):
                     "type": dim.type,
                 }
                 dim_dax = _dax_text(dim)
+                if dim.logical_data_type is not None:
+                    dim_def["logical_data_type"] = dim.logical_data_type
+                if dim.declared_is_time is not None:
+                    dim_def["declared_is_time"] = dim.declared_is_time
                 if dim_dax:
                     dim_def["dax"] = dim_dax
                     dim_def["expression_language"] = "dax"
@@ -1062,6 +1078,10 @@ class SidemanticAdapter(BaseAdapter):
                     "agg": measure.agg,
                 }
                 measure_dax = _dax_text(measure)
+                if measure.logical_data_type is not None:
+                    measure_def["logical_data_type"] = measure.logical_data_type
+                if measure.sql_is_complete:
+                    measure_def["sql_is_complete"] = True
                 if measure_dax:
                     measure_def["dax"] = measure_dax
                     measure_def["expression_language"] = "dax"
@@ -1208,6 +1228,10 @@ class SidemanticAdapter(BaseAdapter):
         result = {
             "name": measure.name,
         }
+        if measure.logical_data_type is not None:
+            result["logical_data_type"] = measure.logical_data_type
+        if measure.sql_is_complete:
+            result["sql_is_complete"] = True
 
         if measure.type:
             result["type"] = measure.type

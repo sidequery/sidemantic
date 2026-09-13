@@ -1,0 +1,19 @@
+version: 1
+models:
+  - name: flights
+    table: nested_flights
+    primary_key: id
+    dimensions: [{name: id, type: numeric}]
+    metrics: [{name: flight_count, agg: count}]
+    relationships:
+      - {name: origin, target_model: airports, type: many_to_one, foreign_key: origin_id}
+      - {name: destination, target_model: airports, type: many_to_one, foreign_key: destination_id}
+  - name: airports
+    table: nested_airports
+    primary_key: id
+    relationships:
+      - {name: countries, type: many_to_one, foreign_key: country_id}
+  - name: countries
+    table: nested_countries
+    primary_key: id
+    dimensions: [{name: name, type: categorical}]

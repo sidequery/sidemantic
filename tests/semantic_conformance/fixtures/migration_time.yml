@@ -1,0 +1,19 @@
+version: 1
+models:
+  - name: sales
+    table: migration_sales
+    primary_key: id
+    dimensions:
+      - {name: day, type: time, granularity: day}
+      - {name: category, type: categorical}
+    metrics: [{name: revenue, agg: sum, sql: amount}]
+metrics:
+  - name: month_change
+    type: time_comparison
+    base_metric: sales.revenue
+    comparison_type: mom
+    calculation: difference
+  - name: rolling_revenue
+    type: cumulative
+    sql: sales.revenue
+    window: 2 months

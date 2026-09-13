@@ -1,0 +1,106 @@
+- name: keyless_aggregate
+  source: native/keyless
+  query:
+    metrics:
+    - keyless.revenue
+  columns:
+  - revenue
+  rows:
+  - - 30
+- name: unknown_key_fanout
+  source: native/keyless
+  query:
+    metrics:
+    - keyless.revenue
+    dimensions:
+    - labels.label
+  error:
+    type: QueryValidationError
+    match: no primary key
+- name: composite_null_foreign_key
+  source: native/composite
+  query:
+    metrics:
+    - shipments.shipment_count
+    dimensions:
+    - shipments.id
+    - items.label
+    order_by:
+    - shipments.id
+  columns:
+  - id
+  - label
+  - shipment_count
+  rows:
+  - - 1
+    - first
+    - 1
+  - - 2
+    - second
+    - 1
+  - - 3
+    - null
+    - 1
+  - - 4
+    - other
+    - 1
+- name: computed_physical_collision
+  source: native/collisions
+  query:
+    metrics:
+    - collisions.raw_revenue
+    dimensions:
+    - collisions.amount
+    order_by:
+    - collisions.amount
+  columns:
+  - amount
+  - raw_revenue
+  rows:
+  - - 20
+    - 2
+  - - 30
+    - 3
+- name: cube_join
+  source: cube
+  query:
+    metrics:
+    - orders.revenue
+    dimensions:
+    - customers.region
+    order_by:
+    - customers.region
+  columns:
+  - region
+  - revenue
+  rows:
+  - - EU
+    - 90
+  - - US
+    - 150
+- name: cube_filtered_measure
+  source: cube
+  query:
+    metrics:
+    - orders.large_revenue
+  columns:
+  - large_revenue
+  rows:
+  - - 100
+- name: ossie_complete_aggregate
+  source: ossie
+  query: {metrics: [large_revenue]}
+  columns: [large_revenue]
+  rows: [[100]]
+- name: empty_aggregate_null_fill
+  source: native/null_fill
+  query: {metrics: [collisions.empty_revenue]}
+  columns: [empty_revenue]
+  rows: [[0]]
+  rust_unsupported: [metric.fill_nulls_with]
+- name: complete_aggregate_physical_filter
+  source: native/complete_filter
+  query: {metrics: [collisions.filtered_revenue]}
+  columns: [filtered_revenue]
+  rows: [[2]]
+  rust_unsupported: [metric.complete_filters]

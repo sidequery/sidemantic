@@ -1,0 +1,33 @@
+version: 1
+models:
+  - name: purchases
+    table: aggregate_purchases
+    primary_key: id
+    invariant_filters: ['not deleted']
+    dimensions:
+      - {name: id, type: numeric}
+      - {name: cost, type: numeric, public: false}
+    metrics:
+      - {name: revenue, agg: sum, sql: amount}
+      - {name: secret_cost, agg: sum, sql: cost, public: false}
+    relationships:
+      - {name: accounts, type: many_to_one, foreign_key: account_id}
+  - name: accounts
+    table: aggregate_accounts
+    primary_key: id
+    invariant_filters: [active]
+    dimensions:
+      - {name: tier, type: categorical}
+    metrics:
+      - {name: quota, agg: sum, sql: quota}
+      - {name: account_count, agg: count}
+    security:
+      row_filters: ['tenant = {{ user.tenant }}']
+metrics:
+  - name: revenue_per_quota
+    type: ratio
+    numerator: purchases.revenue
+    denominator: accounts.quota
+  - name: net_of_quota
+    type: derived
+    sql: purchases.revenue - accounts.quota

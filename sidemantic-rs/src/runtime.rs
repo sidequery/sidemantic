@@ -153,6 +153,10 @@ struct GraphPathModelPayload {
 struct GraphPathRelationshipPayload {
     name: String,
     #[serde(default)]
+    target_model: Option<String>,
+    #[serde(default)]
+    active: Option<bool>,
+    #[serde(default)]
     edge_id: Option<String>,
     #[serde(default, rename = "type")]
     relationship_type: Option<String>,
@@ -5730,6 +5734,8 @@ fn semantic_graph_from_graph_path_payload(
 
             model.relationships.push(Relationship {
                 name: relationship_payload.name.clone(),
+                target_model: relationship_payload.target_model.clone(),
+                active: relationship_payload.active.unwrap_or(true),
                 edge_id: relationship_payload.edge_id.clone(),
                 r#type: normalized_type,
                 foreign_key: foreign_key_columns

@@ -1,0 +1,19 @@
+version: 1
+models:
+  - name: journeys
+    table: migration_journeys
+    primary_key: id
+    dimensions: [{name: id, type: numeric}]
+    metrics: [{name: journey_count, agg: count}]
+    relationships:
+      - {name: origin, target_model: stops, type: many_to_one, foreign_key: origin_id}
+      - {name: destination, target_model: stops, type: many_to_one, foreign_key: destination_id}
+      - {name: archived, target_model: archived_stops, type: many_to_one, foreign_key: archived_id, active: false}
+  - name: stops
+    table: migration_stops
+    primary_key: id
+    dimensions: [{name: city, type: categorical}]
+  - name: archived_stops
+    table: deliberately_missing_archived_stops
+    primary_key: id
+    dimensions: [{name: city, type: categorical}]

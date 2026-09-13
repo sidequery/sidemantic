@@ -1,0 +1,29 @@
+version: 1
+models:
+  - name: quoted
+    table: policy_values
+    primary_key: id
+    metrics: [{name: total, agg: sum, sql: amount}]
+    security:
+      row_filters: ["subject = '{{ user.subject }}'"]
+  - name: unquoted
+    table: policy_values
+    primary_key: id
+    metrics: [{name: total, agg: sum, sql: amount}]
+    security:
+      row_filters: ['subject = {{ user.subject }}']
+  - name: allowed
+    table: policy_values
+    primary_key: id
+    metrics: [{name: total, agg: sum, sql: amount}]
+    security: {access: true}
+  - name: denied
+    table: policy_values
+    primary_key: id
+    metrics: [{name: total, agg: sum, sql: amount}]
+    security: {access: false}
+  - name: admin_only
+    table: policy_values
+    primary_key: id
+    metrics: [{name: total, agg: sum, sql: amount}]
+    security: {access: "{{ user.role == 'admin' }}"}

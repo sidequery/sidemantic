@@ -847,7 +847,7 @@ impl<'a> SqlGenerator<'a> {
         self.ensure_queryable_sources(&required_models)?;
 
         // Dimension-first base selection, mirroring `generate`.
-        let base_model = self.query_base_model(&dimension_refs, &metric_refs);
+        let base_model = self.query_base_model(dimension_refs, metric_refs);
         if let Some(base_model) = base_model {
             self.build_join_paths(&base_model, &required_models)?;
         }

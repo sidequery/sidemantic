@@ -530,6 +530,54 @@ models:
     assert "name: commerce" in output.read_text()
 
 
+@pytest.mark.parametrize("target_format", ["ossie", "osi"])
+def test_convert_refuses_filtered_metrics_without_writing_lossy_output(tmp_path: Path, target_format: str):
+    source = tmp_path / "source.yml"
+    output = tmp_path / "output.yml"
+    source.write_text("""models:
+  - name: orders
+    table: orders
+    metrics:
+      - name: paid_revenue
+        agg: sum
+        sql: amount
+        filters: ["status = 'paid'"]
+""")
+
+    result = runner.invoke(
+        app,
+        [
+            "convert",
+            str(source),
+            "--from",
+            "sidemantic",
+            "--to",
+            target_format,
+            "--output",
+            str(output),
+            "--ossie-scope",
+            "commerce",
+            "--ossie-expression-dialect",
+            "ANSI_SQL",
+        ],
+    )
+
+    assert result.exit_code == 1, result.output
+    assert "filters" in result.stderr
+    assert not output.exists()
+
+
+def test_validate_accepts_current_ossie_dialects_and_vendors(tmp_path: Path):
+    import yaml
+
+    fixture = Path(__file__).parent / "ossie-fixtures/cases/logical-0.2-current-dialects-vendors/document.json"
+    (tmp_path / "current.ossie.yaml").write_text(yaml.safe_dump(json.loads(fixture.read_text())))
+
+    result = runner.invoke(app, ["validate", str(tmp_path), "--json"])
+
+    assert result.exit_code == 0, result.output
+
+
 def test_convert_to_dbt_alias_carries_explicit_consumer_profile(tmp_path: Path):
     source = tmp_path / "source.yml"
     output = tmp_path / "output.json"

@@ -25,8 +25,8 @@ independent choices. Sidemantic supports these explicit contracts:
 | Consumer profile | Declared version | Document family | Validation schema | Pinned upstream commit |
 |---|---|---|---|---|
 | `ossie-core` | `0.1.1` | Logical | `logical-0.1.1` | `faf581054dcf7964d5fe0ceae7d6f415c8ce32a5` |
-| `ossie-core` | `0.2.0.dev0` | Logical | `logical-0.2.0.dev0` | `88e0011148283302c9a04cd0287e00e0b9d87354` |
-| `ossie-core` | `0.2.0.dev0` | Ontology | `ontology-0.2.0.dev0` | `88e0011148283302c9a04cd0287e00e0b9d87354` |
+| `ossie-core` | `0.2.0.dev0` | Logical | `logical-0.2.0.dev0` | `831f48e582731cf1ee2e65380ca5abf8157869c7` |
+| `ossie-core` | `0.2.0.dev0` | Ontology | `ontology-0.2.0.dev0` | `831f48e582731cf1ee2e65380ca5abf8157869c7` |
 | `dbt-1.12` | `0.1.0` | Logical compatibility alias | Pinned `logical-0.1.1`; the retained document still declares `0.1.0` | `faf581054dcf7964d5fe0ceae7d6f415c8ce32a5` |
 | `dbt-1.12` | `0.1.1` | Logical | `logical-0.1.1` | `faf581054dcf7964d5fe0ceae7d6f415c8ce32a5` |
 
@@ -43,6 +43,11 @@ untouched upstream ontology schema is retained alongside it. Exact paths,
 source URLs, transformations, and SHA-256 values are in
 [`sidemantic/interchange/ossie/schemas/manifest.json`](../../sidemantic/interchange/ossie/schemas/manifest.json).
 
+The `0.2.0.dev0` snapshot was refreshed against Apache HEAD on September 12,
+2026. It accepts root `dialects` and `vendors`, plus `SIGMA` and `THOUGHTSPOT`
+expression alternatives. The development version string alone does not identify
+a schema revision; the commit and checksums identify the supported snapshot.
+
 ## Pinned upstream validator gate
 
 The conformance suite also runs the official Apache Ossie validator from a
@@ -51,9 +56,10 @@ code. It verifies that canonical Sidemantic exports pass for core `0.1.1`
 (JSON) and core `0.2.0.dev0` (YAML), and that a deliberately invalid document is
 rejected. The gate is implemented by
 [`tests/interchange/ossie/test_upstream_validator_gate.py`](../../tests/interchange/ossie/test_upstream_validator_gate.py)
-and does not require network access. The `dbt-1.12` compatibility alias is
-validated separately against its declared compatibility contract; it is not
-presented as an upstream Ossie schema version.
+and does not require network access. This reproducible gate checks the pinned
+revision; it does not monitor future upstream changes. The `dbt-1.12`
+compatibility alias is validated separately against its declared compatibility
+contract; it is not presented as an upstream Ossie schema version.
 
 ## Source documents and runtime graphs are different contracts
 
@@ -162,7 +168,9 @@ executable lowering.
 Relationship `name` is the edge identity. It is retained as `edge_id` so
 multiple edges between the same datasets remain distinguishable. Import never
 invents relationship names or missing key columns. The target columns must
-match an explicitly declared primary or unique key; an unsafe relationship is
+match the normalized column set of an explicitly declared primary or unique
+key, irrespective of declaration order. The original ordered source/target pairs
+are preserved when constructing the join; an unsafe relationship is
 preserved in the source document but excluded from executable topology.
 
 ## Ontology documents
@@ -209,6 +217,17 @@ to invent or misrepresent, including a missing or ambiguous dataset source,
 untranslated non-SQL expressions, invalid scalar SQL, unsupported datatypes or
 relationship cardinality, missing or duplicate edge identity, unusable key
 arrays, non-unique relationship targets, and conflicting metric definitions.
+Synthesis also refuses metric filters, null filling, non-additive/time/window
+modifiers, unresolved inheritance, security restrictions, private fields,
+custom join SQL, and inactive relationships. These runtime settings cannot be
+silently reduced to an unfiltered aggregate or a key-only join. Model-owned
+columnless aggregates such as `COUNT(*)` are refused because Ossie has no metric
+owner field to preserve their dataset binding.
+
+Model-owned SQL is parsed and its column nodes are qualified in the owning
+dataset's context. Function names, literals, quoted identifiers, existing column
+qualifiers, and derived metric references retain their meaning.
+
 Graph synthesis cannot create ontology documents or recover source-only fields.
 
 ## CLI examples

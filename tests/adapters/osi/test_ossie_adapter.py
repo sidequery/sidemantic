@@ -9,6 +9,7 @@ import yaml
 from sidemantic.adapters.osi import OSIAdapter
 from sidemantic.adapters.ossie import OssieAdapter, OssieImportError
 from sidemantic.core.dimension import Dimension
+from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
@@ -220,3 +221,23 @@ def test_graph_export_refuses_unidentified_relationships(tmp_path: Path) -> None
 
     with pytest.raises(OssieSynthesisError):
         OssieAdapter(export_scope_name="commerce", expression_dialect="ANSI_SQL").export(graph, tmp_path / "model.yaml")
+
+
+@pytest.mark.parametrize("adapter_class", [OssieAdapter, OSIAdapter])
+def test_filtered_metric_export_refusal_preserves_existing_output(tmp_path: Path, adapter_class) -> None:
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="orders",
+            table="orders",
+            metrics=[Metric(name="paid_revenue", agg="sum", sql="amount", filters=["status = 'paid'"])],
+        )
+    )
+    output = tmp_path / "model.yaml"
+    output.write_text("existing document\n")
+
+    with pytest.raises(OssieSynthesisError) as error:
+        adapter_class(export_scope_name="commerce", expression_dialect="ANSI_SQL").export(graph, output)
+
+    assert any(d.code == "ossie.synthesis.metric_semantics_unsupported" for d in error.value.diagnostics)
+    assert output.read_text() == "existing document\n"

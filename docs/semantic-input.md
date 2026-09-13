@@ -289,7 +289,10 @@ Named many-to-many relationships use a separate junction SQL instance for each
 role, even when roles share the same physical junction table. They require an
 explicit `through` model, `through_foreign_key` and `related_foreign_key`, and
 known endpoint primary keys with matching arities. Composite key arrays are
-accepted. Junction policies are applied to each role instance using the canonical
+accepted for junction matching, including ungrouped queries. Fanout aggregation
+requiring symmetric deduplication still requires a single-column measure primary
+key; composite measure keys fail with `aggregation.requires_single_primary_key`.
+Junction policies are applied to each role instance using the canonical
 junction declaration. Measures retain their source-key grain across duplicate
 junction rows. Inactive relationships remain excluded.
 

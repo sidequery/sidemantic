@@ -2,6 +2,7 @@
 
 import copy
 import json
+from collections import Counter
 
 import duckdb
 import pytest
@@ -73,11 +74,11 @@ def execute(rust, model, dimensions, **query):
         )
         connection.execute("alter table orders add column tenant varchar default 'a'")
         connection.execute("alter table tags add column tenant varchar default 'a'")
-        return {tuple(row) for row in connection.execute(sql).fetchall()}
+        return Counter(connection.execute(sql).fetchall())
 
 
 def test_role_fanout_deduplicates_at_order_key(rust):
-    assert execute(rust, source(), ["primary_tags.name"]) == {("x", 10), ("y", 30), ("z", 30), (None, 50)}
+    assert execute(rust, source(), ["primary_tags.name"]) == Counter({("x", 10), ("y", 30), ("z", 30), (None, 50)})
 
 
 @pytest.mark.parametrize(
@@ -91,24 +92,28 @@ def test_bridge_policies_bind_each_role(rust, role, expected):
     model = source()
     model["models"][2]["security"] = {"row_filters": ["tenant = {{ user.tenant }}"]}
     model["models"][2]["invariant_filters"] = ["enabled"]
-    assert execute(rust, model, [f"{role}.name"], user_attributes={"tenant": "a"}) == expected
+    assert execute(rust, model, [f"{role}.name"], user_attributes={"tenant": "a"}) == Counter(expected)
 
 
 def test_alternate_roles_do_not_share_junction_keys(rust):
     model = source()
     model["models"][2]["security"] = {"row_filters": ["tenant = {{ user.tenant }}"]}
     model["models"][2]["invariant_filters"] = ["enabled"]
-    assert execute(rust, model, ["primary_tags.name", "secondary_tags.name"], user_attributes={"tenant": "a"}) == {
-        ("x", "y", 10),
-        ("y", "x", 20),
-        ("y", None, 20),
-        (None, "x", 20),
-        (None, None, 50),
-    }
+    assert execute(
+        rust, model, ["primary_tags.name", "secondary_tags.name"], user_attributes={"tenant": "a"}
+    ) == Counter(
+        {
+            ("x", "y", 10),
+            ("y", "x", 20),
+            ("y", None, 20),
+            (None, "x", 20),
+            (None, None, 50),
+        }
+    )
 
 
 def test_role_filter_preserves_source_grain(rust):
-    assert execute(rust, source(), ["primary_tags.name"], filters=["primary_tags.name = 'x'"]) == {("x", 10)}
+    assert execute(rust, source(), ["primary_tags.name"], filters=["primary_tags.name = 'x'"]) == Counter({("x", 10)})
 
 
 @pytest.mark.parametrize("index", [0, 1, 2])
@@ -124,7 +129,7 @@ def test_inactive_role_is_excluded(rust):
     model["models"][0]["relationships"][0]["active"] = False
     with pytest.raises(Exception, match="primary_tags"):
         execute(rust, model, ["primary_tags.name"])
-    assert execute(rust, model, ["secondary_tags.name"]) == {("x", 30), ("y", 10), ("z", 30), (None, 50)}
+    assert execute(rust, model, ["secondary_tags.name"]) == Counter({("x", 30), ("y", 10), ("z", 30), (None, 50)})
 
 
 def test_duplicate_role_identity_is_rejected(rust):
@@ -164,7 +169,7 @@ def test_incomplete_junction_contract_is_rejected(rust, mutation, expected):
 def test_target_measures_retain_target_key_grain(rust):
     model = source()
     model["models"][1]["metrics"] = [{"name": "sum_ids", "agg": "sum", "sql": "id"}]
-    assert execute(rust, model, ["orders.id"], metrics=["primary_tags.sum_ids"]) == {(1, 6), (2, 5), (3, None)}
+    assert execute(rust, model, ["orders.id"], metrics=["primary_tags.sum_ids"]) == Counter({(1, 6), (2, 5), (3, None)})
 
 
 def test_composite_junction_keys_do_not_cross_tenants(rust):
@@ -174,4 +179,15 @@ def test_composite_junction_keys_do_not_cross_tenants(rust):
     for relationship in model["models"][0]["relationships"]:
         relationship["through_foreign_key"] = ["tenant", "order_id"]
         relationship["related_foreign_key"] = ["tenant", relationship["related_foreign_key"]]
-    assert execute(rust, model, ["primary_tags.name"]) == {("x", 10), ("y", 20), ("z", 20), (None, 50)}
+    assert execute(rust, model, ["orders.id", "primary_tags.name"], metrics=[], ungrouped=True) == Counter(
+        [
+            (1, "x"),
+            (1, "x"),
+            (2, "y"),
+            (2, "z"),
+            (2, None),
+            (3, None),
+        ]
+    )
+    with pytest.raises(Exception, match="aggregation.requires_single_primary_key"):
+        execute(rust, model, ["primary_tags.name"])

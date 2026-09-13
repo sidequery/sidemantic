@@ -1968,7 +1968,13 @@ def test_explain_rust_rewriter_route(monkeypatch, semantic_layer):
     assert explanation.source_kind == "rust"
     assert explanation.rewritten_sql == "SELECT 1 AS from_rust"
     assert candidates["rust_semantic_rewriter"].valid is True
-    assert calls == [(semantic_layer.graph, "SELECT orders.revenue FROM orders", {"input_dialect": "duckdb"})]
+    assert calls == [
+        (
+            semantic_layer.graph,
+            "SELECT orders.revenue FROM orders",
+            {"input_dialect": "duckdb", "user_attributes": None, "enforce_visibility": False},
+        )
+    ]
 
 
 def test_trivial_wrapper_uses_direct_semantic_plan(semantic_layer):

@@ -165,9 +165,18 @@ requested output columns, ordering by projected fields, and pagination.
 Caller attributes and opt-in visibility reach the same Rust policy planner as
 structured queries. Access gates, row filters, invariants, and relationship-role
 populations therefore also apply to supported scoped rewrites. Policy-bearing
-requests with nested queries, set operations, or other source shapes remain
-unsupported; they cannot enter the legacy Rust rewrite path. Security failures
-never trigger fallback.
+SQL can nest those semantic leaves inside derived-table SELECTs and
+nonrecursive CTEs. Every leaf, including unused CTE bodies, runs policy
+preparation independently. Outer projections, DISTINCT, WHERE, GROUP BY,
+HAVING, ORDER BY and pagination operate on the secured results. Each wrapper
+has one derived-table or in-scope CTE source. CTE column aliases and nested
+shadowing are retained; user CTE bindings are renamed internally so they cannot
+capture physical reads introduced by the compiler.
+
+Set operations, recursive CTEs, wrapper joins, scalar/predicate subqueries,
+physical source reads, DML and other source shapes remain unsupported; they
+cannot enter the legacy Rust rewrite path. Security failures never trigger
+fallback.
 
 CLI `query` and `rewrite` accept `--user-attrs-file attributes.json` containing a
 JSON object and `--enforce-visibility`. These apply equally to execution,

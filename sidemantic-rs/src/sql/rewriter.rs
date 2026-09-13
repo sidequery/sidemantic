@@ -15,9 +15,10 @@ use polyglot_sql::{
 use crate::core::{DimensionType, MetricType, SemanticGraph};
 use crate::error::{Result, SidemanticError};
 use crate::sql::SemanticQuery;
-use polyglot_sql::traversal::ExpressionWalk;
 
 type QueryPreparer<'a> = &'a dyn Fn(&mut SemanticQuery) -> Result<()>;
+
+mod policy;
 
 /// SQL query rewriter using semantic definitions
 pub struct QueryRewriter<'a> {
@@ -33,8 +34,8 @@ impl<'a> QueryRewriter<'a> {
         }
     }
 
-    /// Apply request policies before semantic planning. Other SQL shapes are
-    /// rejected because the legacy expression rewriter cannot enforce them.
+    /// Apply request policies to each semantic leaf before retaining supported
+    /// relational wrappers. Other shapes cannot enter the legacy rewriter.
     pub(crate) fn with_query_preparer(mut self, prepare: QueryPreparer<'a>) -> Self {
         self.query_preparer = Some(prepare);
         self
@@ -60,6 +61,9 @@ impl<'a> QueryRewriter<'a> {
         if statements.is_empty() {
             return Err(SidemanticError::SqlParse("Empty SQL".into()));
         }
+        if self.query_preparer.is_some() && statements.len() != 1 {
+            return Err(policy::unsupported());
+        }
 
         let mut rewritten_statements = Vec::new();
         for statement in statements {
@@ -74,16 +78,8 @@ impl<'a> QueryRewriter<'a> {
     }
 
     fn rewrite_statement(&self, statement: Expression) -> Result<Expression> {
-        if self.query_preparer.is_some()
-            && (!matches!(&statement, Expression::Select(select) if is_from_metrics(select.from.as_ref()))
-                || statement
-                    .dfs()
-                    .skip(1)
-                    .any(|node| matches!(node, Expression::Select(_) | Expression::Subquery(_))))
-        {
-            return Err(SidemanticError::UnsupportedSemanticFeatures {
-                capabilities: vec!["rewrite.policy_select_shape".into()],
-            });
+        if self.query_preparer.is_some() {
+            return self.rewrite_policy_statement(statement);
         }
         match statement {
             Expression::Select(select) => {

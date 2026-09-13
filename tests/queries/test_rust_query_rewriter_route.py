@@ -154,3 +154,32 @@ def test_old_extension_cannot_silently_drop_caller_context():
         rewrite_semantic_input(
             _graph(), "SELECT orders.revenue FROM metrics", user_attributes={}, rust_module=OldExtension()
         )
+
+
+@pytest.mark.parametrize("context", ["attributes", "visibility", "security", "invariant", "none"])
+def test_cte_collision_binding_belongs_to_contextual_rust(monkeypatch, context):
+    from sidemantic.core.security import SecurityPolicy
+
+    graph = _graph()
+    if context == "security":
+        graph.models["orders"].security = SecurityPolicy(access=True)
+    if context == "invariant":
+        graph.models["orders"].invariant_filters = ["status != 'deleted'"]
+    calls = []
+
+    def rewrite(graph, query, **kwargs):
+        calls.append(query)
+        return "SELECT 42"
+
+    monkeypatch.setattr("sidemantic.sql.query_rewriter.rewrite_semantic_input", rewrite)
+    rewriter = QueryRewriter(
+        graph, use_rust_rewriter=True, rust_no_fallback=True, enforce_visibility=context == "visibility"
+    )
+    sql = "WITH orders_cte AS (SELECT orders.revenue FROM metrics) SELECT * FROM orders_cte"
+    if context == "none":
+        with pytest.raises(ValueError, match="conflicts with an internally generated name"):
+            rewriter.rewrite(sql)
+        assert calls == []
+    else:
+        assert rewriter.rewrite(sql, user_attributes={} if context == "attributes" else None) == "SELECT 42"
+        assert calls == [sql]

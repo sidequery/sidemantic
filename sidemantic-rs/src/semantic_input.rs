@@ -244,11 +244,7 @@ fn decode_metric(value: Value, path: &str) -> Result<Metric> {
         return Err(unsupported("metric.approx_count_distinct"));
     }
     // These change aggregation grain or temporal semantics and are not promoted yet.
-    for field in [
-        "window_expression",
-        "window_frame",
-        "window_order",
-    ] {
+    for field in ["window_expression", "window_frame", "window_order"] {
         if raw.get(field).is_some_and(|value| !neutral(value)) {
             return Err(unsupported(format!("metric.{field}")));
         }

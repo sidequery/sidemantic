@@ -18,6 +18,11 @@ on:
       - "sidemantic-rs-v*"
       - "rust-runtime-v*"
 
+  pull_request:
+    paths:
+      - ".github/workflows/rust-runtime-release.yml"
+      - "sidemantic-rs/tests/packaged_cli_smoke.py"
+
 permissions:
   contents: read
 
@@ -37,11 +42,6 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: sidemantic-rs
 
       - name: Run package metadata tests
         run: cargo test --locked --test package_metadata
@@ -73,7 +73,7 @@ jobs:
         include:
           - os: ubuntu-latest
             artifact: linux-x86_64
-          - os: macos-13
+          - os: macos-15-intel
             artifact: macos-x86_64
           - os: macos-14
             artifact: macos-arm64
@@ -90,11 +90,6 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: sidemantic-rs
-
       - name: Build CLI
         run: cargo build --release --locked --bin sidemantic
 
@@ -104,10 +99,25 @@ jobs:
           mkdir -p dist
 
           if [ "$RUNNER_OS" = "Windows" ]; then
-            cp target/release/sidemantic.exe "dist/sidemantic-${{ matrix.artifact }}.exe"
+            cp ../target/release/sidemantic.exe "dist/sidemantic-${{ matrix.artifact }}.exe"
           else
-            cp target/release/sidemantic "dist/sidemantic-${{ matrix.artifact }}"
+            cp ../target/release/sidemantic "dist/sidemantic-${{ matrix.artifact }}"
             tar -czf "dist/sidemantic-${{ matrix.artifact }}.tar.gz" -C dist "sidemantic-${{ matrix.artifact }}"
+          fi
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Smoke packaged CLI
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            uv run --no-project tests/packaged_cli_smoke.py dist/sidemantic-${{ matrix.artifact }}.exe
+          else
+            mkdir -p dist/smoke
+            tar -xzf dist/sidemantic-${{ matrix.artifact }}.tar.gz -C dist/smoke
+            uv run --no-project tests/packaged_cli_smoke.py dist/smoke/sidemantic-${{ matrix.artifact }}
+            rm -r dist/smoke
           fi
 
       - name: Upload CLI artifact

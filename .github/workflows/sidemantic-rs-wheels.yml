@@ -17,6 +17,12 @@ on:
     tags:
       - "sidemantic-rs-v*"
 
+  pull_request:
+    paths:
+      - ".github/workflows/sidemantic-rs-wheels.yml"
+      - "sidemantic-rs/pyproject.toml"
+      - "sidemantic-rs/tests/python_wheel_smoke.py"
+
 permissions:
   contents: read
 
@@ -33,9 +39,9 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64
-          - os: ubuntu-latest
+          - os: ubuntu-24.04-arm
             target: aarch64
-          - os: macos-13
+          - os: macos-15-intel
             target: x86_64
           - os: macos-14
             target: aarch64
@@ -57,6 +63,13 @@ jobs:
           args: --release --manifest-path sidemantic-rs/Cargo.toml --out sidemantic-rs/dist
           manylinux: auto
           target: ${{ matrix.target }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Smoke built wheel on its target host
+        shell: bash
+        run: uv run --no-project --with sidemantic-rs/dist/*.whl sidemantic-rs/tests/python_wheel_smoke.py
 
       - name: Upload wheel
         uses: actions/upload-artifact@v4
@@ -93,36 +106,11 @@ jobs:
           path: sidemantic-rs/dist/*.tar.gz
           if-no-files-found: error
 
-  smoke-host-wheel:
-    name: Smoke host wheel
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: sidemantic-rs
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-
-      - name: Set up Python
-        run: uv python install 3.12
-
-      - name: Build host wheel
-        run: uvx maturin build --release --out dist
-
-      - name: Smoke host wheel
-        run: uv run --no-project --with dist/*.whl tests/python_wheel_smoke.py
-
   release:
     name: Publish or attach wheel artifacts
     needs:
       - build-wheels
       - build-sdist
-      - smoke-host-wheel
     if: ${{ startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && (inputs.publish_pypi == true || inputs.create_github_release == true)) }}
     runs-on: ubuntu-latest
     permissions:

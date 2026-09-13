@@ -1407,16 +1407,25 @@ impl<'a> SqlGenerator<'a> {
 
         let metric = self.metric_for_ref(metric_ref)?;
 
-        let exprs: Vec<&str> = [
+        // Window expressions read the generated `base` relation. Resolve its
+        // output references before collecting semantic source dependencies.
+        let window_refs = metric
+            .window_expression
+            .as_deref()
+            .map(|expression| {
+                self.metric_refs_from_window_expression(expression, &metric_ref.model)
+            })
+            .unwrap_or_default();
+        let mut exprs: Vec<&str> = [
             metric.sql.as_deref(),
             metric.numerator.as_deref(),
             metric.denominator.as_deref(),
             metric.base_metric.as_deref(),
-            metric.window_expression.as_deref(),
         ]
         .into_iter()
         .flatten()
         .collect();
+        exprs.extend(window_refs.iter().map(String::as_str));
 
         for expr in &exprs {
             self.collect_models_from_sql_references(expr, models)?;

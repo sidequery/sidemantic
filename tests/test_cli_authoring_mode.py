@@ -100,6 +100,18 @@ def test_unknown_profile_fails_with_canonical_diagnostic(tmp_path):
     assert any("ossie.synthesis.profile_unsupported" in error for error in json.loads(result.stdout)["errors"])
 
 
+@pytest.mark.parametrize("profile", ["ossie-core", "dbt-1.12"])
+def test_portable_consumer_profiles_validate_core_model(tmp_path, profile):
+    source = write_source(tmp_path)
+    original = source.read_bytes()
+    result = runner.invoke(app, ["validate", str(tmp_path), "--json", *PORTABLE, "--ossie-consumer-profile", profile])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["valid"]
+    assert any(f"Portable Ossie core representation validated ({profile}," in item for item in payload["info"])
+    assert source.read_bytes() == original
+
+
 def test_preserved_external_expression_is_not_portable_execution(tmp_path):
     source = tmp_path / "model.ossie.yaml"
     source.write_text("""version: 0.2.0.dev0

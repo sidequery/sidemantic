@@ -111,13 +111,16 @@ def validate_directory(
 
     if authoring_mode == "ossie-portable" and not report.errors:
         from sidemantic.interchange.ossie import synthesize_ossie_document
+        from sidemantic.interchange.ossie.profiles import DBT_1_12_0_1_1, OSSIE_CORE_0_2_0_DEV0
 
         # Exercise the export contract without exporting or replacing source.
         # The scope is only an in-memory validation envelope, never a new identity.
+        profile = DBT_1_12_0_1_1 if ossie_consumer_profile == "dbt-1.12" else OSSIE_CORE_0_2_0_DEV0
         result = synthesize_ossie_document(
             layer.graph,
             scope_name=ossie_scope_id or "authoring_validation",
             expression_dialect=ossie_expression_dialect,
+            schema_version=profile.schema_version,
             consumer_profile=ossie_consumer_profile,
             portable_only=True,
         )

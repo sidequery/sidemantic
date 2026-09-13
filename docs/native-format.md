@@ -719,7 +719,9 @@ that require Sidemantic or cannot be represented. Dropped or approximated source
 semantics are errors in this mode. The declared expression dialect must describe
 the actual SQL; validation does not translate SQL or rewrite source files.
 The default profile is `ossie-core` at the pinned `0.2.0.dev0` schema; select
-`--ossie-consumer-profile dbt-1.12` to apply that pinned consumer profile.
+`--ossie-consumer-profile dbt-1.12` to validate against its supported `0.1.1`
+schema instead. These versions come from the canonical pinned profile definitions;
+the `0.1.0` dbt compatibility alias is not used for synthesized validation.
 
 Portable validation certifies a core representation, not execution by every
 consumer. Preserved external expressions still have to lower through the normal

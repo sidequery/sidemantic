@@ -290,11 +290,11 @@ def test_scoped_filters_and_alias_pagination_keep_authorized_rows():
     try:
         layer.adapter.execute((FIXTURES / "policy_aggregate.sql").read_text())
         sql = (
-            "select purchases.id as purchase, purchases.revenue as total from metrics "
+            "select purchases.id as purchase, accounts.tier, purchases.revenue as total from metrics "
             "where purchases.id > 1 having purchases.revenue >= 60 "
             "order by total desc limit 1 offset 0"
         )
         # Purchases 4/5 are outside the account policy; 6 violates the invariant.
-        assert layer.adapter.execute(rewrite(layer, sql, {"tenant": 1})).fetchall() == [(3, 60)]
+        assert layer.adapter.execute(rewrite(layer, sql, {"tenant": 1})).fetchall() == [(3, "business", 60)]
     finally:
         layer.adapter.close()

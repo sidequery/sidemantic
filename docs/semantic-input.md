@@ -78,6 +78,18 @@ supports:
   apply to metric dependencies after aggregation, including absent source leaves
   after cross-source recombination; they do not create policy-excluded groups.
   Filled temporal and non-additive shapes remain explicitly unsupported.
+- Existing cumulative `window_expression` fields accept `SUM`, `AVG`, `MIN`,
+  `MAX`, or `COUNT` of one `base.output` metric reference, with an optionally
+  quoted simple output identifier. The input is a grouped period metric value;
+  it is not a physical source column. `window_order` names a selected period
+  output column and defaults to the selected time dimension. Windows retain
+  selected non-time partitions. `window_frame` accepts preceding `ROWS` frames
+  or calendar `RANGE` frames (day, week, month, year), ending at `CURRENT ROW`;
+  the default is unbounded preceding rows. Other strict expressions or frames,
+  and a frame without a window expression, remain unsupported. Legacy Rust
+  utility expression discovery and Python's broader expression passthrough
+  remain available through their existing paths.
+
 
 Configured ordinary rollups reach the Rust graph through this boundary. Routing
 supports single-source sum/count/min/max queries over compatible stored dimensions
@@ -114,10 +126,9 @@ explicitly unsupported. Unowned graph measures also remain unsupported on this p
 Remaining capability gates include policy-bearing SQL outside the scoped
 `FROM metrics` subset, policy output outside DuckDB/PostgreSQL, many-to-many paths without explicit keyed junctions or with custom join SQL,
 unsupported computed-key query shapes, genuinely duplicate child output aliases,
-unsupported complete-expression filter shapes, temporal/null-fill combinations, raw cumulative windows,
+unsupported complete-expression filter shapes, temporal/null-fill combinations, cumulative windows outside the bounded subset,
 and unqualified conversion, cohort, and non-additive metric shapes. Retention
 has a bounded dedicated path described below.
-
 
 Deserialization alone is not evidence of executable support.
 

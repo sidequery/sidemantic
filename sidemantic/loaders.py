@@ -411,7 +411,16 @@ def load_from_directory(
                 adapter = SidemanticAdapter()
         elif suffix == ".json":
             content = file_path.read_text()
-            if '"ldm"' in content and '"datasets"' in content:
+            if file_path.name.lower().endswith(".ossie.json"):
+                # An explicit format suffix opts into Ossie discovery anywhere
+                # in the source tree, including malformed files without markers.
+                if _is_generated_artifact(file_path, directory):
+                    continue
+                adapter = OssieAdapter(
+                    target_dialect=layer.dialect or "duckdb",
+                    scope_id=ossie_scope_id,
+                )
+            elif '"ldm"' in content and '"datasets"' in content:
                 adapter = GoodDataAdapter()
             elif '"projectModel"' in content:
                 adapter = GoodDataAdapter()

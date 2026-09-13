@@ -500,6 +500,47 @@ def test_load_from_directory_detects_released_osi_json(tmp_path):
     assert "order_count" in layer.graph.metrics
 
 
+@pytest.mark.parametrize("relative_path", ["orders.ossie.json", "models/orders.ossie.json"])
+def test_load_from_directory_detects_explicit_ossie_json_outside_osi_tree(tmp_path, relative_path):
+    source = tmp_path / relative_path
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text(
+        '{"version": "0.2.0.dev0", "semantic_model": [{"name": "analytics", '
+        '"datasets": [{"name": "orders", "source": "analytics.orders"}]}]}'
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+
+    assert list(layer.graph.models) == ["orders"]
+    assert layer.graph.models["orders"].table == "analytics.orders"
+    assert layer.graph.models["orders"]._source_format == "Ossie"
+
+
+@pytest.mark.parametrize("content", ['{"version":', "{}"])
+def test_load_from_directory_surfaces_invalid_explicit_ossie_json(tmp_path, content):
+    (tmp_path / "invalid.ossie.json").write_text(content)
+
+    with pytest.raises(ValueError, match=r"invalid\.ossie\.json"):
+        load_from_directory(SemanticLayer(), tmp_path)
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path, strict=False)
+    assert not layer.graph.models
+
+
+@pytest.mark.parametrize("generated_dir", ["target", "dbt_packages", "OSI/target"])
+def test_load_from_directory_skips_generated_explicit_ossie_json(tmp_path, generated_dir):
+    generated = tmp_path / generated_dir
+    generated.mkdir(parents=True)
+    (generated / "invalid.ossie.json").write_text('{"version":')
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+
+    assert not layer.graph.models
+
+
 def test_auto_loader_rejects_multi_scope_ossie_instead_of_flattening_namespaces(tmp_path):
     source = tmp_path / "multiple.yaml"
     source.write_text(

@@ -118,7 +118,7 @@ def test_synthesis_refuses_to_invent_relationship_identity_or_keys() -> None:
         Relationship(name="customers", type="many_to_one", foreign_key="customer_id", primary_key=None)
     ]
 
-    result = synthesize_ossie_document(graph, scope_name="commerce", expression_dialect="ANSI_SQL")
+    result = synthesize_ossie_document(graph, scope_name="commerce", expression_dialect="ANSI_SQL", portable_only=True)
 
     assert not result.valid
     assert result.document is None
@@ -192,8 +192,6 @@ def test_synthesis_closes_over_relationship_endpoint_semantics() -> None:
 @pytest.mark.parametrize(
     "options",
     [
-        {"filters": ["status = 'paid'"]},
-        {"fill_nulls_with": 0},
         {"non_additive_dimension": "loaded_at"},
         {"non_additive_window_groupings": ["customer_id"]},
         {"offset_window": "1 month"},
@@ -206,7 +204,7 @@ def test_synthesis_refuses_result_affecting_metric_options(options: dict) -> Non
     graph = _graph()
     graph.models["orders"].metrics = [Metric(name="revenue", agg="sum", sql="amount", **options)]
 
-    result = synthesize_ossie_document(graph, scope_name="commerce", expression_dialect="ANSI_SQL")
+    result = synthesize_ossie_document(graph, scope_name="commerce", expression_dialect="ANSI_SQL", portable_only=True)
 
     assert result.document is None
     assert any(d.code == "ossie.synthesis.metric_semantics_unsupported" for d in result.diagnostics)
@@ -219,7 +217,7 @@ def test_synthesis_refuses_relationship_behavior_not_expressed_by_keys(options: 
     for name, value in options.items():
         setattr(relationship, name, value)
 
-    result = synthesize_ossie_document(graph, scope_name="commerce", expression_dialect="ANSI_SQL")
+    result = synthesize_ossie_document(graph, scope_name="commerce", expression_dialect="ANSI_SQL", portable_only=True)
 
     assert result.document is None
     assert any(d.code == "ossie.synthesis.relationship_semantics_unsupported" for d in result.diagnostics)
@@ -231,7 +229,7 @@ def test_synthesis_refuses_to_erase_relationship_role_instances() -> None:
     relationship.name = "billing_customer"
     relationship.target_model = "customers"
 
-    result = synthesize_ossie_document(graph, scope_name="commerce", expression_dialect="ANSI_SQL")
+    result = synthesize_ossie_document(graph, scope_name="commerce", expression_dialect="ANSI_SQL", portable_only=True)
 
     assert result.document is None
     assert any(
@@ -274,6 +272,13 @@ def test_synthesis_accepts_reordered_unique_key_without_reordering_join_pairs(ke
         ({"sql": "SUM(amount) + SUM(quantity)"}, 21),
         ({"agg": "sum", "sql": 'coalesce("amount", 0) * orders.quantity'}, 40),
         ({"type": "derived", "agg": "sum", "sql": "amount * quantity"}, 40),
+        ({"agg": "sum", "sql": "amount", "filters": ["quantity = 2"]}, 10),
+        ({"agg": "sum", "sql": "amount", "filters": ["quantity < 0"], "fill_nulls_with": 0}, 0),
+        ({"agg": "count"}, 3),
+        ({"agg": "sum", "sql": "1"}, 3),
+        ({"agg": "count", "filters": ["quantity >= 0"]}, 3),
+        ({"agg": "count", "sql": "amount", "filters": ["quantity >= 0"]}, 2),
+        ({"agg": "count_distinct", "sql": "amount", "filters": ["quantity = 2"]}, 1),
     ],
 )
 def test_synthesis_qualifies_expression_columns_and_preserves_numeric_results(options: dict, expected: float) -> None:
@@ -281,11 +286,14 @@ def test_synthesis_qualifies_expression_columns_and_preserves_numeric_results(op
     graph.add_model(
         Model(
             name="orders",
-            sql="SELECT * FROM (VALUES (10, 2), (5, 4), (NULL, 0)) AS t(amount, quantity)",
+            sql="SELECT * FROM (VALUES (10, 2), (5, 4), (NULL, 0)) AS orders(amount, quantity)",
             dimensions=[Dimension(name="amount", type="numeric"), Dimension(name="quantity", type="numeric")],
             metrics=[Metric(name="value", **options)],
         )
     )
+    native = SemanticLayer(auto_register=False)
+    native.graph = graph
+    assert float(native.query(metrics=["orders.value"]).fetchone()[0]) == pytest.approx(expected)
     result = synthesize_ossie_document(graph, scope_name="commerce", expression_dialect="ANSI_SQL")
     assert result.valid, result.diagnostics
     parsed = parse_ossie_document(json.dumps(result.document.to_parsed_data()).encode(), source_identifier="test.json")
@@ -319,14 +327,15 @@ def test_synthesis_preserves_model_metric_references_in_derived_formulas(express
 
 
 @pytest.mark.parametrize("options", [{"agg": "count"}, {"agg": "sum", "sql": "1"}])
-def test_synthesis_refuses_to_lose_model_binding_for_columnless_aggregates(options: dict) -> None:
+def test_synthesis_retains_model_binding_for_columnless_aggregates(options: dict) -> None:
     graph = _graph()
     graph.models["orders"].metrics = [Metric(name="row_count", **options)]
 
     result = synthesize_ossie_document(graph, scope_name="commerce", expression_dialect="ANSI_SQL")
 
-    assert result.document is None
-    assert any(d.code == "ossie.synthesis.metric_owner_unrepresentable" for d in result.diagnostics)
+    assert result.valid, result.diagnostics
+    scope = result.document.to_parsed_data()["semantic_model"][0]
+    assert "orders.__sidemantic_row" in scope["metrics"][0]["expression"]["dialects"][0]["expression"]
 
 
 @pytest.mark.parametrize(
@@ -342,7 +351,7 @@ def test_synthesis_refuses_to_discard_model_security_or_inheritance(options: dic
     for name, value in options.items():
         setattr(graph.models["orders"], name, value)
 
-    result = synthesize_ossie_document(graph, scope_name="commerce", expression_dialect="ANSI_SQL")
+    result = synthesize_ossie_document(graph, scope_name="commerce", expression_dialect="ANSI_SQL", portable_only=True)
 
     assert result.document is None
     assert any(d.code == "ossie.synthesis.model_semantics_unsupported" for d in result.diagnostics)
@@ -362,7 +371,111 @@ def test_synthesis_refuses_to_expose_private_dimensions() -> None:
     graph = _graph()
     graph.models["orders"].dimensions[-1].public = False
 
-    result = synthesize_ossie_document(graph, scope_name="commerce", expression_dialect="ANSI_SQL")
+    result = synthesize_ossie_document(graph, scope_name="commerce", expression_dialect="ANSI_SQL", portable_only=True)
 
     assert result.document is None
     assert any(d.code == "ossie.synthesis.field_semantics_unsupported" for d in result.diagnostics)
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"non_additive_dimension": "loaded_at"},
+        {"offset_window": "1 month"},
+        {"window_expression": "SUM(amount)", "window_frame": "ROWS UNBOUNDED PRECEDING"},
+        {"public": False},
+    ],
+)
+def test_synthesis_restores_native_metric_semantics_through_extension(options):
+    graph = _graph()
+    graph.models["orders"].metrics = [Metric(name="value", agg="sum", sql="amount", **options)]
+    result = synthesize_ossie_document(graph, scope_name="commerce", expression_dialect="ANSI_SQL")
+    assert result.valid, result.diagnostics
+    assert any(d.code == "ossie.synthesis.runtime_extension_required" for d in result.diagnostics)
+    document = result.document.to_parsed_data()
+    assert all("analytics.orders" not in d["source"] for d in document["semantic_model"][0]["datasets"])
+    lowered = lower_ossie_document(parse_ossie_document(json.dumps(document).encode()), target_dialect="duckdb")
+    assert lowered.valid, lowered.diagnostics
+    assert lowered.catalog["commerce"].graph.models["orders"].metrics[0] == graph.models["orders"].metrics[0]
+
+
+def test_native_extension_does_not_hide_invalid_sql():
+    graph = _graph()
+    graph.models["orders"].metrics = [Metric(name="value", agg="sum", sql="amount; SELECT 1", public=False)]
+    result = synthesize_ossie_document(graph, scope_name="commerce", expression_dialect="ANSI_SQL")
+    assert not result.valid
+    assert any(d.code == "ossie.synthesis.expression_invalid" for d in result.diagnostics)
+
+
+def test_columnless_aggregate_uses_own_rows_and_avoids_declared_field_collision():
+    graph = SemanticGraph()
+    graph.add_model(Model(name="unrelated", sql="SELECT 1 AS id"))
+    graph.add_model(
+        Model(
+            name="orders",
+            sql="SELECT * FROM (VALUES (NULL), (NULL), (NULL)) AS t(id)",
+            dimensions=[Dimension(name="__sidemantic_row", type="numeric", sql="id")],
+            metrics=[Metric(name="rows", agg="count")],
+        )
+    )
+    result = synthesize_ossie_document(graph, scope_name="commerce", expression_dialect="ANSI_SQL", portable_only=True)
+    assert result.valid, result.diagnostics
+    lowered = lower_ossie_document(
+        parse_ossie_document(json.dumps(result.document.to_parsed_data()).encode()), target_dialect="duckdb"
+    )
+    layer = SemanticLayer.from_catalog(lowered.catalog, auto_register=False)
+    assert layer.query(metrics=["rows"]).fetchall() == [(3,)]
+
+
+@pytest.mark.parametrize("model_local", [True, False])
+@pytest.mark.parametrize("filtered", [True, False])
+def test_roundtrip_distinguishes_physical_measure_columns_from_semantic_fields(model_local, filtered):
+    graph = SemanticGraph()
+    model = Model(
+        name="orders",
+        sql="SELECT * FROM (VALUES (10), (5), (NULL)) AS t(amount)",
+        dimensions=[Dimension(name="amount", type="numeric", sql="amount * 2")],
+    )
+    graph.add_model(model)
+    metric = Metric(
+        name="value",
+        agg="sum",
+        sql="amount" if model_local else "orders.amount",
+        filters=["amount > 7" if model_local else "orders.amount > 7"] if filtered else None,
+    )
+    if model_local:
+        model.metrics.append(metric)
+    else:
+        graph.add_metric(metric)
+    native = SemanticLayer(auto_register=False)
+    native.graph = graph
+    expected = native.query(metrics=["orders.value" if model_local else "value"]).fetchall()
+    result = synthesize_ossie_document(graph, scope_name="commerce", expression_dialect="ANSI_SQL", portable_only=True)
+    assert result.valid, result.diagnostics
+    lowered = lower_ossie_document(
+        parse_ossie_document(json.dumps(result.document.to_parsed_data()).encode()), target_dialect="duckdb"
+    )
+    imported = SemanticLayer.from_catalog(lowered.catalog, auto_register=False)
+    assert imported.query(metrics=["value"]).fetchall() == expected
+
+
+@pytest.mark.parametrize("fill", ["", "can't"])
+def test_null_fill_string_literals_execute_before_and_after_portable_export(fill):
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="orders",
+            sql="SELECT CAST(NULL AS VARCHAR) AS label",
+            metrics=[Metric(name="label", agg="max", sql="label", fill_nulls_with=fill)],
+        )
+    )
+    native = SemanticLayer(auto_register=False)
+    native.graph = graph
+    assert native.query(metrics=["orders.label"]).fetchall() == [(fill,)]
+    result = synthesize_ossie_document(graph, scope_name="commerce", expression_dialect="ANSI_SQL", portable_only=True)
+    assert result.valid, result.diagnostics
+    lowered = lower_ossie_document(
+        parse_ossie_document(json.dumps(result.document.to_parsed_data()).encode()), target_dialect="duckdb"
+    )
+    imported = SemanticLayer.from_catalog(lowered.catalog, auto_register=False)
+    assert imported.query(metrics=["label"]).fetchall() == [(fill,)]

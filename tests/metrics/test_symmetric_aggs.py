@@ -758,3 +758,30 @@ def test_filtered_count_under_fanout():
     assert row[1] != row[2]
 
     conn.close()
+
+
+def test_model_measure_null_fill_under_fanout():
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="orders",
+            sql="SELECT 1 AS order_id, CAST(NULL AS INTEGER) AS amount",
+            primary_key="order_id",
+            metrics=[Metric(name="average", agg="avg", sql="amount", fill_nulls_with=10)],
+            relationships=[
+                Relationship(name="items", type="one_to_many", foreign_key="order_id", primary_key="order_id")
+            ],
+        )
+    )
+    graph.add_model(
+        Model(
+            name="items",
+            sql="SELECT * FROM (VALUES (1, 1, 'X'), (2, 1, 'X')) AS t(item_id, order_id, region)",
+            primary_key="item_id",
+            dimensions=[Dimension(name="region", type="categorical")],
+        )
+    )
+    sql = SQLGenerator(graph).generate(metrics=["orders.average"], dimensions=["items.region"])
+
+    with duckdb.connect(":memory:") as conn:
+        assert conn.execute(sql).fetchall() == [("X", 10)]

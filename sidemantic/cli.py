@@ -1493,6 +1493,11 @@ def convert(
         "--ossie-permissive",
         help="Preserve invalid Ossie source while lowering only independently safe constructs",
     ),
+    ossie_portable_only: bool = typer.Option(
+        False,
+        "--ossie-portable-only",
+        help="Require portable Ossie core output instead of preserving native behavior in a Sidemantic extension",
+    ),
     force: bool = typer.Option(False, "--force", help="Allow writing to an existing destination"),
 ):
     """Convert semantic definitions through the shared format registry."""
@@ -1564,6 +1569,7 @@ def convert(
                 target_export_options = {
                     "scope_name": ossie_scope,
                     "expression_dialect": ossie_expression_dialect,
+                    "portable_only": ossie_portable_only,
                 }
                 if ossie_consumer_profile is not None:
                     target_adapter_options = {"consumer_profile": ossie_consumer_profile}

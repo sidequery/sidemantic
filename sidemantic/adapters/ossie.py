@@ -213,6 +213,7 @@ class OssieAdapter(BaseAdapter):
         expression_dialect: str | None = None,
         schema_version: str | None = None,
         serialization: OssieSerialization | str | None = None,
+        portable_only: bool = False,
     ) -> None:
         """Synthesize and write one schema-valid logical Ossie document.
 
@@ -235,6 +236,12 @@ class OssieAdapter(BaseAdapter):
             schema_version=schema_version or self._schema_version,
             serialization=output_serialization,
             consumer_profile=self._parse_options.consumer_profile,
+            portable_only=portable_only,
         )
         document = require_synthesized_document(synthesis)
+        if synthesis.diagnostics:
+            import warnings
+
+            for diagnostic in synthesis.diagnostics:
+                warnings.warn(diagnostic.message, UserWarning, stacklevel=2)
         self.export_document(document, destination, serialization=output_serialization)

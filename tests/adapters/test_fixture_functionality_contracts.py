@@ -19,7 +19,7 @@ from sidemantic.adapters.lookml import LookMLAdapter
 from sidemantic.adapters.malloy import MalloyAdapter
 from sidemantic.adapters.metricflow import MetricFlowAdapter
 from sidemantic.adapters.omni import OmniAdapter
-from sidemantic.adapters.osi import OSIAdapter
+from sidemantic.adapters.osi import LegacyOSIAdapter as OSIAdapter
 from sidemantic.adapters.rill import RillAdapter
 from sidemantic.adapters.snowflake import SnowflakeAdapter
 from sidemantic.adapters.superset import SupersetAdapter
@@ -195,7 +195,7 @@ EXACT_SEMANTIC_ADAPTER_FIXTURES = {
     "MalloyAdapter": "tests/fixtures/malloy/ga4.malloy",
     "MetricFlowAdapter": "tests/fixtures/metricflow/accounts_source.yml",
     "OmniAdapter": "tests/fixtures/omni/estore/views/dim_categories.view.yaml",
-    "OSIAdapter": "tests/fixtures/osi/ecommerce.yaml",
+    "LegacyOSIAdapter": "tests/fixtures/osi/ecommerce.yaml",
     "RillAdapter": "tests/fixtures/rill/cost_monitoring.yaml",
     "SnowflakeAdapter": "tests/fixtures/snowflake/customer_loyalty_metrics.yaml",
     "SupersetAdapter": "tests/fixtures/superset/covid_dashboard.yaml",

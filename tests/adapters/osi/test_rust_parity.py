@@ -14,7 +14,7 @@ import yaml
 
 pytest.importorskip("sidemantic_rs")
 
-from sidemantic.adapters.osi import OSIAdapter as PyOSIAdapter
+from sidemantic.adapters.osi import LegacyOSIAdapter as PyOSIAdapter
 from sidemantic.rust_bridge import export_osi_with_rust, load_osi_graph_with_rust
 
 FIXTURE_DIR = Path("tests/fixtures/osi")

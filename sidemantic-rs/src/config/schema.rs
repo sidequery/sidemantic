@@ -123,6 +123,10 @@ pub struct DimensionConfig {
     pub name: String,
     #[serde(default, rename = "type")]
     pub dim_type: Option<String>,
+    #[serde(default)]
+    pub logical_data_type: Option<String>,
+    #[serde(default)]
+    pub declared_is_time: Option<bool>,
     #[serde(default, alias = "expr")]
     pub sql: Option<String>,
     pub granularity: Option<String>,
@@ -155,6 +159,8 @@ pub struct DimensionConfig {
 pub struct MetricConfig {
     pub name: String,
     pub extends: Option<String>,
+    #[serde(default)]
+    pub logical_data_type: Option<String>,
     #[serde(default, rename = "type")]
     pub metric_type: Option<String>,
     pub agg: Option<String>,
@@ -219,6 +225,8 @@ pub struct CohortInnerMetricConfig {
 #[serde(deny_unknown_fields)]
 pub struct RelationshipConfig {
     pub name: String,
+    #[serde(default)]
+    pub edge_id: Option<String>,
     #[serde(default, rename = "type")]
     pub rel_type: Option<String>,
     pub foreign_key: Option<KeyConfig>,
@@ -618,6 +626,8 @@ impl DimensionConfig {
         Dimension {
             name: self.name,
             r#type: dim_type,
+            logical_data_type: self.logical_data_type,
+            declared_is_time: self.declared_is_time,
             sql: self.sql,
             granularity: self.granularity,
             supported_granularities: self.supported_granularities,
@@ -705,6 +715,7 @@ impl MetricConfig {
         Metric {
             name: self.name,
             extends: self.extends,
+            logical_data_type: self.logical_data_type,
             r#type: metric_type,
             agg,
             sql,
@@ -772,6 +783,7 @@ impl RelationshipConfig {
 
         Relationship {
             name: self.name,
+            edge_id: self.edge_id,
             r#type: rel_type,
             foreign_key: foreign_key_columns
                 .as_ref()
@@ -1379,6 +1391,66 @@ models:
         let err = serde_yaml::from_str::<SidemanticConfig>(yaml).unwrap_err();
         assert!(err.to_string().contains("unknown field"));
         assert!(err.to_string().contains("unexpected"));
+    }
+
+    #[test]
+    fn test_native_contract_preserves_optional_parity_fields_and_explicit_false() {
+        let yaml = r#"
+models:
+  - name: orders
+    table: orders
+    dimensions:
+      - name: occurred_at
+        type: categorical
+        logical_data_type: DateTimeTz
+        declared_is_time: false
+      - name: status
+        type: categorical
+    metrics:
+      - name: revenue
+        agg: sum
+        sql: amount
+        logical_data_type: Decimal
+    relationships:
+      - name: customers
+        edge_id: orders_customer
+        type: many_to_one
+        foreign_key: customer_id
+"#;
+
+        let config: SidemanticConfig = serde_yaml::from_str(yaml).unwrap();
+        let model = &config.models[0];
+        assert_eq!(
+            model.dimensions[0].logical_data_type.as_deref(),
+            Some("DateTimeTz")
+        );
+        assert_eq!(model.dimensions[0].declared_is_time, Some(false));
+        assert_eq!(model.dimensions[1].logical_data_type, None);
+        assert_eq!(model.dimensions[1].declared_is_time, None);
+        assert_eq!(
+            model.metrics[0].logical_data_type.as_deref(),
+            Some("Decimal")
+        );
+        assert_eq!(
+            model.relationships[0].edge_id.as_deref(),
+            Some("orders_customer")
+        );
+
+        let (models, _, _) = config.into_parts().unwrap();
+        assert_eq!(
+            models[0].dimensions[0].logical_data_type.as_deref(),
+            Some("DateTimeTz")
+        );
+        assert_eq!(models[0].dimensions[0].declared_is_time, Some(false));
+        assert_eq!(models[0].dimensions[1].declared_is_time, None);
+        assert_eq!(
+            models[0].metrics[0].logical_data_type.as_deref(),
+            Some("Decimal")
+        );
+        assert_eq!(
+            models[0].relationships[0].edge_id.as_deref(),
+            Some("orders_customer")
+        );
     }
 
     #[test]

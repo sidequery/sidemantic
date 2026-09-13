@@ -5,8 +5,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sidemantic::{
     build_symmetric_aggregate_sql, config::SidemanticConfig, load_from_string, Aggregation,
-    DimensionType, Metric, Model, QueryRewriter, RelationshipType, SemanticGraph, SemanticQuery,
-    SqlDialect, SqlGenerator, SymmetricAggType, TableCalculation,
+    DimensionType, Metric, Model, OssieConsumerProfile, OssieForwardAdapter, OssieSerialization,
+    OssieTarget, QueryRewriter, RelationshipType, SemanticGraph, SemanticQuery, SqlDialect,
+    SqlGenerator, SymmetricAggType, TableCalculation,
 };
 
 #[derive(Debug, Deserialize)]
@@ -90,6 +91,21 @@ enum Request {
         relationship: String,
         is_base_model: bool,
     },
+    OssieValidate {
+        content: String,
+        serialization: String,
+        #[serde(default = "default_ossie_consumer_profile")]
+        consumer_profile: String,
+    },
+    OssieSelectScope {
+        content: String,
+        serialization: String,
+        #[serde(default = "default_ossie_consumer_profile")]
+        consumer_profile: String,
+        #[serde(default = "default_ossie_target")]
+        target: String,
+        scope_id: Option<String>,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -117,6 +133,8 @@ struct PathStep {
     from_columns: Vec<String>,
     to_columns: Vec<String>,
     relationship: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    edge_id: Option<String>,
 }
 
 fn handle(request: Request) -> sidemantic::Result<Response> {
@@ -186,6 +204,7 @@ fn handle(request: Request) -> sidemantic::Result<Response> {
                     from_columns: step.from_keys,
                     to_columns: step.to_keys,
                     relationship: relationship_type_name(&step.relationship_type),
+                    edge_id: step.edge_id,
                 })
                 .collect();
             Ok(Response::Ok {
@@ -356,7 +375,71 @@ fn handle(request: Request) -> sidemantic::Result<Response> {
                 )
             )),
         }),
+        Request::OssieValidate {
+            content,
+            serialization,
+            consumer_profile,
+        } => {
+            let serialization = parse_ossie_serialization(&serialization)?;
+            let consumer = parse_ossie_consumer(&consumer_profile)?;
+            let status = OssieForwardAdapter.inspect(&content, serialization, consumer);
+            Ok(Response::Ok {
+                sql: None,
+                path: None,
+                catalog: None,
+                value: Some(
+                    serde_json::to_value(status).map_err(|error| {
+                        sidemantic::SidemanticError::Validation(error.to_string())
+                    })?,
+                ),
+            })
+        }
+        Request::OssieSelectScope {
+            content,
+            serialization,
+            consumer_profile,
+            target,
+            scope_id,
+        } => {
+            let scope = OssieForwardAdapter.select_scope(
+                &content,
+                parse_ossie_serialization(&serialization)?,
+                parse_ossie_consumer(&consumer_profile)?,
+                parse_ossie_target(&target)?,
+                scope_id.as_deref(),
+            )?;
+            Ok(Response::Ok {
+                sql: None,
+                path: None,
+                catalog: None,
+                value: Some(
+                    serde_json::to_value(scope).map_err(|error| {
+                        sidemantic::SidemanticError::Validation(error.to_string())
+                    })?,
+                ),
+            })
+        }
     }
+}
+
+fn default_ossie_consumer_profile() -> String {
+    "ossie-core".to_string()
+}
+
+fn default_ossie_target() -> String {
+    "ANSI_SQL".to_string()
+}
+
+fn parse_ossie_serialization(value: &str) -> sidemantic::Result<OssieSerialization> {
+    OssieSerialization::parse(value).map_err(sidemantic::SidemanticError::Validation)
+}
+
+fn parse_ossie_consumer(value: &str) -> sidemantic::Result<OssieConsumerProfile> {
+    OssieConsumerProfile::parse(value).map_err(sidemantic::SidemanticError::Validation)
+}
+
+fn parse_ossie_target(value: &str) -> sidemantic::Result<OssieTarget> {
+    OssieTarget::parse(value).map_err(sidemantic::SidemanticError::Validation)
 }
 
 fn parse_symmetric_agg_type(agg_type: &str) -> sidemantic::Result<SymmetricAggType> {

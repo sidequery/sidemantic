@@ -470,24 +470,27 @@ def models_to_rust_yaml(
         }
 
         for dimension in model.dimensions:
-            model_data["dimensions"].append(
-                {
-                    "name": dimension.name,
-                    "type": dimension.type,
-                    "sql": dimension.sql,
-                    "granularity": dimension.granularity,
-                    "supported_granularities": dimension.supported_granularities,
-                    "description": dimension.description,
-                    "label": dimension.label,
-                    "metadata": dimension.metadata,
-                    "meta": dimension.meta,
-                    "format": dimension.format,
-                    "value_format_name": dimension.value_format_name,
-                    "parent": dimension.parent,
-                    "window": dimension.window,
-                    "public": dimension.public,
-                }
-            )
+            dimension_payload = {
+                "name": dimension.name,
+                "type": dimension.type,
+                "sql": dimension.sql,
+                "granularity": dimension.granularity,
+                "supported_granularities": dimension.supported_granularities,
+                "description": dimension.description,
+                "label": dimension.label,
+                "metadata": dimension.metadata,
+                "meta": dimension.meta,
+                "format": dimension.format,
+                "value_format_name": dimension.value_format_name,
+                "parent": dimension.parent,
+                "window": dimension.window,
+                "public": dimension.public,
+            }
+            if dimension.logical_data_type is not None:
+                dimension_payload["logical_data_type"] = dimension.logical_data_type
+            if dimension.declared_is_time is not None:
+                dimension_payload["declared_is_time"] = dimension.declared_is_time
+            model_data["dimensions"].append(dimension_payload)
 
         serialized_metric_names = set()
         for metric in [*model.metrics, *extra_metrics_by_model.get(model.name, [])]:
@@ -724,18 +727,18 @@ def parse_reference_with_rust(graph: SemanticGraph, reference: str) -> tuple[str
 def find_relationship_path_with_rust(graph: SemanticGraph, from_model: str, to_model: str) -> list:
     """Find join path between models via sidemantic-rs."""
     rust_module = get_rust_module()
-    rust_steps = rust_module.find_relationship_path_with_yaml(
-        graph_to_rust_yaml(graph),
-        from_model,
-        to_model,
-    )
+    graph_yaml = graph_to_rust_yaml(graph)
+    if hasattr(rust_module, "find_relationship_path_payload_with_yaml"):
+        rust_steps = rust_module.find_relationship_path_payload_with_yaml(graph_yaml, from_model, to_model)
+    else:
+        rust_steps = rust_module.find_relationship_path_with_yaml(graph_yaml, from_model, to_model)
     rust_steps = _deserialize_json_payload(rust_steps)
 
     from sidemantic.core.semantic_graph import JoinPath
 
     path = []
     for step in rust_steps:
-        from_name, to_name, from_columns, to_columns, relationship = _normalize_relationship_path_step(step)
+        from_name, to_name, from_columns, to_columns, relationship, edge_id = _normalize_relationship_path_step(step)
         path.append(
             JoinPath(
                 from_model=str(from_name),
@@ -743,6 +746,7 @@ def find_relationship_path_with_rust(graph: SemanticGraph, from_model: str, to_m
                 from_columns=[str(column) for column in from_columns],
                 to_columns=[str(column) for column in to_columns],
                 relationship=str(relationship),
+                edge_id=str(edge_id) if edge_id is not None else None,
             )
         )
     return path
@@ -766,13 +770,14 @@ def _normalize_parsed_reference(parsed: object) -> tuple[str, str, str | None]:
     return str(model_name), str(field_name), (str(granularity) if granularity is not None else None)
 
 
-def _normalize_relationship_path_step(step: object) -> tuple[str, str, list[str], list[str], str]:
+def _normalize_relationship_path_step(step: object) -> tuple[str, str, list[str], list[str], str, str | None]:
     if isinstance(step, dict):
         from_name = step.get("from_model")
         to_name = step.get("to_model")
         relationship = step.get("relationship")
         from_columns = step.get("from_columns")
         to_columns = step.get("to_columns")
+        edge_id = step.get("edge_id")
 
         # Older payloads may expose only single-column aliases.
         if from_columns is None:
@@ -784,6 +789,7 @@ def _normalize_relationship_path_step(step: object) -> tuple[str, str, list[str]
     else:
         try:
             from_name, to_name, from_columns, to_columns, relationship = step
+            edge_id = None
         except (TypeError, ValueError) as exc:
             raise TypeError("unexpected find_relationship_path_with_yaml step shape") from exc
 
@@ -792,7 +798,14 @@ def _normalize_relationship_path_step(step: object) -> tuple[str, str, list[str]
 
     normalized_from_columns = _normalize_relationship_columns(from_columns)
     normalized_to_columns = _normalize_relationship_columns(to_columns)
-    return str(from_name), str(to_name), normalized_from_columns, normalized_to_columns, str(relationship)
+    return (
+        str(from_name),
+        str(to_name),
+        normalized_from_columns,
+        normalized_to_columns,
+        str(relationship),
+        str(edge_id) if edge_id is not None else None,
+    )
 
 
 def _normalize_relationship_columns(columns: object) -> list[str]:
@@ -909,7 +922,7 @@ def _serialize_metric(metric, *, primary_key_columns: list[str] | None) -> dict:
             casts = ", '|', ".join(f"CAST({col} AS VARCHAR)" for col in primary_key_columns)
             metric_sql = f"CONCAT({casts})"
 
-    return {
+    payload = {
         "name": metric.name,
         "extends": metric.extends,
         "type": metric.type,
@@ -951,6 +964,9 @@ def _serialize_metric(metric, *, primary_key_columns: list[str] | None) -> dict:
         "meta": metric.meta,
         "public": metric.public,
     }
+    if metric.logical_data_type is not None:
+        payload["logical_data_type"] = metric.logical_data_type
+    return payload
 
 
 def _serialize_parameter(parameter) -> dict:
@@ -1636,7 +1652,7 @@ def _serialize_relationship(relationship, source_model, target_model) -> dict | 
             through_foreign_key = through_foreign_key or (junction_self_fks[0] if junction_self_fks else None)
             related_foreign_key = related_foreign_key or (junction_related_fks[0] if junction_related_fks else None)
 
-    return {
+    payload = {
         "name": relationship.name,
         "type": relationship.type,
         "foreign_key": foreign_keys[0] if foreign_keys else None,
@@ -1651,3 +1667,6 @@ def _serialize_relationship(relationship, source_model, target_model) -> dict | 
         "sql": sql,
         "metadata": getattr(relationship, "metadata", None),
     }
+    if relationship.edge_id is not None:
+        payload["edge_id"] = relationship.edge_id
+    return payload

@@ -1,0 +1,14 @@
+version: 0.2.0.dev0
+name: commerce-ontology
+ai_context:
+  instructions: Use customer concepts consistently.
+ontology:
+  - concept: Customer
+    type: EntityType
+ontology_mappings:
+  - semantic_model:
+      name: commerce
+      datasets:
+        - name: customers
+          source: analytics.customers
+    concept_mappings: []

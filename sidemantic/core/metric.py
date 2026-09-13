@@ -23,6 +23,11 @@ class Metric(GovernedObject):
 
     name: str = Field(..., description="Unique measure name")
     extends: str | None = Field(None, description="Parent metric to inherit from")
+    logical_data_type: str | None = Field(
+        None,
+        exclude=True,
+        description="Source logical result type, independent of aggregation and runtime metric type",
+    )
 
     def __init__(self, **data):
         super().__init__(**data)

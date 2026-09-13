@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from sidemantic.adapters.osi import OSIAdapter as _PythonOSIAdapter
+from sidemantic.adapters.osi import LegacyOSIAdapter as _PythonOSIAdapter
 from sidemantic.core.semantic_graph import SemanticGraph
 
 

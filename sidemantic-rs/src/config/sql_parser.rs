@@ -2010,6 +2010,7 @@ fn build_relationship(props: &HashMap<String, String>) -> Option<Relationship> {
 
     Some(Relationship {
         name: name.clone(),
+        edge_id: None,
         r#type: rtype,
         foreign_key: foreign_key_columns
             .as_ref()

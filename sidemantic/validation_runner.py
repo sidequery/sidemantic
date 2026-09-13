@@ -34,13 +34,13 @@ def _find_orphaned_models(models: dict[str, object]) -> list[str]:
     ]
 
 
-def validate_directory(directory: str | Path) -> ValidationReport:
+def validate_directory(directory: str | Path, *, ossie_scope_id: str | None = None) -> ValidationReport:
     """Load and validate semantic layer definitions from a directory."""
     directory = Path(directory)
     report = ValidationReport(directory=directory)
 
     layer = SemanticLayer()
-    load_from_directory(layer, str(directory))
+    load_from_directory(layer, str(directory), ossie_scope_id=ossie_scope_id)
 
     if not layer.graph.models:
         report.errors.append("No models found in directory")

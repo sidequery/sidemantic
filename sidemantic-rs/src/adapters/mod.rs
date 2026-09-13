@@ -13,9 +13,14 @@ use crate::error::{Result, SidemanticError};
 
 pub mod cube;
 pub mod osi;
+pub mod ossie;
 
 pub use cube::CubeAdapter;
 pub use osi::OsiAdapter;
+pub use ossie::{
+    OssieCatalog, OssieCompiledScope, OssieConsumerProfile, OssieDiagnostic, OssieForwardAdapter,
+    OssieProfile, OssieSerialization, OssieStatus, OssieTarget,
+};
 
 /// Result of parsing a single external-format document.
 #[derive(Debug, Default)]

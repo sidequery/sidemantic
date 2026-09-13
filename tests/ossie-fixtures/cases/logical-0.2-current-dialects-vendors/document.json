@@ -1,0 +1,32 @@
+{
+  "version": "0.2.0.dev0",
+  "dialects": ["ANSI_SQL", "SIGMA", "THOUGHTSPOT"],
+  "vendors": ["Sigma", "ThoughtSpot"],
+  "semantic_model": [
+    {
+      "name": "commerce",
+      "datasets": [
+        {
+          "name": "orders",
+          "source": "analytics.orders",
+          "fields": [
+            {
+              "name": "amount",
+              "expression": {
+                "dialects": [
+                  {"dialect": "ANSI_SQL", "expression": "amount"},
+                  {"dialect": "SIGMA", "expression": "[Amount]"},
+                  {"dialect": "THOUGHTSPOT", "expression": "amount"}
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "custom_extensions": [
+        {"vendor_name": "Sigma", "data": "{}"},
+        {"vendor_name": "ThoughtSpot", "data": "{}"}
+      ]
+    }
+  ]
+}

@@ -8,7 +8,8 @@ from sidemantic.core.model import Model
 from sidemantic.core.pre_aggregation import Index, PreAggregation, RefreshKey
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
-from sidemantic.rust_bridge import graph_to_rust_yaml, models_to_rust_yaml
+from sidemantic.rust_bridge import find_relationship_path_with_rust, graph_to_rust_yaml, models_to_rust_yaml
+from tests.rust_layer_adapter import _dimension_to_rust_dict, _metric_to_rust_dict, _relationship_to_rust_dict
 
 
 def test_models_to_rust_yaml_preserves_extended_core_metadata():
@@ -116,6 +117,105 @@ def test_models_to_rust_yaml_does_not_invent_table_for_source_uri_model():
 
     assert model_payload["source_uri"] == "s3://warehouse/events.parquet"
     assert model_payload["table"] is None
+
+
+def test_models_to_rust_yaml_preserves_optional_parity_fields_and_omits_none():
+    model = Model(
+        name="orders",
+        table="orders",
+        primary_key="order_id",
+        dimensions=[
+            Dimension(
+                name="occurred_at",
+                type="categorical",
+                logical_data_type="DateTimeTz",
+                declared_is_time=False,
+            ),
+            Dimension(name="status", type="categorical"),
+        ],
+        metrics=[Metric(name="revenue", agg="sum", sql="amount", logical_data_type="Decimal")],
+        relationships=[
+            Relationship(
+                name="customers",
+                edge_id="orders_customer",
+                type="many_to_one",
+                foreign_key="customer_id",
+            )
+        ],
+    )
+
+    model_payload = yaml.safe_load(models_to_rust_yaml([model]))["models"][0]
+    occurred_at, status = model_payload["dimensions"]
+    assert occurred_at["logical_data_type"] == "DateTimeTz"
+    assert occurred_at["declared_is_time"] is False
+    assert "logical_data_type" not in status
+    assert "declared_is_time" not in status
+    assert model_payload["metrics"][0]["logical_data_type"] == "Decimal"
+    assert model_payload["relationships"][0]["edge_id"] == "orders_customer"
+
+
+def test_pure_rust_adapter_serializers_preserve_false_and_omit_none():
+    explicit_dimension = _dimension_to_rust_dict(
+        Dimension(
+            name="occurred_at",
+            type="categorical",
+            logical_data_type="DateTimeTz",
+            declared_is_time=False,
+        )
+    )
+    omitted_dimension = _dimension_to_rust_dict(Dimension(name="status", type="categorical"))
+    metric = _metric_to_rust_dict(Metric(name="revenue", agg="sum", logical_data_type="Decimal"))
+    relationship = _relationship_to_rust_dict(
+        Relationship(name="customers", edge_id="orders_customer", type="many_to_one")
+    )
+
+    assert explicit_dimension["declared_is_time"] is False
+    assert explicit_dimension["logical_data_type"] == "DateTimeTz"
+    assert "declared_is_time" not in omitted_dimension
+    assert "logical_data_type" not in omitted_dimension
+    assert metric["logical_data_type"] == "Decimal"
+    assert relationship["edge_id"] == "orders_customer"
+
+
+def test_find_relationship_path_prefers_edge_aware_payload_and_preserves_legacy_fallback(monkeypatch):
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="orders",
+            table="orders",
+            primary_key="order_id",
+            relationships=[
+                Relationship(
+                    name="customers",
+                    edge_id="orders_customer",
+                    type="many_to_one",
+                    foreign_key="customer_id",
+                )
+            ],
+        )
+    )
+    graph.add_model(Model(name="customers", table="customers", primary_key="id"))
+
+    class EdgeAwareRustModule:
+        @staticmethod
+        def find_relationship_path_payload_with_yaml(_yaml, _from_model, _to_model):
+            return (
+                '[{"from_model":"orders","to_model":"customers","from_columns":["customer_id"],'
+                '"to_columns":["id"],"relationship":"many_to_one","edge_id":"orders_customer"}]'
+            )
+
+    monkeypatch.setattr("sidemantic.rust_bridge.get_rust_module", lambda: EdgeAwareRustModule())
+    path = find_relationship_path_with_rust(graph, "orders", "customers")
+    assert path[0].edge_id == "orders_customer"
+
+    class LegacyRustModule:
+        @staticmethod
+        def find_relationship_path_with_yaml(_yaml, _from_model, _to_model):
+            return [("orders", "customers", ["customer_id"], ["id"], "many_to_one")]
+
+    monkeypatch.setattr("sidemantic.rust_bridge.get_rust_module", lambda: LegacyRustModule())
+    legacy_path = find_relationship_path_with_rust(graph, "orders", "customers")
+    assert legacy_path[0].edge_id is None
 
 
 def test_graph_to_rust_yaml_assigns_complex_metrics_by_entity_dimension():

@@ -1,0 +1,75 @@
+{
+  "manifest_version": 1,
+  "profiles": {
+    "logical-0.1.1": {
+      "document_kind": "logical",
+      "version": "0.1.1",
+      "schema_dialect": "https://json-schema.org/draft/2020-12/schema",
+      "resource_uri": "urn:sidemantic:ossie:schema:logical:0.1.1",
+      "runtime_path": "logical/0.1.1/schema.json",
+      "runtime_sha256": "c1e9adec39562786aa78809665fba568797b15f4c53a0847d9cbcf2dead1bc94",
+      "upstream_path": "logical/0.1.1/schema.json",
+      "upstream_sha256": "c1e9adec39562786aa78809665fba568797b15f4c53a0847d9cbcf2dead1bc94",
+      "source": {
+        "repository": "https://github.com/open-semantic-interchange/OSI",
+        "commit": "faf581054dcf7964d5fe0ceae7d6f415c8ce32a5",
+        "path": "core-spec/osi-schema.json",
+        "url": "https://raw.githubusercontent.com/open-semantic-interchange/OSI/faf581054dcf7964d5fe0ceae7d6f415c8ce32a5/core-spec/osi-schema.json",
+        "license": "Apache-2.0"
+      },
+      "transformations": []
+    },
+    "logical-0.2.0.dev0": {
+      "document_kind": "logical",
+      "version": "0.2.0.dev0",
+      "schema_dialect": "https://json-schema.org/draft/2020-12/schema",
+      "resource_uri": "urn:sidemantic:ossie:schema:logical:0.2.0.dev0",
+      "runtime_path": "logical/0.2.0.dev0/schema.json",
+      "runtime_sha256": "22be177612ed665e0af244c586b9c0162f2a3706f8e9b061910f7a8e2a19b8e8",
+      "upstream_path": "logical/0.2.0.dev0/schema.json",
+      "upstream_sha256": "22be177612ed665e0af244c586b9c0162f2a3706f8e9b061910f7a8e2a19b8e8",
+      "source": {
+        "repository": "https://github.com/apache/ossie",
+        "commit": "831f48e582731cf1ee2e65380ca5abf8157869c7",
+        "path": "core-spec/ossie-schema.json",
+        "url": "https://raw.githubusercontent.com/apache/ossie/831f48e582731cf1ee2e65380ca5abf8157869c7/core-spec/ossie-schema.json",
+        "license": "Apache-2.0"
+      },
+      "transformations": []
+    },
+    "ontology-0.2.0.dev0": {
+      "document_kind": "ontology",
+      "version": "0.2.0.dev0",
+      "schema_dialect": "https://json-schema.org/draft/2020-12/schema",
+      "resource_uri": "urn:sidemantic:ossie:schema:ontology:0.2.0.dev0",
+      "runtime_path": "ontology/0.2.0.dev0/schema.json",
+      "runtime_sha256": "555820756a7d30bc6986ce1b57feaa9937ec4ddd3288878b8af0e3361d824a41",
+      "upstream_path": "ontology/0.2.0.dev0/upstream.json",
+      "upstream_sha256": "43ed640d984dda250d2baa0bf11ffc7cc174fc87c71d4e0e943e5d127427f889",
+      "source": {
+        "repository": "https://github.com/apache/ossie",
+        "commit": "831f48e582731cf1ee2e65380ca5abf8157869c7",
+        "path": "ontology/ontology.json",
+        "url": "https://raw.githubusercontent.com/apache/ossie/831f48e582731cf1ee2e65380ca5abf8157869c7/ontology/ontology.json",
+        "license": "Apache-2.0"
+      },
+      "dependencies": [
+        "logical-0.2.0.dev0"
+      ],
+      "transformations": [
+        {
+          "operation": "replace_id",
+          "from": "https://github.com/apache/ossie/ontology/ontology.json",
+          "to": "urn:sidemantic:ossie:schema:ontology:0.2.0.dev0",
+          "reason": "Use a stable local ontology resource identity for offline validation."
+        },
+        {
+          "operation": "replace_reference_base",
+          "from": "https://raw.githubusercontent.com/apache/ossie/main/core-spec/ossie-schema.json",
+          "to": "urn:sidemantic:ossie:schema:logical:0.2.0.dev0",
+          "reason": "Resolve ontology references against the pinned logical schema without network access."
+        }
+      ]
+    }
+  }
+}

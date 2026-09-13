@@ -1,0 +1,106 @@
+"""Typed Apache Ossie source-contract foundation."""
+
+from sidemantic.interchange.ossie.diagnostics import (
+    OssieDiagnostic,
+    OssieDiagnosticSeverity,
+    OssieSchemaProvenance,
+    OssieSourceLocation,
+    diagnostic_sort_key,
+    sort_diagnostics,
+)
+from sidemantic.interchange.ossie.documents import (
+    FrozenJSONObject,
+    FrozenJSONValue,
+    JSONScalar,
+    OssieDocument,
+    OssieDocumentSource,
+    OssieLogicalDocument,
+    OssieOntologyDocument,
+    UnsupportedOssieDocument,
+    freeze_json,
+    thaw_json,
+)
+from sidemantic.interchange.ossie.lowering import OssieLoweringResult, lower_ossie_document
+from sidemantic.interchange.ossie.parser import (
+    OssieParseOptions,
+    OssieParseResult,
+    parse_ossie_document,
+)
+from sidemantic.interchange.ossie.profiles import (
+    DBT_1_12_0_1_0_ALIAS,
+    DBT_1_12_0_1_1,
+    OSSIE_CORE_0_1_1,
+    OSSIE_CORE_0_2_0_DEV0,
+    OSSIE_PROFILES,
+    OssieConsumerProfile,
+    OssieImportPolicy,
+    OssieOptions,
+    OssiePreservationPolicy,
+    OssieProfile,
+    OssieProfileError,
+    OssieSerialization,
+    resolve_ossie_profile,
+)
+from sidemantic.interchange.ossie.semantic_validation import (
+    SemanticDocumentKind,
+    SemanticValidationResult,
+    validate_ossie_semantics,
+)
+from sidemantic.interchange.ossie.serialization import (
+    OssieSerializationError,
+    OssieSerializationResult,
+    serialize_ossie_document,
+)
+from sidemantic.interchange.ossie.synthesis import (
+    OssieSynthesisError,
+    OssieSynthesisResult,
+    require_synthesized_document,
+    synthesize_ossie_document,
+)
+
+__all__ = [
+    "DBT_1_12_0_1_0_ALIAS",
+    "DBT_1_12_0_1_1",
+    "OSSIE_CORE_0_1_1",
+    "OSSIE_CORE_0_2_0_DEV0",
+    "OSSIE_PROFILES",
+    "FrozenJSONValue",
+    "FrozenJSONObject",
+    "JSONScalar",
+    "OssieConsumerProfile",
+    "OssieDiagnostic",
+    "OssieDiagnosticSeverity",
+    "OssieDocument",
+    "OssieDocumentSource",
+    "OssieImportPolicy",
+    "OssieLogicalDocument",
+    "OssieLoweringResult",
+    "OssieOntologyDocument",
+    "OssieOptions",
+    "OssieParseOptions",
+    "OssieParseResult",
+    "OssiePreservationPolicy",
+    "OssieProfile",
+    "OssieProfileError",
+    "OssieSchemaProvenance",
+    "OssieSerialization",
+    "OssieSerializationError",
+    "OssieSerializationResult",
+    "OssieSourceLocation",
+    "OssieSynthesisError",
+    "OssieSynthesisResult",
+    "SemanticDocumentKind",
+    "SemanticValidationResult",
+    "UnsupportedOssieDocument",
+    "diagnostic_sort_key",
+    "freeze_json",
+    "lower_ossie_document",
+    "parse_ossie_document",
+    "resolve_ossie_profile",
+    "require_synthesized_document",
+    "serialize_ossie_document",
+    "sort_diagnostics",
+    "synthesize_ossie_document",
+    "thaw_json",
+    "validate_ossie_semantics",
+]

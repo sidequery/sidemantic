@@ -24,6 +24,11 @@ class Relationship(BaseModel):
             "When omitted, name remains the target model for backwards compatibility."
         ),
     )
+    edge_id: str | None = Field(
+        default=None,
+        exclude=True,
+        description="Stable identity of the declared edge, independent of the related model name",
+    )
     type: Literal["many_to_one", "one_to_one", "one_to_many", "many_to_many", "cross"] = Field(
         description="Type of relationship"
     )

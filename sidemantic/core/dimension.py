@@ -13,6 +13,16 @@ class Dimension(BaseModel):
 
     name: str = Field(..., description="Unique dimension name within model")
     type: Literal["categorical", "time", "boolean", "numeric"] = Field(..., description="Dimension type")
+    logical_data_type: str | None = Field(
+        None,
+        exclude=True,
+        description="Source logical data type, independent of the effective runtime dimension type",
+    )
+    declared_is_time: bool | None = Field(
+        None,
+        exclude=True,
+        description="Source-declared temporal role; None preserves an omitted declaration",
+    )
     sql: str | None = Field(None, description="SQL expression (defaults to name; accepts 'expr' as alias)")
     dax: str | None = Field(None, description="DAX expression source text")
     expression_language: Literal["sql", "dax"] | None = Field(

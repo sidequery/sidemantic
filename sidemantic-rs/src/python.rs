@@ -1,5 +1,6 @@
 //! Python bindings for sidemantic-rs via PyO3.
 
+use crate::adapters::{OssieConsumerProfile, OssieForwardAdapter, OssieSerialization, OssieTarget};
 #[cfg(feature = "python-adbc")]
 use crate::db::{execute_with_adbc as execute_with_adbc_native, AdbcExecutionRequest, AdbcValue};
 use crate::error::SidemanticError;
@@ -22,6 +23,7 @@ use crate::runtime::{
     extract_preaggregation_patterns as extract_preaggregation_patterns_native,
     find_models_for_query as find_models_for_query_native,
     find_models_for_query_with_yaml as find_models_for_query_with_yaml_native,
+    find_relationship_path_payload_with_yaml as find_relationship_path_payload_with_yaml_native,
     find_relationship_path_with_yaml as find_relationship_path_with_yaml_native,
     format_parameter_value_with_yaml as format_parameter_value_with_yaml_native,
     generate_catalog_metadata_with_yaml as generate_catalog_metadata_with_yaml_native,
@@ -1280,6 +1282,31 @@ fn find_relationship_path_with_yaml(
     })
 }
 
+/// Find an edge-aware join path as a JSON object payload.
+#[pyfunction]
+fn find_relationship_path_payload_with_yaml(
+    graph_yaml: &str,
+    from_model: &str,
+    to_model: &str,
+) -> PyResult<String> {
+    let path = find_relationship_path_payload_with_yaml_native(graph_yaml, from_model, to_model)
+        .map_err(|e| match e {
+            RelationshipPathError::ModelNotFound(model_name) => {
+                PyKeyError::new_err(format!("Model {model_name} not found"))
+            }
+            RelationshipPathError::NoJoinPath {
+                from_model,
+                to_model,
+            } => PyValueError::new_err(format!(
+                "No join path found between {from_model} and {to_model}"
+            )),
+            RelationshipPathError::InvalidPayload(err) => {
+                PyValueError::new_err(format!("failed to parse graph payload: {err}"))
+            }
+        })?;
+    serde_json::to_string(&path).map_err(|e| PyValueError::new_err(e.to_string()))
+}
+
 /// Parse a qualified semantic reference using Rust graph semantics.
 #[pyfunction]
 fn parse_reference_with_yaml(
@@ -1314,6 +1341,59 @@ fn find_models_for_query_with_yaml(
     find_models_for_query_with_yaml_native(yaml, &dimensions, &measures)
         .map(|models| models.into_iter().collect())
         .map_err(|e| PyValueError::new_err(e.to_string()))
+}
+
+fn parse_ossie_options(
+    serialization: &str,
+    consumer_profile: &str,
+) -> PyResult<(OssieSerialization, OssieConsumerProfile)> {
+    let serialization = OssieSerialization::parse(serialization).map_err(PyValueError::new_err)?;
+    let consumer = OssieConsumerProfile::parse(consumer_profile).map_err(PyValueError::new_err)?;
+    Ok((serialization, consumer))
+}
+
+/// Validate an Apache Ossie document with the strict forward handoff contract.
+#[pyfunction]
+#[pyo3(signature = (content, serialization, consumer_profile = "ossie-core"))]
+fn ossie_validate(content: &str, serialization: &str, consumer_profile: &str) -> PyResult<String> {
+    let (serialization, consumer) = parse_ossie_options(serialization, consumer_profile)?;
+    serde_json::to_string(&OssieForwardAdapter.inspect(content, serialization, consumer))
+        .map_err(|error| PyValueError::new_err(error.to_string()))
+}
+
+/// Compile all isolated scopes in an Apache Ossie logical document.
+#[pyfunction]
+#[pyo3(signature = (content, serialization, consumer_profile = "ossie-core", target = "ANSI_SQL"))]
+fn ossie_parse_catalog(
+    content: &str,
+    serialization: &str,
+    consumer_profile: &str,
+    target: &str,
+) -> PyResult<String> {
+    let (serialization, consumer) = parse_ossie_options(serialization, consumer_profile)?;
+    let target = OssieTarget::parse(target).map_err(PyValueError::new_err)?;
+    let catalog = OssieForwardAdapter
+        .parse_catalog(content, serialization, consumer, target)
+        .map_err(|error| PyValueError::new_err(error.to_string()))?;
+    serde_json::to_string(&catalog).map_err(|error| PyValueError::new_err(error.to_string()))
+}
+
+/// Select exactly one compiled Apache Ossie semantic-model scope.
+#[pyfunction]
+#[pyo3(signature = (content, serialization, scope_id = None, consumer_profile = "ossie-core", target = "ANSI_SQL"))]
+fn ossie_select_scope(
+    content: &str,
+    serialization: &str,
+    scope_id: Option<&str>,
+    consumer_profile: &str,
+    target: &str,
+) -> PyResult<String> {
+    let (serialization, consumer) = parse_ossie_options(serialization, consumer_profile)?;
+    let target = OssieTarget::parse(target).map_err(PyValueError::new_err)?;
+    let scope = OssieForwardAdapter
+        .select_scope(content, serialization, consumer, target, scope_id)
+        .map_err(|error| PyValueError::new_err(error.to_string()))?;
+    serde_json::to_string(&scope).map_err(|error| PyValueError::new_err(error.to_string()))
 }
 
 /// Python module entrypoint.
@@ -1408,9 +1488,16 @@ fn sidemantic_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(relationship_primary_key_columns, m)?)?;
     m.add_function(wrap_pyfunction!(segment_get_sql, m)?)?;
     m.add_function(wrap_pyfunction!(find_relationship_path_with_yaml, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        find_relationship_path_payload_with_yaml,
+        m
+    )?)?;
     m.add_function(wrap_pyfunction!(parse_reference_with_yaml, m)?)?;
     m.add_function(wrap_pyfunction!(find_models_for_query, m)?)?;
     m.add_function(wrap_pyfunction!(find_models_for_query_with_yaml, m)?)?;
     m.add_function(wrap_pyfunction!(generate_catalog_metadata, m)?)?;
+    m.add_function(wrap_pyfunction!(ossie_validate, m)?)?;
+    m.add_function(wrap_pyfunction!(ossie_parse_catalog, m)?)?;
+    m.add_function(wrap_pyfunction!(ossie_select_scope, m)?)?;
     Ok(())
 }

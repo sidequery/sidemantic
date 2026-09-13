@@ -269,6 +269,7 @@ class RustSemanticLayerAdapter:
                 from_columns=step["from_columns"],
                 to_columns=step["to_columns"],
                 relationship=step["relationship"],
+                edge_id=step.get("edge_id"),
             )
             for step in response["path"]
         ]
@@ -410,6 +411,7 @@ class RustSemanticGraphDirectAdapter:
                 from_columns=step["from_columns"],
                 to_columns=step["to_columns"],
                 relationship=step["relationship"],
+                edge_id=step.get("edge_id"),
             )
             for step in response["path"]
         ]
@@ -428,6 +430,7 @@ class RustJoinPath:
     from_columns: list[str]
     to_columns: list[str]
     relationship: str
+    edge_id: str | None = None
 
     @property
     def from_entity(self) -> str:
@@ -613,6 +616,46 @@ def rust_needs_symmetric_aggregate(relationship: str, is_base_model: bool) -> bo
     return bool(response["value"])
 
 
+def rust_ossie_validate(
+    content: str,
+    serialization: str,
+    consumer_profile: str = "ossie-core",
+) -> dict[str, Any]:
+    response = _rust_request(
+        {
+            "action": "ossie_validate",
+            "content": content,
+            "serialization": serialization,
+            "consumer_profile": consumer_profile,
+        }
+    )
+    if response["status"] == "error":
+        raise ValueError(response["error"])
+    return response["value"]
+
+
+def rust_ossie_select_scope(
+    content: str,
+    serialization: str,
+    scope_id: str | None = None,
+    consumer_profile: str = "ossie-core",
+    target: str = "ANSI_SQL",
+) -> dict[str, Any]:
+    response = _rust_request(
+        {
+            "action": "ossie_select_scope",
+            "content": content,
+            "serialization": serialization,
+            "consumer_profile": consumer_profile,
+            "target": target,
+            "scope_id": scope_id,
+        }
+    )
+    if response["status"] == "error":
+        raise ValueError(response["error"])
+    return response["value"]
+
+
 def _model_to_rust_dict(model: Model) -> dict[str, Any]:
     return _drop_none(
         {
@@ -639,7 +682,7 @@ def _model_to_rust_dict(model: Model) -> dict[str, Any]:
 
 
 def _dimension_to_rust_dict(dimension) -> dict[str, Any]:
-    return _drop_none(
+    payload = _drop_none(
         {
             "name": dimension.name,
             "type": dimension.type,
@@ -657,10 +700,15 @@ def _dimension_to_rust_dict(dimension) -> dict[str, Any]:
             "public": dimension.public,
         }
     )
+    if dimension.logical_data_type is not None:
+        payload["logical_data_type"] = dimension.logical_data_type
+    if dimension.declared_is_time is not None:
+        payload["declared_is_time"] = dimension.declared_is_time
+    return payload
 
 
 def _metric_to_rust_dict(metric: Metric) -> dict[str, Any]:
-    return _drop_none(
+    payload = _drop_none(
         {
             "name": metric.name,
             "type": metric.type,
@@ -703,6 +751,9 @@ def _metric_to_rust_dict(metric: Metric) -> dict[str, Any]:
             "public": metric.public,
         }
     )
+    if metric.logical_data_type is not None:
+        payload["logical_data_type"] = metric.logical_data_type
+    return payload
 
 
 def _relationship_to_rust_dict(relationship) -> dict[str, Any]:
@@ -717,6 +768,8 @@ def _relationship_to_rust_dict(relationship) -> dict[str, Any]:
         "sql": getattr(relationship, "sql", None),
         "metadata": relationship.metadata,
     }
+    if relationship.edge_id is not None:
+        payload["edge_id"] = relationship.edge_id
     if isinstance(relationship.foreign_key, list):
         payload["foreign_key_columns"] = relationship.foreign_key
     else:
@@ -860,7 +913,11 @@ def _ensure_rust_adapter_binary() -> None:
         text=True,
         capture_output=True,
         cwd=ROOT,
-        env={**os.environ, "CARGO_TARGET_DIR": str(RUST_TARGET_DIR)},
+        env={
+            **os.environ,
+            "CARGO_BUILD_RUSTC_WRAPPER": "",
+            "CARGO_TARGET_DIR": str(RUST_TARGET_DIR),
+        },
         check=False,
     )
     if result.returncode != 0:

@@ -313,6 +313,7 @@ jobs:
               - 'sidemantic/db/postgres.py'
               - 'sidemantic/db/unavailable.py'
               - 'sidemantic/validation.py'
+              - 'sidemantic/validation_runner.py'
               - 'sidemantic/cli.py'
               - 'sidemantic/cli_contract.py'
               - 'sidemantic/cli_polish.py'

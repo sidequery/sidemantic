@@ -194,7 +194,7 @@ packages = ["sidemantic"]
 line-length = 120
 target-version = "py311"
 force-exclude = true
-exclude = [
+extend-exclude = [
     "sidemantic/adapters/malloy_grammar",  # ANTLR-generated files
     "sidemantic/adapters/holistics_grammar",  # ANTLR-generated files
     "tests/ossie-fixtures/upstream/validation/validate.py",  # Exact pinned Apache validator fixture

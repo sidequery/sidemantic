@@ -243,3 +243,96 @@ def test_rewrite_output_dialect_keeps_input_sql_and_graph_dialect(source_graph):
     assert envelope["input_dialect"] == "duckdb"
     assert received_sql == sql
     assert context == {"output_dialect": "postgres", "user_attributes": None, "enforce_visibility": False}
+
+
+def test_postgres_transport_sql_preserves_literals_identifiers_and_graph(source_graph):
+    from sidemantic.rust_bridge import rewrite_semantic_input
+
+    received = []
+
+    def rewrite(graph_json, sql, context_json):
+        received.append((json.loads(graph_json), sql, json.loads(context_json)))
+        return "SELECT 1"
+
+    original = graph_to_semantic_input(source_graph)
+    sql = r"""SELECT "events"."Revenue" FROM metrics WHERE "events"."Region" = E'O\'Brien' """
+    rewrite_semantic_input(
+        source_graph,
+        sql,
+        sql_dialect="postgres",
+        output_dialect="postgres",
+        rust_module=SimpleNamespace(rewrite_with_semantic_input_context=rewrite),
+    )
+    envelope, normalized, context = received[0]
+    assert envelope == original
+    assert '"events"."Revenue"' in normalized
+    assert "'O''Brien'" in normalized
+    assert context["output_dialect"] == "postgres"
+    assert graph_to_semantic_input(source_graph) == original
+
+
+def test_postgres_structured_fragments_keep_input_dictionary_unchanged(source_graph):
+    received = []
+
+    def compile_input(graph_json, query_json):
+        received.append(json.loads(query_json))
+        return "SELECT 1"
+
+    query = {
+        "metrics": ["events.total"],
+        "filters": [r"""events."Region" = E'O\'Brien' """],
+        "order_by": ['events."Region" DESC NULLS LAST'],
+        "dialect": "postgres",
+    }
+    compile_semantic_input(
+        source_graph,
+        query,
+        query_dialect="postgres",
+        rust_module=SimpleNamespace(compile_with_semantic_input=compile_input),
+    )
+    assert "'O''Brien'" in received[0]["filters"][0]
+    assert received[0]["order_by"] == ['events."Region" DESC NULLS LAST']
+    assert query["filters"] == [r"""events."Region" = E'O\'Brien' """]
+
+
+@pytest.mark.parametrize(
+    "field,fragment",
+    [
+        ("filters", "1 = 1; SELECT 2"),
+        ("filters", "1 = 1 ORDER BY 1"),
+        ("filters", "1 = 1 LIMIT 1"),
+        ("order_by", "events.total; SELECT 2"),
+        ("order_by", "events.total LIMIT 1"),
+    ],
+)
+def test_postgres_fragment_normalization_rejects_extra_sql(source_graph, field, fragment):
+    with pytest.raises(ValueError, match="single statement|extra SQL clauses"):
+        compile_semantic_input(source_graph, {field: [fragment]}, query_dialect="postgres", rust_module=object())
+
+
+def test_postgres_sql_normalization_rejects_multiple_statements(source_graph):
+    from sidemantic.rust_bridge import rewrite_semantic_input
+
+    with pytest.raises(ValueError, match="single statement"):
+        rewrite_semantic_input(source_graph, "SELECT 1; SELECT 2", sql_dialect="postgres", rust_module=object())
+
+
+@pytest.mark.parametrize("clause", [None, "ORDER BY"])
+@pytest.mark.parametrize(
+    "ordering,expected",
+    [("x ASC", "x ASC NULLS LAST"), ("x DESC", "x DESC NULLS FIRST"), ("x DESC NULLS LAST", "x DESC NULLS LAST")],
+)
+def test_postgres_null_order_survives_intermediate_dialect(clause, ordering, expected):
+    from sidemantic.rust_bridge import _postgres_query_sql
+
+    sql = f"SELECT x FROM events ORDER BY {ordering}" if clause is None else ordering
+    assert expected in _postgres_query_sql(sql, clause=clause)
+
+
+def test_postgres_nested_window_null_order_survives_intermediate_dialect():
+    from sidemantic.rust_bridge import _postgres_query_sql
+
+    sql = "SELECT x FROM events ORDER BY SUM(x) OVER (ORDER BY y DESC)"
+    assert _postgres_query_sql(sql) == (
+        "SELECT x FROM events ORDER BY SUM(x) OVER (ORDER BY y DESC NULLS FIRST) ASC NULLS LAST"
+    )

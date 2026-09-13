@@ -250,3 +250,13 @@ from date)` and have a PostgreSQL row-result test. Date-difference predicates
 remain unsupported: PostgreSQL elapsed-duration lowering does not preserve
 DuckDB calendar-boundary counting for timestamps. Raw SQL nodes and unresolved
 generic function nodes are also rejected for PostgreSQL policy output.
+
+Public PostgreSQL layers keep graph definitions in the version-1 DuckDB input
+contract while selecting PostgreSQL output. At the Python bridge, PostgreSQL
+request SQL and structured filter/order expressions are normalized explicitly
+to the compiler's input syntax. This conversion preserves quoted identifiers,
+escaped strings and resolved null ordering; it does not bind semantic references
+or rewrite graph definitions. Multiple statements and trailing scalar clauses
+are rejected. Explicit non-DuckDB graph-expression dialect metadata remains
+unsupported. The PostgreSQL CI corpus exercises `SemanticLayer.compile`,
+`query`, `sql`, and `QueryRewriter` with a real PostgreSQL adapter and Rust runtime.

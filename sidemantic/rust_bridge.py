@@ -85,14 +85,67 @@ def _call_semantic_entrypoint(rust_module, name: str, *args):
         raise UnsupportedSemanticFeaturesError(capabilities) from error
 
 
+def _postgres_query_sql(sql: str, *, clause: str | None = None) -> str:
+    """Translate transport syntax only; graph definitions remain inert DuckDB input.
+
+    Scalar filters/orderings use a wrapper so trailing clauses cannot be lost
+    when extracting an expression. SQLGlot owns dialect syntax, not binding.
+    """
+    import sqlglot
+    from sqlglot import exp
+    from sqlglot.errors import ErrorLevel, UnsupportedError
+
+    source = sql if clause is None else f"SELECT 1 {clause} {sql}"
+    statements = [statement for statement in sqlglot.parse(source, read="postgres") if statement is not None]
+    if len(statements) != 1:
+        raise ValueError("PostgreSQL query input requires a single statement")
+    parsed = statements[0]
+    if not isinstance(parsed, (exp.Select, exp.SetOperation)):
+        raise ValueError("PostgreSQL query input requires a SELECT query")
+    expression = parsed
+    if clause is not None:
+        key = "where" if clause == "WHERE" else "order"
+        if not isinstance(parsed, exp.Select) or any(
+            value and name not in {"expressions", key} for name, value in parsed.args.items()
+        ):
+            raise ValueError(f"PostgreSQL {clause} input contains extra SQL clauses")
+        wrapper = parsed.args.get(key)
+        if wrapper is None:
+            raise ValueError(f"PostgreSQL {clause} input requires an expression")
+        expression = wrapper.this if clause == "WHERE" else wrapper
+    try:
+        # The intermediate parser must not infer DuckDB's default null ordering
+        # after PostgreSQL defaults have been resolved. Emit that choice explicitly.
+        for ordered in reversed(list(expression.find_all(exp.Ordered))):
+            if any(value and name not in {"this", "desc", "nulls_first"} for name, value in ordered.args.items()):
+                raise UnsupportedSemanticFeaturesError(["query.postgres_order_syntax"])
+            body = ordered.this.sql(dialect="duckdb", unsupported_level=ErrorLevel.RAISE)
+            direction = "DESC" if ordered.args.get("desc") else "ASC"
+            nulls = "FIRST" if ordered.args.get("nulls_first") else "LAST"
+            ordered.replace(exp.Var(this=f"{body} {direction} NULLS {nulls}"))
+        result = expression.sql(dialect="duckdb", unsupported_level=ErrorLevel.RAISE)
+    except UnsupportedError as error:
+        raise UnsupportedSemanticFeaturesError(["query.postgres_input_syntax"]) from error
+    return result.removeprefix("ORDER BY ") if clause == "ORDER BY" else result
+
+
 def compile_semantic_input(
     graph: SemanticGraph,
     query: dict,
     *,
     input_dialect: str = "duckdb",
+    query_dialect: str | None = None,
     rust_module=None,
 ) -> str:
     """Compile through the versioned graph contract; Rust owns SQL generation."""
+    if query_dialect not in {None, "duckdb", "postgres"}:
+        raise UnsupportedSemanticFeaturesError([f"query.input_dialect.{query_dialect}"])
+    if query_dialect == "postgres":
+        query = dict(query)
+        query["filters"] = [_postgres_query_sql(filter_sql, clause="WHERE") for filter_sql in query.get("filters", [])]
+        query["order_by"] = [
+            _postgres_query_sql(order_sql, clause="ORDER BY") for order_sql in query.get("order_by", [])
+        ]
     module = rust_module if rust_module is not None else get_rust_module()
     sql = _call_semantic_entrypoint(
         module,
@@ -131,12 +184,17 @@ def rewrite_semantic_input(
     sql: str,
     *,
     input_dialect: str = "duckdb",
+    sql_dialect: str | None = None,
     output_dialect: str | None = None,
     user_attributes: dict | None = None,
     enforce_visibility: bool = False,
     rust_module=None,
 ) -> str:
     """Rewrite SQL with caller context through the versioned graph contract."""
+    if sql_dialect not in {None, "duckdb", "postgres"}:
+        raise UnsupportedSemanticFeaturesError([f"query.input_dialect.{sql_dialect}"])
+    if sql_dialect == "postgres":
+        sql = _postgres_query_sql(sql)
     module = rust_module if rust_module is not None else get_rust_module()
     context_required = (
         output_dialect is not None

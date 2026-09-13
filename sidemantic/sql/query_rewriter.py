@@ -216,9 +216,10 @@ class QueryRewriter:
             rewritten = rewrite_semantic_input(
                 self.graph,
                 sql,
-                input_dialect=self.dialect,
+                input_dialect="duckdb" if self.dialect == "postgres" else self.dialect,
                 user_attributes=user_attributes,
                 enforce_visibility=self.enforce_visibility,
+                **({"sql_dialect": "postgres", "output_dialect": "postgres"} if self.dialect == "postgres" else {}),
             )
             self.last_engine_selection = {"engine": "rust", "reason": None}
             return rewritten

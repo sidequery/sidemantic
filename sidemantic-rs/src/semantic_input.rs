@@ -9,8 +9,8 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
 use crate::core::{
-    parse_semantic_expression, Dimension, Metric, Model, Parameter, Relationship, Segment,
-    SemanticGraph,
+    parse_semantic_expression, Dimension, Metric, Model, Parameter, PreAggregation, Relationship,
+    Segment, SemanticGraph,
 };
 use crate::error::{Result, SidemanticError};
 use crate::runtime::{
@@ -51,7 +51,6 @@ pub struct SemanticInput {
     pub source: Value,
     validation_context: QueryValidationContext,
     policies: HashMap<String, policies::ModelPolicies>,
-    has_preaggregations: bool,
 }
 
 fn invalid(path: &str, message: impl std::fmt::Display) -> SidemanticError {
@@ -303,7 +302,22 @@ fn decode_model(value: Value, path: &str) -> Result<Model> {
     raw.remove("security");
     raw.remove("invariant_filters");
     if let Some(value) = raw.remove("pre_aggregations") {
-        let _: Vec<Value> = deserialize(value, &format!("{path}.pre_aggregations"))?;
+        let values: Vec<Value> = deserialize(value, &format!("{path}.pre_aggregations"))?;
+        let preaggregations = values
+            .into_iter()
+            .enumerate()
+            .map(|(index, value)| {
+                let path = format!("{path}.pre_aggregations[{index}]");
+                let mut raw = object(value, &path)?;
+                // Lambda freshness semantics have no executable core slot yet.
+                // Do not discard active behavior, even on an otherwise plain rollup.
+                reject_active(&mut raw, "rollups", "preaggregation.lambda")?;
+                reject_active(&mut raw, "union_with_source_data", "preaggregation.lambda")?;
+                let exemplar: PreAggregation = deserialize(json!({"name":""}), &path)?;
+                project(raw, exemplar, &path)
+            })
+            .collect::<Result<Vec<PreAggregation>>>()?;
+        raw.insert("pre_aggregations".into(), json!(preaggregations));
     }
     if raw.contains_key("primary_key_columns") {
         return Err(invalid(path, "use primary_key, not primary_key_columns"));
@@ -563,12 +577,6 @@ impl SemanticInput {
         }
         let _ = envelope.import_warnings; // Descriptive state remains in source.
         let policies = policies::decode(&envelope.models)?;
-        let has_preaggregations = envelope.models.iter().any(|model| {
-            model
-                .get("pre_aggregations")
-                .and_then(Value::as_array)
-                .is_some_and(|values| !values.is_empty())
-        });
         let mut graph = SemanticGraph::new();
         let mut models = Vec::new();
         for (index, model) in envelope.models.into_iter().enumerate() {
@@ -652,7 +660,6 @@ impl SemanticInput {
             source,
             validation_context: QueryValidationContext::from_top_level_metrics(&metrics),
             policies,
-            has_preaggregations,
         })
     }
 }
@@ -731,10 +738,14 @@ fn compile_semantic_input(input_json: &str, query_json: &str) -> Result<String> 
         payload.enforce_visibility,
         dialect,
     )?;
-    if query.prepared_policies.has_row_filters() {
+    if query.prepared_policies.has_row_filters()
+        || query
+            .prepared_policies
+            .invariant_filters
+            .values()
+            .any(|filters| !filters.is_empty())
+    {
         query.use_preaggregations = false;
-    } else if query.use_preaggregations && input.has_preaggregations {
-        return Err(unsupported("model.pre_aggregations"));
     }
     SqlGenerator::new(&input.graph)
         .with_dialect(dialect)
@@ -865,6 +876,33 @@ mod tests {
         source = input();
         source["models"][0]["dimensions"][0]["mystery"] = json!(1);
         assert!(SemanticInput::from_json(&source.to_string()).is_err());
+    }
+
+    #[test]
+    fn handoff_rollups_are_checked_and_mandatory_filters_bypass_them() {
+        let mut source = input();
+        source["models"][0]["pre_aggregations"] = json!([{"name":"total", "measures":["revenue"], "rollups":null, "union_with_source_data":false}]);
+        let query = r#"{"metrics":["orders.revenue"],"use_preaggregations":true}"#;
+        let sql = compile_with_semantic_input(&source.to_string(), query).unwrap();
+        assert!(sql.contains("orders_preagg_total"), "{sql}");
+        source["models"][0]["invariant_filters"] = json!(["not deleted"]);
+        let sql = compile_with_semantic_input(&source.to_string(), query).unwrap();
+        assert!(!sql.contains("orders_preagg_total"), "{sql}");
+        assert!(sql.contains("NOT deleted"), "{sql}");
+        source["models"][0]["pre_aggregations"][0]["unexpected"] = json!(true);
+        assert!(matches!(
+            SemanticInput::from_json(&source.to_string()),
+            Err(SidemanticError::ValidationIssue { .. })
+        ));
+        source["models"][0]["pre_aggregations"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("unexpected");
+        source["models"][0]["pre_aggregations"][0]["union_with_source_data"] = json!(true);
+        assert!(matches!(
+            SemanticInput::from_json(&source.to_string()),
+            Err(SidemanticError::UnsupportedSemanticFeatures { .. })
+        ));
     }
 
     #[test]

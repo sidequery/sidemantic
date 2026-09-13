@@ -70,10 +70,23 @@ supports:
   semantics. Summing period-level distinct counts is not a distinct count over
   the combined underlying rows.
 
-Configured rollups can be bypassed for raw queries. Active row policies always
-bypass rollups, including when routing was requested. Rollup routing through
-this boundary is not yet qualified. The legacy Rust materialization helper
-rejects models with invariant filters instead of discarding those filters.
+Configured ordinary rollups reach the Rust graph through this boundary. Routing
+supports single-source sum/count/min/max queries over compatible stored dimensions
+and time grains. Simple predicates on stored non-time dimensions are checked through
+the parsed expression, including IN, BETWEEN and IS NULL. Uncovered dimensions,
+time predicates, functions, unsupported measure states and incomplete rollup
+populations use raw source SQL, with `used_preagg=false`. A bucketed timestamp cannot
+serve a finer grain or an untruncated timestamp, and week buckets cannot serve months.
+Cross-source aggregate child queries retain raw-source planning.
+
+Active row policies and invariant filters always bypass rollups, including when
+routing was requested. Access and visibility checks still run before routing.
+Python materialization preserves invariants; the legacy Rust materialization helper
+continues to reject models with invariant filters instead of discarding them. Rust
+materialization supports filtered sum/count/min/max states, including distinct row
+and non-null value count populations, and rejects unsupported states such as AVG,
+custom SQL, partitioned builds and partial build ranges. Lambda freshness behavior
+remains explicitly unsupported by the versioned boundary.
 
 Remaining capability gates include policy-bearing SQL outside the scoped
 `FROM metrics` subset, non-DuckDB policy output, many-to-many role paths, computed primary-key
@@ -127,6 +140,11 @@ synthetic DuckDB data and compares result columns and rows against independently
 specified expectations. Unsafe or unsupported cases assert errors explicitly.
 Rust tests require an installed extension; skipped Rust parameters do not count
 as acceptance.
+
+`test_rollup_routing.py` additionally creates materialized tables through the Python
+and Rust helpers and compares real raw/routed execution against independent expected
+rows. Poisoned unscoped rollups verify mandatory restriction bypass. These are
+synthetic fixtures, not production workload or performance qualification.
 
 `tests/core/test_semantic_handoff.py` checks inert snapshots and typed errors.
 Rust's `semantic_input` tests check decoding, keys, scope, dialects and rejection

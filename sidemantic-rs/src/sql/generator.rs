@@ -214,7 +214,13 @@ impl<'a> SqlGenerator<'a> {
         // Try pre-aggregation routing for single-model aggregate queries.
         if query.use_preaggregations
             && !query.prepared_policies.has_row_filters()
+            && !query
+                .prepared_policies
+                .invariant_filters
+                .values()
+                .any(|filters| !filters.is_empty())
             && !query.ungrouped
+            && query.table_calculations.is_empty()
             && required_models.len() == 1
         {
             if let Some(model_name) = required_models.iter().next() {
@@ -3727,7 +3733,10 @@ impl<'a> SqlGenerator<'a> {
             SidemanticError::model_not_found(model_name, &available)
         })?;
 
-        if model.pre_aggregations.is_empty() {
+        if model.pre_aggregations.is_empty()
+            || metric_refs.is_empty()
+            || metric_refs.iter().any(|metric| metric.graph_metric)
+        {
             return Ok(None);
         }
 
@@ -3735,7 +3744,44 @@ impl<'a> SqlGenerator<'a> {
         let query_dimension_names: Vec<String> =
             dimension_refs.iter().map(|d| d.name.clone()).collect();
         let query_granularity = dimension_refs.iter().find_map(|d| d.granularity.clone());
-        let filter_columns = self.extract_filter_columns(filters);
+        let Some((filter_columns, rewritten_filters)) =
+            self.preaggregation_filters(model, filters)?
+        else {
+            return Ok(None);
+        };
+
+        // Ordering is limited to selected semantic outputs on this route.
+        let mut rewritten_order = Vec::new();
+        for order in order_by {
+            let mut parts = order.split_whitespace();
+            let field = parts.next().unwrap_or_default();
+            let suffix = parts.collect::<Vec<_>>().join(" ");
+            if !matches!(suffix.to_ascii_uppercase().as_str(), "" | "ASC" | "DESC") {
+                return Ok(None);
+            }
+            let alias = dimension_refs
+                .iter()
+                .find_map(|dim| {
+                    let name = dim.granularity.as_ref().map_or_else(
+                        || dim.name.clone(),
+                        |grain| format!("{}__{grain}", dim.name),
+                    );
+                    (field == name || field == format!("{model_name}.{name}"))
+                        .then_some(dim.alias.as_str())
+                })
+                .or_else(|| {
+                    metric_refs.iter().find_map(|metric| {
+                        (field == metric.name || field == format!("{model_name}.{}", metric.name))
+                            .then_some(metric.alias.as_str())
+                    })
+                });
+            let Some(alias) = alias else { return Ok(None) };
+            rewritten_order.push(
+                format!("{} {suffix}", self.quote_identifier(alias))
+                    .trim()
+                    .to_string(),
+            );
+        }
 
         let mut best_match: Option<(crate::core::PreAggregation, i32)> = None;
         for preagg in &model.pre_aggregations {
@@ -3743,8 +3789,7 @@ impl<'a> SqlGenerator<'a> {
                 model,
                 preagg,
                 &query_metric_names,
-                &query_dimension_names,
-                query_granularity.as_deref(),
+                dimension_refs,
                 &filter_columns,
             ) {
                 continue;
@@ -3772,13 +3817,13 @@ impl<'a> SqlGenerator<'a> {
             &best_preagg,
             metric_refs,
             dimension_refs,
-            filters,
-            order_by,
+            &rewritten_filters,
+            &rewritten_order,
             limit,
             offset,
             preagg_database,
             preagg_schema,
-        );
+        )?;
 
         Ok(Some(format!("{preagg_sql}\n-- used_preagg=true")))
     }
@@ -3788,140 +3833,184 @@ impl<'a> SqlGenerator<'a> {
         model: &crate::core::Model,
         preagg: &crate::core::PreAggregation,
         query_metrics: &[String],
-        query_dimensions: &[String],
-        query_granularity: Option<&str>,
+        dimension_refs: &[DimensionRef],
         filter_columns: &HashSet<String>,
     ) -> bool {
+        // Only ordinary, complete-source materializations have this state contract.
+        if preagg.preagg_type != crate::core::PreAggregationType::Rollup
+            || preagg.sql.is_some()
+            || preagg.build_range_start.is_some()
+            || preagg.build_range_end.is_some()
+            || preagg.time_dimension.is_some() != preagg.granularity.is_some()
+            || preagg
+                .granularity
+                .as_deref()
+                .is_some_and(|grain| Self::granularity_level(grain).is_none())
+        {
+            return false;
+        }
         let preagg_dims: HashSet<String> = preagg
             .dimensions
-            .as_ref()
-            .map(|d| d.iter().cloned().collect())
-            .unwrap_or_default();
-        let mut query_dims: HashSet<String> = query_dimensions.iter().cloned().collect();
-        if let Some(time_dim) = preagg.time_dimension.as_ref() {
-            query_dims.remove(time_dim);
-        }
-        if !query_dims.is_subset(&preagg_dims) {
-            return false;
-        }
-
-        let preagg_measures: HashSet<String> = preagg
-            .measures
-            .as_ref()
-            .map(|m| m.iter().cloned().collect())
-            .unwrap_or_default();
-
-        for metric_name in query_metrics {
-            let Some(metric) = model.get_metric(metric_name) else {
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        for name in preagg_dims.iter().chain(preagg.time_dimension.iter()) {
+            let Some(dimension) = model.get_dimension(name) else {
                 return false;
             };
-            if !self.metric_derivable_from_preaggregation(metric, &preagg_measures) {
+            if dimension.window.is_some() {
+                return false;
+            }
+            if preagg.time_dimension.as_deref() == Some(name.as_str())
+                && dimension.r#type != crate::core::DimensionType::Time
+            {
                 return false;
             }
         }
-
-        if let (Some(query_grain), Some(preagg_grain)) =
-            (query_granularity, preagg.granularity.as_deref())
-        {
-            if !self.is_granularity_compatible(query_grain, preagg_grain) {
+        for dimension in dimension_refs {
+            if dimension.model != model.name {
+                return false;
+            }
+            if let Some(grain) = dimension.granularity.as_deref() {
+                if preagg.time_dimension.as_deref() != Some(dimension.name.as_str())
+                    || !preagg
+                        .granularity
+                        .as_deref()
+                        .is_some_and(|stored| self.is_granularity_compatible(grain, stored))
+                {
+                    return false;
+                }
+            } else if !preagg_dims.contains(&dimension.name) {
+                // A bucket column cannot reconstruct an untruncated timestamp.
                 return false;
             }
         }
-
-        if !filter_columns.is_empty() {
-            let mut available_columns: HashSet<String> = preagg
-                .dimensions
-                .as_ref()
-                .map(|d| d.iter().cloned().collect())
-                .unwrap_or_default();
-            if let Some(time_dim) = preagg.time_dimension.as_ref() {
-                available_columns.insert(time_dim.clone());
-            }
-            if !filter_columns.is_subset(&available_columns) {
-                return false;
-            }
-        }
-
-        true
-    }
-
-    fn metric_derivable_from_preaggregation(
-        &self,
-        metric: &crate::core::Metric,
-        preagg_measures: &HashSet<String>,
-    ) -> bool {
-        if !preagg_measures.contains(&metric.name) {
+        if !filter_columns.is_subset(&preagg_dims) {
             return false;
         }
+        let preagg_measures: HashSet<String> = preagg
+            .measures
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        query_metrics.iter().all(|name| {
+            model.get_metric(name).is_some_and(|metric| {
+                preagg_measures.contains(name)
+                    && metric.r#type == MetricType::Simple
+                    && matches!(
+                        metric.agg,
+                        Some(
+                            Aggregation::Sum
+                                | Aggregation::Count
+                                | Aggregation::Min
+                                | Aggregation::Max
+                        )
+                    )
+                    && !metric.sql_is_complete
+                    && metric.filters.is_empty()
+                    && metric.window.is_none()
+                    && metric.window_expression.is_none()
+                    && metric.window_frame.is_none()
+                    && metric.window_order.is_none()
+                    && metric.grain_to_date.is_none()
+                    && metric.offset_window.is_none()
+                    && metric.non_additive_dimension.is_none()
+                    && metric.fill_nulls_with.is_none()
+            })
+        })
+    }
 
-        match metric.agg.as_ref() {
-            None => true,
-            Some(Aggregation::Sum | Aggregation::Count | Aggregation::Min | Aggregation::Max) => {
-                true
+    // Admit row predicates whose entire syntax and referenced population are known.
+    // In particular, aggregate/window functions and subqueries cannot slip through
+    // an empty or incomplete set of regex-extracted column names.
+    fn preaggregation_filter_shape(expression: &Expression) -> bool {
+        match expression {
+            Expression::Column(column) => !column.join_mark,
+            Expression::Literal(_) => true,
+            Expression::Eq(binary)
+            | Expression::Neq(binary)
+            | Expression::Lt(binary)
+            | Expression::Lte(binary)
+            | Expression::Gt(binary)
+            | Expression::Gte(binary)
+            | Expression::And(binary)
+            | Expression::Or(binary) => {
+                Self::preaggregation_filter_shape(&binary.left)
+                    && Self::preaggregation_filter_shape(&binary.right)
             }
-            Some(Aggregation::Avg) => self
-                .find_count_measure_for_avg(&metric.name, preagg_measures)
-                .is_some(),
-            Some(
-                Aggregation::CountDistinct
-                | Aggregation::Stddev
-                | Aggregation::StddevPop
-                | Aggregation::Variance
-                | Aggregation::VariancePop,
-            ) => false,
-            Some(Aggregation::Median | Aggregation::Expression) => true,
+            Expression::Paren(unary) => Self::preaggregation_filter_shape(&unary.this),
+            Expression::Not(unary) | Expression::Neg(unary) => {
+                Self::preaggregation_filter_shape(&unary.this)
+            }
+            Expression::IsNull(unary) => Self::preaggregation_filter_shape(&unary.this),
+            Expression::Between(between) => {
+                Self::preaggregation_filter_shape(&between.this)
+                    && Self::preaggregation_filter_shape(&between.low)
+                    && Self::preaggregation_filter_shape(&between.high)
+            }
+            Expression::In(values) => {
+                values.query.is_none()
+                    && values.unnest.is_none()
+                    && Self::preaggregation_filter_shape(&values.this)
+                    && values
+                        .expressions
+                        .iter()
+                        .all(Self::preaggregation_filter_shape)
+            }
+            _ => false,
         }
     }
 
-    fn find_count_measure_for_avg(
+    fn preaggregation_filters(
         &self,
-        avg_metric_name: &str,
-        preagg_measures: &HashSet<String>,
-    ) -> Option<String> {
-        if let Some(base_name) = avg_metric_name.strip_prefix("avg_") {
-            let candidate = format!("count_{base_name}");
-            if preagg_measures.contains(&candidate) {
-                return Some(candidate);
-            }
-        }
-
-        if avg_metric_name.contains("_avg") {
-            let candidate = avg_metric_name.replace("_avg", "_count");
-            if preagg_measures.contains(&candidate) {
-                return Some(candidate);
-            }
-        }
-
-        if preagg_measures.contains("count") {
-            return Some("count".to_string());
-        }
-
-        let count_word_re =
-            regex::Regex::new(r"(?:^|_)count(?:$|_)").expect("valid count-word regex");
-        let mut measures: Vec<&String> = preagg_measures.iter().collect();
-        measures.sort();
-        for measure in measures {
-            if count_word_re.is_match(measure) {
-                return Some(measure.clone());
-            }
-        }
-
-        None
-    }
-
-    fn extract_filter_columns(&self, filters: &[String]) -> HashSet<String> {
+        model: &Model,
+        filters: &[String],
+    ) -> Result<Option<(HashSet<String>, Vec<String>)>> {
         let mut columns = HashSet::new();
-        let col_re =
-            regex::Regex::new(r"(\w+\.)?(\w+)\s*[=<>!]").expect("valid filter-column regex");
+        let mut rewritten = Vec::new();
         for filter in filters {
-            for captures in col_re.captures_iter(filter) {
-                let Some(column) = captures.get(2) else {
-                    continue;
-                };
-                columns.insert(column.as_str().to_string());
+            let Ok(expression) = parse_semantic_expression(filter) else {
+                return Ok(None);
+            };
+            if !Self::preaggregation_filter_shape(&expression) {
+                return Ok(None);
             }
+            let Ok(references) = semantic_column_references(filter) else {
+                return Ok(None);
+            };
+            let mut replacements = HashMap::new();
+            for reference in references {
+                if reference
+                    .model
+                    .as_deref()
+                    .is_some_and(|owner| owner != model.name)
+                    || reference.aggregate_input
+                    || model.get_metric(&reference.field).is_some()
+                {
+                    return Ok(None);
+                }
+                let Some(dimension) = model.get_dimension(&reference.field) else {
+                    return Ok(None);
+                };
+                // Temporal row predicates need bucket-alignment analysis, even
+                // when their field name is also present as a raw dimension.
+                if dimension.r#type == crate::core::DimensionType::Time
+                    || dimension.window.is_some()
+                {
+                    return Ok(None);
+                }
+                columns.insert(reference.field.clone());
+                replacements.insert(
+                    (reference.model, reference.field.clone()),
+                    self.quote_identifier(&reference.field),
+                );
+            }
+            let expression = crate::core::replace_semantic_columns(expression, &replacements)?;
+            rewritten.push(format!("({})", self.emit_expression(&expression)?));
         }
-        columns
+        Ok(Some((columns, rewritten)))
     }
 
     fn granularity_level(granularity: &str) -> Option<i32> {
@@ -3932,6 +4021,8 @@ impl<'a> SqlGenerator<'a> {
             "week" => Some(4),
             "day" => Some(5),
             "hour" => Some(6),
+            "minute" => Some(7),
+            "second" => Some(8),
             _ => None,
         }
     }
@@ -3945,7 +4036,7 @@ impl<'a> SqlGenerator<'a> {
         let preagg_level = Self::granularity_level(preagg_grain);
         match (query_level, preagg_level) {
             (Some(q), Some(p)) => q <= p,
-            _ => query_grain == preagg_grain,
+            _ => false,
         }
     }
 
@@ -4001,125 +4092,74 @@ impl<'a> SqlGenerator<'a> {
         offset: Option<usize>,
         preagg_database: Option<&str>,
         preagg_schema: Option<&str>,
-    ) -> String {
-        let preagg_table = preagg.table_name(&model.name, preagg_database, preagg_schema);
-        let mut select_parts: Vec<String> = Vec::new();
-
-        for dim_ref in dimension_refs {
-            let dim_name = &dim_ref.name;
-            if let (Some(query_grain), Some(preagg_time_dim), Some(preagg_grain)) = (
-                dim_ref.granularity.as_deref(),
-                preagg.time_dimension.as_deref(),
-                preagg.granularity.as_deref(),
-            ) {
-                if preagg_time_dim == dim_name {
-                    let preagg_col = format!("{dim_name}_{preagg_grain}");
-                    if query_grain == preagg_grain {
-                        select_parts.push(format!("{preagg_col} AS {}__{query_grain}", dim_name));
-                    } else {
-                        select_parts.push(format!(
-                            "DATE_TRUNC('{query_grain}', {preagg_col}) AS {}__{query_grain}",
-                            dim_name
-                        ));
-                    }
-                    continue;
+    ) -> Result<String> {
+        let table = format!("{}_preagg_{}", model.name, preagg.name);
+        let preagg_table = preagg_database
+            .into_iter()
+            .chain(preagg_schema)
+            .chain(Some(table.as_str()))
+            .map(|part| self.quote_identifier(part))
+            .collect::<Vec<_>>()
+            .join(".");
+        let mut select_parts = Vec::new();
+        for dimension in dimension_refs {
+            let column = if let Some(grain) = dimension.granularity.as_deref() {
+                let stored_grain = preagg.granularity.as_deref().expect("matched time grain");
+                let column = self.quote_identifier(&format!("{}_{stored_grain}", dimension.name));
+                if grain == stored_grain {
+                    column
+                } else {
+                    self.emit_expression(&parse_semantic_expression(&format!(
+                        "DATE_TRUNC('{grain}', {column})"
+                    ))?)?
                 }
-            }
-            select_parts.push(dim_name.clone());
+            } else {
+                self.quote_identifier(&dimension.name)
+            };
+            select_parts.push(format!(
+                "{column} AS {}",
+                self.quote_identifier(&dimension.alias)
+            ));
         }
-
-        let preagg_measures: HashSet<String> = preagg
-            .measures
-            .as_ref()
-            .map(|m| m.iter().cloned().collect())
-            .unwrap_or_default();
-
         for metric_ref in metric_refs {
-            let Some(metric) = model.get_metric(&metric_ref.name) else {
-                continue;
+            let metric = model.get_metric(&metric_ref.name).expect("matched measure");
+            let column = self.quote_identifier(&format!("{}_raw", metric_ref.name));
+            let expression = match metric.agg {
+                Some(Aggregation::Sum) => format!("SUM({column})"),
+                // COUNT over an empty source is zero; SUM of zero stored rows is NULL.
+                Some(Aggregation::Count) => format!("COALESCE(SUM({column}), 0)"),
+                Some(Aggregation::Min) => format!("MIN({column})"),
+                Some(Aggregation::Max) => format!("MAX({column})"),
+                _ => unreachable!("matcher admits only additive or min/max state"),
             };
-            let raw_col = format!("{}_raw", metric_ref.name);
-            let expr = match metric.agg.as_ref() {
-                Some(Aggregation::Sum | Aggregation::Count) => {
-                    format!("SUM({raw_col}) AS {}", metric_ref.name)
-                }
-                Some(Aggregation::Avg) => {
-                    let count_measure = self
-                        .find_count_measure_for_avg(&metric_ref.name, &preagg_measures)
-                        .unwrap_or_else(|| "count".to_string());
-                    let count_col = format!("{count_measure}_raw");
-                    format!(
-                        "SUM({raw_col}) / NULLIF(SUM({count_col}), 0) AS {}",
-                        metric_ref.name
-                    )
-                }
-                Some(Aggregation::Min) => format!("MIN({raw_col}) AS {}", metric_ref.name),
-                Some(Aggregation::Max) => format!("MAX({raw_col}) AS {}", metric_ref.name),
-                _ => format!("SUM({raw_col}) AS {}", metric_ref.name),
-            };
-            select_parts.push(expr);
+            select_parts.push(format!(
+                "{expression} AS {}",
+                self.quote_identifier(&metric_ref.alias)
+            ));
         }
-
         let mut sql = format!(
             "SELECT\n  {}\nFROM {preagg_table}",
             select_parts.join(",\n  ")
         );
-
         if !filters.is_empty() {
-            let mut rewritten = Vec::with_capacity(filters.len());
-            let time_col_re = preagg
-                .time_dimension
-                .as_ref()
-                .zip(preagg.granularity.as_ref())
-                .map(|(dim, grain)| {
-                    (
-                        regex::Regex::new(&format!(r"\b{}\b", regex::escape(dim)))
-                            .expect("valid preagg time-column regex"),
-                        format!("{dim}_{grain}"),
-                    )
-                });
-            for filter in filters {
-                let mut filter_sql = filter.replace(&format!("{}.", model.name), "");
-                filter_sql = filter_sql.replace(&format!("{}_cte.", model.name), "");
-                if let Some((pattern, replacement)) = &time_col_re {
-                    filter_sql = pattern
-                        .replace_all(&filter_sql, replacement.as_str())
-                        .into_owned();
-                }
-                rewritten.push(filter_sql);
-            }
-            sql.push_str(&format!("\nWHERE {}", rewritten.join(" AND ")));
+            sql.push_str(&format!("\nWHERE {}", filters.join(" AND ")));
         }
-
         if !dimension_refs.is_empty() {
-            let group_by: Vec<String> = (1..=dimension_refs.len()).map(|i| i.to_string()).collect();
+            let group_by: Vec<_> = (1..=dimension_refs.len())
+                .map(|index| index.to_string())
+                .collect();
             sql.push_str(&format!("\nGROUP BY {}", group_by.join(", ")));
         }
-
         if !order_by.is_empty() {
-            let mut order_clauses = Vec::new();
-            for order in order_by {
-                let mut parts = order.split_whitespace();
-                let field = parts.next().unwrap_or(order);
-                let suffix = parts.collect::<Vec<&str>>().join(" ");
-                let field_name = field.split('.').next_back().unwrap_or(field);
-                if suffix.is_empty() {
-                    order_clauses.push(field_name.to_string());
-                } else {
-                    order_clauses.push(format!("{field_name} {suffix}"));
-                }
-            }
-            sql.push_str(&format!("\nORDER BY {}", order_clauses.join(", ")));
+            sql.push_str(&format!("\nORDER BY {}", order_by.join(", ")));
         }
-
         if let Some(limit) = limit {
             sql.push_str(&format!("\nLIMIT {limit}"));
         }
         if let Some(offset) = offset {
             sql.push_str(&format!("\nOFFSET {offset}"));
         }
-
-        sql
+        Ok(sql)
     }
 
     fn split_filters(
@@ -4989,6 +5029,210 @@ mod tests {
         Aggregation, CohortInnerMetric, ComparisonType, Dimension, Metric, MetricType, Model,
         Relationship,
     };
+
+    fn rollup_model() -> Model {
+        let preagg = serde_json::from_value(serde_json::json!({
+            "name": "daily_status", "type": "rollup",
+            "measures": ["revenue", "order_count", "minimum", "maximum"],
+            "dimensions": ["status"], "time_dimension": "created", "granularity": "day"
+        }))
+        .unwrap();
+        let mut minimum = Metric::sum("minimum", "amount");
+        minimum.agg = Some(Aggregation::Min);
+        let mut maximum = Metric::sum("maximum", "amount");
+        maximum.agg = Some(Aggregation::Max);
+        Model::new("orders", "id")
+            .with_table("orders")
+            .with_dimension(Dimension::categorical("status"))
+            .with_dimension(Dimension::categorical("region"))
+            .with_dimension(Dimension::time("created"))
+            .with_dimension(Dimension::time("shipped"))
+            .with_metric(Metric::sum("revenue", "amount"))
+            .with_metric(Metric::count("order_count"))
+            .with_metric(minimum)
+            .with_metric(maximum)
+            .with_pre_aggregation(preagg)
+    }
+
+    #[test]
+    fn test_rollup_routes_stored_state_and_ast_dimension_filters() {
+        let mut graph = SemanticGraph::new();
+        graph.add_model(rollup_model()).unwrap();
+        let generator = SqlGenerator::new(&graph);
+        for filter in [
+            "orders.status = 'orders.created'",
+            "status IN ('paid', 'refunded')",
+            "status IS NULL OR status = 'paid'",
+            "status BETWEEN 'a' AND 'z'",
+            "NOT (status = 'refunded')",
+        ] {
+            let query = SemanticQuery::new()
+                .with_metrics(vec![
+                    "orders.revenue".into(),
+                    "orders.order_count".into(),
+                    "orders.minimum".into(),
+                    "orders.maximum".into(),
+                ])
+                .with_dimensions(vec!["orders.created__month".into()])
+                .with_filters(vec![filter.into()])
+                .with_use_preaggregations(true);
+            let sql = generator.generate(&query).unwrap();
+            assert!(sql.contains("used_preagg=true"), "{filter}: {sql}");
+            assert!(sql.contains("FROM orders_preagg_daily_status"), "{sql}");
+            assert!(sql.contains("COALESCE(SUM(order_count_raw), 0)"), "{sql}");
+            assert!(sql.contains("MIN(minimum_raw)"), "{sql}");
+            assert!(sql.contains("MAX(maximum_raw)"), "{sql}");
+            if filter.contains("orders.created") {
+                assert!(
+                    sql.contains("'orders.created'"),
+                    "literal was rewritten: {sql}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_rollup_falls_back_for_missing_state_and_temporal_predicates() {
+        let mut graph = SemanticGraph::new();
+        graph.add_model(rollup_model()).unwrap();
+        let generator = SqlGenerator::new(&graph);
+        for dimensions in [
+            vec!["orders.created__hour"],
+            vec!["orders.created"],
+            vec!["orders.shipped__day"],
+            vec!["orders.region"],
+        ] {
+            let query = SemanticQuery::new()
+                .with_metrics(vec!["orders.revenue".into()])
+                .with_dimensions(dimensions.into_iter().map(str::to_string).collect())
+                .with_use_preaggregations(true);
+            let sql = generator.generate(&query).unwrap();
+            assert!(!sql.contains("used_preagg=true"), "{sql}");
+        }
+        for filter in [
+            "orders.region IN ('west')",
+            "orders.created >= '2024-01-15'",
+            "orders.revenue > 100",
+        ] {
+            let query = SemanticQuery::new()
+                .with_metrics(vec!["orders.revenue".into()])
+                .with_filters(vec![filter.into()])
+                .with_use_preaggregations(true);
+            let sql = generator.generate(&query).unwrap();
+            assert!(!sql.contains("used_preagg=true"), "{filter}: {sql}");
+        }
+    }
+
+    #[test]
+    fn test_rollup_granularity_lattice() {
+        let graph = SemanticGraph::new();
+        let generator = SqlGenerator::new(&graph);
+        for (query, stored, accepted) in [
+            ("day", "day", true),
+            ("month", "day", true),
+            ("week", "day", true),
+            ("quarter", "month", true),
+            ("hour", "minute", true),
+            ("minute", "second", true),
+            ("second", "minute", false),
+            ("day", "month", false),
+            ("month", "week", false),
+            ("quarter", "week", false),
+            ("year", "week", false),
+            ("unknown", "unknown", false),
+        ] {
+            assert_eq!(
+                generator.is_granularity_compatible(query, stored),
+                accepted,
+                "{stored} -> {query}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_rollup_rejects_unsupported_measures_and_materializations() {
+        let graph = SemanticGraph::new();
+        let generator = SqlGenerator::new(&graph);
+        let model = rollup_model();
+        let preagg = &model.pre_aggregations[0];
+        for aggregation in [
+            None,
+            Some(Aggregation::Avg),
+            Some(Aggregation::CountDistinct),
+            Some(Aggregation::Median),
+            Some(Aggregation::Expression),
+            Some(Aggregation::Stddev),
+        ] {
+            let mut candidate = model.clone();
+            candidate.metrics[0].agg = aggregation;
+            assert!(!generator.preaggregation_can_satisfy_query(
+                &candidate,
+                preagg,
+                &["revenue".into()],
+                &[],
+                &HashSet::new()
+            ));
+        }
+        let mut filtered = model.clone();
+        filtered.metrics[0].filters.push("status = 'paid'".into());
+        assert!(!generator.preaggregation_can_satisfy_query(
+            &filtered,
+            preagg,
+            &["revenue".into()],
+            &[],
+            &HashSet::new()
+        ));
+        for kind in [
+            crate::core::PreAggregationType::OriginalSql,
+            crate::core::PreAggregationType::RollupJoin,
+            crate::core::PreAggregationType::Lambda,
+        ] {
+            let mut candidate = preagg.clone();
+            candidate.preagg_type = kind;
+            assert!(!generator.preaggregation_can_satisfy_query(
+                &model,
+                &candidate,
+                &["revenue".into()],
+                &[],
+                &HashSet::new()
+            ));
+        }
+        for expression in [
+            "SUM(status) > 1",
+            "COUNT(*) > 0",
+            "status IN (SELECT status FROM other)",
+            "LOWER(status) = 'paid'",
+        ] {
+            assert!(
+                generator
+                    .preaggregation_filters(&model, &[expression.into()])
+                    .unwrap()
+                    .is_none(),
+                "{expression}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_rollup_bypasses_prepared_mandatory_filters() {
+        let mut graph = SemanticGraph::new();
+        graph.add_model(rollup_model()).unwrap();
+        let generator = SqlGenerator::new(&graph);
+        for invariant in [false, true] {
+            let mut query = SemanticQuery::new()
+                .with_metrics(vec!["orders.revenue".into()])
+                .with_use_preaggregations(true);
+            let filters = if invariant {
+                &mut query.prepared_policies.invariant_filters
+            } else {
+                &mut query.prepared_policies.row_filters
+            };
+            filters.insert("orders".into(), vec!["status = 'paid'".into()]);
+            let sql = generator.generate(&query).unwrap();
+            assert!(!sql.contains("used_preagg=true"), "{sql}");
+            assert!(sql.contains("'paid'"), "{sql}");
+        }
+    }
 
     fn create_test_graph() -> SemanticGraph {
         let mut graph = SemanticGraph::new();

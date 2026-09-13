@@ -403,6 +403,9 @@ pub(super) fn try_generate(
         child.limit = None;
         child.offset = None;
         child.skip_default_time_dimensions = true;
+        // Materialized routing is qualified for whole single-source queries.
+        // Cross-source child populations need separate grain/domain acceptance.
+        child.use_preaggregations = false;
         let child_sql = generator.generate(&child)?;
         ctes.push(format!(
             "{} AS (\n{child_sql}\n)",

@@ -332,8 +332,9 @@ null-fill options remain gated. HAVING and outer expressions must reference
 available inner columns; other aggregate contexts are not silently inferred.
 
 The WASM SQL parser has a host-specific admission limit of 16 nested
-parenthesis/bracket/brace/CASE constructs and 256 non-comment tokens per parser
-input. The token limit additionally bounds recursive unary/operator chains.
+parenthesis/bracket/brace/CASE constructs, 32 operators per expression chain,
+and 16 set operations per parser input. Flat projections and independent
+clauses do not share an operator budget; long unary chains do.
 These are conservative fixed-host-stack limits, not limits on native compilation
 or source-file bytes. Dialect tokenization keeps strings, quoted identifiers,
 and comments out of structural nesting counts. Excess inputs return a SQL parse

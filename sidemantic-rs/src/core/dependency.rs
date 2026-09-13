@@ -327,6 +327,11 @@ fn extract_column_references(sql: &str) -> HashSet<String> {
     // Wrap in SELECT to make it valid SQL
     let wrapped = format!("SELECT {normalized_sql}");
 
+    #[cfg(target_arch = "wasm32")]
+    if crate::wasm_sql_guard::check(&wrapped, DialectType::Generic).is_err() {
+        return extract_simple_references(&normalized_sql);
+    }
+
     let Ok(statements) = parse(&wrapped, DialectType::Generic) else {
         // If parsing fails, try simple extraction
         return extract_simple_references(&normalized_sql);

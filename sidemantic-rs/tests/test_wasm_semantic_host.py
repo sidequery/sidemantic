@@ -127,7 +127,7 @@ def test_reference_validation_is_not_authorization():
     "expression,diagnostic",
     [
         ("(" * 1000 + "1" + ")" * 1000, "nesting limit"),
-        ("NOT " * 1000 + "true", "token limit"),
+        ("NOT " * 1000 + "true", "operator-chain limit"),
     ],
 )
 def test_parser_work_limits_return_errors_not_traps(method, expression, diagnostic):
@@ -147,8 +147,11 @@ def test_near_nesting_limit_and_literal_delimiters_are_accepted():
     del model["models"][0]["security"]
     model["models"][0]["metrics"][0]["sql"] = "(" * 14 + "amount" + ")" * 14
     assert rows(call("compile", source=model, query={"metrics": ["orders.revenue"]})["result"]) == [(110,)]
-    result = call("rewrite", source=model, sql="select " + "NOT " * 240 + "true")
+    result = call("rewrite", source=model, sql="select " + "NOT " * 30 + "true")
     assert "result" in result, result
+    # Flat projections can exceed 256 tokens without recursive expression depth.
+    wide_sql = "select " + ", ".join(f"{i} as c{i}" for i in range(100))
+    assert "result" in call("rewrite", source=model, sql=wide_sql)
     # Parentheses in literals and comments do not consume a nesting budget.
     literal = "(" * 100
     for expression in [f"'{literal}'", f"$tag${literal}$tag$"]:

@@ -151,11 +151,10 @@ def _parse_measures_test(path: Path) -> tuple[list[_StatementBlock], list[_Query
                 i += 1
 
             sql_lines: list[str] = []
-            while i < len(lines):
+            # SQLLogicTest statement records end at a blank line or the error
+            # separator, not at a SQL semicolon. A record can contain a batch.
+            while i < len(lines) and lines[i].strip() and lines[i].strip() != "----":
                 sql_lines.append(lines[i])
-                if lines[i].strip().endswith(";"):
-                    i += 1
-                    break
                 i += 1
 
             expected_error_lines: list[str] = []
@@ -370,13 +369,19 @@ def _execute_statement_sql(layer: SemanticLayer, adapter: YardstickAdapter, sql:
         if isinstance(statement, exp.Create) and (statement.args.get("kind") or "").upper() == "VIEW":
             select = statement.expression
             if isinstance(select, exp.Select):
+                if sum(part is not None for part in parsed) > 1:
+                    raise NotImplementedError(
+                        "Yardstick replay does not support multi-statement view lifecycle records"
+                    )
                 model = adapter._model_from_create_view(statement, select)
                 if model is not None:
                     layer.add_model(model)
+                    create_view = "CREATE OR REPLACE VIEW" if statement.args.get("replace") else "CREATE VIEW"
+                    view_name = statement.this.sql(dialect=adapter.dialect)
                     if model.sql:
-                        layer.adapter.execute(f"CREATE VIEW {model.name} AS {model.sql}")
+                        layer.adapter.execute(f"{create_view} {view_name} AS {model.sql}")
                     elif model.table and model.table != model.name:
-                        layer.adapter.execute(f"CREATE VIEW {model.name} AS SELECT * FROM {model.table}")
+                        layer.adapter.execute(f"{create_view} {view_name} AS SELECT * FROM {model.table}")
                     return
 
     statement_head = sql.lstrip().upper()
@@ -730,10 +735,18 @@ def _apply_statement(layer: SemanticLayer, adapter: YardstickAdapter, statement:
     with pytest.raises(Exception) as exc_info:
         _execute_statement_sql(layer, adapter, statement.sql)
 
+    # An unsupported replay capability is not proof of the expected SQL error.
+    if isinstance(exc_info.value, NotImplementedError):
+        raise exc_info.value
+
     if statement.expected_error_lines:
         expected_text = "\n".join(statement.expected_error_lines)
         actual_text = str(exc_info.value)
-        if expected_text not in actual_text:
+        if expected_text.startswith("<REGEX>:"):
+            matches = re.search(expected_text.removeprefix("<REGEX>:"), actual_text, flags=re.DOTALL) is not None
+        else:
+            matches = expected_text in actual_text
+        if not matches:
             pytest.fail(
                 "\n".join(
                     [
@@ -781,6 +794,10 @@ def _replay_yardstick_sql_test(path: Path) -> None:
             )
         _assert_query_rows_match(query, actual_rows)
 
+    # Setup/error assertions following the final query are still executable records.
+    for statement in statements[statement_index:]:
+        _apply_statement(layer, adapter, statement)
+
 
 def test_yardstick_measures_test_replay():
     _replay_yardstick_sql_test(_yardstick_measures_test_path())
@@ -796,3 +813,102 @@ def test_yardstick_upstream_create_view_definitions():
 def test_yardstick_upstream_sql_replay():
     for path in _yardstick_upstream_sql_test_paths():
         _replay_yardstick_sql_test(path)
+
+
+def test_parse_statement_record_preserves_batch_and_unterminated_error(tmp_path):
+    path = tmp_path / "batch.test"
+    path.write_text(
+        "statement error\n"
+        "DROP VIEW sales_v;\n"
+        "CREATE VIEW other_v AS SELECT 1;\n"
+        "SELECT (\n"
+        "----\n"
+        "<REGEX>:.*Parser Error.*\n\n"
+        "statement ok\n"
+        "SELECT 'a;b';\n"
+        "SELECT $$c;d$$;\n\n"
+        "query I\nSELECT 1;\n----\n1\n"
+    )
+    statements, queries = _parse_measures_test(path)
+    assert len(statements) == 2
+    assert statements[0].sql == "DROP VIEW sales_v;\nCREATE VIEW other_v AS SELECT 1;\nSELECT ("
+    assert statements[0].expected_error_lines == ["<REGEX>:.*Parser Error.*"]
+    assert statements[1].sql == "SELECT 'a;b';\nSELECT $$c;d$$;"
+    assert len(queries) == 1
+    assert queries[0].expected_rows == ["1"]
+
+
+def test_statement_error_regex_is_checked_against_actual_error():
+    layer = SemanticLayer(connection="duckdb:///:memory:")
+    adapter = YardstickAdapter()
+    statement = _StatementBlock(1, "statement error", "SELECT (", True, ["<REGEX>:Failed to parse SQL:.*Paren.*"])
+    _apply_statement(layer, adapter, statement)
+    statement.expected_error_lines = ["<REGEX>:.*unrelated_error.*"]
+    with pytest.raises(pytest.fail.Exception, match="Error text mismatch"):
+        _apply_statement(layer, adapter, statement)
+
+
+def test_replay_executes_statement_records_after_last_query(tmp_path):
+    path = tmp_path / "trailing.test"
+    path.write_text("query I\nSELECT 1;\n----\n1\n\nstatement ok\nINSERT INTO missing_trailing_table VALUES (1);\n")
+    with pytest.raises(Exception, match="missing_trailing_table"):
+        _replay_yardstick_sql_test(path)
+
+
+def test_malformed_batch_does_not_execute_its_initial_drop():
+    layer = SemanticLayer(connection="duckdb:///:memory:")
+    adapter = YardstickAdapter()
+    layer.adapter.execute("CREATE VIEW existing_view AS SELECT 42 AS value")
+    statement = _StatementBlock(
+        1,
+        "statement error",
+        "DROP VIEW existing_view;\nCREATE VIEW other_view AS SELECT 1;\nSELECT (",
+        True,
+        ["<REGEX>:.*Parser Error.*"],
+    )
+    _apply_statement(layer, adapter, statement)
+    assert fetch_rows(layer.adapter.execute("SELECT * FROM existing_view")) == [(42,)]
+
+
+def test_measure_view_replay_preserves_create_or_replace():
+    layer = SemanticLayer(connection="duckdb:///:memory:")
+    adapter = YardstickAdapter()
+    layer.adapter.execute("CREATE TABLE sales(amount INTEGER)")
+    layer.adapter.execute("INSERT INTO sales VALUES (10), (20)")
+    _execute_statement_sql(layer, adapter, "CREATE VIEW sales_v AS SELECT SUM(amount) AS MEASURE revenue FROM sales")
+    layer.adapter.execute("CREATE OR REPLACE VIEW sales_v AS SELECT -1 AS amount")
+    _execute_statement_sql(
+        layer, adapter, "CREATE OR REPLACE VIEW sales_v AS SELECT SUM(amount) AS MEASURE revenue FROM sales"
+    )
+    assert fetch_rows(layer.adapter.execute("SELECT SUM(amount) FROM sales_v")) == [(30,)]
+    assert fetch_rows(layer.sql("SEMANTIC SELECT AGGREGATE(revenue) FROM sales_v")) == [(30,)]
+
+
+def test_create_first_batch_is_rejected_before_partial_execution():
+    layer = SemanticLayer(connection="duckdb:///:memory:")
+    adapter = YardstickAdapter()
+    layer.adapter.execute("CREATE TABLE sales(amount INTEGER)")
+    with pytest.raises(NotImplementedError, match="multi-statement view lifecycle"):
+        _execute_statement_sql(
+            layer,
+            adapter,
+            "CREATE VIEW sales_v AS SELECT SUM(amount) AS MEASURE revenue FROM sales; INSERT INTO sales VALUES (99);",
+        )
+    assert "sales_v" not in layer.graph.models
+    assert fetch_rows(layer.adapter.execute("SELECT count(*) FROM sales")) == [(0,)]
+    assert fetch_rows(
+        layer.adapter.execute("SELECT count(*) FROM information_schema.views WHERE table_name = 'sales_v'")
+    ) == [(0,)]
+
+
+def test_unsupported_batch_does_not_satisfy_statement_error():
+    layer = SemanticLayer(connection="duckdb:///:memory:")
+    statement = _StatementBlock(
+        1,
+        "statement error",
+        "CREATE VIEW sales_v AS SELECT SUM(amount) AS MEASURE revenue FROM sales; SELECT 1;",
+        True,
+        [],
+    )
+    with pytest.raises(NotImplementedError, match="multi-statement view lifecycle"):
+        _apply_statement(layer, YardstickAdapter(), statement)

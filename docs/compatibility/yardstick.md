@@ -160,10 +160,18 @@ The live replay fetches `https://github.com/sidequery/yardstick.git` at `main` b
 
 | Facet | Coverage |
 |-------|----------|
-| Model/metric definitions | Parses every upstream `CREATE VIEW ... AS MEASURE` statement and asserts model name, source table/base SQL, primary key, Yardstick metadata, dimension SQL/type/granularity, and metric `agg`/`sql`/`filters`/`type` |
+| Model/metric definitions | Checks a leading `CREATE VIEW ... AS MEASURE` in each statement record, asserting model name, source table/base SQL, primary key, Yardstick metadata, dimension SQL/type/granularity, and metric `agg`/`sql`/`filters`/`type`; additional definitions within a batch are not independently checked |
 | Query execution | Replays every upstream query block against Sidemantic's Yardstick rewriter and compares result rows |
 
 The live definition check covers the `CREATE VIEW ... AS MEASURE` definitions used by Yardstick's SQL tests. Sidemantic's native SQL definition parser owns `MODEL(...)`, `METRIC(...)`, and `DIMENSION(...)` files separately from the Yardstick adapter; the live upstream replay does not treat Yardstick's top-level `yardstick_definitions.sql` helper file as part of the SQL-test corpus.
+
+The replay preserves complete SQLLogicTest statement records, including error
+expectations and statements after the final query. The current upstream corpus
+also exercises the native extension's multi-statement view lifecycle. That
+behavior is not implemented by this replay harness, so the live check currently
+fails on those records; a passing definition check does not establish full runtime
+parity. Unsupported view batches fail explicitly rather than executing only their
+first statement.
 
 Optional environment variables:
 

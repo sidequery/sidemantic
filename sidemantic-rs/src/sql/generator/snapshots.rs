@@ -14,6 +14,7 @@ pub(super) fn try_generate(
     if !generator
         .graph
         .metrics()
+        .chain(generator.graph.models().flat_map(|model| &model.metrics))
         .any(|metric| metric.non_additive_dimension.is_some())
     {
         return Ok(None);
@@ -336,6 +337,17 @@ mod tests {
             )
             .unwrap();
         graph
+    }
+
+    #[test]
+    fn simple_model_snapshot_is_not_bypassed_by_graph_metric_fast_path() {
+        let graph = graph();
+        assert_eq!(graph.metrics().count(), 0);
+        let query = SemanticQuery::new().with_metrics(vec!["snapshots.balance".into()]);
+        let sql = try_generate(&SqlGenerator::new(&graph), &query)
+            .unwrap()
+            .expect("model-local snapshot must select the snapshot route");
+        assert!(sql.contains("CASE WHEN day = MAX(day) OVER () THEN balance END AS balance"));
     }
 
     #[test]

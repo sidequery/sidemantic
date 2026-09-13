@@ -16,7 +16,7 @@ FIXTURES = Path(__file__).parent / "fixtures"
 def layer(request):
     if request.param == "rust":
         pytest.importorskip("sidemantic_rs", reason="Snapshot parity requires the real Rust extension")
-    layer = SemanticLayer(engine=request.param, auto_register=False)
+    layer = SemanticLayer(engine=request.param, fallback=False, auto_register=False)
     try:
         layer.graph = SidemanticAdapter().parse(FIXTURES / "snapshots.yml")
         layer.adapter.execute((FIXTURES / "snapshots.sql").read_text())
@@ -39,6 +39,23 @@ def test_opening_closing_and_additive_sibling_keep_separate_populations(layer):
     # Per-account last balances are A=170, B=80, C=NULL, D=NULL: 250.
     # Opening balances are 100+50+30=180. All eight authorized activity rows survive.
     assert result(layer, metrics=["snapshots.closing", "snapshots.opening", "snapshots.activity"]) == [(250, 180, 36)]
+
+
+def test_simple_model_snapshot_is_not_silently_summed(layer):
+    # This graph has only model-local simple metrics; the graph-level index is
+    # empty. Removing the annotation gives 1480, not the latest-per-account 250.
+    assert not layer.graph.metrics
+    cursor = layer.adapter.execute(
+        layer.compile(
+            metrics=["snapshots.closing"],
+            user_attributes={"tenant": 1},
+            use_preaggregations=False,
+        )
+    )
+    assert [column[0] for column in cursor.description] == ["closing"]
+    assert cursor.fetchall() == [(250,)]
+    layer.graph.get_model("snapshots").get_metric("closing").non_additive_dimension = None
+    assert result(layer, metrics=["snapshots.closing"]) == [(1480,)]
 
 
 def test_declared_snapshot_groups_do_not_become_global_latest_date(layer):

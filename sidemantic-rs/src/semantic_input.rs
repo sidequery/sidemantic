@@ -278,24 +278,44 @@ fn lower_complete_filter(
             if !SqlGenerator::preaggregation_filter_shape(&expression) {
                 return Err(unsupported("metric.complete_filters"));
             }
-            let mut replacements = HashMap::new();
-            for reference in crate::core::semantic_column_references(filter)? {
-                if reference
-                    .model
-                    .as_deref()
-                    .is_some_and(|model| model != owner)
-                {
-                    return Err(unsupported("metric.complete_filters"));
+            // Remove only the checked semantic owner. Keep each column node's
+            // identifier and quoted state, including differently quoted occurrences
+            // of the same spelling within one predicate.
+            fn unqualify(value: &mut Value, owner: &str, path: &str) -> Result<()> {
+                match value {
+                    Value::Object(fields) if fields.len() == 1 && fields.contains_key("column") => {
+                        let mut column: polyglot_sql::expressions::Column =
+                            deserialize(fields["column"].clone(), path)?;
+                        if column
+                            .table
+                            .as_ref()
+                            .is_some_and(|table| table.name != owner)
+                        {
+                            return Err(unsupported("metric.complete_filters"));
+                        }
+                        column.table = None;
+                        fields.insert(
+                            "column".into(),
+                            serde_json::to_value(column).map_err(|error| invalid(path, error))?,
+                        );
+                    }
+                    Value::Object(fields) => {
+                        for child in fields.values_mut() {
+                            unqualify(child, owner, path)?;
+                        }
+                    }
+                    Value::Array(children) => {
+                        for child in children {
+                            unqualify(child, owner, path)?;
+                        }
+                    }
+                    _ => {}
                 }
-                let identifier = polyglot_sql::expressions::Identifier::quoted(&reference.field);
-                let sql = polyglot_sql::generate(
-                    &Expression::Identifier(identifier),
-                    DialectType::DuckDB,
-                )
-                .map_err(|error| invalid(path, error))?;
-                replacements.insert((reference.model, reference.field), sql);
+                Ok(())
             }
-            let expression = crate::core::replace_semantic_columns(expression, &replacements)?;
+            let mut ast = serde_json::to_value(expression).map_err(|error| invalid(path, error))?;
+            unqualify(&mut ast, owner, path)?;
+            let expression: Expression = deserialize(ast, path)?;
             polyglot_sql::generate(&expression, DialectType::DuckDB)
                 .map(|sql| format!("({sql})"))
                 .map_err(|error| invalid(path, error))
@@ -1575,6 +1595,27 @@ mod tests {
             compile_with_semantic_input(&source.to_string(), r#"{"metrics":["orders.paid"]}"#)
                 .unwrap();
         assert!(sql.contains("CASE WHEN"), "{sql}");
+    }
+
+    #[test]
+    fn complete_filter_keeps_each_identifier_quoted_state() {
+        let mut source = input();
+        source["models"][0]["metrics"] = json!([{
+            "name": "paid", "sql": "SUM(orders.Amount)", "sql_is_complete": true,
+            "filters": ["orders.Amount > 0 AND orders.\"Amount\" = 10 AND orders.label = 'orders.Amount'"]
+        }]);
+        let decoded = SemanticInput::from_json(&source.to_string()).unwrap();
+        let metric = decoded
+            .graph
+            .get_model("orders")
+            .unwrap()
+            .get_metric("paid")
+            .unwrap();
+        assert_eq!(metric.sql.as_deref(), Some("Amount"));
+        assert_eq!(
+            metric.filters,
+            vec!["(Amount > 0 AND \"Amount\" = 10 AND label = 'orders.Amount')"]
+        );
     }
 
     #[test]

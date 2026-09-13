@@ -245,7 +245,6 @@ fn decode_metric(value: Value, path: &str) -> Result<Metric> {
     }
     // These change aggregation grain or temporal semantics and are not promoted yet.
     for field in [
-        "non_additive_dimension",
         "window_expression",
         "window_frame",
         "window_order",
@@ -276,6 +275,17 @@ fn decode_metric(value: Value, path: &str) -> Result<Metric> {
     exemplar.logical_data_type = Some(String::new());
     exemplar.sql_is_complete = true;
     let metric = project(raw, exemplar, path)?;
+    if metric.non_additive_dimension.is_some() {
+        if metric.r#type != crate::core::MetricType::Simple {
+            return Err(unsupported("metric.non_additive_metric_shape"));
+        }
+        if !matches!(
+            metric.non_additive_window.as_deref(),
+            None | Some("min" | "max")
+        ) {
+            return Err(invalid(path, "non_additive_window must be min or max"));
+        }
+    }
     SqlGenerator::validate_temporal_metric(&metric)?;
     Ok(metric)
 }

@@ -180,3 +180,21 @@ independently expected tenant-filtered population. This qualifies that host
 boundary for the tested subset, not browser packaging, DuckDB-extension host
 parity, or every semantic feature. WASM uses its host stack directly; it does
 not spawn the native semantic compiler worker thread.
+
+### Snapshot measures
+
+Direct simple measures from one model can declare `non_additive_dimension`,
+`non_additive_window` (`min` or `max`, default `max`), and optional
+`non_additive_window_groupings`. The compiler selects the first or last snapshot
+independently for each measure before aggregation. Snapshot values use the declared
+dimension expression and grain; a day-grain timestamp selects every tied row on
+the selected day. Omit that grain to select by the timestamp itself. Additive siblings retain all
+rows. Without explicit groupings, selected query dimensions partition snapshot
+selection; with explicit groupings, those fields and any selected coarse bucket
+of the snapshot dimension partition it. Grouping by the raw snapshot dimension
+needs no masking. Row restrictions apply before snapshot selection.
+
+Fanout, calculated wrappers, multiple metric owners, aggregate predicates,
+colliding output aliases, ungrouped output, rollup routing, and null-fill options
+remain gated for this snapshot path. This does not add raw-row cumulative
+semantics: cumulative references still operate on period outputs.

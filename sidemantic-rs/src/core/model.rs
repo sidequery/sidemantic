@@ -351,6 +351,12 @@ pub struct Metric {
     /// Dimension across which this metric is non-additive
     #[serde(default)]
     pub non_additive_dimension: Option<String>,
+    /// First or last snapshot value; omitted means max.
+    #[serde(default)]
+    pub non_additive_window: Option<String>,
+    /// Entity dimensions partitioning snapshot selection before query aggregation.
+    #[serde(default)]
+    pub non_additive_window_groupings: Option<Vec<String>>,
     /// Whether metric is visible in API/UI.
     #[serde(default = "default_true")]
     pub public: bool,
@@ -400,6 +406,8 @@ impl Metric {
             value_format_name: None,
             drill_fields: None,
             non_additive_dimension: None,
+            non_additive_window: None,
+            non_additive_window_groupings: None,
             public: true,
         }
     }

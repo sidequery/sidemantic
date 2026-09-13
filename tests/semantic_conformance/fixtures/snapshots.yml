@@ -1,0 +1,46 @@
+version: 1
+models:
+  - name: snapshots
+    table: snapshot_rows
+    primary_key: id
+    dimensions:
+      - {name: account, type: categorical}
+      - {name: region, type: categorical}
+      - {name: day, type: time, granularity: day}
+      - {name: eligible, type: boolean}
+    security:
+      row_filters: ['tenant = {{ user.tenant }}']
+    metrics:
+      - name: closing
+        agg: sum
+        sql: balance
+        non_additive_dimension: day
+        non_additive_window: max
+        non_additive_window_groupings: [account]
+      - name: opening
+        agg: sum
+        sql: balance
+        non_additive_dimension: day
+        non_additive_window: min
+        non_additive_window_groupings: [account]
+      - name: global_closing
+        agg: sum
+        sql: balance
+        non_additive_dimension: day
+      - name: eligible_closing
+        agg: sum
+        sql: balance
+        filters: [eligible = true]
+        non_additive_dimension: day
+        non_additive_window_groupings: [account]
+      - {name: activity, agg: sum, sql: amount}
+      - name: closing_rows
+        agg: count
+        non_additive_dimension: day
+        non_additive_window_groupings: [account]
+      - name: closing_accounts
+        agg: count_distinct
+        sql: account
+        non_additive_dimension: day
+        non_additive_window_groupings: [account]
+      - {name: row_count, agg: count}

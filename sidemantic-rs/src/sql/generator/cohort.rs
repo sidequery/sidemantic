@@ -102,7 +102,9 @@ impl SqlGenerator<'_> {
         let expression = expression.replace("{model}", "cohort_sub");
         let mut replacements = HashMap::new();
         for column in semantic_column_references(&expression)? {
-            if !fields.contains(&column.field)
+            if !fields
+                .iter()
+                .any(|field| field.eq_ignore_ascii_case(&column.field))
                 || column
                     .model
                     .as_ref()
@@ -157,6 +159,7 @@ impl SqlGenerator<'_> {
         }
         let entity_sql = self.cohort_source_expression(model, entity)?;
         let mut fields = HashSet::from([entity.to_string()]);
+        let mut folded_fields = HashSet::from([entity.to_ascii_lowercase()]);
         let mut inner_select = vec![format!("{entity_sql} AS {}", quote(entity))];
         let mut inner_group = vec![entity_sql];
         let mut output_dimensions = Vec::new();
@@ -185,14 +188,17 @@ impl SqlGenerator<'_> {
             if dimension.model != model.name || model.get_dimension(&dimension.name).is_none() {
                 return Err(unsupported("joined_dimension"));
             }
-            if !output_names.insert(dimension.alias.clone()) || dimension.alias == metric.name {
+            if !output_names.insert(dimension.alias.to_ascii_lowercase())
+                || dimension.alias.eq_ignore_ascii_case(&metric.name)
+            {
                 return Err(unsupported("output_alias_collision"));
             }
             let mut sql = self.cohort_source_expression(model, &dimension.name)?;
             if let Some(grain) = &dimension.granularity {
                 sql = self.date_trunc_sql(grain, &sql);
             }
-            if fields.insert(dimension.alias.clone()) {
+            if folded_fields.insert(dimension.alias.to_ascii_lowercase()) {
+                fields.insert(dimension.alias.clone());
                 inner_select.push(format!("{sql} AS {}", quote(&dimension.alias)));
                 inner_group.push(sql);
             } else if dimension.name != entity || dimension.granularity.is_some() {
@@ -205,9 +211,10 @@ impl SqlGenerator<'_> {
             .filter(|metrics| !metrics.is_empty())
             .ok_or_else(|| SidemanticError::Validation("cohort requires inner_metrics".into()))?;
         for inner in inner_metrics {
-            if !fields.insert(inner.name.clone()) {
+            if !folded_fields.insert(inner.name.to_ascii_lowercase()) {
                 return Err(unsupported("inner_alias_collision"));
             }
+            fields.insert(inner.name.clone());
             let kind = inner.agg.as_ref().unwrap_or(&Aggregation::Count);
             let expression = match inner.sql.as_deref() {
                 Some(sql) => self.cohort_source_expression(model, sql)?,
@@ -309,7 +316,9 @@ impl SqlGenerator<'_> {
             let name = field
                 .strip_prefix(&format!("{}.", model.name))
                 .unwrap_or(field);
-            if name != metric.name && !output_names.contains(name) {
+            if !name.eq_ignore_ascii_case(&metric.name)
+                && !output_names.contains(&name.to_ascii_lowercase())
+            {
                 return Err(unsupported("order_by"));
             }
             order.push(format!("{} {direction}", quote(name)));

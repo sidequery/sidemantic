@@ -12,7 +12,7 @@ from sidemantic.core.semantic_layer import SecurityError
 def layer(request):
     if request.param == "rust":
         pytest.importorskip("sidemantic_rs", reason="Cohort acceptance requires the real extension")
-    layer = SemanticLayer(engine=request.param, auto_register=False)
+    layer = SemanticLayer(engine=request.param, fallback=False, auto_register=False)
     layer.add_model(
         Model(
             name="events",
@@ -60,7 +60,10 @@ def layer(request):
 def result(layer, **query):
     query.setdefault("metrics", ["events.qualified"])
     query.setdefault("user_attributes", {"tenant": 1})
-    cursor = layer.adapter.execute(layer.compile(**query))
+    sql = layer.compile(**query)
+    if layer.engine == "rust":
+        assert layer.last_engine_selection["engine"] == "rust"
+    cursor = layer.adapter.execute(sql)
     return [field[0] for field in cursor.description], [
         tuple(value.isoformat()[:10] if isinstance(value, (date, datetime)) else value for value in row)
         for row in cursor.fetchall()
@@ -197,3 +200,19 @@ def test_inner_source_dimension_arithmetic_preserves_precedence(layer):
     metric.agg = "sum"
     metric.sql = "amount"
     assert result(layer) == (["qualified"], [(218,)])
+
+
+@pytest.mark.parametrize("layer", ["rust"], indirect=True)
+@pytest.mark.parametrize("alias", ["AMOUNT", "USER_ID", "REGION"])
+def test_rust_inner_alias_collisions_ignore_case(layer, alias):
+    model = layer.graph.models["events"]
+    model.metrics[0].inner_metrics.append({"name": alias, "agg": "count"})
+    with pytest.raises(ValueError, match="inner_alias_collision"):
+        layer.compile(metrics=["events.qualified"], dimensions=["events.region"], user_attributes={"tenant": 1})
+
+
+@pytest.mark.parametrize("layer", ["rust"], indirect=True)
+def test_rust_output_alias_collision_ignores_case(layer):
+    layer.graph.models["events"].dimensions.append(Dimension(name="QUALIFIED", sql="region", type="categorical"))
+    with pytest.raises(ValueError, match="output_alias_collision"):
+        layer.compile(metrics=["events.qualified"], dimensions=["events.QUALIFIED"], user_attributes={"tenant": 1})

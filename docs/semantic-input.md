@@ -112,8 +112,8 @@ subqueries, foreign-model inputs or predicates, and unresolved templates remain
 explicitly unsupported. Unowned graph measures also remain unsupported on this path.
 
 Remaining capability gates include policy-bearing SQL outside the scoped
-`FROM metrics` subset, non-DuckDB policy output, many-to-many role paths, computed primary-key
-dimensions, genuinely duplicate child output aliases,
+`FROM metrics` subset, policy output outside DuckDB/PostgreSQL, many-to-many role paths,
+unsupported computed-key query shapes, genuinely duplicate child output aliases,
 unsupported complete-expression filter shapes, temporal/null-fill combinations, raw cumulative windows,
 and unqualified conversion, retention, cohort, and non-additive metric shapes.
 Deserialization alone is not evidence of executable support.
@@ -224,3 +224,22 @@ invariants, and caller policies constrain both event populations.
 Multi-step funnels, joined populations, graph-scoped conversion metrics,
 calculated wrappers, mapped entity/event/time source names, quoted output names,
 and other output dialects remain gated in this first qualified subset.
+## PostgreSQL policy output
+
+The versioned bridge can generate PostgreSQL output for policy-bearing structured
+queries (`query.dialect = "postgres"`) and scoped semantic SQL rewrites
+(`rewrite` context `output_dialect = "postgres"`; Python bridge keyword
+`output_dialect="postgres"`). Input expressions and input semantic SQL remain
+DuckDB dialect. This does not enable PostgreSQL input expressions or change CLI
+engine defaults. Access checks, typed caller attributes, row filters, invariants,
+and opt-in visibility use the same policy preparation as DuckDB output.
+
+The Rust CI job executes both output paths against a PostgreSQL 16 service using
+its newly built Python extension wheel. The synthetic acceptance population
+checks tenant and invariant exclusions, quoted/injection-shaped values, numeric,
+boolean and null attributes, access denial, and visibility. Local runs without
+`SIDEMANTIC_TEST_POSTGRES_DSN` skip this host test; a configured job fails if the
+service, driver, extension or expected rows are unavailable. PostgreSQL parity
+is not qualified until that execution job passes. Other policy output dialects
+remain typed unsupported requirements.
+

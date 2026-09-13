@@ -225,3 +225,21 @@ def test_legacy_materializer_cannot_discard_invariant_filters():
     with pytest.raises(UnsupportedSemanticFeaturesError) as caught:
         generate_preaggregation_materialization_sql_with_rust(model, rollup)
     assert caught.value.capabilities == ["preaggregation.invariant_filters"]
+
+
+def test_rewrite_output_dialect_keeps_input_sql_and_graph_dialect(source_graph):
+    from sidemantic.rust_bridge import rewrite_semantic_input
+
+    calls = []
+
+    def rewrite(input_json, sql, context_json):
+        calls.append((json.loads(input_json), sql, json.loads(context_json)))
+        return "SELECT 1"
+
+    sql = "select events.total from metrics"
+    module = SimpleNamespace(rewrite_with_semantic_input_context=rewrite)
+    assert rewrite_semantic_input(source_graph, sql, output_dialect="postgres", rust_module=module) == "SELECT 1"
+    envelope, received_sql, context = calls[0]
+    assert envelope["input_dialect"] == "duckdb"
+    assert received_sql == sql
+    assert context == {"output_dialect": "postgres", "user_attributes": None, "enforce_visibility": False}

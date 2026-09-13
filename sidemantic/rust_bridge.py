@@ -131,6 +131,7 @@ def rewrite_semantic_input(
     sql: str,
     *,
     input_dialect: str = "duckdb",
+    output_dialect: str | None = None,
     user_attributes: dict | None = None,
     enforce_visibility: bool = False,
     rust_module=None,
@@ -138,7 +139,8 @@ def rewrite_semantic_input(
     """Rewrite SQL with caller context through the versioned graph contract."""
     module = rust_module if rust_module is not None else get_rust_module()
     context_required = (
-        user_attributes is not None
+        output_dialect is not None
+        or user_attributes is not None
         or enforce_visibility
         or any(model.security is not None or model.invariant_filters for model in graph.models.values())
     )
@@ -148,7 +150,11 @@ def rewrite_semantic_input(
         entrypoint = "rewrite_with_semantic_input_context"
         args.append(
             json.dumps(
-                {"user_attributes": user_attributes, "enforce_visibility": enforce_visibility},
+                {
+                    "user_attributes": user_attributes,
+                    "enforce_visibility": enforce_visibility,
+                    **({"output_dialect": output_dialect} if output_dialect is not None else {}),
+                },
                 allow_nan=False,
             )
         )

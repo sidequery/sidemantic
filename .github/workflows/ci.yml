@@ -345,6 +345,20 @@ jobs:
     needs: check-rust-changes
     if: needs.check-rust-changes.outputs.rust_changed == 'true'
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: sidemantic
+          POSTGRES_PASSWORD: sidemantic
+          POSTGRES_DB: sidemantic
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U sidemantic"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     defaults:
       run:
         working-directory: sidemantic-rs
@@ -463,8 +477,10 @@ jobs:
 
       - name: Run semantic compiler conformance with the built extension
         working-directory: .
+        env:
+          SIDEMANTIC_TEST_POSTGRES_DSN: postgresql://sidemantic:sidemantic@localhost:5432/sidemantic
         run: |
-          uv run --extra dev --with ./sidemantic-rs/dist-python/*.whl python - <<'PY'
+          uv run --extra dev --with "psycopg[binary]" --with ./sidemantic-rs/dist-python/*.whl python - <<'PY'
           import pytest
           import sidemantic_rs
 

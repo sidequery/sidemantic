@@ -46,7 +46,16 @@ impl<'a> QueryRewriter<'a> {
     }
 
     pub fn rewrite_with_dialect(&self, sql: &str, dialect: DialectType) -> Result<String> {
-        let statements = parse_sql_with_dialect(sql, dialect)?;
+        self.rewrite_with_output_dialect(sql, dialect, dialect)
+    }
+
+    pub(crate) fn rewrite_with_output_dialect(
+        &self,
+        sql: &str,
+        input_dialect: DialectType,
+        output_dialect: DialectType,
+    ) -> Result<String> {
+        let statements = parse_sql_with_dialect(sql, input_dialect)?;
 
         if statements.is_empty() {
             return Err(SidemanticError::SqlParse("Empty SQL".into()));
@@ -56,7 +65,7 @@ impl<'a> QueryRewriter<'a> {
         for statement in statements {
             let rewritten = self.rewrite_statement(statement)?;
             rewritten_statements.push(
-                polyglot_generate(&rewritten, dialect)
+                polyglot_generate(&rewritten, output_dialect)
                     .map_err(|e| SidemanticError::SqlGeneration(e.to_string()))?,
             );
         }

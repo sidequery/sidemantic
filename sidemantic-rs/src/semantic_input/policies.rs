@@ -147,7 +147,11 @@ pub(crate) fn prepare(
                 .insert(instance.clone(), qualified);
         }
     }
-    if output_dialect != DialectType::DuckDB && prepared.model_names().next().is_some() {
+    if !matches!(
+        output_dialect,
+        DialectType::DuckDB | DialectType::PostgreSQL
+    ) && prepared.model_names().next().is_some()
+    {
         return Err(SidemanticError::UnsupportedSemanticFeatures {
             capabilities: vec![format!("policy.output_dialect.{output_dialect}")],
         });
@@ -687,6 +691,40 @@ mod tests {
             DialectType::DuckDB
         )
         .is_err());
+    }
+
+    #[test]
+    fn postgres_policy_output_preserves_predicates_and_other_dialects_stay_gated() {
+        let graph = graph();
+        let policies = decode(&[json!({
+            "name":"orders", "security":{"row_filters":["tenant = {{ user.tenant }}"]},
+            "invariant_filters":["not deleted"]
+        })])
+        .unwrap();
+        let query = SemanticQuery::new().with_metrics(vec!["orders.revenue".into()]);
+        let attributes = json!({"tenant": 1});
+        let prepared = prepare(
+            &graph,
+            &policies,
+            &query,
+            attributes.as_object(),
+            false,
+            DialectType::PostgreSQL,
+        )
+        .unwrap();
+        assert!(prepared.row_filters["orders"][0].contains("tenant = 1"));
+        assert!(prepared.invariant_filters["orders"][0].contains("deleted"));
+        assert!(matches!(
+            prepare(
+                &graph,
+                &policies,
+                &query,
+                attributes.as_object(),
+                false,
+                DialectType::BigQuery
+            ),
+            Err(SidemanticError::UnsupportedSemanticFeatures { .. })
+        ));
     }
 
     #[test]

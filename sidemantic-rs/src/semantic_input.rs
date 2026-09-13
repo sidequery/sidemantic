@@ -929,6 +929,7 @@ pub fn rewrite_with_semantic_input(input_json: &str, sql: &str) -> Result<String
 #[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RewriteContext {
+    output_dialect: Option<String>,
     user_attributes: Option<Map<String, Value>>,
     #[serde(default)]
     enforce_visibility: bool,
@@ -943,6 +944,20 @@ pub fn rewrite_with_semantic_input_context(
         let input = SemanticInput::decode(input_json)?;
         let context: RewriteContext = serde_json::from_str(context_json)
             .map_err(|error| invalid("rewrite.context", error))?;
+        let output_dialect = context
+            .output_dialect
+            .as_deref()
+            .unwrap_or("duckdb")
+            .parse::<DialectType>()
+            .map_err(|error| invalid("rewrite.context.output_dialect", error))?;
+        if !matches!(
+            output_dialect,
+            DialectType::DuckDB | DialectType::PostgreSQL
+        ) {
+            return Err(unsupported(format!(
+                "rewrite.output_dialect.{output_dialect}"
+            )));
+        }
         let requires_policies = context.user_attributes.is_some()
             || context.enforce_visibility
             || input
@@ -956,7 +971,7 @@ pub fn rewrite_with_semantic_input_context(
                 query,
                 context.user_attributes.as_ref(),
                 context.enforce_visibility,
-                DialectType::DuckDB,
+                output_dialect,
             )?;
             Ok(())
         };
@@ -964,7 +979,7 @@ pub fn rewrite_with_semantic_input_context(
         if requires_policies {
             rewriter = rewriter.with_query_preparer(&prepare);
         }
-        rewriter.rewrite_with_dialect(sql, DialectType::DuckDB)
+        rewriter.rewrite_with_output_dialect(sql, DialectType::DuckDB, output_dialect)
     })
 }
 

@@ -474,7 +474,7 @@ impl<'a> SqlGenerator<'a> {
 
             select_parts.push(format!(
                 "  {} AS {}",
-                self.fill_metric_expression(metric, sql_expr)?,
+                sql_expr,
                 self.quote_identifier(&output_alias)
             ));
         }
@@ -585,7 +585,7 @@ impl<'a> SqlGenerator<'a> {
 
             select_parts.push(format!(
                 "  {} AS {}",
-                sql_expr,
+                self.fill_metric_expression(metric, sql_expr)?,
                 self.quote_identifier(&output_alias)
             ));
         }

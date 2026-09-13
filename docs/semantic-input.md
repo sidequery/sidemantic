@@ -74,6 +74,10 @@ supports:
   a declared grain; `prior_period` without a resolved grain retains previous-row
   semantics. Summing period-level distinct counts is not a distinct count over
   the combined underlying rows.
+- Numeric and string null defaults on simple, derived and ratio results. Defaults
+  apply to metric dependencies after aggregation, including absent source leaves
+  after cross-source recombination; they do not create policy-excluded groups.
+  Filled temporal and non-additive shapes remain explicitly unsupported.
 
 Configured ordinary rollups reach the Rust graph through this boundary. Routing
 supports single-source sum/count/min/max queries over compatible stored dimensions
@@ -96,7 +100,7 @@ remains explicitly unsupported by the versioned boundary.
 Remaining capability gates include policy-bearing SQL outside the scoped
 `FROM metrics` subset, non-DuckDB policy output, many-to-many role paths, computed primary-key
 dimensions, genuinely duplicate child output aliases,
-complete-expression measure filters, null-fill options, raw cumulative windows,
+complete-expression measure filters, temporal/null-fill combinations, raw cumulative windows,
 and unqualified conversion, retention, cohort, and non-additive metric shapes.
 Deserialization alone is not evidence of executable support.
 

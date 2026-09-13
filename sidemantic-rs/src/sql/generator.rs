@@ -160,6 +160,16 @@ impl<'a> SqlGenerator<'a> {
 
     /// Generate SQL from a semantic query
     pub fn generate(&self, query: &SemanticQuery) -> Result<String> {
+        self.generate_from_model(query, None)
+    }
+
+    /// Aggregate children retain their own source population independently of
+    /// the order of requested grouping dimensions.
+    fn generate_from_model(
+        &self,
+        query: &SemanticQuery,
+        source_model: Option<&str>,
+    ) -> Result<String> {
         if let Some(sql) = aggregate_plan::try_generate(self, query)? {
             return Ok(sql);
         }
@@ -250,10 +260,11 @@ impl<'a> SqlGenerator<'a> {
             }
         }
 
-        // Dimension-first base selection preserves the queried dimension domain,
-        // including zero-count rows for related metric models.
-        let base_model = self
-            .query_base_model(&dimension_refs, &metric_refs)
+        // Ordinary queries preserve the dimension domain, including zero-count
+        // related rows. Aggregate children instead retain their source domain.
+        let base_model = source_model
+            .map(str::to_owned)
+            .or_else(|| self.query_base_model(&dimension_refs, &metric_refs))
             .ok_or_else(|| {
                 SidemanticError::Validation(
                     "Query must have at least one metric or dimension".into(),

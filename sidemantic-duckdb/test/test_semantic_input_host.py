@@ -67,7 +67,8 @@ def test_population_and_injection_value(rewrite):
             sql = call(query={"metrics": ["orders.revenue"], **context})
         rows = execute(sql)
         assert len(rows) == 1
-        assert list(rows[0].values()) == [expected]
+        # DuckDB's shell encodes HUGEINT aggregate results as JSON strings.
+        assert list(rows[0].values()) == [None if expected is None else str(expected)]
 
 
 @pytest.mark.parametrize("mutation", ["version", "envelope", "field", "key", "scope", "capability", "policy"])
@@ -125,7 +126,7 @@ def test_vectorized_callers_are_isolated():
         f"select sidemantic_compile_semantic_input({source}, query) as sql "
         f"from (values (1, {query_a}), (2, {query_b}), (3, {query_a})) requests(id, query) order by id;"
     )
-    assert [list(execute(row["sql"])[0].values()) for row in compiled] == [[10], [100], [10]]
+    assert [list(execute(row["sql"])[0].values()) for row in compiled] == [["10"], ["100"], ["10"]]
 
 
 if __name__ == "__main__":

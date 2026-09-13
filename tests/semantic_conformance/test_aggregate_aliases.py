@@ -84,16 +84,30 @@ def test_hidden_leaf_collision_does_not_rename_public_dimension(layer):
     )
 
 
-def test_two_grouping_dimensions_share_basename(layer):
+@pytest.mark.parametrize("reverse_dimensions", [False, True])
+@pytest.mark.parametrize("reverse_metrics", [False, True])
+def test_two_grouping_dimensions_share_basename(layer, reverse_dimensions, reverse_metrics):
+    dimensions = ["orders.region", "customers.region"]
+    metrics = ["orders.revenue", "customers.quota"]
+    columns = ["orders_region", "customers_region", "revenue", "quota"]
+    expected = [("east", "north", 30, 2), ("west", "south", 40, 4), (None, "west", None, 7), (None, None, None, 5)]
+    if reverse_dimensions:
+        dimensions.reverse()
+        columns[:2] = reversed(columns[:2])
+        expected = [(customer, order, revenue, quota) for order, customer, revenue, quota in expected]
+    if reverse_metrics:
+        metrics.reverse()
+        columns[2:] = reversed(columns[2:])
+        expected = [(first, second, quota, revenue) for first, second, revenue, quota in expected]
     assert_result(
         layer,
         {
-            "metrics": ["orders.revenue", "customers.quota"],
-            "dimensions": ["orders.region", "customers.region"],
+            "metrics": metrics,
+            "dimensions": dimensions,
             "order_by": ["orders.region", "customers.region"],
         },
-        ["orders_region", "customers_region", "revenue", "quota"],
-        [("east", "north", 30, 2), ("west", "south", 40, 4), (None, "west", None, 7), (None, None, None, 5)],
+        columns,
+        expected,
     )
 
 

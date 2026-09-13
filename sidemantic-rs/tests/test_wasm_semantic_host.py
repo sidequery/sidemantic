@@ -50,7 +50,8 @@ def test_compile_population_and_injection_value():
     assert rows(call("compile", query=query)["result"]) == [(None,)]
 
 
-def test_rewrite_population():
+@pytest.mark.parametrize("tenant,expected", [("a", [(10,)]), ("b", [(100,)]), ("a' OR 1=1 --", [(None,)])])
+def test_rewrite_population(tenant, expected):
     # Call the context-bearing public export using the same JSON IPC harness.
     module = str(Path(os.environ["SIDEMANTIC_WASM_MODULE"]).resolve())
     request = {
@@ -58,7 +59,7 @@ def test_rewrite_population():
         "args": [
             json.dumps(SOURCE),
             "select orders.revenue as total from metrics",
-            json.dumps({"user_attributes": {"tenant": "a"}, "enforce_visibility": True}),
+            json.dumps({"user_attributes": {"tenant": tenant}, "enforce_visibility": True}),
         ],
     }
     result = subprocess.run(
@@ -68,7 +69,9 @@ def test_rewrite_population():
         capture_output=True,
         check=True,
     )
-    assert rows(json.loads(result.stdout)["result"]) == [(10,)]
+    response = json.loads(result.stdout)
+    assert "error" not in response, response
+    assert rows(response["result"]) == expected
 
 
 @pytest.mark.parametrize("mutation", ["version", "envelope", "field", "key", "scope", "capability", "policy"])

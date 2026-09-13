@@ -13,7 +13,10 @@ from sidemantic.rust_bridge import generate_preaggregation_materialization_sql_w
 def layer():
     pytest.importorskip("sidemantic_rs", reason="Rollup acceptance requires the matching Rust extension")
     layer = SemanticLayer(engine="rust", fallback=False, auto_register=False)
-    layer.add_model(
+    # Exercise the canonical Rust contract with raw timestamps. The Python
+    # authoring validator requires a default grain, which would change this
+    # fixture's finer-than-rollup fallback cases.
+    layer.graph.add_model(
         Model(
             name="orders",
             table="orders",

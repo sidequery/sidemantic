@@ -439,7 +439,7 @@ pub(super) fn try_generate(
         // Materialized routing is qualified for whole single-source queries.
         // Cross-source child populations need separate grain/domain acceptance.
         child.use_preaggregations = false;
-        let child_sql = generator.generate(&child)?;
+        let child_sql = generator.generate_from_model(&child, Some(model))?;
         ctes.push(format!(
             "{} AS (\nSELECT {}\nFROM (\n{child_sql}\n) AS __sidemantic_source\n)",
             generator.quote_identifier(&format!("{model}_preagg")),

@@ -369,6 +369,7 @@ fn decode_metric(value: Value, path: &str, owner: Option<&str>) -> Result<Metric
             "derived",
             "ratio",
             "cumulative",
+            "conversion",
             "time_comparison",
         ]
         .contains(&kind)

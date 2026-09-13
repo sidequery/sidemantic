@@ -212,3 +212,15 @@ Fanout, calculated wrappers, multiple metric owners, aggregate predicates,
 colliding output aliases, ungrouped output, rollup routing, and null-fill options
 remain gated for this snapshot path. This does not add raw-row cumulative
 semantics: cumulative references still operate on period outputs.
+### Two-event conversion
+
+Source-local two-event conversion metrics (`base_event`, `conversion_event`,
+`entity`, `conversion_window`) can use the strict Rust DuckDB path. Conversion
+counts distinct base entities with a target event inside the inclusive interval,
+and divides by distinct base entities. Empty denominators return null. Grouping
+attributes are attributed to the base event. Query filters, metric filters,
+invariants, and caller policies constrain both event populations.
+
+Multi-step funnels, joined populations, graph-scoped conversion metrics,
+calculated wrappers, mapped entity/event/time source names, quoted output names,
+and other output dialects remain gated in this first qualified subset.

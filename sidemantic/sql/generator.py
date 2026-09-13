@@ -5568,7 +5568,7 @@ JOIN cohort_sizes c ON r.cohort_date = c.cohort_date{order_clause}{limit_clause}
         from_clause = self._model_from_clause(model)
 
         # Normalize filters: strip model name prefixes and resolve dimension names
-        normalized_filters = self._strip_model_prefixes(filters or [], model.name)
+        normalized_filters = self._strip_model_prefixes([*(filters or []), *(metric.filters or [])], model.name)
         normalized_filters = self._resolve_filter_dimensions(normalized_filters, model)
         filter_clause = ""
         if normalized_filters:

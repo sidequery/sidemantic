@@ -339,14 +339,33 @@ fn http_server_exercises_real_endpoints_and_errors() {
     assert_eq!(status, 200);
     assert!(body["sql"].as_str().unwrap_or("").contains("orders_cte"));
 
-    let (status, body, _) = http_request(
-        &bind,
-        "POST",
-        "/raw",
-        Some(json!({ "query": "delete from orders" })),
-    );
-    assert_eq!(status, 400);
-    assert!(body["error"].as_str().unwrap_or("").contains("SELECT"));
+    for endpoint in ["/raw", "/sql"] {
+        let (status, body, _) = http_request(
+            &bind,
+            "POST",
+            endpoint,
+            Some(json!({ "query": "delete from orders" })),
+        );
+        assert_eq!(status, 400, "{endpoint}: {body}");
+        assert_eq!(
+            body["error"], "SQL execution only supports one query statement",
+            "{endpoint}: {body}"
+        );
+
+        // Query expressions pass the guard and reach the disabled ADBC executor.
+        for query in ["select 1", "values (1), (2)", "select (select 1) as value"] {
+            let (status, body, _) =
+                http_request(&bind, "POST", endpoint, Some(json!({ "query": query })));
+            assert_eq!(status, 400, "{endpoint}: {body}");
+            assert!(
+                body["error"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("runtime-server-adbc"),
+                "{endpoint}, {query}: {body}"
+            );
+        }
+    }
 
     child.kill_and_wait();
     fs::remove_dir_all(&dir).expect("temp dir should be removed");

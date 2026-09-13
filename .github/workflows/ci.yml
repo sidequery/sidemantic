@@ -46,8 +46,8 @@ jobs:
           assert "sidemantic_dax" not in sys.modules
           PY
 
-      - name: Install DAX dependencies
-        run: uv sync --extra dev --extra dax
+      - name: Install DAX and MCP test dependencies
+        run: uv sync --extra dev --extra dax --extra mcp
 
       - name: Install browser test runtime
         run: uv run python -m playwright install --with-deps chromium

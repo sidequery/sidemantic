@@ -1,7 +1,7 @@
 //! Retention over one authorized source population with independently sized cohorts.
 
 use super::*;
-use crate::core::replace_semantic_columns;
+use crate::core::{replace_semantic_columns, validate_row_expression};
 
 pub(super) fn unsupported(shape: &str) -> SidemanticError {
     SidemanticError::UnsupportedSemanticFeatures {
@@ -75,7 +75,7 @@ impl SqlGenerator<'_> {
     ) -> Result<String> {
         let sql = sql.replace("{model}", &model.name);
         let expression = parse_semantic_expression(&sql)?;
-        reject_non_row_expression(&expression)?;
+        validate_row_expression(&expression, "metric.retention_non_row_expression")?;
         let mut replacements = HashMap::new();
         for column in semantic_column_references(&sql)? {
             if column.aggregate_input {
@@ -290,69 +290,6 @@ JOIN cohort_sizes c USING (cohort_date)"#
         }
         Ok(sql)
     }
-}
-
-fn reject_non_row_expression(expression: &Expression) -> Result<()> {
-    // Typed aggregate children are not all covered by polyglot's public walker.
-    // Inspect the complete AST, including aggregates without column inputs.
-    fn visit(value: &serde_json::Value) -> bool {
-        match value {
-            serde_json::Value::Object(fields) => {
-                let kind = (fields.len() == 1).then(|| fields.keys().next().unwrap().as_str());
-                matches!(
-                    kind,
-                    Some(
-                        "select"
-                            | "subquery"
-                            | "raw"
-                            | "window"
-                            | "window_function"
-                            | "count"
-                            | "sum"
-                            | "avg"
-                            | "min"
-                            | "max"
-                            | "median"
-                            | "mode"
-                            | "stddev"
-                            | "stddev_pop"
-                            | "stddev_samp"
-                            | "variance"
-                            | "var_pop"
-                            | "var_samp"
-                            | "aggregate_function"
-                            | "group_concat"
-                            | "string_agg"
-                            | "list_agg"
-                            | "array_agg"
-                            | "count_if"
-                            | "sum_if"
-                            | "first"
-                            | "last"
-                            | "any_value"
-                            | "approx_distinct"
-                            | "approx_count_distinct"
-                            | "approx_percentile"
-                            | "percentile"
-                            | "logical_and"
-                            | "logical_or"
-                            | "skewness"
-                            | "array_concat_agg"
-                            | "array_unique_agg"
-                            | "bool_xor_agg"
-                    )
-                ) || fields.values().any(visit)
-            }
-            serde_json::Value::Array(values) => values.iter().any(visit),
-            _ => false,
-        }
-    }
-    let value = serde_json::to_value(expression)
-        .map_err(|error| SidemanticError::SqlParse(error.to_string()))?;
-    if visit(&value) {
-        return Err(unsupported("non_row_expression"));
-    }
-    Ok(())
 }
 
 #[cfg(test)]

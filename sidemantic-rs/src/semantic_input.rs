@@ -431,9 +431,19 @@ fn decode_relationship(value: Value, path: &str) -> Result<Relationship> {
         return Err(unsupported("relationship.cross"));
     }
     if raw.get("type") == Some(&json!("many_to_many")) {
-        return Err(unsupported("relationship.many_to_many"));
+        if raw.get("through").is_none_or(Value::is_null) {
+            return Err(unsupported("relationship.many_to_many.without_through"));
+        }
+        if raw.get("sql").is_some_and(|value| !value.is_null()) {
+            return Err(unsupported("relationship.many_to_many.custom_sql"));
+        }
     }
-    for field in ["foreign_key", "primary_key"] {
+    for field in [
+        "foreign_key",
+        "primary_key",
+        "through_foreign_key",
+        "related_foreign_key",
+    ] {
         if let Some(keys) = raw.remove(field) {
             let keys = key_columns(keys, &format!("{path}.{field}"))?;
             raw.insert(
@@ -748,6 +758,46 @@ impl SemanticInput {
                         "relationships",
                         format!("unknown target {}", relationship.related_model()),
                     ));
+                }
+                if relationship.r#type == crate::core::RelationshipType::ManyToMany {
+                    let through = relationship
+                        .through
+                        .as_deref()
+                        .expect("decoder requires through");
+                    if !keys.contains_key(through) {
+                        return Err(invalid(
+                            "relationships.through",
+                            format!("unknown bridge {through}"),
+                        ));
+                    }
+                    let source_keys = &keys[&model.name];
+                    let target_keys = relationship
+                        .primary_key_columns
+                        .clone()
+                        .filter(|keys| !keys.is_empty())
+                        .unwrap_or_else(|| keys[relationship.related_model()].clone());
+                    let source_foreign = relationship
+                        .through_foreign_key_columns
+                        .clone()
+                        .unwrap_or_default();
+                    let target_foreign = relationship
+                        .related_foreign_key_columns
+                        .clone()
+                        .unwrap_or_default();
+                    if source_keys.is_empty() || target_keys.is_empty() {
+                        return Err(unsupported("relationship.unknown_primary_key"));
+                    }
+                    if source_foreign.is_empty() || target_foreign.is_empty() {
+                        return Err(invalid("relationships", "many-to-many relationships require explicit through_foreign_key and related_foreign_key"));
+                    }
+                    if source_keys.len() != source_foreign.len()
+                        || target_keys.len() != target_foreign.len()
+                    {
+                        return Err(invalid("relationships", "junction key arity mismatch"));
+                    }
+                    relationship.primary_key = target_keys.first().cloned();
+                    relationship.primary_key_columns = Some(target_keys);
+                    continue;
                 }
                 if relationship.sql.is_some() {
                     continue;

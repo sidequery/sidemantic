@@ -112,11 +112,12 @@ subqueries, foreign-model inputs or predicates, and unresolved templates remain
 explicitly unsupported. Unowned graph measures also remain unsupported on this path.
 
 Remaining capability gates include policy-bearing SQL outside the scoped
-`FROM metrics` subset, policy output outside DuckDB/PostgreSQL, many-to-many role paths,
+`FROM metrics` subset, policy output outside DuckDB/PostgreSQL, many-to-many paths without explicit keyed junctions or with custom join SQL,
 unsupported computed-key query shapes, genuinely duplicate child output aliases,
 unsupported complete-expression filter shapes, temporal/null-fill combinations, raw cumulative windows,
 and unqualified conversion, cohort, and non-additive metric shapes. Retention
 has a bounded dedicated path described below.
+
 
 Deserialization alone is not evidence of executable support.
 
@@ -284,3 +285,11 @@ or rewrite graph definitions. Multiple statements and trailing scalar clauses
 are rejected. Explicit non-DuckDB graph-expression dialect metadata remains
 unsupported. The PostgreSQL CI corpus exercises `SemanticLayer.compile`,
 `query`, `sql`, and `QueryRewriter` with a real PostgreSQL adapter and Rust runtime.
+Named many-to-many relationships use a separate junction SQL instance for each
+role, even when roles share the same physical junction table. They require an
+explicit `through` model, `through_foreign_key` and `related_foreign_key`, and
+known endpoint primary keys with matching arities. Composite key arrays are
+accepted. Junction policies are applied to each role instance using the canonical
+junction declaration. Measures retain their source-key grain across duplicate
+junction rows. Inactive relationships remain excluded.
+

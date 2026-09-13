@@ -965,15 +965,13 @@ pub fn rewrite_with_semantic_input_context(
                 .values()
                 .any(|policy| policy.security.is_some() || !policy.invariant_filters.is_empty());
         let prepare = |query: &mut SemanticQuery| {
-            query.prepared_policies = policies::prepare(
+            query.prepared_policies = policies::prepare_for_rewrite(
                 &input.graph,
                 &input.policies,
                 query,
                 context.user_attributes.as_ref(),
                 context.enforce_visibility,
-                // Rewriter compiles and reparses a DuckDB intermediate AST;
-                // only the final emission targets the requested output dialect.
-                DialectType::DuckDB,
+                output_dialect,
             )?;
             Ok(())
         };

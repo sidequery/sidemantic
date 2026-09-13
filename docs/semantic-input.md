@@ -243,3 +243,10 @@ service, driver, extension or expected rows are unavailable. PostgreSQL parity
 is not qualified until that execution job passes. Other policy output dialects
 remain typed unsupported requirements.
 
+PostgreSQL policy predicates emit target SQL before structured CTE assembly.
+The rewrite path preserves its DuckDB intermediate and emits PostgreSQL only
+from the final AST. `year(date)` policies explicitly lower to `extract(year
+from date)` and have a PostgreSQL row-result test. Date-difference predicates
+remain unsupported: PostgreSQL elapsed-duration lowering does not preserve
+DuckDB calendar-boundary counting for timestamps. Raw SQL nodes and unresolved
+generic function nodes are also rejected for PostgreSQL policy output.

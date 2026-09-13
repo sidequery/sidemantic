@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
-use polyglot_sql::expressions::{Column, Expression, Identifier};
+use polyglot_sql::expressions::{Column, DateTimeField, Expression, ExtractFunc, Identifier};
 use polyglot_sql::DialectType;
 use serde_json::{Map, Value};
 
@@ -65,6 +65,43 @@ pub(crate) fn prepare(
     user_attributes: Option<&Map<String, Value>>,
     enforce_visibility: bool,
     output_dialect: DialectType,
+) -> Result<PreparedPolicies> {
+    prepare_with_dialects(
+        graph,
+        policies,
+        query,
+        user_attributes,
+        enforce_visibility,
+        (output_dialect, output_dialect),
+    )
+}
+
+pub(crate) fn prepare_for_rewrite(
+    graph: &SemanticGraph,
+    policies: &HashMap<String, ModelPolicies>,
+    query: &SemanticQuery,
+    user_attributes: Option<&Map<String, Value>>,
+    enforce_visibility: bool,
+    output_dialect: DialectType,
+) -> Result<PreparedPolicies> {
+    // The wrapper reparses a DuckDB intermediate before final target emission.
+    prepare_with_dialects(
+        graph,
+        policies,
+        query,
+        user_attributes,
+        enforce_visibility,
+        (output_dialect, DialectType::DuckDB),
+    )
+}
+
+fn prepare_with_dialects(
+    graph: &SemanticGraph,
+    policies: &HashMap<String, ModelPolicies>,
+    query: &SemanticQuery,
+    user_attributes: Option<&Map<String, Value>>,
+    enforce_visibility: bool,
+    (output_dialect, emission_dialect): (DialectType, DialectType),
 ) -> Result<PreparedPolicies> {
     let mut population = Population::new(graph);
     for reference in &query.metrics {
@@ -132,7 +169,7 @@ pub(crate) fn prepare(
                             &filter.replace("{model}", instance),
                             instance,
                             model,
-                            output_dialect,
+                            (output_dialect, emission_dialect),
                         )
                     })
                     .collect::<Result<Vec<_>>>()?;
@@ -148,7 +185,7 @@ pub(crate) fn prepare(
                         &filter.replace("{model}", instance),
                         instance,
                         model,
-                        output_dialect,
+                        (output_dialect, emission_dialect),
                     )
                 })
                 .collect::<Result<Vec<_>>>()?;
@@ -507,7 +544,7 @@ fn source_predicate(
     predicate: &str,
     instance: &str,
     model: &Model,
-    output_dialect: DialectType,
+    (output_dialect, emission_dialect): (DialectType, DialectType),
 ) -> Result<String> {
     fn expand(value: &mut Value, instance: &str, model: &Model, dimensions: bool) -> Result<()> {
         match value {
@@ -568,33 +605,53 @@ fn source_predicate(
     let mut ast = serde_json::to_value(parse_semantic_expression(&predicate)?)
         .map_err(|error| SidemanticError::SqlParse(error.to_string()))?;
     expand(&mut ast, instance, model, true)?;
-    // Raw SQL has no dialect semantics and the emitter copies it verbatim.
-    // It cannot establish PostgreSQL policy equivalence.
-    fn reject_raw(value: &Value) -> Result<()> {
+    // Unknown/raw SQL cannot establish target semantics. DateDiff's PostgreSQL
+    // elapsed-duration lowering does not preserve DuckDB calendar boundaries.
+    fn prepare_target(value: &mut Value, postgres: bool) -> Result<()> {
+        if let Value::Object(fields) = value {
+            let kind = (fields.len() == 1).then(|| fields.keys().next().unwrap().as_str());
+            if postgres
+                && matches!(
+                    kind,
+                    Some("raw" | "date_diff" | "timestamp_diff" | "function")
+                )
+            {
+                return Err(SidemanticError::UnsupportedSemanticFeatures {
+                    capabilities: vec!["policy.unqualified_output_expression".into()],
+                });
+            }
+            if postgres && kind == Some("year") {
+                let Expression::Year(year) = serde_json::from_value(value.clone())
+                    .map_err(|error| SidemanticError::SqlParse(error.to_string()))?
+                else {
+                    unreachable!()
+                };
+                *value = serde_json::to_value(Expression::Extract(Box::new(ExtractFunc {
+                    this: year.this,
+                    field: DateTimeField::Year,
+                })))
+                .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))?;
+            }
+        }
         match value {
             Value::Object(fields) => {
-                if fields.len() == 1 && fields.contains_key("raw") {
-                    return Err(SidemanticError::UnsupportedSemanticFeatures {
-                        capabilities: vec!["policy.raw_output_expression".into()],
-                    });
-                }
-                for child in fields.values() {
-                    reject_raw(child)?;
+                for child in fields.values_mut() {
+                    prepare_target(child, postgres)?;
                 }
             }
             Value::Array(values) => {
                 for child in values {
-                    reject_raw(child)?;
+                    prepare_target(child, postgres)?;
                 }
             }
             _ => {}
         }
         Ok(())
     }
-    reject_raw(&ast)?;
+    prepare_target(&mut ast, output_dialect == DialectType::PostgreSQL)?;
     let expression: Expression = serde_json::from_value(ast)
         .map_err(|error| SidemanticError::SqlParse(error.to_string()))?;
-    polyglot_sql::generate(&expression, output_dialect)
+    polyglot_sql::generate(&expression, emission_dialect)
         .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))
 }
 
@@ -798,7 +855,7 @@ mod tests {
             "accounts.tenant = 1 AND label = 'accounts.tenant' AND id IN (SELECT id FROM allowed)",
             "buyer",
             &model,
-            DialectType::DuckDB,
+            (DialectType::DuckDB, DialectType::DuckDB),
         )
         .unwrap();
         assert!(filter.contains("tenant_id = 1"), "{filter}");
@@ -808,25 +865,56 @@ mod tests {
     }
 
     #[test]
-    fn postgres_predicate_emits_date_diff_in_target_syntax() {
+    fn postgres_predicate_emits_year_in_target_syntax() {
         let model = Model::new("orders", "id");
         let predicate = source_predicate(
-            "date_diff('day', DATE '2025-01-01', occurred) <= 1",
+            "year(occurred) = 2025",
             "orders",
             &model,
-            DialectType::PostgreSQL,
+            (DialectType::PostgreSQL, DialectType::PostgreSQL),
         )
         .unwrap();
         assert!(predicate.to_uppercase().contains("EXTRACT"), "{predicate}");
-        assert!(
-            !predicate.to_uppercase().contains("DATE_DIFF("),
-            "{predicate}"
-        );
+        assert!(!predicate.to_uppercase().contains("YEAR("), "{predicate}");
         assert!(polyglot_sql::parse_one(
             &format!("SELECT 1 WHERE {predicate}"),
             DialectType::PostgreSQL,
         )
         .is_ok());
+    }
+
+    #[test]
+    fn postgres_date_diff_is_rejected_before_intermediate_emission() {
+        let graph = graph();
+        let policies = decode(&[json!({
+            "name":"orders", "invariant_filters":[
+                "date_diff('day', TIMESTAMP '2025-01-01 23:59:00', TIMESTAMP '2025-01-02 00:01:00') = 1"
+            ]
+        })]).unwrap();
+        let query = SemanticQuery::new().with_metrics(vec!["orders.revenue".into()]);
+        for result in [
+            prepare(
+                &graph,
+                &policies,
+                &query,
+                None,
+                false,
+                DialectType::PostgreSQL,
+            ),
+            prepare_for_rewrite(
+                &graph,
+                &policies,
+                &query,
+                None,
+                false,
+                DialectType::PostgreSQL,
+            ),
+        ] {
+            assert!(matches!(
+                result,
+                Err(SidemanticError::UnsupportedSemanticFeatures { .. })
+            ));
+        }
     }
 
     #[test]

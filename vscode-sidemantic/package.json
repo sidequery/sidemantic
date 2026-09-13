@@ -31,6 +31,12 @@
     "workspaceContains:**/sidemantic.py"
   ],
   "main": "./out/extension.js",
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "The language server loads executable semantic model definitions."
+    }
+  },
   "contributes": {
     "languages": [
       {
@@ -63,6 +69,7 @@
         },
         "sidemantic.lsp.path": {
           "type": "string",
+          "scope": "machine",
           "default": "sidemantic",
           "description": "Path to the sidemantic CLI executable"
         },

@@ -33,18 +33,29 @@ jobs:
 
       - name: Resolve DuckDB version
         id: duckdb
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REQUESTED_VERSION: ${{ inputs.duckdb_version }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            VERSION="${{ inputs.duckdb_version }}"
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            VERSION="$REQUESTED_VERSION"
           else
             VERSION="v1.5.5"
+          fi
+
+          # Keep in sync with SUPPORTED_DUCKDB_VERSION in the extension Makefile.
+          if [ "$VERSION" != "v1.5.5" ]; then
+            echo "Unsupported DuckDB version" >&2
+            exit 1
           fi
 
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Fetch DuckDB dependencies
         working-directory: sidemantic-duckdb
-        run: make deps DUCKDB_VERSION="${{ steps.duckdb.outputs.version }}"
+        env:
+          DUCKDB_VERSION: ${{ steps.duckdb.outputs.version }}
+        run: make deps DUCKDB_VERSION="$DUCKDB_VERSION"
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -67,9 +78,10 @@ jobs:
 
       - name: Package extension artifact
         working-directory: sidemantic-duckdb
+        env:
+          DUCKDB_VERSION: ${{ steps.duckdb.outputs.version }}
         run: |
           mkdir -p dist
-          DUCKDB_VERSION="${{ steps.duckdb.outputs.version }}"
           DUCKDB_VERSION="${DUCKDB_VERSION#v}"
           cp build/release/extension/sidemantic/sidemantic.duckdb_extension "dist/sidemantic-duckdb-${DUCKDB_VERSION}-linux-amd64.duckdb_extension"
 
@@ -99,9 +111,12 @@ jobs:
 
       - name: Resolve release tag
         id: release
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          if [ "${{ github.ref_type }}" = "tag" ]; then
-            TAG="${{ github.ref_name }}"
+          if [ "$REF_TYPE" = "tag" ]; then
+            TAG="$REF_NAME"
           else
             VERSION=$(grep '^version = ' sidemantic-rs/Cargo.toml | sed 's/version = "\(.*\)"/\1/')
             TAG="sidemantic-duckdb-v${VERSION}"
@@ -112,9 +127,8 @@ jobs:
       - name: Create or update GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.release.outputs.tag }}
         run: |
-          TAG="${{ steps.release.outputs.tag }}"
-
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" dist/* --clobber
           else

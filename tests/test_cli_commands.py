@@ -736,6 +736,8 @@ def test_api_serve_calls_start_server(monkeypatch, tmp_path):
         user_header="X-Sidemantic-User",
         dashboard=None,
         serve_mcp=False,
+        server_limits=None,
+        trust_user_header=False,
     ):
         called["layer"] = layer
         called["host"] = host
@@ -972,17 +974,32 @@ connection:
         called["enforce_visibility"] = enforce_visibility
 
     def fake_run(*args, **kwargs):
-        called["transport"] = kwargs["transport"]
+        called["transport"] = "streamable-http"
+        called["auth_token"] = kwargs["auth_token"]
 
     monkeypatch.setattr("sidemantic.mcp_server.initialize_layer", fake_initialize_layer)
-    monkeypatch.setattr("sidemantic.mcp_server.mcp.run", fake_run)
+    monkeypatch.setattr("sidemantic.api_server.start_api_server", fake_run)
+    monkeypatch.setattr("sidemantic.mcp_server.get_layer", lambda: object())
+    token_file = tmp_path / "token"
+    token_file.write_text("secret")
 
     import sidemantic.mcp_server as mcp_mod
 
     mcp_mod._apps_enabled = False
     cli_module._loaded_config = None
     result = runner.invoke(
-        app, ["--config", str(config_path), "mcp-serve", str(models_dir), "--apps", "--port", "4201"]
+        app,
+        [
+            "--config",
+            str(config_path),
+            "mcp-serve",
+            str(models_dir),
+            "--apps",
+            "--port",
+            "4201",
+            "--auth-token-file",
+            str(token_file),
+        ],
     )
 
     assert result.exit_code == 0
@@ -990,6 +1007,7 @@ connection:
     assert called["connection"] == "duckdb:///:memory:"
     assert called["init_sql"] == ["SELECT 42"]
     assert called["transport"] == "streamable-http"
+    assert called["auth_token"] == "secret"
     assert mcp_mod._apps_enabled is True
     assert "Note: --apps implies HTTP transport" in result.stderr
 
@@ -1049,3 +1067,49 @@ connection:
     assert captured["directory"] == str(models_dir)
     assert "order_count,status" in result.stdout
     assert "2,completed" in result.stdout
+
+
+def test_http_mcp_requires_auth_and_rejects_static_identity(tmp_path):
+    _write_min_model(tmp_path)
+    result = runner.invoke(app, ["server", "mcp", str(tmp_path), "--http"])
+    assert result.exit_code != 0
+    assert "--auth-token-file" in result.output
+    attrs = tmp_path / "attrs.json"
+    attrs.write_text('{"role": "admin"}')
+    result = runner.invoke(app, ["server", "mcp", str(tmp_path), "--apps", "--user-attrs-file", str(attrs)])
+    assert result.exit_code != 0
+    assert "only supported with stdio" in result.output
+
+
+@pytest.mark.parametrize("trust_header", [False, True])
+@pytest.mark.parametrize("command", [["serve"], ["server", "mcp", "--http"], ["server", "mcp", "--apps"]])
+def test_http_entrypoints_forward_trusted_identity(monkeypatch, tmp_path, command, trust_header):
+    pytest.importorskip("fastapi")
+    ensure_fake_mcp()
+    _write_min_model(tmp_path)
+    token_file = tmp_path / "token"
+    token_file.write_text("secret")
+    called = {}
+
+    def fake_start_api_server(layer, **kwargs):
+        called.update(kwargs)
+
+    monkeypatch.setattr("sidemantic.api_server.start_api_server", fake_start_api_server)
+    monkeypatch.setattr("sidemantic.mcp_server.initialize_layer", lambda *args, **kwargs: None)
+    monkeypatch.setattr("sidemantic.mcp_server.get_layer", lambda: object())
+    arguments = [*command, str(tmp_path), "--auth-token-file", str(token_file)]
+    if trust_header:
+        arguments.append("--trust-user-header")
+    result = runner.invoke(app, arguments)
+
+    assert result.exit_code == 0, result.output
+    assert called["trust_user_header"] is trust_header
+    assert called["auth_token"] == "secret"
+    assert called["serve_mcp"] is True
+
+
+def test_stdio_mcp_rejects_trusted_header_option(tmp_path):
+    _write_min_model(tmp_path)
+    result = runner.invoke(app, ["server", "mcp", str(tmp_path), "--trust-user-header"])
+    assert result.exit_code != 0
+    assert "--trust-user-header requires --http or --apps" in result.output

@@ -143,9 +143,9 @@ def _try_compile(
             payload["result"] = _execute_sample(layer, payload["sql"], sample_rows=sample_rows)
     except Exception as exc:  # noqa: BLE001 - tool output should report model-specific failures.
         if "sql" in payload:
-            payload["execution_error"] = str(exc)
+            payload["execution_error"] = f"Query execution failed ({type(exc).__name__})"
         else:
-            payload["error"] = str(exc)
+            payload["error"] = f"Query compilation failed ({type(exc).__name__})"
     return payload
 
 
@@ -370,7 +370,6 @@ def inspect_layer(args: argparse.Namespace) -> dict[str, Any]:
 
     return {
         "models_path": str(args.models.resolve()),
-        "connection": connection,
         "dialect": layer.dialect,
         "model_count": len(models),
         "models": models,

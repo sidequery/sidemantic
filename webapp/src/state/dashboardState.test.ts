@@ -80,6 +80,17 @@ test("rowsToCsv quotes commas, quotes, and newlines", () => {
   );
 });
 
+test("rowsToCsv neutralizes formulas in strings and headers without changing numeric cells", () => {
+  for (const text of ["=1+1", "+SUM(A1)", "-1+2", "@SUM(A1)", " \t=1", "\r\n+1", "\u0000=1"]) {
+    const escaped = /[",\r\n]/.test(text) ? `"'${text.replaceAll('"', '""')}"` : `'${text}`;
+    expect(rowsToCsv([text], [{ [text]: text }])).toBe(`${escaped}\r\n${escaped}`);
+  }
+  expect(rowsToCsv(["value"], [{ value: -12.5 }, { value: 0 }, { value: true }, { value: "ordinary" }])).toBe(
+    "value\r\n-12.5\r\n0\r\ntrue\r\nordinary",
+  );
+  expect(rowsToCsv(["value"], [{ value: -12345678901234567890n }])).toBe("value\r\n-12345678901234567890");
+});
+
 describe("dashboard routing", () => {
   test("preserves legacy root explorer and pivot links", () => {
     expect(shouldUseExplorer("/", "?view=explore&model=orders")).toBe(true);

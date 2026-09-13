@@ -572,3 +572,15 @@ FROM t;
     # Both should produce identical dimension SQL (TRY_CAST preserved)
     assert default_model.get_dimension("val").sql == explicit_model.get_dimension("val").sql
     assert "TRY_CAST" in default_model.get_dimension("val").sql
+
+
+def test_measure_alias_tagging_is_scoped_to_its_projection(tmp_path):
+    sql_file = tmp_path / "views.sql"
+    sql_file.write_text(
+        'CREATE VIEW totals AS SELECT SUM(amount) AS MEASURE "revenue" FROM sales;\n'
+        'CREATE VIEW details AS SELECT revenue AS "revenue", COUNT(*) AS MEASURE n FROM sales;\n'
+    )
+    graph = YardstickAdapter().parse(sql_file)
+    assert [metric.name for metric in graph.models["totals"].metrics] == ["revenue"]
+    assert [metric.name for metric in graph.models["details"].metrics] == ["n"]
+    assert [dimension.name for dimension in graph.models["details"].dimensions] == ["revenue"]

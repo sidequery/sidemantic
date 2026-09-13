@@ -1020,7 +1020,7 @@ impl<'a> QueryRewriter<'a> {
     }
 }
 
-fn parse_sql_with_large_stack(sql: &str) -> Result<Vec<Expression>> {
+pub(super) fn parse_sql_with_large_stack(sql: &str) -> Result<Vec<Expression>> {
     #[cfg(target_arch = "wasm32")]
     {
         let _ = sql;

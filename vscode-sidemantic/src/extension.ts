@@ -11,19 +11,23 @@ import {
   SIDEMANTIC_SQL_FILE_GLOB,
   buildDocumentSelector,
   buildServerCommand,
+  getUserServerCommand,
   getStartupFailure,
 } from './lspConfig';
 
 let client: LanguageClient | undefined;
 
 export async function activate(context: vscode.ExtensionContext) {
+  if (!vscode.workspace.isTrusted) {
+    return;
+  }
   const config = vscode.workspace.getConfiguration('sidemantic');
 
   if (!config.get<boolean>('lsp.enabled', true)) {
     return;
   }
 
-  const command = config.get<string>('lsp.path', 'sidemantic');
+  const command = getUserServerCommand(config.inspect<string>('lsp.path'));
   const pythonEnabled = config.get<boolean>('lsp.python.enabled', true);
 
   const watchers = [vscode.workspace.createFileSystemWatcher(SIDEMANTIC_SQL_FILE_GLOB)];

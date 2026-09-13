@@ -6,6 +6,7 @@ Parses user SQL and rewrites it to use the semantic layer.
 import logging
 import os
 import re
+import warnings
 from dataclasses import dataclass
 from typing import Any
 
@@ -31,6 +32,21 @@ _EXPECTED_REWRITE_FAILURES = (KeyError, ValueError, SqlglotError)
 # TypeError and AttributeError deliberately propagate: they indicate an API
 # contract or implementation defect rather than an unavailable backend.
 _RUST_BACKEND_FAILURES = (ImportError, OSError, RuntimeError, ValueError)
+
+
+class YardstickWarning(UserWarning):
+    """A Yardstick context modifier drops a potentially unintended filter."""
+
+
+class YardstickBindingError(ValueError):
+    """A Yardstick measure reference cannot be bound in the query scope."""
+
+
+def yardstick_warnings_may_apply(graph: SemanticGraph, sql: str) -> bool:
+    """Conservatively keep warning-producing compilations out of SQL caches."""
+    return bool(_YARDSTICK_SYNTAX_HINT_RE.search(sql) or re.search(r"\byardstick\s*\(", sql, re.IGNORECASE)) or any(
+        isinstance(model.metadata, dict) and "yardstick" in model.metadata for model in graph.models.values()
+    )
 
 
 @dataclass
@@ -194,12 +210,14 @@ class QueryRewriter:
             ValueError: If SQL cannot be rewritten (unsupported features, invalid references, etc.)
                        Only raised when strict=True
         """
-        sql = sql.strip()
+        sql = self._expand_yardstick_table_functions(sql.strip(), user_attributes=user_attributes)
         # Expose the attributes to the internal generate() calls for this rewrite.
         self._rewrite_user_attributes = user_attributes
         # Never serve a per-user rewrite from the shared cache (another user's access decision
         # could be baked in); only cache the attribute-free case.
-        use_cache = user_attributes is None
+        # Context-loss warnings must be observable on every compilation, including
+        # after a caller changes its Python warnings-as-errors policy.
+        use_cache = user_attributes is None and not yardstick_warnings_may_apply(self.graph, sql)
         cache_key = (getattr(self.graph, "_version", 0), self.dialect, self.use_preaggregations, strict, sql)
         cached = self._rewrite_cache.get(cache_key) if use_cache else None
         if cached is not None:
@@ -345,6 +363,23 @@ class QueryRewriter:
         """
         sql = sql.strip()
         self._rewrite_user_attributes = user_attributes
+
+        expanded_sql = self._expand_yardstick_table_functions(sql, user_attributes=user_attributes)
+        if expanded_sql != sql:
+            return RewriteExplanation(
+                input_sql=sql,
+                rewritten_sql=self.rewrite(expanded_sql, strict=strict, user_attributes=user_attributes),
+                chosen_plan="yardstick_semantic_sql",
+                source_kind="yardstick",
+                candidate_plans=[
+                    CandidatePlan(
+                        name="yardstick_semantic_sql",
+                        valid=True,
+                        reason="query uses the literal-query Yardstick table function",
+                    )
+                ],
+                warnings=["Yardstick semantic SQL uses a separate rewrite path."],
+            )
 
         if self._looks_like_yardstick_query(sql):
             try:
@@ -511,7 +546,7 @@ class QueryRewriter:
             )
 
         plan = self._plan_simple_query(parsed)
-        rewritten_sql = self._generate_from_plan(plan)
+        rewritten_sql = self._generate_from_plan(plan, parsed)
         return self._explanation_from_plan(sql, plan, rewritten_sql)
 
     def _passthrough_explanation(self, sql: str, reason: str, warning: str | None = None) -> RewriteExplanation:
@@ -540,7 +575,7 @@ class QueryRewriter:
         optimization, rejected_rules = self._optimize_wrapped_semantic_query(parsed)
         if optimization is not None:
             explanation = self._explanation_from_plan(
-                sql, optimization.plan, self._generate_from_plan(optimization.plan)
+                sql, optimization.plan, self._generate_from_plan(optimization.plan, parsed)
             )
             explanation.pushed_filters = optimization.pushed_filters
             explanation.applied_rules = optimization.applied_rules
@@ -2985,7 +3020,29 @@ class QueryRewriter:
             return True
         return metric.type == "ratio" and bool(metric.offset_window)
 
-    def _generate_from_plan(self, plan: SemanticQueryPlan) -> str:
+    def _query_ctes_in_scope(self, query: exp.Select | None) -> frozenset[str]:
+        """Identify CTE relations actually visible to this parsed SQL scope."""
+        from sqlglot.optimizer.scope import traverse_scope
+
+        if query is None:
+            return frozenset()
+        root = query
+        while root.parent is not None:
+            root = root.parent
+        for scope in traverse_scope(root):
+            if scope.expression is query:
+                # Normalize identifiers using the same rules as the generator.
+                # SQLGlot's scope lookup itself preserves the source spelling.
+                return frozenset(
+                    sqlglot.Dialect.get_or_raise(self.dialect)
+                    .normalize_identifier(source.expression.parent.args["alias"].this.copy())
+                    .name
+                    for source in scope.cte_sources.values()
+                    if isinstance(source.expression.parent, exp.CTE)
+                )
+        return frozenset()
+
+    def _generate_from_plan(self, plan: SemanticQueryPlan, query: exp.Select | None = None) -> str:
         return self.generator.generate(
             metrics=plan.metrics,
             dimensions=plan.dimensions,
@@ -2996,6 +3053,7 @@ class QueryRewriter:
             use_preaggregations=self.use_preaggregations,
             aliases=plan.aliases,
             user_attributes=getattr(self, "_rewrite_user_attributes", None),
+            _query_ctes=self._query_ctes_in_scope(query),
         )
 
     def _dedupe(self, values: list[str]) -> list[str]:
@@ -3045,6 +3103,52 @@ class QueryRewriter:
                     return True
 
         return False
+
+    def _expand_yardstick_table_functions(self, sql: str, *, user_attributes: dict | None = None) -> str:
+        """Expand the literal-query Yardstick table function without executing SQL."""
+        if not re.search(r"\byardstick\s*\(", sql, re.IGNORECASE):
+            return sql
+        tokens = sqlglot.tokenize(sql, read=self.dialect)
+        if not any(
+            token.text.upper() == "YARDSTICK" and tokens[index + 1].token_type == TokenType.L_PAREN
+            for index, token in enumerate(tokens[:-1])
+            if token.token_type != TokenType.STRING
+        ):
+            return sql
+        statements = sqlglot.parse(sql, read=self.dialect)
+        if len(statements) != 1 or not isinstance(statements[0], (exp.Select, exp.SetOperation)):
+            raise ValueError("yardstick() requires a single SELECT query")
+        parsed = statements[0]
+        expanded = False
+        for table in list(parsed.find_all(exp.Table)):
+            function = table.this
+            if not isinstance(function, exp.Anonymous) or function.name.lower() != "yardstick":
+                continue
+            # This separate Yardstick generator cannot prove row/access scoping.
+            # Keep the same fail-closed boundary as the SQL transport, including
+            # callers that use QueryRewriter directly rather than SemanticLayer.
+            if self.enforce_visibility or any(
+                model.security is not None or model.invariant_filters for model in self.graph.models.values()
+            ):
+                raise ValueError("yardstick() is not supported while semantic security controls are active")
+            args = function.expressions
+            if len(args) != 1 or not isinstance(args[0], exp.Literal) or not args[0].is_string:
+                raise ValueError("yardstick() requires one literal SQL query")
+            inner_sql = args[0].this
+            transformed, _ = self._replace_yardstick_aggregate_calls(inner_sql)
+            inner_statements = sqlglot.parse(transformed, read=self.dialect)
+            if (
+                len(inner_statements) != 1
+                or not isinstance(inner_statements[0], (exp.Select, exp.SetOperation))
+                or any(
+                    isinstance(node, (exp.DML, exp.DDL, exp.Into, exp.Command)) for node in inner_statements[0].walk()
+                )
+            ):
+                raise ValueError("yardstick() requires a single read-only SELECT query")
+            rewritten = parse_fragment(self.rewrite(inner_sql, user_attributes=user_attributes), self.dialect)
+            table.replace(exp.Subquery(this=rewritten, alias=table.args.get("alias")))
+            expanded = True
+        return parsed.sql(dialect=self.dialect) if expanded else sql
 
     def would_use_yardstick_rewrite(self, sql: str) -> bool:
         """Return whether SQL would take an explicit or implicit Yardstick rewrite path."""
@@ -3249,7 +3353,9 @@ class QueryRewriter:
         source_models = self._extract_source_models_from_select(select_scope)
         if not source_models:
             if initial_placeholders:
-                raise ValueError("Yardstick query must reference at least one known semantic model in FROM/JOIN")
+                raise YardstickBindingError(
+                    "Yardstick query must reference at least one known semantic model in FROM/JOIN"
+                )
             return select_scope
 
         # Only default-qualify unaliased columns when this scope truly has a single source relation.
@@ -4163,14 +4269,14 @@ class QueryRewriter:
                 model_name = source_alias
                 aliases = [alias for alias, model in source_models.items() if model == model_name]
                 if not aliases:
-                    raise ValueError(f"Model '{model_name}' is not present in query FROM/JOIN")
+                    raise YardstickBindingError(f"Model '{model_name}' is not present in query FROM/JOIN")
                 model_alias = aliases[0]
             else:
-                raise ValueError(f"Unknown table/model alias '{source_alias}' in AGGREGATE({argument_sql})")
+                raise YardstickBindingError(f"Unknown table/model alias '{source_alias}' in AGGREGATE({argument_sql})")
 
             model = self.graph.get_model(model_name)
             if not model.get_metric(measure_name):
-                raise ValueError(f"Measure '{measure_name}' not found in model '{model_name}'")
+                raise YardstickBindingError(f"Measure '{measure_name}' not found in model '{model_name}'")
             return model_alias, model_name, measure_name
 
         candidates: list[tuple[str, str]] = []
@@ -4180,10 +4286,10 @@ class QueryRewriter:
                 candidates.append((alias, model_name))
 
         if not candidates:
-            raise ValueError(f"Could not resolve AGGREGATE({measure_name}) to any model in query scope")
+            raise YardstickBindingError(f"Could not resolve AGGREGATE({measure_name}) to any model in query scope")
         if len(candidates) > 1:
             candidates_str = ", ".join(f"{alias}.{measure_name}" for alias, _ in candidates)
-            raise ValueError(f"Ambiguous AGGREGATE({measure_name}); use a qualifier: {candidates_str}")
+            raise YardstickBindingError(f"Ambiguous AGGREGATE({measure_name}); use a qualifier: {candidates_str}")
 
         model_alias, model_name = candidates[0]
         return model_alias, model_name, measure_name
@@ -4232,7 +4338,7 @@ class QueryRewriter:
         model = self.graph.get_model(model_name)
         measure = model.get_metric(measure_name)
         if not measure:
-            raise ValueError(f"Measure '{measure_name}' not found in model '{model_name}'")
+            raise YardstickBindingError(f"Measure '{measure_name}' not found in model '{model_name}'")
 
         visit_key = (model_name, measure_name)
         if visit_key in visiting:
@@ -4311,6 +4417,18 @@ class QueryRewriter:
                 model_alias=model_alias,
                 model_name=model_name,
             ),
+        )
+
+        self._warn_yardstick_dropped_filters(
+            measure_name,
+            modifiers,
+            outer_where,
+            active_dimensions,
+            where_modifier_predicates,
+            set_modifier_predicates,
+            include_visible,
+            model_alias,
+            model_name,
         )
 
         correlation_predicates: list[str] = []
@@ -4698,8 +4816,8 @@ class QueryRewriter:
         i = 0
         while i < len(tokens):
             token = tokens[i]
-            if token.text.upper() != "CURRENT":
-                parts.append(token.text)
+            if token.text.upper() != "CURRENT" or token.token_type != TokenType.VAR:
+                parts.append(sql_expr[token.start : token.end + 1])
                 i += 1
                 continue
 
@@ -4709,10 +4827,11 @@ class QueryRewriter:
 
             start_idx = i + 1
             end_idx = start_idx
+            parenthesized = tokens[start_idx].token_type == TokenType.L_PAREN
 
-            if start_idx + 1 < len(tokens) and tokens[start_idx + 1].token_type == TokenType.L_PAREN:
+            if parenthesized or (start_idx + 1 < len(tokens) and tokens[start_idx + 1].token_type == TokenType.L_PAREN):
                 depth = 0
-                j = start_idx + 1
+                j = start_idx if parenthesized else start_idx + 1
                 while j < len(tokens):
                     if tokens[j].token_type == TokenType.L_PAREN:
                         depth += 1
@@ -4727,7 +4846,11 @@ class QueryRewriter:
                 while end_idx + 2 < len(tokens) and tokens[end_idx + 1].token_type == TokenType.DOT:
                     end_idx += 2
 
-            target_sql = sql_expr[tokens[start_idx].start : tokens[end_idx].end + 1].strip()
+            target_sql = (
+                sql_expr[tokens[start_idx].end + 1 : tokens[end_idx].start]
+                if parenthesized
+                else sql_expr[tokens[start_idx].start : tokens[end_idx].end + 1]
+            ).strip()
 
             replacement = "NULL"
             try:
@@ -4761,7 +4884,7 @@ class QueryRewriter:
         active_dimensions = list(context_dimensions)
         where_predicates: list[str] = []
         set_predicates: dict[str, str] = {}
-        include_visible = include_visible_default
+        include_visible = include_visible_default and not expanded_modifiers
         has_set = False
         has_all_global = False
         removed_signatures: set[str] = set()
@@ -4805,7 +4928,6 @@ class QueryRewriter:
                     target_signature = self._expr_signature_without_tables(target_expr)
                     active_dimensions = [d for d in active_dimensions if d["signature"] != target_signature]
                     removed_signatures.add(target_signature)
-                    set_predicates.pop(target_signature, None)
                 continue
 
             if modifier_type == "WHERE":
@@ -4821,7 +4943,8 @@ class QueryRewriter:
                     table_mapping={model_name: "_inner"},
                     default_table="_inner" if single_model else None,
                 )
-                where_predicates.append(where_expr.sql(dialect=self.dialect))
+                where_predicates = [where_expr.sql(dialect=self.dialect)]
+                include_visible = False
                 # Single WHERE modifier evaluates in a non-correlated context.
                 if single_where_modifier:
                     active_dimensions = []
@@ -4859,7 +4982,7 @@ class QueryRewriter:
                         table_mapping={model_name: "_inner"},
                         default_table="_inner" if single_model else None,
                     )
-                    where_predicates.append(set_inner_predicate.sql(dialect=self.dialect))
+                    set_predicates[target_signatures[0]] = set_inner_predicate.sql(dialect=self.dialect)
                     continue
 
                 left_expr = parse_fragment(left_sql, self.dialect)
@@ -4900,11 +5023,89 @@ class QueryRewriter:
                 if has_all_global or has_set:
                     continue
                 include_visible = True
+                where_predicates.clear()
                 continue
 
             raise ValueError(f"Unsupported AT modifier: {modifier}")
 
         return active_dimensions, where_predicates, list(set_predicates.values()), include_visible
+
+    def _warn_yardstick_dropped_filters(
+        self,
+        measure_name: str,
+        modifiers: list[str],
+        outer_where: exp.Where | None,
+        active_dimensions: list[dict[str, str]],
+        where_predicates: list[str],
+        set_predicates: list[str],
+        include_visible: bool,
+        model_alias: str,
+        model_name: str,
+    ) -> None:
+        """Report lost source filters using the effective modifier context.
+
+        Yardstick's warning_for_at_all_ungrouped_where_with_qualifiers ignores
+        nested queries and other joined sources. A SET expression only encodes
+        its input columns when that expression occurs in the outer predicate;
+        SET MONTH(date)=2 does not preserve an arbitrary filter on date.
+        """
+        expanded = [part for modifier in modifiers for part in self._split_compound_yardstick_modifier(modifier)]
+        if (
+            outer_where is None
+            or include_visible
+            or not any(
+                sqlglot.tokenize(part, read=self.dialect)[0].text.upper() == "ALL" for part in expanded if part.strip()
+            )
+        ):
+            return
+
+        model = self.graph.get_model(model_name)
+        source_names = {dimension.name.lower() for dimension in model.dimensions}
+        for dimension in model.dimensions:
+            if dimension.sql:
+                expression = parse_fragment(dimension.sql.replace("{model}", model_alias), self.dialect)
+                source_names.update(column.name.lower() for column in expression.find_all(exp.Column))
+        qualifiers = {model_alias.lower(), model_name.lower(), "_inner"}
+
+        def source_columns(expression: exp.Expression) -> set[str]:
+            return {
+                column.name.lower()
+                for column in self._columns_without_nested_scopes(expression)
+                if column.name.lower() in source_names and (not column.table or column.table.lower() in qualifiers)
+            }
+
+        outer_columns = source_columns(outer_where.this)
+        if not outer_columns:
+            return
+        encoded: set[str] = set()
+        for dimension in active_dimensions:
+            expression = parse_fragment(dimension["inner_sql"], self.dialect)
+            if isinstance(expression, exp.Column):
+                encoded.update(source_columns(expression))
+        for predicate in where_predicates:
+            encoded.update(source_columns(parse_fragment(predicate, self.dialect)))
+
+        outer_expressions = {
+            self._expr_signature_without_tables(node)
+            for node in outer_where.this.walk(prune=lambda node: isinstance(node, (exp.Select, exp.Subquery)))
+        }
+        for predicate in set_predicates:
+            expression = parse_fragment(predicate, self.dialect)
+            target = expression.this
+            while isinstance(target, exp.Paren):
+                target = target.this
+            if isinstance(target, exp.Column) or self._expr_signature_without_tables(target) in outer_expressions:
+                encoded.update(source_columns(target))
+
+        dropped = sorted(outer_columns - encoded)
+        if dropped:
+            warnings.warn(
+                f"AT (ALL ...) on AGGREGATE({measure_name}) does not preserve outer WHERE filter(s) "
+                f"on ungrouped dimension(s): {', '.join(dropped)}. Add the filter dimension(s) to "
+                "SELECT/GROUP BY or use an explicit AT modifier that encodes the intended denominator.",
+                YardstickWarning,
+                stacklevel=4,
+            )
 
     def _has_subquery_in_from(self, select: exp.Select) -> bool:
         """Check if FROM clause contains a subquery."""
@@ -4932,7 +5133,7 @@ class QueryRewriter:
         """
         optimization, _rejected_rules = self._optimize_wrapped_semantic_query(parsed)
         if optimization is not None:
-            return self._generate_from_plan(optimization.plan), [], _rejected_rules, []
+            return self._generate_from_plan(optimization.plan, parsed), [], _rejected_rules, []
 
         semantic_islands, rejected_rules, warnings = self._rewrite_select_tree(parsed)
 
@@ -5418,7 +5619,7 @@ class QueryRewriter:
                     "branch output columns would not align after rewrite"
                 )
                 return None, None, rejected_rules
-            rewritten_sql = self._generate_from_plan(plan)
+            rewritten_sql = self._generate_from_plan(plan, select)
             replacement = self._parse_island_replacement(rewritten_sql, name=name, as_set_branch=as_set_branch)
             return (
                 replacement,
@@ -5447,7 +5648,7 @@ class QueryRewriter:
             rejected_rules["set_operation_branch_optimization"] = "branch output columns would not align after rewrite"
             return None, None, rejected_rules
 
-        rewritten_sql = self._generate_from_plan(plan)
+        rewritten_sql = self._generate_from_plan(plan, select)
         replacement = self._parse_island_replacement(rewritten_sql, name=name, as_set_branch=as_set_branch)
         return (
             replacement,
@@ -5567,7 +5768,7 @@ class QueryRewriter:
             return self._rewrite_expression_query(parsed, extra_filters=explicit_join_filters)
 
         plan = self._plan_simple_query(parsed, include_candidate_details=False)
-        return self._generate_from_plan(plan)
+        return self._generate_from_plan(plan, parsed)
 
     def _validate_explicit_semantic_joins(self, select: exp.Select) -> list[str]:
         """Allow explicit joins only when they point at modeled semantic relationships."""
@@ -5865,6 +6066,7 @@ class QueryRewriter:
                 filters=filters,
                 aliases=aliases,
                 user_attributes=getattr(self, "_rewrite_user_attributes", None),
+                _query_ctes=self._query_ctes_in_scope(parsed),
             )
 
             projection_sql = ",\n  ".join(projection.sql(dialect=self.dialect) for projection in outer_projections)

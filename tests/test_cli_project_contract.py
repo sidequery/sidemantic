@@ -19,6 +19,34 @@ from sidemantic.cli import app
 runner = CliRunner()
 
 
+def test_implicit_models_symlink_cannot_authorize_external_data(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    project.mkdir()
+    external = tmp_path / "external"
+    models = external / "models"
+    models.mkdir(parents=True)
+    (models / "private.yml").write_text(
+        "models:\n  - name: private\n    table: private\n    dimensions:\n"
+        "      - name: secret\n        type: categorical\n"
+    )
+    (external / "data").mkdir()
+    (external / "data" / "private.csv").write_text("secret\nexternal-private-value\n")
+    (project / "models").symlink_to(models, target_is_directory=True)
+    monkeypatch.chdir(project)
+
+    implicit = runner.invoke(app, ["query", "select secret from private"])
+
+    assert implicit.exit_code != 0
+    assert "escapes project root" in implicit.output
+    assert "external-private-value" not in implicit.output
+
+    # Explicit selection supplies the authorization that automatic discovery lacks.
+    explicit = runner.invoke(app, ["query", "select secret from private", "--models", str(models)])
+
+    assert explicit.exit_code == 0, explicit.output
+    assert "external-private-value" in explicit.output
+
+
 @pytest.fixture(autouse=True)
 def _reset_cli_config():
     cli_module._loaded_config = None

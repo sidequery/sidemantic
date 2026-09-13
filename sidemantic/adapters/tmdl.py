@@ -12,6 +12,7 @@ from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
+from sidemantic.paths import output_child
 
 if TYPE_CHECKING:
     from sidemantic_dax.ast import Expr as DaxExpr
@@ -159,15 +160,15 @@ class TMDLAdapter(BaseAdapter):
             return
 
         output_path.mkdir(parents=True, exist_ok=True)
-        definition_dir = output_path / "definition"
+        definition_dir = output_child(output_path, "definition")
         definition_dir.mkdir(parents=True, exist_ok=True)
-        tables_dir = definition_dir / "tables"
+        tables_dir = output_child(definition_dir, "tables")
         tables_dir.mkdir(parents=True, exist_ok=True)
 
         project_name = output_path.name
 
-        (definition_dir / "database.tmdl").write_text(_export_database(graph, project_name))
-        (definition_dir / "model.tmdl").write_text(_export_model(graph, project_name))
+        output_child(definition_dir, "database.tmdl").write_text(_export_database(graph, project_name))
+        output_child(definition_dir, "model.tmdl").write_text(_export_model(graph, project_name))
 
         for model in graph.models.values():
             table_file = _export_table_file_path(tables_dir, model)
@@ -176,7 +177,7 @@ class TMDLAdapter(BaseAdapter):
         export_warnings: list[TmdlExportWarning] = []
         relationships_text = _export_relationships(graph, export_warnings)
         if relationships_text:
-            (definition_dir / "relationships.tmdl").write_text(relationships_text)
+            output_child(definition_dir, "relationships.tmdl").write_text(relationships_text)
         graph.export_warnings = export_warnings
 
 
@@ -202,12 +203,12 @@ def _export_table_file_path(tables_dir: Path, model: Model) -> Path:
     if isinstance(source_file, str) and source_file:
         source_path = Path(source_file)
         if source_path.suffix.lower() == ".tmdl" and source_path.parent == Path("tables"):
-            return tables_dir / source_path.name
+            return output_child(tables_dir, source_path.name)
     # When the recorded source file is missing or collapsed to model.tmdl (a known artifact of
     # merging the top-level ``ref table`` declaration with the real table body), fall back to the
     # table name verbatim. Power BI names the file after the table, so "Dynamic Measure" must stay
     # "Dynamic Measure.tmdl" rather than being mangled to "Dynamic_Measure.tmdl".
-    return tables_dir / f"{_table_file_stem(model.name)}.tmdl"
+    return output_child(tables_dir, f"{_table_file_stem(model.name)}.tmdl")
 
 
 def _table_file_stem(name: str) -> str:

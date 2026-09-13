@@ -258,6 +258,8 @@ impl SidemanticMcpServer {
 
     #[cfg(feature = "mcp-adbc")]
     fn execute_sql_with_adbc(&self, sql: &str) -> Result<AdbcExecutionResult, McpError> {
+        sidemantic::sql::require_query_only_sql(sql)
+            .map_err(|message| McpError::invalid_params(message, None))?;
         let Some(driver) = self.adbc_driver.as_ref() else {
             return Err(McpError::invalid_params(
                 "ADBC driver is not configured. Set SIDEMANTIC_MCP_ADBC_DRIVER or pass --driver."
@@ -406,10 +408,14 @@ impl SidemanticMcpServer {
     ) -> Result<CallToolResult, McpError> {
         let original_sql = normalize_sql(&request.query)
             .map_err(|message| McpError::invalid_params(message, None))?;
+        sidemantic::sql::require_query_only_sql(&original_sql)
+            .map_err(|message| McpError::invalid_params(message, None))?;
         let sql = self
             .runtime
             .rewrite(&original_sql)
             .map_err(|e| McpError::invalid_params(format!("failed to rewrite SQL: {e}"), None))?;
+        sidemantic::sql::require_query_only_sql(&sql)
+            .map_err(|message| McpError::invalid_params(message, None))?;
         self.execute_sql_tool_response(sql, Some(original_sql), "run_sql")
     }
 
@@ -1711,4 +1717,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let service = server.serve(stdio()).await?;
     service.waiting().await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod security_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn run_sql_rejects_mutations_before_driver_access() {
+        let server = SidemanticMcpServer::new(
+            SidemanticRuntime::from_graph(Default::default()),
+            ServerConfig::default(),
+        );
+        for query in ["DELETE FROM orders", "CREATE TABLE stolen AS SELECT 1"] {
+            let result = server
+                .run_sql(Parameters(SQLRequest {
+                    query: query.into(),
+                }))
+                .await;
+            let error = result.expect_err("non-query execution must fail");
+            assert!(error.message.contains("query statement"));
+        }
+        let error = server
+            .run_sql(Parameters(SQLRequest {
+                query: "SELECT 1".into(),
+            }))
+            .await
+            .expect_err("test has no configured ADBC driver");
+        assert!(error.message.contains("ADBC"));
+    }
 }

@@ -14,6 +14,7 @@ from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
+from sidemantic.paths import output_child
 from sidemantic.yaml_compat import safe_load as _yaml_safe_load
 
 _BUCKET_MAP = {
@@ -1547,7 +1548,7 @@ class ThoughtSpotAdapter(BaseAdapter):
             output_path.mkdir(parents=True, exist_ok=True)
             for model in resolved_models.values():
                 tml = self._export_model(model)
-                file_path = output_path / f"{model.name}.{tml['__type']}.tml"
+                file_path = output_child(output_path, f"{model.name}.{tml['__type']}.tml")
                 with open(file_path, "w") as f:
                     yaml.safe_dump(tml["data"], f, sort_keys=False)
         else:

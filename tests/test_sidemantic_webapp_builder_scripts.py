@@ -55,6 +55,70 @@ class _Generator:
         return f"select {', '.join([*dimensions, *metrics])}"
 
 
+def test_inspector_omits_connection_and_database_error_details(tmp_path, monkeypatch) -> None:
+    import sidemantic
+
+    module = _load_script_module("inspect_layer.py", "webapp_inspector_secrets")
+    secret = "postgresql://user:password@host/db?token=secret"
+    connections = []
+
+    def layer_factory(**kwargs):
+        connections.append(kwargs["connection"])
+        return SimpleNamespace(dialect="duckdb", graph=SimpleNamespace(models={}, metrics={}))
+
+    monkeypatch.setattr(sidemantic, "SemanticLayer", layer_factory)
+    monkeypatch.setattr(sidemantic, "load_from_directory", lambda *_args: None)
+    payload = module.inspect_layer(
+        SimpleNamespace(connection=secret, db=None, models=tmp_path, execute=False, require_execute=False)
+    )
+    assert connections == [secret]
+    assert "connection" not in payload
+    assert secret not in json.dumps(payload)
+
+    class FailingGenerator:
+        def generate(self, **kwargs):
+            raise ValueError(secret)
+
+    failed = module._try_compile(FailingGenerator(), metrics=[], dimensions=[])
+    assert failed["error"] == "Query compilation failed (ValueError)"
+    assert secret not in json.dumps(failed)
+
+    class FailingAdapter:
+        def execute(self, sql):
+            raise RuntimeError(secret)
+
+    failed = module._try_compile(
+        _Generator(), layer=SimpleNamespace(adapter=FailingAdapter()), execute=True, metrics=[], dimensions=[]
+    )
+    assert failed["execution_error"] == "Query execution failed (RuntimeError)"
+    assert secret not in json.dumps(failed)
+
+
+def test_public_spec_allowlists_selected_data_and_excludes_inspection_metadata() -> None:
+    module = _load_script_module("scaffold_static_app.py", "webapp_scaffold_allowlist")
+    query = _metric_totals_query("orders") | {
+        "error": "private error",
+        "execution_error": "private error",
+        "token": "secret",
+        "sql": "select 'private SQL'",
+    }
+    query["result"]["sample_rows"][0]["unselected_secret"] = "secret"
+    query["result"]["private_metadata"] = "secret"
+    selected = {"model": "orders", "queries": {"metric_totals": query, "unused_query": query}, "table": "private_table"}
+    spec = {
+        "connection": "secret",
+        "models_path": "/private/models",
+        "warnings": ["secret"],
+        "app_candidates": [selected, {"model": "unrelated", "queries": {"metric_totals": query}}],
+        "models": [{"name": "orders", "table": "private_table", "dimensions": []}],
+    }
+    public = module._browser_safe_spec(spec, selected)
+    serialized = json.dumps(public)
+    for private in ("secret", "private", "unrelated", "unused_query", "sql", "connection", "models_path", "warnings"):
+        assert private not in serialized
+    assert public["app_candidates"][0]["queries"]["metric_totals"]["result"]["sample_rows"] == [{"count": 1}]
+
+
 def test_execute_sample_uses_adapter_fetchone_without_fetchmany() -> None:
     module = _load_script_module("inspect_layer.py", "sidemantic_webapp_builder_inspect_layer")
     layer = SimpleNamespace(adapter=_Adapter())
@@ -203,9 +267,12 @@ def test_static_scaffold_preserves_requested_model_candidate(tmp_path: Path) -> 
     assert "removeFilterValue" in app_js
     assert "filterZeroMetricRows" in app_js
     assert 'renderFilterPills(filterPillsEl, state.filters, removeFilter, { emptyLabel: "No filters" })' in app_js
-    assert "renderHighlightedQueryDebug" in app_js
+    assert "renderHighlightedQueryDebug" not in app_js
     assert "connection" not in public_spec
-    assert "connection" not in public_spec["app_candidates"][1]
+    assert len(public_spec["app_candidates"]) == 1
+    assert "connection" not in public_spec["app_candidates"][0]
+    assert "sql" not in public_spec["app_candidates"][0]["queries"]["metric_totals"]
+    assert [model["name"] for model in public_spec["models"]] == ["requested_model"]
 
     report = verify_module.verify(SimpleNamespace(app_dir=output_dir, app_spec=None))
     assert report["selected_model"] == "requested_model"

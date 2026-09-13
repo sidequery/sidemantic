@@ -11,6 +11,7 @@ from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
+from sidemantic.paths import output_child
 from sidemantic.yaml_compat import safe_load as _yaml_safe_load
 
 
@@ -738,13 +739,13 @@ class OmniAdapter(BaseAdapter):
         output_path.mkdir(parents=True, exist_ok=True)
 
         # Create views directory
-        views_dir = output_path / "views"
+        views_dir = output_child(output_path, "views")
         views_dir.mkdir(exist_ok=True)
 
         # Export each model as a view file
         for model in resolved_models.values():
             view = self._export_view(model)
-            file_path = views_dir / f"{model.name}.yaml"
+            file_path = output_child(views_dir, f"{model.name}.yaml")
             with open(file_path, "w") as f:
                 yaml.dump(view, f, default_flow_style=False, sort_keys=False)
 
@@ -977,7 +978,7 @@ class OmniAdapter(BaseAdapter):
                 relationships.append(rel_def)
 
         if relationships:
-            model_file = output_dir / "model.yaml"
+            model_file = output_child(output_dir, "model.yaml")
             model_def = {"relationships": relationships}
             with open(model_file, "w") as f:
                 yaml.dump(model_def, f, default_flow_style=False, sort_keys=False)

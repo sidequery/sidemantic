@@ -10,6 +10,7 @@ from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
+from sidemantic.paths import output_child
 
 GOODDATA_METADATA_KEY = "gooddata"
 
@@ -86,7 +87,7 @@ class GoodDataAdapter(BaseAdapter):
 
         if output_path.is_dir() or not output_path.suffix:
             output_path.mkdir(parents=True, exist_ok=True)
-            file_path = output_path / "ldm.json"
+            file_path = output_child(output_path, "ldm.json")
         else:
             output_path.parent.mkdir(parents=True, exist_ok=True)
             file_path = output_path

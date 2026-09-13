@@ -867,6 +867,8 @@ async fn run_sql(
     let response_format = resolve_response_format(&format_params, &headers)?;
     let original_sql = normalize_sql(&request.query)
         .map_err(|message| json_error(StatusCode::BAD_REQUEST, message))?;
+    sidemantic::sql::require_query_only_sql(&original_sql)
+        .map_err(|message| json_error(StatusCode::BAD_REQUEST, message))?;
     let sql = state.runtime.rewrite(&original_sql).map_err(|e| {
         json_error(
             StatusCode::BAD_REQUEST,
@@ -885,8 +887,6 @@ async fn run_raw_sql(
     let response_format = resolve_response_format(&format_params, &headers)?;
     let sql = normalize_sql(&request.query)
         .map_err(|message| json_error(StatusCode::BAD_REQUEST, message))?;
-    require_select_only_sql(&sql)
-        .map_err(|message| json_error(StatusCode::BAD_REQUEST, message))?;
     execute_sql_response(&state, sql, None, "/raw", response_format)
 }
 
@@ -897,6 +897,8 @@ fn execute_sql_response(
     route_name: &str,
     response_format: ResponseFormat,
 ) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
+    sidemantic::sql::require_query_only_sql(&sql)
+        .map_err(|message| json_error(StatusCode::BAD_REQUEST, message))?;
     match response_format {
         ResponseFormat::Json => {
             execute_sql_json(state, sql, original_sql, route_name).map(IntoResponse::into_response)
@@ -1103,55 +1105,6 @@ fn has_unquoted_semicolon(sql: &str) -> bool {
         prev = ch;
     }
     false
-}
-
-fn require_select_only_sql(sql: &str) -> Result<(), String> {
-    let scrubbed = scrub_quoted_sql(sql);
-    let lower = scrubbed.to_ascii_lowercase();
-    let first_word = lower
-        .split_whitespace()
-        .next()
-        .ok_or_else(|| "SQL query cannot be empty".to_string())?;
-    if first_word != "select" && first_word != "with" {
-        return Err("Raw SQL execution only supports SELECT statements".to_string());
-    }
-    for banned in [
-        "insert", "update", "delete", "drop", "create", "alter", "truncate", "merge", "copy",
-        "call", "grant", "revoke",
-    ] {
-        if lower
-            .split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
-            .any(|token| token == banned)
-        {
-            return Err(format!(
-                "Raw SQL execution only supports SELECT statements; found {banned}"
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn scrub_quoted_sql(sql: &str) -> String {
-    let mut scrubbed = String::with_capacity(sql.len());
-    let mut in_single = false;
-    let mut in_double = false;
-    let mut prev = '\0';
-    for ch in sql.chars() {
-        match ch {
-            '\'' if !in_double && prev != '\\' => {
-                in_single = !in_single;
-                scrubbed.push(' ');
-            }
-            '"' if !in_single && prev != '\\' => {
-                in_double = !in_double;
-                scrubbed.push(' ');
-            }
-            _ if in_single || in_double => scrubbed.push(' '),
-            _ => scrubbed.push(ch),
-        }
-        prev = ch;
-    }
-    scrubbed
 }
 
 fn parse_config() -> Result<ServerConfig, String> {
@@ -1566,4 +1519,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = tokio::net::TcpListener::bind(&config.bind).await?;
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod security_tests {
+    use super::*;
+
+    #[test]
+    fn execution_formats_reject_non_query_sql_before_driver_access() {
+        let state = AppState {
+            runtime: Arc::new(SidemanticRuntime::from_graph(Default::default())),
+            adbc_driver: None,
+            adbc_uri: None,
+            adbc_entrypoint: None,
+            database_options: vec![],
+            connection_options: vec![],
+        };
+        for format in [
+            ResponseFormat::Json,
+            ResponseFormat::Arrow(ArrowTransport::Buffered),
+            ResponseFormat::Arrow(ArrowTransport::Chunked),
+        ] {
+            for sql in ["DELETE FROM orders", "SELECT 1; DROP TABLE orders"] {
+                let error = execute_sql_response(&state, sql.into(), None, "/sql", format)
+                    .expect_err("non-query execution must fail");
+                assert_eq!(error.0, StatusCode::BAD_REQUEST);
+                assert!(error.1.error.contains("query statement"));
+            }
+            let error = execute_sql_response(&state, "SELECT 1".into(), None, "/sql", format)
+                .expect_err("test has no configured ADBC driver");
+            assert!(error.1.error.contains("ADBC"));
+        }
+    }
 }

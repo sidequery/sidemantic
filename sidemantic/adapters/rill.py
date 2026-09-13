@@ -14,6 +14,7 @@ from sidemantic.core.dimension import Dimension
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.semantic_graph import SemanticGraph
+from sidemantic.paths import output_child
 from sidemantic.yaml_compat import safe_load as _yaml_safe_load
 
 
@@ -765,9 +766,9 @@ class RillAdapter:
             self._export_project_config(output_dir, project_name)
 
             # Create subdirectories
-            sources_dir = output_dir / "sources"
-            models_dir = output_dir / "models"
-            metrics_views_dir = output_dir / "metrics_views"
+            sources_dir = output_child(output_dir, "sources")
+            models_dir = output_child(output_dir, "models")
+            metrics_views_dir = output_child(output_dir, "metrics_views")
 
             sources_dir.mkdir(exist_ok=True)
             models_dir.mkdir(exist_ok=True)
@@ -800,7 +801,7 @@ class RillAdapter:
         if project_name:
             config["name"] = project_name
 
-        output_file = output_dir / "rill.yaml"
+        output_file = output_child(output_dir, "rill.yaml")
         with open(output_file, "w") as f:
             yaml.dump(config, f, sort_keys=False, default_flow_style=False)
 
@@ -835,7 +836,7 @@ class RillAdapter:
             source_def["uri"] = uri
 
         source_name = f"{model.name}_raw"
-        output_file = sources_dir / f"{source_name}.yaml"
+        output_file = output_child(sources_dir, f"{source_name}.yaml")
         with open(output_file, "w") as f:
             yaml.dump(source_def, f, sort_keys=False, default_flow_style=False)
 
@@ -869,7 +870,7 @@ class RillAdapter:
 
             sql = f"SELECT * FROM {source_name}\n"
 
-        output_file = models_dir / f"{model.name}.sql"
+        output_file = output_child(models_dir, f"{model.name}.sql")
         with open(output_file, "w") as f:
             f.write(sql)
 
@@ -1003,7 +1004,7 @@ class RillAdapter:
             metrics_view["measures"] = measures
 
         # Write to file
-        output_file = output_dir / f"{model.name}.yaml"
+        output_file = output_child(output_dir, f"{model.name}.yaml")
         with open(output_file, "w") as f:
             yaml.dump(metrics_view, f, sort_keys=False, default_flow_style=False)
 

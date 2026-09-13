@@ -27,6 +27,11 @@ export function buildServerCommand(command: string): ServerCommand {
   };
 }
 
+export function getUserServerCommand(setting: { globalValue?: string } | undefined): string {
+  // Workspace settings are project input and must never select an executable.
+  return setting?.globalValue ?? 'sidemantic';
+}
+
 export function buildDocumentSelector(enablePython: boolean): DocumentSelectorEntry[] {
   const selectors: DocumentSelectorEntry[] = [
     {

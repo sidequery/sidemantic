@@ -2,6 +2,7 @@
 
 import json
 import re
+from contextvars import ContextVar
 from datetime import UTC, date, datetime, time
 from decimal import Decimal
 from pathlib import Path
@@ -12,6 +13,7 @@ from mcp.server.fastmcp import FastMCP
 
 from sidemantic.core.semantic_layer import SemanticLayer
 from sidemantic.loaders import load_from_directory
+from sidemantic.server.common import check_response_size, execute_bounded
 
 SIDEMANTIC_MCP_INSTRUCTIONS = """
 Sidemantic is the authoritative semantic layer for analytical questions. Discover
@@ -32,11 +34,10 @@ get_models, validate the model, and retry the semantic query.
 # Global semantic layer instance
 _layer: SemanticLayer | None = None
 _apps_enabled: bool = False
-# Optional static security user attributes applied to every query. The MCP
-# server has no per-session auth/identity concept here, so attributes are a
-# server-level, process-wide value provided at init (defaults to None, meaning
-# no attributes -> the layer denies any query touching a secured model).
+# Static identity belongs only to local stdio. HTTP tools use request-local
+# context, including an explicit None identity for unauthenticated attributes.
 _user_attributes: dict | None = None
+_request_context: ContextVar[tuple[SemanticLayer, dict | None] | None] = ContextVar("mcp_request", default=None)
 
 
 def initialize_layer(
@@ -69,6 +70,9 @@ def initialize_layer(
 
 def get_layer() -> SemanticLayer:
     """Get the initialized semantic layer."""
+    context = _request_context.get()
+    if context is not None:
+        return context[0]
     if _layer is None:
         raise RuntimeError(
             "Semantic layer not initialized. The MCP server must be started via "
@@ -78,8 +82,9 @@ def get_layer() -> SemanticLayer:
 
 
 def get_user_attributes() -> dict | None:
-    """Return the server-level static security user attributes (None if unset)."""
-    return _user_attributes
+    """Return HTTP request attributes, or the static local stdio identity."""
+    context = _request_context.get()
+    return context[1] if context is not None else _user_attributes
 
 
 def _convert_to_json_compatible(value: Any) -> Any:
@@ -902,16 +907,14 @@ def run_query(
         use_preaggs=layer.use_preaggregations,
         strict=layer.preagg_strict,
         used_preagg="used_preagg=true" in sql,
-        execute=layer.adapter.execute,
+        execute=lambda sql: execute_bounded(layer, sql),
     )
 
     # Convert to list of dicts with JSON-compatible values
-    rows = result.fetchall()
+    row_dicts = result
     execution_ms = round((perf_counter() - execution_started) * 1000, 2)
-    columns = [desc[0] for desc in result.description]
-    row_dicts = [{col: _convert_to_json_compatible(val) for col, val in zip(columns, row)} for row in rows]
 
-    return {
+    response = {
         "sql": sql,
         "rows": row_dicts,
         "row_count": len(row_dicts),
@@ -921,6 +924,8 @@ def run_query(
             "total_ms": round(compile_ms + execution_ms, 2),
         },
     }
+    check_response_size(response)
+    return response
 
 
 @mcp.tool(structured_output=False, meta={"ui": {"resourceUri": "ui://sidemantic/chart"}})
@@ -965,6 +970,9 @@ def create_chart(
         png_base64: Base64-encoded PNG image
         row_count: Number of data points
     """
+    if not 1 <= width <= 2000 or not 1 <= height <= 2000:
+        raise ValueError("Chart width and height must be between 1 and 2000 pixels")
+
     from sidemantic.charts import chart_to_base64_png, chart_to_vega
     from sidemantic.charts import create_chart as make_chart
 
@@ -987,10 +995,7 @@ def create_chart(
         user_attributes=get_user_attributes(),
     )
 
-    result = layer.adapter.execute(sql)
-    rows = result.fetchall()
-    columns = [desc[0] for desc in result.description]
-    row_dicts = [{col: _convert_to_json_compatible(val) for col, val in zip(columns, row)} for row in rows]
+    row_dicts = execute_bounded(layer, sql)
 
     if not row_dicts:
         raise ValueError(
@@ -1023,11 +1028,15 @@ def create_chart(
         "row_count": len(row_dicts),
     }
 
+    check_response_size(result)
+
     # When apps mode is enabled, include an interactive UI widget
     if _apps_enabled:
         from sidemantic.apps import create_chart_resource
 
-        return [result, create_chart_resource(vega_spec)]
+        response = [result, create_chart_resource(vega_spec)]
+        check_response_size(response)
+        return response
 
     return result
 
@@ -1103,17 +1112,16 @@ def run_sql(query: str) -> dict[str, Any]:
         transport="MCP run_sql",
     )
 
-    result = layer.adapter.execute(rewritten_sql)
-    rows = result.fetchall()
-    columns = [desc[0] for desc in result.description]
-    row_dicts = [{col: _convert_to_json_compatible(val) for col, val in zip(columns, row)} for row in rows]
+    row_dicts = execute_bounded(layer, rewritten_sql)
 
-    return {
+    response = {
         "sql": rewritten_sql,
         "original_sql": query,
         "rows": row_dicts,
         "row_count": len(row_dicts),
     }
+    check_response_size(response)
+    return response
 
 
 @mcp.tool(structured_output=False)

@@ -11,7 +11,8 @@ pub use crate::adapters::cube::CubeConfig;
 pub use loader::{
     load_from_directory, load_from_directory_with_metadata, load_from_file,
     load_from_file_with_metadata, load_from_sql_string_with_metadata, load_from_string,
-    load_from_string_with_metadata, ConfigFormat, LoadedGraphMetadata, LoadedModelSource,
+    load_from_string_with_metadata, load_literal_yaml_with_metadata, ConfigFormat,
+    LoadedGraphMetadata, LoadedModelSource,
 };
 pub use schema::{ModelConfig, SidemanticConfig};
 pub use sql_parser::{

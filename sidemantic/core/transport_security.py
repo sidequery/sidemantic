@@ -98,6 +98,31 @@ def _has_unsafe_subquery(sql: str, dialect: str) -> bool:
     return False
 
 
+def _validate_query_statement(sql: str, dialect: str, transport: str) -> None:
+    """Require one supported read query before applying semantic source checks.
+
+    Backend statements such as TABLE, SHOW and PRAGMA need not contain Table
+    nodes in SQLGlot. An empty source list therefore does not prove they are
+    source-free. Only query forms handled by the semantic planner qualify.
+    """
+    import sqlglot
+    from sqlglot import exp
+    from sqlglot.errors import SqlglotError
+
+    from sidemantic.core.semantic_layer import SecurityError
+
+    try:
+        statements = [statement for statement in sqlglot.parse(sql, dialect=dialect) if statement is not None]
+    except SqlglotError as exc:
+        raise SecurityError(
+            f"{transport} requires a supported SELECT query while security controls are active."
+        ) from exc
+    if len(statements) != 1 or not isinstance(statements[0], (exp.Select, exp.SetOperation)):
+        raise SecurityError(f"{transport} requires a single SELECT query while security controls are active.")
+    if any(isinstance(node, (exp.DML, exp.DDL, exp.Into, exp.Command)) for node in statements[0].walk()):
+        raise SecurityError(f"{transport} refused a non-read query while security controls are active.")
+
+
 def rewrite_transport_sql(
     layer: Any,
     query: str,
@@ -118,6 +143,7 @@ def rewrite_transport_sql(
     from sidemantic.sql.query_rewriter import QueryRewriter
 
     if controls_are_active(layer):
+        _validate_query_statement(query, layer.dialect, transport)
         unrecognized = _unrecognized_sources(query, layer)
         if unrecognized:
             sources = ", ".join(unrecognized)

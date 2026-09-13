@@ -8,6 +8,7 @@ import sqlglot
 from sqlglot import exp
 
 from sidemantic.core.semantic_layer import SemanticLayer
+from sidemantic.paths import output_child
 
 # Single source of truth: maps a sqlglot AggFunc class name (lowercased) to the
 # sidemantic agg name. Used by every migration path (base, derived, window) so the
@@ -1815,7 +1816,7 @@ class Migrator:
 
         for model_name, model_def in models.items():
             native_model_def = self._normalize_model_definition(model_def, fallback_name=model_name)
-            file_path = output_path / f"{model_name}.yml"
+            file_path = output_child(output_path, f"{model_name}.yml")
             with open(file_path, "w") as f:
                 yaml.dump({"models": [native_model_def]}, f, default_flow_style=False, sort_keys=False)
 
@@ -1844,7 +1845,7 @@ class Migrator:
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
 
-        file_path = output_path / filename
+        file_path = output_child(output_path, filename)
         with open(file_path, "w") as f:
             # Include an explicit models key so auto-format detection in
             # load_from_directory selects the native Sidemantic adapter.
@@ -2010,7 +2011,7 @@ class Migrator:
         output_path.mkdir(parents=True, exist_ok=True)
 
         for query_name, sql in queries.items():
-            file_path = output_path / f"{query_name}.sql"
+            file_path = output_child(output_path, f"{query_name}.sql")
             with open(file_path, "w") as f:
                 f.write(sql)
                 f.write("\n")

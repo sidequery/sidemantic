@@ -3,7 +3,6 @@ import {
   normalizeFilterValue,
   renderDataPreview,
   renderFilterPills,
-  renderHighlightedQueryDebug,
   renderLeaderboard,
   renderMetricCards,
   removeFilterValue,
@@ -18,7 +17,6 @@ const leaderboardEl = document.querySelector('[data-testid="leaderboard-rows"]')
 const leaderboardTitleEl = document.querySelector('[data-testid="leaderboard-title"]');
 const leaderboardSubtitleEl = document.querySelector('[data-testid="leaderboard-subtitle"]');
 const previewEl = document.querySelector('[data-testid="data-preview"]');
-const debugEl = document.querySelector('[data-testid="query-debug"]');
 const shellEl = document.querySelector('[data-testid="dashboard-shell"]');
 
 const state = {
@@ -154,11 +152,6 @@ function render() {
     onSelect: setFilter,
   });
   renderDataPreview(previewEl, filterPreviewResult(previewQuery), { pageSize: 10 });
-  renderHighlightedQueryDebug(debugEl, {
-    metric_totals: queries.metric_totals,
-    dimension_leaderboard: queries.dimension_leaderboard,
-    preview_rows: queries.preview_rows,
-  });
   statusEl.textContent = `${state.candidate.model} ready`;
 }
 

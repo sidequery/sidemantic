@@ -309,6 +309,9 @@ Read the API bearer token from a file, or \- for stdin
 \fB\-\-cors\-origin TEXT\fR
 Allowed CORS origin (repeatable)
 .TP
+\fB\-\-trust\-user\-header\fR
+Trust identity headers from an authenticated, header\-sanitizing proxy
+.TP
 \fB\-\-ui, \-\-no\-ui\fR
 Serve the embedded web UI at the root path
 .TP
@@ -609,8 +612,26 @@ Use HTTP transport instead of stdio
 \fB\-\-port, \-p INTEGER\fR
 Port for HTTP server
 .TP
+\fB\-\-max\-result\-rows INTEGER RANGE\fR
+
+.TP
+\fB\-\-max\-response\-bytes INTEGER RANGE\fR
+
+.TP
+\fB\-\-query\-timeout FLOAT RANGE\fR
+
+.TP
+\fB\-\-max\-concurrent\-queries INTEGER RANGE\fR
+
+.TP
+\fB\-\-auth\-token\-file PATH\fR
+Bearer token file required for HTTP MCP
+.TP
+\fB\-\-trust\-user\-header\fR
+Trust identity headers from an authenticated, header\-sanitizing proxy
+.TP
 \fB\-\-user\-attrs\-file PATH\fR
-Path to a JSON user\-attributes object applied to every MCP query
+Path to a JSON user\-attributes object applied to every stdio MCP query
 .TP
 \fB\-\-enforce\-visibility\fR
 Hide and reject fields declared public: false
@@ -692,6 +713,21 @@ Result cache size in MB (0 disables; default 0)
 .TP
 \fB\-\-result\-cache\-ttl FLOAT\fR
 Result cache entry TTL in seconds (default 60)
+.TP
+\fB\-\-trust\-user\-header\fR
+Trust identity headers from an authenticated, header\-sanitizing proxy
+.TP
+\fB\-\-max\-result\-rows INTEGER RANGE\fR
+
+.TP
+\fB\-\-max\-response\-bytes INTEGER RANGE\fR
+
+.TP
+\fB\-\-query\-timeout FLOAT RANGE\fR
+
+.TP
+\fB\-\-max\-concurrent\-queries INTEGER RANGE\fR
+
 .TP
 \fB\-\-require\-user\-attrs\fR
 Require the user\-attributes header on data endpoints (reject with 400 if missing)

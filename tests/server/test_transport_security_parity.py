@@ -125,7 +125,7 @@ def _headers(attrs: dict) -> dict[str, str]:
 
 def test_allowed_identity_gets_identical_rows_across_http_and_mcp(tmp_path):
     attrs = {"role": "analyst", "tenant_id": 2}
-    client = TestClient(create_app(_layer(), auth_token="secret"))
+    client = TestClient(create_app(_layer(), auth_token="secret", trust_user_header=True))
 
     structured = client.post(
         "/query",
@@ -157,7 +157,7 @@ def test_raw_and_unproven_sql_fail_closed_across_http_and_mcp(tmp_path):
     attrs = {"role": "analyst", "tenant_id": 1}
     http_layer = _layer()
     http_layer.adapter.execute("create table audit_log (message varchar)")
-    client = TestClient(create_app(http_layer, auth_token="secret"))
+    client = TestClient(create_app(http_layer, auth_token="secret", trust_user_header=True))
 
     raw = client.post("/raw", json={"query": "SELECT * FROM orders"}, headers=_headers(attrs))
     passthrough = client.post(
@@ -188,7 +188,7 @@ def test_raw_and_unproven_sql_fail_closed_across_http_and_mcp(tmp_path):
 )
 def test_unproven_nested_sql_fails_closed_across_http_and_mcp(tmp_path, query, message):
     attrs = {"role": "analyst", "tenant_id": 1}
-    client = TestClient(create_app(_layer(enforce_visibility=True), auth_token="secret"))
+    client = TestClient(create_app(_layer(enforce_visibility=True), auth_token="secret", trust_user_header=True))
 
     response = client.post("/sql", json={"query": query}, headers=_headers(attrs))
     assert response.status_code == 403
@@ -211,7 +211,7 @@ def test_rust_rewriter_is_disabled_for_secured_sql_transports(tmp_path, monkeypa
 
     monkeypatch.setattr(QueryRewriter, "_rewrite_with_rust", insecure_rust_rewrite)
 
-    client = TestClient(create_app(_layer(), auth_token="secret"))
+    client = TestClient(create_app(_layer(), auth_token="secret", trust_user_header=True))
     response = client.post("/sql", json={"query": query}, headers=_headers(attrs))
     assert response.status_code == 200
     assert response.json()["rows"] == [{"tenant_id": 2, "total_amount": 12.0}]
@@ -249,7 +249,7 @@ def test_yardstick_sql_fails_closed_across_http_and_mcp(tmp_path):
         "SELECT AGGREGATE(total_amount) FROM orders",
         "SELECT total_amount FROM orders",
     ]
-    client = TestClient(create_app(_layer(yardstick=True), auth_token="secret"))
+    client = TestClient(create_app(_layer(yardstick=True), auth_token="secret", trust_user_header=True))
 
     for query in queries:
         response = client.post("/sql", json={"query": query}, headers=_headers(attrs))
@@ -264,7 +264,7 @@ def test_yardstick_sql_fails_closed_across_http_and_mcp(tmp_path):
 
 def test_hidden_column_is_rejected_and_omitted_across_http_and_mcp(tmp_path):
     attrs = {"role": "analyst", "tenant_id": 1}
-    client = TestClient(create_app(_layer(enforce_visibility=True), auth_token="secret"))
+    client = TestClient(create_app(_layer(enforce_visibility=True), auth_token="secret", trust_user_header=True))
 
     for path, payload in [
         ("/query", {"dimensions": ["orders.secret_note"], "metrics": ["orders.total_amount"]}),
@@ -290,3 +290,48 @@ def test_hidden_column_is_rejected_and_omitted_across_http_and_mcp(tmp_path):
         mcp_run_sql("SELECT secret_note, total_amount FROM orders")
     with pytest.raises(SecurityError, match="not public"):
         mcp_run_sql("SELECT MIN(secret_note) FROM orders")
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "table orders",
+        "show tables",
+        "pragma show_tables",
+        "table private_orders",
+        "pragma table_info('private_orders')",
+        "show all tables",
+        "pragma database_list",
+        "select 1; table orders",
+        "delete from orders",
+        "with removed as (delete from orders returning *) select * from removed",
+        "select 1 into orders",
+    ],
+)
+def test_nonquery_forms_fail_closed_across_transports(tmp_path, query):
+    from sidemantic.core.transport_security import rewrite_transport_sql
+
+    attrs = {"role": "analyst", "tenant_id": 1}
+    layer = _layer()
+    with pytest.raises(SecurityError):
+        rewrite_transport_sql(layer, query, user_attributes=attrs, transport="test", strict=False)
+    with pytest.raises(SecurityError):
+        layer.sql(query, user_attributes=attrs)
+
+    client = TestClient(create_app(layer, auth_token="secret", trust_user_header=True))
+    response = client.post("/sql", json={"query": query}, headers=_headers(attrs))
+    assert response.status_code == (400 if ";" in query else 403)
+
+    _mcp_layer(tmp_path / "mcp", attrs)
+    with pytest.raises(SecurityError):
+        mcp_run_sql(query)
+    assert layer.adapter.execute("select count(*) from orders").fetchone()[0] == 4
+
+
+@pytest.mark.parametrize("query", ["select 1 as ok", "select 1 as ok;", "select 1 as ok union all select 2 as ok"])
+def test_projection_queries_remain_available_with_controls(query):
+    from sidemantic.core.transport_security import rewrite_transport_sql
+
+    layer = _layer()
+    rewritten = rewrite_transport_sql(layer, query, user_attributes=None, transport="test", strict=False)
+    assert layer.adapter.execute(rewritten).fetchall()[0] == (1,)

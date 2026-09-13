@@ -10,6 +10,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from sidemantic.paths import is_within
+
 DATA_FILE_SUFFIXES = {".csv", ".tsv", ".parquet", ".json", ".jsonl", ".ndjson"}
 
 _READERS = {
@@ -66,12 +68,16 @@ def build_file_views(paths: list[Path]) -> list[str]:
     return statements
 
 
-def discover_data_files(directory: Path) -> list[Path]:
+def discover_data_files(directory: Path, *, trusted_root: Path | None = None) -> list[Path]:
     """Return the raw data files directly inside a directory, sorted by name."""
 
-    if not directory.is_dir():
+    if not directory.is_dir() or (trusted_root is not None and not is_within(directory, trusted_root)):
         return []
     return sorted(
-        (path for path in directory.iterdir() if path.is_file() and is_data_file(path)),
+        (
+            path
+            for path in directory.iterdir()
+            if path.is_file() and is_data_file(path) and (trusted_root is None or is_within(path, trusted_root))
+        ),
         key=lambda path: path.name,
     )

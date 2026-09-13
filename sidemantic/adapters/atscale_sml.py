@@ -17,6 +17,7 @@ from sidemantic.core.model import Model
 from sidemantic.core.pre_aggregation import PreAggregation
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
+from sidemantic.paths import output_child
 from sidemantic.yaml_compat import safe_load as _yaml_safe_load
 
 _TIME_UNIT_MAP = {
@@ -299,10 +300,10 @@ class AtScaleSMLAdapter(BaseAdapter):
 
         resolved_models = resolve_model_inheritance(graph.models)
 
-        datasets_dir = output_path / "datasets"
-        dimensions_dir = output_path / "dimensions"
-        metrics_dir = output_path / "metrics"
-        models_dir = output_path / "models"
+        datasets_dir = output_child(output_path, "datasets")
+        dimensions_dir = output_child(output_path, "dimensions")
+        metrics_dir = output_child(output_path, "metrics")
+        models_dir = output_child(output_path, "models")
 
         datasets_dir.mkdir(exist_ok=True)
         dimensions_dir.mkdir(exist_ok=True)
@@ -313,20 +314,20 @@ class AtScaleSMLAdapter(BaseAdapter):
 
         for model in resolved_models.values():
             dataset_def = self._export_dataset(model)
-            with open(datasets_dir / f"{model.name}.yml", "w") as f:
+            with open(output_child(datasets_dir, f"{model.name}.yml"), "w") as f:
                 yaml.dump(dataset_def, f, sort_keys=False, default_flow_style=False)
 
             dimension_def = self._export_dimension(model)
-            with open(dimensions_dir / f"{model.name}.yml", "w") as f:
+            with open(output_child(dimensions_dir, f"{model.name}.yml"), "w") as f:
                 yaml.dump(dimension_def, f, sort_keys=False, default_flow_style=False)
 
             model_def = self._export_model(model, resolved_models)
-            with open(models_dir / f"{model.name}.yml", "w") as f:
+            with open(output_child(models_dir, f"{model.name}.yml"), "w") as f:
                 yaml.dump(model_def, f, sort_keys=False, default_flow_style=False)
 
             for metric in model.metrics:
                 metric_def = self._export_metric(metric, model)
-                with open(metrics_dir / f"{metric.name}.yml", "w") as f:
+                with open(output_child(metrics_dir, f"{metric.name}.yml"), "w") as f:
                     yaml.dump(metric_def, f, sort_keys=False, default_flow_style=False)
 
     def _collect_yaml_files(self, source_path: Path) -> list[Path]:
@@ -1200,7 +1201,7 @@ class AtScaleSMLAdapter(BaseAdapter):
                     metric.drill_fields = drill_fields
 
     def _write_catalog(self, output_path: Path) -> None:
-        catalog_path = output_path / "catalog.yml"
+        catalog_path = output_child(output_path, "catalog.yml")
         if catalog_path.exists():
             return
 

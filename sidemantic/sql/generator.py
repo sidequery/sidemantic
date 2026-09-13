@@ -2,6 +2,7 @@
 
 import logging
 import threading
+from collections.abc import Callable
 from functools import lru_cache
 
 import sqlglot
@@ -13,7 +14,13 @@ from sidemantic.core.preagg_matcher import PreAggregationMatcher
 from sidemantic.core.semantic_graph import SemanticGraph, _relationship_local_key_columns
 from sidemantic.core.symmetric_aggregate import build_symmetric_aggregate_sql
 from sidemantic.sql.aggregation_detection import sql_has_aggregate
-from sidemantic.sql.fragment import _column_is_bound_in_select, parse_sql_fragment, rewrite_sql_column_spans
+from sidemantic.sql.fragment import (
+    _column_is_bound_in_select,
+    parse_query_fragment,
+    parse_sql_fragment,
+    replace_outside_sql_protected,
+    rewrite_sql_column_spans,
+)
 from sidemantic.sql.parsing import parse_fragment as _parse_fragment
 from sidemantic.validation import QueryValidationError
 
@@ -999,6 +1006,28 @@ class SQLGenerator:
             filters_by_model[model_name] = qualified
         return filters_by_model
 
+    def _specialized_order_clause(self, order_by: list[str] | None, output_names: list[str]) -> str:
+        """Order specialized results by their exposed columns, never raw SQL."""
+        fields = []
+        for field in order_by or []:
+            try:
+                order = parse_query_fragment(field, self.dialect, order_by=True)
+            except ValueError:
+                parts = field.rsplit(" ", 1)
+                direction = parts[1].upper() if len(parts) == 2 and parts[1].upper() in {"ASC", "DESC"} else ""
+                name = (parts[0] if direction else field).split(".", 1)[-1]
+                if name not in output_names:
+                    raise
+                quoted_field = exp.column(name, quoted=True).sql(dialect=self.dialect)
+                order = parse_query_fragment(f"{quoted_field} {direction}", self.dialect, order_by=True)
+            ordered = order.expressions[0]
+            column = ordered.this
+            if not isinstance(column, exp.Column) or column.name not in output_names:
+                raise ValueError("Specialized order_by must reference a selected output field")
+            ordered.set("this", exp.column(column.name, quoted=True))
+            fields.append(ordered.sql(dialect=self.dialect))
+        return "\nORDER BY " + ", ".join(fields) if fields else ""
+
     def generate(
         self,
         metrics: list[str] | None = None,
@@ -1015,6 +1044,8 @@ class SQLGenerator:
         skip_default_time_dimensions: bool = False,
         with_totals: bool = False,
         user_attributes: dict | None = None,
+        _query_ctes: frozenset[str] = frozenset(),
+        _resolved_filters: tuple[str, ...] = (),
     ) -> str:
         """Generate SQL query from semantic layer query.
 
@@ -1049,6 +1080,13 @@ class SQLGenerator:
         segments = segments or []
         parameters = parameters or {}
         aliases = aliases or {}
+
+        for field in order_by or []:
+            parts = field.rsplit(" ", 1)
+            field_ref = parts[0] if len(parts) == 2 and parts[1].upper() in {"ASC", "DESC"} else field
+            # Public semantic field references may contain spaces without SQL quoting.
+            if field_ref not in [*metrics, *dimensions, *aliases.values()]:
+                parse_query_fragment(field, self.dialect, order_by=True)
 
         # Auto-include default_time_dimension from metrics before visibility
         # validation and cache lookup. An implicit dimension is still part of
@@ -1095,6 +1133,8 @@ class SQLGenerator:
             with_totals,
             user_attributes,
         )
+        # Rewriter-supplied CTE scope must never authorize a later structured call.
+        cache_key = (*cache_key, tuple(sorted(_query_ctes)), _resolved_filters)
         cached = self._generate_cache.get(cache_key)
         if cached is not None:
             return cached
@@ -1102,15 +1142,24 @@ class SQLGenerator:
         if with_totals and ungrouped:
             raise ValueError("with_totals cannot be combined with ungrouped")
 
-        # Resolve segments to SQL filters
-        segment_filters = self._resolve_segments(segments)
-        filters = filters + segment_filters
-
         # Interpolate parameters into filters if provided
         from sidemantic.core.parameter import ParameterSet
 
-        param_set = ParameterSet(self.graph.parameters, parameters)
+        param_set = ParameterSet(self.graph.parameters, parameters, dialect=self.dialect)
         filters = [param_set.interpolate(f) for f in filters]
+        validated_filters = []
+        for f in filters:
+            source = replace_outside_sql_protected(f, "{model}", "__sidemantic_model_placeholder")
+            rendered = parse_query_fragment(source, self.dialect, query_ctes=_query_ctes).sql(dialect=self.dialect)
+            validated_filters.append(
+                replace_outside_sql_protected(rendered, "__sidemantic_model_placeholder", "{model}")
+            )
+        # Recursive planners receive previously validated caller predicates and
+        # trusted model predicates separately, preserving their original boundary.
+        filters = validated_filters + list(_resolved_filters)
+
+        # Segments are trusted model definitions and may contain physical subqueries.
+        filters += self._resolve_segments(segments, interpolate=param_set.interpolate)
 
         # Process relative date expressions in filters
         from sidemantic.core.relative_date import RelativeDateRange
@@ -1239,6 +1288,7 @@ class SQLGenerator:
                     offset,
                     aliases,
                     use_preaggregations=use_preaggregations,
+                    user_attributes=user_attributes,
                 ),
             )
 
@@ -1296,6 +1346,7 @@ class SQLGenerator:
                     offset=offset,
                     aliases=aliases,
                     use_preaggregations=use_preaggregations,
+                    user_attributes=user_attributes,
                 ),
             )
 
@@ -1462,7 +1513,7 @@ class SQLGenerator:
                 parsed.append((dim, None))
         return parsed
 
-    def _resolve_segments(self, segments: list[str]) -> list[str]:
+    def _resolve_segments(self, segments: list[str], interpolate: Callable[[str], str] | None = None) -> list[str]:
         """Resolve segment references to SQL filter expressions.
 
         Args:
@@ -1519,6 +1570,8 @@ class SQLGenerator:
             # Get SQL expression with model alias replaced
             # Use model_cte as the alias (consistent with CTE naming)
             filter_sql = segment.get_sql(f"{model_name}_cte")
+            if interpolate is not None:
+                filter_sql = interpolate(filter_sql)
             filter_sql = qualify_unaliased_columns(filter_sql, f"{model_name}_cte")
             filters.append(filter_sql)
 
@@ -2734,6 +2787,7 @@ class SQLGenerator:
         offset: int | None = None,
         aliases: dict[str, str] | None = None,
         use_preaggregations: bool = False,
+        user_attributes: dict | None = None,
     ) -> str:
         """Generate SQL using pre-aggregation to avoid fan-out.
 
@@ -2775,13 +2829,14 @@ class SQLGenerator:
             return self.generate(
                 metrics=metrics,
                 dimensions=dimensions,
-                filters=filters,
+                _resolved_filters=tuple(filters or []),
                 segments=None,
                 order_by=order_by,
                 limit=limit,
                 offset=offset,
                 aliases=aliases,
                 use_preaggregations=use_preaggregations,
+                user_attributes=user_attributes,
             )
 
         # Resolve segments to SQL filters
@@ -2824,13 +2879,14 @@ class SQLGenerator:
             sub_query = self.generate(
                 metrics=model_metrics,
                 dimensions=dimensions,
-                filters=model_filters,
+                _resolved_filters=tuple(model_filters),
                 segments=None,  # Already resolved
                 order_by=None,
                 limit=None,
                 offset=None,
                 aliases=aliases,
                 use_preaggregations=use_preaggregations,
+                user_attributes=user_attributes,
             )
 
             # Remove the instrumentation comment from sub-query
@@ -3103,7 +3159,7 @@ class SQLGenerator:
             if parsed_filter is None:
                 parsed_filter = filter_expr
 
-            query = query.where(parsed_filter)
+            query = query.where(_parse_fragment(parsed_filter, self.dialect))
 
         return query
 
@@ -3443,7 +3499,9 @@ class SQLGenerator:
             else:
                 outer_query = outer_query.group_by(*range(1, len(parsed_dims) + 1))
         for filter_expr in having_filters:
-            outer_query = outer_query.having(self._rewrite_having_filter(filter_expr, having_metric_expressions))
+            outer_query = outer_query.having(
+                _parse_fragment(self._rewrite_having_filter(filter_expr, having_metric_expressions), self.dialect)
+            )
 
         if order_by:
             order_exprs = []
@@ -4065,7 +4123,7 @@ class SQLGenerator:
 
                     parsed_having = re.sub(pattern, replace_metric_ref, parsed_having)
 
-                query = query.having(parsed_having)
+                query = query.having(_parse_fragment(parsed_having, self.dialect))
 
         # Add ORDER BY
         if order_by:
@@ -5226,13 +5284,12 @@ FROM (
         if normalized_filters:
             filter_clause = " AND " + " AND ".join(normalized_filters)
 
-        order_clause = "\nORDER BY r.cohort_date, r.periods_since"
-        if order_by:
-            order_fields = []
-            for field in order_by:
-                field_name = field.split(".", 1)[1] if "." in field else field
-                order_fields.append(field_name)
-            order_clause = f"\nORDER BY {', '.join(order_fields)}"
+        order_clause = (
+            self._specialized_order_clause(
+                order_by, ["cohort_date", periods_label, "active_users", "cohort_size", "retention_pct"]
+            )
+            or "\nORDER BY r.cohort_date, r.periods_since"
+        )
 
         limit_clause = ""
         if limit is not None:
@@ -5448,13 +5505,7 @@ JOIN cohort_sizes c ON r.cohort_date = c.cohort_date{order_clause}{limit_clause}
             dim_select = f"  {dim_select_list},\n"
             group_by = "\nGROUP BY\n  " + ",\n  ".join(str(i + 1) for i in range(len(dim_aliases)))
 
-        order_clause = ""
-        if order_by:
-            order_fields = []
-            for field in order_by:
-                field_name = field.split(".", 1)[1] if "." in field else field
-                order_fields.append(field_name)
-            order_clause = f"\nORDER BY {', '.join(order_fields)}"
+        order_clause = self._specialized_order_clause(order_by, [*dim_aliases, metric.name])
 
         limit_clause = ""
         if limit is not None:
@@ -5748,13 +5799,10 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
         if dim_aliases:
             final_group_by = "\nGROUP BY\n  " + ",\n  ".join(str(i + 1) for i in range(len(dim_aliases)))
 
-        order_clause = ""
-        if order_by:
-            order_fields = []
-            for field in order_by:
-                field_name = field.split(".", 1)[1] if "." in field else field
-                order_fields.append(field_name)
-            order_clause = f"\nORDER BY {', '.join(order_fields)}"
+        order_clause = self._specialized_order_clause(
+            order_by,
+            [*dim_aliases, "total_entities", *(f"step_{i}_count" for i in range(1, num_steps + 1)), metric_name_only],
+        )
 
         limit_clause = ""
         if limit is not None:
@@ -5782,6 +5830,7 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
         offset: int | None = None,
         aliases: dict[str, str] | None = None,
         use_preaggregations: bool = False,
+        user_attributes: dict | None = None,
     ) -> str:
         """Generate SQL with window functions for cumulative metrics.
 
@@ -6058,10 +6107,11 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
         inner_query = self.generate(
             metrics=base_metrics,
             dimensions=dimensions,
-            filters=filters,
+            _resolved_filters=tuple(filters or []),
             order_by=None,  # Apply ordering in outer query
             limit=None,  # Apply limit in outer query
             use_preaggregations=use_preaggregations,
+            user_attributes=user_attributes,
         )
 
         # Parse dimensions for outer SELECT
@@ -6536,15 +6586,8 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
 
         # Add ORDER BY if specified
         if order_by:
-            order_clauses = []
-            for field in order_by:
-                if "." in field:
-                    # Extract just the field name without model prefix
-                    field_alias = field.split(".")[1]
-                else:
-                    field_alias = field
-                order_clauses.append(field_alias)
-            outer_query += f"\nORDER BY {', '.join(order_clauses)}"
+            output_names = sqlglot.parse_one(outer_query, read=self.dialect).named_selects
+            outer_query += self._specialized_order_clause(order_by, output_names)
 
         # Add LIMIT and OFFSET if specified
         if limit is not None:

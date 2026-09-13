@@ -102,10 +102,12 @@ uv run ${SIDEMANTIC_PLUGIN_ROOT}/skills/webapp-builder/scripts/inspect_layer.py 
 uv run ${SIDEMANTIC_PLUGIN_ROOT}/skills/webapp-builder/scripts/inspect_layer.py path/to/models \
   --db path/to/data.duckdb \
   --require-execute \
-  --output docs/sidemantic-app-spec.json
+  --output /tmp/sidemantic-app-spec.json
 ```
 
 Use `--leaderboard-dimension field_name` when domain judgment says one dimension should drive the first leaderboard. Without it, the inspector prefers common categorical dimensions over identifiers and booleans.
+
+Keep the inspection inventory outside public or committed directories: it contains internal SQL, model metadata, and sampled data. Connection strings and raw database errors are omitted. Only the scaffold's allowlisted selected dashboard data belongs in the published app; review that dataset before publishing. The static scaffold does not publish generated SQL or unrelated models and samples.
 
 3. Copy component source into the project before building UI:
 
@@ -121,7 +123,7 @@ For a minimal static app scaffold from the executed spec:
 
 ```bash
 uv run ${SIDEMANTIC_PLUGIN_ROOT}/skills/webapp-builder/scripts/scaffold_static_app.py \
-  docs/sidemantic-app-spec.json \
+  /tmp/sidemantic-app-spec.json \
   --output dist/sidemantic-dashboard \
   --title "Metrics Dashboard"
 ```

@@ -1,7 +1,7 @@
 """Test metric-level filters."""
 
 import duckdb
-from sqlglot import exp
+from sqlglot import exp, parse_one
 
 from sidemantic import Dimension, Metric, Model, SemanticLayer
 from sidemantic.sql.generator import SQLGenerator
@@ -404,7 +404,11 @@ def test_where_filter_rewrite_only_changes_semantic_columns():
     assert rendered.count("orders_cte.status") == 2
     assert "'orders.revenue'" in rendered
     assert rendered.count('"orders.revenue"') == 2
-    assert "$$orders.status$$" in rendered
+    reparsed = parse_one(rendered, dialect="postgres")
+    assert {literal.this for literal in reparsed.find_all(exp.Literal) if literal.is_string} == {
+        "orders.revenue",
+        "orders.status",
+    }
     assert "orders.revenue" in rendered.split("/*", 1)[1]
 
 

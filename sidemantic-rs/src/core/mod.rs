@@ -3,6 +3,7 @@
 mod dependency;
 mod graph;
 mod inheritance;
+mod key_expression;
 mod model;
 mod parameter;
 mod policy;
@@ -18,6 +19,7 @@ pub use dependency::{
 };
 pub use graph::{JoinPath, JoinStep, SemanticGraph};
 pub use inheritance::{merge_model, resolve_model_inheritance};
+pub use key_expression::{has_computed_keys, is_computed_key, key_expression, semantic_key_names};
 pub use model::{
     Aggregation, CohortInnerMetric, ComparisonCalculation, ComparisonType, Dimension,
     DimensionType, Index, Metric, MetricType, Model, PreAggregation, PreAggregationType,

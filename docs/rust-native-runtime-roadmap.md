@@ -37,6 +37,24 @@ The strategic goal is not "Rust parses everything Python parses." The strategic 
 
 ## Current Reality Summary
 
+Computed identity dimensions are supported by the structured Rust compiler,
+including semantic SQL using `from metrics`. A key's SQL binds directly to its
+physical source columns: `id: tenant * 100 + id` uses the raw `id` once, and the
+same expression supplies the displayed dimension, either side of a default
+relationship join, symmetric aggregation identity, and default `count_distinct`.
+No duplicate `id` projection shadows the physical column. Explicit measure SQL
+continues to describe raw input; a default distinct metric resolves its input
+from the declared semantic key instead.
+
+The initial key-expression subset covers source-local columns, arithmetic,
+concatenation, casts, and `coalesce`. Aggregate/window/subquery expressions,
+arbitrary functions, cross-model inputs, and column-free expressions are rejected.
+Compound computed keys join component by component; compound-key symmetric
+aggregation and default distinct remain explicitly unsupported. Custom SQL joins,
+special temporal/funnel aggregation routes, and the legacy model-table SQL rewrite
+path retain explicit capability errors for computed keys. Materialized routing is
+bypassed until its identity contract is qualified separately.
+
 Rust already has a substantial base:
 
 - A real model graph.

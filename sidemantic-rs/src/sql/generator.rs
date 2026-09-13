@@ -174,14 +174,6 @@ impl<'a> SqlGenerator<'a> {
         let metric_refs = self.parse_metric_refs(&query.metrics)?;
         let direct_required_models = self.find_required_models(&dimension_refs, &metric_refs)?;
         self.ensure_queryable_sources(&direct_required_models)?;
-        if self.has_cumulative_metrics(&metric_refs)? {
-            return self.generate_with_cumulative(
-                query,
-                &effective_dimensions,
-                &dimension_refs,
-                &metric_refs,
-            );
-        }
 
         // Find all required models
         let mut required_models = self.find_required_models(&dimension_refs, &metric_refs)?;
@@ -205,7 +197,18 @@ impl<'a> SqlGenerator<'a> {
         }
         self.ensure_queryable_sources(&required_models)?;
 
+        if self.has_cumulative_metrics(&metric_refs)? {
+            self.reject_computed_keys_for_special_route(&required_models)?;
+            return self.generate_with_cumulative(
+                query,
+                &effective_dimensions,
+                &dimension_refs,
+                &metric_refs,
+            );
+        }
+
         if self.needs_preaggregation_for_fanout(&metric_refs)? {
+            self.reject_computed_keys_for_special_route(&required_models)?;
             return self.generate_with_preaggregation(
                 query,
                 &effective_dimensions,
@@ -336,7 +339,7 @@ impl<'a> SqlGenerator<'a> {
                 self.metric_for_model_with_source(&model_name, &metric_name, graph_metric)?;
             let raw_alias = self.metric_raw_alias(model, &metric_name, metric);
             let mut raw_expr =
-                self.normalize_cte_source_expression(&self.metric_raw_expression(metric, model));
+                self.normalize_cte_source_expression(&self.metric_raw_expression(metric, model)?);
             if !metric.filters.is_empty() {
                 let metric_filter = self.normalize_metric_filters(
                     &metric.filters,
@@ -449,7 +452,16 @@ impl<'a> SqlGenerator<'a> {
             })?;
             let alias = self.model_alias(&dim_ref.model);
             let sql_expr = if let Some(dimension) = model.get_dimension(&dim_ref.name) {
-                if let Some(granularity) = dim_ref
+                if crate::core::semantic_key_names(self.graph, model).contains(&dim_ref.name)
+                    && crate::core::is_computed_key(model, &dim_ref.name)?
+                {
+                    if dim_ref.granularity.is_some() {
+                        return Err(SidemanticError::UnsupportedSemanticFeatures {
+                            capabilities: vec!["dimension.key_granularity".into()],
+                        });
+                    }
+                    self.key_sql(model, &dim_ref.name, Some(&alias))?
+                } else if let Some(granularity) = dim_ref
                     .granularity
                     .as_deref()
                     .or(dimension.granularity.as_deref())
@@ -515,7 +527,7 @@ impl<'a> SqlGenerator<'a> {
                             ],
                         });
                     }
-                    let primary_key_expr = self.model_primary_key_expr(model, Some(&alias));
+                    let primary_key_expr = self.model_primary_key_expr(model, Some(&alias))?;
                     match metric.agg {
                         Some(Aggregation::Sum) => build_symmetric_aggregate_sql_with_key_expr(
                             &raw_alias,
@@ -627,14 +639,27 @@ impl<'a> SqlGenerator<'a> {
 
                 // Use custom condition if available, otherwise default FK/PK join
                 let join_condition = if let Some(custom) = &step.custom_condition {
+                    for model_name in [&step.from_model, &step.to_model] {
+                        if let Some(model) = self.graph.get_model(model_name) {
+                            if crate::core::has_computed_keys(self.graph, model)? {
+                                return Err(SidemanticError::UnsupportedSemanticFeatures {
+                                    capabilities: vec![
+                                        "relationship.computed_key_custom_join".into()
+                                    ],
+                                });
+                            }
+                        }
+                    }
                     // Replace {from} and {to} placeholders with actual aliases
                     custom
                         .replace("{from}", &from_alias)
                         .replace("{to}", &to_alias)
                 } else {
                     self.build_default_join_condition_sql(
+                        &step.from_model,
                         &from_alias,
                         &step.from_keys,
+                        &step.to_model,
                         &to_alias,
                         &step.to_keys,
                     )?
@@ -703,8 +728,10 @@ impl<'a> SqlGenerator<'a> {
 
     fn build_default_join_condition_sql(
         &self,
+        from_model: &str,
         from_alias: &str,
         from_keys: &[String],
+        to_model: &str,
         to_alias: &str,
         to_keys: &[String],
     ) -> Result<String> {
@@ -721,11 +748,23 @@ impl<'a> SqlGenerator<'a> {
             )));
         }
 
+        let from_model = self.graph.get_model(from_model).ok_or_else(|| {
+            SidemanticError::Validation(format!("Unknown join model '{from_model}'"))
+        })?;
+        let to_model = self.graph.get_model(to_model).ok_or_else(|| {
+            SidemanticError::Validation(format!("Unknown join model '{to_model}'"))
+        })?;
         Ok(from_keys
             .iter()
             .zip(to_keys.iter())
-            .map(|(from_key, to_key)| format!("{from_alias}.{from_key} = {to_alias}.{to_key}"))
-            .collect::<Vec<_>>()
+            .map(|(from_key, to_key)| {
+                Ok(format!(
+                    "{} = {}",
+                    self.key_sql(from_model, from_key, Some(from_alias))?,
+                    self.key_sql(to_model, to_key, Some(to_alias))?
+                ))
+            })
+            .collect::<Result<Vec<_>>>()?
             .join(" AND "))
     }
 
@@ -1491,7 +1530,7 @@ impl<'a> SqlGenerator<'a> {
         &self,
         metric: &crate::core::Metric,
         model: &crate::core::Model,
-    ) -> String {
+    ) -> Result<String> {
         match metric.agg {
             Some(Aggregation::CountDistinct)
                 if metric.sql.as_deref().is_none_or(str::is_empty)
@@ -1503,9 +1542,9 @@ impl<'a> SqlGenerator<'a> {
                 if metric.sql.as_deref().is_none_or(str::is_empty)
                     || metric.sql.as_deref() == Some("*") =>
             {
-                "1".to_string()
+                Ok("1".to_string())
             }
-            _ => metric.sql_expr().to_string(),
+            _ => Ok(metric.sql_expr().to_string()),
         }
     }
 
@@ -1898,16 +1937,70 @@ impl<'a> SqlGenerator<'a> {
         trimmed.to_string()
     }
 
-    fn model_primary_key_expr(&self, model: &crate::core::Model, alias: Option<&str>) -> String {
+    fn key_sql(&self, model: &Model, key: &str, alias: Option<&str>) -> Result<String> {
+        self.emit_expression(&crate::core::key_expression(
+            model,
+            key,
+            alias,
+            self.dialect,
+        )?)
+    }
+
+    fn has_computed_key_models(&self, model_names: &HashSet<String>) -> Result<bool> {
+        for model_name in model_names {
+            let Some(model) = self.graph.get_model(model_name) else {
+                continue;
+            };
+            if crate::core::has_computed_keys(self.graph, model)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    fn reject_computed_keys_for_special_route(
+        &self,
+        required_models: &HashSet<String>,
+    ) -> Result<()> {
+        let mut participating_models = required_models.clone();
+        for from_model in required_models {
+            for to_model in required_models {
+                if let Ok(path) = self.graph.find_join_path_with_context(
+                    from_model,
+                    to_model,
+                    Some(required_models),
+                ) {
+                    for step in path.steps {
+                        participating_models.insert(step.from_model);
+                        participating_models.insert(step.to_model);
+                    }
+                }
+            }
+        }
+        if self.has_computed_key_models(&participating_models)? {
+            return Err(SidemanticError::UnsupportedSemanticFeatures {
+                capabilities: vec!["aggregation.computed_key_query_shape".into()],
+            });
+        }
+        Ok(())
+    }
+
+    fn model_primary_key_expr(
+        &self,
+        model: &crate::core::Model,
+        alias: Option<&str>,
+    ) -> Result<String> {
         let primary_keys = model.primary_keys();
         if primary_keys.len() <= 1 {
             return primary_keys
                 .first()
-                .map(|column| match alias {
-                    Some(alias) => format!("{alias}.{column}"),
-                    None => column.clone(),
-                })
-                .unwrap_or_else(|| model.primary_key.clone());
+                .map(|column| self.key_sql(model, column, alias))
+                .unwrap_or_else(|| Ok(model.primary_key.clone()));
+        }
+        if crate::core::has_computed_keys(self.graph, model)? {
+            return Err(SidemanticError::UnsupportedSemanticFeatures {
+                capabilities: vec!["aggregation.computed_composite_key".into()],
+            });
         }
 
         let parts = primary_keys
@@ -1924,7 +2017,7 @@ impl<'a> SqlGenerator<'a> {
             })
             .collect::<Vec<_>>();
         let parts = &parts[..parts.len().saturating_sub(1)];
-        format!("CONCAT({})", parts.join(", "))
+        Ok(format!("CONCAT({})", parts.join(", ")))
     }
 
     /// Generate alias for a model (first letter lowercase)
@@ -3744,6 +3837,7 @@ impl<'a> SqlGenerator<'a> {
         if model.pre_aggregations.is_empty()
             || metric_refs.is_empty()
             || metric_refs.iter().any(|metric| metric.graph_metric)
+            || crate::core::has_computed_keys(self.graph, model)?
         {
             return Ok(None);
         }
@@ -4448,10 +4542,62 @@ impl<'a> SqlGenerator<'a> {
         })?;
         let alias = self.model_alias(model_name);
         let cte_name = format!("{model_name}_cte");
+        let mut computed_keys = HashSet::new();
+        for key in crate::core::semantic_key_names(self.graph, model) {
+            if crate::core::is_computed_key(model, &key)? {
+                computed_keys.insert(key);
+            }
+        }
         let mut expanded = Vec::with_capacity(filters.len());
 
         for filter in filters {
             let mut filter_sql = filter.clone();
+            if !computed_keys.is_empty() {
+                let mut replacements = HashMap::new();
+                for column in semantic_column_references(filter)? {
+                    if column.model.as_deref().is_some_and(|owner| {
+                        owner != model_name && owner != cte_name && owner != alias
+                    }) {
+                        return Err(SidemanticError::UnsupportedSemanticFeatures {
+                            capabilities: vec!["filter.computed_key_source".into()],
+                        });
+                    }
+                    let source = if computed_keys.contains(&column.field) {
+                        self.key_sql(model, &column.field, None)?
+                    } else if let Some(dimension) = model.get_dimension(&column.field) {
+                        let source = dimension.sql_expr().replace("{model}", model_name);
+                        let mut inputs = HashMap::new();
+                        for input in semantic_column_references(&source)? {
+                            if input
+                                .model
+                                .as_deref()
+                                .is_some_and(|owner| owner != model_name)
+                            {
+                                return Err(SidemanticError::UnsupportedSemanticFeatures {
+                                    capabilities: vec!["filter.computed_key_source".into()],
+                                });
+                            }
+                            inputs.insert(
+                                (input.model, input.field.clone()),
+                                self.quote_identifier(&input.field),
+                            );
+                        }
+                        self.emit_expression(&crate::core::replace_semantic_columns(
+                            parse_semantic_expression(&source)?,
+                            &inputs,
+                        )?)?
+                    } else {
+                        self.quote_identifier(&column.field)
+                    };
+                    replacements.insert((column.model, column.field), format!("({source})"));
+                }
+                filter_sql = self.emit_expression(&crate::core::replace_semantic_columns(
+                    parse_semantic_expression(filter)?,
+                    &replacements,
+                )?)?;
+                expanded.push(self.expand_relative_dates(&filter_sql));
+                continue;
+            }
             for dim in &model.dimensions {
                 let source_expr = self.normalize_cte_source_expression(dim.sql_expr());
                 for qualified in [
@@ -4953,6 +5099,33 @@ impl<'a> SqlGenerator<'a> {
 
     fn expand_filter_with_polyglot(&self, filter: &str) -> Result<String> {
         let parsed = self.parse_where_expr(filter)?;
+        let mut keys = HashMap::new();
+        if self.has_computed_key_models(&self.find_filter_models(&[filter.to_string()]))? {
+            for column in semantic_column_references(filter)? {
+                if let Some(model) = column
+                    .model
+                    .as_deref()
+                    .and_then(|name| self.graph.get_model(name))
+                {
+                    if crate::core::semantic_key_names(self.graph, model).contains(&column.field)
+                        && crate::core::is_computed_key(model, &column.field)?
+                    {
+                        keys.insert(
+                            (column.model, column.field.clone()),
+                            format!(
+                                "({})",
+                                self.key_sql(
+                                    model,
+                                    &column.field,
+                                    Some(&self.model_alias(&model.name))
+                                )?
+                            ),
+                        );
+                    }
+                }
+            }
+        }
+        let parsed = crate::core::replace_semantic_columns(parsed, &keys)?;
         let graph = self.graph;
 
         let rewritten = polyglot_sql::transform_map(parsed, &|node| {
@@ -4991,6 +5164,10 @@ impl<'a> SqlGenerator<'a> {
 
         for filter in filters {
             let relative_expanded = self.expand_relative_dates(filter);
+            if self.has_computed_key_models(&self.find_filter_models(&[filter.to_string()]))? {
+                expanded.push(self.expand_filter_with_polyglot(&relative_expanded)?);
+                continue;
+            }
             if let Ok(expanded_filter) = self.expand_filter_with_polyglot(&relative_expanded) {
                 expanded.push(expanded_filter);
                 continue;

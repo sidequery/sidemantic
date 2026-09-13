@@ -181,6 +181,27 @@ impl<'a> QueryRewriter<'a> {
         let mut query_models = referenced_models.clone();
         query_models.extend(model_refs.iter().map(|(model_name, _)| model_name.clone()));
         self.ensure_queryable_sources(&query_models)?;
+        // Computed identities are implemented by the structured planner. The
+        // legacy expression path has separate join and aggregation semantics.
+        if let Some((base, _)) = model_refs.first() {
+            for target in &referenced_models {
+                if let Ok(path) = self.graph.find_join_path(base, target) {
+                    for step in path.steps {
+                        query_models.insert(step.from_model);
+                        query_models.insert(step.to_model);
+                    }
+                }
+            }
+        }
+        for name in &query_models {
+            if let Some(model) = self.graph.get_model(name) {
+                if crate::core::has_computed_keys(self.graph, model)? {
+                    return Err(SidemanticError::UnsupportedSemanticFeatures {
+                        capabilities: vec!["rewrite.computed_key_query_shape".into()],
+                    });
+                }
+            }
+        }
 
         // Find models that need to be joined (referenced but not in FROM)
         let base_model = model_refs.first().map(|(m, _)| m.clone());

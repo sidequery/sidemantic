@@ -539,20 +539,8 @@ fn decode_model(value: Value, path: &str) -> Result<Model> {
     }
     let mut model = project(raw, Model::new("", ""), path)?;
     let primary_keys = model.primary_keys();
-    for dimension in &model.dimensions {
-        if primary_keys.contains(&dimension.name) {
-            if let Some(sql) = &dimension.sql {
-                let expression = parse_semantic_expression(&sql.replace("{model}", &model.name))?;
-                let identity = matches!(expression, polyglot_sql::Expression::Column(column)
-                    if column.name.name == dimension.name
-                        && column.table.as_ref().is_none_or(|table| table.name == model.name));
-                if !identity {
-                    // Source keys and computed dimension outputs currently share
-                    // a projection name. Do not let key projection erase SQL.
-                    return Err(unsupported("dimension.computed_primary_key"));
-                }
-            }
-        }
+    for key in &primary_keys {
+        crate::core::key_expression(&model, key, None, DialectType::DuckDB)?;
     }
     for metric in &mut model.metrics {
         if metric.agg == Some(crate::core::Aggregation::CountDistinct)
@@ -564,7 +552,9 @@ fn decode_model(value: Value, path: &str) -> Result<Model> {
             if primary_keys.len() != 1 {
                 return Err(unsupported("metric.count_distinct_primary_key"));
             }
-            metric.sql = Some(primary_keys[0].clone());
+            // Keep the default distinct input distinct from explicit raw SQL.
+            // The generator resolves it through the same key expression used by joins.
+            metric.sql = None;
         }
     }
     Ok(model)
@@ -1503,18 +1493,39 @@ mod tests {
     }
 
     #[test]
-    fn computed_primary_key_dimensions_cannot_be_silently_erased() {
+    fn computed_primary_key_dimensions_preserve_source_expression() {
         let mut source = input();
         source["models"][0]["primary_key"] = json!(["id"]);
         source["models"][0]["dimensions"] =
             json!([{"name":"id", "type":"numeric", "sql":"id * 10"}]);
-        assert!(matches!(
-            SemanticInput::from_json(&source.to_string()),
-            Err(SidemanticError::UnsupportedSemanticFeatures { capabilities })
-                if capabilities == vec!["dimension.computed_primary_key"]
-        ));
+        let sql =
+            compile_with_semantic_input(&source.to_string(), r#"{"dimensions":["orders.id"]}"#)
+                .unwrap();
+        assert!(sql.contains("orders_cte.id * 10 AS id"), "{sql}");
         source["models"][0]["dimensions"][0]["sql"] = json!("\"orders\".\"id\"");
         assert!(SemanticInput::from_json(&source.to_string()).is_ok());
+    }
+
+    #[test]
+    fn computed_primary_key_rejects_nonlocal_or_nondeterministic_expressions() {
+        let mut source = input();
+        source["models"][0]["primary_key"] = json!(["id"]);
+        for sql in [
+            "random()",
+            "SUM(id)",
+            "other.id",
+            "row_number() OVER ()",
+            "(SELECT id FROM other)",
+            "1",
+        ] {
+            source["models"][0]["dimensions"] = json!([{"name":"id", "type":"numeric", "sql":sql}]);
+            assert!(
+                matches!(SemanticInput::from_json(&source.to_string()),
+                Err(SidemanticError::UnsupportedSemanticFeatures { capabilities })
+                if capabilities == vec!["dimension.computed_key_expression"]),
+                "{sql}"
+            );
+        }
     }
 
     #[test]

@@ -80,6 +80,37 @@ SELECT orders_model.status, orders_model.revenue FROM orders_model;
 -- └───────────┴────────────────────┘
 ```
 
+## Versioned SemanticInput
+
+The stateless SQL functions `sidemantic_compile_semantic_input(input_json, query_json)`
+and `sidemantic_rewrite_semantic_input(input_json, sql, context_json)` accept the
+same SemanticInput v1 contract as the Python and WASM hosts. They return executable
+SQL and do not change models loaded through the session APIs.
+
+```sql
+select sidemantic_compile_semantic_input(
+    '{"version":1,"models":[{"name":"sales","table":"orders","primary_key":"order_id",
+      "metrics":[{"name":"revenue","agg":"sum","sql":"amount"}]}]}',
+    '{"metrics":["sales.revenue"]}'
+);
+```
+
+Pass `user_attributes` and `enforce_visibility` in query JSON for compilation, or
+in the third argument for rewriting. Policies and invariant filters in the input
+apply when generating SQL; missing policy attributes, visibility denials and
+invalid contracts raise SQL errors. SQL NULL arguments return NULL; embedded NUL
+bytes are rejected. Each call uses its own caller context.
+
+CI runs `test/test_semantic_input_host.py` against the freshly built DuckDB shell
+and loaded extension, executes the returned SQL over real rows, and checks policy
+isolation, invalid contracts and argument handling. To run it locally after a build:
+
+```bash
+SIDEMANTIC_DUCKDB_BINARY=build/release/duckdb \
+SIDEMANTIC_DUCKDB_EXTENSION=build/release/extension/sidemantic/sidemantic.duckdb_extension \
+uv run test/test_semantic_input_host.py
+```
+
 ## SQL Syntax Reference
 
 ### MODEL

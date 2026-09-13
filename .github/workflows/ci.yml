@@ -514,6 +514,15 @@ jobs:
         working-directory: sidemantic-duckdb
         run: make test
 
+      - name: Install uv for SQL host acceptance
+        uses: astral-sh/setup-uv@v5
+
+      - name: Execute SemanticInput in the loaded DuckDB extension
+        env:
+          SIDEMANTIC_DUCKDB_BINARY: sidemantic-duckdb/build/release/duckdb
+          SIDEMANTIC_DUCKDB_EXTENSION: sidemantic-duckdb/build/release/extension/sidemantic/sidemantic.duckdb_extension
+        run: uv run sidemantic-duckdb/test/test_semantic_input_host.py
+
   webapp:
     name: Webapp (types + unit)
     needs: check-rust-changes

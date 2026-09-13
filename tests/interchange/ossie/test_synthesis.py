@@ -4,13 +4,17 @@ import json
 
 import pytest
 
+from sidemantic.core.consumption import Explore, SavedQuery
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
+from sidemantic.core.parameter import Parameter
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.security import SecurityPolicy
+from sidemantic.core.segment import Segment
 from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.core.semantic_layer import SemanticLayer
+from sidemantic.core.table_calculation import TableCalculation
 from sidemantic.interchange.ossie import (
     OssieConsumerProfile,
     OssieSynthesisError,
@@ -479,3 +483,115 @@ def test_null_fill_string_literals_execute_before_and_after_portable_export(fill
     )
     imported = SemanticLayer.from_catalog(lowered.catalog, auto_register=False)
     assert imported.query(metrics=["label"]).fetchall() == [(fill,)]
+
+
+@pytest.mark.parametrize("feature", ["granularity", "segments", "window"])
+def test_native_query_semantics_require_extension_and_execute_after_roundtrip(feature):
+    graph = SemanticGraph()
+    model = Model(
+        name="orders",
+        sql="SELECT * FROM (VALUES (TIMESTAMP '2026-01-02', 10), (TIMESTAMP '2026-01-03', 20)) AS t(ts, amount)",
+        dimensions=[Dimension(name="ts", type="categorical")],
+        metrics=[Metric(name="revenue", agg="sum", sql="amount")],
+    )
+    query = {"metrics": ["orders.revenue"], "dimensions": ["orders.ts"]}
+    if feature == "granularity":
+        model.dimensions[0].type = "time"
+        model.dimensions[0].granularity = "month"
+    elif feature == "segments":
+        model.segments.append(Segment(name="large", sql="{model}.amount > 10"))
+        query["segments"] = ["orders.large"]
+    else:
+        model.dimensions[0].window = "MIN(ts) OVER ()"
+    graph.add_model(model)
+    native = SemanticLayer(auto_register=False)
+    native.graph = graph
+    expected = native.query(**query).fetchall()
+    assert len(expected) == 1
+
+    portable = synthesize_ossie_document(
+        graph, scope_name="commerce", expression_dialect="ANSI_SQL", portable_only=True
+    )
+    assert not portable.valid
+    assert portable.document is None
+    assert any(d.code == "ossie.synthesis.native_state_unrepresented" for d in portable.diagnostics)
+
+    result = synthesize_ossie_document(graph, scope_name="commerce", expression_dialect="ANSI_SQL")
+    assert result.valid, result.diagnostics
+    assert any(d.code == "ossie.synthesis.runtime_extension_required" for d in result.diagnostics)
+    lowered = lower_ossie_document(
+        parse_ossie_document(json.dumps(result.document.to_parsed_data()).encode()), target_dialect="duckdb"
+    )
+    assert lowered.valid, lowered.diagnostics
+    restored = lowered.catalog["commerce"].graph.models["orders"]
+    assert restored.dimensions == model.dimensions
+    assert restored.segments == model.segments
+    imported = SemanticLayer.from_catalog(lowered.catalog, auto_register=False)
+    assert imported.query(**query).fetchall() == expected
+
+
+@pytest.mark.parametrize(
+    ("owner", "field", "value"),
+    [
+        ("dimension", "supported_granularities", ["month"]),
+        ("dimension", "parent", "customer_id"),
+        ("dimension", "format", "yyyy-MM"),
+        ("model", "default_grain", "month"),
+        ("model", "auto_dimensions", True),
+        ("model", "owner", "analytics"),
+        ("model", "metadata", {"ossie_source_kind": "table", "ossie_pointer": "/datasets/0", "custom": "preserve"}),
+        ("metric", "drill_fields", ["orders.id"]),
+        ("metric", "label", "Revenue"),
+        ("relationship", "metadata", {"custom": "preserve"}),
+        ("graph", "metadata", {"custom": "preserve"}),
+        ("graph", "parameters", {"region": Parameter(name="region", type="string", default_value="US")}),
+        ("graph", "table_calculations", {"rank": TableCalculation(name="rank", type="rank")}),
+        ("graph", "explores", {"orders": Explore(name="orders", model="orders")}),
+        ("graph", "saved_queries", {"revenue": SavedQuery(name="revenue", metrics=["orders.revenue"])}),
+        ("graph", "import_warnings", [{"message": "source warning"}]),
+    ],
+)
+def test_unprojected_native_fields_are_preserved_or_refused(owner, field, value):
+    graph = _graph()
+    model = graph.models["orders"]
+    item = {
+        "graph": graph,
+        "model": model,
+        "dimension": model.dimensions[2],
+        "metric": model.metrics[0],
+        "relationship": model.relationships[0],
+    }[owner]
+    setattr(item, field, value)
+    portable = synthesize_ossie_document(
+        graph, scope_name="commerce", expression_dialect="ANSI_SQL", portable_only=True
+    )
+    assert not portable.valid
+    assert any(field in d.message for d in portable.diagnostics)
+    result = synthesize_ossie_document(graph, scope_name="commerce", expression_dialect="ANSI_SQL")
+    assert result.valid, result.diagnostics
+    lowered = lower_ossie_document(
+        parse_ossie_document(json.dumps(result.document.to_parsed_data()).encode()), target_dialect="duckdb"
+    )
+    assert lowered.valid, lowered.diagnostics
+    restored_graph = lowered.catalog["commerce"].graph
+    restored_model = restored_graph.models["orders"]
+    restored = {
+        "graph": restored_graph,
+        "model": restored_model,
+        "dimension": restored_model.dimensions[2],
+        "metric": restored_model.metrics[0],
+        "relationship": restored_model.relationships[0],
+    }[owner]
+    assert getattr(restored, field) == value
+
+
+@pytest.mark.parametrize("feature", ["segments", "window"])
+def test_extension_selection_does_not_hide_invalid_native_expression(feature):
+    graph = _graph()
+    if feature == "segments":
+        graph.models["orders"].segments.append(Segment(name="invalid", sql="amount > 0; SELECT 1"))
+    else:
+        graph.models["orders"].dimensions[2].window = "MIN(loaded_at) OVER (); SELECT 1"
+    result = synthesize_ossie_document(graph, scope_name="commerce", expression_dialect="ANSI_SQL")
+    assert not result.valid
+    assert any(d.code == "ossie.synthesis.expression_invalid" for d in result.diagnostics)

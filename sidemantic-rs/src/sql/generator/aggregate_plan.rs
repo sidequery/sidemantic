@@ -138,11 +138,22 @@ impl<'a, 'g> Plan<'a, 'g> {
                     metric: metric.clone(),
                     alias: alias.clone(),
                 });
-                format!(
+                let output = format!(
                     "{}.{}",
                     self.generator.quote_identifier(&format!("{model}_preagg")),
                     self.generator.quote_identifier(&alias)
-                )
+                );
+                // A restored outer-join group has no source rows: COUNT is
+                // zero there, before metric defaults or downstream arithmetic.
+                // SUM/MIN and other nullable aggregates retain their NULL value.
+                if matches!(
+                    metric.agg,
+                    Some(Aggregation::Count | Aggregation::CountDistinct)
+                ) {
+                    format!("COALESCE({output}, 0)")
+                } else {
+                    output
+                }
             }
             MetricType::Ratio => {
                 let numerator = metric.numerator.as_deref().ok_or_else(|| {
@@ -644,7 +655,7 @@ mod tests {
         assert!(sql.contains("orders_preagg AS"));
         assert!(sql.contains("customers_preagg AS"));
         assert!(sql.contains("CROSS JOIN customers_preagg"));
-        assert!(sql.contains("NULLIF((customers_preagg.__sidemantic_metric_1), 0)"));
+        assert!(sql.contains("NULLIF((COALESCE(customers_preagg.__sidemantic_metric_1, 0)), 0)"));
         assert!(!sql.contains("LEFT JOIN customers_cte"));
         assert_valid_sql(&sql);
     }
@@ -664,7 +675,7 @@ mod tests {
     fn nested_arithmetic_keeps_parentheses() {
         let sql = compile(&graph(), &["double_added"], &[]).unwrap();
         assert!(sql.contains("((orders_preagg.__sidemantic_metric_"));
-        assert!(sql.contains(") + (customers_preagg.__sidemantic_metric_"));
+        assert!(sql.contains(") + (COALESCE(customers_preagg.__sidemantic_metric_"));
         assert!(sql.contains(")) * 2"));
     }
 

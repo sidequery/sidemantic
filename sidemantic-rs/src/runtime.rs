@@ -5156,99 +5156,129 @@ impl SidemanticRuntime {
             ))
         })?;
 
-        let mut select_exprs: Vec<String> = Vec::new();
-        let mut group_by_positions: Vec<String> = Vec::new();
-        let mut position = 1usize;
+        let unsupported = |feature: &str| SidemanticError::UnsupportedSemanticFeatures {
+            capabilities: vec![format!("preaggregation.materialization.{feature}")],
+        };
+        if !preagg.has_unique_output_names() {
+            return Err(unsupported("output_alias_collision"));
+        }
+        if preagg.preagg_type != crate::core::PreAggregationType::Rollup || preagg.sql.is_some() {
+            return Err(unsupported("type_or_custom_sql"));
+        }
+        if preagg.partition_granularity.is_some()
+            || preagg.build_range_start.is_some()
+            || preagg.build_range_end.is_some()
+        {
+            return Err(unsupported("partition_or_build_range"));
+        }
+        if preagg.time_dimension.is_some() != preagg.granularity.is_some() {
+            return Err(unsupported("incomplete_time_grain"));
+        }
 
+        // Materialization operates on physical source expressions. Semantic metric
+        // references and request templates need query planning, not text substitution.
+        let source_expression = |expression: &str| -> Result<String> {
+            let expression = expression.replace("{model}.", "");
+            if expression.contains('{') || expression.contains('}') {
+                return Err(unsupported("expression_template"));
+            }
+            Ok(expression)
+        };
+        let mut select_exprs = Vec::new();
+        let mut group_by_positions = Vec::new();
         if let (Some(time_dimension), Some(granularity)) =
             (preagg.time_dimension.as_ref(), preagg.granularity.as_ref())
         {
-            if let Some(time_dim) = model.get_dimension(time_dimension) {
-                let col_name = format!("{time_dimension}_{granularity}");
-                select_exprs.push(format!(
-                    "DATE_TRUNC('{granularity}', {}) as {col_name}",
-                    time_dim.sql_expr()
-                ));
-                group_by_positions.push(position.to_string());
-                position += 1;
+            if !matches!(
+                granularity.as_str(),
+                "year" | "quarter" | "month" | "week" | "day" | "hour" | "minute" | "second"
+            ) {
+                return Err(unsupported("time_grain"));
             }
+            let time_dim = model.get_dimension(time_dimension).ok_or_else(|| {
+                SidemanticError::Validation(format!(
+                    "Unknown rollup time dimension '{time_dimension}'"
+                ))
+            })?;
+            let expression = source_expression(time_dim.sql_expr())?;
+            select_exprs.push(format!(
+                "DATE_TRUNC('{granularity}', {expression}) as {time_dimension}_{granularity}"
+            ));
+            group_by_positions.push(select_exprs.len().to_string());
         }
-
-        if let Some(dimensions) = preagg.dimensions.as_ref() {
-            for dim_name in dimensions {
-                if let Some(dim) = model.get_dimension(dim_name) {
-                    select_exprs.push(format!("{} as {dim_name}", dim.sql_expr()));
-                    group_by_positions.push(position.to_string());
-                    position += 1;
-                }
+        for dim_name in preagg.dimensions.iter().flatten() {
+            let dim = model.get_dimension(dim_name).ok_or_else(|| {
+                SidemanticError::Validation(format!("Unknown rollup dimension '{dim_name}'"))
+            })?;
+            select_exprs.push(format!(
+                "{} as {dim_name}",
+                source_expression(dim.sql_expr())?
+            ));
+            group_by_positions.push(select_exprs.len().to_string());
+        }
+        for measure_name in preagg.measures.iter().flatten() {
+            let measure = model.get_metric(measure_name).ok_or_else(|| {
+                SidemanticError::Validation(format!("Unknown rollup measure '{measure_name}'"))
+            })?;
+            if measure.r#type != MetricType::Simple
+                || measure.sql_is_complete
+                || measure.non_additive_dimension.is_some()
+            {
+                return Err(unsupported("measure_state"));
             }
-        }
-
-        if let Some(measures) = preagg.measures.as_ref() {
-            for measure_name in measures {
-                if let Some(measure) = model.get_metric(measure_name) {
-                    let sql_expr = measure.sql_expr();
-                    match measure.agg.as_ref() {
-                        Some(Aggregation::Count)
-                            if measure.sql.as_deref().is_none_or(str::is_empty) =>
-                        {
-                            select_exprs.push(format!("COUNT(*) as {measure_name}_raw"));
-                        }
-                        Some(Aggregation::Count) => {
-                            select_exprs.push(format!("COUNT({sql_expr}) as {measure_name}_raw"));
-                        }
-                        Some(Aggregation::CountDistinct) => {
-                            select_exprs
-                                .push(format!("COUNT(DISTINCT {sql_expr}) as {measure_name}_raw"));
-                        }
-                        Some(Aggregation::Sum) => {
-                            select_exprs.push(format!("SUM({sql_expr}) as {measure_name}_raw"));
-                        }
-                        Some(Aggregation::Avg) => {
-                            select_exprs.push(format!("AVG({sql_expr}) as {measure_name}_raw"));
-                        }
-                        Some(Aggregation::Min) => {
-                            select_exprs.push(format!("MIN({sql_expr}) as {measure_name}_raw"));
-                        }
-                        Some(Aggregation::Max) => {
-                            select_exprs.push(format!("MAX({sql_expr}) as {measure_name}_raw"));
-                        }
-                        Some(Aggregation::Median) => {
-                            select_exprs.push(format!("MEDIAN({sql_expr}) as {measure_name}_raw"));
-                        }
-                        Some(Aggregation::Stddev) => {
-                            select_exprs.push(format!("STDDEV({sql_expr}) as {measure_name}_raw"));
-                        }
-                        Some(Aggregation::StddevPop) => {
-                            select_exprs
-                                .push(format!("STDDEV_POP({sql_expr}) as {measure_name}_raw"));
-                        }
-                        Some(Aggregation::Variance) => {
-                            select_exprs
-                                .push(format!("VARIANCE({sql_expr}) as {measure_name}_raw"));
-                        }
-                        Some(Aggregation::VariancePop) => {
-                            select_exprs.push(format!("VAR_POP({sql_expr}) as {measure_name}_raw"));
-                        }
-                        Some(Aggregation::Expression) | None => {
-                            select_exprs.push(format!("SUM({sql_expr}) as {measure_name}_raw"));
-                        }
-                    }
-                }
+            let aggregate = match measure.agg.as_ref() {
+                Some(Aggregation::Sum) => "SUM",
+                Some(Aggregation::Count) => "COUNT",
+                Some(Aggregation::Min) => "MIN",
+                Some(Aggregation::Max) => "MAX",
+                // AVG needs a compatible denominator and a shared additive-state
+                // contract; distinct counts and distribution statistics also cannot
+                // be stored as blindly reaggregatable scalar values.
+                _ => return Err(unsupported("measure_aggregation")),
+            };
+            let count_rows = measure.agg == Some(Aggregation::Count)
+                && measure
+                    .sql
+                    .as_deref()
+                    .is_none_or(|sql| sql.trim().is_empty() || sql.trim() == "*");
+            let mut expression = if count_rows {
+                "*".to_owned()
+            } else {
+                source_expression(measure.sql_expr())?
+            };
+            if !measure.filters.is_empty() {
+                let predicates = measure
+                    .filters
+                    .iter()
+                    .map(|filter| source_expression(filter).map(|filter| format!("({filter})")))
+                    .collect::<Result<Vec<_>>>()?;
+                let input = if count_rows { "1" } else { &expression };
+                expression = format!(
+                    "CASE WHEN {} THEN {input} ELSE NULL END",
+                    predicates.join(" AND ")
+                );
             }
+            select_exprs.push(format!("{aggregate}({expression}) as {measure_name}_raw"));
         }
-
+        if select_exprs.is_empty() {
+            return Err(unsupported("empty_rollup"));
+        }
         let from_clause = if let Some(model_sql) = model.sql.as_ref() {
             format!("({model_sql}) AS t")
         } else {
-            model.table.clone().unwrap_or_else(|| "None".to_string())
+            model
+                .table
+                .clone()
+                .ok_or_else(|| unsupported("missing_source"))?
         };
-        let select_str = select_exprs.join(",\n  ");
-        let group_by_str = group_by_positions.join(", ");
-
-        Ok(format!(
-            "SELECT\n  {select_str}\nFROM {from_clause}\nGROUP BY {group_by_str}"
-        ))
+        let mut sql = format!(
+            "SELECT\n  {}\nFROM {from_clause}",
+            select_exprs.join(",\n  ")
+        );
+        if !group_by_positions.is_empty() {
+            sql.push_str(&format!("\nGROUP BY {}", group_by_positions.join(", ")));
+        }
+        Ok(sql)
     }
 
     /// Export semantic graph catalog metadata in Postgres-compatible format.
@@ -7973,6 +8003,144 @@ models:
         assert!(sql.contains("SUM(amount) as revenue_raw"));
         assert!(sql.contains("FROM orders"));
         assert!(sql.contains("GROUP BY 1, 2"));
+    }
+
+    #[test]
+    fn test_materialization_keeps_filtered_aggregate_populations() {
+        let runtime = SidemanticRuntime::from_yaml(
+            r#"
+models:
+  - name: orders
+    table: orders
+    metrics:
+      - name: revenue
+        agg: sum
+        sql: "{model}.amount"
+        filters: ["{model}.status = 'paid' OR status = 'shipped'", "amount > 0"]
+      - name: rows
+        agg: count
+        filters: ["status = 'paid'"]
+      - name: values
+        agg: count
+        sql: amount
+        filters: ["status = 'paid'"]
+      - name: smallest
+        agg: min
+        sql: amount
+        filters: ["status = 'paid'"]
+      - name: largest
+        agg: max
+        sql: amount
+        filters: ["status = 'paid'"]
+    pre_aggregations:
+      - name: totals
+        measures: [revenue, rows, values, smallest, largest]
+"#,
+        )
+        .unwrap();
+        let sql = runtime
+            .generate_preaggregation_materialization_sql("orders", "totals")
+            .unwrap();
+        assert_eq!(sql, "SELECT\n  SUM(CASE WHEN (status = 'paid' OR status = 'shipped') AND (amount > 0) THEN amount ELSE NULL END) as revenue_raw,\n  COUNT(CASE WHEN (status = 'paid') THEN 1 ELSE NULL END) as rows_raw,\n  COUNT(CASE WHEN (status = 'paid') THEN amount ELSE NULL END) as values_raw,\n  MIN(CASE WHEN (status = 'paid') THEN amount ELSE NULL END) as smallest_raw,\n  MAX(CASE WHEN (status = 'paid') THEN amount ELSE NULL END) as largest_raw\nFROM orders");
+    }
+
+    #[test]
+    fn test_materialization_rejects_unsafe_aggregate_states() {
+        for agg in [
+            "avg",
+            "count_distinct",
+            "median",
+            "stddev",
+            "variance",
+            "expression",
+        ] {
+            let yaml = format!(
+                r#"
+models:
+  - name: orders
+    table: orders
+    metrics:
+      - name: value
+        agg: {agg}
+        sql: amount
+    pre_aggregations:
+      - name: totals
+        measures: [value]
+"#
+            );
+            let runtime = SidemanticRuntime::from_yaml(&yaml).unwrap();
+            let error = runtime
+                .generate_preaggregation_materialization_sql("orders", "totals")
+                .unwrap_err();
+            assert!(
+                matches!(error, SidemanticError::UnsupportedSemanticFeatures { .. }),
+                "{agg}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_materialization_rejects_unsupported_rollup_definitions() {
+        for definition in [
+            "type: original_sql",
+            "type: rollup_join",
+            "type: lambda",
+            "sql: select * from orders",
+            "partition_granularity: day",
+            "build_range_start: '2024-01-01'",
+            "time_dimension: created_at",
+        ] {
+            let yaml = format!(
+                r#"
+models:
+  - name: orders
+    table: orders
+    dimensions:
+      - name: created_at
+        type: time
+    pre_aggregations:
+      - name: totals
+        {definition}
+"#
+            );
+            let runtime = SidemanticRuntime::from_yaml(&yaml).unwrap();
+            let error = runtime
+                .generate_preaggregation_materialization_sql("orders", "totals")
+                .unwrap_err();
+            assert!(
+                matches!(error, SidemanticError::UnsupportedSemanticFeatures { .. }),
+                "{definition}: {error}"
+            );
+        }
+        for definition in ["measures: [missing]", "dimensions: [missing]"] {
+            let yaml = format!("models:\n  - name: orders\n    table: orders\n    pre_aggregations:\n      - name: totals\n        {definition}\n");
+            let error = SidemanticRuntime::from_yaml(&yaml).unwrap_err();
+            assert!(error.to_string().contains("missing"), "{error}");
+        }
+    }
+
+    #[test]
+    fn test_materialization_rejects_invariant_yaml_before_build() {
+        let error = SidemanticRuntime::from_yaml(
+            r#"
+models:
+  - name: orders
+    table: orders
+    invariant_filters: ["not deleted"]
+    metrics:
+      - name: revenue
+        agg: sum
+        sql: amount
+    pre_aggregations:
+      - name: totals
+        measures: [revenue]
+"#,
+        );
+        let error = match error {
+            Err(error) => error,
+            Ok(_) => panic!("native invariant declarations must not be discarded"),
+        };
+        assert!(error.to_string().contains("invariant_filters"));
     }
 
     #[test]

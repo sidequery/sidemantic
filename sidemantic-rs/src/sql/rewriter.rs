@@ -15,14 +15,16 @@ use polyglot_sql::{
 use crate::core::{DimensionType, MetricType, SemanticGraph};
 use crate::error::{Result, SidemanticError};
 use crate::sql::SemanticQuery;
-use polyglot_sql::traversal::ExpressionWalk;
 
 type QueryPreparer<'a> = &'a dyn Fn(&mut SemanticQuery) -> Result<()>;
+
+mod policy;
 
 /// SQL query rewriter using semantic definitions
 pub struct QueryRewriter<'a> {
     graph: &'a SemanticGraph,
     query_preparer: Option<QueryPreparer<'a>>,
+    policy_definitions: &'a str,
 }
 
 impl<'a> QueryRewriter<'a> {
@@ -30,13 +32,19 @@ impl<'a> QueryRewriter<'a> {
         Self {
             graph,
             query_preparer: None,
+            policy_definitions: "",
         }
     }
 
-    /// Apply request policies before semantic planning. Other SQL shapes are
-    /// rejected because the legacy expression rewriter cannot enforce them.
-    pub(crate) fn with_query_preparer(mut self, prepare: QueryPreparer<'a>) -> Self {
+    /// Apply request policies to each semantic leaf before retaining supported
+    /// relational wrappers. Other shapes cannot enter the legacy rewriter.
+    pub(crate) fn with_query_preparer(
+        mut self,
+        prepare: QueryPreparer<'a>,
+        policy_definitions: &'a str,
+    ) -> Self {
         self.query_preparer = Some(prepare);
+        self.policy_definitions = policy_definitions;
         self
     }
 
@@ -46,17 +54,29 @@ impl<'a> QueryRewriter<'a> {
     }
 
     pub fn rewrite_with_dialect(&self, sql: &str, dialect: DialectType) -> Result<String> {
-        let statements = parse_sql_with_dialect(sql, dialect)?;
+        self.rewrite_with_output_dialect(sql, dialect, dialect)
+    }
+
+    pub(crate) fn rewrite_with_output_dialect(
+        &self,
+        sql: &str,
+        input_dialect: DialectType,
+        output_dialect: DialectType,
+    ) -> Result<String> {
+        let statements = parse_sql_with_dialect(sql, input_dialect)?;
 
         if statements.is_empty() {
             return Err(SidemanticError::SqlParse("Empty SQL".into()));
+        }
+        if self.query_preparer.is_some() && statements.len() != 1 {
+            return Err(policy::unsupported());
         }
 
         let mut rewritten_statements = Vec::new();
         for statement in statements {
             let rewritten = self.rewrite_statement(statement)?;
             rewritten_statements.push(
-                polyglot_generate(&rewritten, dialect)
+                polyglot_generate(&rewritten, output_dialect)
                     .map_err(|e| SidemanticError::SqlGeneration(e.to_string()))?,
             );
         }
@@ -65,16 +85,8 @@ impl<'a> QueryRewriter<'a> {
     }
 
     fn rewrite_statement(&self, statement: Expression) -> Result<Expression> {
-        if self.query_preparer.is_some()
-            && (!matches!(&statement, Expression::Select(select) if is_from_metrics(select.from.as_ref()))
-                || statement
-                    .dfs()
-                    .skip(1)
-                    .any(|node| matches!(node, Expression::Select(_) | Expression::Subquery(_))))
-        {
-            return Err(SidemanticError::UnsupportedSemanticFeatures {
-                capabilities: vec!["rewrite.policy_select_shape".into()],
-            });
+        if self.query_preparer.is_some() {
+            return self.rewrite_policy_statement(statement);
         }
         match statement {
             Expression::Select(select) => {
@@ -181,6 +193,27 @@ impl<'a> QueryRewriter<'a> {
         let mut query_models = referenced_models.clone();
         query_models.extend(model_refs.iter().map(|(model_name, _)| model_name.clone()));
         self.ensure_queryable_sources(&query_models)?;
+        // Computed identities are implemented by the structured planner. The
+        // legacy expression path has separate join and aggregation semantics.
+        if let Some((base, _)) = model_refs.first() {
+            for target in &referenced_models {
+                if let Ok(path) = self.graph.find_join_path(base, target) {
+                    for step in path.steps {
+                        query_models.insert(step.from_model);
+                        query_models.insert(step.to_model);
+                    }
+                }
+            }
+        }
+        for name in &query_models {
+            if let Some(model) = self.graph.get_model(name) {
+                if crate::core::has_computed_keys(self.graph, model)? {
+                    return Err(SidemanticError::UnsupportedSemanticFeatures {
+                        capabilities: vec!["rewrite.computed_key_query_shape".into()],
+                    });
+                }
+            }
+        }
 
         // Find models that need to be joined (referenced but not in FROM)
         let base_model = model_refs.first().map(|(m, _)| m.clone());

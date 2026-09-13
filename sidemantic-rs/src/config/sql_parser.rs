@@ -1921,6 +1921,11 @@ fn build_metric(props: &HashMap<String, String>) -> Option<Metric> {
     metric.format = props.get("format").cloned();
     metric.value_format_name = props.get("value_format_name").cloned();
     metric.non_additive_dimension = props.get("non_additive_dimension").cloned();
+    metric.non_additive_window = props.get("non_additive_window").cloned();
+    if let Some(groupings) = props.get("non_additive_window_groupings") {
+        metric.non_additive_window_groupings =
+            Some(json_value_to_string_list(parse_literal(groupings)));
+    }
 
     if let Some(fill_nulls_with) = props.get("fill_nulls_with") {
         let parsed = parse_literal(fill_nulls_with);

@@ -351,6 +351,12 @@ pub struct Metric {
     /// Dimension across which this metric is non-additive
     #[serde(default)]
     pub non_additive_dimension: Option<String>,
+    /// First or last snapshot value; omitted means max.
+    #[serde(default)]
+    pub non_additive_window: Option<String>,
+    /// Entity dimensions partitioning snapshot selection before query aggregation.
+    #[serde(default)]
+    pub non_additive_window_groupings: Option<Vec<String>>,
     /// Whether metric is visible in API/UI.
     #[serde(default = "default_true")]
     pub public: bool,
@@ -400,6 +406,8 @@ impl Metric {
             value_format_name: None,
             drill_fields: None,
             non_additive_dimension: None,
+            non_additive_window: None,
+            non_additive_window_groupings: None,
             public: true,
         }
     }
@@ -905,6 +913,25 @@ pub struct PreAggregation {
 }
 
 impl PreAggregation {
+    /// SQL result columns must identify one dimension or aggregate state each.
+    pub fn has_unique_output_names(&self) -> bool {
+        let mut names = std::collections::HashSet::new();
+        for dimension in self.dimensions.iter().flatten() {
+            if !names.insert(dimension.to_lowercase()) {
+                return false;
+            }
+        }
+        if let (Some(dimension), Some(grain)) = (&self.time_dimension, &self.granularity) {
+            if !names.insert(format!("{dimension}_{grain}").to_lowercase()) {
+                return false;
+            }
+        }
+        self.measures
+            .iter()
+            .flatten()
+            .all(|measure| names.insert(format!("{measure}_raw").to_lowercase()))
+    }
+
     /// Returns pre-aggregation table name in [database.][schema.]model_preagg_name form.
     pub fn table_name(
         &self,

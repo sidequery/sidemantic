@@ -265,6 +265,8 @@ impl CubeMeasure {
             value_format_name: None,
             drill_fields: None,
             non_additive_dimension: None,
+            non_additive_window: None,
+            non_additive_window_groupings: None,
             public: true,
         }
     }

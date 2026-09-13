@@ -4,6 +4,8 @@
 #include "duckdb/parser/parser.hpp"
 #include "duckdb/parser/statement/extension_statement.hpp"
 #include "duckdb/function/table_function.hpp"
+#include "duckdb/common/vector_operations/binary_executor.hpp"
+#include "duckdb/common/vector_operations/ternary_executor.hpp"
 #include "sidemantic.h"
 
 #include <cctype>
@@ -205,6 +207,55 @@ static void SidemanticRewriteSqlFunction(DataChunk &args, ExpressionState &state
 }
 
 //=============================================================================
+// Stateless SemanticInput entrypoints retain policies in the canonical input.
+// Reject NULs before crossing the C string boundary instead of truncating input.
+static string SemanticInputArgument(string_t value) {
+    auto text = value.GetString();
+    if (text.find('\0') != string::npos) {
+        throw InvalidInputException("SemanticInput argument contains a NUL byte");
+    }
+    return text;
+}
+
+static string_t SemanticInputResult(Vector &result, SidemanticRewriteResult compiled) {
+    if (compiled.error) {
+        string message(compiled.error);
+        sidemantic_free_result(compiled);
+        throw InvalidInputException("SemanticInput failed: %s", message);
+    }
+    if (!compiled.sql) {
+        sidemantic_free_result(compiled);
+        throw InvalidInputException("SemanticInput returned no SQL");
+    }
+    string sql(compiled.sql);
+    sidemantic_free_result(compiled);
+    return StringVector::AddString(result, sql);
+}
+
+static void SidemanticCompileSemanticInputFunction(DataChunk &args, ExpressionState &state,
+                                                  Vector &result) {
+    BinaryExecutor::Execute<string_t, string_t, string_t>(
+        args.data[0], args.data[1], result, args.size(), [&](string_t input, string_t query) {
+            auto input_json = SemanticInputArgument(input);
+            auto query_json = SemanticInputArgument(query);
+            return SemanticInputResult(result,
+                sidemantic_compile_semantic_input(input_json.c_str(), query_json.c_str()));
+        });
+}
+
+static void SidemanticRewriteSemanticInputFunction(DataChunk &args, ExpressionState &state,
+                                                  Vector &result) {
+    TernaryExecutor::Execute<string_t, string_t, string_t, string_t>(
+        args.data[0], args.data[1], args.data[2], result, args.size(),
+        [&](string_t input, string_t sql, string_t context) {
+            auto input_json = SemanticInputArgument(input);
+            auto sql_text = SemanticInputArgument(sql);
+            auto context_json = SemanticInputArgument(context);
+            return SemanticInputResult(result, sidemantic_rewrite_semantic_input(
+                input_json.c_str(), sql_text.c_str(), context_json.c_str()));
+        });
+}
+
 // PARSER EXTENSION
 //=============================================================================
 
@@ -1084,6 +1135,12 @@ static void LoadInternal(ExtensionLoader &loader) {
                                         LogicalType::VARCHAR,
                                         SidemanticRewriteSqlFunction);
     loader.RegisterFunction(rewrite_func);
+    loader.RegisterFunction(ScalarFunction("sidemantic_compile_semantic_input",
+        {LogicalType::VARCHAR, LogicalType::VARCHAR}, LogicalType::VARCHAR,
+        SidemanticCompileSemanticInputFunction));
+    loader.RegisterFunction(ScalarFunction("sidemantic_rewrite_semantic_input",
+        {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR}, LogicalType::VARCHAR,
+        SidemanticRewriteSemanticInputFunction));
 }
 
 void SidemanticExtension::Load(ExtensionLoader &loader) {

@@ -1432,6 +1432,60 @@ pub extern "C" fn sidemantic_rewrite_for_context(
     }
 }
 
+fn semantic_result(result: std::result::Result<String, *mut c_char>) -> SidemanticRewriteResult {
+    let result = result.and_then(|sql| {
+        CString::new(sql).map_err(|_| to_c_string("Error: generated SQL contains a NUL byte"))
+    });
+    match result {
+        Ok(sql) => SidemanticRewriteResult {
+            sql: sql.into_raw(),
+            error: ptr::null_mut(),
+            was_rewritten: true,
+        },
+        Err(error) => SidemanticRewriteResult {
+            sql: ptr::null_mut(),
+            error,
+            was_rewritten: false,
+        },
+    }
+}
+
+fn semantic_error(error: impl std::fmt::Display) -> *mut c_char {
+    // Error text can include user input; retain an error even for embedded NULs.
+    to_c_string(&format!("Error: {error}").replace('\0', "\\0"))
+}
+
+/// Compile a versioned SemanticInput without changing the legacy session graph.
+/// Caller must free the result with `sidemantic_free_result`.
+#[no_mangle]
+pub extern "C" fn sidemantic_compile_semantic_input(
+    input_json: *const c_char,
+    query_json: *const c_char,
+) -> SidemanticRewriteResult {
+    semantic_result((|| {
+        let input = c_string_arg(input_json, "input_json")?;
+        let query = c_string_arg(query_json, "query_json")?;
+        crate::semantic_input::compile_with_semantic_input(&input, &query).map_err(semantic_error)
+    })())
+}
+
+/// Rewrite using a versioned SemanticInput and caller policy context.
+/// Caller must free the result with `sidemantic_free_result`.
+#[no_mangle]
+pub extern "C" fn sidemantic_rewrite_semantic_input(
+    input_json: *const c_char,
+    sql: *const c_char,
+    context_json: *const c_char,
+) -> SidemanticRewriteResult {
+    semantic_result((|| {
+        let input = c_string_arg(input_json, "input_json")?;
+        let sql = c_string_arg(sql, "sql")?;
+        let context = c_string_arg(context_json, "context_json")?;
+        crate::semantic_input::rewrite_with_semantic_input_context(&input, &sql, &context)
+            .map_err(semantic_error)
+    })())
+}
+
 /// Free a string returned by sidemantic functions
 #[no_mangle]
 pub extern "C" fn sidemantic_free(ptr: *mut c_char) {
@@ -1487,6 +1541,54 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     static TEST_MUTEX: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+
+    #[test]
+    fn semantic_input_ffi_compiles_and_rewrites_with_context() {
+        let input = CString::new(include_str!("../tests/fixtures/semantic_host.json")).unwrap();
+        let query = CString::new(
+            r#"{"metrics":["orders.revenue"],"user_attributes":{"tenant":"a"},"enforce_visibility":true}"#,
+        ).unwrap();
+        let sql = CString::new("select orders.revenue from metrics").unwrap();
+        let context =
+            CString::new(r#"{"user_attributes":{"tenant":"a"},"enforce_visibility":true}"#)
+                .unwrap();
+        for result in [
+            sidemantic_compile_semantic_input(input.as_ptr(), query.as_ptr()),
+            sidemantic_rewrite_semantic_input(input.as_ptr(), sql.as_ptr(), context.as_ptr()),
+        ] {
+            assert!(result.error.is_null());
+            assert!(!result.sql.is_null());
+            assert!(result.was_rewritten);
+            let generated = unsafe { CStr::from_ptr(result.sql).to_str().unwrap() };
+            assert!(generated.contains("tenant"));
+            assert!(generated.contains("deleted"));
+            sidemantic_free_result(result);
+        }
+    }
+
+    #[test]
+    fn semantic_input_ffi_rejects_invalid_arguments_and_denied_queries() {
+        let input = CString::new(include_str!("../tests/fixtures/semantic_host.json")).unwrap();
+        let denied_query = CString::new(r#"{"metrics":["orders.revenue"]}"#).unwrap();
+        let sql = CString::new("select orders.revenue from metrics").unwrap();
+        let empty_context = CString::new("{}").unwrap();
+        let invalid_utf8 = [0xff_u8, 0];
+        for result in [
+            sidemantic_compile_semantic_input(ptr::null(), denied_query.as_ptr()),
+            sidemantic_compile_semantic_input(input.as_ptr(), ptr::null()),
+            sidemantic_compile_semantic_input(invalid_utf8.as_ptr().cast(), denied_query.as_ptr()),
+            sidemantic_compile_semantic_input(input.as_ptr(), denied_query.as_ptr()),
+            sidemantic_rewrite_semantic_input(input.as_ptr(), sql.as_ptr(), ptr::null()),
+            sidemantic_rewrite_semantic_input(input.as_ptr(), sql.as_ptr(), empty_context.as_ptr()),
+            semantic_result(Ok("select '\0'".to_owned())),
+            semantic_result(Err(semantic_error("bad\0input"))),
+        ] {
+            assert!(result.sql.is_null());
+            assert!(!result.error.is_null());
+            assert!(!result.was_rewritten);
+            sidemantic_free_result(result);
+        }
+    }
 
     fn test_lock() -> MutexGuard<'static, ()> {
         TEST_MUTEX.lock().unwrap()

@@ -1337,7 +1337,11 @@ class SemanticLayer:
                 from sidemantic.rust_bridge import validate_semantic_input
 
                 return validate_semantic_input(
-                    self.graph, metrics, dimensions, input_dialect=self.dialect, rust_module=self._rust_module
+                    self.graph,
+                    metrics,
+                    dimensions,
+                    input_dialect="duckdb" if self.dialect == "postgres" else self.dialect,
+                    rust_module=self._rust_module,
                 )
             except (RustBackendUnavailableError, UnsupportedSemanticFeaturesError) as exc:
                 if self._strict_rust_query_validation or self._rust_no_fallback:
@@ -1548,7 +1552,14 @@ class SemanticLayer:
             from sidemantic.rust_bridge import compile_semantic_input
 
             payload["dialect"] = dialect or self.dialect
-            sql = compile_semantic_input(self.graph, payload, input_dialect=self.dialect, rust_module=self._rust_module)
+            # The adapter selects output/query syntax, not model-expression syntax.
+            sql = compile_semantic_input(
+                self.graph,
+                payload,
+                input_dialect="duckdb" if self.dialect == "postgres" else self.dialect,
+                rust_module=self._rust_module,
+                **({"query_dialect": "postgres"} if self.dialect == "postgres" else {}),
+            )
             if not sql.strip():
                 raise ValueError("Rust SQL generator returned empty SQL")
 

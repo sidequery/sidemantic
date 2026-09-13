@@ -286,6 +286,13 @@ def _unrepresented_state_diagnostics(graph: SemanticGraph) -> list[OssieDiagnost
                 f"Relationship {model.name}.{relationship.name}",
             )
     for metric in [*graph.metrics.values(), *(metric for model in graph.models.values() for metric in model.metrics)]:
+        # Lowering records dialect provenance alongside the selected SQL. As
+        # with model source annotations, these do not add native semantics.
+        source_annotations = (
+            {"metadata"}
+            if not set(metric.metadata or {}) - {"ossie_expression_dialect", "ossie_target_dialect"}
+            else set()
+        )
         check(
             metric,
             {
@@ -301,7 +308,8 @@ def _unrepresented_state_diagnostics(graph: SemanticGraph) -> list[OssieDiagnost
                 "logical_data_type",
                 "description",
                 "public",
-            },
+            }
+            | source_annotations,
             f"Metric {metric.name!r}",
         )
     for name in ("parameters", "table_calculations", "explores", "saved_queries", "metadata", "import_warnings"):

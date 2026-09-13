@@ -127,6 +127,16 @@ SidemanticRewriteResult sidemantic_rewrite(const char *sql);
 SidemanticRewriteResult sidemantic_rewrite_for_context(const char *context, const char *sql);
 
 /*
+ * Stateless, policy-aware SemanticInput v1 entrypoints. All arguments must be
+ * non-NULL, NUL-terminated UTF-8 strings. Context is query context JSON (use
+ * "{}" for no caller attributes). Neither function changes loaded YAML models.
+ * Free every returned result with sidemantic_free_result(). On success sql is
+ * non-NULL and was_rewritten is true; on failure error is non-NULL.
+ */
+SidemanticRewriteResult sidemantic_compile_semantic_input(const char *input_json, const char *query_json);
+SidemanticRewriteResult sidemantic_rewrite_semantic_input(const char *input_json, const char *sql, const char *context_json);
+
+/*
  * Free a string returned by sidemantic functions.
  */
 void sidemantic_free(char *ptr);

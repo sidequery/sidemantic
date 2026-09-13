@@ -197,10 +197,8 @@
   query: {metrics: [collisions.empty_revenue]}
   columns: [empty_revenue]
   rows: [[0]]
-  rust_unsupported: [metric.fill_nulls_with]
 - name: complete_aggregate_physical_filter
   source: native/complete_filter
   query: {metrics: [collisions.filtered_revenue]}
   columns: [filtered_revenue]
   rows: [[2]]
-  rust_unsupported: [metric.complete_filters]

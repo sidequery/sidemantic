@@ -325,6 +325,28 @@ impl SemanticGraph {
             .get(self.role_models.get(name).map_or(name, String::as_str))
     }
 
+    /// Physical key names on resolved join edges for a canonical declaration.
+    pub(crate) fn join_key_names(&self, canonical: &str) -> HashSet<String> {
+        let mut keys = HashSet::new();
+        for (instance, edges) in &self.adjacency {
+            for (target, from_keys, to_keys, _, _, _) in edges {
+                if self
+                    .get_model(instance)
+                    .is_some_and(|model| model.name == canonical)
+                {
+                    keys.extend(from_keys.iter().cloned());
+                }
+                if self
+                    .get_model(target)
+                    .is_some_and(|model| model.name == canonical)
+                {
+                    keys.extend(to_keys.iter().cloned());
+                }
+            }
+        }
+        keys
+    }
+
     /// Canonical declarations and independently addressable role instances.
     pub fn model_instances(&self) -> impl Iterator<Item = &str> {
         self.models
@@ -620,7 +642,7 @@ impl SemanticGraph {
                     rel.related_model().to_string()
                 };
                 if is_role {
-                    if rel.r#type == RelationshipType::ManyToMany {
+                    if rel.r#type == RelationshipType::ManyToMany && rel.through.is_none() {
                         return Err(SidemanticError::UnsupportedSemanticFeatures {
                             capabilities: vec!["relationship.roles.many_to_many".into()],
                         });
@@ -640,6 +662,20 @@ impl SemanticGraph {
                     }
                     roles.insert(target.clone(), rel.related_model().to_string());
                     owners.insert(target.clone(), instance.clone());
+                    if let Some(through) = &rel.through {
+                        if rel.r#type == RelationshipType::ManyToMany {
+                            // A bridge belongs to this relationship instance. Sharing
+                            // its canonical alias mixes keys from alternate roles.
+                            let bridge = format!("{target}$through");
+                            if self.models.contains_key(&bridge) || roles.contains_key(&bridge) {
+                                return Err(SidemanticError::Validation(format!(
+                                    "Relationship bridge instance '{bridge}' collides with another model"
+                                )));
+                            }
+                            roles.insert(bridge.clone(), through.clone());
+                            owners.insert(bridge, instance.clone());
+                        }
+                    }
                     instances.push((target.clone(), rel.related_model().to_string()));
                     pending.push_back((target.clone(), rel.related_model().to_string(), depth + 1));
                 }
@@ -679,6 +715,13 @@ impl SemanticGraph {
                             continue;
                         }
 
+                        let through_instance =
+                            if instance != canonical || rel.target_model.is_some() {
+                                format!("{related_instance}$through")
+                            } else {
+                                through_name.clone()
+                            };
+
                         let (source_fks, target_fks) = rel.junction_key_columns();
                         if source_fks.is_empty() || target_fks.is_empty() {
                             continue;
@@ -709,7 +752,7 @@ impl SemanticGraph {
 
                         // source -> through (one_to_many)
                         self.adjacency.entry(instance.clone()).or_default().push((
-                            through_name.clone(),
+                            through_instance.clone(),
                             source_pk.clone(),
                             source_fks.clone(),
                             RelationshipType::OneToMany,
@@ -718,7 +761,7 @@ impl SemanticGraph {
                         ));
                         // through -> source (many_to_one)
                         self.adjacency
-                            .entry(through_name.clone())
+                            .entry(through_instance.clone())
                             .or_default()
                             .push((
                                 instance.clone(),
@@ -731,7 +774,7 @@ impl SemanticGraph {
 
                         // through -> target (many_to_one)
                         self.adjacency
-                            .entry(through_name.clone())
+                            .entry(through_instance.clone())
                             .or_default()
                             .push((
                                 related_instance.clone(),
@@ -746,7 +789,7 @@ impl SemanticGraph {
                             .entry(related_instance.clone())
                             .or_default()
                             .push((
-                                through_name.clone(),
+                                through_instance,
                                 target_pk,
                                 target_fks,
                                 RelationshipType::OneToMany,
@@ -1158,6 +1201,42 @@ mod tests {
             graph.find_join_path("inactive", "airports"),
             Err(SidemanticError::NoJoinPath { .. })
         ));
+    }
+
+    #[test]
+    fn many_to_many_roles_have_independent_bridge_instances() {
+        let mut graph = SemanticGraph::new();
+        graph
+            .add_model(Model::new("tags", "id").with_table("tags"))
+            .unwrap();
+        graph
+            .add_model(Model::new("links", "id").with_table("links"))
+            .unwrap();
+        let mut orders = Model::new("orders", "id").with_table("orders");
+        for (name, key) in [
+            ("primary_tags", "primary_tag"),
+            ("secondary_tags", "secondary_tag"),
+        ] {
+            let mut relationship = role(name, "tags", "order_id");
+            relationship.r#type = RelationshipType::ManyToMany;
+            relationship.through = Some("links".into());
+            relationship.through_foreign_key = Some("order_id".into());
+            relationship.related_foreign_key = Some(key.into());
+            orders.relationships.push(relationship);
+        }
+        graph.add_model(orders).unwrap();
+        for (name, key) in [
+            ("primary_tags", "primary_tag"),
+            ("secondary_tags", "secondary_tag"),
+        ] {
+            let bridge = format!("{name}$through");
+            let path = graph.find_join_path("orders", name).unwrap();
+            assert_eq!(path.steps.len(), 2);
+            assert_eq!(path.steps[0].to_model, bridge);
+            assert_eq!(path.steps[1].from_keys, vec![key.to_string()]);
+            assert_eq!(graph.get_model(&bridge).unwrap().name, "links");
+            assert_eq!(graph.role_root_owner(&bridge), Some("orders"));
+        }
     }
 
     #[test]

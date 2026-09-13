@@ -9,8 +9,8 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
 use crate::core::{
-    parse_semantic_expression, Dimension, Metric, Model, Parameter, Relationship, Segment,
-    SemanticGraph,
+    parse_semantic_expression, Dimension, Metric, Model, Parameter, PreAggregation, Relationship,
+    Segment, SemanticGraph,
 };
 use crate::error::{Result, SidemanticError};
 use crate::runtime::{
@@ -51,7 +51,6 @@ pub struct SemanticInput {
     pub source: Value,
     validation_context: QueryValidationContext,
     policies: HashMap<String, policies::ModelPolicies>,
-    has_preaggregations: bool,
 }
 
 fn invalid(path: &str, message: impl std::fmt::Display) -> SidemanticError {
@@ -201,15 +200,151 @@ fn key_columns(value: Value, path: &str) -> Result<Vec<String>> {
     }
 }
 
-fn decode_metric(value: Value, path: &str) -> Result<Metric> {
+// Only direct aggregate inputs have an equivalent source-local filtered state.
+// Keep the complete declaration in `source`; lower this checked executable copy.
+fn lower_complete_filter(
+    raw: &mut Map<String, Value>,
+    owner: Option<&str>,
+    path: &str,
+) -> Result<()> {
+    use polyglot_sql::Expression;
+    let owner = owner.ok_or_else(|| unsupported("metric.complete_filters"))?;
+    if raw
+        .get("type")
+        .and_then(Value::as_str)
+        .is_some_and(|kind| !matches!(kind, "simple" | "derived"))
+    {
+        return Err(unsupported("metric.complete_filters"));
+    }
+    let sql = raw
+        .get("sql")
+        .and_then(Value::as_str)
+        .ok_or_else(|| invalid(path, "complete metric requires SQL"))?;
+    let expression =
+        parse_semantic_expression(sql).map_err(|_| unsupported("metric.complete_filters"))?;
+    let (aggregation, input) = match &expression {
+        Expression::Sum(aggregate) | Expression::Min(aggregate) | Expression::Max(aggregate)
+            if !aggregate.distinct
+                && aggregate.filter.is_none()
+                && aggregate.order_by.is_empty()
+                && aggregate.ignore_nulls.is_none()
+                && aggregate.having_max.is_none()
+                && aggregate.limit.is_none() =>
+        {
+            let aggregation = match &expression {
+                Expression::Sum(_) => "sum",
+                Expression::Min(_) => "min",
+                _ => "max",
+            };
+            (aggregation, &aggregate.this)
+        }
+        Expression::Count(count)
+            if !count.star
+                && !count.distinct
+                && count.filter.is_none()
+                && count.ignore_nulls.is_none() =>
+        {
+            (
+                "count",
+                count
+                    .this
+                    .as_ref()
+                    .ok_or_else(|| unsupported("metric.complete_filters"))?,
+            )
+        }
+        _ => return Err(unsupported("metric.complete_filters")),
+    };
+    let Expression::Column(column) = input else {
+        return Err(unsupported("metric.complete_filters"));
+    };
+    if column.join_mark
+        || column
+            .table
+            .as_ref()
+            .is_some_and(|table| table.name != owner)
+    {
+        return Err(unsupported("metric.complete_filters"));
+    }
+    let mut column = column.clone();
+    column.table = None;
+    let input = polyglot_sql::generate(&Expression::Column(column), DialectType::DuckDB)
+        .map_err(|error| invalid(path, error))?;
+    let filters: Vec<String> = deserialize(raw.get("filters").cloned().unwrap_or_default(), path)?;
+    let filters = filters
+        .iter()
+        .map(|filter| {
+            let expression = parse_semantic_expression(filter)
+                .map_err(|_| unsupported("metric.complete_filters"))?;
+            if !SqlGenerator::preaggregation_filter_shape(&expression) {
+                return Err(unsupported("metric.complete_filters"));
+            }
+            // Remove only the checked semantic owner. Keep each column node's
+            // identifier and quoted state, including differently quoted occurrences
+            // of the same spelling within one predicate.
+            fn unqualify(value: &mut Value, owner: &str, path: &str) -> Result<()> {
+                match value {
+                    Value::Object(fields) if fields.len() == 1 && fields.contains_key("column") => {
+                        let mut column: polyglot_sql::expressions::Column =
+                            deserialize(fields["column"].clone(), path)?;
+                        if column
+                            .table
+                            .as_ref()
+                            .is_some_and(|table| table.name != owner)
+                        {
+                            return Err(unsupported("metric.complete_filters"));
+                        }
+                        column.table = None;
+                        fields.insert(
+                            "column".into(),
+                            serde_json::to_value(column).map_err(|error| invalid(path, error))?,
+                        );
+                    }
+                    Value::Object(fields) => {
+                        for child in fields.values_mut() {
+                            unqualify(child, owner, path)?;
+                        }
+                    }
+                    Value::Array(children) => {
+                        for child in children {
+                            unqualify(child, owner, path)?;
+                        }
+                    }
+                    _ => {}
+                }
+                Ok(())
+            }
+            let mut ast = serde_json::to_value(expression).map_err(|error| invalid(path, error))?;
+            unqualify(&mut ast, owner, path)?;
+            let expression: Expression = deserialize(ast, path)?;
+            polyglot_sql::generate(&expression, DialectType::DuckDB)
+                .map(|sql| format!("({sql})"))
+                .map_err(|error| invalid(path, error))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    raw.insert("sql".into(), json!(input));
+    raw.insert("agg".into(), json!(aggregation));
+    raw.insert("type".into(), json!("simple"));
+    raw.insert("sql_is_complete".into(), json!(false));
+    raw.insert("filters".into(), json!(filters));
+    Ok(())
+}
+
+fn decode_metric(value: Value, path: &str, owner: Option<&str>) -> Result<Metric> {
     let mut raw = object(value, path)?;
     expression_language(&mut raw, path)?;
     reject_active(&mut raw, "extends", "metric.inheritance")?;
     let complete = raw.remove("sql_is_complete").unwrap_or(json!(false));
-    let complete: bool = deserialize(complete, &format!("{path}.sql_is_complete"))?;
+    let mut complete: bool = deserialize(complete, &format!("{path}.sql_is_complete"))?;
     raw.insert("sql_is_complete".into(), json!(complete));
     if complete && raw.get("filters").is_some_and(|value| !neutral(value)) {
-        return Err(unsupported("metric.complete_filters"));
+        if raw.get("agg").is_some_and(|value| !value.is_null()) {
+            return Err(invalid(
+                path,
+                "sql_is_complete cannot also declare an aggregation",
+            ));
+        }
+        lower_complete_filter(&mut raw, owner, path)?;
+        complete = false;
     }
     if raw.get("type").is_none_or(Value::is_null) {
         let kind = if raw.get("agg").is_some_and(|value| !value.is_null()) && !complete {
@@ -234,7 +369,10 @@ fn decode_metric(value: Value, path: &str) -> Result<Metric> {
             "derived",
             "ratio",
             "cumulative",
+            "conversion",
+            "cohort",
             "time_comparison",
+            "retention",
         ]
         .contains(&kind)
         {
@@ -244,16 +382,21 @@ fn decode_metric(value: Value, path: &str) -> Result<Metric> {
     if raw.get("agg") == Some(&json!("approx_count_distinct")) {
         return Err(unsupported("metric.approx_count_distinct"));
     }
-    // These change aggregation grain or temporal semantics and are not promoted yet.
-    for field in [
-        "non_additive_dimension",
-        "window_expression",
-        "window_frame",
-        "window_order",
-        "fill_nulls_with",
-    ] {
-        if raw.get(field).is_some_and(|value| !neutral(value)) {
-            return Err(unsupported(format!("metric.{field}")));
+    if let Some(fill) = raw.get("fill_nulls_with").filter(|value| !value.is_null()) {
+        if !fill.is_number() && !fill.is_string() {
+            return Err(invalid(path, "fill_nulls_with must be a number or string"));
+        }
+        let kind = raw.get("type").and_then(Value::as_str).unwrap_or("simple");
+        if !matches!(kind, "simple" | "derived" | "ratio")
+            || raw
+                .get("offset_window")
+                .is_some_and(|value| !neutral(value))
+            || raw.get("window").is_some_and(|value| !neutral(value))
+            || raw
+                .get("grain_to_date")
+                .is_some_and(|value| !neutral(value))
+        {
+            return Err(unsupported("metric.fill_nulls_shape"));
         }
     }
     // The optional provenance fields are omitted by core serialization when None.
@@ -261,7 +404,19 @@ fn decode_metric(value: Value, path: &str) -> Result<Metric> {
     exemplar.logical_data_type = Some(String::new());
     exemplar.sql_is_complete = true;
     let metric = project(raw, exemplar, path)?;
+    if metric.non_additive_dimension.is_some() {
+        if metric.r#type != crate::core::MetricType::Simple {
+            return Err(unsupported("metric.non_additive_metric_shape"));
+        }
+        if !matches!(
+            metric.non_additive_window.as_deref(),
+            None | Some("min" | "max")
+        ) {
+            return Err(invalid(path, "non_additive_window must be min or max"));
+        }
+    }
     SqlGenerator::validate_temporal_metric(&metric)?;
+    SqlGenerator::validate_retention_metric(&metric)?;
     Ok(metric)
 }
 
@@ -271,9 +426,19 @@ fn decode_relationship(value: Value, path: &str) -> Result<Relationship> {
         return Err(unsupported("relationship.cross"));
     }
     if raw.get("type") == Some(&json!("many_to_many")) {
-        return Err(unsupported("relationship.many_to_many"));
+        if raw.get("through").is_none_or(Value::is_null) {
+            return Err(unsupported("relationship.many_to_many.without_through"));
+        }
+        if raw.get("sql").is_some_and(|value| !value.is_null()) {
+            return Err(unsupported("relationship.many_to_many.custom_sql"));
+        }
     }
-    for field in ["foreign_key", "primary_key"] {
+    for field in [
+        "foreign_key",
+        "primary_key",
+        "through_foreign_key",
+        "related_foreign_key",
+    ] {
         if let Some(keys) = raw.remove(field) {
             let keys = key_columns(keys, &format!("{path}.{field}"))?;
             raw.insert(
@@ -303,7 +468,22 @@ fn decode_model(value: Value, path: &str) -> Result<Model> {
     raw.remove("security");
     raw.remove("invariant_filters");
     if let Some(value) = raw.remove("pre_aggregations") {
-        let _: Vec<Value> = deserialize(value, &format!("{path}.pre_aggregations"))?;
+        let values: Vec<Value> = deserialize(value, &format!("{path}.pre_aggregations"))?;
+        let preaggregations = values
+            .into_iter()
+            .enumerate()
+            .map(|(index, value)| {
+                let path = format!("{path}.pre_aggregations[{index}]");
+                let mut raw = object(value, &path)?;
+                // Lambda freshness semantics have no executable core slot yet.
+                // Do not discard active behavior, even on an otherwise plain rollup.
+                reject_active(&mut raw, "rollups", "preaggregation.lambda")?;
+                reject_active(&mut raw, "union_with_source_data", "preaggregation.lambda")?;
+                let exemplar: PreAggregation = deserialize(json!({"name":""}), &path)?;
+                project(raw, exemplar, &path)
+            })
+            .collect::<Result<Vec<PreAggregation>>>()?;
+        raw.insert("pre_aggregations".into(), json!(preaggregations));
     }
     if raw.contains_key("primary_key_columns") {
         return Err(invalid(path, "use primary_key, not primary_key_columns"));
@@ -319,10 +499,11 @@ fn decode_model(value: Value, path: &str) -> Result<Model> {
     raw.insert("primary_key_columns".into(), json!(keys));
     if let Some(metrics) = raw.remove("metrics") {
         let metrics: Vec<Value> = deserialize(metrics, path)?;
+        let owner = raw.get("name").and_then(Value::as_str);
         let metrics = metrics
             .into_iter()
             .enumerate()
-            .map(|(i, value)| decode_metric(value, &format!("{path}.metrics[{i}]")))
+            .map(|(i, value)| decode_metric(value, &format!("{path}.metrics[{i}]"), owner))
             .collect::<Result<Vec<_>>>()?;
         raw.insert("metrics".into(), json!(metrics));
     }
@@ -366,20 +547,8 @@ fn decode_model(value: Value, path: &str) -> Result<Model> {
     }
     let mut model = project(raw, Model::new("", ""), path)?;
     let primary_keys = model.primary_keys();
-    for dimension in &model.dimensions {
-        if primary_keys.contains(&dimension.name) {
-            if let Some(sql) = &dimension.sql {
-                let expression = parse_semantic_expression(&sql.replace("{model}", &model.name))?;
-                let identity = matches!(expression, polyglot_sql::Expression::Column(column)
-                    if column.name.name == dimension.name
-                        && column.table.as_ref().is_none_or(|table| table.name == model.name));
-                if !identity {
-                    // Source keys and computed dimension outputs currently share
-                    // a projection name. Do not let key projection erase SQL.
-                    return Err(unsupported("dimension.computed_primary_key"));
-                }
-            }
-        }
+    for key in &primary_keys {
+        crate::core::key_expression(&model, key, None, DialectType::DuckDB)?;
     }
     for metric in &mut model.metrics {
         if metric.agg == Some(crate::core::Aggregation::CountDistinct)
@@ -391,7 +560,9 @@ fn decode_model(value: Value, path: &str) -> Result<Model> {
             if primary_keys.len() != 1 {
                 return Err(unsupported("metric.count_distinct_primary_key"));
             }
-            metric.sql = Some(primary_keys[0].clone());
+            // Keep the default distinct input distinct from explicit raw SQL.
+            // The generator resolves it through the same key expression used by joins.
+            metric.sql = None;
         }
     }
     Ok(model)
@@ -418,10 +589,14 @@ fn validate_semantic_dependencies(graph: &SemanticGraph, graph_metrics: &[Metric
     let mut dependencies: HashMap<String, Vec<String>> = HashMap::new();
     for (name, metric, context) in definitions {
         let mut metric_dependencies = Vec::new();
+        // `base` is the generated period-output relation, not a model. Resolve
+        // its metric name with the same ownership and cycle rules as other refs.
+        let window_dependency = SqlGenerator::window_output_dependency(metric)?;
         for expression in [
             metric.sql.as_deref(),
             metric.numerator.as_deref(),
             metric.denominator.as_deref(),
+            window_dependency.as_deref(),
         ]
         .into_iter()
         .flatten()
@@ -563,12 +738,6 @@ impl SemanticInput {
         }
         let _ = envelope.import_warnings; // Descriptive state remains in source.
         let policies = policies::decode(&envelope.models)?;
-        let has_preaggregations = envelope.models.iter().any(|model| {
-            model
-                .get("pre_aggregations")
-                .and_then(Value::as_array)
-                .is_some_and(|values| !values.is_empty())
-        });
         let mut graph = SemanticGraph::new();
         let mut models = Vec::new();
         for (index, model) in envelope.models.into_iter().enumerate() {
@@ -588,6 +757,46 @@ impl SemanticInput {
                         "relationships",
                         format!("unknown target {}", relationship.related_model()),
                     ));
+                }
+                if relationship.r#type == crate::core::RelationshipType::ManyToMany {
+                    let through = relationship
+                        .through
+                        .as_deref()
+                        .expect("decoder requires through");
+                    if !keys.contains_key(through) {
+                        return Err(invalid(
+                            "relationships.through",
+                            format!("unknown bridge {through}"),
+                        ));
+                    }
+                    let source_keys = &keys[&model.name];
+                    let target_keys = relationship
+                        .primary_key_columns
+                        .clone()
+                        .filter(|keys| !keys.is_empty())
+                        .unwrap_or_else(|| keys[relationship.related_model()].clone());
+                    let source_foreign = relationship
+                        .through_foreign_key_columns
+                        .clone()
+                        .unwrap_or_default();
+                    let target_foreign = relationship
+                        .related_foreign_key_columns
+                        .clone()
+                        .unwrap_or_default();
+                    if source_keys.is_empty() || target_keys.is_empty() {
+                        return Err(unsupported("relationship.unknown_primary_key"));
+                    }
+                    if source_foreign.is_empty() || target_foreign.is_empty() {
+                        return Err(invalid("relationships", "many-to-many relationships require explicit through_foreign_key and related_foreign_key"));
+                    }
+                    if source_keys.len() != source_foreign.len()
+                        || target_keys.len() != target_foreign.len()
+                    {
+                        return Err(invalid("relationships", "junction key arity mismatch"));
+                    }
+                    relationship.primary_key = target_keys.first().cloned();
+                    relationship.primary_key_columns = Some(target_keys);
+                    continue;
                 }
                 if relationship.sql.is_some() {
                     continue;
@@ -625,7 +834,12 @@ impl SemanticInput {
         }
         let mut metrics = Vec::new();
         for (index, metric) in envelope.metrics.into_iter().enumerate() {
-            let metric = decode_metric(metric, &format!("metrics[{index}]"))?;
+            let owner = metric
+                .get("name")
+                .and_then(Value::as_str)
+                .and_then(|name| envelope.metric_owners.get(name))
+                .cloned();
+            let metric = decode_metric(metric, &format!("metrics[{index}]"), owner.as_deref())?;
             if metric.agg == Some(crate::core::Aggregation::CountDistinct)
                 && metric
                     .sql
@@ -652,7 +866,6 @@ impl SemanticInput {
             source,
             validation_context: QueryValidationContext::from_top_level_metrics(&metrics),
             policies,
-            has_preaggregations,
         })
     }
 }
@@ -731,10 +944,14 @@ fn compile_semantic_input(input_json: &str, query_json: &str) -> Result<String> 
         payload.enforce_visibility,
         dialect,
     )?;
-    if query.prepared_policies.has_row_filters() {
+    if query.prepared_policies.has_row_filters()
+        || query
+            .prepared_policies
+            .invariant_filters
+            .values()
+            .any(|filters| !filters.is_empty())
+    {
         query.use_preaggregations = false;
-    } else if query.use_preaggregations && input.has_preaggregations {
-        return Err(unsupported("model.pre_aggregations"));
     }
     SqlGenerator::new(&input.graph)
         .with_dialect(dialect)
@@ -763,6 +980,7 @@ pub fn rewrite_with_semantic_input(input_json: &str, sql: &str) -> Result<String
 #[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RewriteContext {
+    output_dialect: Option<String>,
     user_attributes: Option<Map<String, Value>>,
     #[serde(default)]
     enforce_visibility: bool,
@@ -777,6 +995,20 @@ pub fn rewrite_with_semantic_input_context(
         let input = SemanticInput::decode(input_json)?;
         let context: RewriteContext = serde_json::from_str(context_json)
             .map_err(|error| invalid("rewrite.context", error))?;
+        let output_dialect = context
+            .output_dialect
+            .as_deref()
+            .unwrap_or("duckdb")
+            .parse::<DialectType>()
+            .map_err(|error| invalid("rewrite.context.output_dialect", error))?;
+        if !matches!(
+            output_dialect,
+            DialectType::DuckDB | DialectType::PostgreSQL
+        ) {
+            return Err(unsupported(format!(
+                "rewrite.output_dialect.{output_dialect}"
+            )));
+        }
         let requires_policies = context.user_attributes.is_some()
             || context.enforce_visibility
             || input
@@ -784,21 +1016,25 @@ pub fn rewrite_with_semantic_input_context(
                 .values()
                 .any(|policy| policy.security.is_some() || !policy.invariant_filters.is_empty());
         let prepare = |query: &mut SemanticQuery| {
-            query.prepared_policies = policies::prepare(
+            query.prepared_policies = policies::prepare_for_rewrite(
                 &input.graph,
                 &input.policies,
                 query,
                 context.user_attributes.as_ref(),
                 context.enforce_visibility,
-                DialectType::DuckDB,
+                output_dialect,
             )?;
             Ok(())
         };
         let mut rewriter = QueryRewriter::new(&input.graph);
+        // Policy declarations live outside the ordinary Model graph. Reserve
+        // their source names too, before the rewriter allocates any user CTE.
+        let policy_definitions = serde_json::to_string(&input.policies)
+            .map_err(|error| invalid("rewrite.policy_definitions", error))?;
         if requires_policies {
-            rewriter = rewriter.with_query_preparer(&prepare);
+            rewriter = rewriter.with_query_preparer(&prepare, &policy_definitions);
         }
-        rewriter.rewrite_with_dialect(sql, DialectType::DuckDB)
+        rewriter.rewrite_with_output_dialect(sql, DialectType::DuckDB, output_dialect)
     })
 }
 
@@ -865,6 +1101,33 @@ mod tests {
         source = input();
         source["models"][0]["dimensions"][0]["mystery"] = json!(1);
         assert!(SemanticInput::from_json(&source.to_string()).is_err());
+    }
+
+    #[test]
+    fn handoff_rollups_are_checked_and_mandatory_filters_bypass_them() {
+        let mut source = input();
+        source["models"][0]["pre_aggregations"] = json!([{"name":"total", "measures":["revenue"], "rollups":null, "union_with_source_data":false}]);
+        let query = r#"{"metrics":["orders.revenue"],"use_preaggregations":true}"#;
+        let sql = compile_with_semantic_input(&source.to_string(), query).unwrap();
+        assert!(sql.contains("orders_preagg_total"), "{sql}");
+        source["models"][0]["invariant_filters"] = json!(["not deleted"]);
+        let sql = compile_with_semantic_input(&source.to_string(), query).unwrap();
+        assert!(!sql.contains("orders_preagg_total"), "{sql}");
+        assert!(sql.contains("NOT deleted"), "{sql}");
+        source["models"][0]["pre_aggregations"][0]["unexpected"] = json!(true);
+        assert!(matches!(
+            SemanticInput::from_json(&source.to_string()),
+            Err(SidemanticError::ValidationIssue { .. })
+        ));
+        source["models"][0]["pre_aggregations"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("unexpected");
+        source["models"][0]["pre_aggregations"][0]["union_with_source_data"] = json!(true);
+        assert!(matches!(
+            SemanticInput::from_json(&source.to_string()),
+            Err(SidemanticError::UnsupportedSemanticFeatures { .. })
+        ));
     }
 
     #[test]
@@ -1301,18 +1564,39 @@ mod tests {
     }
 
     #[test]
-    fn computed_primary_key_dimensions_cannot_be_silently_erased() {
+    fn computed_primary_key_dimensions_preserve_source_expression() {
         let mut source = input();
         source["models"][0]["primary_key"] = json!(["id"]);
         source["models"][0]["dimensions"] =
             json!([{"name":"id", "type":"numeric", "sql":"id * 10"}]);
-        assert!(matches!(
-            SemanticInput::from_json(&source.to_string()),
-            Err(SidemanticError::UnsupportedSemanticFeatures { capabilities })
-                if capabilities == vec!["dimension.computed_primary_key"]
-        ));
+        let sql =
+            compile_with_semantic_input(&source.to_string(), r#"{"dimensions":["orders.id"]}"#)
+                .unwrap();
+        assert!(sql.contains("orders_cte.id * 10 AS id"), "{sql}");
         source["models"][0]["dimensions"][0]["sql"] = json!("\"orders\".\"id\"");
         assert!(SemanticInput::from_json(&source.to_string()).is_ok());
+    }
+
+    #[test]
+    fn computed_primary_key_rejects_nonlocal_or_nondeterministic_expressions() {
+        let mut source = input();
+        source["models"][0]["primary_key"] = json!(["id"]);
+        for sql in [
+            "random()",
+            "SUM(id)",
+            "other.id",
+            "row_number() OVER ()",
+            "(SELECT id FROM other)",
+            "1",
+        ] {
+            source["models"][0]["dimensions"] = json!([{"name":"id", "type":"numeric", "sql":sql}]);
+            assert!(
+                matches!(SemanticInput::from_json(&source.to_string()),
+                Err(SidemanticError::UnsupportedSemanticFeatures { capabilities })
+                if capabilities == vec!["dimension.computed_key_expression"]),
+                "{sql}"
+            );
+        }
     }
 
     #[test]
@@ -1375,14 +1659,82 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_null_fills_complete_filters_and_raw_collisions_are_explicit() {
+    fn complete_filtered_aggregate_lowering_preserves_source() {
+        let mut source = input();
+        source["models"][0]["metrics"] = json!([{"name":"paid", "sql":"SUM(orders.amount)", "sql_is_complete":true, "filters":["orders.amount = 2"]}]);
+        let decoded = SemanticInput::from_json(&source.to_string()).unwrap();
+        assert_eq!(decoded.source, source);
+        let metric = decoded
+            .graph
+            .get_model("orders")
+            .unwrap()
+            .get_metric("paid")
+            .unwrap();
+        assert_eq!(metric.agg, Some(crate::core::Aggregation::Sum));
+        assert_eq!(metric.sql.as_deref(), Some("amount"));
+        assert!(!metric.sql_is_complete);
+        let sql =
+            compile_with_semantic_input(&source.to_string(), r#"{"metrics":["orders.paid"]}"#)
+                .unwrap();
+        assert!(sql.contains("CASE WHEN"), "{sql}");
+    }
+
+    #[test]
+    fn complete_filter_keeps_each_identifier_quoted_state() {
+        let mut source = input();
+        source["models"][0]["metrics"] = json!([{
+            "name": "paid", "sql": "SUM(orders.Amount)", "sql_is_complete": true,
+            "filters": ["orders.Amount > 0 AND orders.\"Amount\" = 10 AND orders.label = 'orders.Amount'"]
+        }]);
+        let decoded = SemanticInput::from_json(&source.to_string()).unwrap();
+        let metric = decoded
+            .graph
+            .get_model("orders")
+            .unwrap()
+            .get_metric("paid")
+            .unwrap();
+        assert_eq!(metric.sql.as_deref(), Some("Amount"));
+        assert_eq!(
+            metric.filters,
+            vec!["(Amount > 0 AND \"Amount\" = 10 AND label = 'orders.Amount')"]
+        );
+    }
+
+    #[test]
+    fn complete_filtered_aggregate_rejects_unproven_populations() {
+        for sql in [
+            "COUNT(*)",
+            "COUNT(1)",
+            "SUM(1)",
+            "SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END)",
+            "SUM(amount) + COUNT(amount)",
+            "SUM(amount) OVER ()",
+            "SUM((SELECT amount))",
+            "SUM(other.amount)",
+            "COUNT(DISTINCT amount)",
+            "SUM(amount) FILTER (WHERE amount > 0)",
+        ] {
+            let mut source = input();
+            source["models"][0]["metrics"] = json!([{"name":"paid", "sql":sql, "sql_is_complete":true, "filters":["amount = 2"]}]);
+            assert!(
+                matches!(SemanticInput::from_json(&source.to_string()), Err(SidemanticError::UnsupportedSemanticFeatures { capabilities }) if capabilities == vec!["metric.complete_filters"]),
+                "{sql}"
+            );
+        }
+    }
+
+    #[test]
+    fn null_fill_literals_are_checked_and_other_restrictions_remain_explicit() {
         let mut source = input();
         source["models"][0]["metrics"][0]["fill_nulls_with"] = json!(0);
-        assert!(
-            matches!(SemanticInput::from_json(&source.to_string()), Err(SidemanticError::UnsupportedSemanticFeatures { capabilities }) if capabilities == vec!["metric.fill_nulls_with"])
-        );
+        assert!(SemanticInput::from_json(&source.to_string()).is_ok());
+        source["models"][0]["metrics"][0]["fill_nulls_with"] = json!({"sql":"unsafe"});
+        assert!(matches!(
+            SemanticInput::from_json(&source.to_string()),
+            Err(SidemanticError::ValidationIssue { .. })
+        ));
         source = input();
-        source["models"][0]["metrics"] = json!([{"name":"paid", "sql":"SUM(amount)", "sql_is_complete":true, "filters":["status = 'paid'"]}]);
+        source["models"][0]["metrics"] = json!([{"name":"paid", "sql":"COUNT(*)", "sql_is_complete":true, "filters":["status = 'paid'"]}]);
         assert!(
             matches!(SemanticInput::from_json(&source.to_string()), Err(SidemanticError::UnsupportedSemanticFeatures { capabilities }) if capabilities == vec!["metric.complete_filters"])
         );
@@ -1390,6 +1742,7 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("filters");
+        source["models"][0]["metrics"][0]["sql"] = json!("SUM(amount)");
         source["models"][0]["dimensions"] =
             json!([{"name":"amount", "type":"numeric", "sql":"amount * 10"}]);
         let error = SemanticInput::from_json(&source.to_string()).err();

@@ -34,10 +34,22 @@ def _find_orphaned_models(models: dict[str, object]) -> list[str]:
     ]
 
 
-def validate_directory(directory: str | Path, *, ossie_scope_id: str | None = None) -> ValidationReport:
+def validate_directory(
+    directory: str | Path,
+    *,
+    ossie_scope_id: str | None = None,
+    authoring_mode: str = "sidemantic",
+    ossie_expression_dialect: str | None = None,
+    ossie_consumer_profile: str = "ossie-core",
+) -> ValidationReport:
     """Load and validate semantic layer definitions from a directory."""
     directory = Path(directory)
     report = ValidationReport(directory=directory)
+
+    if authoring_mode not in {"sidemantic", "ossie-portable"}:
+        raise ValueError("authoring_mode must be sidemantic or ossie-portable")
+    if authoring_mode == "ossie-portable" and not ossie_expression_dialect:
+        raise ValueError("Portable authoring requires an explicit ossie_expression_dialect")
 
     layer = SemanticLayer(engine="python")
     load_from_directory(layer, str(directory), ossie_scope_id=ossie_scope_id)
@@ -97,4 +109,23 @@ def validate_directory(directory: str | Path, *, ossie_scope_id: str | None = No
     report.info.append(f"Total metrics: {total_metrics}")
     report.info.append(f"Total relationships: {total_rels}")
 
+    if authoring_mode == "ossie-portable" and not report.errors:
+        from sidemantic.interchange.ossie import synthesize_ossie_document
+        from sidemantic.interchange.ossie.profiles import DBT_1_12_0_1_1, OSSIE_CORE_0_2_0_DEV0
+
+        # Exercise the export contract without exporting or replacing source.
+        # The scope is only an in-memory validation envelope, never a new identity.
+        profile = DBT_1_12_0_1_1 if ossie_consumer_profile == "dbt-1.12" else OSSIE_CORE_0_2_0_DEV0
+        result = synthesize_ossie_document(
+            layer.graph,
+            scope_name=ossie_scope_id or "authoring_validation",
+            expression_dialect=ossie_expression_dialect,
+            schema_version=profile.schema_version,
+            consumer_profile=ossie_consumer_profile,
+            portable_only=True,
+        )
+        destinations = {"error": report.errors, "warning": report.warnings, "info": report.info}
+        for diagnostic in result.diagnostics:
+            message = f"{diagnostic.code} {diagnostic.json_pointer}: {diagnostic.message}"
+            destinations[diagnostic.severity.value].append(message)
     return report

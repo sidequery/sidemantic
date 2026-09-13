@@ -18,6 +18,7 @@ struct Leaf {
     reference: String,
     model: String,
     metric: Metric,
+    alias: String,
 }
 
 struct Plan<'a, 'g> {
@@ -101,7 +102,6 @@ impl<'a, 'g> Plan<'a, 'g> {
         if metric.sql_is_complete
             || metric.non_additive_dimension.is_some()
             || metric.offset_window.is_some()
-            || metric.fill_nulls_with.is_some()
         {
             return Err(unsupported("calculation_shape"));
         }
@@ -131,15 +131,17 @@ impl<'a, 'g> Plan<'a, 'g> {
                 if !self.models.contains(&model) {
                     self.models.push(model.clone());
                 }
+                let alias = format!("__sidemantic_metric_{}", self.leaves.len());
                 self.leaves.push(Leaf {
                     reference: resolved.reference.clone(),
                     model: model.clone(),
                     metric: metric.clone(),
+                    alias: alias.clone(),
                 });
                 format!(
                     "{}.{}",
                     self.generator.quote_identifier(&format!("{model}_preagg")),
-                    self.generator.quote_identifier(&metric.name)
+                    self.generator.quote_identifier(&alias)
                 )
             }
             MetricType::Ratio => {
@@ -180,6 +182,7 @@ impl<'a, 'g> Plan<'a, 'g> {
             }
             _ => return Err(unsupported("calculation_shape")),
         };
+        let expression = self.generator.fill_metric_expression(metric, expression)?;
         self.active.remove(&resolved.reference);
         if metric.r#type != MetricType::Simple
             && resolved
@@ -204,6 +207,54 @@ fn conjuncts(expression: Expression, output: &mut Vec<Expression>) {
         Expression::Paren(paren) => conjuncts(paren.this, output),
         other => output.push(other),
     }
+}
+
+fn dimension_alias(index: usize) -> String {
+    format!("__sidemantic_dimension_{index}")
+}
+
+/// Normalize the ordinary compiler's public outputs at the child boundary.
+/// Each child has its own collision set because it selects different measures.
+fn child_projection(
+    generator: &SqlGenerator<'_>,
+    dimensions: &[DimensionRef],
+    leaves: &[&Leaf],
+) -> Result<Vec<String>> {
+    let references: Vec<_> = leaves.iter().map(|leaf| leaf.reference.clone()).collect();
+    let metrics = generator.parse_metric_refs(&references)?;
+    let mut collisions = HashMap::new();
+    for alias in dimensions
+        .iter()
+        .map(|dimension| &dimension.alias)
+        .chain(metrics.iter().map(|metric| &metric.alias))
+    {
+        *collisions.entry(alias.clone()).or_insert(0) += 1;
+    }
+    let mut names = HashSet::new();
+    let mut projection = Vec::new();
+    for (index, dimension) in dimensions.iter().enumerate() {
+        let source = generator.output_alias(&dimension.model, &dimension.alias, &collisions);
+        if !names.insert(source.clone()) {
+            return Err(unsupported("child_output_alias_collision"));
+        }
+        projection.push(format!(
+            "__sidemantic_source.{} AS {}",
+            generator.quote_identifier(&source),
+            dimension_alias(index)
+        ));
+    }
+    for (metric, leaf) in metrics.iter().zip(leaves) {
+        let source = generator.output_alias(&metric.model, &metric.alias, &collisions);
+        if !names.insert(source.clone()) {
+            return Err(unsupported("child_output_alias_collision"));
+        }
+        projection.push(format!(
+            "__sidemantic_source.{} AS {}",
+            generator.quote_identifier(&source),
+            leaf.alias
+        ));
+    }
+    Ok(projection)
 }
 
 /// Return None for the existing single-source/special-metric paths. Only this
@@ -270,20 +321,7 @@ pub(super) fn try_generate(
         generator.graph.find_join_path(&plan.models[0], model)?;
     }
     let dimensions = generator.parse_dimension_refs(&query.dimensions)?;
-    let mut dimension_names = HashSet::new();
     for dimension in &dimensions {
-        if !dimension_names.insert(&dimension.alias) {
-            return Err(unsupported("dimension_alias_collision"));
-        }
-        // The source-local generator qualifies both outputs when a measure and
-        // dimension share a name. This plan requires stable child column names.
-        if plan
-            .leaves
-            .iter()
-            .any(|leaf| leaf.metric.name == dimension.alias)
-        {
-            return Err(unsupported("dimension_metric_alias_collision"));
-        }
         if generator
             .graph
             .get_model(&dimension.model)
@@ -297,7 +335,8 @@ pub(super) fn try_generate(
         .dimensions
         .iter()
         .zip(&dimensions)
-        .map(|(reference, dimension)| {
+        .enumerate()
+        .map(|(index, (reference, _))| {
             let columns = plan
                 .models
                 .iter()
@@ -305,7 +344,7 @@ pub(super) fn try_generate(
                     format!(
                         "{}.{}",
                         generator.quote_identifier(&format!("{model}_preagg")),
-                        generator.quote_identifier(&dimension.alias)
+                        dimension_alias(index)
                     )
                 })
                 .collect::<Vec<_>>();
@@ -355,13 +394,7 @@ pub(super) fn try_generate(
             .iter()
             .filter(|leaf| &leaf.model == model)
             .collect();
-        let mut leaf_names = HashSet::new();
-        if leaves
-            .iter()
-            .any(|leaf| !leaf_names.insert(&leaf.metric.name))
-        {
-            return Err(unsupported("leaf_alias_collision"));
-        }
+        let projection = child_projection(generator, &dimensions, &leaves)?;
         // Reuse the ordinary source-local compiler only where its fanout contract
         // is proven: single declared keys and aggregates with symmetric support.
         let mut required = HashSet::from([model.clone()]);
@@ -403,29 +436,41 @@ pub(super) fn try_generate(
         child.limit = None;
         child.offset = None;
         child.skip_default_time_dimensions = true;
+        // Materialized routing is qualified for whole single-source queries.
+        // Cross-source child populations need separate grain/domain acceptance.
+        child.use_preaggregations = false;
         let child_sql = generator.generate(&child)?;
         ctes.push(format!(
-            "{} AS (\n{child_sql}\n)",
-            generator.quote_identifier(&format!("{model}_preagg"))
+            "{} AS (\nSELECT {}\nFROM (\n{child_sql}\n) AS __sidemantic_source\n)",
+            generator.quote_identifier(&format!("{model}_preagg")),
+            projection.join(", ")
         ));
     }
-    let mut selections: Vec<_> = query
-        .dimensions
-        .iter()
-        .zip(&dimensions)
-        .map(|(reference, dimension)| {
-            format!(
-                "{} AS {}",
-                dimension_expressions[reference],
-                generator.quote_identifier(&dimension.alias)
-            )
-        })
-        .collect();
     let mut names = HashMap::new();
+    for dimension in &dimensions {
+        *names.entry(dimension.alias.clone()).or_insert(0usize) += 1;
+    }
     for (_, resolved, _) in &outputs {
         *names.entry(resolved.metric.name.clone()).or_insert(0usize) += 1;
     }
+    let mut public_names = HashSet::new();
     let mut order_names = HashMap::new();
+    let mut selections = Vec::new();
+    for (reference, dimension) in query.dimensions.iter().zip(&dimensions) {
+        let alias = generator.output_alias(&dimension.model, &dimension.alias, &names);
+        if !public_names.insert(alias.clone()) {
+            return Err(unsupported("ambiguous_output_alias"));
+        }
+        order_names.insert(reference.clone(), alias.clone());
+        if names[&dimension.alias] == 1 {
+            order_names.insert(dimension.alias.clone(), alias.clone());
+        }
+        selections.push(format!(
+            "{} AS {}",
+            dimension_expressions[reference],
+            generator.quote_identifier(&alias)
+        ));
+    }
     for (reference, resolved, expression) in outputs {
         let name = &resolved.metric.name;
         let alias = if names[name] > 1 {
@@ -433,10 +478,13 @@ pub(super) fn try_generate(
                 .context
                 .as_deref()
                 .ok_or_else(|| unsupported("ambiguous_output_alias"))?;
-            format!("{owner}_{name}")
+            generator.output_alias(owner, name, &names)
         } else {
             name.clone()
         };
+        if !public_names.insert(alias.clone()) {
+            return Err(unsupported("ambiguous_output_alias"));
+        }
         order_names.insert(reference, alias.clone());
         if names[name] == 1 {
             order_names.insert(name.clone(), alias.clone());
@@ -445,9 +493,6 @@ pub(super) fn try_generate(
             "{expression} AS {}",
             generator.quote_identifier(&alias)
         ));
-    }
-    for (reference, dimension) in query.dimensions.iter().zip(&dimensions) {
-        order_names.insert(reference.clone(), dimension.alias.clone());
     }
     let mut sql = format!(
         "WITH {}\nSELECT {}\nFROM {}",
@@ -462,8 +507,9 @@ pub(super) fn try_generate(
         } else {
             let conditions = dimensions
                 .iter()
-                .map(|dimension| {
-                    let name = generator.quote_identifier(&dimension.alias);
+                .enumerate()
+                .map(|(dimension_index, _)| {
+                    let name = dimension_alias(dimension_index);
                     let previous: Vec<_> = plan.models[..index]
                         .iter()
                         .map(|model| {
@@ -551,6 +597,8 @@ mod tests {
             .add_model(
                 Model::new("orders", "id")
                     .with_table("orders")
+                    .with_dimension(Dimension::categorical("region"))
+                    .with_dimension(Dimension::categorical("revenue").with_sql("region"))
                     .with_metric(Metric::sum("revenue", "amount"))
                     .with_metric(Metric::derived("proxy", "customers.customer_count"))
                     .with_metric(Metric::derived(
@@ -566,6 +614,7 @@ mod tests {
                     .with_table("customers")
                     .with_dimension(Dimension::categorical("region"))
                     .with_dimension(Dimension::categorical("revenue").with_sql("region"))
+                    .with_dimension(Dimension::categorical("orders_region").with_sql("region"))
                     .with_metric(Metric::count("customer_count")),
             )
             .unwrap();
@@ -595,7 +644,7 @@ mod tests {
         assert!(sql.contains("orders_preagg AS"));
         assert!(sql.contains("customers_preagg AS"));
         assert!(sql.contains("CROSS JOIN customers_preagg"));
-        assert!(sql.contains("NULLIF((customers_preagg.customer_count), 0)"));
+        assert!(sql.contains("NULLIF((customers_preagg.__sidemantic_metric_1), 0)"));
         assert!(!sql.contains("LEFT JOIN customers_cte"));
         assert_valid_sql(&sql);
     }
@@ -605,7 +654,7 @@ mod tests {
         let graph = graph();
         for metric in ["proxy_ratio", "orders.local_sum"] {
             let sql = compile(&graph, &[metric], &[]).unwrap();
-            assert!(sql.contains("customers_preagg.customer_count"));
+            assert!(sql.contains("customers_preagg.__sidemantic_metric_"));
             assert!(!sql.contains("proxy_raw"));
             assert!(!sql.contains("local_sum_raw"));
         }
@@ -614,7 +663,9 @@ mod tests {
     #[test]
     fn nested_arithmetic_keeps_parentheses() {
         let sql = compile(&graph(), &["double_added"], &[]).unwrap();
-        assert!(sql.contains("((orders_preagg.revenue) + (customers_preagg.customer_count)) * 2"));
+        assert!(sql.contains("((orders_preagg.__sidemantic_metric_"));
+        assert!(sql.contains(") + (customers_preagg.__sidemantic_metric_"));
+        assert!(sql.contains(")) * 2"));
     }
 
     #[test]
@@ -628,7 +679,7 @@ mod tests {
         assert!(sql.contains("WHERE"));
         assert!(!sql.contains("WHERE ratio"));
         assert!(!sql.contains("proxy_raw"));
-        assert!(sql.contains("customers_preagg.customer_count"));
+        assert!(sql.contains("customers_preagg.__sidemantic_metric_"));
     }
 
     #[test]
@@ -652,7 +703,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(sql.contains("IS NOT DISTINCT FROM"));
-        assert!(sql.contains("COALESCE(orders_preagg.region, customers_preagg.region)"));
+        assert!(sql.contains("COALESCE(orders_preagg.__sidemantic_dimension_0, customers_preagg.__sidemantic_dimension_0)"));
         assert!(sql.contains("ORDER BY region DESC"));
     }
 
@@ -678,16 +729,110 @@ mod tests {
     }
 
     #[test]
-    fn dimension_leaf_alias_collision_is_rejected_before_generating_sql() {
+    fn dimension_leaf_alias_collision_is_normalized_per_child() {
         let graph = graph();
         let query = SemanticQuery::new()
             .with_metrics(vec!["ratio".into()])
             .with_dimensions(vec!["customers.revenue".into()]);
-        assert!(matches!(
-            try_generate(&SqlGenerator::new(&graph), &query),
-            Err(SidemanticError::UnsupportedSemanticFeatures { capabilities })
-                if capabilities == vec!["aggregation.dimension_metric_alias_collision"]
-        ));
+        let sql = try_generate(&SqlGenerator::new(&graph), &query)
+            .unwrap()
+            .unwrap();
+        assert!(
+            sql.contains("__sidemantic_source.customers_revenue AS __sidemantic_dimension_0"),
+            "{sql}"
+        );
+        assert!(
+            sql.contains("__sidemantic_source.orders_revenue AS __sidemantic_metric_0"),
+            "{sql}"
+        );
+        assert!(
+            sql.contains("__sidemantic_source.revenue AS __sidemantic_dimension_0"),
+            "{sql}"
+        );
+        assert!(sql.contains(") AS revenue"), "{sql}");
+        assert_valid_sql(&sql);
+    }
+
+    #[test]
+    fn duplicate_dimension_names_have_distinct_grouping_and_order_names() {
+        let graph = graph();
+        let query = SemanticQuery::new()
+            .with_metrics(vec!["ratio".into()])
+            .with_dimensions(vec!["orders.region".into(), "customers.region".into()])
+            .with_filters(vec!["ratio > 1 OR customers.region IS NULL".into()])
+            .with_order_by(vec![
+                "orders.region ASC".into(),
+                "customers.region DESC".into(),
+            ]);
+        let sql = try_generate(&SqlGenerator::new(&graph), &query)
+            .unwrap()
+            .unwrap();
+        assert!(
+            sql.contains("__sidemantic_source.orders_region AS __sidemantic_dimension_0"),
+            "{sql}"
+        );
+        assert!(
+            sql.contains("__sidemantic_source.customers_region AS __sidemantic_dimension_1"),
+            "{sql}"
+        );
+        assert!(sql.contains(") AS orders_region"), "{sql}");
+        assert!(sql.contains(") AS customers_region"), "{sql}");
+        assert!(sql.contains("__sidemantic_dimension_0 IS NOT DISTINCT FROM customers_preagg.__sidemantic_dimension_0"), "{sql}");
+        assert!(sql.contains("__sidemantic_dimension_1 IS NOT DISTINCT FROM customers_preagg.__sidemantic_dimension_1"), "{sql}");
+        assert!(
+            sql.contains("ORDER BY orders_region ASC, customers_region DESC"),
+            "{sql}"
+        );
+        assert_valid_sql(&sql);
+    }
+
+    #[test]
+    fn selected_metric_and_dimension_collisions_use_qualified_public_names() {
+        let graph = graph();
+        let query = SemanticQuery::new()
+            .with_metrics(vec![
+                "orders.revenue".into(),
+                "customers.customer_count".into(),
+            ])
+            .with_dimensions(vec!["customers.revenue".into()])
+            .with_filters(vec!["orders.revenue > 100".into()])
+            .with_order_by(vec![
+                "orders.revenue DESC".into(),
+                "customers.revenue ASC".into(),
+            ]);
+        let sql = try_generate(&SqlGenerator::new(&graph), &query)
+            .unwrap()
+            .unwrap();
+        assert!(sql.contains(") AS customers_revenue"), "{sql}");
+        assert!(
+            sql.contains("orders_preagg.__sidemantic_metric_0 AS orders_revenue"),
+            "{sql}"
+        );
+        assert!(
+            sql.contains("ORDER BY orders_revenue DESC, customers_revenue ASC"),
+            "{sql}"
+        );
+        assert_valid_sql(&sql);
+    }
+
+    #[test]
+    fn genuinely_duplicate_child_outputs_remain_unsupported() {
+        let graph = graph();
+        for dimensions in [
+            vec!["orders.revenue"],
+            vec![
+                "orders.region",
+                "customers.region",
+                "customers.orders_region",
+            ],
+        ] {
+            let query = SemanticQuery::new()
+                .with_metrics(vec!["ratio".into()])
+                .with_dimensions(dimensions.into_iter().map(str::to_string).collect());
+            assert!(matches!(try_generate(&SqlGenerator::new(&graph), &query),
+                Err(SidemanticError::UnsupportedSemanticFeatures { capabilities })
+                if capabilities == vec!["aggregation.child_output_alias_collision"]));
+        }
     }
 
     #[test]

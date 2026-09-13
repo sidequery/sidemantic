@@ -203,7 +203,15 @@ class QueryRewriter:
             if not self._expression_tree_references_semantic_model(parsed):
                 self.last_engine_selection = {"engine": "passthrough", "reason": "No semantic model reference"}
                 return sql
-            self._raise_on_user_cte_name_collision(parsed)
+            contextual_rust = (
+                user_attributes is not None
+                or self.enforce_visibility
+                or any(model.security is not None or model.invariant_filters for model in self.graph.models.values())
+            )
+            # Contextual Rust rewriting binds and renames user CTEs itself.
+            # The legacy path still needs the preflight collision guard.
+            if not contextual_rust:
+                self._raise_on_user_cte_name_collision(parsed)
         self.last_engine_selection = {"engine": "rust", "reason": "Rust engine selected"}
         try:
             capabilities = []
@@ -216,9 +224,10 @@ class QueryRewriter:
             rewritten = rewrite_semantic_input(
                 self.graph,
                 sql,
-                input_dialect=self.dialect,
+                input_dialect="duckdb" if self.dialect == "postgres" else self.dialect,
                 user_attributes=user_attributes,
                 enforce_visibility=self.enforce_visibility,
+                **({"sql_dialect": "postgres", "output_dialect": "postgres"} if self.dialect == "postgres" else {}),
             )
             self.last_engine_selection = {"engine": "rust", "reason": None}
             return rewritten

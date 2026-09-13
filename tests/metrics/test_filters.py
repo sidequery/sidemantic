@@ -8,6 +8,31 @@ from sidemantic.sql.generator import SQLGenerator
 from tests.utils import df_rows
 
 
+def _assert_metric_filter(sql, model, metric, predicate, input_column, *, where=None):
+    """Check the named raw projection, keeping measure filters out of row scope."""
+
+    def without_parentheses(expression):
+        return expression.transform(lambda node: node.this if isinstance(node, exp.Paren) else node)
+
+    query = parse_one(sql, read="duckdb")
+    cte = next(cte for cte in query.find_all(exp.CTE) if cte.alias == f"{model}_cte")
+    projection = next(expression for expression in cte.this.expressions if expression.alias == f"{metric}_raw")
+    case = projection.this
+    assert isinstance(case, exp.Case)
+    assert case.this is None
+    assert len(case.args["ifs"]) == 1
+    branch = case.args["ifs"][0]
+    assert without_parentheses(branch.this) == without_parentheses(parse_one(predicate, read="duckdb"))
+    assert branch.args["true"] == exp.column(input_column)
+    assert case.args.get("default") is None or isinstance(case.args["default"], exp.Null)
+    row_filter = cte.this.args.get("where")
+    if where is None:
+        assert row_filter is None
+    else:
+        assert row_filter is not None
+        assert without_parentheses(row_filter.this) == without_parentheses(parse_one(where, read="duckdb"))
+
+
 def test_metric_level_filter_basic(layer):
     """Test basic metric-level filter.
 
@@ -45,7 +70,7 @@ def test_metric_level_filter_basic(layer):
     print(sql)
 
     # Filter should be in CTE's CASE WHEN on raw column, not in outer query
-    assert "CASE WHEN status = 'completed' THEN amount" in sql
+    _assert_metric_filter(sql, "orders", "completed_revenue", "status = 'completed'", "amount")
     # Outer query should just aggregate the pre-filtered raw column
     assert "SUM(orders_cte.completed_revenue_raw)" in sql
 
@@ -77,7 +102,9 @@ def test_metric_level_multiple_filters(layer):
     sql = layer.compile(metrics=["orders.high_value_completed_revenue"])
 
     # Should contain both filters combined via CASE WHEN in CTE
-    assert "CASE WHEN status = 'completed' AND amount > 100" in sql
+    _assert_metric_filter(
+        sql, "orders", "high_value_completed_revenue", "status = 'completed' AND amount > 100", "amount"
+    )
     assert "high_value_completed_revenue_raw" in sql
 
 
@@ -107,7 +134,7 @@ def test_metric_filters_combined_with_query_filters(layer):
     sql = layer.compile(metrics=["orders.completed_revenue"], filters=["orders_cte.region = 'US'"])
 
     # Metric filter should be in CASE WHEN, query filter pushed down to CTE WHERE
-    assert "CASE WHEN status = 'completed'" in sql  # Metric filter in CTE
+    _assert_metric_filter(sql, "orders", "completed_revenue", "status = 'completed'", "amount", where="region = 'US'")
     assert "region = 'US'" in sql  # Query filter pushed down into CTE
 
 
@@ -142,7 +169,7 @@ def test_mixed_filtered_and_unfiltered_metrics(layer):
     sql = layer.compile(metrics=["orders.total_revenue", "orders.completed_revenue"])
 
     # Completed filter should be in CASE WHEN for completed_revenue only
-    assert "CASE WHEN status = 'completed'" in sql
+    _assert_metric_filter(sql, "orders", "completed_revenue", "status = 'completed'", "amount")
     assert "completed_revenue_raw" in sql
     # Total revenue should have no CASE WHEN
     assert "amount AS total_revenue_raw" in sql
@@ -176,7 +203,9 @@ def test_metric_filter_with_time_dimension(layer):
     sql = layer.compile(metrics=["orders.recent_completed_revenue"], dimensions=["orders.created_at__month"])
 
     # Both filters should be in CASE WHEN combined with AND
-    assert "CASE WHEN status = 'completed' AND created_at >= CURRENT_DATE" in sql
+    _assert_metric_filter(
+        sql, "orders", "recent_completed_revenue", "status = 'completed' AND created_at >= CURRENT_DATE - 30", "amount"
+    )
     assert "recent_completed_revenue_raw" in sql
 
 
@@ -221,7 +250,13 @@ def test_metric_filter_column_not_in_query_dimensions(layer):
     assert "state" in cte_match, f"'state' column should be in CTE SELECT for filter to work. CTE: {cte_match}"
 
     # The filter should be in a CASE WHEN expression
-    assert "CASE WHEN state IN ('confirmed', 'completed', 'cancelled')" in sql
+    _assert_metric_filter(
+        sql,
+        "bookings",
+        "gross_booking_value",
+        "state IN ('confirmed', 'completed', 'cancelled')",
+        "gross_booking_value",
+    )
 
 
 def test_metric_filter_multiple_columns_not_in_dimensions(layer):

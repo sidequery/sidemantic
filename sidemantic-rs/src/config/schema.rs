@@ -201,6 +201,10 @@ pub struct MetricConfig {
     pub drill_fields: Option<Vec<String>>,
     pub non_additive_dimension: Option<String>,
     #[serde(default)]
+    pub non_additive_window: Option<String>,
+    #[serde(default)]
+    pub non_additive_window_groupings: Option<Vec<String>>,
+    #[serde(default)]
     pub filters: Vec<String>,
     pub description: Option<String>,
     pub label: Option<String>,
@@ -759,6 +763,8 @@ impl MetricConfig {
             value_format_name: self.value_format_name,
             drill_fields: self.drill_fields,
             non_additive_dimension: self.non_additive_dimension,
+            non_additive_window: self.non_additive_window,
+            non_additive_window_groupings: self.non_additive_window_groupings,
             public: self.public,
         }
     }

@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "input_dialect": "duckdb",
+  "models": [{
+    "name": "orders", "table": "orders", "primary_key": "id",
+    "dimensions": [{"name": "tenant", "type": "categorical"}],
+    "metrics": [
+      {"name": "revenue", "agg": "sum", "sql": "amount"},
+      {"name": "secret", "agg": "sum", "sql": "amount", "public": false}
+    ],
+    "security": {"row_filters": ["tenant = {{ user.tenant }}"]},
+    "invariant_filters": ["not deleted"]
+  }]
+}

@@ -3213,20 +3213,7 @@ impl<'a> SqlGenerator<'a> {
 
         let mut ctes = Vec::new();
         let first_from = self.model_from_clause(model, Some("t"));
-        let dim_source_aliases = dim_entries
-            .iter()
-            .enumerate()
-            .map(|(idx, (alias, sql_col))| (alias.clone(), format!("__dim_{idx}"), sql_col.clone()))
-            .collect::<Vec<_>>();
-        let mut source_projection_parts = vec![
-            "*".to_string(),
-            format!("{timestamp_sql} AS __ts"),
-            format!("{entity_sql} AS __entity"),
-        ];
-        for (_, source_alias, sql_col) in &dim_source_aliases {
-            source_projection_parts.push(format!("{sql_col} AS {source_alias}"));
-        }
-        let source_projection = source_projection_parts.join(", ");
+        let source_projection = format!("*, {timestamp_sql} AS __ts, {entity_sql} AS __entity");
 
         for (index, step_expr) in steps.iter().enumerate() {
             let step_number = index + 1;
@@ -3272,15 +3259,11 @@ impl<'a> SqlGenerator<'a> {
                 for alias in &dim_aliases {
                     group_parts.push(format!("{previous}.{alias}"));
                 }
-                let mut join_condition = format!(
+                // Later events retain the first step's attribution dimensions.
+                let join_condition = format!(
                     "s.__entity = {previous}.entity\n    AND s.__ts >= {previous}.step_{}_ts",
                     step_number - 1
                 );
-                for (alias, source_alias, _) in &dim_source_aliases {
-                    join_condition.push_str(&format!(
-                        "\n    AND s.{source_alias} IS NOT DISTINCT FROM {previous}.{alias}"
-                    ));
-                }
                 ctes.push(format!(
                     "step_{step_number} AS (\n  SELECT\n    {}\n  FROM {source_from}\n  JOIN {previous} ON {join_condition}\n  WHERE s.__step_match AND s.__filter_match\n  GROUP BY\n    {}\n)",
                     select_parts.join(",\n    "),
@@ -5988,7 +5971,7 @@ models:
         assert!(sql.contains("step_2 AS"), "{sql}");
         assert!(sql.contains("s.__ts >= step_1.step_1_ts"), "{sql}");
         assert!(
-            sql.contains("s.__dim_0 IS NOT DISTINCT FROM step_1.region"),
+            !sql.contains("s.__dim_0 IS NOT DISTINCT FROM step_1.region"),
             "{sql}"
         );
         assert!(sql.contains("s.__step_match AND s.__filter_match"), "{sql}");

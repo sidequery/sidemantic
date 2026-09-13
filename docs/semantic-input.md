@@ -273,9 +273,34 @@ and divides by distinct base entities. Empty denominators return null. Grouping
 attributes are attributed to the base event. Query filters, metric filters,
 invariants, and caller policies constrain both event populations.
 
-Multi-step funnels, joined populations, graph-scoped conversion metrics,
+Joined populations, graph-scoped two-event conversion metrics,
 calculated wrappers, mapped entity/event/time source names, quoted output names,
 and other output dialects remain gated in this first qualified subset.
+
+### Multi-step conversion
+
+Direct model conversion metrics with two or more `steps` predicates use the
+existing sequential funnel algorithm through the strict DuckDB boundary. Each
+step finds the earliest qualifying event at or after the previous step's timestamp;
+equal timestamps qualify. There is no conversion-window option for this form.
+Selected grouping values belong to the first step and remain attached when later
+events have different values. Repeated events do not multiply entity counts.
+
+Outputs are selected dimensions, `total_entities`, each `step_N_count`, and the
+metric name containing the final step count. The denominator includes only
+distinct non-null first-step entities. A first-step entity with a null timestamp
+can enter the denominator but cannot advance. Empty ungrouped populations return
+zero counts. Ordering and pagination use these output columns.
+
+Entity and time dimensions can map to row-local source expressions. Step predicates
+refer to physical source columns; query and metric filters resolve declared dimensions.
+All steps read the same policy-, invariant-, query-, and metric-filtered population.
+The strict wrapper validates expressions and projects internal source columns before
+calling the existing sequential generator. Graph-scoped metrics, mixed metrics,
+joined populations, aggregate/window/subquery source expressions, colliding output
+names (including dimensions named `entity` or `step_N_ts`), rollup routing,
+null-fill options, and other output dialects remain gated.
+
 ## PostgreSQL policy output
 
 The versioned bridge can generate PostgreSQL output for policy-bearing structured

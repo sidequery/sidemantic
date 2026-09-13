@@ -5795,7 +5795,7 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
         entity_sql_s = _normalize_expr_for_subquery(entity_sql_raw, "s", qualify_bare=True)
 
         # Normalize filters: strip model name prefixes and resolve dimension names
-        normalized_filters = self._strip_model_prefixes(filters or [], model.name)
+        normalized_filters = self._strip_model_prefixes([*(filters or []), *(metric.filters or [])], model.name)
         normalized_filters = self._resolve_filter_dimensions(normalized_filters, model)
 
         # Build WHERE filter clauses for step 1 and step N
@@ -5901,7 +5901,7 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
         metric_name_only = metric_name.split(".", 1)[-1] if "." in metric_name else metric_name
         final_select_parts = []
         for alias in dim_aliases:
-            final_select_parts.append(f"step_1.{alias}")
+            final_select_parts.append(f"step_1.{alias} AS {alias}")
         final_select_parts.append("COUNT(DISTINCT step_1.entity) AS total_entities")
         for i in range(1, num_steps + 1):
             final_select_parts.append(f"COUNT(DISTINCT step_{i}.entity) AS step_{i}_count")

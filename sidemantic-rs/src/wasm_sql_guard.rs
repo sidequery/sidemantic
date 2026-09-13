@@ -46,6 +46,8 @@ pub(crate) fn check(sql: &str, dialect: DialectType) -> Result<()> {
             | TokenType::Plus
             | TokenType::Star
             | TokenType::Slash
+            | TokenType::Mod
+            | TokenType::Percent
             | TokenType::Lt
             | TokenType::Lte
             | TokenType::Gt
@@ -146,6 +148,19 @@ mod tests {
         ] {
             check(sql, DialectType::DuckDB).unwrap();
         }
+    }
+
+    #[test]
+    fn nested_commas_do_not_reset_the_parent_operator_chain() {
+        let expression = std::iter::repeat_n("coalesce(1, 2)", MAX_OPERATORS + 2)
+            .collect::<Vec<_>>()
+            .join(" + ");
+        assert!(check(&format!("SELECT {expression}"), DialectType::DuckDB).is_err());
+        let projections = (0..100)
+            .map(|i| format!("{i} AS c{i}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        check(&format!("SELECT {projections}"), DialectType::DuckDB).unwrap();
     }
 
     #[test]

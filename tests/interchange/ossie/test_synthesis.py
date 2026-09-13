@@ -595,3 +595,22 @@ def test_extension_selection_does_not_hide_invalid_native_expression(feature):
     result = synthesize_ossie_document(graph, scope_name="commerce", expression_dialect="ANSI_SQL")
     assert not result.valid
     assert any(d.code == "ossie.synthesis.expression_invalid" for d in result.diagnostics)
+
+
+def test_core_metric_dialect_provenance_is_not_native_semantics():
+    from sidemantic.interchange.ossie import lower_ossie_document, parse_ossie_document
+
+    source = b"""{"version":"0.2.0.dev0","semantic_model":[{"name":"commerce",
+      "datasets":[{"name":"orders","source":"orders","fields":[{"name":"amount",
+        "expression":{"dialects":[{"dialect":"ANSI_SQL","expression":"amount"}]}}]}],
+      "metrics":[{"name":"revenue","expression":{"dialects":[
+        {"dialect":"ANSI_SQL","expression":"sum(orders.amount)"}]}}]}]}"""
+    lowered = lower_ossie_document(parse_ossie_document(source), target_dialect="duckdb")
+    assert lowered.valid, lowered.diagnostics
+    graph = lowered.catalog["commerce"].graph
+    result = synthesize_ossie_document(graph, scope_name="commerce", expression_dialect="ANSI_SQL", portable_only=True)
+    assert result.valid, result.diagnostics
+    graph.metrics["revenue"].metadata["custom_semantics"] = "must preserve"
+    refused = synthesize_ossie_document(graph, scope_name="commerce", expression_dialect="ANSI_SQL", portable_only=True)
+    assert not refused.valid
+    assert any("metadata" in item.message for item in refused.diagnostics)

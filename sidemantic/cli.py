@@ -2674,6 +2674,15 @@ def validate(
     db: Path = typer.Option(None, "--db", help="DuckDB database or data file for --live"),
     json_output: bool = typer.Option(False, "--json", help="Emit the validation report as JSON"),
     ossie_scope: str = typer.Option(None, "--ossie-scope", help="Explicit Apache Ossie semantic-model scope"),
+    authoring_mode: str = typer.Option(
+        "sidemantic", "--authoring-mode", help="Authoring contract: sidemantic or ossie-portable"
+    ),
+    ossie_expression_dialect: str = typer.Option(
+        None, "--ossie-expression-dialect", help="Actual SQL dialect for portable validation; no SQL is rewritten"
+    ),
+    ossie_consumer_profile: str = typer.Option(
+        "ossie-core", "--ossie-consumer-profile", help="Portable validation profile: ossie-core or dbt-1.12"
+    ),
 ):
     """
     Validate semantic layer definitions.
@@ -2689,6 +2698,14 @@ def validate(
     """
     if (connection or db) and not live:
         raise typer.BadParameter("--connection/--db require --live")
+    if authoring_mode not in {"sidemantic", "ossie-portable"}:
+        raise typer.BadParameter("--authoring-mode must be sidemantic or ossie-portable")
+    if authoring_mode == "ossie-portable" and not ossie_expression_dialect:
+        raise typer.BadParameter("--authoring-mode ossie-portable requires --ossie-expression-dialect")
+    if authoring_mode == "sidemantic" and (ossie_expression_dialect or ossie_consumer_profile != "ossie-core"):
+        raise typer.BadParameter(
+            "--ossie-expression-dialect/--ossie-consumer-profile require --authoring-mode ossie-portable"
+        )
     output_format = resolve_output_format(json_output=json_output)
     structured = json_output or cli_state().requested_format is not None or cli_state().plain
     verbose = verbose or cli_state().verbose
@@ -2709,13 +2726,21 @@ def validate(
             # below; the stdlib warning would print a second, uglier copy.
             warnings_module.simplefilter("ignore")
             with capture_import_report() as fidelity_report:
-                if ossie_scope is None:
+                if authoring_mode == "ossie-portable":
+                    report = validate_directory(
+                        directory,
+                        ossie_scope_id=ossie_scope,
+                        authoring_mode=authoring_mode,
+                        ossie_expression_dialect=ossie_expression_dialect,
+                        ossie_consumer_profile=ossie_consumer_profile,
+                    )
+                elif ossie_scope is None:
                     report = validate_directory(directory)
                 else:
                     report = validate_directory(directory, ossie_scope_id=ossie_scope)
         for note in fidelity_report.notes:
             message = f"Import fidelity ({note.severity}) {note.construct}: {note.detail}"
-            if note.severity in {"dropped", "approximated"}:
+            if note.severity in {"dropped", "approximated"} and authoring_mode != "ossie-portable":
                 report.warnings.append(message)
             else:
                 report.errors.append(message)
@@ -2729,12 +2754,17 @@ def validate(
             elif not location and feature.location:
                 location = f" ({feature.location})"
             message = f"Import fidelity ({feature.status}) {feature.feature}{detail}{location}"
-            if feature.status == "partial":
+            if feature.status == "partial" and authoring_mode != "ossie-portable":
                 report.warnings.append(message)
             else:
                 report.errors.append(message)
         if fidelity_report.notes or fidelity_report.features:
             report.info.append(f"Import readiness: {fidelity_report.readiness}")
+        if authoring_mode == "ossie-portable" and not report.errors:
+            report.info.append(
+                f"Portable Ossie core representation validated ({ossie_consumer_profile}, "
+                f"{ossie_expression_dialect}); consumer execution is not certified"
+            )
     except Exception as e:
         if cli_state().debug:
             raise

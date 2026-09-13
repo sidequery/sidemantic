@@ -696,3 +696,39 @@ metrics:
     numerator: orders.total_revenue
     denominator: customers.customer_count
 ```
+
+## Authoring contracts
+
+Use the default full Sidemantic contract for native semantics such as non-additive
+metrics, policies, and other runtime features:
+
+```bash
+sidemantic validate ./models --authoring-mode sidemantic
+```
+
+To author a model intended for Ossie core interchange, check representability
+while editing, before exporting:
+
+```bash
+sidemantic validate ./models --authoring-mode ossie-portable --ossie-expression-dialect ANSI_SQL
+```
+
+This uses the same portable-only synthesis checks as `convert --ossie-portable-only`.
+It reports stable `ossie.synthesis.*` diagnostics and object paths for semantics
+that require Sidemantic or cannot be represented. Dropped or approximated source
+semantics are errors in this mode. The declared expression dialect must describe
+the actual SQL; validation does not translate SQL or rewrite source files.
+The default profile is `ossie-core` at the pinned `0.2.0.dev0` schema; select
+`--ossie-consumer-profile dbt-1.12` to apply that pinned consumer profile.
+
+Portable validation certifies a core representation, not execution by every
+consumer. Preserved external expressions still have to lower through the normal
+strict source importer; schema validity alone is insufficient. Extension-dependent
+native models remain valid under the full Sidemantic contract, but fail the
+portable contract. Invalid source fails both. `--engine` controls separate runtime
+compatibility checks, and `--live` checks database schema; neither selects the
+authoring contract. The default authoring contract remains `sidemantic`.
+
+Validation never exports, migrates, or replaces the authoritative source. When
+ready to export, continue to supply an explicit scope, expression dialect, and
+`--ossie-portable-only` to `convert`.

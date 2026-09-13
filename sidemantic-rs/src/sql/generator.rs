@@ -3873,9 +3873,11 @@ impl<'a> SqlGenerator<'a> {
             if dimension.model != model.name {
                 return false;
             }
-            let definition = model
-                .get_dimension(&dimension.name)
-                .expect("validated dimension");
+            let Some(definition) = model.get_dimension(&dimension.name) else {
+                // Relationship keys may be legal raw dimensions without a
+                // declared dimension definition. They cannot use this rollup.
+                return false;
+            };
             let effective_grain = dimension.granularity.as_deref().or_else(|| {
                 (definition.r#type == crate::core::DimensionType::Time)
                     .then_some(definition.granularity.as_deref())

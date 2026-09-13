@@ -34,6 +34,8 @@ jobs:
 
       - name: Install bun
         uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5

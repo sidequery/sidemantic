@@ -423,16 +423,18 @@ def _lower_scope(
             canonical_to_columns = _canonical_columns(to_columns, to_declarations)
             from_key = _key_value(canonical_from_columns)
             to_key = _key_value(canonical_to_columns)
-            target_keys = {tuple(to_model.primary_key_columns)} if to_model and to_model.primary_key_columns else set()
+            target_keys = (
+                {frozenset(to_model.primary_key_columns)} if to_model and to_model.primary_key_columns else set()
+            )
             if to_model:
-                target_keys.update(tuple(key) for key in to_model.unique_keys or ())
+                target_keys.update(frozenset(key) for key in to_model.unique_keys or ())
             safe = (
                 from_model is not None
                 and to_model is not None
                 and from_key is not None
                 and to_key is not None
                 and len(canonical_from_columns or ()) == len(canonical_to_columns or ())
-                and tuple(canonical_to_columns or ()) in target_keys
+                and frozenset(canonical_to_columns or ()) in target_keys
                 and all(from_model.get_dimension(column) is not None for column in canonical_from_columns or ())
                 and all(to_model.get_dimension(column) is not None for column in canonical_to_columns or ())
             )

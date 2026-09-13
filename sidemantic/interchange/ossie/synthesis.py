@@ -12,6 +12,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import sqlglot
+from sqlglot import expressions as exp
+
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.semantic_graph import SemanticGraph
@@ -22,6 +25,7 @@ from sidemantic.interchange.ossie.diagnostics import (
 )
 from sidemantic.interchange.ossie.documents import OssieLogicalDocument
 from sidemantic.interchange.ossie.expression_validation import scalar_sql_expression_error
+from sidemantic.interchange.ossie.identifier import normalize_identifier
 from sidemantic.interchange.ossie.profiles import (
     OssieConsumerProfile,
     OssieProfileError,
@@ -89,21 +93,17 @@ def _scalar_expression_error(text: str, dialect: str) -> str | None:
     return scalar_sql_expression_error(text, sqlglot_dialect=_SQLGLOT_DIALECTS[dialect])
 
 
-def _metric_expression(metric: Metric, model_name: str | None) -> str | None:
+def _metric_expression(metric: Metric) -> str | None:
+    if metric.type not in {None, "ratio", "derived"}:
+        return None
     if metric.sql_is_complete and metric.sql:
         return metric.sql
     if metric.type == "ratio":
         if not metric.numerator or not metric.denominator:
             return None
         return f"{metric.numerator} / NULLIF({metric.denominator}, 0)"
-    if metric.type == "derived":
-        return metric.sql
-    if metric.type is not None:
-        return None
     if metric.agg:
         inner = metric.sql or "*"
-        if model_name and inner != "*" and "." not in inner:
-            inner = f"{model_name}.{inner}"
         if metric.agg == "count_distinct":
             return f"COUNT(DISTINCT {inner})"
         aggregate = {"variance_pop": "VAR_POP"}.get(metric.agg, metric.agg.upper())
@@ -111,8 +111,81 @@ def _metric_expression(metric: Metric, model_name: str | None) -> str | None:
     return metric.sql
 
 
+def _qualify_metric_expression(
+    expression: str, metric: Metric, owner: str | None, graph: SemanticGraph, dialect: str
+) -> str | None:
+    """Move model-local column expressions into Ossie's scope-wide namespace."""
+    parsed = sqlglot.parse_one(expression, read=_SQLGLOT_DIALECTS[dialect])
+    # Aggregate and opaque SQL consume source columns, even when a column has
+    # the same name as a metric. Derived formulas instead consume metric refs.
+    raw_columns = metric.sql_is_complete or bool(metric.agg) or any(parsed.find_all(exp.AggFunc))
+    if owner and raw_columns and not any(parsed.find_all(exp.Column)):
+        # COUNT(*) and SUM(1) still depend on the owner's rows. Ossie has no
+        # metric owner field; emitting these would lose the dataset binding.
+        return None
+    metric_names = set(graph.metrics)
+    metric_names.update(item.name for model in graph.models.values() for item in model.metrics)
+    for column in parsed.find_all(exp.Column):
+        if not raw_columns and column.name in metric_names:
+            if column.table:
+                model = graph.models.get(column.table)
+                if model is not None and model.get_metric(column.name) is not None:
+                    column.set("table", None)
+            continue
+        if owner and not column.table:
+            column.set("table", exp.to_identifier(owner))
+    return parsed.sql(dialect=_SQLGLOT_DIALECTS[dialect])
+
+
+def _unsupported_metric_options(metric: Metric) -> list[str]:
+    # These require query context or additional runtime rewrites. Emitting just
+    # sql would silently discard filters, null handling, or time semantics.
+    options = (
+        "filters",
+        "fill_nulls_with",
+        "non_additive_dimension",
+        "non_additive_window_groupings",
+        "offset_window",
+        "window",
+        "grain_to_date",
+        "window_expression",
+        "window_frame",
+        "window_order",
+        "base_metric",
+        "comparison_type",
+        "time_offset",
+        "calculation",
+        "entity",
+        "base_event",
+        "conversion_event",
+        "conversion_window",
+        "steps",
+        "cohort_event",
+        "activity_event",
+        "periods",
+        "retention_granularity",
+        "inner_metrics",
+        "entity_dimensions",
+        "having",
+        "extends",
+    )
+    unsupported = [name for name in options if getattr(metric, name) is not None and getattr(metric, name) != []]
+    if not metric.public:
+        unsupported.append("public=False")
+    return unsupported
+
+
 def _dataset(model: Model, dialect: str, index: int, diagnostics: list[OssieDiagnostic]) -> dict[str, object] | None:
     pointer = f"/semantic_model/0/datasets/{index}"
+    if model.extends or (model.security and (model.security.access is not True or model.security.row_filters)):
+        diagnostics.append(
+            _error(
+                "ossie.synthesis.model_semantics_unsupported",
+                f"Model {model.name!r} has inheritance or security settings that Ossie synthesis cannot preserve.",
+                pointer,
+            )
+        )
+        return None
     if model.table and model.sql:
         diagnostics.append(
             _error(
@@ -153,6 +226,15 @@ def _dataset(model: Model, dialect: str, index: int, diagnostics: list[OssieDiag
     fields: list[dict[str, object]] = []
     for field_index, dimension in enumerate(model.dimensions):
         field_pointer = f"{pointer}/fields/{field_index}"
+        if not dimension.public:
+            diagnostics.append(
+                _error(
+                    "ossie.synthesis.field_semantics_unsupported",
+                    f"Field {model.name}.{dimension.name} is private; Ossie synthesis cannot preserve its access restriction.",
+                    field_pointer,
+                )
+            )
+            continue
         if dimension.has_untranslated_dax:
             diagnostics.append(
                 _error(
@@ -211,6 +293,15 @@ def _relationships(models: dict[str, Model], diagnostics: list[OssieDiagnostic])
         for relationship in from_model.relationships:
             pointer = f"/semantic_model/0/relationships/{relationship_index}"
             relationship_index += 1
+            if relationship.sql is not None or not relationship.active:
+                diagnostics.append(
+                    _error(
+                        "ossie.synthesis.relationship_semantics_unsupported",
+                        f"Relationship from {from_model.name!r} to {relationship.name!r} has custom SQL or is inactive; Ossie key equality cannot preserve that behavior.",
+                        pointer,
+                    )
+                )
+                continue
             if relationship.type != "many_to_one":
                 diagnostics.append(
                     _error(
@@ -252,9 +343,15 @@ def _relationships(models: dict[str, Model], diagnostics: list[OssieDiagnostic])
                     )
                 )
                 continue
-            target_keys = {tuple(target.primary_key_columns)} if target.primary_key_columns else set()
-            target_keys.update(tuple(key) for key in target.unique_keys or ())
-            if tuple(to_columns) not in target_keys:
+            target_keys = (
+                {frozenset(normalize_identifier(column) for column in target.primary_key_columns)}
+                if target.primary_key_columns
+                else set()
+            )
+            target_keys.update(
+                frozenset(normalize_identifier(column) for column in key) for key in target.unique_keys or ()
+            )
+            if frozenset(normalize_identifier(column) for column in to_columns) not in target_keys:
                 diagnostics.append(
                     _error(
                         "ossie.synthesis.relationship_target_not_unique",
@@ -288,7 +385,18 @@ def _metrics(
     result: list[dict[str, object]] = []
     seen: dict[str, str] = {}
     for metric, owner in candidates:
-        expression = _metric_expression(metric, owner)
+        unsupported = _unsupported_metric_options(metric)
+        if unsupported or metric.has_untranslated_dax:
+            diagnostics.append(
+                _error(
+                    "ossie.synthesis.metric_semantics_unsupported",
+                    f"Metric {metric.name!r} has unsupported runtime semantics: "
+                    + (", ".join(unsupported) if unsupported else "untranslated DAX")
+                    + ".",
+                )
+            )
+            continue
+        expression = _metric_expression(metric)
         if expression is None:
             diagnostics.append(
                 _error(
@@ -303,6 +411,15 @@ def _metrics(
                 _error(
                     "ossie.synthesis.expression_invalid",
                     f"Metric {metric.name!r} is not one {dialect} SQL expression: {expression_error}",
+                )
+            )
+            continue
+        expression = _qualify_metric_expression(expression, metric, owner, graph, dialect)
+        if expression is None:
+            diagnostics.append(
+                _error(
+                    "ossie.synthesis.metric_owner_unrepresentable",
+                    f"Metric {metric.name!r} depends on rows of {owner!r} without a column reference; Ossie cannot preserve its dataset binding.",
                 )
             )
             continue

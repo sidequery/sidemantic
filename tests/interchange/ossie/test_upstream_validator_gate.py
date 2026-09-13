@@ -26,6 +26,15 @@ _VALIDATOR = _UPSTREAM_ROOT / "validation" / "validate.py"
 _SCHEMAS = _UPSTREAM_ROOT / "schemas" / "logical"
 
 
+def test_current_dialects_and_vendors_pass_pinned_apache_validator() -> None:
+    fixture = _UPSTREAM_ROOT.parent / "cases" / "logical-0.2-current-dialects-vendors" / "document.json"
+
+    completed = _run_pinned_validator(fixture, schema_version="0.2.0.dev0")
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert "Validation PASSED" in completed.stdout
+
+
 def _graph(*, include_datatypes: bool) -> SemanticGraph:
     graph = SemanticGraph()
     graph.add_model(

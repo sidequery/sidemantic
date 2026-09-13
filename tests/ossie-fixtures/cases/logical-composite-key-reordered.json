@@ -1,0 +1,30 @@
+{
+  "version": "0.2.0.dev0",
+  "semantic_model": [{
+    "name": "commerce",
+    "datasets": [{
+      "name": "orders",
+      "source": "select 10 as customer_id, 2 as tenant_id",
+      "fields": [
+        {"name": "customer_id", "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "customer_id"}]}},
+        {"name": "tenant_id", "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "tenant_id"}]}}
+      ]
+    }, {
+      "name": "customers",
+      "source": "select 10 as id, 2 as tenant_id, 'matched' as label union all select 2, 10, 'wrong pair'",
+      "primary_key": ["tenant_id", "id"],
+      "fields": [
+        {"name": "id", "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "id"}]}},
+        {"name": "tenant_id", "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "tenant_id"}]}},
+        {"name": "label", "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "label"}]}}
+      ]
+    }],
+    "relationships": [{
+      "name": "order_customer",
+      "from": "orders",
+      "to": "customers",
+      "from_columns": ["customer_id", "tenant_id"],
+      "to_columns": ["id", "tenant_id"]
+    }]
+  }]
+}

@@ -400,7 +400,57 @@ def test_relationship_key_arrays_are_executable_together(
     assert _contracts(result) == expected
 
 
-def test_relationship_keys_must_resolve_to_fields_and_a_unique_target_tuple() -> None:
+@pytest.mark.parametrize("key_kind", ["primary_key", "unique_keys"])
+@pytest.mark.parametrize(
+    ("to_columns", "valid"),
+    [(["ID", "TENANT_ID"], True), (["tenant_id", "id"], True), (["id"], False), (["id", "other"], False)],
+)
+def test_relationship_target_uniqueness_uses_normalized_column_sets(key_kind, to_columns, valid) -> None:
+    target = _dataset("customers", field_names=("id", "tenant_id", "other"), primary_key=None)
+    target[key_kind] = ["tenant_id", "id"] if key_kind == "primary_key" else [["tenant_id", "id"]]
+    result = validate_ossie_semantics(
+        _logical_document(
+            _semantic_model(
+                "commerce",
+                datasets=[_dataset("orders", field_names=("id", "customer_id", "tenant_id")), target],
+                relationships=[
+                    {
+                        "name": "customer",
+                        "from": "orders",
+                        "to": "customers",
+                        "from_columns": ["customer_id", "tenant_id"][: len(to_columns)],
+                        "to_columns": to_columns,
+                    }
+                ],
+            )
+        )
+    )
+    assert result.valid is valid
+    if not valid:
+        assert [diagnostic.code for diagnostic in result.diagnostics] == [
+            "ossie.semantic.relationship.target_key_not_unique"
+        ]
+
+
+def test_reordered_unique_key_declarations_are_duplicates() -> None:
+    result = validate_ossie_semantics(
+        _logical_document(
+            _semantic_model(
+                "commerce",
+                datasets=[
+                    _dataset(
+                        "orders",
+                        field_names=("id", "tenant_id"),
+                        unique_keys=(("id", "tenant_id"), ("TENANT_ID", "ID")),
+                    )
+                ],
+            )
+        )
+    )
+    assert [diagnostic.code for diagnostic in result.diagnostics] == ["ossie.semantic.dataset.key_duplicate"]
+
+
+def test_relationship_keys_must_resolve_to_fields_and_a_unique_target_set() -> None:
     result = validate_ossie_semantics(
         _logical_document(
             _semantic_model(

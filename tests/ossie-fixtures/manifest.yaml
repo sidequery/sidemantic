@@ -9,6 +9,22 @@ equivalence_groups:
     - logical-0.2.0.dev0-json
 
 cases:
+  - id: logical-0.2-current-dialects-vendors
+    input: cases/logical-0.2-current-dialects-vendors/document.json
+    serialization: json
+    profile: logical-0.2.0.dev0
+    expected:
+      valid: true
+      diagnostics: []
+
+  - id: logical-composite-key-reordered
+    input: cases/logical-composite-key-reordered.json
+    serialization: json
+    profile: logical-0.2.0.dev0
+    expected:
+      valid: true
+      diagnostics: []
+
   - id: logical-0.1.1-yaml
     input: cases/logical-0.1.1-valid/document.yaml
     serialization: yaml

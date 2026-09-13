@@ -63,6 +63,25 @@ def test_yaml_and_json_are_equivalent_within_each_version() -> None:
         assert documents[1:] == documents[:-1]
 
 
+@pytest.mark.parametrize(
+    ("field", "value", "code", "pointer"),
+    [
+        ("dialects", "SIGMA", "ossie.schema.type", "/dialects"),
+        ("dialects", ["NOT_A_DIALECT"], "ossie.schema.enum", "/dialects/0"),
+        ("vendors", "Sigma", "ossie.schema.type", "/vendors"),
+        ("vendors", [42], "ossie.schema.type", "/vendors/0"),
+    ],
+)
+def test_current_root_dialect_and_vendor_constraints(field: str, value: Any, code: str, pointer: str) -> None:
+    document = json.loads((FIXTURE_ROOT / "cases/logical-0.2-current-dialects-vendors/document.json").read_text())
+    document[field] = value
+
+    result = validation.validate_ossie_schema(document)
+
+    assert not result.valid
+    assert _diagnostic_contract(result) == [{"code": code, "instance_path": pointer}]
+
+
 def test_schema_profiles_have_exact_pins_and_integrity() -> None:
     expected = {
         "logical-0.1.1": (
@@ -71,14 +90,14 @@ def test_schema_profiles_have_exact_pins_and_integrity() -> None:
             "c1e9adec39562786aa78809665fba568797b15f4c53a0847d9cbcf2dead1bc94",
         ),
         "logical-0.2.0.dev0": (
-            "88e0011148283302c9a04cd0287e00e0b9d87354",
-            "8ce9f82aa92080265f9ae119e31cda5bef062f489674d3c467245c2d4c5ff264",
-            "8ce9f82aa92080265f9ae119e31cda5bef062f489674d3c467245c2d4c5ff264",
+            "831f48e582731cf1ee2e65380ca5abf8157869c7",
+            "22be177612ed665e0af244c586b9c0162f2a3706f8e9b061910f7a8e2a19b8e8",
+            "22be177612ed665e0af244c586b9c0162f2a3706f8e9b061910f7a8e2a19b8e8",
         ),
         "ontology-0.2.0.dev0": (
-            "88e0011148283302c9a04cd0287e00e0b9d87354",
+            "831f48e582731cf1ee2e65380ca5abf8157869c7",
             "555820756a7d30bc6986ce1b57feaa9937ec4ddd3288878b8af0e3361d824a41",
-            "c0ce26ff658aff52307f01bdc564061d194c1987e930d61ff498e63456b9b41d",
+            "43ed640d984dda250d2baa0bf11ffc7cc174fc87c71d4e0e943e5d127427f889",
         ),
     }
 
@@ -112,7 +131,8 @@ def test_ontology_runtime_schema_uses_only_pinned_local_refs() -> None:
             return [ref for child in value for ref in refs(child)]
         return []
 
-    assert upstream["$id"] == logical["$id"]
+    assert upstream["$id"] == "https://github.com/apache/ossie/ontology/ontology.json"
+    assert upstream["$id"] != logical["$id"]
     assert runtime["$id"] == "urn:sidemantic:ossie:schema:ontology:0.2.0.dev0"
     assert runtime["$id"] != logical["$id"]
     assert any("/apache/ossie/main/" in ref for ref in refs(upstream))

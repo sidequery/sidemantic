@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -19,6 +20,36 @@ def _parse(text: str, *, policy: OssieImportPolicy = OssieImportPolicy.STRICT):
         source_identifier="model.ossie.yaml",
         options=OssieParseOptions(import_policy=policy, validate_schema=True),
     )
+
+
+@pytest.mark.parametrize("key_kind", ["primary_key", "unique_keys"])
+def test_reordered_composite_unique_key_preserves_join_pairs(key_kind: str) -> None:
+    source = json.loads(
+        (Path(__file__).parents[2] / "ossie-fixtures/cases/logical-composite-key-reordered.json").read_text()
+    )
+    target = source["semantic_model"][0]["datasets"][1]
+    if key_kind == "unique_keys":
+        target["unique_keys"] = [target.pop("primary_key")]
+    lowered = lower_ossie_document(_parse(json.dumps(source)), target_dialect="duckdb")
+
+    assert lowered.valid, lowered.diagnostics
+    relationship = lowered.catalog["commerce"].graph.get_model("orders").relationships[0]
+    assert relationship.foreign_key_columns == ["customer_id", "tenant_id"]
+    assert relationship.primary_key_columns == ["id", "tenant_id"]
+    layer = SemanticLayer.from_catalog(lowered.catalog, auto_register=False)
+    assert layer.query(dimensions=["orders.customer_id", "customers.label"]).fetchall() == [(10, "matched")]
+
+
+def test_vendor_expression_alternatives_preserved_while_ansi_sql_is_selected() -> None:
+    source = (
+        Path(__file__).parents[2] / "ossie-fixtures/cases/logical-0.2-current-dialects-vendors/document.json"
+    ).read_text()
+    parsed = _parse(source)
+    lowered = lower_ossie_document(parsed, target_dialect="duckdb")
+
+    assert lowered.valid, lowered.diagnostics
+    assert lowered.catalog["commerce"].graph.get_model("orders").get_dimension("amount").sql == "amount"
+    assert lowered.document.to_parsed_data() == json.loads(source)
 
 
 def test_lowers_multiple_scopes_without_flattening_duplicate_model_names() -> None:

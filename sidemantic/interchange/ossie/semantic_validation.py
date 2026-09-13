@@ -514,7 +514,7 @@ class _SemanticValidator:
         if to_dataset is not None and to_key is not None:
             target, _ = to_dataset
             declared_keys = self.declared_unique_keys(target)
-            if to_key not in declared_keys:
+            if frozenset(to_key) not in declared_keys:
                 self.emit(
                     "ossie.semantic.relationship.target_key_not_unique",
                     (
@@ -563,18 +563,18 @@ class _SemanticValidator:
         return tuple(normalize_identifier(column) for column in columns) if valid else None
 
     @staticmethod
-    def declared_unique_keys(dataset: JSONObject) -> set[tuple[str, ...]]:
-        keys: set[tuple[str, ...]] = set()
+    def declared_unique_keys(dataset: JSONObject) -> set[frozenset[str]]:
+        keys: set[frozenset[str]] = set()
         primary_key = _array(dataset.get("primary_key"))
         if primary_key and all(
             isinstance(column, str) and column and identifier_within_limit(column) for column in primary_key
         ):
-            keys.add(tuple(normalize_identifier(column) for column in primary_key))
+            keys.add(frozenset(normalize_identifier(column) for column in primary_key))
         unique_keys = _array(dataset.get("unique_keys"))
         for value in unique_keys or ():
             key = _array(value)
             if key and all(isinstance(column, str) and column and identifier_within_limit(column) for column in key):
-                keys.add(tuple(normalize_identifier(column) for column in key))
+                keys.add(frozenset(normalize_identifier(column) for column in key))
         return keys
 
     def validate_declared_keys(
@@ -602,7 +602,7 @@ class _SemanticValidator:
             if key is not None:
                 key_groups.append((f"unique_keys/{key_index}", key))
 
-        first_key_pointer: dict[tuple[str, ...], str] = {}
+        first_key_pointer: dict[frozenset[str], str] = {}
         for key_path, columns in key_groups:
             key_pointer = _pointer(dataset_pointer, *key_path.split("/"))
             if not columns:
@@ -643,7 +643,7 @@ class _SemanticValidator:
                         scope=scope,
                     )
                 seen_columns.add(normalized)
-            normalized_key = tuple(normalized_columns)
+            normalized_key = frozenset(normalized_columns)
             is_unique_key = key_path.startswith("unique_keys/")
             if valid and is_unique_key and normalized_key in first_key_pointer:
                 self.emit(

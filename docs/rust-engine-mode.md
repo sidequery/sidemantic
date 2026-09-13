@@ -6,22 +6,17 @@ Rust engine mode is the explicit product surface for opting into the native Rust
 
 | Mode | Behavior |
 |---|---|
-| `python` | Use Python structured validation and compilation. |
-| `rust` | Use versioned Rust structured validation and compilation; reject unavailable or unsupported requirements unless fallback is enabled. |
+| `python` | Use Python validation, compilation, and rewrite paths. |
+| `rust` | Use the versioned Rust semantic-input path; reject unavailable or unsupported requirements unless fallback is enabled. |
 | `auto` | Select Rust when supported; permit Python fallback for typed unavailable or unsupported requirements. |
 
 The current supported boundary and conformance evidence are documented in
 [Semantic input contract](semantic-input.md). Invalid definitions and unexpected
-structured compiler failures remain errors in every mode. Automatic fallback
-does not hide those failures. These guarantees describe structured compilation;
-the CLI rewrite route is migrated separately.
+compiler failures remain errors in every mode. Automatic fallback does not hide
+those failures. Fallback diagnostics are written to stderr; SQL and data remain
+on stdout.
 
 ## CLI
-
-The existing CLI options remain available. In this layer, CLI validation and
-semantic-SQL rewrite still use their existing integrations; these commands do
-not yet establish versioned semantic-input or exact-projection conformance.
-The structured compiler guarantees below apply to the Python API.
 
 Validation:
 

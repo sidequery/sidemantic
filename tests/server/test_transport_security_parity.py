@@ -200,8 +200,6 @@ def test_unproven_nested_sql_fails_closed_across_http_and_mcp(tmp_path, query, m
 
 
 def test_rust_rewriter_is_disabled_for_secured_sql_transports(tmp_path, monkeypatch):
-    from sidemantic.sql.query_rewriter import QueryRewriter
-
     attrs = {"role": "analyst", "tenant_id": 2}
     query = "SELECT tenant_id, total_amount FROM orders"
     monkeypatch.setenv("SIDEMANTIC_RS_REWRITER", "1")
@@ -209,7 +207,7 @@ def test_rust_rewriter_is_disabled_for_secured_sql_transports(tmp_path, monkeypa
     def insecure_rust_rewrite(*_args, **_kwargs):
         return "SELECT tenant_id, SUM(amount) AS total_amount FROM orders GROUP BY tenant_id"
 
-    monkeypatch.setattr(QueryRewriter, "_rewrite_with_rust", insecure_rust_rewrite)
+    monkeypatch.setattr("sidemantic.sql.query_rewriter.rewrite_semantic_input", insecure_rust_rewrite)
 
     client = TestClient(create_app(_layer(), auth_token="secret", trust_user_header=True))
     response = client.post("/sql", json={"query": query}, headers=_headers(attrs))

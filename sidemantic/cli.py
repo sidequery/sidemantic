@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -176,24 +175,6 @@ def _normalize_engine(engine: str | None) -> str | None:
     return normalized
 
 
-def _configure_engine_environment(engine: str | None, fallback: bool) -> None:
-    if engine is None:
-        return
-
-    if engine == "python":
-        os.environ["SIDEMANTIC_RS_SQL_GENERATOR"] = "0"
-        os.environ["SIDEMANTIC_RS_QUERY_VALIDATION"] = "0"
-        os.environ["SIDEMANTIC_RS_REWRITER"] = "0"
-        os.environ["SIDEMANTIC_RS_NO_FALLBACK"] = "0"
-        return
-
-    os.environ["SIDEMANTIC_RS_SQL_GENERATOR"] = "1"
-    os.environ["SIDEMANTIC_RS_QUERY_VALIDATION"] = "1"
-    os.environ["SIDEMANTIC_RS_REWRITER"] = "1"
-    os.environ["SIDEMANTIC_RS_SQL_GENERATOR_VERIFY"] = "0"
-    os.environ["SIDEMANTIC_RS_NO_FALLBACK"] = "0" if fallback else "1"
-
-
 def _resolve_engine_options(engine: str | None, fallback: bool | None) -> tuple[str | None, bool]:
     resolved_engine = _normalize_engine(engine)
     resolved_fallback = fallback
@@ -214,6 +195,18 @@ def _resolve_engine_options(engine: str | None, fallback: bool | None) -> tuple[
     return resolved_engine, resolved_fallback
 
 
+def _emit_engine_selection(layer: SemanticLayer) -> None:
+    """Keep engine diagnostics off SQL and structured-data stdout."""
+    selection = layer.last_engine_selection
+    if not selection or cli_state().quiet:
+        return
+    reason = selection.get("reason")
+    if selection["engine"] == "python" and reason:
+        emit_diagnostic(f"Using Python engine: {reason}", force=True)
+    elif cli_state().verbose:
+        emit_diagnostic(f"Engine: {selection['engine']}", force=True)
+
+
 def _load_query_layer(
     models: Path | None = None,
     connection: str | None = None,
@@ -225,7 +218,6 @@ def _load_query_layer(
 ) -> SemanticLayer:
     """Load a semantic layer for CLI query/explain commands."""
     engine, resolved_fallback = _resolve_engine_options(engine, fallback)
-    _configure_engine_environment(engine, resolved_fallback)
 
     models = _models_path(models)
     resolved_connection = _resolve_connection(connection=connection, database=db, models=models)
@@ -270,19 +262,19 @@ def _load_graph_layer(
     *,
     engine: str | None = None,
     fallback: bool | None = None,
+    ossie_scope: str | None = None,
 ) -> SemanticLayer:
     """Load project models without opening the configured database."""
 
     models = _models_path(models)
     engine, resolved_fallback = _resolve_engine_options(engine, fallback)
-    _configure_engine_environment(engine, resolved_fallback)
     layer = SemanticLayer(engine=engine, fallback=resolved_fallback)
     if models.is_file():
         from sidemantic.loaders import load_from_file
 
-        load_from_file(layer, models)
+        load_from_file(layer, models, ossie_scope_id=ossie_scope)
     else:
-        load_from_directory(layer, str(models))
+        load_from_directory(layer, str(models), ossie_scope_id=ossie_scope)
     if not layer.graph.models:
         raise ValueError("No models found")
     return layer
@@ -1469,15 +1461,11 @@ def rewrite(
             use_preaggregations=use_preaggregations,
         )
 
-        from sidemantic.sql.query_rewriter import QueryRewriter
+        from sidemantic.core.transport_security import rewrite_transport_sql
 
-        typer.echo(
-            QueryRewriter(
-                layer.graph,
-                dialect=layer.adapter.dialect,
-                use_preaggregations=layer.use_preaggregations,
-            ).rewrite(sql)
-        )
+        rewritten_sql = rewrite_transport_sql(layer, sql, user_attributes=None, transport="CLI rewrite")
+        _emit_engine_selection(layer)
+        typer.echo(rewritten_sql)
     except typer.Exit:
         raise
     except Exception as e:
@@ -1828,14 +1816,10 @@ def query(
 
         # Dry run: show generated SQL without executing
         if dry_run:
-            from sidemantic.sql.query_rewriter import QueryRewriter
+            from sidemantic.core.transport_security import rewrite_transport_sql
 
-            rewriter = QueryRewriter(
-                layer.graph,
-                dialect=layer.adapter.dialect,
-                use_preaggregations=layer.use_preaggregations,
-            )
-            rewritten_sql = rewriter.rewrite(sql)
+            rewritten_sql = rewrite_transport_sql(layer, sql, user_attributes=None, transport="CLI dry run")
+            _emit_engine_selection(layer)
             if cli_state().format_explicit and output_format in {"csv", "json", "jsonl"}:
                 emit_records(
                     [{"sql": rewritten_sql}],
@@ -1849,6 +1833,7 @@ def query(
 
         # Execute query
         result = layer.sql(sql)
+        _emit_engine_selection(layer)
 
         # Get results
         columns = [desc[0] for desc in result.description]
@@ -2151,6 +2136,7 @@ def explain_sql_command(
             fallback=fallback,
         )
         explanation = layer.explain_sql(sql, strict=strict)
+        _emit_engine_selection(layer)
         payload = explanation.to_dict()
         if cli_state().machine_output:
             emit_json(payload)
@@ -2678,46 +2664,9 @@ def validate(
     directory = _models_path(directory)
 
     engine, fallback = _resolve_engine_options(engine, fallback)
-    _configure_engine_environment(engine, fallback)
 
     rust_models: list[str] | None = None
-    if engine in {"rust", "auto"}:
-        try:
-            from sidemantic.rust_bridge import load_graph_from_directory_with_rust
-
-            graph = load_graph_from_directory_with_rust(directory)
-            rust_models = sorted(graph.models)
-            if not structured:
-                typer.echo(f"Validated {len(graph.models)} models with Rust")
-            if verbose and not structured:
-                for model_name in sorted(graph.models):
-                    typer.echo(f"  - {model_name}")
-        except Exception as e:
-            if engine == "rust" or not fallback:
-                if cli_state().debug:
-                    raise
-                message = f"Rust validation failed: {e}"
-                if structured:
-                    emit_records(
-                        [{"level": "error", "message": message}],
-                        columns=("level", "message"),
-                        output_format=output_format,
-                        json_value={
-                            "valid": False,
-                            "path": str(directory),
-                            "engine": engine,
-                            "errors": [message],
-                            "warnings": [],
-                            "info": [],
-                        },
-                    )
-                else:
-                    emit_error(message)
-                raise typer.Exit(1)
-
-    # Canonical semantic checks are always Python-backed; Rust validation above
-    # is an additional compatibility check, not a different definition of valid.
-    _configure_engine_environment("python", False)
+    # Authoring validation remains Python-backed for every engine selection.
     try:
         import warnings as warnings_module
 
@@ -2777,11 +2726,38 @@ def validate(
             emit_error(e)
         raise typer.Exit(1)
 
+    if engine in {"rust", "auto"} and not report.errors:
+        try:
+            from sidemantic.rust_bridge import validate_semantic_input
+
+            # Use the same source adapters as authoring and compilation; Rust
+            # receives the versioned graph rather than a second native YAML parse.
+            with warnings_module.catch_warnings():
+                warnings_module.simplefilter("ignore")
+                runtime_layer = _load_graph_layer(directory, engine="python", ossie_scope=ossie_scope)
+            runtime_errors = validate_semantic_input(runtime_layer.graph, [], [], input_dialect=runtime_layer.dialect)
+            if runtime_errors:
+                report.errors.extend(f"Rust compatibility: {error}" for error in runtime_errors)
+            else:
+                rust_models = sorted(runtime_layer.graph.models)
+                report.info.append(f"Rust semantic input compatibility: {len(rust_models)} model(s) validated")
+        except Exception as e:
+            from sidemantic.semantic_handoff import RustBackendUnavailableError, UnsupportedSemanticFeaturesError
+
+            if fallback and isinstance(e, (RustBackendUnavailableError, UnsupportedSemanticFeaturesError)):
+                message = f"Using Python validation: {type(e).__name__}: {e}"
+                report.warnings.append(message)
+                emit_diagnostic(message, force=True)
+            else:
+                if cli_state().debug:
+                    raise
+                report.errors.append(f"Rust compatibility failed: {e}")
+
     live_payload: dict[str, object] | None = None
     if live:
         try:
             _resolve_connection(connection=connection, database=db, models=directory, required=True)
-            layer = _load_query_layer(directory, connection=connection, db=db, ossie_scope=ossie_scope)
+            layer = _load_query_layer(directory, connection=connection, db=db, engine="python", ossie_scope=ossie_scope)
             from sidemantic.testing import check_schema_drift
 
             with progress("Checking live database schema"):

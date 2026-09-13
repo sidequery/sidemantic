@@ -16,7 +16,7 @@ use crate::error::{Result, SidemanticError};
 use crate::runtime::{
     interpolate_query_filters, validate_query_references, QueryValidationContext,
 };
-use crate::sql::{SemanticQuery, SqlGenerator};
+use crate::sql::{QueryRewriter, SemanticQuery, SqlGenerator};
 mod policies;
 
 #[derive(Debug, Deserialize)]
@@ -766,8 +766,7 @@ pub fn rewrite_with_semantic_input(input_json: &str, sql: &str) -> Result<String
         {
             return Err(unsupported("rewrite.model_policies"));
         }
-        let _ = (&input.graph, sql);
-        Err(unsupported("rewrite.semantic_input"))
+        QueryRewriter::new(&input.graph).rewrite_with_dialect(sql, DialectType::DuckDB)
     })
 }
 
@@ -1003,6 +1002,15 @@ mod tests {
             r#"{"metrics":["orders.revenue"],"dimensions":["buyer.name"]}"#
         )
         .is_err());
+    }
+
+    #[test]
+    fn handoff_rewrite_uses_declared_duckdb_input() {
+        let source = input();
+        let sql =
+            rewrite_with_semantic_input(&source.to_string(), "select orders.revenue from orders")
+                .unwrap();
+        assert!(sql.contains("SUM("));
     }
 
     #[test]

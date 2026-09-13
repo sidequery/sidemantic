@@ -2,7 +2,7 @@
 
 The Python bridge sends a versioned JSON snapshot of its existing semantic graph
 to the Rust compiler. This replaces the native-YAML conversion previously used
-by the structured compile and reference-validation paths. Native YAML/SQL and external adapters
+by the compile, validate, and rewrite paths. Native YAML/SQL and external adapters
 remain authoring inputs. The Python and Rust compilers still have separate graph
 implementations; this bridge does not yet consolidate them into one compiler.
 
@@ -45,8 +45,9 @@ semantic fields cannot be silently discarded during projection.
 
 ## Executable boundary
 
-The first version accepts DuckDB input expressions and provides Rust compilation
-and reference-validation entrypoints. Structured query output dialect selection belongs to Rust SQL generation. Support for another
+The first version accepts DuckDB input expressions and provides Rust compile,
+reference-validation, and semantic-SQL rewrite entrypoints. Structured query
+output dialect selection belongs to Rust SQL generation. Support for another
 output dialect is not evidence that its warehouse has passed live execution
 tests.
 
@@ -85,9 +86,12 @@ The existing YAML-based Rust utility entrypoints remain for compatibility.
 They are not an automatic fallback for the new compiler boundary and do not
 establish version-1 conformance for other host integrations.
 
-CLI semantic-SQL commands continue to use the existing rewrite integration.
-The versioned rewrite route and exact projection handling are introduced in a
-later layer; structured compiler support does not imply CLI rewrite parity.
+For CLI semantic SQL, scoped `SELECT ... FROM metrics` queries with column
+projections and aliases use the structured compiler, including cross-model
+calculations, role dimensions and temporal metrics. The wrapper preserves the
+requested output columns, ordering by projected fields, and pagination.
+Expressions or additional clauses outside this subset report an unsupported
+rewrite capability. This is a bounded rewrite path, not full semantic-SQL parity.
 
 ## Engine selection
 
@@ -100,8 +104,8 @@ later layer; structured compiler support does not imply CLI rewrite parity.
 Malformed definitions, invalid references, and unexpected compiler failures
 remain errors. They do not trigger speculative execution through another
 engine. `last_engine_selection` records the selected engine and fallback reason
-for structured compilation on the Python layer. CLI selection reporting and
-versioned rewrite routing are introduced separately.
+on the Python layer and rewriter. CLI fallback diagnostics go to stderr so SQL
+and data stdout remain usable in pipelines.
 
 ## Acceptance evidence
 

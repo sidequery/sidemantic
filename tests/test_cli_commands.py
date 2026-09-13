@@ -217,7 +217,7 @@ def test_explain_sql_outputs_planner_json(tmp_path):
     assert "rewritten_sql" in payload
 
 
-def test_query_engine_rust_sets_rewriter_env(monkeypatch, tmp_path):
+def test_query_engine_rust_routes_rewriter_without_environment_mutation(monkeypatch, tmp_path):
     _write_min_model(tmp_path)
     captured = {}
     monkeypatch.setenv("SIDEMANTIC_RS_SQL_GENERATOR", "0")
@@ -226,12 +226,13 @@ def test_query_engine_rust_sets_rewriter_env(monkeypatch, tmp_path):
     monkeypatch.setenv("SIDEMANTIC_RS_NO_FALLBACK", "0")
 
     class FakeRewriter:
-        def __init__(self, *_args, **_kwargs):
-            pass
+        last_engine_selection = {"engine": "rust", "reason": None}
 
-        def rewrite(self, _sql):
-            captured["rewriter"] = os.environ.get("SIDEMANTIC_RS_REWRITER")
-            captured["no_fallback"] = os.environ.get("SIDEMANTIC_RS_NO_FALLBACK")
+        def __init__(self, *_args, **kwargs):
+            captured["rewriter"] = kwargs["use_rust_rewriter"]
+            captured["no_fallback"] = kwargs["rust_no_fallback"]
+
+        def rewrite(self, _sql, **kwargs):
             return "select 1"
 
     monkeypatch.setattr("sidemantic.sql.query_rewriter.QueryRewriter", FakeRewriter)
@@ -251,7 +252,8 @@ def test_query_engine_rust_sets_rewriter_env(monkeypatch, tmp_path):
     )
 
     assert result.exit_code == 0
-    assert captured == {"rewriter": "1", "no_fallback": "0"}
+    assert captured == {"rewriter": True, "no_fallback": False}
+    assert os.environ["SIDEMANTIC_RS_REWRITER"] == "0"
 
 
 def test_query_uses_config_runtime_engine(monkeypatch, tmp_path):
@@ -268,12 +270,13 @@ runtime:
     )
 
     class FakeRewriter:
-        def __init__(self, *_args, **_kwargs):
-            pass
+        last_engine_selection = {"engine": "rust", "reason": None}
 
-        def rewrite(self, _sql):
-            captured["rewriter"] = os.environ.get("SIDEMANTIC_RS_REWRITER")
-            captured["no_fallback"] = os.environ.get("SIDEMANTIC_RS_NO_FALLBACK")
+        def __init__(self, *_args, **kwargs):
+            captured["rewriter"] = kwargs["use_rust_rewriter"]
+            captured["no_fallback"] = kwargs["rust_no_fallback"]
+
+        def rewrite(self, _sql, **kwargs):
             return "select 1"
 
     monkeypatch.setattr("sidemantic.sql.query_rewriter.QueryRewriter", FakeRewriter)
@@ -292,20 +295,21 @@ runtime:
     )
 
     assert result.exit_code == 0
-    assert captured == {"rewriter": "1", "no_fallback": "0"}
+    assert captured == {"rewriter": True, "no_fallback": False}
 
 
-def test_rewrite_engine_rust_sets_rewriter_env(monkeypatch, tmp_path):
+def test_rewrite_engine_rust_routes_rewriter(monkeypatch, tmp_path):
     _write_min_model(tmp_path)
     captured = {}
 
     class FakeRewriter:
-        def __init__(self, *_args, **_kwargs):
-            pass
+        last_engine_selection = {"engine": "rust", "reason": None}
 
-        def rewrite(self, _sql):
-            captured["rewriter"] = os.environ.get("SIDEMANTIC_RS_REWRITER")
-            captured["no_fallback"] = os.environ.get("SIDEMANTIC_RS_NO_FALLBACK")
+        def __init__(self, *_args, **kwargs):
+            captured["rewriter"] = kwargs["use_rust_rewriter"]
+            captured["no_fallback"] = kwargs["rust_no_fallback"]
+
+        def rewrite(self, _sql, **kwargs):
             return "select 1"
 
     monkeypatch.setattr("sidemantic.sql.query_rewriter.QueryRewriter", FakeRewriter)
@@ -325,7 +329,7 @@ def test_rewrite_engine_rust_sets_rewriter_env(monkeypatch, tmp_path):
 
     assert result.exit_code == 0
     assert "select 1" in result.stdout
-    assert captured == {"rewriter": "1", "no_fallback": "0"}
+    assert captured == {"rewriter": True, "no_fallback": False}
 
 
 def test_export_native_writes_versioned_yaml(tmp_path):
@@ -523,16 +527,14 @@ models:
     assert "Validation Failed" in result.output
 
 
-def test_validate_engine_rust_uses_rust_loader(monkeypatch, tmp_path):
+def test_validate_engine_rust_uses_semantic_input(monkeypatch, tmp_path):
     _write_min_model(tmp_path)
     called = {}
 
-    class FakeGraph:
-        models = {"orders": object()}
-
-    def fake_load_graph_from_directory_with_rust(directory):
-        called["directory"] = directory
-        return FakeGraph()
+    def fake_validate_semantic_input(graph, metrics, dimensions, *, input_dialect):
+        called["models"] = sorted(graph.models)
+        called["query"] = (metrics, dimensions, input_dialect)
+        return []
 
     class FakeReport:
         errors = []
@@ -543,21 +545,18 @@ def test_validate_engine_rust_uses_rust_loader(monkeypatch, tmp_path):
         called["python_directory"] = directory
         return FakeReport()
 
-    monkeypatch.setattr(
-        "sidemantic.rust_bridge.load_graph_from_directory_with_rust",
-        fake_load_graph_from_directory_with_rust,
-    )
+    monkeypatch.setattr("sidemantic.rust_bridge.validate_semantic_input", fake_validate_semantic_input)
     monkeypatch.setattr("sidemantic.validation_runner.validate_directory", fake_validate_directory)
 
     result = runner.invoke(app, ["validate", str(tmp_path), "--engine", "rust", "--verbose"])
 
-    assert result.exit_code == 0
-    assert called["directory"] == tmp_path
+    assert result.exit_code == 0, result.output
+    assert called["models"] == ["orders"]
+    assert called["query"] == ([], [], "duckdb")
     assert called["python_directory"] == tmp_path
-    assert "Validated 1 models with Rust" in result.stdout
+    assert "Rust semantic input compatibility: 1 model(s) validated" in result.stdout
     assert "canonical Python validation ran" in result.stdout
     assert "Validation Passed" in result.stdout
-    assert "orders" in result.stdout
 
 
 def test_validate_routes_fidelity_features_and_unknown_legacy_notes_fail_closed(monkeypatch, tmp_path):
@@ -1035,6 +1034,8 @@ connection:
             return [(2, "completed")]
 
     class FakeLayer:
+        last_engine_selection = None
+
         def __init__(self, **kwargs):
             captured["kwargs"] = kwargs
             self.graph = type("Graph", (), {"models": {"orders": object()}})()

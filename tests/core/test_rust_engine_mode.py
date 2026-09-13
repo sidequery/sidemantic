@@ -212,3 +212,24 @@ def test_compiler_capability_failure_obeys_engine_mode(monkeypatch, engine, reje
         assert "SELECT" in layer.compile(metrics=["orders.revenue"])
         assert layer.last_engine_selection["engine"] == "python"
         assert "future_requirement" in layer.last_engine_selection["reason"]
+
+
+def test_cached_sql_restores_the_engine_selection_of_its_compilation(monkeypatch):
+    import sidemantic.core.transport_security as transport_security
+
+    layer = _engine_layer(monkeypatch, "auto")
+    calls = []
+
+    def rewrite(layer, query, **kwargs):
+        calls.append(query)
+        layer.last_engine_selection = {"engine": "python", "reason": "query capability"}
+        return "SELECT 1"
+
+    monkeypatch.setattr(transport_security, "rewrite_transport_sql", rewrite)
+    query = "select orders.revenue from orders"
+    assert layer.sql(query).fetchone() == (1,)
+    layer.compile(metrics=["orders.revenue"])
+    assert layer.last_engine_selection == {"engine": "rust", "reason": None}
+    assert layer.sql(query).fetchone() == (1,)
+    assert calls == [query]
+    assert layer.last_engine_selection == {"engine": "python", "reason": "query capability"}

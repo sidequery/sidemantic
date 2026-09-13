@@ -175,10 +175,10 @@ def rewrite_transport_sql(
         dialect=layer.dialect,
         use_preaggregations=requested_preaggregations,
         enforce_visibility=getattr(layer, "enforce_visibility", False),
-        # The optional Rust planner does not accept caller attributes or run
-        # SQLGenerator's policy/visibility checks yet. Keep secured transports
-        # on the policy-aware Python planner even when it is enabled globally.
-        use_rust_rewriter=False if controls_are_active(layer) else None,
+        use_rust_rewriter=(
+            getattr(layer, "_use_rust_sql_generator", None) if getattr(layer, "_explicit_engine", False) else None
+        ),
+        rust_no_fallback=getattr(layer, "_rust_no_fallback", None),
     )
     # Yardstick's explicit and implicit measure paths expand directly against
     # physical model tables. They do not currently route those reads through
@@ -209,6 +209,7 @@ def rewrite_transport_sql(
         rewritten = explanation.rewritten_sql
     else:
         rewritten = rewriter.rewrite(query, strict=strict, user_attributes=user_attributes)
+    layer.last_engine_selection = rewriter.last_engine_selection
     return rewritten
 
 

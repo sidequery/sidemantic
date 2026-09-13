@@ -146,7 +146,7 @@ class SemanticLayer:
         # compiled semantic scope. Ordinary/native layers remain catalog-free.
         self.catalog = None
         self.compiled_scope = None
-        self._sql_rewrite_cache: dict[tuple[object, ...], str] = {}
+        self._sql_rewrite_cache: dict[tuple[object, ...], tuple[str, dict[str, str | None] | None]] = {}
         self._sql_rewrite_cache_limit = 256
         # Monotonic counter bumped whenever the model/metric graph or query-affecting
         # config mutates. Included in result-cache keys so cached Arrow results are
@@ -2189,12 +2189,18 @@ class SemanticLayer:
             self.dialect,
             self.use_preaggregations,
             self.enforce_visibility,
+            self._explicit_engine,
+            self._use_rust_sql_generator,
+            self._rust_no_fallback,
             os.getenv("SIDEMANTIC_RS_REWRITER", "0"),
             os.getenv("SIDEMANTIC_RS_NO_FALLBACK", "0"),
             query,
         )
-        rewritten_sql = self._sql_rewrite_cache.get(cache_key) if use_cache else None
-        if rewritten_sql is None:
+        cached = self._sql_rewrite_cache.get(cache_key) if use_cache else None
+        if cached is not None:
+            rewritten_sql, selection = cached
+            self.last_engine_selection = dict(selection) if selection is not None else None
+        else:
             rewritten_sql = rewrite_transport_sql(
                 self,
                 query,
@@ -2204,7 +2210,8 @@ class SemanticLayer:
             if use_cache:
                 if len(self._sql_rewrite_cache) >= self._sql_rewrite_cache_limit:
                     self._sql_rewrite_cache.pop(next(iter(self._sql_rewrite_cache)))
-                self._sql_rewrite_cache[cache_key] = rewritten_sql
+                selection = dict(self.last_engine_selection) if self.last_engine_selection is not None else None
+                self._sql_rewrite_cache[cache_key] = (rewritten_sql, selection)
 
         def recompile_raw():
             return rewrite_transport_sql(
@@ -2241,8 +2248,12 @@ class SemanticLayer:
             dialect=self.dialect,
             use_preaggregations=self.use_preaggregations,
             enforce_visibility=self.enforce_visibility,
+            use_rust_rewriter=self._use_rust_sql_generator if self._explicit_engine else None,
+            rust_no_fallback=self._rust_no_fallback,
         )
-        return rewriter.explain(query, strict=strict)
+        explanation = rewriter.explain(query, strict=strict)
+        self.last_engine_selection = rewriter.last_engine_selection
+        return explanation
 
     def to_yaml(self, path: str | Path) -> None:
         """Export semantic layer to native YAML file.

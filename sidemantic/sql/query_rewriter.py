@@ -3,7 +3,6 @@
 Parses user SQL and rewrites it to use the semantic layer.
 """
 
-import logging
 import os
 import re
 import warnings
@@ -16,7 +15,8 @@ from sqlglot.errors import SqlglotError
 from sqlglot.tokens import TokenType
 
 from sidemantic.core.semantic_graph import SemanticGraph
-from sidemantic.rust_bridge import get_rust_module, graph_to_rust_yaml
+from sidemantic.rust_bridge import rewrite_semantic_input
+from sidemantic.semantic_handoff import RustBackendUnavailableError, UnsupportedSemanticFeaturesError
 from sidemantic.sql.aggregation_detection import sql_has_aggregate
 from sidemantic.sql.generator import SQLGenerator
 from sidemantic.sql.parsing import parse_fragment
@@ -27,11 +27,6 @@ _YARDSTICK_SYNTAX_HINT_RE = re.compile(r"\b(?:SEMANTIC|AGGREGATE|AT)\b|\{", re.I
 # Expected failures for speculative optimizer paths. These paths may reject a
 # query shape, but must not hide programming errors such as AttributeError.
 _EXPECTED_REWRITE_FAILURES = (KeyError, ValueError, SqlglotError)
-
-# PyO3/import/version failures that make the optional Rust backend unavailable.
-# TypeError and AttributeError deliberately propagate: they indicate an API
-# contract or implementation defect rather than an unavailable backend.
-_RUST_BACKEND_FAILURES = (ImportError, OSError, RuntimeError, ValueError)
 
 
 class YardstickWarning(UserWarning):
@@ -147,6 +142,7 @@ class QueryRewriter:
         use_preaggregations: bool = False,
         enforce_visibility: bool = False,
         use_rust_rewriter: bool | None = None,
+        rust_no_fallback: bool | None = None,
     ):
         """Initialize query rewriter.
 
@@ -156,6 +152,7 @@ class QueryRewriter:
             use_preaggregations: Enable single-model pre-aggregation routing
             enforce_visibility: Reject semantic references to fields declared ``public: false``
             use_rust_rewriter: Override the environment-controlled Rust rewrite path
+            rust_no_fallback: Reject unsupported Rust requirements instead of falling back
         """
         self.graph = graph
         self.dialect = dialect
@@ -168,26 +165,103 @@ class QueryRewriter:
         self._use_rust_rewriter = (
             os.getenv("SIDEMANTIC_RS_REWRITER", "0") == "1" if use_rust_rewriter is None else use_rust_rewriter
         )
-        if self._use_rust_rewriter and any(model.invariant_filters for model in graph.models.values()):
-            self._use_rust_rewriter = False
-            self.rust_fallback_reason = "model invariant filters require the Python rewriter"
-        self._rust_no_fallback = os.getenv("SIDEMANTIC_RS_NO_FALLBACK", "0") == "1"
-        self._rust_module = None
-        self._rust_models_yaml: str | None = None
-        if not hasattr(self, "rust_fallback_reason"):
-            self.rust_fallback_reason: str | None = None
+        self._rust_no_fallback = (
+            os.getenv("SIDEMANTIC_RS_NO_FALLBACK", "0") == "1" if rust_no_fallback is None else rust_no_fallback
+        )
+        self.rust_fallback_reason: str | None = None
+        self.last_engine_selection: dict[str, str | None] | None = None
 
-        if self._use_rust_rewriter:
+    def _route_rust(self, sql: str, user_attributes: dict | None, strict: bool) -> str | None:
+        """Attempt the complete Rust rewrite before any Python semantic expansion."""
+        self.rust_fallback_reason = None
+        self.last_engine_selection = {"engine": "python", "reason": None}
+        if not self._use_rust_rewriter:
+            return None
+        self.last_engine_selection = {"engine": "passthrough", "reason": "No semantic compilation"}
+        # Validate query framing without binding or rewriting semantic expressions.
+        uses_yardstick = self.would_use_yardstick_rewrite(sql) or bool(
+            re.search(r"\byardstick\s*\(", sql, re.IGNORECASE)
+        )
+        if not uses_yardstick:
             try:
-                self._rust_module = get_rust_module()
-                self._rust_models_yaml = graph_to_rust_yaml(self.graph)
-            except _RUST_BACKEND_FAILURES as exc:
-                if self._rust_no_fallback:
-                    raise
-                self.rust_fallback_reason = f"{type(exc).__name__}: {exc}"
-                logging.debug("Rust rewriter initialization failed; using Python", exc_info=True)
+                statements = [
+                    statement for statement in sqlglot.parse(sql, dialect=self.dialect) if statement is not None
+                ]
+            except SqlglotError as exc:
+                if strict:
+                    raise ValueError(f"Failed to parse SQL: {exc}") from exc
+                return sql
+            if len(statements) != 1:
+                if strict:
+                    raise ValueError("Multiple statements are not supported")
+                return sql
+            parsed = statements[0]
+            if not isinstance(parsed, (exp.Select, exp.SetOperation)):
+                if strict:
+                    raise ValueError("Only SELECT queries are supported")
+                return sql
+            if not self._expression_tree_references_semantic_model(parsed):
+                self.last_engine_selection = {"engine": "passthrough", "reason": "No semantic model reference"}
+                return sql
+            self._raise_on_user_cte_name_collision(parsed)
+        self.last_engine_selection = {"engine": "rust", "reason": "Rust engine selected"}
+        try:
+            capabilities = []
+            if self.enforce_visibility:
+                capabilities.append("query.visibility")
+            if user_attributes is not None:
+                capabilities.append("query.user_attributes")
+            if any(model.security is not None for model in self.graph.models.values()):
+                capabilities.append("model.security")
+            if any(model.invariant_filters for model in self.graph.models.values()):
+                capabilities.append("model.invariant_filters")
+            if self.use_preaggregations:
+                capabilities.append("query.preaggregations")
+            if uses_yardstick:
+                capabilities.append("query.yardstick_rewrite")
+            if capabilities:
+                raise UnsupportedSemanticFeaturesError(capabilities)
+            rewritten = rewrite_semantic_input(self.graph, sql, input_dialect=self.dialect)
+            self.last_engine_selection = {"engine": "rust", "reason": None}
+            return rewritten
+        except (RustBackendUnavailableError, UnsupportedSemanticFeaturesError) as exc:
+            if self._rust_no_fallback:
+                raise
+            self.rust_fallback_reason = f"{type(exc).__name__}: {exc}"
+            self.last_engine_selection = {"engine": "python", "reason": self.rust_fallback_reason}
+            return None
 
     def rewrite(self, sql: str, strict: bool = True, user_attributes: dict | None = None) -> str:
+        """Rewrite with the requested engine, falling back only for typed capability failures."""
+        rewritten = self._route_rust(sql, user_attributes, strict)
+        if rewritten is not None:
+            return rewritten
+        selection = self.last_engine_selection
+        result = self._rewrite_python(sql, strict=strict, user_attributes=user_attributes)
+        self.last_engine_selection = selection
+        return result
+
+    def explain(self, sql: str, strict: bool = True, user_attributes: dict | None = None) -> RewriteExplanation:
+        """Explain the engine that actually compiles the semantic query."""
+        rewritten = self._route_rust(sql, user_attributes, strict)
+        if rewritten is not None:
+            if self.last_engine_selection["engine"] == "passthrough":
+                return self._passthrough_explanation(sql, reason=self.last_engine_selection["reason"])
+            return RewriteExplanation(
+                input_sql=sql,
+                rewritten_sql=rewritten,
+                chosen_plan="rust_semantic_rewriter",
+                source_kind="rust",
+                candidate_plans=[
+                    CandidatePlan(name="rust_semantic_rewriter", valid=True, reason="Rust engine selected")
+                ],
+            )
+        selection = self.last_engine_selection
+        result = self._explain_python(sql, strict=strict, user_attributes=user_attributes)
+        self.last_engine_selection = selection
+        return result
+
+    def _rewrite_python(self, sql: str, strict: bool = True, user_attributes: dict | None = None) -> str:
         """Rewrite user SQL to use semantic layer.
 
         Supports:
@@ -300,12 +374,6 @@ class QueryRewriter:
 
         self._raise_on_user_cte_name_collision(parsed)
 
-        if self._use_rust_rewriter:
-            rust_sql = self._prepare_sql_for_rust(parsed, sql)
-            rust_rewritten = self._rewrite_with_rust(rust_sql, strict=strict)
-            if rust_rewritten is not None:
-                return cache_result(rust_rewritten)
-
         # Check if this is a CTE-based query or has subqueries
         has_ctes = parsed.args.get("with_") is not None
         has_subquery_in_from = self._has_subquery_in_from(parsed)
@@ -350,7 +418,7 @@ class QueryRewriter:
                 column.set("table", exp.to_identifier(aliases[column.table]))
         return rewritten
 
-    def explain(
+    def _explain_python(
         self,
         sql: str,
         strict: bool = True,
@@ -368,7 +436,7 @@ class QueryRewriter:
         if expanded_sql != sql:
             return RewriteExplanation(
                 input_sql=sql,
-                rewritten_sql=self.rewrite(expanded_sql, strict=strict, user_attributes=user_attributes),
+                rewritten_sql=self._rewrite_python(expanded_sql, strict=strict, user_attributes=user_attributes),
                 chosen_plan="yardstick_semantic_sql",
                 source_kind="yardstick",
                 candidate_plans=[
@@ -489,25 +557,6 @@ class QueryRewriter:
             return self._passthrough_explanation(sql, reason="no_semantic_model_reference")
 
         self._raise_on_user_cte_name_collision(parsed)
-
-        if self._use_rust_rewriter:
-            rust_sql = self._prepare_sql_for_rust(parsed, sql)
-            rust_rewritten = self._rewrite_with_rust(rust_sql, strict=strict)
-            if rust_rewritten is not None:
-                return RewriteExplanation(
-                    input_sql=sql,
-                    rewritten_sql=rust_rewritten,
-                    chosen_plan="rust_semantic_rewriter",
-                    source_kind="rust",
-                    candidate_plans=[
-                        CandidatePlan(
-                            name="rust_semantic_rewriter",
-                            valid=True,
-                            reason="SIDEMANTIC_RS_REWRITER is enabled",
-                        )
-                    ],
-                    warnings=["Rust rewriter handled this query before the Python planner."],
-                )
 
         has_ctes = parsed.args.get("with_") is not None
         has_subquery_in_from = self._has_subquery_in_from(parsed)
@@ -3043,11 +3092,30 @@ class QueryRewriter:
         return frozenset()
 
     def _generate_from_plan(self, plan: SemanticQueryPlan, query: exp.Select | None = None) -> str:
-        return self.generator.generate(
+        temporal_projection = any(
+            self.graph.resolve_metric_reference(ref)[1].type == "time_comparison" for ref in plan.metrics
+        )
+        references = [*plan.metrics, *plan.dimensions]
+        repeated_projection = len(references) != len(set(references))
+        restore_projection = query is not None and (temporal_projection or repeated_projection)
+        order_by = plan.order_by
+        if restore_projection and order_by:
+            alias_references = {}
+            for expression in query.expressions:
+                if isinstance(expression, exp.Alias) and isinstance(expression.this, exp.Column):
+                    source = self._normalize_source_aliases(expression.this)
+                    alias_references[expression.alias] = source.sql(dialect=self.dialect)
+            order_by = []
+            for item in plan.order_by:
+                parts = item.rsplit(" ", 1)
+                field = parts[0] if len(parts) == 2 and parts[1].upper() in {"ASC", "DESC"} else item
+                direction = item[len(field) :]
+                order_by.append(alias_references.get(field, field) + direction)
+        generated_sql = self.generator.generate(
             metrics=plan.metrics,
             dimensions=plan.dimensions,
             filters=plan.filters,
-            order_by=plan.order_by,
+            order_by=order_by,
             limit=plan.limit,
             offset=plan.offset,
             use_preaggregations=self.use_preaggregations,
@@ -3055,6 +3123,41 @@ class QueryRewriter:
             user_attributes=getattr(self, "_rewrite_user_attributes", None),
             _query_ctes=self._query_ctes_in_scope(query),
         )
+        # Time-comparison generators also expose their base measures for structured
+        # queries. A SQL SELECT keeps only the columns its projection requests.
+        # Repeated references likewise need separate projection aliases because
+        # the structured query carries only one alias per semantic reference.
+        if restore_projection:
+            requested = [expression.alias_or_name for expression in query.expressions]
+            if all(requested) and not any(isinstance(expression, exp.Star) for expression in query.expressions):
+                generated = parse_fragment(generated_sql, self.dialect)
+                if isinstance(generated, exp.Select):
+                    outputs = {expression.alias_or_name: expression for expression in generated.expressions}
+                    projections = []
+                    restored_names = {}
+                    for expression, name in zip(query.expressions, requested):
+                        source = expression.this if isinstance(expression, exp.Alias) else expression
+                        if not isinstance(source, exp.Column):
+                            break
+                        output = outputs.get(name)
+                        if output is None:
+                            reference = self._normalize_source_aliases(source).sql(dialect=self.dialect)
+                            output = outputs.get(plan.aliases.get(reference))
+                        if output is None:
+                            output = outputs.get(source.name)
+                        if output is None:
+                            break
+                        restored_names[output.alias_or_name] = name
+                        output = output.this if isinstance(output, exp.Alias) else output
+                        projections.append(output.copy().as_(name))
+                    if len(projections) == len(requested):
+                        generated.set("expressions", projections)
+                        if order := generated.args.get("order"):
+                            for column in order.find_all(exp.Column):
+                                if not column.table and column.name in restored_names:
+                                    column.set("this", exp.to_identifier(restored_names[column.name]))
+                        return generated.sql(dialect=self.dialect, pretty=True)
+        return generated_sql
 
     def _dedupe(self, values: list[str]) -> list[str]:
         deduped = []
@@ -3145,7 +3248,7 @@ class QueryRewriter:
                 )
             ):
                 raise ValueError("yardstick() requires a single read-only SELECT query")
-            rewritten = parse_fragment(self.rewrite(inner_sql, user_attributes=user_attributes), self.dialect)
+            rewritten = parse_fragment(self._rewrite_python(inner_sql, user_attributes=user_attributes), self.dialect)
             table.replace(exp.Subquery(this=rewritten, alias=table.args.get("alias")))
             expanded = True
         return parsed.sql(dialect=self.dialect) if expanded else sql
@@ -3303,7 +3406,7 @@ class QueryRewriter:
         if not calls and not allow_plain_measures:
             if not has_semantic_prefix and transformed_sql == original_sql:
                 return transformed_sql
-            return self.rewrite(transformed_sql, strict=strict)
+            return self._rewrite_python(transformed_sql, strict=strict)
 
         try:
             parsed = parse_fragment(transformed_sql, self.dialect)
@@ -5250,58 +5353,6 @@ class QueryRewriter:
                 self.table_aliases = previous_table_aliases
             elif hasattr(self, "table_aliases"):
                 del self.table_aliases
-
-    def _rewrite_with_rust(self, sql: str, strict: bool = True) -> str | None:
-        """Rewrite using sidemantic-rs bindings, returning None to allow Python fallback."""
-        if not self._rust_module:
-            if strict and self._rust_no_fallback:
-                raise ValueError("Rust rewriter backend is not initialized")
-            return None
-
-        try:
-            models_yaml = self._rust_models_yaml
-            if models_yaml is None:
-                models_yaml = graph_to_rust_yaml(self.graph)
-                self._rust_models_yaml = models_yaml
-            return self._rust_module.rewrite_with_yaml(models_yaml, sql)
-        except _RUST_BACKEND_FAILURES as e:
-            if self._rust_no_fallback:
-                raise ValueError(f"Rust rewriter failed: {e}") from e
-            self.rust_fallback_reason = f"{type(e).__name__}: {e}"
-            logging.debug("Rust rewrite failed; using Python", exc_info=True)
-            return None
-
-    def _prepare_sql_for_rust(self, parsed: exp.Select, original_sql: str) -> str:
-        """Normalize Python-only graph metric shorthand to SQL sidemantic-rs can rewrite."""
-        if self._extract_from_table(parsed) != "metrics":
-            return original_sql
-
-        changed = False
-        rewritten_projections: list[exp.Expression] = []
-
-        for projection in parsed.expressions:
-            alias_name = projection.alias_or_name if isinstance(projection, exp.Alias) else None
-            node = projection.this if isinstance(projection, exp.Alias) else projection
-
-            if isinstance(node, exp.Column) and not node.table and node.name in self.graph.metrics:
-                graph_metric = self.graph.metrics[node.name]
-                if graph_metric.sql:
-                    try:
-                        metric_expr = parse_fragment(graph_metric.sql, self.dialect)
-                    except SqlglotError:
-                        return original_sql
-                    rewritten_projections.append(exp.alias_(metric_expr, alias_name or node.name, copy=False))
-                    changed = True
-                    continue
-
-            rewritten_projections.append(projection)
-
-        if not changed:
-            return original_sql
-
-        rewritten = parsed.copy()
-        rewritten.set("expressions", rewritten_projections)
-        return rewritten.sql(dialect=self.dialect)
 
     def _rewrite_select_tree(
         self, select: exp.Select

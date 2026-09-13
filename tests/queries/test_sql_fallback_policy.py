@@ -58,44 +58,32 @@ def test_non_strict_rewrite_does_not_hide_runtime_bug(monkeypatch):
         rewriter.rewrite("SELECT 1", strict=False)
 
 
-def test_rust_initialization_fallback_is_observable(monkeypatch):
-    monkeypatch.setenv("SIDEMANTIC_RS_REWRITER", "1")
-    monkeypatch.delenv("SIDEMANTIC_RS_NO_FALLBACK", raising=False)
+def test_rust_backend_fallback_is_observable(monkeypatch):
+    from sidemantic import Metric, Model
+    from sidemantic.semantic_handoff import RustBackendUnavailableError
 
-    def unavailable():
-        raise ImportError("bindings are not installed")
+    def unavailable(*args, **kwargs):
+        raise RustBackendUnavailableError("bindings are not installed")
 
-    monkeypatch.setattr(query_rewriter_module, "get_rust_module", unavailable)
-
-    rewriter = QueryRewriter(SemanticGraph())
-
-    assert rewriter.rust_fallback_reason == "ImportError: bindings are not installed"
-    assert rewriter._rust_module is None
-
-
-def test_rust_initialization_does_not_hide_unexpected_failure(monkeypatch):
-    monkeypatch.setenv("SIDEMANTIC_RS_REWRITER", "1")
-
-    def fail_unexpectedly():
-        raise AttributeError("binding contract bug")
-
-    monkeypatch.setattr(query_rewriter_module, "get_rust_module", fail_unexpectedly)
-
-    with pytest.raises(AttributeError, match="binding contract bug"):
-        QueryRewriter(SemanticGraph())
+    monkeypatch.setattr(query_rewriter_module, "rewrite_semantic_input", unavailable)
+    graph = SemanticGraph()
+    graph.add_model(Model(name="orders", table="orders", metrics=[Metric(name="count", agg="count")]))
+    rewriter = QueryRewriter(graph, use_rust_rewriter=True, rust_no_fallback=False)
+    assert "COUNT(" in rewriter.rewrite("SELECT count FROM orders")
+    assert rewriter.rust_fallback_reason == "RustBackendUnavailableError: bindings are not installed"
+    assert rewriter.last_engine_selection["engine"] == "python"
 
 
-def test_rust_rewrite_does_not_hide_api_contract_defect(monkeypatch):
-    class DefectiveRustModule:
-        def rewrite_with_yaml(self, _models_yaml, _sql):
-            raise TypeError("rewrite binding contract bug")
+@pytest.mark.parametrize("error", [AttributeError("binding contract bug"), TypeError("rewrite binding contract bug")])
+def test_rust_rewrite_does_not_hide_api_contract_defect(monkeypatch, error):
+    from sidemantic import Metric, Model
 
-    monkeypatch.setenv("SIDEMANTIC_RS_REWRITER", "1")
-    monkeypatch.delenv("SIDEMANTIC_RS_NO_FALLBACK", raising=False)
-    monkeypatch.setattr(query_rewriter_module, "get_rust_module", DefectiveRustModule)
-    monkeypatch.setattr(query_rewriter_module, "graph_to_rust_yaml", lambda _graph: "models: []")
+    def fail_unexpectedly(*args, **kwargs):
+        raise error
 
-    rewriter = QueryRewriter(SemanticGraph())
-
-    with pytest.raises(TypeError, match="rewrite binding contract bug"):
-        rewriter._rewrite_with_rust("SELECT 1")
+    monkeypatch.setattr(query_rewriter_module, "rewrite_semantic_input", fail_unexpectedly)
+    graph = SemanticGraph()
+    graph.add_model(Model(name="orders", table="orders", metrics=[Metric(name="count", agg="count")]))
+    rewriter = QueryRewriter(graph, use_rust_rewriter=True, rust_no_fallback=False)
+    with pytest.raises(type(error), match=str(error)):
+        rewriter.rewrite("SELECT count FROM orders")

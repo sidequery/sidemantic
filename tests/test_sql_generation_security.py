@@ -279,6 +279,22 @@ def test_count_metrics_with_filters(layer):
     assert "* AS completed_orders_raw" not in sql
 
 
+def test_filtered_count_expression_preserves_nulls(layer):
+    layer.add_model(
+        Model(
+            name="orders",
+            sql="SELECT * FROM (VALUES (10, true), (NULL, true), (10, true), (20, false)) AS t(amount, active)",
+            metrics=[
+                Metric(name="rows", agg="count", filters=["active"]),
+                Metric(name="values", agg="count", sql="amount", filters=["active"]),
+                Metric(name="distinct_values", agg="count_distinct", sql="amount", filters=["active"]),
+            ],
+        )
+    )
+
+    assert layer.query(metrics=["orders.rows", "orders.values", "orders.distinct_values"]).fetchall() == [(3, 2, 1)]
+
+
 def test_table_calculation_with_division():
     """Test safe evaluator handles division correctly."""
     calc = TableCalculation(name="margin_pct", type="formula", expression="(${revenue} - ${cost}) / ${revenue} * 100")

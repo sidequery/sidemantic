@@ -10,6 +10,9 @@ import pytest
 from typer.testing import CliRunner
 
 import sidemantic.cli as cli_module
+from sidemantic import SemanticLayer
+from sidemantic.adapters.ossie import OssieAdapter
+from sidemantic.adapters.sidemantic import SidemanticAdapter
 from sidemantic.cli import app
 from tests.optional_dep_stubs import ensure_fake_riffq
 
@@ -531,7 +534,7 @@ models:
 
 
 @pytest.mark.parametrize("target_format", ["ossie", "osi"])
-def test_convert_refuses_filtered_metrics_without_writing_lossy_output(tmp_path: Path, target_format: str):
+def test_convert_filtered_metrics_roundtrip_executes(tmp_path: Path, target_format: str):
     source = tmp_path / "source.yml"
     output = tmp_path / "output.yml"
     source.write_text("""models:
@@ -559,12 +562,69 @@ def test_convert_refuses_filtered_metrics_without_writing_lossy_output(tmp_path:
             "commerce",
             "--ossie-expression-dialect",
             "ANSI_SQL",
+            "--ossie-portable-only",
         ],
     )
 
-    assert result.exit_code == 1, result.output
-    assert "filters" in result.stderr
-    assert not output.exists()
+    assert result.exit_code == 0, result.output
+    layer = SemanticLayer()
+    layer.graph = OssieAdapter().parse(output)
+    layer.adapter.conn.execute("create table orders(amount integer, status varchar)")
+    layer.adapter.conn.execute("insert into orders values (100, 'paid'), (20, 'paid'), (500, 'pending')")
+    assert layer.query(metrics=["paid_revenue"]).fetchall() == [(120,)]
+
+
+@pytest.mark.parametrize("target_format", ["ossie", "osi"])
+def test_convert_native_metric_extension_roundtrip_and_portable_refusal(tmp_path: Path, target_format: str):
+    source = tmp_path / "source.yml"
+    output = tmp_path / "output.ossie.json"
+    restored = tmp_path / "restored.yml"
+    source.write_text("""models:
+  - name: orders
+    table: orders
+    dimensions:
+      - {name: day, type: time, granularity: day}
+    metrics:
+      - name: balance
+        agg: sum
+        sql: amount
+        non_additive_dimension: day
+""")
+    arguments = [
+        "convert",
+        str(source),
+        "--from",
+        "sidemantic",
+        "--to",
+        target_format,
+        "--output",
+        str(output),
+        "--ossie-scope",
+        "commerce",
+        "--ossie-expression-dialect",
+        "ANSI_SQL",
+        "--force",
+    ]
+    output.write_text("existing document\n")
+    refused = runner.invoke(app, [*arguments, "--ossie-portable-only"])
+    assert refused.exit_code == 1, refused.output
+    assert "non_additive_dimension" in refused.stderr
+    assert output.read_text() == "existing document\n"
+
+    with pytest.warns(UserWarning, match="requires Sidemantic runtime extension"):
+        converted = runner.invoke(app, arguments)
+    assert converted.exit_code == 0, converted.output
+    assert json.loads(output.read_text())["semantic_model"][0]["custom_extensions"]
+    reimported = runner.invoke(
+        app,
+        ["convert", str(output), "--from", target_format, "--to", "sidemantic", "--output", str(restored)],
+    )
+    assert reimported.exit_code == 0, reimported.output
+    layer = SemanticLayer()
+    layer.graph = SidemanticAdapter().parse(restored)
+    layer.adapter.conn.execute("create table orders(day date, amount integer)")
+    layer.adapter.conn.execute("insert into orders values ('2026-01-01',100), ('2026-01-31',120)")
+    assert layer.query(metrics=["orders.balance"], dimensions=["orders.day__month"]).fetchall()[0][1] == 120
 
 
 def test_validate_accepts_current_ossie_dialects_and_vendors(tmp_path: Path):

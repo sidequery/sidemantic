@@ -1,6 +1,7 @@
 """Test advanced metric features: grain-to-date, fill_nulls_with, offsets, conversion."""
 
 import duckdb
+import pytest
 
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.metric import Metric
@@ -137,6 +138,37 @@ def test_fill_nulls_with_zero():
 
     assert completed[1] == 100
     assert pending[1] == 0  # Filled with 0 instead of NULL!
+
+
+@pytest.mark.parametrize(
+    ("source", "filters", "expected_ratio"),
+    [
+        ("SELECT CAST(NULL AS INTEGER) AS amount", None, 0.1),
+        ("SELECT 10 AS amount", ["amount < 0"], 0.1),
+        ("SELECT 10 AS amount WHERE false", None, 0),
+    ],
+)
+def test_model_measure_null_fill_applies_to_direct_and_dependent_metrics(source, filters, expected_ratio):
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="orders",
+            sql=source,
+            metrics=[
+                Metric(name="total", agg="sum", sql="amount", filters=filters, fill_nulls_with=10),
+                Metric(name="twice", type="derived", sql="total * 2"),
+                Metric(name="rows", agg="count"),
+                Metric(name="rate", type="ratio", numerator="rows", denominator="total"),
+            ],
+        )
+    )
+    sql = SQLGenerator(graph).generate(metrics=["orders.total", "orders.twice", "orders.rate"])
+
+    with duckdb.connect(":memory:") as conn:
+        total, twice, rate = conn.execute(sql).fetchone()
+
+    assert (total, twice) == (10, 20)
+    assert rate == pytest.approx(expected_ratio)
 
 
 def test_fill_nulls_with_string():

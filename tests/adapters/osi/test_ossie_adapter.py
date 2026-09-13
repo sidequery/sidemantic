@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from sidemantic import SemanticLayer
 from sidemantic.adapters.osi import OSIAdapter
 from sidemantic.adapters.ossie import OssieAdapter, OssieImportError
 from sidemantic.core.dimension import Dimension
@@ -220,11 +221,13 @@ def test_graph_export_refuses_unidentified_relationships(tmp_path: Path) -> None
     )
 
     with pytest.raises(OssieSynthesisError):
-        OssieAdapter(export_scope_name="commerce", expression_dialect="ANSI_SQL").export(graph, tmp_path / "model.yaml")
+        OssieAdapter(export_scope_name="commerce", expression_dialect="ANSI_SQL").export(
+            graph, tmp_path / "model.yaml", portable_only=True
+        )
 
 
 @pytest.mark.parametrize("adapter_class", [OssieAdapter, OSIAdapter])
-def test_filtered_metric_export_refusal_preserves_existing_output(tmp_path: Path, adapter_class) -> None:
+def test_filtered_metric_export_roundtrip_executes(tmp_path: Path, adapter_class) -> None:
     graph = SemanticGraph()
     graph.add_model(
         Model(
@@ -234,10 +237,41 @@ def test_filtered_metric_export_refusal_preserves_existing_output(tmp_path: Path
         )
     )
     output = tmp_path / "model.yaml"
+    adapter_class(export_scope_name="commerce", expression_dialect="ANSI_SQL").export(graph, output, portable_only=True)
+    assert not yaml.safe_load(output.read_text())["semantic_model"][0].get("custom_extensions")
+    layer = SemanticLayer()
+    layer.graph = adapter_class().parse(output)
+    layer.adapter.conn.execute("create table orders(amount integer, status varchar)")
+    layer.adapter.conn.execute("insert into orders values (100, 'paid'), (20, 'paid'), (500, 'pending')")
+    assert layer.query(metrics=["paid_revenue"]).fetchall() == [(120,)]
+
+
+@pytest.mark.parametrize("adapter_class", [OssieAdapter, OSIAdapter])
+def test_native_metric_portable_export_refusal_preserves_existing_output(tmp_path: Path, adapter_class) -> None:
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="orders",
+            table="orders",
+            dimensions=[Dimension(name="day", type="time", granularity="day")],
+            metrics=[Metric(name="balance", agg="sum", sql="amount", non_additive_dimension="day")],
+        )
+    )
+    output = tmp_path / "model.yaml"
     output.write_text("existing document\n")
 
     with pytest.raises(OssieSynthesisError) as error:
-        adapter_class(export_scope_name="commerce", expression_dialect="ANSI_SQL").export(graph, output)
+        adapter_class(export_scope_name="commerce", expression_dialect="ANSI_SQL").export(
+            graph, output, portable_only=True
+        )
 
     assert any(d.code == "ossie.synthesis.metric_semantics_unsupported" for d in error.value.diagnostics)
     assert output.read_text() == "existing document\n"
+
+    with pytest.warns(UserWarning, match="requires Sidemantic runtime extension"):
+        adapter_class(export_scope_name="commerce", expression_dialect="ANSI_SQL").export(graph, output)
+    layer = SemanticLayer()
+    layer.graph = adapter_class().parse(output)
+    layer.adapter.conn.execute("create table orders(day date, amount integer)")
+    layer.adapter.conn.execute("insert into orders values ('2026-01-01',100), ('2026-01-31',120)")
+    assert layer.query(metrics=["orders.balance"], dimensions=["orders.day__month"]).fetchall()[0][1] == 120

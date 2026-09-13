@@ -32,6 +32,7 @@ from sidemantic.interchange.ossie.profiles import (
     OssieSerialization,
     resolve_ossie_profile,
 )
+from sidemantic.interchange.ossie.runtime_extension import encode_runtime_extension
 from sidemantic.interchange.ossie.semantic_validation import validate_ossie_semantics
 from sidemantic.interchange.ossie.validation import validate_ossie_schema
 
@@ -104,6 +105,9 @@ def _metric_expression(metric: Metric) -> str | None:
         return f"{metric.numerator} / NULLIF({metric.denominator}, 0)"
     if metric.agg:
         inner = metric.sql or "*"
+        if metric.filters:
+            condition = " AND ".join(f"({item})" for item in metric.filters)
+            inner = f"CASE WHEN {condition} THEN {'1' if inner == '*' else inner} ELSE NULL END"
         if metric.agg == "count_distinct":
             return f"COUNT(DISTINCT {inner})"
         aggregate = {"variance_pop": "VAR_POP"}.get(metric.agg, metric.agg.upper())
@@ -111,8 +115,31 @@ def _metric_expression(metric: Metric) -> str | None:
     return metric.sql
 
 
+def _generated_field(
+    graph: SemanticGraph, fields: dict[str, dict[str, str]], owner: str, expression: str, preferred: str
+) -> str:
+    generated = fields.setdefault(owner, {})
+    for name, existing in generated.items():
+        if existing == expression:
+            return name
+    names = {normalize_identifier(d.name) for d in graph.models[owner].dimensions}
+    names.update(normalize_identifier(m.name) for m in graph.models[owner].metrics)
+    names.update(normalize_identifier(name) for name in generated)
+    name = preferred
+    while normalize_identifier(name) in names:
+        name += "_"
+    generated[name] = expression
+    return name
+
+
 def _qualify_metric_expression(
-    expression: str, metric: Metric, owner: str | None, graph: SemanticGraph, dialect: str
+    expression: str,
+    metric: Metric,
+    owner: str | None,
+    graph: SemanticGraph,
+    dialect: str,
+    generated_fields: dict[str, dict[str, str]],
+    model_local: bool,
 ) -> str | None:
     """Move model-local column expressions into Ossie's scope-wide namespace."""
     parsed = sqlglot.parse_one(expression, read=_SQLGLOT_DIALECTS[dialect])
@@ -120,9 +147,18 @@ def _qualify_metric_expression(
     # the same name as a metric. Derived formulas instead consume metric refs.
     raw_columns = metric.sql_is_complete or bool(metric.agg) or any(parsed.find_all(exp.AggFunc))
     if owner and raw_columns and not any(parsed.find_all(exp.Column)):
-        # COUNT(*) and SUM(1) still depend on the owner's rows. Ossie has no
-        # metric owner field; emitting these would lose the dataset binding.
-        return None
+        # An explicit constant dataset field retains the row source even when
+        # the aggregate contains only literals (including COUNT(*)).
+        name = _generated_field(graph, generated_fields, owner, "1", "__sidemantic_row")
+        for aggregate in parsed.find_all(exp.AggFunc):
+            inner = aggregate.this
+            if inner is None or isinstance(inner, exp.Distinct):
+                return None
+            anchor = exp.column(name, table=owner)
+            aggregate.set(
+                "this",
+                anchor if isinstance(inner, exp.Star) else exp.Case().when(anchor.eq(1), inner),
+            )
     metric_names = set(graph.metrics)
     metric_names.update(item.name for model in graph.models.values() for item in model.metrics)
     for column in parsed.find_all(exp.Column):
@@ -134,6 +170,22 @@ def _qualify_metric_expression(
             continue
         if owner and not column.table:
             column.set("table", exp.to_identifier(owner))
+        if model_local and raw_columns and column.table == owner:
+            dimension = graph.models[owner].get_dimension(column.name)
+            if dimension is not None and dimension.sql_expr != column.name:
+                # Model measures consume physical columns. A scope metric that
+                # uses the same field name would instead apply its dimension's
+                # expression, changing both measure inputs and filter operands.
+                raw = column.copy()
+                raw.set("table", None)
+                field_name = _generated_field(
+                    graph,
+                    generated_fields,
+                    owner,
+                    raw.sql(dialect=_SQLGLOT_DIALECTS[dialect]),
+                    "__sidemantic_raw",
+                )
+                column.set("this", exp.to_identifier(field_name))
     return parsed.sql(dialect=_SQLGLOT_DIALECTS[dialect])
 
 
@@ -141,8 +193,6 @@ def _unsupported_metric_options(metric: Metric) -> list[str]:
     # These require query context or additional runtime rewrites. Emitting just
     # sql would silently discard filters, null handling, or time semantics.
     options = (
-        "filters",
-        "fill_nulls_with",
         "non_additive_dimension",
         "non_additive_window_groupings",
         "offset_window",
@@ -170,18 +220,65 @@ def _unsupported_metric_options(metric: Metric) -> list[str]:
         "extends",
     )
     unsupported = [name for name in options if getattr(metric, name) is not None and getattr(metric, name) != []]
+    if metric.filters and (not metric.agg or metric.sql_is_complete):
+        unsupported.append("filters")
     if not metric.public:
         unsupported.append("public=False")
     return unsupported
 
 
+def _runtime_expression_diagnostics(graph: SemanticGraph, dialect: str) -> list[OssieDiagnostic]:
+    """Keep native modifiers from masking otherwise invalid SQL declarations."""
+    diagnostics: list[OssieDiagnostic] = []
+    expressions: list[tuple[str, str]] = []
+    for model in graph.models.values():
+        for dimension in model.dimensions:
+            if dimension.has_untranslated_dax:
+                diagnostics.append(
+                    _error(
+                        "ossie.synthesis.expression_language_unsupported",
+                        f"Field {model.name}.{dimension.name} contains untranslated DAX.",
+                    )
+                )
+            expressions.append((f"{model.name}.{dimension.name}", dimension.sql_expr))
+    metrics = [*graph.metrics.values(), *(metric for model in graph.models.values() for metric in model.metrics)]
+    for metric in metrics:
+        if metric.has_untranslated_dax:
+            diagnostics.append(
+                _error(
+                    "ossie.synthesis.expression_language_unsupported",
+                    f"Metric {metric.name!r} contains untranslated DAX.",
+                )
+            )
+        if metric.sql:
+            expressions.append((metric.name, metric.sql))
+        expressions.extend((metric.name, item) for item in metric.filters or ())
+    for name, expression in expressions:
+        # Parameter templates need native request context. The extension keeps
+        # them verbatim; it never renders them using the exporting user's data.
+        if "{{" in expression or "{%" in expression:
+            continue
+        error = _scalar_expression_error(expression.replace("{model}", "runtime_model"), dialect)
+        if error is not None:
+            diagnostics.append(
+                _error("ossie.synthesis.expression_invalid", f"Expression for {name!r} is invalid: {error}")
+            )
+    return diagnostics
+
+
 def _dataset(model: Model, dialect: str, index: int, diagnostics: list[OssieDiagnostic]) -> dict[str, object] | None:
     pointer = f"/semantic_model/0/datasets/{index}"
-    if model.extends or (model.security and (model.security.access is not True or model.security.row_filters)):
+    if (
+        model.extends
+        or model.invariant_filters
+        or model.default_time_dimension
+        or model.schema_exposure
+        or (model.security and (model.security.access is not True or model.security.row_filters))
+    ):
         diagnostics.append(
             _error(
                 "ossie.synthesis.model_semantics_unsupported",
-                f"Model {model.name!r} has inheritance or security settings that Ossie synthesis cannot preserve.",
+                f"Model {model.name!r} requires Sidemantic inheritance, row scope, time defaults, or security semantics.",
                 pointer,
             )
         )
@@ -386,14 +483,15 @@ def _metrics(
     models: dict[str, Model],
     dialect: str,
     diagnostics: list[OssieDiagnostic],
+    generated_fields: dict[str, dict[str, str]],
 ) -> list[dict[str, object]]:
-    candidates: list[tuple[Metric, str | None]] = [
-        (metric, graph.metric_owners.get(name)) for name, metric in graph.metrics.items()
+    candidates: list[tuple[Metric, str | None, bool]] = [
+        (metric, graph.metric_owners.get(name), False) for name, metric in graph.metrics.items()
     ]
-    candidates.extend((metric, model.name) for model in models.values() for metric in model.metrics)
+    candidates.extend((metric, model.name, True) for model in models.values() for metric in model.metrics)
     result: list[dict[str, object]] = []
     seen: dict[str, str] = {}
-    for metric, owner in candidates:
+    for metric, owner, model_local in candidates:
         unsupported = _unsupported_metric_options(metric)
         if unsupported or metric.has_untranslated_dax:
             diagnostics.append(
@@ -414,6 +512,11 @@ def _metrics(
                 )
             )
             continue
+        if owner:
+            expression = expression.replace("{model}", owner)
+        if metric.fill_nulls_with is not None:
+            value = exp.convert(metric.fill_nulls_with).sql(dialect=_SQLGLOT_DIALECTS[dialect])
+            expression = f"COALESCE({expression}, {value})"
         expression_error = _scalar_expression_error(expression, dialect)
         if expression_error is not None:
             diagnostics.append(
@@ -423,7 +526,9 @@ def _metrics(
                 )
             )
             continue
-        expression = _qualify_metric_expression(expression, metric, owner, graph, dialect)
+        expression = _qualify_metric_expression(
+            expression, metric, owner, graph, dialect, generated_fields, model_local
+        )
         if expression is None:
             diagnostics.append(
                 _error(
@@ -468,6 +573,7 @@ def synthesize_ossie_document(
     schema_version: str = "0.2.0.dev0",
     serialization: OssieSerialization | str = OssieSerialization.YAML,
     consumer_profile: OssieConsumerProfile | str = OssieConsumerProfile.OSSIE_CORE,
+    portable_only: bool = False,
 ) -> OssieSynthesisResult:
     """Synthesize one logical document without guessing scope or dialect."""
 
@@ -498,12 +604,61 @@ def synthesize_ossie_document(
     ]
     semantic_model: dict[str, object] = {"name": scope_name, "datasets": datasets}
     relationships = _relationships(models, diagnostics)
-    metrics = _metrics(graph, models, dialect, diagnostics)
+    generated_fields: dict[str, dict[str, str]] = {}
+    metrics = _metrics(graph, models, dialect, diagnostics, generated_fields)
+    for dataset in datasets:
+        for field_name, expression in generated_fields.get(dataset["name"], {}).items():
+            dataset.setdefault("fields", []).append(
+                {"name": field_name, "expression": _expression(expression, dialect)}
+            )
     if relationships:
         semantic_model["relationships"] = relationships
     if metrics:
         semantic_model["metrics"] = metrics
     data = {"version": schema_version, "semantic_model": [semantic_model]}
+
+    extension_codes = {
+        "ossie.synthesis.model_semantics_unsupported",
+        "ossie.synthesis.field_semantics_unsupported",
+        "ossie.synthesis.metric_semantics_unsupported",
+        "ossie.synthesis.metric_unrepresentable",
+        "ossie.synthesis.metric_owner_unrepresentable",
+        "ossie.synthesis.metric_name_collision",
+        "ossie.synthesis.relationship_semantics_unsupported",
+        "ossie.synthesis.relationship_cardinality_unsupported",
+        "ossie.synthesis.relationship_identity_missing",
+    }
+    if diagnostics and not portable_only and all(item.code in extension_codes for item in diagnostics):
+        expression_diagnostics = _runtime_expression_diagnostics(graph, dialect)
+        if expression_diagnostics:
+            return OssieSynthesisResult(document=None, diagnostics=tuple(expression_diagnostics))
+        # Core-only consumers must not see an unrestricted source or a metric
+        # with silently simplified behavior. The authoritative graph lives in
+        # the vendor extension; the required core dataset is an empty sentinel.
+        semantic_model = {
+            "name": scope_name,
+            "description": "Requires the Sidemantic runtime extension; core datasets contain no business data.",
+            "datasets": [
+                {
+                    "name": "sidemantic_runtime_required",
+                    "source": "SELECT NULL AS runtime_extension_required WHERE 1 = 0",
+                }
+            ],
+        }
+        try:
+            extension = encode_runtime_extension(graph, semantic_model, expression_dialect=dialect)
+        except (TypeError, ValueError) as exc:
+            diagnostics.append(_error("ossie.synthesis.runtime_extension_invalid", str(exc)))
+        else:
+            semantic_model["custom_extensions"] = [extension]
+            data = {"version": schema_version, "vendors": ["SIDEMANTIC"], "semantic_model": [semantic_model]}
+            diagnostics = [
+                _warning(
+                    "ossie.synthesis.runtime_extension_required",
+                    "This document requires Sidemantic runtime extension v1 to execute. "
+                    "Other consumers see only an empty dataset; use portable_only=True to require Ossie core output.",
+                )
+            ]
 
     validation = validate_ossie_schema(data, profile=profile, consumer_profile=profile.consumer_profile)
     diagnostics.extend(validation.diagnostics)

@@ -29,6 +29,7 @@ from sidemantic.interchange.ossie.expression_validation import scalar_sql_expres
 from sidemantic.interchange.ossie.identifier import identifier_within_limit, normalize_identifier
 from sidemantic.interchange.ossie.parser import OssieParseResult
 from sidemantic.interchange.ossie.profiles import OssieImportPolicy
+from sidemantic.interchange.ossie.runtime_extension import decode_runtime_extension, resolve_runtime_graph
 from sidemantic.interchange.ossie.semantic_validation import (
     SemanticValidationResult,
     validate_ossie_semantics,
@@ -259,10 +260,11 @@ def _lower_scope(
     target_dialect: str,
     diagnostics: list[OssieDiagnostic],
     document_diagnostics: tuple[OssieDiagnostic, ...],
+    runtime_override: SemanticGraph | None = None,
 ) -> CompiledSemanticScope:
-    graph = SemanticGraph()
+    graph = runtime_override if runtime_override is not None else SemanticGraph()
     source_dialect = result.options.source_dialect if result.options else None
-    dataset_values = _array(semantic_model.get("datasets"))
+    dataset_values = _array(semantic_model.get("datasets")) if runtime_override is None else ()
     lowered_models: dict[str, Model] = {}
 
     # Model/Metric construction has a legacy auto-registration hook. Lowering
@@ -396,7 +398,7 @@ def _lower_scope(
             graph.add_model(model)
             lowered_models[normalize_identifier(dataset_name)] = model
 
-        relationships = _array(semantic_model.get("relationships"))
+        relationships = _array(semantic_model.get("relationships")) if runtime_override is None else ()
         for relationship_index, relationship, edge_id in _unique_named_items(relationships):
             pointer = f"/semantic_model/{scope_index}/relationships/{relationship_index}"
             from_name = _name(relationship.get("from"))
@@ -459,7 +461,7 @@ def _lower_scope(
                 )
             )
 
-        metrics = _array(semantic_model.get("metrics"))
+        metrics = _array(semantic_model.get("metrics")) if runtime_override is None else ()
         for metric_index, metric, metric_name in _unique_named_items(metrics):
             pointer = f"/semantic_model/{scope_index}/metrics/{metric_index}"
             selected = _expression_for_target(metric.get("expression"), target_dialect)
@@ -626,6 +628,35 @@ def lower_ossie_document(
         if not identifier_within_limit(name):
             continue
         scope_id = name if name_counts[normalize_identifier(name)] == 1 else f"{name}@{index}"
+        try:
+            runtime_override = decode_runtime_extension(semantic_model, target_dialect=selected_target)
+            if runtime_override is not None:
+                runtime_override = resolve_runtime_graph(runtime_override)
+        except (ValueError, TypeError) as exc:
+            diagnostics.append(
+                _diagnostic(
+                    parse_result,
+                    code="ossie.lowering.runtime_extension_invalid",
+                    message=f"Sidemantic runtime extension cannot be restored safely: {exc}",
+                    pointer=f"/semantic_model/{index}/custom_extensions",
+                    scope=scope_id,
+                )
+            )
+            # Even permissive imports must never fall back to a potentially
+            # unrestricted core projection after rejecting native policies.
+            continue
+        if runtime_override is not None:
+            diagnostics.append(
+                OssieDiagnostic(
+                    severity=OssieDiagnosticSeverity.WARNING,
+                    code="ossie.lowering.runtime_extension_restored",
+                    message="Restored native Sidemantic runtime semantics; other consumers require Sidemantic extension support.",
+                    json_pointer=f"/semantic_model/{index}/custom_extensions",
+                    scope=scope_id,
+                    source=_source_location(parse_result),
+                    profile=parse_result.profile,
+                )
+            )
         scopes.append(
             _lower_scope(
                 parse_result,
@@ -636,6 +667,7 @@ def lower_ossie_document(
                 target_dialect=selected_target,
                 diagnostics=diagnostics,
                 document_diagnostics=tuple(all_pre_lowering),
+                runtime_override=runtime_override,
             )
         )
 

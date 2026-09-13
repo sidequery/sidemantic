@@ -2433,25 +2433,25 @@ class SQLGenerator:
                         )
                 else:
                     base_sql = replace_model_placeholder(measure.sql_expr)
+                    # The raw source may be a subquery aliased as t, rather
+                    # than the semantic model name used in measure SQL.
+                    base_sql = self._strip_model_prefixes([base_sql], model.name)[0]
 
                 # Apply measure filters if present (wrap in CASE WHEN)
                 if measure.filters:
                     # Filters are SQL conditions like "{model}.field = 'value'"
                     # Replace {model} placeholder and combine into CASE WHEN
                     filter_conditions = []
-                    for filter_str in measure.filters:
+                    for filter_str in self._strip_model_prefixes(measure.filters, model.name):
                         # Replace {model} with nothing since we're in the CTE selecting from raw table
                         filter_sql = filter_str.replace("{model}.", "").replace("{model}", "")
                         filter_conditions.append(filter_sql)
 
                     if filter_conditions:
                         filter_sql = " AND ".join(filter_conditions)
-                        # For count measures, return 1 if condition met, else NULL
-                        # COUNT counts non-NULL values, so we need NULL to exclude non-matching rows
-                        if measure.agg == "count":
-                            measure_sql = f"CASE WHEN {filter_sql} THEN 1 ELSE NULL END"
-                        else:
-                            measure_sql = f"CASE WHEN {filter_sql} THEN {base_sql} ELSE NULL END"
+                        # base_sql is 1 for COUNT(*), but COUNT(expr) must retain
+                        # its expression so matching NULL values are not counted.
+                        measure_sql = f"CASE WHEN {filter_sql} THEN {base_sql} ELSE NULL END"
                     else:
                         measure_sql = base_sql
                 else:
@@ -3974,6 +3974,7 @@ class SQLGenerator:
                                 agg_type=measure.agg,
                                 dialect=self.dialect,
                             )
+                            agg_expr = self._wrap_with_fill_nulls(agg_expr, measure)
                         else:
                             # Use helper that applies metric-level filters via CASE WHEN
                             # This ensures each metric's filter only affects that metric
@@ -4239,11 +4240,8 @@ class SQLGenerator:
             Wrapped SQL expression
         """
         if metric.fill_nulls_with is not None:
-            # Quote string values
-            if isinstance(metric.fill_nulls_with, str):
-                fill_value = f"'{metric.fill_nulls_with}'"
-            else:
-                fill_value = str(metric.fill_nulls_with)
+            # Render typed literals so quotes in string defaults are escaped.
+            fill_value = exp.convert(metric.fill_nulls_with).sql(dialect=self.dialect)
             return f"COALESCE({sql_expr}, {fill_value})"
         return sql_expr
 
@@ -4407,13 +4405,15 @@ class SQLGenerator:
 
         # Simple aggregation - filters are already applied in CTE's raw column
         if agg_func == "COUNT_DISTINCT":
-            return f"COUNT(DISTINCT {raw_col})"
-        if agg_func == "COUNT":
+            aggregate = f"COUNT(DISTINCT {raw_col})"
+        elif agg_func == "COUNT":
             # Always use COUNT(raw_col) to avoid fan-out overcounting in multi-model joins.
-            # The CTE projects a non-NULL raw column for matching rows, so COUNT(raw_col)
-            # is equivalent to COUNT(*) for single-model queries but correct for joins.
-            return f"COUNT({raw_col})"
-        return f"{agg_func}({raw_col})"
+            # Row counts project 1 for matching rows; expression counts retain
+            # their NULL values. Both exclude rows removed by measure filters.
+            aggregate = f"COUNT({raw_col})"
+        else:
+            aggregate = f"{agg_func}({raw_col})"
+        return self._wrap_with_fill_nulls(aggregate, measure)
 
     def _ensure_sql_dimension(self, model_name: str, dimension) -> None:
         if getattr(dimension, "has_untranslated_dax", False):

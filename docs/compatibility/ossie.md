@@ -198,7 +198,7 @@ emits canonical output and reports an `ossie.serialization.exact_source_mismatch
 warning. This guarantee does not apply to an Ossie -> runtime graph -> Ossie
 conversion.
 
-## Fail-closed graph synthesis
+## Graph synthesis and runtime preservation
 
 Exporting a runtime graph creates a new logical document. It requires both:
 
@@ -212,24 +212,40 @@ and validates the completed document against the pinned schema. It validates
 that expression text in the named dialect but does not infer its origin,
 transpile it, or relabel it as another dialect.
 
-Synthesis refuses the complete output when it encounters meaning it would have
-to invent or misrepresent, including a missing or ambiguous dataset source,
-untranslated non-SQL expressions, invalid scalar SQL, unsupported datatypes or
-relationship cardinality, missing or duplicate edge identity, unusable key
-arrays, non-unique relationship targets, and conflicting metric definitions.
-Synthesis also refuses metric filters, null filling, non-additive/time/window
-modifiers, unresolved inheritance, security restrictions, private fields,
-custom join SQL, inactive relationships, and relationship role aliases. These
-runtime settings cannot be silently reduced to an unfiltered aggregate or a
-key-only join. Model-owned
-columnless aggregates such as `COUNT(*)` are refused because Ossie has no metric
-owner field to preserve their dataset binding.
+Simple aggregate filters are emitted as conditional SQL and null filling as
+`COALESCE`. Model-owned columnless aggregates such as `COUNT(*)` and `SUM(1)`
+reference a constant dataset field so they retain their row source.
+
+For native behaviors that Ossie core cannot express, synthesis preserves the
+graph in a versioned `SIDEMANTIC` custom extension. This includes non-additive,
+time and window metrics, inheritance, security restrictions, private fields,
+custom or inactive joins, and relationship role aliases. Python Sidemantic restores
+these definitions on import; security templates are evaluated for each query's
+user context. The extension records its SQL dialect and a fingerprint of the
+core projection. Unsupported versions, malformed payloads, incompatible dialects,
+and edits that make the projection stale are rejected.
+
+Extension-dependent documents contain only an empty placeholder dataset in
+their core projection. Real sources and metrics live in the extension, so
+consumers that ignore it cannot execute unrestricted or simplified definitions.
+Export emits a warning that Sidemantic extension support is required. Use
+`sidemantic convert ... --ossie-portable-only` (or `portable_only=True` in the
+export API) to require portable core output instead. Invalid SQL, unresolved
+inheritance references, and other invalid declarations still fail export.
+
+The experimental Rust implementation does not restore this extension; it sees
+the empty core placeholder.
 
 Model-owned SQL is parsed and its column nodes are qualified in the owning
 dataset's context. Function names, literals, quoted identifiers, existing column
 qualifiers, and derived metric references retain their meaning.
 
 Graph synthesis cannot create ontology documents or recover source-only fields.
+
+Directory loading recognizes explicit `*.ossie.json` files anywhere in the
+source tree. Arbitrarily named JSON documents still follow the dbt `OSI/`
+directory convention; generated `target/` and `dbt_packages/` artifacts are
+excluded. Malformed explicitly named files report an error.
 
 ## CLI examples
 

@@ -5,6 +5,11 @@ on:
     branches: [main]
   pull_request:
 
+concurrency:
+  # Non-PR runs get a unique suffix so queued main runs are retained too.
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name == 'pull_request' && 'pr' || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   python:
     name: Python ${{ matrix.python-version }}

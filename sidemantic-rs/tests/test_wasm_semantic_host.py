@@ -122,5 +122,39 @@ def test_reference_validation_is_not_authorization():
     assert "no user_attributes" in call("rewrite", sql="select orders.revenue from metrics").get("error", "")
 
 
+@pytest.mark.parametrize("method", ["compile", "rewrite"])
+@pytest.mark.parametrize(
+    "expression,diagnostic",
+    [
+        ("(" * 1000 + "1" + ")" * 1000, "nesting limit"),
+        ("NOT " * 1000 + "true", "token limit"),
+    ],
+)
+def test_parser_work_limits_return_errors_not_traps(method, expression, diagnostic):
+    model = copy.deepcopy(SOURCE)
+    del model["models"][0]["security"]
+    if method == "compile":
+        model["models"][0]["metrics"][0]["sql"] = expression
+        result = call(method, source=model, query={"metrics": ["orders.revenue"]})
+    else:
+        result = call(method, source=model, sql=f"select {expression}")
+    assert "SQL parse error: WASM SQL parser" in result.get("error", ""), result
+    assert diagnostic in result["error"]
+
+
+def test_near_nesting_limit_and_literal_delimiters_are_accepted():
+    model = copy.deepcopy(SOURCE)
+    del model["models"][0]["security"]
+    model["models"][0]["metrics"][0]["sql"] = "(" * 14 + "amount" + ")" * 14
+    assert rows(call("compile", source=model, query={"metrics": ["orders.revenue"]})["result"]) == [(110,)]
+    result = call("rewrite", source=model, sql="select " + "NOT " * 240 + "true")
+    assert "result" in result, result
+    # Parentheses in literals and comments do not consume a nesting budget.
+    literal = "(" * 100
+    for expression in [f"'{literal}'", f"$tag${literal}$tag$"]:
+        result = call("rewrite", source=model, sql=f"select {expression} /* {literal} */ -- {literal}\n")
+        assert "result" in result, result
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q", "-o", "addopts="]))

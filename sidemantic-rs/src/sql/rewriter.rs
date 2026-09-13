@@ -1333,8 +1333,8 @@ pub(super) fn parse_sql_with_large_stack(sql: &str) -> Result<Vec<Expression>> {
 fn parse_sql_with_dialect(sql: &str, dialect: DialectType) -> Result<Vec<Expression>> {
     #[cfg(target_arch = "wasm32")]
     {
-        // WASM has no native thread stack to allocate. The parser itself is
-        // portable; run it on the host stack, as the semantic-input decoder does.
+        // Bound parser recursion before using the fixed WASM host stack.
+        crate::wasm_sql_guard::check(sql, dialect)?;
         polyglot_parse(sql, dialect).map_err(|error| SidemanticError::SqlParse(error.to_string()))
     }
 

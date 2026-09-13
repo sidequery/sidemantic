@@ -497,6 +497,8 @@ fn check_visibility(
 }
 
 fn order_columns(order: &str) -> Result<Vec<Column>> {
+    #[cfg(target_arch = "wasm32")]
+    crate::wasm_sql_guard::check(order, DialectType::DuckDB)?;
     let expression =
         polyglot_sql::parse_one(&format!("SELECT 1 ORDER BY {order}"), DialectType::DuckDB)
             .map_err(|error| SidemanticError::SqlParse(error.to_string()))?;

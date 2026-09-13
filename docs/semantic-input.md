@@ -330,3 +330,12 @@ and aggregates hidden in source dimensions, inner SQL or row filters are
 rejected. Joined populations, graph-scoped cohorts, calculated wrappers and
 null-fill options remain gated. HAVING and outer expressions must reference
 available inner columns; other aggregate contexts are not silently inferred.
+
+The WASM SQL parser has a host-specific admission limit of 16 nested
+parenthesis/bracket/brace/CASE constructs and 256 non-comment tokens per parser
+input. The token limit additionally bounds recursive unary/operator chains.
+These are conservative fixed-host-stack limits, not limits on native compilation
+or source-file bytes. Dialect tokenization keeps strings, quoted identifiers,
+and comments out of structural nesting counts. Excess inputs return a SQL parse
+error before recursive parsing; generated intermediate SQL is subject to the same
+limits. Native hosts retain the existing larger worker stack.

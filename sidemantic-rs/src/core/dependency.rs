@@ -29,6 +29,8 @@ impl SemanticColumnReference {
 /// Parse one scalar expression in the handoff's declared DuckDB dialect.
 /// Unlike legacy helpers, failure never falls back to scanning source text.
 pub fn parse_semantic_expression(sql: &str) -> crate::error::Result<Expression> {
+    #[cfg(target_arch = "wasm32")]
+    crate::wasm_sql_guard::check(sql, DialectType::DuckDB)?;
     let statement = polyglot_sql::parse_one(&format!("SELECT {sql}"), DialectType::DuckDB)
         .map_err(|error| crate::error::SidemanticError::SqlParse(error.to_string()))?;
     let Expression::Select(mut select) = statement else {

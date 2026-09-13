@@ -5066,6 +5066,8 @@ impl<'a> SqlGenerator<'a> {
 
     fn parse_where_expr(&self, expr_sql: &str) -> Result<Expression> {
         let sql = format!("SELECT 1 WHERE {expr_sql}");
+        #[cfg(target_arch = "wasm32")]
+        crate::wasm_sql_guard::check(&sql, SOURCE_DIALECT)?;
         let expression = polyglot_sql::parse_one(&sql, SOURCE_DIALECT)
             .map_err(|e| SidemanticError::SqlParse(e.to_string()))?;
 

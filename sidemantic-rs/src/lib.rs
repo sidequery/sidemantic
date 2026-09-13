@@ -47,6 +47,8 @@ pub mod semantic_input;
 pub mod sql;
 #[cfg(feature = "wasm")]
 pub mod wasm;
+#[cfg(any(target_arch = "wasm32", test))]
+mod wasm_sql_guard;
 
 // Re-export commonly used types
 pub use adapters::{

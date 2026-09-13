@@ -341,13 +341,16 @@ mod tests {
 
     #[test]
     fn simple_model_snapshot_is_not_bypassed_by_graph_metric_fast_path() {
-        let graph = graph();
-        assert_eq!(graph.metrics().count(), 0);
-        let query = SemanticQuery::new().with_metrics(vec!["snapshots.balance".into()]);
-        let sql = try_generate(&SqlGenerator::new(&graph), &query)
-            .unwrap()
-            .expect("model-local snapshot must select the snapshot route");
-        assert!(sql.contains("CASE WHEN day = MAX(day) OVER () THEN balance END AS balance"));
+        crate::semantic_input::with_semantic_stack(|| {
+            let graph = graph();
+            assert_eq!(graph.metrics().count(), 0);
+            let query = SemanticQuery::new().with_metrics(vec!["snapshots.balance".into()]);
+            let sql = try_generate(&SqlGenerator::new(&graph), &query)?
+                .expect("model-local snapshot must select the snapshot route");
+            assert!(sql.contains("CASE WHEN day = MAX(day) OVER () THEN balance END AS balance"));
+            Ok(())
+        })
+        .unwrap();
     }
 
     #[test]

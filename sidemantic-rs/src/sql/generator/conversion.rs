@@ -140,11 +140,15 @@ impl SqlGenerator<'_> {
             if dimension.model != model.name || model.get_dimension(&dimension.name).is_none() {
                 return Err(unsupported("joined_dimension"));
             }
-            if !Self::is_simple_identifier(&dimension.alias) || !aliases.insert(&dimension.alias) {
+            if !Self::is_simple_identifier(&dimension.alias)
+                || !aliases.insert(dimension.alias.to_ascii_lowercase())
+            {
                 return Err(unsupported("output_alias"));
             }
         }
-        if !Self::is_simple_identifier(&metric.name) || aliases.contains(&metric.name) {
+        if !Self::is_simple_identifier(&metric.name)
+            || aliases.contains(&metric.name.to_ascii_lowercase())
+        {
             return Err(unsupported("output_alias"));
         }
         if query

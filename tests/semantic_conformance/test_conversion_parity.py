@@ -57,7 +57,10 @@ def layer(request):
 def result(layer, **query):
     query.setdefault("metrics", ["events.converted"])
     query.setdefault("user_attributes", {"tenant": 1})
-    cursor = layer.adapter.execute(layer.compile(**query))
+    sql = layer.compile(**query)
+    if layer.engine == "rust":
+        assert layer.last_engine_selection["engine"] == "rust"
+    cursor = layer.adapter.execute(sql)
     columns = ["channel", "converted"] if query.get("dimensions") else ["converted"]
     assert [field[0] for field in cursor.description] == columns
     return cursor.fetchall()
@@ -133,3 +136,10 @@ def test_filter_literals_are_not_rewritten_as_dimension_expressions(layer):
     model.metrics[0].base_event = "channel"
     layer.adapter.execute("update events set event_type = 'channel' where event_type = 'signup'")
     assert result(layer, filters=["events.event_type = 'channel'"]) == [(0.0,)]
+
+
+@pytest.mark.parametrize("layer", ["rust"], indirect=True)
+def test_rust_output_alias_collision_ignores_case(layer):
+    layer.graph.models["events"].dimensions.append(Dimension(name="CONVERTED", sql="channel", type="categorical"))
+    with pytest.raises(ValueError, match="output_alias"):
+        layer.compile(metrics=["events.converted"], dimensions=["events.CONVERTED"], user_attributes={"tenant": 1})

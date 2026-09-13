@@ -549,7 +549,7 @@ class SQLGenerator:
                         for rcol in replacement.find_all(exp.Column):
                             if rcol.table and rcol.table.replace("_cte", "") == model.name:
                                 rcol.set("table", None)
-                        column.replace(replacement)
+                        column.replace(exp.Paren(this=replacement))
                 result.append(parsed.sql(dialect=self.dialect))
             except SqlglotError:
                 result.append(f)
@@ -5038,6 +5038,9 @@ class SQLGenerator:
             raise ValueError(f"No model found for cohort metric {metric_name}")
         self._ensure_sql_model(model_name or model.name, model)
 
+        def quote_alias(name: str) -> str:
+            return exp.to_identifier(name, quoted=True).sql(dialect=self.dialect)
+
         # Validate entity identifier
         if not _re.match(r"^[a-zA-Z_][a-zA-Z0-9_.]*$", metric.entity):
             raise ValueError(f"Invalid entity identifier: {metric.entity}")
@@ -5061,7 +5064,7 @@ class SQLGenerator:
         entity_sql = _replace_model_placeholder(entity_sql)
 
         # Process segments from filters
-        all_filters = list(filters or [])
+        all_filters = [*(filters or []), *(metric.filters or [])]
         segment_clause = ""
         remaining_filters = []
         for f in all_filters:
@@ -5081,15 +5084,16 @@ class SQLGenerator:
         filter_parts = []
         for f in remaining_filters:
             stripped = self._strip_model_prefixes([f], model_name or "")[0] if model_name else f
+            stripped = self._resolve_filter_dimensions([stripped], model)[0]
             stripped = _replace_model_placeholder(stripped)
             filter_parts.append(stripped)
 
         where_clause = "1=1" + segment_clause
         if filter_parts:
-            where_clause += " AND " + " AND ".join(filter_parts)
+            where_clause += " AND " + " AND ".join(f"({part})" for part in filter_parts)
 
         # Build inner GROUP BY columns
-        quoted_entity = self._quote_alias(entity_alias)
+        quoted_entity = quote_alias(entity_alias)
         entity_select = f"{entity_sql} AS {quoted_entity}" if entity_sql != entity_alias else quoted_entity
         inner_group_cols = [entity_sql]
         inner_select_cols = [entity_select]
@@ -5098,7 +5102,7 @@ class SQLGenerator:
         entity_dim_aliases = []
         for ed_name in metric.entity_dimensions or []:
             dim = model.get_dimension(ed_name)
-            quoted_name = self._quote_alias(ed_name)
+            quoted_name = quote_alias(ed_name)
             if dim:
                 dim_sql = _replace_model_placeholder(dim.sql_expr)
                 inner_select_cols.append(f"{dim_sql} AS {quoted_name}")
@@ -5117,11 +5121,9 @@ class SQLGenerator:
             im_sql = im.get("sql")
 
             if im_sql:
+                im_sql = self._strip_model_prefixes([im_sql], model.name)[0]
+                im_sql = self._resolve_filter_dimensions([im_sql], model)[0]
                 im_sql = _replace_model_placeholder(im_sql)
-                # Resolve dimension references in inner metric sql
-                dim = model.get_dimension(im_sql)
-                if dim:
-                    im_sql = _replace_model_placeholder(dim.sql_expr)
 
             if not im_sql and im_agg != "COUNT":
                 raise ValueError(
@@ -5136,7 +5138,7 @@ class SQLGenerator:
             else:
                 expr = f"{im_agg}({im_sql})"
 
-            inner_metric_selects.append(f"{expr} AS {self._quote_alias(im_name)}")
+            inner_metric_selects.append(f"{expr} AS {quote_alias(im_name)}")
 
         having_clause = _replace_model_placeholder(metric.having)
 
@@ -5163,7 +5165,7 @@ class SQLGenerator:
 
         # Add entity_dimensions to outer SELECT/GROUP BY
         for alias in entity_dim_aliases:
-            quoted = self._quote_alias(alias)
+            quoted = quote_alias(alias)
             outer_select_cols.append(quoted)
             outer_group_cols.append(quoted)
 
@@ -5192,7 +5194,7 @@ class SQLGenerator:
             dim_sql = _replace_model_placeholder(dim.sql_expr)
             if granularity:
                 dim_sql = self._date_trunc(granularity, dim_sql)
-            quoted_alias = self._quote_alias(alias)
+            quoted_alias = quote_alias(alias)
             # Add to inner query so it's available in the outer subquery
             inner_select_cols.append(f"{dim_sql} AS {quoted_alias}")
             inner_group_cols.append(dim_sql)
@@ -5203,7 +5205,7 @@ class SQLGenerator:
         inner_select = ",\n    ".join(inner_select_cols + inner_metric_selects)
         inner_group = ", ".join(inner_group_cols)
 
-        outer_select_cols.append(f"{outer_expr} AS {self._quote_alias(metric.name)}")
+        outer_select_cols.append(f"{outer_expr} AS {quote_alias(metric.name)}")
 
         # Also add any additional outer metrics from inner_metrics that the user
         # might want (e.g., AVG(active_days) alongside COUNT)
@@ -5224,9 +5226,9 @@ class SQLGenerator:
                 # Handle "desc"/"asc" suffix
                 parts = field_name.rsplit(" ", 1)
                 if len(parts) == 2 and parts[1].upper() in ("ASC", "DESC"):
-                    order_fields.append(f"{self._quote_alias(parts[0])} {parts[1].upper()}")
+                    order_fields.append(f"{quote_alias(parts[0])} {parts[1].upper()}")
                 else:
-                    order_fields.append(self._quote_alias(field_name))
+                    order_fields.append(quote_alias(field_name))
             order_clause = f"\nORDER BY {', '.join(order_fields)}"
 
         limit_clause = f"\nLIMIT {limit}" if limit is not None else ""

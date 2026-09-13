@@ -370,6 +370,7 @@ fn decode_metric(value: Value, path: &str, owner: Option<&str>) -> Result<Metric
             "ratio",
             "cumulative",
             "conversion",
+            "cohort",
             "time_comparison",
             "retention",
         ]

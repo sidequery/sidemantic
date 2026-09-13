@@ -1,6 +1,7 @@
 //! SQL generator: compiles semantic queries to SQL
 
 mod aggregate_plan;
+mod cohort;
 mod conversion;
 mod join_kind;
 mod retention;
@@ -2452,6 +2453,9 @@ impl<'a> SqlGenerator<'a> {
                         .to_string(),
                 ));
             }
+            if self.graph.has_strict_metric_scope() {
+                return self.generate_scoped_cohort(query, cohort_metric_ref, dimension_refs);
+            }
             return self.generate_cohort_query(
                 cohort_metric_ref,
                 dimension_refs,
@@ -4749,6 +4753,11 @@ impl<'a> SqlGenerator<'a> {
                 });
             }
             MetricType::Retention => return Err(retention::unsupported("wrapped_metric")),
+            MetricType::Cohort if self.graph.has_strict_metric_scope() => {
+                return Err(SidemanticError::UnsupportedSemanticFeatures {
+                    capabilities: vec!["metric.cohort_wrapper".into()],
+                });
+            }
             MetricType::Simple => self.simple_metric_reference_sql(metric, &metric_name, &alias),
             MetricType::Derived => {
                 self.expand_derived_metric_inner(metric.sql_expr(), &model_name, visited)?

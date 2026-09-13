@@ -25,6 +25,9 @@ pub(crate) fn validate_metric(metric: &Metric) -> Result<()> {
             return Err(unsupported("cumulative_aggregation"));
         }
         if let Some(expression) = &metric.window_expression {
+            if metric.window.is_some() || metric.grain_to_date.is_some() {
+                return Err(unsupported("window_expression_controls"));
+            }
             window_output_reference(expression)?;
             if let Some(frame) = &metric.window_frame {
                 validate_output_frame(frame)?;
@@ -92,6 +95,21 @@ fn period_interval(value: &str) -> Result<(u32, String)> {
 }
 
 impl SqlGenerator<'_> {
+    pub(crate) fn window_output_dependency(metric: &Metric) -> Result<Option<String>> {
+        metric
+            .window_expression
+            .as_deref()
+            .map(|expression| {
+                let name = window_output_reference(expression)?;
+                polyglot_sql::generate(
+                    &Expression::Identifier(Identifier::quoted(name)),
+                    DialectType::DuckDB,
+                )
+                .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))
+            })
+            .transpose()
+    }
+
     pub(crate) fn validate_temporal_metric(metric: &Metric) -> Result<()> {
         validate_metric(metric)
     }

@@ -44,7 +44,15 @@ def layer(request):
 
 
 def run(
-    layer, *, expression="SUM(base.daily_amount)", frame=None, order=None, filters=None, dimensions=None, execute=True
+    layer,
+    *,
+    expression="SUM(base.daily_amount)",
+    frame=None,
+    order=None,
+    filters=None,
+    dimensions=None,
+    execute=True,
+    dialect=None,
 ):
     layer.graph.models["events"].metrics.append(
         Metric(
@@ -61,6 +69,7 @@ def run(
         filters=filters or [],
         user_attributes={"tenant": 1},
         order_by=["events.category", "events.day"],
+        dialect=dialect,
     )
     if not execute:
         return sql
@@ -158,3 +167,84 @@ def test_invalid_window_order_rejected_before_execution(layer, order):
 def test_invalid_window_frame_rejected_before_execution(layer, frame):
     with pytest.raises(Exception):
         run(layer, frame=frame, execute=False)
+
+
+@pytest.fixture
+def rust_layer(layer):
+    if layer.engine != "rust":
+        pytest.skip("Strict Rust compiler validation contract")
+    return layer
+
+
+@pytest.mark.parametrize("references", [["windowed"], ["second", "windowed"]])
+def test_window_dependency_cycles_return_validation_errors(rust_layer, references):
+    names = ["windowed", "second"]
+    for name, reference in zip(names, references):
+        rust_layer.graph.models["events"].metrics.append(
+            Metric(
+                name=name,
+                type="cumulative",
+                window_expression=f"SUM(base.{reference})",
+            )
+        )
+    with pytest.raises(Exception, match="[Cc]ycl"):
+        rust_layer.compile(metrics=["events.windowed"], dimensions=["events.day"], user_attributes={"tenant": 1})
+
+
+@pytest.mark.parametrize("controls", [{"window": "7 days"}, {"grain_to_date": "month"}])
+def test_window_expression_rejects_ignored_temporal_controls(rust_layer, controls):
+    rust_layer.graph.models["events"].metrics.append(
+        Metric(
+            name="windowed",
+            type="cumulative",
+            window_expression="SUM(base.daily_amount)",
+            **controls,
+        )
+    )
+    with pytest.raises(Exception, match="window_expression_controls"):
+        rust_layer.compile(metrics=["events.windowed"], dimensions=["events.day"], user_attributes={"tenant": 1})
+
+
+def test_graph_window_infers_unique_period_metric_owner(layer):
+    layer.add_metric(Metric(name="graph_window", type="cumulative", window_expression="SUM(base.daily_amount)"))
+    cursor = layer.adapter.execute(
+        layer.compile(
+            metrics=["graph_window"],
+            dimensions=["events.day"],
+            order_by=["events.day"],
+            user_attributes={"tenant": 1},
+        )
+    )
+    assert [column[0] for column in cursor.description] == ["day", "daily_amount", "graph_window"]
+    assert [row[2] for row in cursor.fetchall()] == [15, 42, 82]
+
+
+def test_quoted_output_expression_is_generated_for_bigquery(rust_layer):
+    import sqlglot
+    from sqlglot import exp
+
+    # This is compilation and AST binding coverage, not live BigQuery execution.
+    rust_layer.graph.models["events"].security = None
+    sql = run(rust_layer, expression='AVG(base."daily_amount")', dialect="bigquery", execute=False)
+    parsed = sqlglot.parse_one(sql, read="bigquery")
+    window = next(parsed.find_all(exp.Window))
+    columns = list(window.this.find_all(exp.Column))
+    assert [(column.table, column.name) for column in columns] == [("base", "daily_amount")]
+    assert not list(window.this.find_all(exp.Literal))
+    assert 'base."daily_amount"' not in sql
+
+
+@pytest.mark.parametrize("reference", ["missing", "daily_amount"])
+def test_graph_window_rejects_missing_or_ambiguous_period_metric(rust_layer, reference):
+    if reference == "daily_amount":
+        rust_layer.add_model(
+            Model(
+                name="other",
+                table="events",
+                primary_key="id",
+                metrics=[Metric(name="daily_amount", agg="sum", sql="amount")],
+            )
+        )
+    rust_layer.add_metric(Metric(name="graph_window", type="cumulative", window_expression=f"SUM(base.{reference})"))
+    with pytest.raises(Exception, match="possible definitions|[Aa]mbiguous"):
+        rust_layer.compile(metrics=["graph_window"], dimensions=["events.day"], user_attributes={"tenant": 1})

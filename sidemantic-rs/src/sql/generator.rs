@@ -1141,6 +1141,7 @@ impl<'a> SqlGenerator<'a> {
         visiting: &mut HashSet<String>,
     ) -> Result<Vec<String>> {
         let mut owners = HashSet::new();
+        let window_dependency = Self::window_output_dependency(metric)?;
         if let Some(owner) = self.graph.metric_owner(reference) {
             owners.insert(owner.to_string());
         }
@@ -1149,6 +1150,7 @@ impl<'a> SqlGenerator<'a> {
             metric.base_metric.as_deref(),
             metric.numerator.as_deref(),
             metric.denominator.as_deref(),
+            window_dependency.as_deref(),
         ]
         .into_iter()
         .flatten()
@@ -2515,6 +2517,14 @@ impl<'a> SqlGenerator<'a> {
             };
 
             if let Some(window_expr) = metric.window_expression.as_ref() {
+                let window_expr = if self.graph.has_strict_metric_scope() {
+                    // Input expressions use DuckDB syntax; regenerate their AST
+                    // so quoted output references follow the target dialect.
+                    let expression = parse_semantic_expression(window_expr)?;
+                    self.emit_expression(&expression)?
+                } else {
+                    window_expr.clone()
+                };
                 let partitions = self.temporal_partition_columns(dimension_refs, &order_col);
                 let partition = if partitions.is_empty() {
                     String::new()

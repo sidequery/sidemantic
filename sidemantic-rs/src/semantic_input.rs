@@ -589,10 +589,14 @@ fn validate_semantic_dependencies(graph: &SemanticGraph, graph_metrics: &[Metric
     let mut dependencies: HashMap<String, Vec<String>> = HashMap::new();
     for (name, metric, context) in definitions {
         let mut metric_dependencies = Vec::new();
+        // `base` is the generated period-output relation, not a model. Resolve
+        // its metric name with the same ownership and cycle rules as other refs.
+        let window_dependency = SqlGenerator::window_output_dependency(metric)?;
         for expression in [
             metric.sql.as_deref(),
             metric.numerator.as_deref(),
             metric.denominator.as_deref(),
+            window_dependency.as_deref(),
         ]
         .into_iter()
         .flatten()

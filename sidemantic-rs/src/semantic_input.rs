@@ -371,6 +371,7 @@ fn decode_metric(value: Value, path: &str, owner: Option<&str>) -> Result<Metric
             "cumulative",
             "conversion",
             "time_comparison",
+            "retention",
         ]
         .contains(&kind)
         {
@@ -420,6 +421,7 @@ fn decode_metric(value: Value, path: &str, owner: Option<&str>) -> Result<Metric
         }
     }
     SqlGenerator::validate_temporal_metric(&metric)?;
+    SqlGenerator::validate_retention_metric(&metric)?;
     Ok(metric)
 }
 

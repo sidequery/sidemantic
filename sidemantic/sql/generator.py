@@ -5400,7 +5400,7 @@ FROM (
         # Build optional WHERE filters for the source data
         filter_clause = ""
         if normalized_filters:
-            filter_clause = " AND " + " AND ".join(normalized_filters)
+            filter_clause = " AND " + " AND ".join(f"({predicate})" for predicate in normalized_filters)
 
         order_clause = (
             self._specialized_order_clause(
@@ -5423,13 +5423,13 @@ FROM (
         sql = f"""WITH cohorts AS (
   SELECT {entity_select}, MIN({trunc_expr}) AS cohort_date
   FROM {from_clause}
-  WHERE {cohort_event}{filter_clause}
+  WHERE ({cohort_event}){filter_clause}
   GROUP BY {entity_sql}
 ),
 activity AS (
   SELECT DISTINCT {entity_select}, {trunc_expr} AS active_date
   FROM {from_clause}
-  WHERE {activity_event}{filter_clause}
+  WHERE ({activity_event}){filter_clause}
 ),
 retention AS (
   SELECT
@@ -5452,7 +5452,7 @@ SELECT
   c.cohort_size,
   ROUND(r.active_users * 100.0 / c.cohort_size, 1) AS retention_pct
 FROM retention r
-JOIN cohort_sizes c ON r.cohort_date = c.cohort_date{order_clause}{limit_clause}{offset_clause}"""
+JOIN cohort_sizes c USING (cohort_date){order_clause}{limit_clause}{offset_clause}"""
 
         return sql.strip()
 

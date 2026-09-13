@@ -115,8 +115,32 @@ Remaining capability gates include policy-bearing SQL outside the scoped
 `FROM metrics` subset, policy output outside DuckDB/PostgreSQL, many-to-many role paths,
 unsupported computed-key query shapes, genuinely duplicate child output aliases,
 unsupported complete-expression filter shapes, temporal/null-fill combinations, raw cumulative windows,
-and unqualified conversion, retention, cohort, and non-additive metric shapes.
+and unqualified conversion, cohort, and non-additive metric shapes. Retention
+has a bounded dedicated path described below.
+
 Deserialization alone is not evidence of executable support.
+
+Model-owned retention metrics support one source in DuckDB, with `entity`,
+`cohort_event`, optional `activity_event`, and day/week/month periods. The first
+qualifying event determines each entity's cohort. Activity is distinct per entity
+and period; entities without returning activity remain in the cohort denominator.
+Only observed activity periods are emitted, through the inclusive `periods`
+bound (default 28). NULL entities and cohorts without a non-NULL event date do
+not produce retention rows.
+
+Query filters, metric filters, model invariants, and rendered row policies scope
+both cohort and activity populations before either is calculated. The model's
+default time dimension is preferred, otherwise its first time dimension is used.
+Entity and time dimensions may map to physical source expressions. The fixed
+outputs are `cohort_date`, `days_since`/`weeks_since`/`months_since`, `active_users`,
+`cohort_size`, and `retention_pct`. Ordering and pagination apply to these outputs.
+
+Selected dimensions, graph-level or wrapped retention metrics, combinations with
+other metrics, joined populations, aggregate predicates, window/subquery source
+expressions, ungrouped queries, table calculations, and non-DuckDB outputs remain
+explicitly unsupported. Result acceptance is in
+`tests/semantic_conformance/test_retention_parity.py`; enabling this path requires
+the freshly built Rust extension to pass those cases, not only SQL compilation.
 
 The existing YAML-based Rust utility entrypoints remain for compatibility.
 They are not an automatic fallback for the new compiler boundary and do not

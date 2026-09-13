@@ -1,0 +1,32 @@
+version: 1
+models:
+  - name: events
+    table: retention_events
+    primary_key: id
+    default_time_dimension: occurred
+    invariant_filters: [deleted = false]
+    security:
+      row_filters: ['tenant = {{ user.tenant }}']
+    dimensions:
+      - {name: person, type: categorical, sql: user_id}
+      - {name: ingested, type: time, sql: ingested_at}
+      - {name: occurred, type: time, sql: event_ts}
+      - {name: event_label, type: categorical, sql: event_kind}
+      - {name: country, type: categorical}
+    metrics:
+      - name: retained
+        type: retention
+        entity: person
+        cohort_event: "event_kind = 'signup'"
+        activity_event: "event_kind = 'active'"
+        periods: 3
+        retention_granularity: day
+      - name: retained_us
+        type: retention
+        entity: person
+        cohort_event: "event_kind = 'signup'"
+        activity_event: "event_kind = 'active'"
+        periods: 3
+        retention_granularity: day
+        filters: [country = 'us']
+      - {name: event_count, agg: count}

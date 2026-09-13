@@ -3,6 +3,7 @@
 mod aggregate_plan;
 mod conversion;
 mod join_kind;
+mod retention;
 mod snapshots;
 mod temporal;
 
@@ -2398,13 +2399,7 @@ impl<'a> SqlGenerator<'a> {
                         .to_string(),
                 ));
             }
-            return self.generate_retention_query(
-                retention_metric_ref,
-                &query.filters,
-                &query.order_by,
-                query.limit,
-                query.offset,
-            );
+            return self.generate_retention_query(retention_metric_ref, query);
         }
 
         if let Some(conversion_metric_ref) = conversion_metrics.first() {
@@ -3248,103 +3243,6 @@ impl<'a> SqlGenerator<'a> {
             "WITH {}\nSELECT\n  {}\nFROM step_1{join_section}{group_by}{order_clause}{limit_clause}{offset_clause}",
             ctes.join(",\n"),
             select_parts.join(",\n  ")
-        ))
-    }
-
-    fn generate_retention_query(
-        &self,
-        metric_ref: &MetricRef,
-        filters: &[String],
-        order_by: &[String],
-        limit: Option<usize>,
-        offset: Option<usize>,
-    ) -> Result<String> {
-        let model = self.graph.get_model(&metric_ref.model).ok_or_else(|| {
-            let available: Vec<&str> = self.graph.models().map(|m| m.name.as_str()).collect();
-            SidemanticError::model_not_found(&metric_ref.model, &available)
-        })?;
-        let metric = model.get_metric(&metric_ref.name).ok_or_else(|| {
-            let available: Vec<&str> = model.metrics.iter().map(|m| m.name.as_str()).collect();
-            SidemanticError::metric_not_found(&metric_ref.model, &metric_ref.name, &available)
-        })?;
-        let entity = metric.entity.as_ref().ok_or_else(|| {
-            SidemanticError::Validation(format!(
-                "Retention metric {} missing required fields (entity, cohort_event)",
-                metric_ref.alias
-            ))
-        })?;
-        let cohort_event = metric.cohort_event.as_ref().ok_or_else(|| {
-            SidemanticError::Validation(format!(
-                "Retention metric {} missing required fields (entity, cohort_event)",
-                metric_ref.alias
-            ))
-        })?;
-        self.validate_identifier(entity, "entity")?;
-        let periods = metric.periods.unwrap_or(28);
-        if periods < 1 {
-            return Err(SidemanticError::Validation(format!(
-                "Invalid periods value: {periods}"
-            )));
-        }
-        let granularity = metric.retention_granularity.as_deref().unwrap_or("day");
-        let timestamp_dim = self.default_time_dimension(model).ok_or_else(|| {
-            SidemanticError::Validation(
-                "Retention metrics require a time dimension on the model".to_string(),
-            )
-        })?;
-        let entity_sql = model
-            .get_dimension(entity)
-            .map(|dimension| self.raw_dimension_sql(model, dimension.sql_expr()))
-            .unwrap_or_else(|| entity.to_string());
-        let entity_select = if entity_sql == *entity {
-            entity.to_string()
-        } else {
-            format!("{entity_sql} AS {entity}")
-        };
-        let ts_sql = self.raw_dimension_sql(model, timestamp_dim.sql_expr());
-        let (trunc_expr, diff_expr, periods_label) = match granularity {
-            "day" => (
-                format!("CAST({ts_sql} AS DATE)"),
-                "(a.active_date - c.cohort_date)".to_string(),
-                "days_since",
-            ),
-            "week" => (
-                format!("CAST({} AS DATE)", self.date_trunc_sql("week", &ts_sql)),
-                "((a.active_date - c.cohort_date) / 7)".to_string(),
-                "weeks_since",
-            ),
-            "month" => (
-                format!("CAST({} AS DATE)", self.date_trunc_sql("month", &ts_sql)),
-                "(EXTRACT(YEAR FROM a.active_date) - EXTRACT(YEAR FROM c.cohort_date)) * 12 + (EXTRACT(MONTH FROM a.active_date) - EXTRACT(MONTH FROM c.cohort_date))".to_string(),
-                "months_since",
-            ),
-            _ => {
-                return Err(SidemanticError::Validation(format!(
-                    "Unsupported retention granularity: {granularity}"
-                )))
-            }
-        };
-        let from_clause = self.model_from_clause(model, Some("t"));
-        let activity_event = metric.activity_event.as_deref().unwrap_or("TRUE");
-        let mut all_filters = filters.to_vec();
-        all_filters.extend(metric.filters.clone());
-        let filter_clause = self.raw_filter_suffix(model, &all_filters, " AND ")?;
-        let order_clause = if order_by.is_empty() {
-            "\nORDER BY r.cohort_date, r.periods_since".to_string()
-        } else {
-            self.simple_order_clause(order_by)
-        };
-        let limit_clause = limit
-            .map(|value| format!("\nLIMIT {value}"))
-            .unwrap_or_default();
-        let offset_clause = offset
-            .map(|value| format!("\nOFFSET {value}"))
-            .unwrap_or_default();
-
-        Ok(format!(
-            "WITH cohorts AS (\n  SELECT {entity_select}, MIN({trunc_expr}) AS cohort_date\n  FROM {from_clause}\n  WHERE {}{filter_clause}\n  GROUP BY {entity_sql}\n),\nactivity AS (\n  SELECT DISTINCT {entity_select}, {trunc_expr} AS active_date\n  FROM {from_clause}\n  WHERE {}{filter_clause}\n),\nretention AS (\n  SELECT\n    c.cohort_date,\n    CAST({diff_expr} AS INTEGER) AS periods_since,\n    COUNT(DISTINCT c.{entity}) AS active_users\n  FROM cohorts c\n  JOIN activity a ON c.{entity} = a.{entity} AND a.active_date >= c.cohort_date\n  WHERE CAST({diff_expr} AS INTEGER) <= {periods}\n  GROUP BY 1, 2\n),\ncohort_sizes AS (\n  SELECT cohort_date, COUNT(DISTINCT {entity}) AS cohort_size\n  FROM cohorts GROUP BY 1\n)\nSELECT\n  r.cohort_date,\n  r.periods_since AS {periods_label},\n  r.active_users,\n  c.cohort_size,\n  ROUND(r.active_users * 100.0 / c.cohort_size, 1) AS retention_pct\nFROM retention r\nJOIN cohort_sizes c ON r.cohort_date = c.cohort_date{order_clause}{limit_clause}{offset_clause}",
-            self.raw_filter_for_model(model, cohort_event)?,
-            self.raw_filter_for_model(model, activity_event)?
         ))
     }
 
@@ -4850,6 +4748,7 @@ impl<'a> SqlGenerator<'a> {
                     capabilities: vec!["metric.conversion_wrapper".into()],
                 });
             }
+            MetricType::Retention => return Err(retention::unsupported("wrapped_metric")),
             MetricType::Simple => self.simple_metric_reference_sql(metric, &metric_name, &alias),
             MetricType::Derived => {
                 self.expand_derived_metric_inner(metric.sql_expr(), &model_name, visited)?
@@ -6018,7 +5917,7 @@ models:
 
         let sql = generator.generate(&query).unwrap();
 
-        assert!(sql.contains("WITH cohorts AS"), "{sql}");
+        assert!(sql.contains("cohorts AS"), "{sql}");
         assert!(sql.contains("retention AS"), "{sql}");
         assert!(sql.contains("cohort_sizes AS"), "{sql}");
         assert!(sql.contains("r.periods_since AS days_since"), "{sql}");

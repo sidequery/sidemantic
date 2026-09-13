@@ -317,7 +317,7 @@ fixtures:
         file: queries/signup_retention.query.yml
         expected_result: expected/signup_retention_result.json
         result_columns: [cohort_date, days_since, active_users, cohort_size, retention_pct]
-        sql_contains: ["WITH cohorts", retention_pct, days_since]
+        sql_contains: ["cohorts AS", retention_pct, days_since]
       - name: multi_platform_users
         file: queries/multi_platform_users.query.yml
         expected_result: expected/multi_platform_users_result.json

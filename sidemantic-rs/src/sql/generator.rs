@@ -5148,7 +5148,9 @@ impl<'a> SqlGenerator<'a> {
 
         for filter in filters {
             let relative_expanded = self.expand_relative_dates(filter);
-            if self.has_computed_key_models(&self.find_filter_models(&[filter.to_string()]))? {
+            if self
+                .has_computed_key_models(&self.find_filter_models(std::slice::from_ref(filter)))?
+            {
                 expanded.push(self.expand_filter_with_polyglot(&relative_expanded)?);
                 continue;
             }

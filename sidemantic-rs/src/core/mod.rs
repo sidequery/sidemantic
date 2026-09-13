@@ -15,7 +15,7 @@ mod table_calc;
 pub use dependency::{
     check_circular_dependencies, extract_column_references_from_expr, extract_dependencies,
     extract_dependencies_with_context, parse_semantic_expression, replace_semantic_columns,
-    semantic_column_references, SemanticColumnReference,
+    semantic_column_references, validate_row_expression, SemanticColumnReference,
 };
 pub use graph::{JoinPath, JoinStep, SemanticGraph};
 pub use inheritance::{merge_model, resolve_model_inheritance};

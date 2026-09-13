@@ -671,3 +671,89 @@ mod tests {
         assert!(!refs.contains("float"));
     }
 }
+
+/// Reject expressions that change the source-row scope of a scalar input.
+pub fn validate_row_expression(
+    expression: &Expression,
+    capability: &str,
+) -> crate::error::Result<()> {
+    // Typed aggregate children are not all covered by polyglot's public walker.
+    // Inspect the complete AST, including aggregates without column inputs.
+    fn visit(value: &serde_json::Value) -> bool {
+        match value {
+            serde_json::Value::Object(fields) => {
+                let kind = (fields.len() == 1).then(|| fields.keys().next().unwrap().as_str());
+                matches!(
+                    kind,
+                    Some(
+                        "select"
+                            | "subquery"
+                            | "raw"
+                            | "window"
+                            | "window_function"
+                            | "count"
+                            | "sum"
+                            | "avg"
+                            | "min"
+                            | "max"
+                            | "median"
+                            | "mode"
+                            | "stddev"
+                            | "stddev_pop"
+                            | "stddev_samp"
+                            | "variance"
+                            | "var_pop"
+                            | "var_samp"
+                            | "aggregate_function"
+                            | "group_concat"
+                            | "string_agg"
+                            | "list_agg"
+                            | "array_agg"
+                            | "count_if"
+                            | "sum_if"
+                            | "first"
+                            | "last"
+                            | "any_value"
+                            | "approx_distinct"
+                            | "approx_count_distinct"
+                            | "approx_percentile"
+                            | "percentile"
+                            | "logical_and"
+                            | "logical_or"
+                            | "skewness"
+                            | "array_concat_agg"
+                            | "array_unique_agg"
+                            | "bool_xor_agg"
+                    )
+                ) || fields.values().any(visit)
+            }
+            serde_json::Value::Array(values) => values.iter().any(visit),
+            _ => false,
+        }
+    }
+    let value = serde_json::to_value(expression)
+        .map_err(|error| crate::error::SidemanticError::SqlParse(error.to_string()))?;
+    if visit(&value) {
+        return Err(crate::error::SidemanticError::UnsupportedSemanticFeatures {
+            capabilities: vec![capability.to_owned()],
+        });
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod row_expression_tests {
+    use super::*;
+
+    #[test]
+    fn row_scope_checks_constant_aggregates_and_nested_nodes() {
+        crate::semantic_input::with_semantic_stack(|| {
+            for expression in ["count(*)", "sum(value)", "sum(value) over ()", "(select count(*) from other)"] {
+                let parsed = parse_semantic_expression(expression)?;
+                assert!(matches!(validate_row_expression(&parsed, "test.row_scope"), Err(crate::error::SidemanticError::UnsupportedSemanticFeatures { capabilities }) if capabilities == vec!["test.row_scope"]));
+            }
+            validate_row_expression(&parse_semantic_expression("coalesce(value, 0) + 2")?, "test.row_scope")?;
+            Ok(())
+        }).unwrap();
+    }
+}

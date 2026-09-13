@@ -549,7 +549,11 @@ class SQLGenerator:
                         for rcol in replacement.find_all(exp.Column):
                             if rcol.table and rcol.table.replace("_cte", "") == model.name:
                                 rcol.set("table", None)
-                        column.replace(exp.Paren(this=replacement))
+                        replacement = exp.Paren(this=replacement)
+                        if column is parsed:
+                            parsed = replacement
+                        else:
+                            column.replace(replacement)
                 result.append(parsed.sql(dialect=self.dialect))
             except SqlglotError:
                 result.append(f)

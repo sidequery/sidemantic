@@ -748,12 +748,25 @@ mod row_expression_tests {
     #[test]
     fn row_scope_checks_constant_aggregates_and_nested_nodes() {
         crate::semantic_input::with_semantic_stack(|| {
-            for expression in ["count(*)", "sum(value)", "sum(value) over ()", "(select count(*) from other)"] {
+            for expression in [
+                "count(*)",
+                "sum(value)",
+                "sum(value) over ()",
+                "(select count(*) from other)",
+            ] {
                 let parsed = parse_semantic_expression(expression)?;
-                assert!(matches!(validate_row_expression(&parsed, "test.row_scope"), Err(crate::error::SidemanticError::UnsupportedSemanticFeatures { capabilities }) if capabilities == vec!["test.row_scope"]));
+                let error = validate_row_expression(&parsed, "test.row_scope").unwrap_err();
+                let crate::error::SidemanticError::UnsupportedSemanticFeatures { capabilities } =
+                    error
+                else {
+                    panic!("expected a row-scope capability error");
+                };
+                assert_eq!(capabilities, vec!["test.row_scope"]);
             }
-            validate_row_expression(&parse_semantic_expression("coalesce(value, 0) + 2")?, "test.row_scope")?;
+            let scalar = parse_semantic_expression("coalesce(value, 0) + 2")?;
+            validate_row_expression(&scalar, "test.row_scope")?;
             Ok(())
-        }).unwrap();
+        })
+        .unwrap();
     }
 }

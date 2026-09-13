@@ -89,25 +89,34 @@ def test_invalid_contract_is_rejected(mutation):
     else:
         source["models"][0]["security"]["unknown"] = True
     result = call("compile", source, {"metrics": ["orders.revenue"], "user_attributes": {"tenant": "a"}})
-    assert "error" in result, result
+    expected = {
+        "version": "supported semantic input version",
+        "envelope": "unknown field",
+        "field": "unknown semantic field",
+        "key": "key",
+        "scope": "Invalid metric owner",
+        "capability": "Unsupported semantic features",
+        "policy": "unknown field",
+    }
+    assert expected[mutation] in result.get("error", ""), result
 
 
 @pytest.mark.parametrize(
-    "query",
+    "query,expected",
     [
-        {"metrics": ["orders.revenue"]},
-        {"metrics": ["orders.secret"], "user_attributes": {"tenant": "a"}, "enforce_visibility": True},
-        {"metrics": ["orders.revenue"], "prepared_policies": {}},
+        ({"metrics": ["orders.revenue"]}, "no user_attributes"),
+        ({"metrics": ["orders.secret"], "user_attributes": {"tenant": "a"}, "enforce_visibility": True}, "not public"),
+        ({"metrics": ["orders.revenue"], "prepared_policies": {}}, "unknown field"),
     ],
 )
-def test_query_denials(query):
-    assert "error" in call("compile", query=query)
+def test_query_denials(query, expected):
+    assert expected in call("compile", query=query).get("error", "")
 
 
 def test_reference_validation_is_not_authorization():
     assert json.loads(call("validate", query={"metrics": ["orders.revenue"]})["result"]) == []
-    assert "error" in call("compile", query={"metrics": ["orders.revenue"]})
-    assert "error" in call("rewrite", sql="select orders.revenue from metrics")
+    assert "no user_attributes" in call("compile", query={"metrics": ["orders.revenue"]}).get("error", "")
+    assert "no user_attributes" in call("rewrite", sql="select orders.revenue from metrics").get("error", "")
 
 
 if __name__ == "__main__":

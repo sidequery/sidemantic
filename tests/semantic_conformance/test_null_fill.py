@@ -15,7 +15,7 @@ def layer(request):
             name="events",
             table="fill_events",
             primary_key="id",
-            dimensions=[Dimension(name="category"), Dimension(name="amount", type="numeric")],
+            dimensions=[Dimension(name="category", type="categorical"), Dimension(name="amount", type="numeric")],
             metrics=[
                 Metric(name="filled", agg="sum", sql="amount", fill_nulls_with=0),
                 Metric(name="raw", agg="sum", sql="amount"),
@@ -60,7 +60,7 @@ def test_filled_leaf_participates_in_cross_source_calculation(layer):
             name="groups",
             table="fill_groups",
             primary_key="category",
-            dimensions=[Dimension(name="category")],
+            dimensions=[Dimension(name="category", type="categorical")],
             metrics=[Metric(name="quota", agg="sum", sql="quota")],
         )
     )

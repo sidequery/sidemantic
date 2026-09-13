@@ -16,13 +16,18 @@ struct CteNames {
 }
 
 impl CteNames {
-    fn new(statement: &Expression, graph: &SemanticGraph) -> Result<Self> {
+    fn new(
+        statement: &Expression,
+        graph: &SemanticGraph,
+        policy_definitions: &str,
+    ) -> Result<Self> {
         let mut reserved = HashSet::new();
         for definition in graph
             .models()
             .map(serde_json::to_string)
             .chain(graph.metrics().map(serde_json::to_string))
             .chain(std::iter::once(serde_json::to_string(statement)))
+            .chain(std::iter::once(Ok(policy_definitions.to_owned())))
         {
             // Source reads can occur inside trusted SQL definitions as well as
             // model.table. Reserve those tokens and the complete input AST,
@@ -52,7 +57,7 @@ impl CteNames {
 
 impl QueryRewriter<'_> {
     pub(super) fn rewrite_policy_statement(&self, statement: Expression) -> Result<Expression> {
-        let mut names = CteNames::new(&statement, self.graph)?;
+        let mut names = CteNames::new(&statement, self.graph, self.policy_definitions)?;
         self.rewrite_policy_query(statement, &HashMap::new(), &mut names)
     }
 

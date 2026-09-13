@@ -123,6 +123,29 @@ def test_internal_cte_names_do_not_collide_with_trusted_sql_sources(layer):
     ) == [(180,)]
 
 
+@pytest.mark.parametrize("policy_kind", ["security", "invariant"])
+def test_user_cte_cannot_capture_private_policy_entitlement_source(layer, policy_kind):
+    # The first candidate is reserved by the input alias. The next candidate
+    # names a real entitlement source declared only in the private policy map.
+    layer.adapter.execute("create table __sidemantic_input_cte_1(tenant integer)")
+    layer.adapter.execute("insert into __sidemantic_input_cte_1 values (1)")
+    accounts = layer.graph.models["accounts"]
+    predicate = "tenant in (select tenant from __sidemantic_input_cte_1)"
+    accounts.security = SecurityPolicy(row_filters=[predicate]) if policy_kind == "security" else None
+    if policy_kind == "invariant":
+        accounts.invariant_filters.append(predicate)
+    sql = """
+        with hostile as (
+            select purchases.id as tenant from metrics
+        )
+        select purchases.revenue as __sidemantic_input_cte_0 from metrics
+    """
+    # The hostile CTE includes purchase ID 2, which would authorize tenant 2
+    # if it captured the entitlement table. Its real policy permits only 1.
+    generated = rewrite_semantic_input(layer.graph, sql, user_attributes={}, enforce_visibility=True)
+    assert layer.adapter.execute(generated).fetchall() == [(180,)]
+
+
 @pytest.mark.parametrize(
     "leaf",
     [

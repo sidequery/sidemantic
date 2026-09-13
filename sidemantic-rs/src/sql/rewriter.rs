@@ -24,6 +24,7 @@ mod policy;
 pub struct QueryRewriter<'a> {
     graph: &'a SemanticGraph,
     query_preparer: Option<QueryPreparer<'a>>,
+    policy_definitions: &'a str,
 }
 
 impl<'a> QueryRewriter<'a> {
@@ -31,13 +32,19 @@ impl<'a> QueryRewriter<'a> {
         Self {
             graph,
             query_preparer: None,
+            policy_definitions: "",
         }
     }
 
     /// Apply request policies to each semantic leaf before retaining supported
     /// relational wrappers. Other shapes cannot enter the legacy rewriter.
-    pub(crate) fn with_query_preparer(mut self, prepare: QueryPreparer<'a>) -> Self {
+    pub(crate) fn with_query_preparer(
+        mut self,
+        prepare: QueryPreparer<'a>,
+        policy_definitions: &'a str,
+    ) -> Self {
         self.query_preparer = Some(prepare);
+        self.policy_definitions = policy_definitions;
         self
     }
 

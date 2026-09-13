@@ -1027,8 +1027,12 @@ pub fn rewrite_with_semantic_input_context(
             Ok(())
         };
         let mut rewriter = QueryRewriter::new(&input.graph);
+        // Policy declarations live outside the ordinary Model graph. Reserve
+        // their source names too, before the rewriter allocates any user CTE.
+        let policy_definitions = serde_json::to_string(&input.policies)
+            .map_err(|error| invalid("rewrite.policy_definitions", error))?;
         if requires_policies {
-            rewriter = rewriter.with_query_preparer(&prepare);
+            rewriter = rewriter.with_query_preparer(&prepare, &policy_definitions);
         }
         rewriter.rewrite_with_output_dialect(sql, DialectType::DuckDB, output_dialect)
     })

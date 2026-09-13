@@ -16,7 +16,7 @@ use crate::core::{
 use crate::error::{Result, SidemanticError};
 use crate::sql::SemanticQuery;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize)]
 pub(crate) struct ModelPolicies {
     pub security: Option<SecurityPolicy>,
     pub invariant_filters: Vec<String>,

@@ -17,6 +17,33 @@
   error:
     type: QueryValidationError
     match: no primary key
+- name: restricted_rollup
+  source: native/restricted
+  query:
+    metrics:
+    - restricted.revenue
+    user_attributes:
+      tenant: 1
+  columns:
+  - revenue
+  rows:
+  - - 30
+- name: restricted_rollup_requested
+  source: native/restricted
+  query:
+    metrics: [restricted.revenue]
+    user_attributes: {tenant: 1}
+    use_preaggregations: true
+  columns: [revenue]
+  rows: [[30]]
+- name: missing_security_context
+  source: native/restricted
+  query:
+    metrics:
+    - restricted.revenue
+  error:
+    type: SecurityError
+    match: no user_attributes|security policy
 - name: composite_null_foreign_key
   source: native/composite
   query:
@@ -61,6 +88,27 @@
     - 2
   - - 30
     - 3
+- name: relationship_roles
+  source: native/roles
+  query:
+    metrics:
+    - flights.flight_count
+    dimensions:
+    - origin.city
+    - destination.city
+    order_by:
+    - destination.city
+  columns:
+  - origin_city
+  - destination_city
+  - flight_count
+  rows:
+  - - SFO
+    - JFK
+    - 1
+  - - SFO
+    - LAX
+    - 1
 - name: cube_join
   source: cube
   query:

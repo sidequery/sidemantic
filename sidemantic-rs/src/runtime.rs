@@ -5936,12 +5936,19 @@ pub fn validate_query_references(
         .into_iter()
         .filter(|model_name| graph.get_model(model_name).is_some())
         .collect();
+    let query_models = valid_model_names.iter().cloned().collect();
     for (index, model_a) in valid_model_names.iter().enumerate() {
         for model_b in valid_model_names.iter().skip(index + 1) {
-            if graph.find_join_path(model_a, model_b).is_err() {
-                errors.push(format!(
-                    "No join path found between models '{model_a}' and '{model_b}'. Add relationships to enable joining these models."
-                ));
+            if let Err(error) =
+                graph.find_join_path_with_context(model_a, model_b, Some(&query_models))
+            {
+                if matches!(error, SidemanticError::AmbiguousJoinPath { .. }) {
+                    errors.push(error.to_string());
+                } else {
+                    errors.push(format!(
+                        "No join path found between models '{model_a}' and '{model_b}'. Add relationships to enable joining these models."
+                    ));
+                }
             }
         }
     }

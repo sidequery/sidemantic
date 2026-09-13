@@ -17,6 +17,7 @@ use crate::runtime::{
     interpolate_query_filters, validate_query_references, QueryValidationContext,
 };
 use crate::sql::{SemanticQuery, SqlGenerator};
+mod policies;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -49,6 +50,7 @@ pub struct SemanticInput {
     /// Original declarations, including metadata which has no executable core slot.
     pub source: Value,
     validation_context: QueryValidationContext,
+    policies: HashMap<String, policies::ModelPolicies>,
     has_preaggregations: bool,
 }
 
@@ -256,15 +258,6 @@ fn decode_metric(value: Value, path: &str) -> Result<Metric> {
 
 fn decode_relationship(value: Value, path: &str) -> Result<Relationship> {
     let mut raw = object(value, path)?;
-    if raw
-        .get("target_model")
-        .is_some_and(|value| !value.is_null())
-    {
-        return Err(unsupported("relationship.roles"));
-    }
-    if raw.get("active") == Some(&json!(false)) {
-        return Err(unsupported("relationship.inactive"));
-    }
     if raw.get("type") == Some(&json!("cross")) {
         return Err(unsupported("relationship.cross"));
     }
@@ -298,8 +291,8 @@ fn decode_model(value: Value, path: &str) -> Result<Model> {
         reject_active(&mut raw, field, capability)?;
     }
     // These declarations are retained and checked separately from core models.
-    reject_active(&mut raw, "security", "model.security")?;
-    reject_active(&mut raw, "invariant_filters", "model.invariant_filters")?;
+    raw.remove("security");
+    raw.remove("invariant_filters");
     if let Some(value) = raw.remove("pre_aggregations") {
         let _: Vec<Value> = deserialize(value, &format!("{path}.pre_aggregations"))?;
     }
@@ -565,8 +558,20 @@ impl SemanticInput {
                 envelope.input_dialect
             )));
         }
-        let unsupported_capabilities: Vec<String> =
-            envelope.required_capabilities.into_iter().collect();
+        let unsupported_capabilities: Vec<String> = envelope
+            .required_capabilities
+            .into_iter()
+            .filter(|capability| {
+                !matches!(
+                    capability.as_str(),
+                    "relationship.roles"
+                        | "relationship.inactive"
+                        | "model.security"
+                        | "model.invariant_filters"
+                        | "visibility"
+                )
+            })
+            .collect();
         if !unsupported_capabilities.is_empty() {
             return Err(SidemanticError::UnsupportedSemanticFeatures {
                 capabilities: unsupported_capabilities,
@@ -582,6 +587,7 @@ impl SemanticInput {
             }
         }
         let _ = envelope.import_warnings; // Descriptive state remains in source.
+        let policies = policies::decode(&envelope.models)?;
         let has_preaggregations = envelope.models.iter().any(|model| {
             model
                 .get("pre_aggregations")
@@ -670,6 +676,7 @@ impl SemanticInput {
             graph,
             source,
             validation_context: QueryValidationContext::from_top_level_metrics(&metrics),
+            policies,
             has_preaggregations,
         })
     }
@@ -726,7 +733,7 @@ fn compile_semantic_input(input_json: &str, query_json: &str) -> Result<String> 
     let filters =
         interpolate_query_filters(&input.graph, payload.filters, &payload.parameter_values)
             .map_err(|error| invalid("query.parameter_values", error))?;
-    let query = SemanticQuery {
+    let mut query = SemanticQuery {
         metrics: payload.metrics,
         dimensions: payload.dimensions,
         filters,
@@ -741,11 +748,17 @@ fn compile_semantic_input(input_json: &str, query_json: &str) -> Result<String> 
         preagg_schema: payload.preagg_schema,
         ..SemanticQuery::default()
     };
-    let _ = payload.user_attributes;
-    if payload.enforce_visibility {
-        return Err(unsupported("visibility"));
-    }
-    if query.use_preaggregations && input.has_preaggregations {
+    query.prepared_policies = policies::prepare(
+        &input.graph,
+        &input.policies,
+        &query,
+        payload.user_attributes.as_ref(),
+        payload.enforce_visibility,
+        dialect,
+    )?;
+    if query.prepared_policies.has_row_filters() {
+        query.use_preaggregations = false;
+    } else if query.use_preaggregations && input.has_preaggregations {
         return Err(unsupported("model.pre_aggregations"));
     }
     SqlGenerator::new(&input.graph)
@@ -771,6 +784,13 @@ fn validate_semantic_input(input_json: &str, query_json: &str) -> Result<Vec<Str
 pub fn rewrite_with_semantic_input(input_json: &str, sql: &str) -> Result<String> {
     with_semantic_stack(|| {
         let input = SemanticInput::decode(input_json)?;
+        if input
+            .policies
+            .values()
+            .any(|policy| policy.security.is_some() || !policy.invariant_filters.is_empty())
+        {
+            return Err(unsupported("rewrite.model_policies"));
+        }
         let _ = (&input.graph, sql);
         Err(unsupported("rewrite.semantic_input"))
     })
@@ -829,10 +849,7 @@ mod tests {
         ));
         let mut source = input();
         source["models"][0]["invariant_filters"] = json!(["tenant_id = 1"]);
-        assert!(matches!(
-            SemanticInput::from_json(&source.to_string()),
-            Err(SidemanticError::UnsupportedSemanticFeatures { .. })
-        ));
+        assert!(SemanticInput::from_json(&source.to_string()).is_ok());
         source = input();
         source["version"] = json!(2);
         assert!(matches!(
@@ -842,6 +859,32 @@ mod tests {
         source = input();
         source["models"][0]["dimensions"][0]["mystery"] = json!(1);
         assert!(SemanticInput::from_json(&source.to_string()).is_err());
+    }
+
+    #[test]
+    fn handoff_policies_are_enforced_and_cannot_be_forged() {
+        let mut source = input();
+        source["models"][0]["security"] = json!({"row_filters":["tenant = {{ user.tenant }}"]});
+        source["models"][0]["invariant_filters"] = json!(["not deleted"]);
+        source["models"][0]["pre_aggregations"] = json!([{"name":"all_orders"}]);
+        let input = source.to_string();
+        assert!(matches!(
+            compile_with_semantic_input(&input, r#"{"metrics":["orders.revenue"]}"#),
+            Err(SidemanticError::Security(_))
+        ));
+        let sql = compile_with_semantic_input(&input, r#"{"metrics":["orders.revenue"],"user_attributes":{"tenant":1},"use_preaggregations":true}"#).unwrap();
+        assert!(sql.contains("tenant = 1"), "{sql}");
+        assert!(sql.contains("NOT deleted"), "{sql}");
+        assert!(!sql.contains("all_orders"), "{sql}");
+        assert!(compile_with_semantic_input(
+            &input,
+            r#"{"metrics":["orders.revenue"],"prepared_policies":{}}"#
+        )
+        .is_err());
+        assert!(matches!(
+            rewrite_with_semantic_input(&input, "select revenue from orders"),
+            Err(SidemanticError::UnsupportedSemanticFeatures { .. })
+        ));
     }
 
     #[test]
@@ -924,6 +967,67 @@ mod tests {
             compile_with_semantic_input(&source.to_string(), r#"{"metrics":["orders.spread"]}"#)
                 .unwrap();
         assert!(sql.contains("NULLIF"));
+    }
+
+    #[test]
+    fn handoff_relationships_preserve_composite_keys_and_roles() {
+        let mut source = input();
+        source["models"][0]["primary_key"] = json!(["tenant_id", "order_id"]);
+        source["models"][0]["relationships"] = json!([{"name":"customers", "type":"many_to_one", "foreign_key":["tenant_id", "customer_id"]}]);
+        source["models"].as_array_mut().unwrap().push(json!({"name":"customers", "table":"customers", "primary_key":["tenant_id", "customer_id"]}));
+        let decoded = SemanticInput::from_json(&source.to_string()).unwrap();
+        let relationship = &decoded.graph.get_model("orders").unwrap().relationships[0];
+        assert_eq!(
+            relationship.primary_key_columns(),
+            vec!["tenant_id", "customer_id"]
+        );
+        source["models"][0]["relationships"][0]["name"] = json!("buyer");
+        source["models"][0]["relationships"][0]["target_model"] = json!("customers");
+        source["required_capabilities"] = json!(["relationship.roles"]);
+        let decoded = SemanticInput::from_json(&source.to_string()).unwrap();
+        let path = decoded.graph.find_join_path("orders", "buyer").unwrap();
+        assert_eq!(path.steps[0].to_keys, vec!["tenant_id", "customer_id"]);
+        assert_eq!(decoded.graph.get_model("buyer").unwrap().name, "customers");
+    }
+
+    #[test]
+    fn handoff_compiles_two_roles_and_nested_paths_without_conflating_sources() {
+        let mut source = input();
+        source["models"][0]["primary_key"] = json!(["id"]);
+        source["models"][0]["relationships"] = json!([
+            {"name":"buyer", "target_model":"customers", "type":"many_to_one", "foreign_key":["buyer_id"]},
+            {"name":"recipient", "target_model":"customers", "type":"many_to_one", "foreign_key":["recipient_id"]}
+        ]);
+        source["models"].as_array_mut().unwrap().extend([
+            json!({"name":"customers", "table":"customers", "primary_key":["id"], "dimensions":[{"name":"name", "type":"categorical"}], "relationships":[{"name":"country", "target_model":"countries", "type":"many_to_one", "foreign_key":["country_id"]}]}),
+            json!({"name":"countries", "table":"countries", "primary_key":["id"], "dimensions":[{"name":"label", "type":"categorical"}]})
+        ]);
+        source["required_capabilities"] = json!(["relationship.roles"]);
+        let query = r#"{"metrics":["orders.revenue"],"dimensions":["buyer.name","recipient.name","buyer$country.label"],"use_preaggregations":false}"#;
+        let sql = compile_with_semantic_input(&source.to_string(), query).unwrap();
+        assert!(sql.contains("buyer_cte"), "{sql}");
+        assert!(sql.contains("recipient_cte"), "{sql}");
+        assert!(sql.contains("buyer$country_cte"), "{sql}");
+        assert!(sql.contains("orders_cte.buyer_id"), "{sql}");
+        assert!(sql.contains("orders_cte.recipient_id"), "{sql}");
+        assert!(sql.contains("FROM orders_cte"), "{sql}");
+    }
+
+    #[test]
+    fn handoff_preserves_inactive_relationships_without_making_them_queryable() {
+        let mut source = input();
+        source["models"][0]["relationships"] = json!([
+            {"name":"buyer", "target_model":"customers", "type":"many_to_one", "foreign_key":["buyer_id"], "active":false}
+        ]);
+        source["required_capabilities"] = json!(["relationship.roles", "relationship.inactive"]);
+        let decoded = SemanticInput::from_json(&source.to_string()).unwrap();
+        assert!(!decoded.graph.get_model("orders").unwrap().relationships[0].active);
+        assert!(decoded.graph.get_model("buyer").is_none());
+        assert!(compile_with_semantic_input(
+            &source.to_string(),
+            r#"{"metrics":["orders.revenue"],"dimensions":["buyer.name"]}"#
+        )
+        .is_err());
     }
 
     #[test]
@@ -1176,32 +1280,6 @@ mod tests {
                 if capabilities == vec!["aggregation.cross_model"]
         ));
     }
-    #[test]
-    fn later_policy_and_role_capabilities_are_rejected_without_capability_hints() {
-        for (field, value) in [
-            ("security", json!({"row_filters":["tenant = 1"]})),
-            ("invariant_filters", json!(["not deleted"])),
-        ] {
-            let mut source = input();
-            source["models"][0][field] = value;
-            assert!(matches!(
-                SemanticInput::from_json(&source.to_string()),
-                Err(SidemanticError::UnsupportedSemanticFeatures { .. })
-            ));
-        }
-        for relationship in [
-            json!({"name":"buyer", "target_model":"customers", "foreign_key":"buyer_id"}),
-            json!({"name":"customers", "active":false, "foreign_key":"buyer_id"}),
-        ] {
-            let mut source = input();
-            source["models"][0]["relationships"] = json!([relationship]);
-            assert!(matches!(
-                SemanticInput::from_json(&source.to_string()),
-                Err(SidemanticError::UnsupportedSemanticFeatures { .. })
-            ));
-        }
-    }
-
     #[test]
     fn temporal_handoff_metrics_are_explicitly_unsupported() {
         for kind in ["cumulative", "time_comparison"] {

@@ -1,5 +1,7 @@
 //! SQL generator: compiles semantic queries to SQL
 
+mod join_kind;
+
 use std::collections::{HashMap, HashSet};
 
 use polyglot_sql::expressions::{Expression, Identifier, Literal, Raw};
@@ -34,6 +36,8 @@ pub struct SemanticQuery {
     pub preagg_database: Option<String>,
     pub preagg_schema: Option<String>,
     pub skip_default_time_dimensions: bool,
+    #[doc(hidden)]
+    pub prepared_policies: crate::core::PreparedPolicies,
 }
 
 impl SemanticQuery {
@@ -172,6 +176,7 @@ impl<'a> SqlGenerator<'a> {
 
         // Find all required models
         let mut required_models = self.find_required_models(&dimension_refs, &metric_refs)?;
+        required_models.extend(query.prepared_policies.model_names().cloned());
         let segment_filters = self.resolve_segments(&query.segments)?;
         let all_filters: Vec<String> = query
             .filters
@@ -202,7 +207,11 @@ impl<'a> SqlGenerator<'a> {
         }
 
         // Try pre-aggregation routing for single-model aggregate queries.
-        if query.use_preaggregations && !query.ungrouped && required_models.len() == 1 {
+        if query.use_preaggregations
+            && !query.prepared_policies.has_row_filters()
+            && !query.ungrouped
+            && required_models.len() == 1
+        {
             if let Some(model_name) = required_models.iter().next() {
                 if let Some(preagg_sql) = self.try_use_preaggregation(
                     model_name,
@@ -222,10 +231,8 @@ impl<'a> SqlGenerator<'a> {
 
         // Dimension-first base selection preserves the queried dimension domain,
         // including zero-count rows for related metric models.
-        let base_model = dimension_refs
-            .first()
-            .map(|d| d.model.clone())
-            .or_else(|| metric_refs.first().map(|m| m.model.clone()))
+        let base_model = self
+            .query_base_model(&dimension_refs, &metric_refs)
             .ok_or_else(|| {
                 SidemanticError::Validation(
                     "Query must have at least one metric or dimension".into(),
@@ -324,14 +331,14 @@ impl<'a> SqlGenerator<'a> {
                 raw_expr = format!("CASE WHEN {metric_filter} THEN {raw_expr} END");
             }
             raw_model_columns
-                .entry(model_name)
+                .entry(model_name.clone())
                 .or_default()
                 .push(format!(
                     "{raw_expr} AS {}",
                     self.quote_identifier(&raw_alias)
                 ));
             raw_model_aliases
-                .entry(model.name.clone())
+                .entry(model_name)
                 .or_default()
                 .insert(raw_alias);
         }
@@ -384,15 +391,25 @@ impl<'a> SqlGenerator<'a> {
                 } else {
                     "SELECT *".to_string()
                 };
-                let cte_where = if let Some(filters) = cte_where_filters.get(model_name) {
-                    let filter_sql = self.expand_filters_for_cte(model_name, filters)?;
+                let cte_where = {
+                    let mut filter_sql = self.expand_filters_for_cte(
+                        model_name,
+                        cte_where_filters
+                            .get(model_name)
+                            .map(Vec::as_slice)
+                            .unwrap_or_default(),
+                    )?;
+                    filter_sql.extend(
+                        query
+                            .prepared_policies
+                            .filters_for_model(model_name)
+                            .cloned(),
+                    );
                     if filter_sql.is_empty() {
                         String::new()
                     } else {
                         format!("\n  WHERE {}", filter_sql.join(" AND "))
                     }
-                } else {
-                    String::new()
                 };
                 cte_defs.push(format!(
                     "{model_name}_cte AS (\n  {cte_select}\n  FROM {cte_source}{cte_where}\n)"
@@ -608,14 +625,22 @@ impl<'a> SqlGenerator<'a> {
                     )?
                 };
 
-                let join_type = if cte_where_filters
-                    .get(&step.to_model)
-                    .is_some_and(|filters| !filters.is_empty())
-                {
-                    "INNER JOIN"
-                } else {
-                    "LEFT JOIN"
-                };
+                let join_type =
+                    if let Some(explicit) = join_kind::explicit_join_type(self.graph, step)? {
+                        explicit
+                    } else if cte_where_filters
+                        .get(&step.to_model)
+                        .is_some_and(|filters| !filters.is_empty())
+                        || query
+                            .prepared_policies
+                            .filters_for_model(&step.to_model)
+                            .next()
+                            .is_some()
+                    {
+                        "INNER JOIN"
+                    } else {
+                        "LEFT JOIN"
+                    };
                 sql.push_str(&format!(
                     "{join_type} {}_cte AS {} ON {}\n",
                     step.to_model, to_alias, join_condition
@@ -822,10 +847,7 @@ impl<'a> SqlGenerator<'a> {
         self.ensure_queryable_sources(&required_models)?;
 
         // Dimension-first base selection, mirroring `generate`.
-        let base_model = dimension_refs
-            .first()
-            .map(|d| d.model.clone())
-            .or_else(|| metric_refs.first().map(|m| m.model.clone()));
+        let base_model = self.query_base_model(&dimension_refs, &metric_refs);
         if let Some(base_model) = base_model {
             self.build_join_paths(&base_model, &required_models)?;
         }
@@ -1251,6 +1273,30 @@ impl<'a> SqlGenerator<'a> {
     }
 
     /// Find all models required by the query
+    fn query_base_model(
+        &self,
+        dimensions: &[DimensionRef],
+        metrics: &[MetricRef],
+    ) -> Option<String> {
+        // A role describes rows of its owner when that owner supplies the measures.
+        // Otherwise preserve dimension-first domain selection.
+        if let Some(metric) = metrics.first() {
+            if metrics
+                .iter()
+                .all(|candidate| candidate.model == metric.model)
+                && dimensions.iter().any(|dimension| {
+                    self.graph.role_root_owner(&dimension.model) == Some(metric.model.as_str())
+                })
+            {
+                return Some(metric.model.clone());
+            }
+        }
+        dimensions
+            .first()
+            .map(|dimension| dimension.model.clone())
+            .or_else(|| metrics.first().map(|metric| metric.model.clone()))
+    }
+
     fn find_required_models(
         &self,
         dimension_refs: &[DimensionRef],
@@ -1393,7 +1439,9 @@ impl<'a> SqlGenerator<'a> {
         let mut paths = HashMap::new();
 
         for model in required_models {
-            let path = self.graph.find_join_path(base_model, model)?;
+            let path =
+                self.graph
+                    .find_join_path_with_context(base_model, model, Some(required_models))?;
             paths.insert(model.clone(), path);
         }
 
@@ -1972,7 +2020,7 @@ impl<'a> SqlGenerator<'a> {
         for model_name in &model_order {
             let cte_name = format!("{model_name}_preagg");
             cte_names.push(cte_name.clone());
-            let subquery = SemanticQuery::new()
+            let mut subquery = SemanticQuery::new()
                 .with_metrics(
                     metrics_by_model
                         .get(model_name)
@@ -1995,6 +2043,7 @@ impl<'a> SqlGenerator<'a> {
                 })
                 .with_ungrouped(false)
                 .with_skip_default_time_dimensions(true);
+            subquery.prepared_policies = query.prepared_policies.clone();
             let subquery_sql = self.generate(&subquery)?;
             cte_defs.push(format!("{cte_name} AS (\n{subquery_sql}\n)"));
         }
@@ -2296,12 +2345,13 @@ impl<'a> SqlGenerator<'a> {
             );
         }
 
-        let inner_query = SemanticQuery::new()
+        let mut inner_query = SemanticQuery::new()
             .with_metrics(base_metrics.clone())
             .with_dimensions(effective_dimensions.to_vec())
             .with_filters(query.filters.clone())
             .with_segments(query.segments.clone())
             .with_ungrouped(false);
+        inner_query.prepared_policies = query.prepared_policies.clone();
 
         let inner_sql = self.generate(&inner_query)?;
         let mut select_exprs: Vec<String> = Vec::new();
@@ -3620,7 +3670,7 @@ impl<'a> SqlGenerator<'a> {
     }
 
     fn validate_identifier(&self, value: &str, label: &str) -> Result<()> {
-        let valid = regex::Regex::new(r"^[a-zA-Z_][a-zA-Z0-9_.]*$")
+        let valid = regex::Regex::new(r"^[a-zA-Z_][a-zA-Z0-9_.$]*$")
             .expect("valid identifier regex")
             .is_match(value);
         if valid {

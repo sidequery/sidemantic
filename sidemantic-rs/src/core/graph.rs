@@ -90,6 +90,10 @@ pub struct SemanticGraph {
     parameters: HashMap<String, Parameter>,
     /// Adjacency list: model -> edges
     adjacency: HashMap<String, Vec<AdjacencyEdge>>,
+    /// Query instances remain separate from their canonical model declarations.
+    role_models: HashMap<String, String>,
+    role_owners: HashMap<String, String>,
+    relationship_instances: HashMap<(String, String), String>,
     /// Graph-level metadata payload (e.g. format-specific import/export state).
     metadata: Option<serde_json::Value>,
     /// Explicit scope supplied by a semantic handoff, independent of SQL references.
@@ -257,8 +261,13 @@ impl SemanticGraph {
 
         self.index_model_metrics(&model);
 
-        self.models.insert(name, model);
-        self.rebuild_adjacency();
+        self.models.insert(name.clone(), model);
+        if let Err(error) = self.rebuild_adjacency() {
+            self.models.remove(&name);
+            self.rebuild_model_metric_index();
+            self.rebuild_adjacency()?;
+            return Err(error);
+        }
         Ok(())
     }
 
@@ -267,9 +276,18 @@ impl SemanticGraph {
         let name = model.name.clone();
 
         Self::validate_model(&model)?;
-        self.models.insert(name, model);
+        let previous = self.models.insert(name.clone(), model);
         self.rebuild_model_metric_index();
-        self.rebuild_adjacency();
+        if let Err(error) = self.rebuild_adjacency() {
+            if let Some(previous) = previous {
+                self.models.insert(name, previous);
+            } else {
+                self.models.remove(&name);
+            }
+            self.rebuild_model_metric_index();
+            self.rebuild_adjacency()?;
+            return Err(error);
+        }
         Ok(())
     }
 
@@ -303,7 +321,37 @@ impl SemanticGraph {
 
     /// Get a model by name
     pub fn get_model(&self, name: &str) -> Option<&Model> {
-        self.models.get(name)
+        self.models
+            .get(self.role_models.get(name).map_or(name, String::as_str))
+    }
+
+    /// Canonical declarations and independently addressable role instances.
+    pub fn model_instances(&self) -> impl Iterator<Item = &str> {
+        self.models
+            .keys()
+            .chain(self.role_models.keys())
+            .map(String::as_str)
+    }
+
+    pub fn role_root_owner(&self, instance: &str) -> Option<&str> {
+        let mut owner = self.role_owners.get(instance)?;
+        while let Some(parent) = self.role_owners.get(owner) {
+            owner = parent;
+        }
+        Some(owner)
+    }
+
+    pub fn relationship_target_instance(
+        &self,
+        source: &str,
+        relationship: &crate::core::Relationship,
+    ) -> Option<&str> {
+        if !relationship.active {
+            return None;
+        }
+        self.relationship_instances
+            .get(&(source.to_string(), relationship.name.clone()))
+            .map(String::as_str)
     }
 
     /// Get all models
@@ -523,18 +571,110 @@ impl SemanticGraph {
         &mut self.metadata
     }
 
-    /// Rebuild the adjacency list from model relationships
-    fn rebuild_adjacency(&mut self) {
+    /// Register separate SQL instances for role relationships and nested paths.
+    fn rebuild_role_instances(&mut self) -> Result<Vec<(String, String)>> {
+        let mut names: Vec<String> = self.models.keys().cloned().collect();
+        names.sort();
+        let mut counts = HashMap::<String, usize>::new();
+        for model in self.models.values() {
+            for rel in &model.relationships {
+                if rel.active
+                    && rel.target_model.is_some()
+                    && self.models.contains_key(rel.related_model())
+                {
+                    *counts.entry(rel.name.clone()).or_default() += 1;
+                }
+            }
+        }
+        if !counts.is_empty() && names.iter().any(|name| name.contains('$')) {
+            return Err(SidemanticError::Validation(
+                "Model names cannot contain '$' when relationship roles are used".into(),
+            ));
+        }
+        let mut roles = HashMap::new();
+        let mut owners = HashMap::new();
+        let mut relationships = HashMap::new();
+        let mut instances: Vec<(String, String)> = names
+            .iter()
+            .map(|name| (name.clone(), name.clone()))
+            .collect();
+        let mut pending: VecDeque<(String, String, usize)> = names
+            .into_iter()
+            .map(|name| (name.clone(), name, 0))
+            .collect();
+        while let Some((instance, canonical, depth)) = pending.pop_front() {
+            if depth >= self.models.len() {
+                continue;
+            }
+            let model = &self.models[&canonical];
+            for rel in &model.relationships {
+                if !rel.active || !self.models.contains_key(rel.related_model()) {
+                    continue;
+                }
+                let is_role = depth > 0 || rel.target_model.is_some();
+                let target = if depth > 0 || (rel.target_model.is_some() && counts[&rel.name] > 1) {
+                    format!("{instance}${}", rel.name)
+                } else if rel.target_model.is_some() {
+                    rel.name.clone()
+                } else {
+                    rel.related_model().to_string()
+                };
+                if is_role {
+                    if rel.r#type == RelationshipType::ManyToMany {
+                        return Err(SidemanticError::UnsupportedSemanticFeatures {
+                            capabilities: vec!["relationship.roles.many_to_many".into()],
+                        });
+                    }
+                    if self.models.contains_key(&target) {
+                        return Err(SidemanticError::Validation(format!(
+                            "Relationship role instance '{target}' collides with canonical model '{target}'"
+                        )));
+                    }
+                    if relationships.contains_key(&(instance.clone(), rel.name.clone()))
+                        || roles.contains_key(&target)
+                    {
+                        return Err(SidemanticError::Validation(format!(
+                            "Model '{instance}' declares relationship role '{}' more than once",
+                            rel.name
+                        )));
+                    }
+                    roles.insert(target.clone(), rel.related_model().to_string());
+                    owners.insert(target.clone(), instance.clone());
+                    instances.push((target.clone(), rel.related_model().to_string()));
+                    pending.push_back((target.clone(), rel.related_model().to_string(), depth + 1));
+                }
+                relationships.insert((instance.clone(), rel.name.clone()), target);
+            }
+        }
+        self.role_models = roles;
+        self.role_owners = owners;
+        self.relationship_instances = relationships;
+        Ok(instances)
+    }
+
+    /// Rebuild the adjacency list from model relationships.
+    fn rebuild_adjacency(&mut self) -> Result<()> {
+        let instances = self.rebuild_role_instances()?;
         self.adjacency.clear();
 
-        for model in self.models.values() {
-            self.adjacency.entry(model.name.clone()).or_default();
+        for (instance, canonical) in instances {
+            let model = &self.models[&canonical];
+            self.adjacency.entry(instance.clone()).or_default();
 
             for rel in &model.relationships {
+                if !rel.active {
+                    continue;
+                }
+                let Some(related_instance) = self
+                    .relationship_instances
+                    .get(&(instance.clone(), rel.name.clone()))
+                else {
+                    continue;
+                };
                 if rel.r#type == RelationshipType::ManyToMany {
                     if let Some(through_name) = &rel.through {
                         let through_model_exists = self.models.contains_key(through_name);
-                        let target_model_exists = self.models.contains_key(&rel.name);
+                        let target_model_exists = self.models.contains_key(rel.related_model());
                         if !through_model_exists || !target_model_exists {
                             continue;
                         }
@@ -557,7 +697,7 @@ impl SemanticGraph {
                                 rel.primary_key_columns()
                             } else {
                                 self.models
-                                    .get(&rel.name)
+                                    .get(rel.related_model())
                                     .map(|target_model| target_model.primary_keys())
                                     .unwrap_or_else(|| vec!["id".to_string()])
                             };
@@ -568,7 +708,7 @@ impl SemanticGraph {
                         };
 
                         // source -> through (one_to_many)
-                        self.adjacency.entry(model.name.clone()).or_default().push((
+                        self.adjacency.entry(instance.clone()).or_default().push((
                             through_name.clone(),
                             source_pk.clone(),
                             source_fks.clone(),
@@ -581,7 +721,7 @@ impl SemanticGraph {
                             .entry(through_name.clone())
                             .or_default()
                             .push((
-                                model.name.clone(),
+                                instance.clone(),
                                 source_fks,
                                 source_pk,
                                 RelationshipType::ManyToOne,
@@ -594,7 +734,7 @@ impl SemanticGraph {
                             .entry(through_name.clone())
                             .or_default()
                             .push((
-                                rel.name.clone(),
+                                related_instance.clone(),
                                 target_fks.clone(),
                                 target_pk.clone(),
                                 RelationshipType::ManyToOne,
@@ -602,14 +742,17 @@ impl SemanticGraph {
                                 rel.edge_id.clone(),
                             ));
                         // target -> through (one_to_many)
-                        self.adjacency.entry(rel.name.clone()).or_default().push((
-                            through_name.clone(),
-                            target_pk,
-                            target_fks,
-                            RelationshipType::OneToMany,
-                            None,
-                            rel.edge_id.clone(),
-                        ));
+                        self.adjacency
+                            .entry(related_instance.clone())
+                            .or_default()
+                            .push((
+                                through_name.clone(),
+                                target_pk,
+                                target_fks,
+                                RelationshipType::OneToMany,
+                                None,
+                                rel.edge_id.clone(),
+                            ));
                         continue;
                     }
                 }
@@ -617,14 +760,26 @@ impl SemanticGraph {
                 let fk_keys = rel.foreign_key_columns();
                 let pk_keys = if rel.primary_key.is_some() || rel.primary_key_columns.is_some() {
                     rel.primary_key_columns()
+                } else if (instance != canonical || rel.target_model.is_some())
+                    && matches!(
+                        rel.r#type,
+                        RelationshipType::OneToMany | RelationshipType::OneToOne
+                    )
+                {
+                    model.primary_keys()
                 } else {
                     self.models
-                        .get(&rel.name)
+                        .get(rel.related_model())
                         .map(|target_model| target_model.primary_keys())
                         .unwrap_or_else(|| vec!["id".to_string()])
                 };
 
                 let (from_keys, to_keys) = match rel.r#type {
+                    RelationshipType::OneToOne
+                        if instance != canonical || rel.target_model.is_some() =>
+                    {
+                        (pk_keys.clone(), fk_keys.clone())
+                    }
                     RelationshipType::ManyToOne | RelationshipType::OneToOne => {
                         (fk_keys.clone(), pk_keys.clone())
                     }
@@ -633,8 +788,8 @@ impl SemanticGraph {
                     }
                 };
 
-                self.adjacency.entry(model.name.clone()).or_default().push((
-                    rel.name.clone(),
+                self.adjacency.entry(instance.clone()).or_default().push((
+                    related_instance.clone(),
                     from_keys.clone(),
                     to_keys.clone(),
                     rel.r#type.clone(),
@@ -645,6 +800,15 @@ impl SemanticGraph {
 
             // Add reverse edges for relationships
             for rel in &model.relationships {
+                if !rel.active {
+                    continue;
+                }
+                let Some(related_instance) = self
+                    .relationship_instances
+                    .get(&(instance.clone(), rel.name.clone()))
+                else {
+                    continue;
+                };
                 if rel.r#type == RelationshipType::ManyToMany && rel.through.is_some() {
                     continue;
                 }
@@ -652,11 +816,15 @@ impl SemanticGraph {
                 // If the target model already declares an explicit reverse relationship,
                 // don't synthesize another reverse edge. This avoids conflicting
                 // FK/PK directions when both sides are configured.
-                if self
-                    .models
-                    .get(&rel.name)
-                    .and_then(|target| target.get_relationship(&model.name))
-                    .is_some()
+                if instance == canonical
+                    && rel.target_model.is_none()
+                    && self.models.get(rel.related_model()).is_some_and(|target| {
+                        target.relationships.iter().any(|reverse| {
+                            reverse.active
+                                && reverse.target_model.is_none()
+                                && reverse.related_model() == canonical
+                        })
+                    })
                 {
                     continue;
                 }
@@ -678,14 +846,26 @@ impl SemanticGraph {
                 let fk_keys = rel.foreign_key_columns();
                 let pk_keys = if rel.primary_key.is_some() || rel.primary_key_columns.is_some() {
                     rel.primary_key_columns()
+                } else if (instance != canonical || rel.target_model.is_some())
+                    && matches!(
+                        rel.r#type,
+                        RelationshipType::OneToMany | RelationshipType::OneToOne
+                    )
+                {
+                    model.primary_keys()
                 } else {
                     self.models
-                        .get(&rel.name)
+                        .get(rel.related_model())
                         .map(|target_model| target_model.primary_keys())
                         .unwrap_or_else(|| vec!["id".to_string()])
                 };
 
                 let (reverse_from_keys, reverse_to_keys) = match rel.r#type {
+                    RelationshipType::OneToOne
+                        if instance != canonical || rel.target_model.is_some() =>
+                    {
+                        (fk_keys.clone(), pk_keys.clone())
+                    }
                     RelationshipType::ManyToOne | RelationshipType::OneToOne => {
                         (pk_keys.clone(), fk_keys.clone())
                     }
@@ -694,74 +874,122 @@ impl SemanticGraph {
                     }
                 };
 
-                self.adjacency.entry(rel.name.clone()).or_default().push((
-                    model.name.clone(),
-                    reverse_from_keys,
-                    reverse_to_keys,
-                    reverse_type,
-                    reverse_sql,
-                    rel.edge_id.clone(),
-                ));
+                self.adjacency
+                    .entry(related_instance.clone())
+                    .or_default()
+                    .push((
+                        instance.clone(),
+                        reverse_from_keys,
+                        reverse_to_keys,
+                        reverse_type,
+                        reverse_sql,
+                        rel.edge_id.clone(),
+                    ));
             }
         }
+        Ok(())
     }
 
-    /// Find the shortest join path between two models using BFS
+    /// Find a unique shortest join path, rejecting distinct equal-length routes.
     pub fn find_join_path(&self, from: &str, to: &str) -> Result<JoinPath> {
+        self.find_join_path_with_context(from, to, None)
+    }
+
+    pub fn find_join_path_with_context(
+        &self,
+        from: &str,
+        to: &str,
+        query_models: Option<&HashSet<String>>,
+    ) -> Result<JoinPath> {
+        for name in [from, to] {
+            if self.get_model(name).is_none() {
+                let available: Vec<&str> = self.models.keys().map(String::as_str).collect();
+                return Err(SidemanticError::model_not_found(name, &available));
+            }
+        }
         if from == to {
             return Ok(JoinPath { steps: Vec::new() });
         }
 
-        if !self.models.contains_key(from) {
-            let available: Vec<&str> = self.models.keys().map(|s| s.as_str()).collect();
-            return Err(SidemanticError::model_not_found(from, &available));
-        }
-        if !self.models.contains_key(to) {
-            let available: Vec<&str> = self.models.keys().map(|s| s.as_str()).collect();
-            return Err(SidemanticError::model_not_found(to, &available));
-        }
-
-        // BFS to find shortest path
-        let mut visited: HashSet<String> = HashSet::new();
-        let mut queue: VecDeque<(String, Vec<JoinStep>)> = VecDeque::new();
-
-        visited.insert(from.to_string());
-        queue.push_back((from.to_string(), Vec::new()));
-
-        while let Some((current, path)) = queue.pop_front() {
-            if let Some(edges) = self.adjacency.get(&current) {
-                for (target, from_keys, to_keys, rel_type, custom_sql, edge_id) in edges {
-                    if !visited.contains(target) {
-                        let mut new_path = path.clone();
-                        let from_key = from_keys.first().cloned().unwrap_or_default();
-                        let to_key = to_keys.first().cloned().unwrap_or_default();
-                        new_path.push(JoinStep {
-                            from_model: current.clone(),
-                            to_model: target.clone(),
-                            from_key,
-                            to_key,
-                            from_keys: from_keys.clone(),
-                            to_keys: to_keys.clone(),
-                            relationship_type: rel_type.clone(),
-                            edge_id: edge_id.clone(),
-                            custom_condition: custom_sql.clone(),
-                        });
-
-                        if target == to {
-                            return Ok(JoinPath { steps: new_path });
-                        }
-
-                        visited.insert(target.clone());
-                        queue.push_back((target.clone(), new_path));
+        let mut queue = VecDeque::from([(
+            from.to_string(),
+            Vec::<JoinStep>::new(),
+            HashSet::from([from.to_string()]),
+        )]);
+        let mut shortest = None;
+        let mut candidates = Vec::<Vec<JoinStep>>::new();
+        while let Some((current, path, visited)) = queue.pop_front() {
+            if shortest.is_some_and(|length| path.len() >= length) {
+                continue;
+            }
+            for (target, from_keys, to_keys, rel_type, custom_sql, edge_id) in
+                self.adjacency.get(&current).into_iter().flatten()
+            {
+                if visited.contains(target) {
+                    continue;
+                }
+                let mut next_path = path.clone();
+                next_path.push(JoinStep {
+                    from_model: current.clone(),
+                    to_model: target.clone(),
+                    from_key: from_keys.first().cloned().unwrap_or_default(),
+                    to_key: to_keys.first().cloned().unwrap_or_default(),
+                    from_keys: from_keys.clone(),
+                    to_keys: to_keys.clone(),
+                    relationship_type: rel_type.clone(),
+                    edge_id: edge_id.clone(),
+                    custom_condition: custom_sql.clone(),
+                });
+                if target == to {
+                    shortest = Some(next_path.len());
+                    let equivalent = |candidate: &Vec<JoinStep>| {
+                        candidate.len() == next_path.len()
+                            && candidate.iter().zip(&next_path).all(|(left, right)| {
+                                left.from_model == right.from_model
+                                    && left.to_model == right.to_model
+                                    && left.relationship_type == right.relationship_type
+                                    && left.edge_id == right.edge_id
+                                    && left.custom_condition.as_deref().map(str::trim)
+                                        == right.custom_condition.as_deref().map(str::trim)
+                                    && (left.custom_condition.is_some()
+                                        || (left.from_keys == right.from_keys
+                                            && left.to_keys == right.to_keys))
+                            })
+                    };
+                    if !candidates.iter().any(equivalent) {
+                        candidates.push(next_path);
                     }
+                } else {
+                    let mut next_visited = visited.clone();
+                    next_visited.insert(target.clone());
+                    queue.push_back((target.clone(), next_path, next_visited));
                 }
             }
         }
-
-        Err(SidemanticError::NoJoinPath {
-            from: from.to_string(),
-            to: to.to_string(),
-        })
+        if let Some(context) = query_models {
+            let score = |path: &Vec<JoinStep>| {
+                path.iter()
+                    .take(path.len().saturating_sub(1))
+                    .filter(|step| !context.contains(&step.to_model))
+                    .count()
+            };
+            if let Some(best) = candidates.iter().map(score).min() {
+                candidates.retain(|path| score(path) == best);
+            }
+        }
+        match candidates.len() {
+            0 => Err(SidemanticError::NoJoinPath {
+                from: from.into(),
+                to: to.into(),
+            }),
+            1 => Ok(JoinPath {
+                steps: candidates.remove(0),
+            }),
+            _ => Err(SidemanticError::AmbiguousJoinPath {
+                from: from.into(),
+                to: to.into(),
+            }),
+        }
     }
 
     /// Parse a qualified reference (model.field) and return (model_name, field_name, granularity)
@@ -790,7 +1018,7 @@ impl SemanticGraph {
             };
 
         // Verify model exists
-        if !self.models.contains_key(model_name) {
+        if self.get_model(model_name).is_none() {
             let available: Vec<&str> = self.models.keys().map(|s| s.as_str()).collect();
             return Err(SidemanticError::model_not_found(model_name, &available));
         }
@@ -806,6 +1034,293 @@ mod tests {
         ComparisonType, Dimension, Metric, PreAggregation, PreAggregationType, Relationship,
     };
     use crate::core::parameter::{Parameter, ParameterType};
+
+    fn role(name: &str, target: &str, key: &str) -> Relationship {
+        let mut relationship = Relationship::many_to_one(name).with_keys(key, "id");
+        relationship.target_model = Some(target.into());
+        relationship.edge_id = Some(format!("edge_{name}"));
+        relationship
+    }
+
+    #[test]
+    fn role_instances_resolve_canonical_models_and_preserve_keys() {
+        let mut graph = SemanticGraph::new();
+        graph
+            .add_model(
+                Model::new("flights", "id")
+                    .with_table("flights")
+                    .with_relationship(role("origin", "airports", "origin_id"))
+                    .with_relationship(role("destination", "airports", "destination_id")),
+            )
+            .unwrap();
+        graph
+            .add_model(
+                Model::new("airports", "id")
+                    .with_table("airports")
+                    .with_dimension(Dimension::categorical("city")),
+            )
+            .unwrap();
+        assert_eq!(graph.models().count(), 2);
+        assert_eq!(graph.get_model("origin").unwrap().name, "airports");
+        assert_eq!(
+            graph.parse_reference("destination.city").unwrap().0,
+            "destination"
+        );
+        for (alias, key) in [("origin", "origin_id"), ("destination", "destination_id")] {
+            let path = graph.find_join_path("flights", alias).unwrap();
+            assert_eq!(path.steps[0].to_model, alias);
+            assert_eq!(path.steps[0].from_key, key);
+            assert_eq!(path.steps[0].edge_id, Some(format!("edge_{alias}")));
+            assert_eq!(graph.role_root_owner(alias), Some("flights"));
+            let reverse = graph.find_join_path(alias, "flights").unwrap();
+            assert_eq!(reverse.steps[0].to_key, key);
+            assert!(reverse.has_fan_out());
+        }
+        assert!(matches!(
+            graph.find_join_path("flights", "airports"),
+            Err(SidemanticError::NoJoinPath { .. })
+        ));
+    }
+
+    #[test]
+    fn nested_and_repeated_roles_use_scoped_instances() {
+        let mut graph = SemanticGraph::new();
+        for owner in ["flights", "bookings"] {
+            graph
+                .add_model(
+                    Model::new(owner, "id")
+                        .with_table(owner)
+                        .with_relationship(role("airport", "airports", "airport_id")),
+                )
+                .unwrap();
+        }
+        graph
+            .add_model(
+                Model::new("airports", "id")
+                    .with_table("airports")
+                    .with_relationship(role("country", "countries", "country_id")),
+            )
+            .unwrap();
+        graph
+            .add_model(
+                Model::new("countries", "id")
+                    .with_table("countries")
+                    .with_dimension(Dimension::categorical("label")),
+            )
+            .unwrap();
+        assert!(graph.get_model("airport").is_none());
+        for owner in ["flights", "bookings"] {
+            let nested = format!("{owner}$airport$country");
+            assert_eq!(graph.get_model(&nested).unwrap().name, "countries");
+            assert_eq!(graph.role_root_owner(&nested), Some(owner));
+            assert_eq!(graph.find_join_path(owner, &nested).unwrap().steps.len(), 2);
+        }
+    }
+
+    #[test]
+    fn inactive_and_unresolved_roles_do_not_change_active_alias() {
+        let mut graph = SemanticGraph::new();
+        let mut inactive = role("airport", "airports", "archived_id");
+        inactive.active = false;
+        graph
+            .add_model(
+                Model::new("flights", "id")
+                    .with_table("flights")
+                    .with_relationship(role("airport", "airports", "airport_id"))
+                    .with_relationship(inactive),
+            )
+            .unwrap();
+        graph
+            .add_model(
+                Model::new("archives", "id")
+                    .with_table("archives")
+                    .with_relationship(role("airport", "missing", "airport_id")),
+            )
+            .unwrap();
+        graph
+            .add_model(Model::new("airports", "id").with_table("airports"))
+            .unwrap();
+        assert_eq!(
+            graph.find_join_path("flights", "airport").unwrap().steps[0].from_key,
+            "airport_id"
+        );
+        assert!(graph.get_model("flights$airport").is_none());
+        let mut inactive = Relationship::many_to_one("airports");
+        inactive.active = false;
+        graph
+            .add_model(
+                Model::new("inactive", "id")
+                    .with_table("inactive")
+                    .with_relationship(inactive),
+            )
+            .unwrap();
+        assert!(matches!(
+            graph.find_join_path("inactive", "airports"),
+            Err(SidemanticError::NoJoinPath { .. })
+        ));
+    }
+
+    #[test]
+    fn many_to_many_roles_fail_with_a_specific_capability() {
+        let mut graph = SemanticGraph::new();
+        graph
+            .add_model(Model::new("airports", "id").with_table("airports"))
+            .unwrap();
+        let mut relationship = role("airport", "airports", "airport_id");
+        relationship.r#type = RelationshipType::ManyToMany;
+        let result = graph.add_model(
+            Model::new("flights", "id")
+                .with_table("flights")
+                .with_relationship(relationship),
+        );
+        assert!(
+            matches!(result, Err(SidemanticError::UnsupportedSemanticFeatures { capabilities }) if capabilities == vec!["relationship.roles.many_to_many"])
+        );
+    }
+
+    #[test]
+    fn role_one_to_many_and_one_to_one_use_owner_primary_key() {
+        for kind in [RelationshipType::OneToMany, RelationshipType::OneToOne] {
+            let mut graph = SemanticGraph::new();
+            let mut relationship = Relationship::new("child");
+            relationship.target_model = Some("children".into());
+            relationship.r#type = kind;
+            relationship.foreign_key_columns = Some(vec!["owner_tenant".into(), "owner_id".into()]);
+            graph
+                .add_model(
+                    Model::new("parents", "tenant_id")
+                        .with_table("parents")
+                        .with_primary_key_columns(vec!["tenant_id".into(), "parent_id".into()])
+                        .with_relationship(relationship),
+                )
+                .unwrap();
+            graph
+                .add_model(Model::new("children", "child_id").with_table("children"))
+                .unwrap();
+            let path = graph.find_join_path("parents", "child").unwrap();
+            assert_eq!(path.steps[0].from_keys, vec!["tenant_id", "parent_id"]);
+            assert_eq!(path.steps[0].to_keys, vec!["owner_tenant", "owner_id"]);
+            let reverse = graph.find_join_path("child", "parents").unwrap();
+            assert_eq!(reverse.steps[0].to_keys, vec!["tenant_id", "parent_id"]);
+        }
+    }
+
+    #[test]
+    fn invalid_role_declarations_fail_without_corrupting_graph() {
+        let mut graph = SemanticGraph::new();
+        graph
+            .add_model(Model::new("airports", "id").with_table("airports"))
+            .unwrap();
+        for relationships in [
+            vec![role("airports", "airports", "airport_id")],
+            vec![
+                role("airport", "airports", "origin_id"),
+                role("airport", "airports", "destination_id"),
+            ],
+        ] {
+            let mut model = Model::new("flights", "id").with_table("flights");
+            model.relationships = relationships;
+            assert!(graph.add_model(model).is_err());
+            assert!(graph.get_model("flights").is_none());
+            assert_eq!(graph.models().count(), 1);
+        }
+        graph
+            .add_model(Model::new("reserved$name", "id").with_table("flights"))
+            .unwrap();
+        assert!(graph
+            .add_model(
+                Model::new("flights", "id")
+                    .with_table("flights")
+                    .with_relationship(role("airport", "airports", "airport_id"))
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn shortest_paths_reject_ambiguity_and_use_query_context() {
+        let mut graph = SemanticGraph::new();
+        graph
+            .add_model(
+                Model::new("a", "id")
+                    .with_table("a")
+                    .with_relationship(Relationship::many_to_one("b"))
+                    .with_relationship(Relationship::many_to_one("c")),
+            )
+            .unwrap();
+        for name in ["b", "c"] {
+            graph
+                .add_model(
+                    Model::new(name, "id")
+                        .with_table(name)
+                        .with_relationship(Relationship::many_to_one("d")),
+                )
+                .unwrap();
+        }
+        graph
+            .add_model(Model::new("d", "id").with_table("d"))
+            .unwrap();
+        assert!(matches!(
+            graph.find_join_path("a", "d"),
+            Err(SidemanticError::AmbiguousJoinPath { .. })
+        ));
+        let context = HashSet::from(["a".into(), "b".into(), "d".into()]);
+        let path = graph
+            .find_join_path_with_context("a", "d", Some(&context))
+            .unwrap();
+        assert_eq!(path.steps[0].to_model, "b");
+    }
+
+    #[test]
+    fn duplicate_edges_deduplicate_but_distinct_edge_ids_remain_ambiguous() {
+        let mut graph = SemanticGraph::new();
+        let first = Relationship::many_to_one("b")
+            .with_condition("{from}.x = {to}.x AND {from}.y = {to}.y");
+        let second = first.clone();
+        graph
+            .add_model(
+                Model::new("a", "id")
+                    .with_table("a")
+                    .with_relationship(first)
+                    .with_relationship(second),
+            )
+            .unwrap();
+        graph
+            .add_model(Model::new("b", "id").with_table("b"))
+            .unwrap();
+        assert_eq!(graph.find_join_path("a", "b").unwrap().steps.len(), 1);
+        let mut model = graph.get_model("a").unwrap().clone();
+        model.relationships[1].edge_id = Some("different".into());
+        graph.replace_model(model).unwrap();
+        assert!(matches!(
+            graph.find_join_path("a", "b"),
+            Err(SidemanticError::AmbiguousJoinPath { .. })
+        ));
+    }
+
+    #[test]
+    fn custom_join_literals_are_never_normalized_into_equivalent_paths() {
+        for (left, right) in [
+            ("{from}.label = 'a b'", "{from}.label = 'ab'"),
+            ("{from}.label = 'x AND y'", "{from}.label = 'y AND x'"),
+        ] {
+            let mut graph = SemanticGraph::new();
+            graph
+                .add_model(
+                    Model::new("a", "id")
+                        .with_table("a")
+                        .with_relationship(Relationship::many_to_one("b").with_condition(left))
+                        .with_relationship(Relationship::many_to_one("b").with_condition(right)),
+                )
+                .unwrap();
+            graph
+                .add_model(Model::new("b", "id").with_table("b"))
+                .unwrap();
+            assert!(matches!(
+                graph.find_join_path("a", "b"),
+                Err(SidemanticError::AmbiguousJoinPath { .. })
+            ));
+        }
+    }
 
     fn create_test_graph() -> SemanticGraph {
         let mut graph = SemanticGraph::new();

@@ -1668,6 +1668,20 @@ class SQLGenerator:
                 for model_name in self._extract_models_from_sql(metric.sql):
                     add_model(model_name)
 
+        # Role dimensions describe rows of their declaring model, not the full
+        # population of the reused lookup table. Anchor at that model when it
+        # also owns the selected measures; an explicit explore base still wins.
+        aggregate_models = self._find_aggregate_metric_models(metrics)
+        if len(aggregate_models) == 1:
+            metric_model = next(iter(aggregate_models))
+            for dim in dimensions:
+                owner = self.graph._role_owners.get(dim.split(".")[0])
+                while owner in self.graph._role_owners:
+                    owner = self.graph._role_owners[owner]
+                if owner == metric_model:
+                    add_model(metric_model)
+                    break
+
         # Collect from dimensions first (since they define the grain)
         for dim in dimensions:
             # Remove granularity suffix if present

@@ -51,15 +51,23 @@ output dialect is not evidence that its warehouse has passed live execution
 tests.
 
 The structured compiler supports basic aggregations, filtered measures, declared
-keyed joins, complete aggregate expressions, and graph metric binding.
+keyed joins, complete aggregate expressions, and graph metric binding. It also
+supports:
 
-Configured rollups can be bypassed for raw queries. Policy-bearing requests
-remain unsupported in this layer. Rollup routing through this boundary is not
-yet qualified. The legacy Rust materialization helper
+- Separate relationship role instances, nested and scoped role names, inactive
+  edge exclusion, and rejection of ambiguous join paths. Explicit adapter join
+  kinds retain their direction and row-preservation behavior.
+- Model access policies, SQL-literal-safe user attributes, row policies,
+  invariant filters, and opt-in field visibility. Restrictions reach the source
+  CTEs of participating source queries; temporal child-query support is added
+  with the temporal compiler layer.
+
+Configured rollups can be bypassed for raw queries. Active row policies always
+bypass rollups, including when routing was requested. Rollup routing through
+this boundary is not yet qualified. The legacy Rust materialization helper
 rejects models with invariant filters instead of discarding those filters.
 
-This layer does not yet qualify relationship roles, inactive edges, model security
-policies and invariant filters; cross-model ratio and derived calculations over
+This layer does not yet qualify cross-model ratio and derived calculations over
 independent aggregate grains; advanced period windows and calendar comparison metrics.
 These feature families must remain unsupported until their compiler and result
 contracts are introduced in the later layers.

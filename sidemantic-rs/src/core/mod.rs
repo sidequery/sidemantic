@@ -5,6 +5,7 @@ mod graph;
 mod inheritance;
 mod model;
 mod parameter;
+mod policy;
 mod relative_date;
 mod segment;
 pub mod symmetric_agg;
@@ -23,6 +24,7 @@ pub use model::{
     RefreshKey, Relationship, RelationshipType, TimeGrain,
 };
 pub use parameter::{Parameter, ParameterType};
+pub use policy::{AccessRule, PolicyError, PreparedPolicies, SecurityPolicy};
 pub use relative_date::RelativeDate;
 pub use segment::Segment;
 pub use symmetric_agg::{

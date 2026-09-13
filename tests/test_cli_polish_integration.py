@@ -139,7 +139,7 @@ def test_info_and_validation_route_human_reports_through_pager_seam(tmp_path: Pa
 def test_explain_routes_human_output_but_not_json_through_pager_seam(tmp_path: Path, monkeypatch) -> None:
     reports: list[str] = []
     explanation = SimpleNamespace(to_dict=lambda: {"rewritten_sql": "SELECT 1"})
-    layer = SimpleNamespace(explain_sql=lambda *_args, **_kwargs: explanation)
+    layer = SimpleNamespace(explain_sql=lambda *_args, **_kwargs: explanation, last_engine_selection=None)
     monkeypatch.setattr(cli_module, "_load_query_layer", lambda *_args, **_kwargs: layer)
     monkeypatch.setattr(
         "sidemantic.cli_contract.emit_long_output",

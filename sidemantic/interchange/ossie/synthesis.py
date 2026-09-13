@@ -13,6 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import sqlglot
+from pydantic import BaseModel
 from sqlglot import expressions as exp
 
 from sidemantic.core.metric import Metric
@@ -227,6 +228,90 @@ def _unsupported_metric_options(metric: Metric) -> list[str]:
     return unsupported
 
 
+def _unrepresented_state_diagnostics(graph: SemanticGraph) -> list[OssieDiagnostic]:
+    """Fail closed for populated fields outside the core projection's contract.
+
+    List handled fields rather than omitted ones so new native options cannot
+    silently become portable. Existing projection checks still validate the
+    supported combinations of these fields.
+    """
+    diagnostics: list[OssieDiagnostic] = []
+
+    def check(item: BaseModel, handled: set[str], location: str) -> None:
+        omitted = [
+            name
+            for name, field in type(item).model_fields.items()
+            if name not in handled and getattr(item, name) != field.get_default(call_default_factory=True)
+        ]
+        if omitted:
+            diagnostics.append(
+                _error(
+                    "ossie.synthesis.native_state_unrepresented",
+                    f"{location} has native state not represented in Ossie core: {', '.join(omitted)}.",
+                )
+            )
+
+    for model in graph.models.values():
+        # Lowering adds these source-location annotations to every core model.
+        # They describe the input document, not native state to synthesize.
+        source_annotations = (
+            {"metadata"} if not set(model.metadata or {}) - {"ossie_source_kind", "ossie_pointer"} else set()
+        )
+        check(
+            model,
+            {
+                "name",
+                "table",
+                "sql",
+                "description",
+                "primary_key",
+                "unique_keys",
+                "dimensions",
+                "metrics",
+                "relationships",
+            }
+            | source_annotations,
+            f"Model {model.name!r}",
+        )
+        for dimension in model.dimensions:
+            check(
+                dimension,
+                {"name", "type", "sql", "logical_data_type", "declared_is_time", "description", "label", "public"},
+                f"Field {model.name}.{dimension.name}",
+            )
+        for relationship in model.relationships:
+            check(
+                relationship,
+                {"name", "edge_id", "type", "foreign_key", "primary_key", "target_model", "sql", "active"},
+                f"Relationship {model.name}.{relationship.name}",
+            )
+    for metric in [*graph.metrics.values(), *(metric for model in graph.models.values() for metric in model.metrics)]:
+        check(
+            metric,
+            {
+                "name",
+                "type",
+                "agg",
+                "sql",
+                "sql_is_complete",
+                "numerator",
+                "denominator",
+                "filters",
+                "fill_nulls_with",
+                "logical_data_type",
+                "description",
+                "public",
+            },
+            f"Metric {metric.name!r}",
+        )
+    for name in ("parameters", "table_calculations", "explores", "saved_queries", "metadata", "import_warnings"):
+        if getattr(graph, name):
+            diagnostics.append(
+                _error("ossie.synthesis.native_state_unrepresented", f"Graph {name} is not represented in Ossie core.")
+            )
+    return diagnostics
+
+
 def _runtime_expression_diagnostics(graph: SemanticGraph, dialect: str) -> list[OssieDiagnostic]:
     """Keep native modifiers from masking otherwise invalid SQL declarations."""
     diagnostics: list[OssieDiagnostic] = []
@@ -241,6 +326,9 @@ def _runtime_expression_diagnostics(graph: SemanticGraph, dialect: str) -> list[
                     )
                 )
             expressions.append((f"{model.name}.{dimension.name}", dimension.sql_expr))
+            if dimension.window:
+                expressions.append((f"{model.name}.{dimension.name} window", dimension.window))
+        expressions.extend((f"{model.name}.{segment.name}", segment.sql) for segment in model.segments)
     metrics = [*graph.metrics.values(), *(metric for model in graph.models.values() for metric in model.metrics)]
     for metric in metrics:
         if metric.has_untranslated_dax:
@@ -617,7 +705,9 @@ def synthesize_ossie_document(
         semantic_model["metrics"] = metrics
     data = {"version": schema_version, "semantic_model": [semantic_model]}
 
+    diagnostics.extend(_unrepresented_state_diagnostics(graph))
     extension_codes = {
+        "ossie.synthesis.native_state_unrepresented",
         "ossie.synthesis.model_semantics_unsupported",
         "ossie.synthesis.field_semantics_unsupported",
         "ossie.synthesis.metric_semantics_unsupported",

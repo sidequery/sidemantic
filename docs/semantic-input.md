@@ -54,6 +54,8 @@ The structured compiler supports basic aggregations, filtered measures, declared
 keyed joins, complete aggregate expressions, and graph metric binding. It also
 supports:
 
+- Independent source aggregation for cross-model ratios and derived metrics,
+  including source filters, aggregate filters, and grouped results.
 - Separate relationship role instances, nested and scoped role names, inactive
   edge exclusion, and rejection of ambiguous join paths. Explicit adapter join
   kinds retain their direction and row-preservation behavior.
@@ -67,8 +69,7 @@ bypass rollups, including when routing was requested. Rollup routing through
 this boundary is not yet qualified. The legacy Rust materialization helper
 rejects models with invariant filters instead of discarding those filters.
 
-This layer does not yet qualify cross-model ratio and derived calculations over
-independent aggregate grains; advanced period windows and calendar comparison metrics.
+This layer does not yet qualify advanced period windows and calendar comparison metrics.
 These feature families must remain unsupported until their compiler and result
 contracts are introduced in the later layers.
 

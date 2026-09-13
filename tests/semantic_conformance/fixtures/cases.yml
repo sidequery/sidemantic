@@ -17,6 +17,38 @@
   error:
     type: QueryValidationError
     match: no primary key
+- name: cross_model_ratio
+  source: native/orders
+  query:
+    metrics:
+    - revenue_per_customer
+  columns:
+  - revenue_per_customer
+  rows:
+  - - 120.0
+- name: local_customer_proxy_uses_customer_grain
+  source: native/orders
+  query:
+    metrics: [orders.customer_proxy]
+    filters: [orders.amount > 40]
+  columns: [customer_proxy]
+  rows: [[2]]
+- name: graph_customer_proxy_uses_customer_grain
+  source: native/orders
+  query:
+    metrics: [proxied_customers]
+    filters: [orders.amount > 40]
+  columns: [proxied_customers]
+  rows: [[2]]
+- name: grouped_customer_proxy_uses_customer_grain
+  source: native/orders
+  query:
+    metrics: [proxied_customers]
+    dimensions: [customers.region]
+    filters: [orders.amount > 40]
+    order_by: [customers.region]
+  columns: [region, proxied_customers]
+  rows: [[EU, 1], [US, 1]]
 - name: restricted_rollup
   source: native/restricted
   query:

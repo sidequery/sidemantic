@@ -407,15 +407,8 @@ fn validate_semantic_dependencies(graph: &SemanticGraph, graph_metrics: &[Metric
         ));
     }
     let mut dependencies: HashMap<String, Vec<String>> = HashMap::new();
-    let mut source_models: HashMap<String, std::collections::HashSet<String>> = HashMap::new();
     for (name, metric, context) in definitions {
         let mut metric_dependencies = Vec::new();
-        let mut sources = std::collections::HashSet::new();
-        if metric.r#type == crate::core::MetricType::Simple {
-            if let Some(owner) = context {
-                sources.insert(owner.to_string());
-            }
-        }
         for expression in [
             metric.sql.as_deref(),
             metric.numerator.as_deref(),
@@ -426,11 +419,6 @@ fn validate_semantic_dependencies(graph: &SemanticGraph, graph_metrics: &[Metric
         {
             for column in crate::core::semantic_column_references(expression)? {
                 let model_name = column.model.as_deref().or(context);
-                if metric.r#type == crate::core::MetricType::Simple || column.aggregate_input {
-                    if let Some(owner) = model_name {
-                        sources.insert(owner.to_string());
-                    }
-                }
                 if let Some(model_name) = model_name {
                     let model = graph
                         .get_model(model_name)
@@ -488,7 +476,6 @@ fn validate_semantic_dependencies(graph: &SemanticGraph, graph_metrics: &[Metric
                 metric_dependencies.push(dependency);
             }
         }
-        source_models.insert(name.clone(), sources);
         dependencies.insert(name, metric_dependencies);
     }
     fn visit(
@@ -516,27 +503,6 @@ fn validate_semantic_dependencies(graph: &SemanticGraph, graph_metrics: &[Metric
     let mut complete = std::collections::HashSet::new();
     for name in dependencies.keys() {
         visit(name, &dependencies, &mut active, &mut complete)?;
-    }
-    // Multi-source calculations require the independent aggregate planner.
-    // Until that planner is enabled, reject them before the legacy join path.
-    for name in dependencies.keys() {
-        let mut pending = vec![name.as_str()];
-        let mut seen = std::collections::HashSet::new();
-        let mut sources = std::collections::HashSet::new();
-        while let Some(dependency) = pending.pop() {
-            if !seen.insert(dependency) {
-                continue;
-            }
-            if let Some(owners) = source_models.get(dependency) {
-                sources.extend(owners.iter());
-            }
-            if let Some(children) = dependencies.get(dependency) {
-                pending.extend(children.iter().map(String::as_str));
-            }
-        }
-        if sources.len() > 1 {
-            return Err(unsupported("aggregation.cross_model"));
-        }
     }
     Ok(())
 }
@@ -1119,6 +1085,23 @@ mod tests {
     }
 
     #[test]
+    fn cross_model_graph_metric_requires_a_declared_join_path() {
+        let mut source = input();
+        source["models"].as_array_mut().unwrap().push(json!({"name":"refunds", "table":"refunds", "metrics":[{"name":"amount", "agg":"sum", "sql":"amount"}]}));
+        source["metrics"] =
+            json!([{"name":"net", "type":"derived", "sql":"orders.revenue - refunds.amount"}]);
+        assert!(matches!(
+            compile_with_semantic_input(&source.to_string(), r#"{"metrics":["net"]}"#),
+            Err(SidemanticError::NoJoinPath { .. })
+        ));
+        source["metric_owners"] = json!({"net":"orders"});
+        assert!(matches!(
+            compile_with_semantic_input(&source.to_string(), r#"{"metrics":["net"]}"#),
+            Err(SidemanticError::NoJoinPath { .. })
+        ));
+    }
+
+    #[test]
     fn computed_primary_key_dimensions_cannot_be_silently_erased() {
         let mut source = input();
         source["models"][0]["primary_key"] = json!(["id"]);
@@ -1260,25 +1243,6 @@ mod tests {
                 .unwrap();
         assert!(sql.contains("orders_cte.amount"), "{sql}");
         assert!(!sql.contains("orders.amount"), "{sql}");
-    }
-    #[test]
-    fn cross_source_calculations_are_explicitly_unsupported() {
-        let mut source = input();
-        source["models"].as_array_mut().unwrap().push(json!({
-            "name":"refunds", "table":"refunds", "primary_key":["id"],
-            "metrics":[{"name":"amount", "agg":"sum", "sql":"amount"}]
-        }));
-        source["models"][0]["metrics"]
-            .as_array_mut()
-            .unwrap()
-            .push(json!({
-                "name":"net", "type":"derived", "sql":"revenue - refunds.amount"
-            }));
-        assert!(matches!(
-            compile_with_semantic_input(&source.to_string(), r#"{"metrics":["orders.net"]}"#),
-            Err(SidemanticError::UnsupportedSemanticFeatures { capabilities })
-                if capabilities == vec!["aggregation.cross_model"]
-        ));
     }
     #[test]
     fn temporal_handoff_metrics_are_explicitly_unsupported() {

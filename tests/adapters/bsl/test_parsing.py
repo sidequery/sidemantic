@@ -1089,6 +1089,8 @@ flights:
         import tempfile
         from pathlib import Path
 
+        import duckdb
+
         from sidemantic.sql.generator import SQLGenerator
 
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
@@ -1130,12 +1132,15 @@ customers:
             sql = SQLGenerator(graph).generate(
                 metrics=["orders.customer_order_ratio"],
                 dimensions=["orders.customer_id"],
+                order_by=["orders.customer_id"],
                 skip_default_time_dimensions=True,
             )
-            assert "customers.(" not in sql
-            assert "JOIN customers_cte" in sql
-            assert "COUNT(customers_cte.count_raw)" in sql
-            assert "COUNT(orders_cte.count_raw)" in sql
+            with duckdb.connect() as connection:
+                connection.execute("create table orders(order_id integer, customer_id integer)")
+                connection.execute("insert into orders values (1, 1), (2, 1), (3, 2)")
+                connection.execute("create table customers(customer_id integer)")
+                connection.execute("insert into customers values (1), (2)")
+                assert connection.execute(sql).fetchall() == [(1, 0.5), (2, 1.0)]
         finally:
             temp_path.unlink(missing_ok=True)
 

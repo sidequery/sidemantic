@@ -1,5 +1,6 @@
 //! SQL generator: compiles semantic queries to SQL
 
+mod aggregate_plan;
 mod join_kind;
 
 use std::collections::{HashMap, HashSet};
@@ -154,6 +155,9 @@ impl<'a> SqlGenerator<'a> {
 
     /// Generate SQL from a semantic query
     pub fn generate(&self, query: &SemanticQuery) -> Result<String> {
+        if let Some(sql) = aggregate_plan::try_generate(self, query)? {
+            return Ok(sql);
+        }
         let effective_dimensions = if query.skip_default_time_dimensions {
             query.dimensions.clone()
         } else {

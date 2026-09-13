@@ -185,3 +185,60 @@ def test_disconnected_computed_model_does_not_block_temporal_query(layer):
         ["day", "revenue", "running"],
         [(date(2026, 1, 1), 3, 3), (date(2026, 1, 2), 4, 7)],
     )
+
+
+def test_cross_role_computed_key_predicate_keeps_role_aliases(layer):
+    layer.graph.models["events"].relationships = [
+        Relationship(name="buyer", target_model="accounts", type="many_to_one", foreign_key="account_id"),
+        Relationship(name="seller", target_model="accounts", type="many_to_one", foreign_key="account_id"),
+    ]
+    result(
+        layer,
+        {
+            "metrics": ["events.amount"],
+            "dimensions": ["buyer.id", "seller.id"],
+            "filters": ["buyer.id = 101 OR seller.id = 201"],
+            "order_by": ["buyer.id"],
+        },
+        ["buyer_id", "seller_id", "amount"],
+        [(101, 101, 7), (201, 201, 17)],
+    )
+
+
+@pytest.mark.parametrize("composite", [False, True])
+def test_omitted_native_relationship_key_does_not_classify_ordinary_id(composite):
+    rust = pytest.importorskip("sidemantic_rs")
+    # YAML host preserves omitted keys, unlike the structured handoff decoder
+    # which resolves them before graph construction.
+    primary = "[tenant, account_key]" if composite else "account_key"
+    foreign = "[tenant, account_ref]" if composite else "account_ref"
+    yaml = f"""
+models:
+  - name: accounts
+    table: ordinary_accounts
+    primary_key: {primary}
+    dimensions:
+      - name: id
+        type: categorical
+        sql: upper(label)
+    metrics:
+      - name: budget
+        agg: sum
+        sql: budget
+  - name: events
+    table: ordinary_events
+    primary_key: event_key
+    relationships:
+      - name: accounts
+        type: many_to_one
+        foreign_key: {foreign}
+"""
+    sql = rust.compile_with_yaml(yaml, "metrics: [accounts.budget]\ndimensions: [accounts.id]")
+    import duckdb
+
+    with duckdb.connect() as connection:
+        connection.execute(
+            "create table ordinary_accounts(tenant integer, account_key integer, label varchar, budget integer)"
+        )
+        connection.execute("insert into ordinary_accounts values (1, 9, 'hello', 12)")
+        assert connection.execute(sql).fetchall() == [("HELLO", 12)]

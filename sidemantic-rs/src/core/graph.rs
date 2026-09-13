@@ -325,6 +325,28 @@ impl SemanticGraph {
             .get(self.role_models.get(name).map_or(name, String::as_str))
     }
 
+    /// Physical key names on resolved join edges for a canonical declaration.
+    pub(crate) fn join_key_names(&self, canonical: &str) -> HashSet<String> {
+        let mut keys = HashSet::new();
+        for (instance, edges) in &self.adjacency {
+            for (target, from_keys, to_keys, _, _, _) in edges {
+                if self
+                    .get_model(instance)
+                    .is_some_and(|model| model.name == canonical)
+                {
+                    keys.extend(from_keys.iter().cloned());
+                }
+                if self
+                    .get_model(target)
+                    .is_some_and(|model| model.name == canonical)
+                {
+                    keys.extend(to_keys.iter().cloned());
+                }
+            }
+        }
+        keys
+    }
+
     /// Canonical declarations and independently addressable role instances.
     pub fn model_instances(&self) -> impl Iterator<Item = &str> {
         self.models

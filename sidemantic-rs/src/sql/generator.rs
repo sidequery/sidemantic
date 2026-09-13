@@ -5119,16 +5119,11 @@ impl<'a> SqlGenerator<'a> {
                     if crate::core::semantic_key_names(self.graph, model).contains(&column.field)
                         && crate::core::is_computed_key(model, &column.field)?
                     {
+                        let alias =
+                            self.model_alias(column.model.as_deref().expect("qualified column"));
                         keys.insert(
                             (column.model, column.field.clone()),
-                            format!(
-                                "({})",
-                                self.key_sql(
-                                    model,
-                                    &column.field,
-                                    Some(&self.model_alias(&model.name))
-                                )?
-                            ),
+                            format!("({})", self.key_sql(model, &column.field, Some(&alias))?),
                         );
                     }
                 }

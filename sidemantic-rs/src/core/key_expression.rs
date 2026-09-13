@@ -118,19 +118,9 @@ pub fn key_expression(
 
 pub fn semantic_key_names(graph: &SemanticGraph, model: &Model) -> HashSet<String> {
     let mut keys: HashSet<_> = model.primary_keys().into_iter().collect();
-    for source in graph.models() {
-        for relationship in &source.relationships {
-            if !relationship.active {
-                continue;
-            }
-            if source.name == model.name {
-                keys.extend(relationship.foreign_key_columns());
-            }
-            if relationship.related_model() == model.name {
-                keys.extend(relationship.primary_key_columns());
-            }
-        }
-    }
+    // Use resolved adjacency so omitted keys, direction, roles and junctions
+    // follow the same contract as the actual joins.
+    keys.extend(graph.join_key_names(&model.name));
     keys
 }
 

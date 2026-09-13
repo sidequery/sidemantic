@@ -309,6 +309,9 @@ Read the API bearer token from a file, or \- for stdin
 \fB\-\-cors\-origin TEXT\fR
 Allowed CORS origin (repeatable)
 .TP
+\fB\-\-trust\-user\-header\fR
+Trust identity headers from an authenticated, header\-sanitizing proxy
+.TP
 \fB\-\-ui, \-\-no\-ui\fR
 Serve the embedded web UI at the root path
 .TP
@@ -624,8 +627,11 @@ Port for HTTP server
 \fB\-\-auth\-token\-file PATH\fR
 Bearer token file required for HTTP MCP
 .TP
+\fB\-\-trust\-user\-header\fR
+Trust identity headers from an authenticated, header\-sanitizing proxy
+.TP
 \fB\-\-user\-attrs\-file PATH\fR
-Path to a JSON user\-attributes object applied to every MCP query
+Path to a JSON user\-attributes object applied to every stdio MCP query
 .TP
 \fB\-\-enforce\-visibility\fR
 Hide and reject fields declared public: false

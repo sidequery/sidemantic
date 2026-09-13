@@ -95,7 +95,7 @@ Parameter values are emitted as SQL literals using the query dialect, including
 inside Jinja conditionals and loops. Control-flow comparisons still use the raw
 typed parameter values.
 
-### HTTP (`sidemantic server api`)
+### HTTP (`sidemantic serve`)
 
 Client-supplied identity headers are rejected by default. Enable
 `--trust-user-header` only behind a header-sanitizing proxy that authenticates users,
@@ -105,6 +105,10 @@ Custom applications can instead supply `create_app(user_attributes_resolver=...)
 to derive attributes from a verified principal. The shared bearer by itself does
 not verify caller-supplied roles or tenants. Resolved attributes scope structured
 queries, semantic SQL, mounted MCP tools, and result-cache keys.
+
+For example: `sidemantic serve ./models --auth-token-file .secrets/api-token --trust-user-header`.
+The additional header-name, required-attributes, and visibility options below are
+available on `sidemantic server api`.
 
 | Flag | Effect |
 |------|--------|
@@ -141,6 +145,9 @@ rejected when security is active; catalog discovery omits inaccessible models.
 Stdio MCP may use `--user-attrs-file` as a local process identity. HTTP MCP
 (`--http` or `--apps`) requires `--auth-token-file` and rejects static identity
 files. Install both optional extras for this transport: `uv add 'sidemantic[mcp,api]'`.
+Use `--trust-user-header` behind the authenticated, header-sanitizing proxy described
+above to resolve each request's `X-Sidemantic-User` attributes. This option works with
+both `--http` and `--apps`; stdio rejects it and retains `--user-attrs-file`.
 It uses the same authenticated `/mcp/` mount as the API. All mounted transport
 methods require the API's bearer or browser session when authentication is configured.
 Tools receive request-local identity and layer context; they never inherit a stdio

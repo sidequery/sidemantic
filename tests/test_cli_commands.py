@@ -1079,3 +1079,37 @@ def test_http_mcp_requires_auth_and_rejects_static_identity(tmp_path):
     result = runner.invoke(app, ["server", "mcp", str(tmp_path), "--apps", "--user-attrs-file", str(attrs)])
     assert result.exit_code != 0
     assert "only supported with stdio" in result.output
+
+
+@pytest.mark.parametrize("trust_header", [False, True])
+@pytest.mark.parametrize("command", [["serve"], ["server", "mcp", "--http"], ["server", "mcp", "--apps"]])
+def test_http_entrypoints_forward_trusted_identity(monkeypatch, tmp_path, command, trust_header):
+    pytest.importorskip("fastapi")
+    ensure_fake_mcp()
+    _write_min_model(tmp_path)
+    token_file = tmp_path / "token"
+    token_file.write_text("secret")
+    called = {}
+
+    def fake_start_api_server(layer, **kwargs):
+        called.update(kwargs)
+
+    monkeypatch.setattr("sidemantic.api_server.start_api_server", fake_start_api_server)
+    monkeypatch.setattr("sidemantic.mcp_server.initialize_layer", lambda *args, **kwargs: None)
+    monkeypatch.setattr("sidemantic.mcp_server.get_layer", lambda: object())
+    arguments = [*command, str(tmp_path), "--auth-token-file", str(token_file)]
+    if trust_header:
+        arguments.append("--trust-user-header")
+    result = runner.invoke(app, arguments)
+
+    assert result.exit_code == 0, result.output
+    assert called["trust_user_header"] is trust_header
+    assert called["auth_token"] == "secret"
+    assert called["serve_mcp"] is True
+
+
+def test_stdio_mcp_rejects_trusted_header_option(tmp_path):
+    _write_min_model(tmp_path)
+    result = runner.invoke(app, ["server", "mcp", str(tmp_path), "--trust-user-header"])
+    assert result.exit_code != 0
+    assert "--trust-user-header requires --http or --apps" in result.output

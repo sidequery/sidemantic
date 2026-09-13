@@ -1242,10 +1242,13 @@ def mcp_serve(
     query_timeout: float = typer.Option(30.0, "--query-timeout", min=0.001),
     max_concurrent_queries: int = typer.Option(4, "--max-concurrent-queries", min=1),
     auth_token_file: Path = typer.Option(None, "--auth-token-file", help="Bearer token file required for HTTP MCP"),
+    trust_user_header: bool = typer.Option(
+        False, "--trust-user-header", help="Trust identity headers from an authenticated, header-sanitizing proxy"
+    ),
     user_attrs_file: Path = typer.Option(
         None,
         "--user-attrs-file",
-        help="Path to a JSON user-attributes object applied to every MCP query",
+        help="Path to a JSON user-attributes object applied to every stdio MCP query",
     ),
     enforce_visibility: bool = typer.Option(
         False,
@@ -1306,6 +1309,8 @@ def mcp_serve(
             effective_init_sql = resolved_connection.init_sql
 
     try:
+        if trust_user_header and not (http or apps):
+            raise InvocationError("--trust-user-header requires --http or --apps")
         user_attributes = None
         if user_attrs_file is not None:
             if not user_attrs_file.exists():
@@ -1413,6 +1418,7 @@ def mcp_serve(
                 get_layer(),
                 port=port,
                 auth_token=network_auth_token,
+                trust_user_header=trust_user_header,
                 serve_ui=False,
                 serve_mcp=True,
                 server_limits=limits,
@@ -2572,6 +2578,9 @@ def serve(
         None, "--auth-token-file", help="Read the API bearer token from a file, or - for stdin"
     ),
     cors_origin: list[str] | None = typer.Option(None, "--cors-origin", help="Allowed CORS origin (repeatable)"),
+    trust_user_header: bool = typer.Option(
+        False, "--trust-user-header", help="Trust identity headers from an authenticated, header-sanitizing proxy"
+    ),
     ui: bool = typer.Option(True, "--ui/--no-ui", help="Serve the embedded web UI at the root path"),
     mcp_endpoint: bool = typer.Option(
         True, "--mcp/--no-mcp", help="Serve the MCP endpoint at /mcp when the mcp extra is installed"
@@ -2605,7 +2614,7 @@ def serve(
         max_response_bytes=16 * 1024 * 1024,
         query_timeout=30.0,
         max_concurrent_queries=4,
-        trust_user_header=False,
+        trust_user_header=trust_user_header,
         require_user_attrs=False,
         enforce_visibility=False,
         user_header="X-Sidemantic-User",

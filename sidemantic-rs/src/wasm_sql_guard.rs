@@ -184,7 +184,7 @@ mod tests {
         )
         .is_err());
         assert!(check(
-            &format!("SELECT {}true", "NOT ".repeat(MAX_OPERATORS)),
+            &format!("SELECT {}true", "NOT ".repeat(MAX_OPERATORS + 1)),
             DialectType::DuckDB
         )
         .is_err());

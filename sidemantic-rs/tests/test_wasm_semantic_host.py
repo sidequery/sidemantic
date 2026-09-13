@@ -147,6 +147,9 @@ def test_near_nesting_limit_and_literal_delimiters_are_accepted():
     del model["models"][0]["security"]
     model["models"][0]["metrics"][0]["sql"] = "(" * 14 + "amount" + ")" * 14
     assert rows(call("compile", source=model, query={"metrics": ["orders.revenue"]})["result"]) == [(110,)]
+    combined = "(" * 14 + "NOT " * 30 + "true" + ")" * 14
+    result = call("rewrite", source=model, sql=f"select {combined}")
+    assert "result" in result, result
     result = call("rewrite", source=model, sql="select " + "NOT " * 30 + "true")
     assert "result" in result, result
     # Flat projections can exceed 256 tokens without recursive expression depth.

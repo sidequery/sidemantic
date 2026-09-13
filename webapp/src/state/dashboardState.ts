@@ -570,7 +570,10 @@ export function storeSavedDashboardViews(document: DashboardDocument, views: Sav
 
 function csvCell(value: unknown): string {
   if (value == null) return "";
-  const text = String(value);
+  let text = String(value);
+  // Spreadsheet applications recognize formulas after leading whitespace/control characters.
+  // Keep typed numbers (including negative numbers) numeric in the exported file.
+  if (typeof value !== "number" && typeof value !== "bigint" && /^[\s\u0000-\u001f]*[=+@-]/.test(text)) text = `'${text}`;
   return /[",\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
 }
 

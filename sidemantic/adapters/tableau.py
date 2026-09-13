@@ -15,6 +15,11 @@ from sidemantic.core.relationship import Relationship
 from sidemantic.core.segment import Segment
 from sidemantic.core.semantic_graph import SemanticGraph
 
+# Only metadata XML is consumed from packages; bundled extracts are never read.
+_MAX_PACKAGE_MEMBERS = 10_000
+_MAX_PACKAGE_XML_BYTES = 64 * 1024 * 1024
+_MAX_PACKAGE_XML_RATIO = 1_000
+
 # --- Type mapping ---
 _DATATYPE_MAP: dict[str, str] = {
     "string": "categorical",
@@ -1464,21 +1469,40 @@ class TableauAdapter(BaseAdapter):
                     dim_by_name[child_name].parent = parent_name
 
     def _unzip_and_parse(self, zip_path: Path) -> SemanticGraph:
-        """Extract .tdsx or .twbx ZIP, find inner .tds/.twb, parse it."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with zipfile.ZipFile(zip_path, "r") as zf:
-                zf.extractall(tmpdir)
-
+        """Read bounded metadata XML from a package without extracting assets."""
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            members = zf.infolist()
+            if len(members) > _MAX_PACKAGE_MEMBERS:
+                raise ValueError("Tableau package exceeds member count limit")
             # TWBX packages can contain workbook-level .twb files plus packaged
             # datasource .tds files. Prefer the file type that matches the package.
-            tmpdir_path = Path(tmpdir)
             candidates = sorted(
-                inner_file for inner_file in tmpdir_path.rglob("*") if inner_file.suffix.lower() in (".tds", ".twb")
+                (
+                    member
+                    for member in members
+                    if not member.is_dir() and Path(member.filename).suffix.lower() in (".tds", ".twb")
+                ),
+                key=lambda member: member.filename,
             )
             preferred_suffixes = (".twb", ".tds") if zip_path.suffix.lower() == ".twbx" else (".tds", ".twb")
             for suffix in preferred_suffixes:
-                for inner_file in candidates:
-                    if inner_file.suffix.lower() == suffix:
+                for member in candidates:
+                    if Path(member.filename).suffix.lower() != suffix:
+                        continue
+                    if member.file_size > _MAX_PACKAGE_XML_BYTES:
+                        raise ValueError("Tableau package XML exceeds expanded size limit")
+                    if member.file_size > max(1, member.compress_size) * _MAX_PACKAGE_XML_RATIO:
+                        raise ValueError("Tableau package XML exceeds compression ratio limit")
+                    with tempfile.TemporaryDirectory() as tmpdir:
+                        # Never use an archive-controlled name as a filesystem path.
+                        inner_file = Path(tmpdir) / ("metadata" + suffix)
+                        with zf.open(member) as source, inner_file.open("wb") as destination:
+                            total = 0
+                            while chunk := source.read(64 * 1024):
+                                total += len(chunk)
+                                if total > _MAX_PACKAGE_XML_BYTES:
+                                    raise ValueError("Tableau package XML exceeds expanded size limit")
+                                destination.write(chunk)
                         return self._parse_xml(inner_file)
 
         return SemanticGraph()

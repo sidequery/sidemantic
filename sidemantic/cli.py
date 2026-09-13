@@ -1237,6 +1237,11 @@ def mcp_serve(
     apps: bool = typer.Option(False, "--apps", help="Enable interactive UI widgets (requires mcp-ui-server)"),
     http: bool = typer.Option(False, "--http", help="Use HTTP transport instead of stdio"),
     port: int = typer.Option(4100, "--port", "-p", help="Port for HTTP server"),
+    max_result_rows: int = typer.Option(10000, "--max-result-rows", min=1),
+    max_response_bytes: int = typer.Option(16 * 1024 * 1024, "--max-response-bytes", min=1),
+    query_timeout: float = typer.Option(30.0, "--query-timeout", min=0.001),
+    max_concurrent_queries: int = typer.Option(4, "--max-concurrent-queries", min=1),
+    auth_token_file: Path = typer.Option(None, "--auth-token-file", help="Bearer token file required for HTTP MCP"),
     user_attrs_file: Path = typer.Option(
         None,
         "--user-attrs-file",
@@ -1262,6 +1267,9 @@ def mcp_serve(
     """
     emit_pending_deprecation("mcp-serve")
     from sidemantic.mcp_server import initialize_layer, mcp
+    from sidemantic.server.common import ServerLimits, request_limits
+
+    limits = ServerLimits(max_result_rows, max_response_bytes, query_timeout, max_concurrent_queries)
 
     if demo:
         # Use packaged demo models
@@ -1308,6 +1316,18 @@ def mcp_serve(
                 raise InvocationError(f"failed to parse user-attrs file {user_attrs_file}: {exc}") from exc
             if not isinstance(user_attributes, dict):
                 raise InvocationError(f"user-attrs file {user_attrs_file} must contain a JSON object")
+
+        network_auth_token = None
+        if http or apps:
+            if user_attributes is not None:
+                raise InvocationError(
+                    "--user-attrs-file is only supported with stdio; HTTP identity must be resolved per request"
+                )
+            if not auth_token_file:
+                raise InvocationError("HTTP MCP requires --auth-token-file")
+            network_auth_token = auth_token_file.read_text().strip()
+            if not network_auth_token:
+                raise InvocationError("Auth token file must not be empty")
 
         # Initialize the semantic layer
         with progress("Initializing MCP server"):
@@ -1385,7 +1405,24 @@ def mcp_serve(
             emit_diagnostic("Server running on stdio...")
 
         # Run the MCP server
-        mcp.run(transport=transport)
+        if transport == "streamable-http":
+            from sidemantic.api_server import start_api_server
+            from sidemantic.mcp_server import get_layer
+
+            start_api_server(
+                get_layer(),
+                port=port,
+                auth_token=network_auth_token,
+                serve_ui=False,
+                serve_mcp=True,
+                server_limits=limits,
+            )
+        else:
+            limits_token = request_limits.set(limits)
+            try:
+                mcp.run(transport=transport)
+            finally:
+                request_limits.reset(limits_token)
 
     except typer.Exit:
         raise
@@ -2318,6 +2355,13 @@ def api_serve(
     result_cache_ttl: float = typer.Option(
         None, "--result-cache-ttl", help="Result cache entry TTL in seconds (default 60)"
     ),
+    trust_user_header: bool = typer.Option(
+        False, "--trust-user-header", help="Trust identity headers from an authenticated, header-sanitizing proxy"
+    ),
+    max_result_rows: int = typer.Option(10000, "--max-result-rows", min=1),
+    max_response_bytes: int = typer.Option(16 * 1024 * 1024, "--max-response-bytes", min=1),
+    query_timeout: float = typer.Option(30.0, "--query-timeout", min=0.001),
+    max_concurrent_queries: int = typer.Option(4, "--max-concurrent-queries", min=1),
     require_user_attrs: bool = typer.Option(
         False,
         "--require-user-attrs",
@@ -2488,6 +2532,8 @@ def api_serve(
     else:
         emit_diagnostic("Authentication: disabled")
 
+    from sidemantic.server.common import ServerLimits
+
     start_api_server(
         layer,
         host=host_resolved,
@@ -2498,6 +2544,8 @@ def api_serve(
         serve_ui=serve_ui,
         result_cache_mb=result_cache_mb_resolved,
         result_cache_ttl=result_cache_ttl_resolved,
+        server_limits=ServerLimits(max_result_rows, max_response_bytes, query_timeout, max_concurrent_queries),
+        trust_user_header=trust_user_header,
         require_user_attrs=require_user_attrs,
         enforce_visibility=enforce_visibility,
         user_header=user_header,
@@ -2553,6 +2601,11 @@ def serve(
         max_request_body_bytes=None,
         result_cache_mb=None,
         result_cache_ttl=None,
+        max_result_rows=10000,
+        max_response_bytes=16 * 1024 * 1024,
+        query_timeout=30.0,
+        max_concurrent_queries=4,
+        trust_user_header=False,
         require_user_attrs=False,
         enforce_visibility=False,
         user_header="X-Sidemantic-User",

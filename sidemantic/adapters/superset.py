@@ -11,6 +11,7 @@ from sidemantic.core.dimension import Dimension
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.semantic_graph import SemanticGraph
+from sidemantic.paths import output_child
 from sidemantic.yaml_compat import safe_load as _yaml_safe_load
 
 
@@ -301,7 +302,7 @@ class SupersetAdapter(BaseAdapter):
             output_path.mkdir(parents=True, exist_ok=True)
             for model in resolved_models.values():
                 dataset = self._export_dataset(model)
-                file_path = output_path / f"{model.name}.yaml"
+                file_path = output_child(output_path, f"{model.name}.yaml")
                 with open(file_path, "w") as f:
                     yaml.dump(dataset, f, default_flow_style=False, sort_keys=False)
         else:

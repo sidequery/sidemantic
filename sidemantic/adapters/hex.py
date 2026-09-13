@@ -10,6 +10,7 @@ from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
+from sidemantic.paths import output_child
 from sidemantic.yaml_compat import safe_load_all as _yaml_safe_load_all
 
 
@@ -478,7 +479,7 @@ class HexAdapter(BaseAdapter):
             output_path.mkdir(parents=True, exist_ok=True)
             for model in resolved_models.values():
                 model_data = self._export_model(model, graph)
-                model_file = output_path / f"{model.name}.yml"
+                model_file = output_child(output_path, f"{model.name}.yml")
                 with open(model_file, "w") as f:
                     yaml.dump(model_data, f, sort_keys=False, default_flow_style=False)
 

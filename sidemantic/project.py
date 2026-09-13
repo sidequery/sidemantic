@@ -13,6 +13,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from sidemantic.config import SidemanticConfig, build_connection_string, find_config, get_init_sql, load_config
+from sidemantic.paths import is_within
 
 
 class ProjectResolutionError(ValueError):
@@ -69,7 +70,7 @@ def _load_config_values(config_path: Path) -> dict[str, Any]:
     return values if isinstance(values, dict) else {}
 
 
-def _data_file_views(path: Path) -> list[str] | None:
+def _data_file_views(path: Path, *, trusted_root: Path | None = None) -> list[str] | None:
     """Return DuckDB view statements when a path is (or contains) raw data files."""
 
     from sidemantic.datafiles import build_file_views, discover_data_files, is_data_file
@@ -78,7 +79,7 @@ def _data_file_views(path: Path) -> list[str] | None:
         if path.is_file() and is_data_file(path):
             return build_file_views([path])
         if path.is_dir():
-            data_files = discover_data_files(path)
+            data_files = discover_data_files(path, trusted_root=trusted_root)
             if data_files:
                 return build_file_views(data_files)
     except ValueError as exc:
@@ -93,12 +94,14 @@ def _find_conventional_root(start: Path) -> Path:
             (current / name).is_file() for name in ("dashboard.yml", "dashboard.yaml", "dashboard.json")
         )
         has_database = any(
-            path.is_file() for pattern in ("*.db", "*.duckdb") for path in (current / "data").glob(pattern)
+            path.is_file() and is_within(path, current)
+            for pattern in ("*.db", "*.duckdb")
+            for path in (current / "data").glob(pattern)
         )
         if not has_database:
             from sidemantic.datafiles import discover_data_files
 
-            has_database = bool(discover_data_files(current / "data"))
+            has_database = bool(discover_data_files(current / "data", trusted_root=current))
         if (current / "models").is_dir() or has_dashboard or has_database:
             return current
         if current.parent == current:
@@ -168,6 +171,11 @@ class ProjectContext:
 
         conventional = self.root / "models"
         if conventional.is_dir():
+            if not is_within(conventional, self.root):
+                raise ProjectResolutionError(
+                    f"Automatically discovered models path escapes project root: {conventional}; "
+                    "pass --models explicitly to use an external directory"
+                )
             return conventional.resolve()
         return _require_path(self.root.resolve(), "Project root")
 
@@ -245,20 +253,23 @@ class ProjectContext:
                 source="config",
             )
 
-        data_dirs = [self.root / "data"]
+        data_dirs = {self.root / "data": self.root}
         if models is not None:
             models_path = _resolve_cli_path(models, self.start_dir)
             if models_path.is_dir():
-                data_dirs.append(models_path / "data")
+                # An explicitly selected models directory can belong to another
+                # project. Keep discovery within that selected project's root.
+                models_root = models_path.parent if models_path.name == "models" else models_path
+                data_dirs[models_path / "data"] = models_root
                 if models_path.name == "models":
-                    data_dirs.append(models_path.parent / "data")
+                    data_dirs[models_path.parent / "data"] = models_root
         matches = sorted(
             {
                 path.resolve()
-                for data_dir in data_dirs
+                for data_dir, trusted_root in data_dirs.items()
                 for pattern in ("*.db", "*.duckdb")
                 for path in data_dir.glob(pattern)
-                if path.is_file()
+                if path.is_file() and is_within(path, trusted_root)
             },
             key=lambda path: str(path),
         )
@@ -272,16 +283,16 @@ class ProjectContext:
         # No database file: raw data files in data/ still make a queryable project.
         from sidemantic.datafiles import discover_data_files
 
-        for data_dir in dict.fromkeys(data_dirs):
-            data_files = discover_data_files(data_dir)
+        for data_dir, trusted_root in data_dirs.items():
+            data_files = discover_data_files(data_dir, trusted_root=trusted_root)
             if data_files:
                 return ResolvedConnection(
                     connection="duckdb:///:memory:",
-                    init_sql=_data_file_views(data_dir),
+                    init_sql=_data_file_views(data_dir, trusted_root=trusted_root),
                     source="project data files",
                 )
         if required:
-            locations = ", ".join(str(path) for path in dict.fromkeys(data_dirs))
+            locations = ", ".join(str(path) for path in data_dirs)
             raise ProjectResolutionError(
                 f"No database connection configured and no .db or .duckdb file found in: {locations}"
             )

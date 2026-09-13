@@ -108,6 +108,10 @@ class _MaterializedResult:
         """
         return self._table.to_reader()
 
+    @property
+    def description(self):
+        return [(name,) for name in self._table.column_names]
+
     def fetchone(self) -> tuple | None:
         if self._rows is None:
             self._rows = self._table.to_pylist()
@@ -143,6 +147,15 @@ class _SerializedCursor:
             reader = self._adapter.fetch_record_batch(result)
             table = reader.read_all()
         return _MaterializedResult(table)
+
+    def execute_bounded(self, sql: str) -> Any:
+        """Transport-only bounded drain; ordinary library execution is unchanged."""
+        from sidemantic.server.common import bounded_table
+
+        with self._lock:
+            result = self._adapter.execute(sql)
+            reader = self._adapter.fetch_record_batch(result)
+            return _MaterializedResult(bounded_table(reader))
 
     def fetch_record_batch(self, result: Any) -> Any:
         """Return a RecordBatchReader; results from ``execute`` are already materialized."""

@@ -7,6 +7,7 @@ import json
 import secrets
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Literal
 
@@ -24,8 +25,10 @@ from sidemantic import SemanticLayer, __version__
 from sidemantic.loaders import load_from_directory
 from sidemantic.server.common import (
     ARROW_STREAM_MEDIA_TYPE,
-    record_batch_reader_to_table,
-    result_to_record_batch_reader,
+    ServerLimits,
+    check_response_size,
+    execute_bounded,
+    request_limits,
     table_to_arrow_bytes,
     table_to_json_rows,
     validate_filter_expression,
@@ -177,6 +180,9 @@ def start_api_server(
     user_header: str = "X-Sidemantic-User",
     dashboard: Any | None = None,
     serve_mcp: bool = False,
+    server_limits: ServerLimits | None = None,
+    trust_user_header: bool = False,
+    user_attributes_resolver: Callable[[Request], dict | None] | None = None,
 ) -> None:
     """Start the HTTP API server."""
     try:
@@ -197,6 +203,9 @@ def start_api_server(
         user_header=user_header,
         dashboard=dashboard,
         serve_mcp=serve_mcp,
+        server_limits=server_limits,
+        trust_user_header=trust_user_header,
+        user_attributes_resolver=user_attributes_resolver,
     )
     uvicorn.run(app, host=host, port=port, log_level="info")
 
@@ -219,6 +228,9 @@ def create_app(
     user_header: str = "X-Sidemantic-User",
     dashboard: Any | None = None,
     serve_mcp: bool = False,
+    server_limits: ServerLimits | None = None,
+    trust_user_header: bool = False,
+    user_attributes_resolver: Callable[[Request], dict | None] | None = None,
 ) -> FastAPI:
     """Create a FastAPI app for a loaded semantic layer.
 
@@ -227,7 +239,7 @@ def create_app(
     library ``SemanticLayer.query()`` is never cached by default).
 
     Security integration:
-    - Per-request user attributes are read from the trusted ``user_header``
+    - With explicit ``trust_user_header=True``, per-request attributes are read from the trusted ``user_header``
       (default ``X-Sidemantic-User``) whose value is a JSON object. They are
       threaded into the layer's compile/query path so access gates and row
       filters are enforced, and into the result-cache key so cached results
@@ -237,33 +249,48 @@ def create_app(
     - ``enforce_visibility`` is applied to the layer so requesting a non-public
       field is rejected.
     """
+    if trust_user_header and not auth_token:
+        raise ValueError("trust_user_header requires bearer authentication and a header-sanitizing proxy")
     mcp_module = None
     mcp_asgi = None
     lifespan = None
     if serve_mcp:
         # Reuse the MCP server's tool surface on this process's layer so HTTP,
         # UI, and agent traffic all read the same in-memory graph.
+        from copy import copy, deepcopy
+
         import sidemantic.mcp_server as mcp_module
 
-        mcp_module._layer = layer
-        mcp_module.mcp.settings.streamable_http_path = "/"
-        mcp_asgi = mcp_module.mcp.streamable_http_app()
+        mounted_mcp = copy(mcp_module.mcp)
+        mounted_mcp.settings = deepcopy(mcp_module.mcp.settings)
+        mounted_mcp.settings.streamable_http_path = "/"
+        mounted_mcp.settings.stateless_http = True
+        mounted_mcp._session_manager = None
+        mcp_asgi = mounted_mcp.streamable_http_app()
 
         from contextlib import asynccontextmanager
 
         @asynccontextmanager
         async def lifespan(_app):
-            async with mcp_module.mcp.session_manager.run():
+            async with mounted_mcp.session_manager.run():
                 yield
 
     app = FastAPI(title="Sidemantic API", version=__version__, lifespan=lifespan)
-    if mcp_asgi is not None:
-        app.mount("/mcp", mcp_asgi, name="mcp")
     # enforce_visibility is a SemanticLayer.__init__ arg; the layer is passed in
     # pre-built here, so set it on the instance (least invasive) rather than
     # reconstructing the layer and re-loading its models.
     if enforce_visibility:
         layer.enforce_visibility = True
+    app.state.server_limits = server_limits or ServerLimits()
+
+    @app.middleware("http")
+    async def resource_context(request: Request, call_next):
+        token = request_limits.set(app.state.server_limits)
+        try:
+            return await call_next(request)
+        finally:
+            request_limits.reset(token)
+
     app.state.layer = layer
     app.state.require_user_attrs = require_user_attrs
     app.state.user_header = user_header
@@ -354,8 +381,19 @@ def create_app(
         Raises HTTP 400 when ``require_user_attrs`` is set and the header is
         missing, or whenever the header is present but not a JSON object.
         """
+        if user_attributes_resolver is not None:
+            attributes = user_attributes_resolver(request)
+            if attributes is not None and not isinstance(attributes, dict):
+                raise HTTPException(status_code=400, detail="Identity resolver must return a JSON object")
+            if attributes is None and app.state.require_user_attrs:
+                raise HTTPException(status_code=400, detail="Missing required user attributes")
+            return attributes
         header_name = app.state.user_header
         raw = request.headers.get(header_name)
+        if raw and not trust_user_header:
+            raise HTTPException(
+                status_code=403, detail="User-attributes headers require explicit trusted proxy configuration"
+            )
         if raw is None or raw.strip() == "":
             if app.state.require_user_attrs:
                 raise HTTPException(
@@ -376,6 +414,28 @@ def create_app(
                 detail=f"{header_name!r} header must be a JSON object",
             )
         return parsed
+
+    if mcp_asgi is not None:
+
+        async def authenticated_mcp(scope, receive, send):
+            request = Request(scope, receive=receive)
+            try:
+                credentials = await security(request)
+                require_auth(request, credentials)
+                attributes = resolve_user_attributes(request)
+            except HTTPException as exc:
+                response = JSONResponse({"detail": exc.detail}, status_code=exc.status_code, headers=exc.headers)
+                await response(scope, receive, send)
+                return
+            # Stateless MCP dispatch inherits this request's context, including an
+            # explicit None identity; it must never fall back to stdio globals.
+            token = mcp_module._request_context.set((layer, attributes))
+            try:
+                await mcp_asgi(scope, receive, send)
+            finally:
+                mcp_module._request_context.reset(token)
+
+        app.mount("/mcp", authenticated_mcp, name="mcp")
 
     @app.post("/auth/session", include_in_schema=False)
     def create_browser_session(
@@ -727,9 +787,7 @@ def _execute_to_table(layer: SemanticLayer, sql: str) -> Any:
     concurrent reads run in parallel; the result cache's singleflight then dedups
     identical concurrent queries into a single underlying execute.
     """
-    result = layer.adapter.cursor().execute(sql)
-    reader = result_to_record_batch_reader(result, layer.adapter)
-    return record_batch_reader_to_table(reader)
+    return execute_bounded(layer, sql, arrow=True)
 
 
 def _query_table_with_preagg_fallback(
@@ -790,6 +848,7 @@ def _build_query_response(
 
     if response_format == ARROW_FORMAT:
         body = table_to_arrow_bytes(table)
+        check_response_size(body)
         return Response(
             content=body,
             media_type=ARROW_STREAM_MEDIA_TYPE,
@@ -806,7 +865,9 @@ def _build_query_response(
     }
     if original_sql is not None:
         payload["original_sql"] = original_sql
-    return JSONResponse(payload)
+    response = JSONResponse(payload)
+    check_response_size(response.body)
+    return response
 
 
 def _normalize_sql_query(query: str) -> str:

@@ -25,14 +25,12 @@ Structured family (dimensions/metrics -> compiled SQL):
   5. HTTP API ``POST /compile`` -- ``sidemantic/api_server.py`` delegates
      straight to ``current_layer.compile(...)``.
 
-Skipped surface:
-  - PG wire server rewrite (``sidemantic/server/connection.py``). Its rewrite
-    path is ``QueryRewriter(self.layer.graph, dialect=self.layer.dialect)`` too,
-    but the module imports ``riffq`` at module top level, and ``riffq`` is an
-    optional dependency not installed in the dev/test environment. Importing the
-    rewrite function is therefore unavoidable-ly gated on ``riffq``; we assert
-    the import is skippable rather than smuggling in a copy of its logic. See
-    ``test_pg_server_rewrite_path_requires_riffq``.
+Optional surface:
+  - PG wire server (``sidemantic/server/connection.py``) uses the shared
+    policy-aware SQL transport rewrite. When ``riffq`` and ``pyarrow`` are
+    installed, the real handler's executed SQL and returned rows are checked
+    against the CLI preview.
+
 """
 
 # ruff: noqa: E402
@@ -355,26 +353,37 @@ def test_execution_results_match_across_surfaces(name: str, layer: SemanticLayer
 
 
 # --------------------------------------------------------------------------- #
-# Skipped surface: PG wire server rewrite path (gated on optional riffq dep).
+# PG wire execution equivalence (gated on optional server dependencies).
 # --------------------------------------------------------------------------- #
 
 
-def test_pg_server_rewrite_path_requires_riffq() -> None:
-    """Document why the PG wire server rewrite path is not covered here.
+@pytest.mark.parametrize("name", list(SQL_FIRST_QUERIES))
+def test_pg_server_executes_previewed_sql(name: str, layer: SemanticLayer, monkeypatch) -> None:
+    """The real PG handler executes the same SQL and returns the previewed rows."""
+    pytest.importorskip("riffq", reason="PG wire server requires the optional 'riffq' dependency")
+    pytest.importorskip("pyarrow")
+    from sidemantic.server.connection import SemanticLayerConnection
 
-    ``sidemantic/server/connection.py`` rewrites with
-    ``QueryRewriter(self.layer.graph, dialect=self.layer.dialect)`` -- the same
-    rewriter the surfaces above exercise. But that module imports ``riffq`` at
-    module top level, so it cannot be imported without the optional ``riffq``
-    dependency (absent in the dev/test env). We assert the import is genuinely
-    skippable so this test documents the reason rather than testing a fake.
-    """
-    riffq = pytest.importorskip("riffq", reason="PG wire server rewrite path requires the optional 'riffq' dependency")
-    # If riffq ever lands in the dev env, exercise the real path for parity.
-    assert riffq is not None
-    from sidemantic.server.connection import QueryRewriter as PGQueryRewriter
+    sql = SQL_FIRST_QUERIES[name]
+    previewed_sql = _rewrite_cli(layer, sql)
+    previewed_rows = _fetch_sorted(layer, previewed_sql)
+    cursor = layer.adapter.cursor()
+    executed_sql = []
 
-    layer = _build_layer()
-    sql = "SELECT orders.revenue FROM orders"
-    pg_sql = PGQueryRewriter(layer.graph, dialect=layer.dialect).rewrite(sql, strict=False)
-    assert pg_sql == _rewrite_cli(layer, sql)
+    class RecordingCursor:
+        def execute(self, query):
+            executed_sql.append(query)
+            return cursor.execute(query)
+
+    monkeypatch.setattr(layer.adapter, "cursor", lambda: RecordingCursor())
+    connection = SemanticLayerConnection(1, None, layer)
+    rows = []
+
+    def capture_reader(reader, callback):
+        rows.extend(tuple(row.values()) for row in reader.read_all().to_pylist())
+
+    connection.send_reader = capture_reader
+    connection._handle_query(sql, lambda *_: None)
+
+    assert executed_sql == [previewed_sql]
+    assert _sort_rows(rows) == previewed_rows

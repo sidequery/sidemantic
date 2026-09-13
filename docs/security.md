@@ -82,14 +82,33 @@ layer.compile(metrics=["orders.revenue"], filters=["orders.margin > 100"])  # Se
 
 ## Server enforcement
 
+### Structured query expressions
+
+Caller-supplied filters support semantic fields and an allowlist of scalar SQL
+functions. They cannot introduce physical data sources, arbitrary UDFs, or extra
+SQL clauses. Put custom functions in trusted model dimensions and filter on those
+dimensions. Model, segment, and security predicates retain their trusted SQL
+capabilities. Specialized metric ordering accepts selected output fields with
+optional direction and null ordering.
+
+Parameter values are emitted as SQL literals using the query dialect, including
+inside Jinja conditionals and loops. Control-flow comparisons still use the raw
+typed parameter values.
+
 ### HTTP (`sidemantic server api`)
 
-User attributes come from a trusted header (default `X-Sidemantic-User`, a JSON object).
-The value is passed into every structured `/query` and `/compile` request, and the
-result cache is keyed per user so cached rows never leak across users.
+Client-supplied identity headers are rejected by default. Enable
+`--trust-user-header` only behind a header-sanitizing proxy that authenticates users,
+sets the JSON `X-Sidemantic-User` header, and owns the API bearer credential. Do not
+give that credential to clients who can reach the trusted-header endpoint directly.
+Custom applications can instead supply `create_app(user_attributes_resolver=...)`
+to derive attributes from a verified principal. The shared bearer by itself does
+not verify caller-supplied roles or tenants. Resolved attributes scope structured
+queries, semantic SQL, mounted MCP tools, and result-cache keys.
 
 | Flag | Effect |
 |------|--------|
+| `--trust-user-header` | Explicitly trust identity headers from an authenticated proxy; requires bearer authentication. |
 | `--user-header NAME` | Header carrying the JSON user-attributes object (default `X-Sidemantic-User`). |
 | `--require-user-attrs` | Reject data requests that lack the header (HTTP 400). |
 | `--enforce-visibility` | Apply field-visibility enforcement. |
@@ -106,24 +125,41 @@ credential kept only in memory and sent with the `Sidemantic-Session` authorizat
 scheme. The server stores only a SHA-256 digest of either session credential and expires
 it after ten minutes. API clients may continue to send the configured bearer directly.
 
-**The `/sql` and `/raw` endpoints are disabled (HTTP 403) whenever any model declares a
-security policy.** They rewrite/execute free-form SQL and cannot apply per-user row
-filters, so they refuse rather than return unscoped rows — use the structured `/query`
-endpoint, which enforces.
+The `/sql` endpoint rewrites semantic queries through row and access policies.
+When security is active, `/raw` and SQL referencing unproven physical sources are
+denied with HTTP 403.
 
 ### PostgreSQL wire server
 
 The connecting Postgres username is mapped to user attributes via a startup
-`--user-attrs-file` (JSON mapping usernames → attribute dicts). Because the PG path is
-SQL-first (it uses the query rewriter), it enforces the **access gate** for secured
-models but does **not** apply row-level filters. Treat the PG server as coarse-grained
-access control, not row security.
+`--user-attrs-file` (JSON mapping usernames to attribute dictionaries). Semantic
+SQL is rewritten through access gates and row filters. Physical-source SQL is
+rejected when security is active; catalog discovery omits inaccessible models.
 
 ### MCP server
 
-The MCP server applies static, process-wide user attributes supplied at startup. Its
-`run_sql` tool (free-form SQL) does not apply row filters, mirroring the HTTP `/sql`
-caveat.
+Stdio MCP may use `--user-attrs-file` as a local process identity. HTTP MCP
+(`--http` or `--apps`) requires `--auth-token-file` and rejects static identity
+files. Install both optional extras for this transport: `uv add 'sidemantic[mcp,api]'`.
+It uses the same authenticated `/mcp/` mount as the API. All mounted transport
+methods require the API's bearer or browser session when authentication is configured.
+Tools receive request-local identity and layer context; they never inherit a stdio
+process identity. Mounted sessions are stateless to prevent identity retention
+across requests. Both `run_query` and `run_sql` enforce row filters.
+
+### HTTP and MCP resource limits
+
+Defaults can be adjusted with `--max-result-rows`, `--max-response-bytes`,
+`--query-timeout` (seconds), and `--max-concurrent-queries` on the API/MCP CLI, or
+`create_app(server_limits=ServerLimits(...))` in a custom application.
+
+By default, query transports reject results above 10,000 rows or 16 MiB, admit at most four
+concurrent executions per server instance, and bound chart dimensions to 1–2,000 pixels
+on each axis. DuckDB execution and result draining have a 30-second deadline
+that interrupts the request's independent cursor. Other adapters still require
+backend statement timeouts; their drivers may materialize a batch before the
+transport can check its byte size. These controls do not impose a hard process
+memory bound. CLI and direct SemanticLayer execution defaults are unchanged.
 
 ## Importing policies from Cube / Rill
 
@@ -136,6 +172,5 @@ caveat.
 
 - Row-level filters are enforced on the structured/compile path (Python engine). Queries
   touching a secured model are forced onto the Python generator even under `engine="rust"`.
-- The PG wire server and MCP `run_sql` enforce the access gate but not row filters (above).
 - Pre-aggregation routing is disabled for a query while row filters are active (a rollup
   is materialized without per-user filtering).

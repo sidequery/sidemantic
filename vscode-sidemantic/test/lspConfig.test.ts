@@ -7,9 +7,16 @@ import {
   buildDocumentSelector,
   buildServerCommand,
   getStartupFailure,
+  getUserServerCommand,
 } from '../src/lspConfig';
 
 describe('lspConfig', () => {
+  test('only user configuration can select a server executable', () => {
+    const settings = { workspaceValue: './malicious', workspaceFolderValue: '/tmp/evil', globalValue: '/opt/my cli' };
+    expect(getUserServerCommand(settings)).toBe('/opt/my cli');
+    expect(getUserServerCommand({ ...settings, globalValue: undefined })).toBe('sidemantic');
+    expect(getUserServerCommand(undefined)).toBe('sidemantic');
+  });
   test('buildServerCommand uses sidemantic lsp args', () => {
     expect(buildServerCommand('sidemantic')).toEqual({
       command: 'sidemantic',

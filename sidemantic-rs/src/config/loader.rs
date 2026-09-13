@@ -102,8 +102,13 @@ pub fn load_from_string(content: &str) -> Result<SemanticGraph> {
 
 /// Load a semantic graph from YAML with parsing metadata used by Python bridge.
 pub fn load_from_string_with_metadata(content: &str) -> Result<LoadedGraphMetadata> {
+    load_literal_yaml_with_metadata(&substitute_env_vars(content))
+}
+
+/// Parse caller-supplied YAML literally, without access to process environment variables.
+pub fn load_literal_yaml_with_metadata(content: &str) -> Result<LoadedGraphMetadata> {
     let format = detect_format(content);
-    let parsed = parse_content_with_extends(content, format)?;
+    let parsed = parse_literal_content_with_extends(content, format)?;
     let ParsedConfig {
         models,
         extends_map,
@@ -772,11 +777,13 @@ fn substitute_env_vars(content: &str) -> String {
 
 /// Parse content and return extends map for inheritance resolution
 fn parse_content_with_extends(content: &str, format: ConfigFormat) -> Result<ParsedConfig> {
-    let content = substitute_env_vars(content);
+    parse_literal_content_with_extends(&substitute_env_vars(content), format)
+}
 
+fn parse_literal_content_with_extends(content: &str, format: ConfigFormat) -> Result<ParsedConfig> {
     match format {
         ConfigFormat::Sidemantic => {
-            let config: SidemanticConfig = serde_yaml::from_str(&content)
+            let config: SidemanticConfig = serde_yaml::from_str(content)
                 .map_err(|e| SidemanticError::Validation(format!("YAML parse error: {e}")))?;
             config.validate_contract()?;
             let extends_map: HashMap<String, String> = config
@@ -786,7 +793,7 @@ fn parse_content_with_extends(content: &str, format: ConfigFormat) -> Result<Par
                 .collect();
             let graph_metadata = config.metadata.clone();
             let (mut models, mut top_level_metrics, top_level_parameters) = config.into_parts()?;
-            apply_embedded_sql_definitions(&content, &mut models, &mut top_level_metrics)?;
+            apply_embedded_sql_definitions(content, &mut models, &mut top_level_metrics)?;
 
             Ok(ParsedConfig {
                 models,
@@ -800,12 +807,12 @@ fn parse_content_with_extends(content: &str, format: ConfigFormat) -> Result<Par
         ConfigFormat::Cube => {
             // Cube.js doesn't support extends in the same way
             Ok(ParsedConfig {
-                models: CubeAdapter::new().parse_models(&content)?,
+                models: CubeAdapter::new().parse_models(content)?,
                 ..Default::default()
             })
         }
         ConfigFormat::Osi => {
-            let doc = OsiAdapter::new().parse_document(&content)?;
+            let doc = OsiAdapter::new().parse_document(content)?;
             Ok(ParsedConfig {
                 models: doc.models,
                 top_level_parameters: doc.parameters,

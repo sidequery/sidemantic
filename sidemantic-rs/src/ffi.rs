@@ -23,7 +23,7 @@ use once_cell::sync::Lazy;
 
 use crate::config::{
     load_from_directory_with_metadata, load_from_file_with_metadata,
-    load_from_sql_string_with_metadata, load_from_string_with_metadata, parse_sql_model,
+    load_from_sql_string_with_metadata, load_literal_yaml_with_metadata, parse_sql_model,
 };
 use crate::core::SemanticGraph;
 use crate::sql::QueryRewriter;
@@ -93,7 +93,8 @@ fn active_model_for_loaded_models(model_order: &[String]) -> Option<String> {
     }
 }
 
-/// Load semantic models from YAML string
+/// Load semantic models from literal YAML supplied by SQL callers.
+/// Environment substitution is reserved for trusted file configuration.
 ///
 /// Returns null on success, error message on failure.
 /// Caller must free the returned string with `sidemantic_free`.
@@ -102,7 +103,7 @@ pub extern "C" fn sidemantic_load_yaml(yaml: *const c_char) -> *mut c_char {
     sidemantic_load_yaml_for_context(ptr::null(), yaml)
 }
 
-/// Load semantic models from YAML string into a context-keyed graph.
+/// Load literal YAML into a context-keyed graph without environment substitution.
 #[no_mangle]
 pub extern "C" fn sidemantic_load_yaml_for_context(
     context: *const c_char,
@@ -117,7 +118,7 @@ pub extern "C" fn sidemantic_load_yaml_for_context(
         Err(error) => return error,
     };
 
-    match load_from_string_with_metadata(&yaml_str) {
+    match load_literal_yaml_with_metadata(&yaml_str) {
         Ok(metadata) => {
             let active_model = active_model_for_loaded_models(&metadata.model_order);
             let mut states = FFI_STATES.lock().unwrap();
@@ -1534,6 +1535,37 @@ mod tests {
         if let Some(definitions_path) = get_definitions_path(db_path.as_ptr()) {
             let _ = fs::remove_file(definitions_path);
         }
+    }
+
+    #[test]
+    fn test_inline_yaml_does_not_expand_environment() {
+        let _guard = test_lock();
+        let context = CString::new("literal_yaml_security_test").unwrap();
+        let variable = "SIDEMANTIC_TEST_INLINE_YAML_SECRET";
+        std::env::set_var(variable, "private_model_name");
+        for name in [
+            "$SIDEMANTIC_TEST_INLINE_YAML_SECRET",
+            "${SIDEMANTIC_TEST_INLINE_YAML_SECRET}",
+            "${SIDEMANTIC_TEST_INLINE_YAML_SECRET:-fallback}",
+        ] {
+            let yaml = format!("models:\n  - name: '{name}'\n    table: orders\n");
+            let value = CString::new(yaml.clone()).unwrap();
+            assert_success(sidemantic_load_yaml_for_context(
+                context.as_ptr(),
+                value.as_ptr(),
+            ));
+            let key = context_key(context.as_ptr()).unwrap();
+            {
+                let states = FFI_STATES.lock().unwrap();
+                assert!(states[&key].graph.get_model(name).is_some());
+                assert!(states[&key].graph.get_model("private_model_name").is_none());
+            }
+            let trusted = crate::config::load_from_string_with_metadata(&yaml).unwrap();
+            assert!(trusted.graph.get_model("private_model_name").is_some());
+        }
+        std::env::remove_var(variable);
+        let key = context_key(context.as_ptr()).unwrap();
+        FFI_STATES.lock().unwrap().remove(&key);
     }
 
     #[test]

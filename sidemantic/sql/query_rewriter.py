@@ -511,7 +511,7 @@ class QueryRewriter:
             )
 
         plan = self._plan_simple_query(parsed)
-        rewritten_sql = self._generate_from_plan(plan)
+        rewritten_sql = self._generate_from_plan(plan, parsed)
         return self._explanation_from_plan(sql, plan, rewritten_sql)
 
     def _passthrough_explanation(self, sql: str, reason: str, warning: str | None = None) -> RewriteExplanation:
@@ -540,7 +540,7 @@ class QueryRewriter:
         optimization, rejected_rules = self._optimize_wrapped_semantic_query(parsed)
         if optimization is not None:
             explanation = self._explanation_from_plan(
-                sql, optimization.plan, self._generate_from_plan(optimization.plan)
+                sql, optimization.plan, self._generate_from_plan(optimization.plan, parsed)
             )
             explanation.pushed_filters = optimization.pushed_filters
             explanation.applied_rules = optimization.applied_rules
@@ -2985,7 +2985,29 @@ class QueryRewriter:
             return True
         return metric.type == "ratio" and bool(metric.offset_window)
 
-    def _generate_from_plan(self, plan: SemanticQueryPlan) -> str:
+    def _query_ctes_in_scope(self, query: exp.Select | None) -> frozenset[str]:
+        """Identify CTE relations actually visible to this parsed SQL scope."""
+        from sqlglot.optimizer.scope import traverse_scope
+
+        if query is None:
+            return frozenset()
+        root = query
+        while root.parent is not None:
+            root = root.parent
+        for scope in traverse_scope(root):
+            if scope.expression is query:
+                # Normalize identifiers using the same rules as the generator.
+                # SQLGlot's scope lookup itself preserves the source spelling.
+                return frozenset(
+                    sqlglot.Dialect.get_or_raise(self.dialect)
+                    .normalize_identifier(source.expression.parent.args["alias"].this.copy())
+                    .name
+                    for source in scope.cte_sources.values()
+                    if isinstance(source.expression.parent, exp.CTE)
+                )
+        return frozenset()
+
+    def _generate_from_plan(self, plan: SemanticQueryPlan, query: exp.Select | None = None) -> str:
         return self.generator.generate(
             metrics=plan.metrics,
             dimensions=plan.dimensions,
@@ -2996,6 +3018,7 @@ class QueryRewriter:
             use_preaggregations=self.use_preaggregations,
             aliases=plan.aliases,
             user_attributes=getattr(self, "_rewrite_user_attributes", None),
+            _query_ctes=self._query_ctes_in_scope(query),
         )
 
     def _dedupe(self, values: list[str]) -> list[str]:
@@ -4932,7 +4955,7 @@ class QueryRewriter:
         """
         optimization, _rejected_rules = self._optimize_wrapped_semantic_query(parsed)
         if optimization is not None:
-            return self._generate_from_plan(optimization.plan), [], _rejected_rules, []
+            return self._generate_from_plan(optimization.plan, parsed), [], _rejected_rules, []
 
         semantic_islands, rejected_rules, warnings = self._rewrite_select_tree(parsed)
 
@@ -5418,7 +5441,7 @@ class QueryRewriter:
                     "branch output columns would not align after rewrite"
                 )
                 return None, None, rejected_rules
-            rewritten_sql = self._generate_from_plan(plan)
+            rewritten_sql = self._generate_from_plan(plan, select)
             replacement = self._parse_island_replacement(rewritten_sql, name=name, as_set_branch=as_set_branch)
             return (
                 replacement,
@@ -5447,7 +5470,7 @@ class QueryRewriter:
             rejected_rules["set_operation_branch_optimization"] = "branch output columns would not align after rewrite"
             return None, None, rejected_rules
 
-        rewritten_sql = self._generate_from_plan(plan)
+        rewritten_sql = self._generate_from_plan(plan, select)
         replacement = self._parse_island_replacement(rewritten_sql, name=name, as_set_branch=as_set_branch)
         return (
             replacement,
@@ -5567,7 +5590,7 @@ class QueryRewriter:
             return self._rewrite_expression_query(parsed, extra_filters=explicit_join_filters)
 
         plan = self._plan_simple_query(parsed, include_candidate_details=False)
-        return self._generate_from_plan(plan)
+        return self._generate_from_plan(plan, parsed)
 
     def _validate_explicit_semantic_joins(self, select: exp.Select) -> list[str]:
         """Allow explicit joins only when they point at modeled semantic relationships."""
@@ -5865,6 +5888,7 @@ class QueryRewriter:
                 filters=filters,
                 aliases=aliases,
                 user_attributes=getattr(self, "_rewrite_user_attributes", None),
+                _query_ctes=self._query_ctes_in_scope(parsed),
             )
 
             projection_sql = ",\n  ".join(projection.sql(dialect=self.dialect) for projection in outer_projections)

@@ -31,6 +31,7 @@ from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
+from sidemantic.paths import output_child
 from sidemantic.yaml_compat import safe_load as _yaml_safe_load
 
 
@@ -534,7 +535,7 @@ class BSLAdapter(BaseAdapter):
                     continue
                 model_data = self._export_model(model)
                 self._add_profile_to_export(model_data, model)
-                model_file = output_path / f"{model.name}.yml"
+                model_file = output_child(output_path, f"{model.name}.yml")
                 with open(model_file, "w") as f:
                     yaml.dump(model_data, f, sort_keys=False, default_flow_style=False)
         else:

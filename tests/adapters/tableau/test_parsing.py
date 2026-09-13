@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+import sidemantic.adapters.tableau as tableau_module
 from sidemantic import SemanticLayer
 from sidemantic.adapters.tableau import TableauAdapter
 from sidemantic.loaders import load_from_directory
@@ -571,3 +572,31 @@ def test_subquery_with_paren_in_string_literal_strips_alias(adapter, tmp_path):
 
     sql = _compiles_to_valid_duckdb_sql(model)
     assert 'AS "Weird"' not in sql
+
+
+def test_package_ignores_compressed_assets(adapter, tmp_path, monkeypatch):
+    package = tmp_path / "assets.tdsx"
+    with zipfile.ZipFile(package, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("../../metadata.tds", '<datasource name="orders"/>')
+        archive.writestr("Data/large.hyper", b"0" * 100_000)
+    monkeypatch.setattr(tableau_module, "_MAX_PACKAGE_XML_BYTES", 1000)
+    assert "orders" in adapter.parse(package).models
+    assert not (tmp_path / "metadata.tds").exists()
+
+
+@pytest.mark.parametrize(
+    "limit,match",
+    [
+        ("_MAX_PACKAGE_MEMBERS", "member count"),
+        ("_MAX_PACKAGE_XML_BYTES", "expanded size"),
+        ("_MAX_PACKAGE_XML_RATIO", "compression ratio"),
+    ],
+)
+def test_package_resource_limits(adapter, tmp_path, monkeypatch, limit, match):
+    package = tmp_path / "limited.tdsx"
+    with zipfile.ZipFile(package, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("orders.tds", '<datasource name="orders">' + " " * 5000 + "</datasource>")
+        archive.writestr("asset.txt", "asset")
+    monkeypatch.setattr(tableau_module, limit, 1)
+    with pytest.raises(ValueError, match=match):
+        adapter.parse(package)

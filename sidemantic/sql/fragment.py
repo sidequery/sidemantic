@@ -12,7 +12,78 @@ from collections.abc import Callable, Iterator
 import sqlglot
 from sqlglot import exp
 from sqlglot.dialects import Dialect
+from sqlglot.errors import SqlglotError
 from sqlglot.optimizer.scope import build_scope
+
+
+def parse_query_fragment(
+    sql: str,
+    dialect: str | None = None,
+    *,
+    order_by: bool = False,
+    query_ctes: frozenset[str] = frozenset(),
+) -> exp.Expression:
+    """Parse a caller expression without granting access to new SQL relations.
+
+    Trusted model and security predicates are deliberately outside this boundary.
+    A SELECT wrapper also catches valid SQL that escapes into another clause.
+    """
+    clause = "order" if order_by else "where"
+    prefix = "SELECT 1 ORDER BY " if order_by else "SELECT 1 WHERE "
+    try:
+        statements = sqlglot.parse(prefix + sql, read=dialect)
+    except SqlglotError as exc:
+        raise ValueError("Invalid query expression") from exc
+    if len(statements) != 1 or not isinstance(statements[0], exp.Select):
+        raise ValueError("Query expression contains disallowed SQL")
+    query = statements[0]
+    if any(value for key, value in query.args.items() if key not in {"expressions", clause}):
+        raise ValueError("Query expression contains disallowed SQL clauses")
+    expression = query.args.get(clause)
+    if expression is None or (order_by and len(expression.expressions) != 1):
+        raise ValueError("Expected one query expression")
+    for node in expression.walk():
+        if isinstance(node, exp.Table):
+            identifier = node.this
+            if (
+                not isinstance(identifier, exp.Identifier)
+                or node.db
+                or node.catalog
+                or Dialect.get_or_raise(dialect).normalize_identifier(identifier.copy()).name not in query_ctes
+            ):
+                raise ValueError("Query expressions cannot introduce physical data sources")
+        if isinstance(node, (exp.From, exp.Join)) and not isinstance(node.this, (exp.Table, exp.Subquery)):
+            raise ValueError("Query expressions cannot introduce physical data sources")
+        if isinstance(node, (exp.Command, exp.DDL, exp.DML, exp.Into)):
+            raise ValueError("Query expressions cannot introduce physical data sources")
+        if isinstance(node, exp.Dot) and isinstance(node.expression, exp.Func):
+            raise ValueError("Qualified functions are not allowed in query expressions")
+        if isinstance(node, exp.Func) and not isinstance(node, (exp.And, exp.Or, exp.Xor)):
+            name = node.name if isinstance(node, exp.Anonymous) else node.sql_name()
+            # Unknown/UDF functions can read files or execute SQL despite having
+            # scalar syntax. Expose those through trusted model expressions only.
+            if name.upper() not in _QUERY_SCALAR_FUNCTIONS:
+                raise ValueError(f"Function {name} is not allowed in query expressions")
+    return expression if order_by else expression.this
+
+
+_QUERY_SCALAR_FUNCTIONS = frozenset(
+    "ABS ACOS ASIN ATAN ATAN2 CEIL CEILING FLOOR ROUND SIGN SQRT CBRT POWER POW EXP LN LOG LOG2 LOG10 "
+    "SIN COS TAN COT DEGREES RADIANS PI MOD GREATEST LEAST COALESCE NULLIF IF IIF CASE CAST TRY_CAST "
+    "LOWER UPPER LENGTH CHAR_LENGTH CHARACTER_LENGTH CONCAT CONCAT_WS SUBSTRING SUBSTR LEFT RIGHT "
+    "TRIM LTRIM RTRIM REPLACE REPEAT REVERSE LPAD RPAD SPLIT SPLIT_PART STARTS_WITH ENDS_WITH "
+    "CONTAINS POSITION STR_POSITION REGEXP_LIKE REGEXP_REPLACE REGEXP_EXTRACT REGEXP_SPLIT "
+    "COUNT SUM AVG MIN MAX MEDIAN STDDEV STDDEV_POP STDDEV_SAMP VARIANCE VAR_POP VAR_SAMP "
+    "DATE TIME TIMESTAMP DATE_TRUNC TIMESTAMP_TRUNC DATETIME_TRUNC TIME_TRUNC DATE_ADD DATE_SUB "
+    "DATE_DIFF DATEDIFF TIMESTAMP_ADD TIMESTAMP_SUB TIMESTAMP_DIFF EXTRACT YEAR MONTH DAY "
+    "DAY_OF_MONTH DAY_OF_WEEK DAY_OF_YEAR WEEK WEEK_OF_YEAR QUARTER HOUR MINUTE SECOND "
+    "CURRENT_DATE CURRENT_TIME CURRENT_TIMESTAMP CURRENT_DATETIME TIME_TO_STR STR_TO_TIME "
+    "TS_OR_DS_TO_DATE TS_OR_DS_TO_TIMESTAMP TS_OR_DS_TO_DATE_STR TIME_TO_UNIX UNIX_TO_TIME "
+    "DATE_TO_DATE_STR LAST_DAY DATE_FROM_PARTS TIMESTAMP_FROM_PARTS INTERVAL "
+    "ARRAY ARRAY_SIZE ARRAY_LENGTH ARRAY_CONTAINS ARRAY_SLICE ARRAY_TO_STRING "
+    "JSON_EXTRACT JSON_EXTRACT_SCALAR JSONB_EXTRACT JSONB_EXTRACT_SCALAR JSON_TYPE "
+    "STRUCT MAP EXISTS ISNULL IFNULL NVL".split()
+)
 
 
 def _quoted_end(sql: str, start: int, closing: str) -> int:

@@ -118,7 +118,9 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
     checks["totals_executed"] = _has_executed_result(totals)
     checks["leaderboard_executed"] = _has_executed_result(leaderboard)
     checks["totals_true_total"] = (
-        totals.get("result", {}).get("sample_row_count") == 1 and "group by" not in (totals.get("sql") or "").lower()
+        totals.get("result", {}).get("sample_row_count") == 1
+        and not totals.get("dimensions")
+        and "group by" not in (totals.get("sql") or "").lower()
     )
 
     leaderboard_dimension = (leaderboard.get("dimensions") or [""])[0]

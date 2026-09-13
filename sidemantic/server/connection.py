@@ -1,12 +1,11 @@
 """PostgreSQL wire protocol connection handler for semantic layer."""
 
 import logging
-import re
 
 import riffq
 
 from sidemantic.core.semantic_layer import SemanticLayer
-from sidemantic.sql.query_rewriter import QueryRewriter
+from sidemantic.core.transport_security import controls_are_active, rewrite_transport_sql
 
 
 class SemanticLayerConnection(riffq.BaseConnection):
@@ -73,13 +72,6 @@ class SemanticLayerConnection(riffq.BaseConnection):
         try:
             sql_lower = sql.lower().strip()
 
-            # Resolve per-session security attributes from the connecting user.
-            # NOTE: the PG path rewrites arbitrary SQL through QueryRewriter, which
-            # does not currently bake in row-level filters. When user attributes
-            # are configured we route the semantic-query path through
-            # ``layer.compile(user_attributes=...)`` so access gates and row
-            # filters are enforced; system/passthrough queries (SET, SHOW,
-            # information_schema, pg_catalog) are unaffected.
             user_attributes = self._user_attributes()
 
             # Each executor thread gets its own cursor so concurrent reads do not
@@ -96,25 +88,17 @@ class SemanticLayerConnection(riffq.BaseConnection):
                 self.send_reader(reader, callback)
                 return
 
-            # Try to handle PostgreSQL-specific system queries
-            # Skip multi-statement queries to avoid response count mismatch
-            if ";" not in sql:
-                handled = self._try_handle_system_query(sql, sql_lower, callback, cursor)
-                if handled:
-                    return
+            # Only parsed single statements qualify for compatibility responses.
+            if self._try_handle_system_query(sql, sql_lower, callback, cursor):
+                return
 
-            # Enforce the coarse-grained access gate BEFORE rewriting. The raw SQL already
-            # names the semantic models, so we can deny deny-by-default (no attributes), a
-            # failing access gate, and any secured model with row_filters (which this SQL-first
-            # path cannot inject) here, before the rewriter's generator runs. Doing it first also
-            # lets an authorized user through: we then thread the attributes into the rewrite so
-            # the generator's deny-by-default does not re-reject an access-only secured model.
-            self._enforce_pg_access(sql, user_attributes)
-
-            # Execute through semantic layer
-            rewriter = QueryRewriter(self.layer.graph, dialect=self.layer.dialect)
-            # Use non-strict mode to pass through system queries (SHOW, SET, etc.)
-            rendered_sql = rewriter.rewrite(sql, strict=False, user_attributes=user_attributes)
+            rendered_sql = rewrite_transport_sql(
+                self.layer,
+                sql,
+                strict=False,
+                user_attributes=user_attributes,
+                transport="PostgreSQL",
+            )
 
             # Execute the query
             result = cursor.execute(rendered_sql)
@@ -130,141 +114,105 @@ class SemanticLayerConnection(riffq.BaseConnection):
             raise
 
     def _enforce_pg_access(self, rendered_sql: str, user_attributes: dict | None) -> None:
-        """Enforce model access gates for the PG wire path.
+        """Validate SQL using the same parsed policy boundary as execution."""
+        rewrite_transport_sql(
+            self.layer,
+            rendered_sql,
+            strict=False,
+            user_attributes=user_attributes,
+            transport="PostgreSQL",
+        )
 
-        Parses ``rendered_sql`` for referenced model names and, for any model with
-        a declared security policy, evaluates its access gate. A secured model
-        queried with no user attributes is denied (deny-by-default); a falsy access
-        gate is denied. Row-level filters are NOT applied here (see the caller's
-        LIMITATION note).
-
-        Raises:
-            SecurityError: If access to a touched secured model is denied.
-        """
+    def _visible_model_names(self) -> list[str]:
+        """Expose semantic names only when the session passes their access gate."""
         from sidemantic.core.security import evaluate_access
-        from sidemantic.core.semantic_layer import SecurityError
 
-        secured = {
-            name: model
+        attrs = self._user_attributes()
+        return [
+            name
             for name, model in self.layer.graph.models.items()
-            if getattr(model, "security", None) is not None
-        }
-        if not secured:
-            return
-
-        lowered = rendered_sql.lower()
-        for name, model in secured.items():
-            # Match the model name (and its underlying table) as a whole word so a
-            # substring of another identifier does not trigger a false positive.
-            candidates = {name.lower()}
-            if getattr(model, "table", None):
-                candidates.add(str(model.table).lower())
-            if not any(re.search(rf"\b{re.escape(c)}\b", lowered) for c in candidates):
-                continue
-            if user_attributes is None:
-                raise SecurityError(
-                    f"Model '{name}' has a security policy but no user attributes were provided "
-                    f"for this session. Configure the connecting user in --user-attrs-file."
-                )
-            if not evaluate_access(model.security.access, user_attributes):
-                raise SecurityError(f"Access to model '{name}' denied for the current user.")
-            # The SQL-first PG path cannot inject per-user row filters into the rewritten SQL,
-            # so a model with row_filters would otherwise return unfiltered rows to any user who
-            # passes the access gate. Deny it here (matching /sql, MCP run_sql, and .sql()).
-            if model.security.row_filters:
-                raise SecurityError(
-                    f"Model '{name}' has row-level filters that the SQL-first PostgreSQL path "
-                    "cannot apply. Query it through the structured HTTP /query API, which enforces "
-                    "row filters per user."
-                )
+            if model.security is None or (attrs is not None and evaluate_access(model.security.access, attrs))
+        ]
 
     def _try_handle_system_query(self, sql: str, sql_lower: str, callback, cursor) -> bool:
         """Try to handle PostgreSQL system queries. Returns True if handled."""
 
-        # pg_get_keywords() - return DuckDB keywords instead
-        if "pg_get_keywords" in sql_lower and ";" not in sql:
-            result = cursor.execute("SELECT keyword_name as word, 'U' as catcode FROM duckdb_keywords()")
-            reader = result.fetch_record_batch()
+        import sqlglot
+        from sqlglot import exp
+
+        # Dispatch on parsed references, never on strings or comments in caller SQL.
+        # Compatibility handlers execute only server-owned SQL, not modified input.
+        statements = [statement for statement in sqlglot.parse(sql, dialect=self.layer.dialect) if statement]
+        if len(statements) != 1:
+            if controls_are_active(self.layer):
+                from sidemantic.core.semantic_layer import SecurityError
+
+                raise SecurityError("PostgreSQL requires a single statement while security controls are active.")
+            return False
+        if not isinstance(statements[0], exp.Select):
+            return False
+        statement = statements[0]
+        tables = {(table.db.lower(), table.name.lower()) for table in statement.find_all(exp.Table)}
+        functions = {node.name.lower() for node in statement.find_all(exp.Anonymous)}
+        controlled = controls_are_active(self.layer)
+
+        def send(query: str) -> bool:
+            reader = cursor.execute(query).fetch_record_batch()
             self.send_reader(reader, callback)
             return True
 
-        # pg_my_temp_schema() - return NULL (DuckDB doesn't have temp schemas the same way)
-        if "pg_my_temp_schema" in sql_lower:
-            result = cursor.execute("SELECT NULL::INTEGER as oid")
-            reader = result.fetch_record_batch()
-            self.send_reader(reader, callback)
-            return True
+        if "pg_get_keywords" in functions:
+            return send("SELECT keyword_name as word, 'U' as catcode FROM duckdb_keywords()")
+        if "pg_my_temp_schema" in functions:
+            return send("SELECT NULL::INTEGER as oid")
 
-        # information_schema queries - include semantic layer tables
-        if "information_schema.tables" in sql_lower:
-            schemas_tables = []
-            for model_name in self.layer.graph.models.keys():
-                safe_name = model_name.replace("'", "''")
-                schemas_tables.append(f"('semantic_layer', '{safe_name}')")
-            if self.layer.graph.metrics:
-                schemas_tables.append("('semantic_layer', 'metrics')")
-
-            union_sql = f"""
-            SELECT table_schema, table_name, 'BASE TABLE' as table_type
-            FROM information_schema.tables
-            WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
-            UNION ALL
-            SELECT schema, table_name, 'BASE TABLE' as table_type
-            FROM (VALUES {", ".join(schemas_tables)}) AS t(schema, table_name)
-            """
-            result = cursor.execute(union_sql)
-            reader = result.fetch_record_batch()
-            self.send_reader(reader, callback)
-            return True
-
-        # pg_settings - PostgreSQL settings view
-        if "pg_settings" in sql_lower:
-            result = cursor.execute(
-                "SELECT name, setting, NULL as source FROM (SELECT NULL as name, NULL as setting) WHERE FALSE"
+        if ("information_schema", "tables") in tables or ("pg_catalog", "pg_class") in tables:
+            visible_models = self._visible_model_names()
+            rows = ["('semantic_layer', '" + name.replace("'", "''") + "')" for name in visible_models]
+            # The synthetic metrics relation spans the entire graph; do not advertise
+            # its global field list to a partially authorized session.
+            if self.layer.graph.metrics and len(visible_models) == len(self.layer.graph.models):
+                rows.append("('semantic_layer', 'metrics')")
+            semantic_sql = (
+                "SELECT schema AS table_schema, table_name FROM (VALUES "
+                + ", ".join(rows)
+                + ") AS t(schema, table_name)"
+                if rows
+                else "SELECT NULL::VARCHAR AS table_schema, NULL::VARCHAR AS table_name WHERE FALSE"
             )
-            reader = result.fetch_record_batch()
-            self.send_reader(reader, callback)
-            return True
-
-        # pg_catalog queries - map to DuckDB equivalents
-        if "pg_catalog." in sql_lower:
-            # pg_namespace - schemas
-            if "pg_namespace" in sql_lower:
-                result = cursor.execute(
-                    "SELECT oid, schema_name as nspname, true as is_on_search_path, comment "
-                    "FROM duckdb_schemas() "
-                    "WHERE schema_name NOT IN ('pg_catalog', 'information_schema')"
+            catalog_sql = semantic_sql
+            if not controlled:
+                catalog_sql += (
+                    " UNION ALL SELECT table_schema, table_name FROM information_schema.tables "
+                    "WHERE table_schema NOT IN ('pg_catalog', 'information_schema')"
                 )
-                reader = result.fetch_record_batch()
-                self.send_reader(reader, callback)
-                return True
+            if ("information_schema", "tables") in tables:
+                return send(f"SELECT table_schema, table_name, 'BASE TABLE' AS table_type FROM ({catalog_sql})")
+            return send(f"SELECT table_name AS relname, table_schema AS relnamespace FROM ({catalog_sql})")
 
-            # pg_class - tables and views
-            elif "pg_class" in sql_lower:
-                result = cursor.execute(
-                    "SELECT table_name as relname, schema_name as relnamespace "
-                    "FROM duckdb_tables() "
-                    "WHERE schema_name NOT IN ('pg_catalog', 'information_schema')"
+        if any(name == "pg_settings" for _, name in tables):
+            return send("SELECT NULL::VARCHAR AS name, NULL::VARCHAR AS setting, NULL::VARCHAR AS source WHERE FALSE")
+
+        if ("pg_catalog", "pg_namespace") in tables:
+            if controlled:
+                return send(
+                    "SELECT 0::BIGINT AS oid, 'semantic_layer' AS nspname, true AS is_on_search_path, "
+                    "NULL::VARCHAR AS comment" + ("" if self._visible_model_names() else " WHERE FALSE")
                 )
-                reader = result.fetch_record_batch()
-                self.send_reader(reader, callback)
-                return True
+            return send(
+                "SELECT oid, schema_name as nspname, true as is_on_search_path, comment "
+                "FROM duckdb_schemas() WHERE schema_name NOT IN ('pg_catalog', 'information_schema')"
+            )
 
-            # Other pg_catalog queries - return empty result
-            else:
-                result = cursor.execute("SELECT NULL WHERE FALSE")
-                reader = result.fetch_record_batch()
-                self.send_reader(reader, callback)
-                return True
+        if any(schema == "pg_catalog" for schema, _ in tables):
+            return send("SELECT NULL WHERE FALSE")
+        if controlled and any(schema == "information_schema" for schema, _ in tables):
+            return send("SELECT NULL WHERE FALSE")
 
-        # obj_description() - not supported, return NULL
-        if "obj_description" in sql_lower:
-            rendered_sql = sql.replace("obj_description(oid, 'pg_namespace')", "NULL")
-            result = cursor.execute(rendered_sql)
-            reader = result.fetch_record_batch()
-            self.send_reader(reader, callback)
-            return True
-
+        # A source-free description probe is safe. Queries involving real sources
+        # must proceed through semantic authorization, including obj_description().
+        if "obj_description" in functions and not tables:
+            return send("SELECT NULL::VARCHAR AS obj_description")
         return False
 
     def handle_query(self, sql, callback=callable, **kwargs):

@@ -17,6 +17,7 @@ from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
+from sidemantic.paths import output_child
 
 _AML_INTERPOLATION_RE = re.compile(r"\{\{\s*(.*?)\s*\}\}")
 _TAGGED_BLOCK_RE = re.compile(r"^@(?P<tag>[A-Za-z_][A-Za-z0-9_]*)\s*(?P<body>.*?);;\s*$", re.DOTALL)
@@ -372,12 +373,12 @@ class HolisticsAdapter(BaseAdapter):
         output_path.mkdir(parents=True, exist_ok=True)
 
         for model in resolved_models.values():
-            model_file = output_path / f"{model.name}.model.aml"
+            model_file = output_child(output_path, f"{model.name}.model.aml")
             model_file.write_text(self._export_model(model))
 
         relationship_blocks = self._export_relationships(resolved_models)
         if relationship_blocks:
-            relationships_file = output_path / "relationships.aml"
+            relationships_file = output_child(output_path, "relationships.aml")
             relationships_file.write_text("\n\n".join(relationship_blocks) + "\n")
 
     def _export_model(self, model: Model) -> str:

@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import base64
+import threading
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 from datetime import date, datetime, time
 from decimal import Decimal
 from typing import Any
@@ -112,3 +115,139 @@ def table_to_arrow_bytes(table: Any) -> bytes:
     with pa.ipc.new_stream(sink, table.schema) as writer:
         writer.write_table(table)
     return sink.getvalue().to_pybytes()
+
+
+# Transport limits do not change SemanticLayer's CLI/Python execution defaults.
+MAX_RESULT_ROWS = 10_000
+MAX_RESPONSE_BYTES = 16 * 1024 * 1024
+QUERY_TIMEOUT_SECONDS = 30.0
+
+
+@dataclass
+class ServerLimits:
+    max_rows: int = MAX_RESULT_ROWS
+    max_bytes: int = MAX_RESPONSE_BYTES
+    timeout_seconds: float = QUERY_TIMEOUT_SECONDS
+    max_concurrency: int = 4
+    slots: Any = field(init=False, repr=False)
+
+    def __post_init__(self):
+        import math
+
+        if any(
+            isinstance(value, bool) or not isinstance(value, int) or value <= 0
+            for value in (self.max_rows, self.max_bytes, self.max_concurrency)
+        ):
+            raise ValueError("Server row, byte and concurrency limits must be positive integers")
+        if not math.isfinite(self.timeout_seconds) or self.timeout_seconds <= 0:
+            raise ValueError("Server timeout must be positive and finite")
+        self.slots = threading.BoundedSemaphore(self.max_concurrency)
+
+
+_default_limits = ServerLimits()
+request_limits: ContextVar[ServerLimits | None] = ContextVar("server_limits", default=None)
+
+
+def current_limits() -> ServerLimits:
+    return request_limits.get() or _default_limits
+
+
+def bounded_sql(sql: str, dialect: str) -> str:
+    """Bound returned rows, including raw SQL; the extra row detects overflow."""
+    import sqlglot
+
+    query = sqlglot.parse_one(sql, dialect=dialect)
+    maximum = current_limits().max_rows + 1
+    limit = query.args.get("limit")
+    expression = limit.expression if limit is not None else None
+    if expression is None:
+        return query.limit(maximum).sql(dialect=dialect)
+    if isinstance(expression, sqlglot.exp.Literal) and expression.is_int:
+        return query.limit(min(int(expression.this), maximum)).sql(dialect=dialect)
+    return sqlglot.exp.select("*").from_(query.subquery("_sidemantic_result")).limit(maximum).sql(dialect=dialect)
+
+
+def check_response_size(value: Any) -> None:
+    import json
+
+    size = len(value) if isinstance(value, bytes) else len(json.dumps(value, default=str).encode())
+    if size > current_limits().max_bytes:
+        raise ValueError(f"Response exceeds {current_limits().max_bytes} bytes")
+
+
+def bounded_table(reader: Any) -> Any:
+    """Drain Arrow batches with cumulative row and byte limits."""
+    import pyarrow as pa
+
+    batches = []
+    rows = size = 0
+    for batch in reader:
+        rows += batch.num_rows
+        size += batch.nbytes
+        if rows > current_limits().max_rows or size > current_limits().max_bytes:
+            raise ValueError("Query result exceeds server row or byte limit")
+        batches.append(batch)
+    return pa.Table.from_batches(batches, schema=reader.schema)
+
+
+def execute_bounded(layer: Any, sql: str, *, arrow: bool = False) -> Any:
+    """Bound transport execution and drain within the cursor lifetime.
+
+    DuckDB's independent cursor supports interrupt. Other adapters still need
+    backend statement timeouts configured by the operator.
+    """
+    import threading
+
+    limits = current_limits()
+    if not limits.slots.acquire(blocking=False):
+        raise ValueError("Server query concurrency limit reached")
+    cursor = None
+    timer = None
+    expired = threading.Event()
+    finished = threading.Event()
+    try:
+        query = bounded_sql(sql, layer.dialect)
+        cursor = layer.adapter.cursor()
+
+        def interrupt():
+            if finished.wait(limits.timeout_seconds):
+                return
+            expired.set()
+            # A one-shot interrupt can race with execute starting (the driver
+            # ignores interrupts while idle). Keep cancelling until draining ends.
+            while not finished.is_set():
+                cursor.interrupt()
+                finished.wait(0.01)
+
+        if callable(getattr(cursor, "interrupt", None)):
+            timer = threading.Thread(target=interrupt, daemon=True)
+            timer.start()
+        execute = getattr(cursor, "execute_bounded", cursor.execute)
+        result = execute(query)
+        if arrow:
+            output = bounded_table(result_to_record_batch_reader(result, layer.adapter))
+        else:
+            # Fetch incrementally; no pyarrow dependency for stdio MCP on DuckDB.
+            columns = [desc[0] for desc in result.description]
+            output = []
+            size = 0
+            import json
+
+            while (row := result.fetchone()) is not None:
+                item = {col: to_json_compatible(value) for col, value in zip(columns, row)}
+                size += len(json.dumps(item).encode())
+                if len(output) >= limits.max_rows or size > current_limits().max_bytes:
+                    raise ValueError("Query result exceeds server row or byte limit")
+                output.append(item)
+        return output
+    finally:
+        if timer is not None:
+            finished.set()
+            timer.join()
+        try:
+            if cursor is not None:
+                cursor.close()
+        finally:
+            limits.slots.release()
+            if expired.is_set():
+                raise ValueError("Query exceeded server execution deadline")

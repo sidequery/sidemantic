@@ -46,7 +46,7 @@ class Parameter(BaseModel):
     def __hash__(self) -> int:
         return hash(self.name)
 
-    def format_value(self, value: Any) -> str:
+    def format_value(self, value: Any, dialect: str | None = None) -> str:
         """Format parameter value for SQL interpolation.
 
         Args:
@@ -61,13 +61,12 @@ class Parameter(BaseModel):
         if value is None:
             value = self.default_value
 
-        if self.type == "string":
-            # Quote string values and escape internal quotes
-            escaped = str(value).replace("'", "''")
-            return f"'{escaped}'"
-        elif self.type == "date":
-            # Format as quoted date string (SQLGlot will handle casting)
-            return f"'{value}'"
+        if self.type in {"string", "date"}:
+            from sqlglot import exp
+
+            # Dialects differ on backslash escaping; let their literal generator
+            # preserve the value. Date coercion remains the database's job.
+            return exp.Literal.string(str(value)).sql(dialect=dialect)
         elif self.type == "number":
             # Validate that value is actually numeric to prevent SQL injection
             if isinstance(value, (int, float)):
@@ -101,7 +100,9 @@ class Parameter(BaseModel):
 class ParameterSet:
     """Collection of parameter values for a query execution."""
 
-    def __init__(self, parameters: dict[str, Parameter], values: dict[str, Any] | None = None):
+    def __init__(
+        self, parameters: dict[str, Parameter], values: dict[str, Any] | None = None, dialect: str | None = None
+    ):
         """Initialize parameter set.
 
         Args:
@@ -110,6 +111,7 @@ class ParameterSet:
         """
         self.parameters = parameters
         self.values = values or {}
+        self.dialect = dialect
 
     def get(self, name: str) -> Any:
         """Get parameter value.
@@ -151,7 +153,7 @@ class ParameterSet:
         """
         param = self.parameters[name]
         value = self.get(name)
-        return param.format_value(value)
+        return param.format_value(value, dialect=self.dialect)
 
     def interpolate(self, sql: str) -> str:
         """Interpolate parameters into SQL string.
@@ -166,7 +168,7 @@ class ParameterSet:
         """
         import re
 
-        from sidemantic.core.template import is_sql_template, render_sql_template
+        from sidemantic.core.template import is_sql_template, render_parameter_template
 
         # Check if this is a full Jinja template (has conditionals, loops, etc.)
         if is_sql_template(sql) and any(marker in sql for marker in ["{%", "{#"]):
@@ -175,7 +177,7 @@ class ParameterSet:
             context = {}
             for name in self.parameters:
                 context[name] = self.get(name)
-            return render_sql_template(sql, context)
+            return render_parameter_template(sql, context, self.parameters, dialect=self.dialect)
 
         # Otherwise use simple parameter substitution with SQL formatting
         # Find all {{ parameter_name }} patterns

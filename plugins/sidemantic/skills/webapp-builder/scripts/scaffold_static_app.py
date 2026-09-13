@@ -13,7 +13,6 @@ from typing import Any
 SKILL_ROOT = Path(__file__).resolve().parents[1]
 STATIC_COMPONENT_ROOT = SKILL_ROOT / "assets" / "components" / "static"
 STATIC_TEMPLATE_ROOT = SKILL_ROOT / "assets" / "templates" / "static-dashboard"
-SENSITIVE_APP_SPEC_KEYS = {"connection"}
 
 
 def _select_candidate(spec: dict[str, Any], model: str | None) -> dict[str, Any]:
@@ -46,16 +45,56 @@ def _render_template(template_name: str, replacements: dict[str, str]) -> str:
     return content
 
 
-def _browser_safe_spec(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {key: _browser_safe_spec(item) for key, item in value.items() if key not in SENSITIVE_APP_SPEC_KEYS}
-    if isinstance(value, list):
-        return [_browser_safe_spec(item) for item in value]
-    return value
+def _browser_safe_spec(spec: dict[str, Any], candidate: dict[str, Any]) -> dict[str, Any]:
+    """Publish only the selected dashboard's data and its verification metadata."""
+    queries = {}
+    for name in ("metric_totals", "dimension_leaderboard", "preview_rows"):
+        query = (candidate.get("queries") or {}).get(name)
+        if not query:
+            continue
+        result = query.get("result") or {}
+        columns = result.get("columns") or []
+        refs = [*query.get("metrics", []), *query.get("dimensions", [])]
+        queries[name] = {
+            "metrics": query.get("metrics", []),
+            "dimensions": query.get("dimensions", []),
+            "output_aliases": {
+                ref: query["output_aliases"][ref] for ref in refs if ref in query.get("output_aliases", {})
+            },
+            "result": {
+                "columns": columns,
+                "sample_rows": [
+                    {column: row.get(column) for column in columns} for row in result.get("sample_rows", [])
+                ],
+                "sample_row_count": len(result.get("sample_rows", [])),
+            },
+        }
+    model = next((model for model in spec.get("models", []) if model.get("name") == candidate["model"]), {})
+    dimension_refs = {ref for query in queries.values() for ref in query["dimensions"]}
+    return {
+        "models": [
+            {
+                "name": candidate["model"],
+                "primary_key": model.get("primary_key"),
+                "dimensions": [
+                    {"name": dimension["name"], "type": dimension.get("type")}
+                    for dimension in model.get("dimensions", [])
+                    if f"{candidate['model']}.{dimension['name']}" in dimension_refs
+                ],
+            }
+        ],
+        "app_candidates": [
+            {
+                "model": candidate["model"],
+                "explicit_leaderboard_dimension": bool(candidate.get("explicit_leaderboard_dimension")),
+                "queries": queries,
+            }
+        ],
+    }
 
 
-def _write_app_spec(path: Path, spec: dict[str, Any]) -> None:
-    path.write_text(json.dumps(_browser_safe_spec(spec), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+def _write_app_spec(path: Path, spec: dict[str, Any], candidate: dict[str, Any]) -> None:
+    path.write_text(json.dumps(_browser_safe_spec(spec, candidate), indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def _write_index(path: Path, title: str, model_name: str) -> None:
@@ -86,7 +125,7 @@ def scaffold(args: argparse.Namespace) -> None:
     data_dir = output_dir / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
 
-    _write_app_spec(data_dir / "app-spec.json", spec)
+    _write_app_spec(data_dir / "app-spec.json", spec, candidate)
     _write_index(output_dir / "index.html", args.title or f"{candidate['model']} Dashboard", candidate["model"])
     distribution_root = STATIC_COMPONENT_ROOT.parent.parent / "ui-dist"
     shutil.copyfile(distribution_root / "sidemantic-ui.css", output_dir / "styles.css")

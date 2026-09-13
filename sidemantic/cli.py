@@ -207,6 +207,19 @@ def _emit_engine_selection(layer: SemanticLayer) -> None:
         emit_diagnostic(f"Engine: {selection['engine']}", force=True)
 
 
+def _read_query_user_attributes(path: Path | None) -> dict | None:
+    """Load local caller context without exposing its contents in diagnostics."""
+    if path is None:
+        return None
+    try:
+        attributes = json.loads(path.read_text())
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise InvocationError(f"Unable to read user-attrs file {path} as JSON") from exc
+    if not isinstance(attributes, dict):
+        raise InvocationError(f"user-attrs file {path} must contain a JSON object")
+    return attributes
+
+
 def _load_query_layer(
     models: Path | None = None,
     connection: str | None = None,
@@ -215,6 +228,7 @@ def _load_query_layer(
     engine: str | None = None,
     fallback: bool | None = None,
     ossie_scope: str | None = None,
+    enforce_visibility: bool = False,
 ) -> SemanticLayer:
     """Load a semantic layer for CLI query/explain commands."""
     engine, resolved_fallback = _resolve_engine_options(engine, fallback)
@@ -232,6 +246,7 @@ def _load_query_layer(
         "use_preaggregations": use_preaggregations,
         "engine": engine,
         "fallback": resolved_fallback,
+        "enforce_visibility": enforce_visibility,
     }
     if connection_str:
         layer = SemanticLayer(connection=connection_str, init_sql=init_sql, **layer_kwargs)
@@ -1439,6 +1454,12 @@ def rewrite(
     db: Path = typer.Option(None, "--db", help="Path to DuckDB database file"),
     engine: str = typer.Option(None, "--engine", help="Runtime engine: python, rust, or auto"),
     fallback: bool | None = typer.Option(None, "--fallback/--no-fallback", help="Allow Rust engine fallback to Python"),
+    user_attrs_file: Path | None = typer.Option(
+        None, "--user-attrs-file", help="JSON object with caller attributes for model access and row policies"
+    ),
+    enforce_visibility: bool = typer.Option(
+        False, "--enforce-visibility", help="Reject semantic fields declared public: false"
+    ),
     use_preaggregations: bool = typer.Option(
         False, "--use-preaggregations", help="Enable automatic pre-aggregation routing"
     ),
@@ -1452,18 +1473,20 @@ def rewrite(
     """
     try:
         sql = read_sql_input(sql)
+        user_attributes = _read_query_user_attributes(user_attrs_file)
         layer = _load_query_layer(
             models,
             connection=connection,
             db=db,
             engine=engine,
             fallback=fallback,
+            enforce_visibility=enforce_visibility,
             use_preaggregations=use_preaggregations,
         )
 
         from sidemantic.core.transport_security import rewrite_transport_sql
 
-        rewritten_sql = rewrite_transport_sql(layer, sql, user_attributes=None, transport="CLI rewrite")
+        rewritten_sql = rewrite_transport_sql(layer, sql, user_attributes=user_attributes, transport="CLI rewrite")
         _emit_engine_selection(layer)
         typer.echo(rewritten_sql)
     except typer.Exit:
@@ -1784,6 +1807,12 @@ def query(
     dry_run: bool = typer.Option(False, "--dry-run", help="Show generated SQL without executing"),
     engine: str = typer.Option(None, "--engine", help="Runtime engine: python, rust, or auto"),
     fallback: bool | None = typer.Option(None, "--fallback/--no-fallback", help="Allow Rust engine fallback to Python"),
+    user_attrs_file: Path | None = typer.Option(
+        None, "--user-attrs-file", help="JSON object with caller attributes for model access and row policies"
+    ),
+    enforce_visibility: bool = typer.Option(
+        False, "--enforce-visibility", help="Reject semantic fields declared public: false"
+    ),
     use_preaggregations: bool = typer.Option(
         False, "--use-preaggregations", help="Enable automatic pre-aggregation routing"
     ),
@@ -1804,6 +1833,7 @@ def query(
     try:
         output_format = resolve_output_format(default="csv")
         sql = read_sql_input(sql)
+        user_attributes = _read_query_user_attributes(user_attrs_file)
         layer = _load_query_layer(
             models,
             connection=connection,
@@ -1811,6 +1841,7 @@ def query(
             use_preaggregations=use_preaggregations,
             engine=engine,
             fallback=fallback,
+            enforce_visibility=enforce_visibility,
             ossie_scope=ossie_scope,
         )
 
@@ -1818,7 +1849,7 @@ def query(
         if dry_run:
             from sidemantic.core.transport_security import rewrite_transport_sql
 
-            rewritten_sql = rewrite_transport_sql(layer, sql, user_attributes=None, transport="CLI dry run")
+            rewritten_sql = rewrite_transport_sql(layer, sql, user_attributes=user_attributes, transport="CLI dry run")
             _emit_engine_selection(layer)
             if cli_state().format_explicit and output_format in {"csv", "json", "jsonl"}:
                 emit_records(
@@ -1832,7 +1863,7 @@ def query(
             return
 
         # Execute query
-        result = layer.sql(sql)
+        result = layer.sql(sql, user_attributes=user_attributes)
         _emit_engine_selection(layer)
 
         # Get results

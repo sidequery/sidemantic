@@ -757,16 +757,48 @@ fn validate_semantic_input(input_json: &str, query_json: &str) -> Result<Vec<Str
 }
 
 pub fn rewrite_with_semantic_input(input_json: &str, sql: &str) -> Result<String> {
+    rewrite_with_semantic_input_context(input_json, sql, "{}")
+}
+
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RewriteContext {
+    user_attributes: Option<Map<String, Value>>,
+    #[serde(default)]
+    enforce_visibility: bool,
+}
+
+pub fn rewrite_with_semantic_input_context(
+    input_json: &str,
+    sql: &str,
+    context_json: &str,
+) -> Result<String> {
     with_semantic_stack(|| {
         let input = SemanticInput::decode(input_json)?;
-        if input
-            .policies
-            .values()
-            .any(|policy| policy.security.is_some() || !policy.invariant_filters.is_empty())
-        {
-            return Err(unsupported("rewrite.model_policies"));
+        let context: RewriteContext = serde_json::from_str(context_json)
+            .map_err(|error| invalid("rewrite.context", error))?;
+        let requires_policies = context.user_attributes.is_some()
+            || context.enforce_visibility
+            || input
+                .policies
+                .values()
+                .any(|policy| policy.security.is_some() || !policy.invariant_filters.is_empty());
+        let prepare = |query: &mut SemanticQuery| {
+            query.prepared_policies = policies::prepare(
+                &input.graph,
+                &input.policies,
+                query,
+                context.user_attributes.as_ref(),
+                context.enforce_visibility,
+                DialectType::DuckDB,
+            )?;
+            Ok(())
+        };
+        let mut rewriter = QueryRewriter::new(&input.graph);
+        if requires_policies {
+            rewriter = rewriter.with_query_preparer(&prepare);
         }
-        QueryRewriter::new(&input.graph).rewrite_with_dialect(sql, DialectType::DuckDB)
+        rewriter.rewrite_with_dialect(sql, DialectType::DuckDB)
     })
 }
 
@@ -858,6 +890,157 @@ mod tests {
         assert!(matches!(
             rewrite_with_semantic_input(&input, "select revenue from orders"),
             Err(SidemanticError::UnsupportedSemanticFeatures { .. })
+        ));
+    }
+
+    #[test]
+    fn rewrite_context_enforces_security_and_invariants() {
+        let mut source = input();
+        source["models"][0]["security"] = json!({"row_filters":["tenant = {{ user.tenant }}"]});
+        source["models"][0]["invariant_filters"] = json!(["not deleted"]);
+        let input = source.to_string();
+        let sql = rewrite_with_semantic_input_context(
+            &input,
+            "select orders.revenue as amount from metrics order by amount desc limit 2 offset 1",
+            r#"{"user_attributes":{"tenant":7}}"#,
+        )
+        .unwrap();
+        assert!(sql.contains("tenant = 7"), "{sql}");
+        assert!(sql.contains("NOT deleted"), "{sql}");
+        assert!(sql.contains("AS amount"), "{sql}");
+        assert!(sql.contains("LIMIT 2"), "{sql}");
+        assert!(sql.contains("OFFSET 1"), "{sql}");
+        assert!(matches!(
+            rewrite_with_semantic_input(&input, "select orders.revenue from metrics"),
+            Err(SidemanticError::Security(_))
+        ));
+    }
+
+    #[test]
+    fn rewrite_context_rejects_unsupported_shapes_and_forged_controls() {
+        let input = input().to_string();
+        for sql in [
+            "select orders.revenue from orders",
+            "select orders.revenue from metrics union all select orders.revenue from metrics",
+            "with x as (select orders.revenue from metrics) select * from x",
+            "select orders.revenue from metrics where orders.status in (select status from orders)",
+            "select orders.revenue from metrics qualify 1 = 1",
+            "select orders.revenue + 1 from metrics",
+            "delete from orders",
+        ] {
+            assert!(
+                matches!(
+                    rewrite_with_semantic_input_context(&input, sql, r#"{"user_attributes":{}}"#),
+                    Err(SidemanticError::UnsupportedSemanticFeatures { .. })
+                ),
+                "{sql}"
+            );
+        }
+        for context in [
+            r#"{"prepared_policies":{}}"#,
+            r#"{"user_attributes":[]}"#,
+            r#"{"enforce_visibility":"false"}"#,
+        ] {
+            assert!(rewrite_with_semantic_input_context(
+                &input,
+                "select orders.revenue from metrics",
+                context
+            )
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn rewrite_context_filters_require_declared_semantic_fields() {
+        let mut source = input();
+        source["models"][0]["invariant_filters"] = json!(["not deleted"]);
+        let input = source.to_string();
+        for clause in ["where", "having"] {
+            for reference in [
+                "orders.amount",
+                "unknown.status",
+                "status",
+                "orders.missing",
+            ] {
+                let sql = format!("select orders.revenue from metrics {clause} {reference} = 1");
+                assert!(
+                    matches!(
+                        rewrite_with_semantic_input_context(
+                            &input,
+                            &sql,
+                            r#"{"user_attributes":{}}"#
+                        ),
+                        Err(SidemanticError::Validation(_))
+                    ),
+                    "{sql}"
+                );
+            }
+        }
+        // Physical columns from the metric and invariant remain valid model
+        // declarations, while the user filter names a declared dimension.
+        let sql = rewrite_with_semantic_input_context(
+            &input,
+            "select orders.revenue from metrics where orders.status = 'paid'",
+            r#"{"user_attributes":{}}"#,
+        )
+        .unwrap();
+        assert!(sql.contains("amount"), "{sql}");
+        assert!(sql.contains("NOT deleted"), "{sql}");
+        source["models"][0]["dimensions"][0]["public"] = json!(false);
+        for clause in ["where", "having"] {
+            let sql = format!("select orders.revenue from metrics {clause} orders.status = 'paid'");
+            assert!(
+                matches!(
+                    rewrite_with_semantic_input_context(
+                        &source.to_string(),
+                        &sql,
+                        r#"{"enforce_visibility":true}"#
+                    ),
+                    Err(SidemanticError::Security(_))
+                ),
+                "{sql}"
+            );
+        }
+    }
+
+    #[test]
+    fn rewrite_context_visibility_and_legacy_compatibility() {
+        let mut source = input();
+        source["models"][0]["metrics"][0]["public"] = json!(false);
+        let input = source.to_string();
+        assert!(rewrite_with_semantic_input(&input, "select orders.revenue from orders").is_ok());
+        assert!(rewrite_with_semantic_input_context(
+            &input,
+            "select orders.revenue from metrics",
+            "{}"
+        )
+        .is_ok());
+        assert!(matches!(
+            rewrite_with_semantic_input_context(
+                &input,
+                "select orders.revenue from metrics",
+                r#"{"enforce_visibility":true}"#,
+            ),
+            Err(SidemanticError::Security(_))
+        ));
+        assert!(matches!(
+            rewrite_with_semantic_input_context(
+                &input,
+                "select orders.missing from metrics",
+                r#"{"enforce_visibility":true}"#,
+            ),
+            Err(SidemanticError::Validation(_))
+        ));
+        let mut source = source;
+        source["models"][0]["metrics"][0]["public"] = json!(true);
+        source["models"][0]["dimensions"][0]["public"] = json!(false);
+        assert!(matches!(
+            rewrite_with_semantic_input_context(
+                &source.to_string(),
+                "select orders.revenue from metrics order by orders.status",
+                r#"{"enforce_visibility":true}"#,
+            ),
+            Err(SidemanticError::Security(_))
         ));
     }
 

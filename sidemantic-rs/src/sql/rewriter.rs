@@ -14,15 +14,30 @@ use polyglot_sql::{
 
 use crate::core::{DimensionType, MetricType, SemanticGraph};
 use crate::error::{Result, SidemanticError};
+use crate::sql::SemanticQuery;
+use polyglot_sql::traversal::ExpressionWalk;
+
+type QueryPreparer<'a> = &'a dyn Fn(&mut SemanticQuery) -> Result<()>;
 
 /// SQL query rewriter using semantic definitions
 pub struct QueryRewriter<'a> {
     graph: &'a SemanticGraph,
+    query_preparer: Option<QueryPreparer<'a>>,
 }
 
 impl<'a> QueryRewriter<'a> {
     pub fn new(graph: &'a SemanticGraph) -> Self {
-        Self { graph }
+        Self {
+            graph,
+            query_preparer: None,
+        }
+    }
+
+    /// Apply request policies before semantic planning. Other SQL shapes are
+    /// rejected because the legacy expression rewriter cannot enforce them.
+    pub(crate) fn with_query_preparer(mut self, prepare: QueryPreparer<'a>) -> Self {
+        self.query_preparer = Some(prepare);
+        self
     }
 
     /// Rewrite a SQL query using semantic layer definitions
@@ -50,6 +65,17 @@ impl<'a> QueryRewriter<'a> {
     }
 
     fn rewrite_statement(&self, statement: Expression) -> Result<Expression> {
+        if self.query_preparer.is_some()
+            && (!matches!(&statement, Expression::Select(select) if is_from_metrics(select.from.as_ref()))
+                || statement
+                    .dfs()
+                    .skip(1)
+                    .any(|node| matches!(node, Expression::Select(_) | Expression::Subquery(_))))
+        {
+            return Err(SidemanticError::UnsupportedSemanticFeatures {
+                capabilities: vec!["rewrite.policy_select_shape".into()],
+            });
+        }
         match statement {
             Expression::Select(select) => {
                 let rewritten_select = self.rewrite_select(*select)?;
@@ -60,7 +86,9 @@ impl<'a> QueryRewriter<'a> {
     }
 
     fn rewrite_select(&self, mut select: Select) -> Result<Select> {
-        if self.graph.has_strict_metric_scope() && is_from_metrics(select.from.as_ref()) {
+        if (self.graph.has_strict_metric_scope() || self.query_preparer.is_some())
+            && is_from_metrics(select.from.as_ref())
+        {
             return self.rewrite_scoped_metrics_select(select);
         }
         if let Some(mut with_clause) = select.with.take() {
@@ -327,6 +355,32 @@ impl<'a> QueryRewriter<'a> {
                     .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))?,
             );
         }
+        if let Some(prepare) = self.query_preparer {
+            for filter in &query.filters {
+                self.validate_contextual_references(filter)?;
+            }
+            // Policies must see semantic ORDER BY references, including private
+            // fields that the projection wrapper cannot otherwise support.
+            let aliases: HashMap<_, _> = projections
+                .iter()
+                .filter_map(|(_, reference, alias)| {
+                    alias
+                        .as_ref()
+                        .map(|alias| ((None, alias.clone()), reference.clone()))
+                })
+                .collect();
+            if let Some(order) = &select.order_by {
+                for item in &order.expressions {
+                    let expression = replace_semantic_columns(item.this.clone(), &aliases)?;
+                    let order_sql = polyglot_generate(&expression, DialectType::DuckDB)
+                        .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))?;
+                    self.validate_contextual_references(&order_sql)?;
+                    query.order_by.push(order_sql);
+                }
+            }
+            prepare(&mut query)?;
+            query.order_by.clear();
+        }
         let sql = SqlGenerator::new(self.graph).generate(&query)?;
         let compiled = parse_sql_with_dialect(&sql, DialectType::DuckDB)?;
         let Some(Expression::Select(compiled)) = compiled.first() else {
@@ -413,6 +467,35 @@ impl<'a> QueryRewriter<'a> {
             }
         }
         Ok(*outer)
+    }
+
+    /// Contextual SQL refers only to declared semantic fields. Physical columns
+    /// are permitted inside trusted model declarations, not user filter text.
+    fn validate_contextual_references(&self, sql: &str) -> Result<()> {
+        for column in crate::core::semantic_column_references(sql)? {
+            let valid = if let Some(owner) = &column.model {
+                self.graph.get_model(owner).is_some_and(|model| {
+                    let base_name = column
+                        .field
+                        .split_once("__")
+                        .map_or(column.field.as_str(), |(name, _)| name);
+                    model.get_metric(&column.field).is_some()
+                        || model.get_dimension(base_name).is_some()
+                })
+            } else {
+                self.graph.get_metric(&column.field).is_some()
+            };
+            if !valid {
+                let reference = column.model.as_ref().map_or_else(
+                    || column.field.clone(),
+                    |model| format!("{model}.{}", column.field),
+                );
+                return Err(SidemanticError::Validation(format!(
+                    "Field '{reference}' not found; model fields must be qualified"
+                )));
+            }
+        }
+        Ok(())
     }
 
     fn wrap_simple_select_with_cte(

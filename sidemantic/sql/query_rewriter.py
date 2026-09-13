@@ -207,21 +207,19 @@ class QueryRewriter:
         self.last_engine_selection = {"engine": "rust", "reason": "Rust engine selected"}
         try:
             capabilities = []
-            if self.enforce_visibility:
-                capabilities.append("query.visibility")
-            if user_attributes is not None:
-                capabilities.append("query.user_attributes")
-            if any(model.security is not None for model in self.graph.models.values()):
-                capabilities.append("model.security")
-            if any(model.invariant_filters for model in self.graph.models.values()):
-                capabilities.append("model.invariant_filters")
             if self.use_preaggregations:
                 capabilities.append("query.preaggregations")
             if uses_yardstick:
                 capabilities.append("query.yardstick_rewrite")
             if capabilities:
                 raise UnsupportedSemanticFeaturesError(capabilities)
-            rewritten = rewrite_semantic_input(self.graph, sql, input_dialect=self.dialect)
+            rewritten = rewrite_semantic_input(
+                self.graph,
+                sql,
+                input_dialect=self.dialect,
+                user_attributes=user_attributes,
+                enforce_visibility=self.enforce_visibility,
+            )
             self.last_engine_selection = {"engine": "rust", "reason": None}
             return rewritten
         except (RustBackendUnavailableError, UnsupportedSemanticFeaturesError) as exc:

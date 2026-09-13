@@ -131,16 +131,28 @@ def rewrite_semantic_input(
     sql: str,
     *,
     input_dialect: str = "duckdb",
+    user_attributes: dict | None = None,
+    enforce_visibility: bool = False,
     rust_module=None,
 ) -> str:
-    """Rewrite SQL without converting graph definitions through native YAML."""
+    """Rewrite SQL with caller context through the versioned graph contract."""
     module = rust_module if rust_module is not None else get_rust_module()
-    rewritten = _call_semantic_entrypoint(
-        module,
-        "rewrite_with_semantic_input",
-        graph_to_semantic_json(graph, input_dialect=input_dialect),
-        sql,
+    context_required = (
+        user_attributes is not None
+        or enforce_visibility
+        or any(model.security is not None or model.invariant_filters for model in graph.models.values())
     )
+    args = [graph_to_semantic_json(graph, input_dialect=input_dialect), sql]
+    entrypoint = "rewrite_with_semantic_input"
+    if context_required:
+        entrypoint = "rewrite_with_semantic_input_context"
+        args.append(
+            json.dumps(
+                {"user_attributes": user_attributes, "enforce_visibility": enforce_visibility},
+                allow_nan=False,
+            )
+        )
+    rewritten = _call_semantic_entrypoint(module, entrypoint, *args)
     if not isinstance(rewritten, str):
         raise TypeError("Rust rewriter returned a non-string SQL result")
     return rewritten

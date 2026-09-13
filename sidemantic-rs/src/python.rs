@@ -156,6 +156,17 @@ fn rewrite_with_semantic_input(py: Python<'_>, input_json: &str, sql: &str) -> P
         .map_err(|error| semantic_input_error(py, error))
 }
 
+#[pyfunction]
+fn rewrite_with_semantic_input_context(
+    py: Python<'_>,
+    input_json: &str,
+    sql: &str,
+    context_json: &str,
+) -> PyResult<String> {
+    crate::semantic_input::rewrite_with_semantic_input_context(input_json, sql, context_json)
+        .map_err(|error| semantic_input_error(py, error))
+}
+
 fn registry_contextvar(py: Python<'_>) -> PyResult<&Py<PyAny>> {
     REGISTRY_CONTEXTVAR.get_or_try_init(py, || {
         let contextvars = py.import("contextvars")?;
@@ -1466,6 +1477,7 @@ fn sidemantic_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(compile_with_semantic_input, m)?)?;
     m.add_function(wrap_pyfunction!(validate_with_semantic_input, m)?)?;
     m.add_function(wrap_pyfunction!(rewrite_with_semantic_input, m)?)?;
+    m.add_function(wrap_pyfunction!(rewrite_with_semantic_input_context, m)?)?;
     m.add_function(wrap_pyfunction!(rewrite_with_yaml, m)?)?;
     m.add_function(wrap_pyfunction!(compile_with_yaml, m)?)?;
     m.add_function(wrap_pyfunction!(load_graph_with_yaml, m)?)?;

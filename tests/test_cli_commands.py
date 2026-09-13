@@ -1040,7 +1040,8 @@ connection:
             captured["kwargs"] = kwargs
             self.graph = type("Graph", (), {"models": {"orders": object()}})()
 
-        def sql(self, sql):
+        def sql(self, sql, *, user_attributes=None):
+            assert user_attributes is None
             captured["sql"] = sql
             return FakeResult()
 

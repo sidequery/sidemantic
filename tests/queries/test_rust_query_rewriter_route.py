@@ -35,7 +35,7 @@ def test_query_rewriter_passes_unexpanded_graph_metric_to_rust(monkeypatch):
     rewriter = QueryRewriter(graph, use_rust_rewriter=True, rust_no_fallback=True)
     sql = "SELECT total_revenue FROM metrics"
     assert rewriter.rewrite(sql) == "SELECT 1 AS from_rust"
-    assert calls == [(graph, sql, {"input_dialect": "duckdb"})]
+    assert calls == [(graph, sql, {"input_dialect": "duckdb", "user_attributes": None, "enforce_visibility": False})]
     assert rewriter.last_engine_selection["engine"] == "rust"
 
 
@@ -78,13 +78,33 @@ def test_strict_rust_cannot_enter_python_yardstick_path(method):
         getattr(rewriter, method)("SEMANTIC SELECT revenue FROM orders")
 
 
-def test_security_fallback_does_not_disable_future_rust_queries(monkeypatch):
-    monkeypatch.setattr("sidemantic.sql.query_rewriter.rewrite_semantic_input", lambda *a, **kw: "SELECT 7")
-    rewriter = QueryRewriter(_graph(), use_rust_rewriter=True, rust_no_fallback=False)
-    rewriter.rewrite("SELECT revenue FROM orders", user_attributes={})
-    assert rewriter.last_engine_selection["engine"] == "python"
-    assert rewriter.rewrite("SELECT revenue FROM orders") == "SELECT 7"
-    assert rewriter.last_engine_selection["engine"] == "rust"
+def test_caller_context_reaches_rust_without_fallback(monkeypatch):
+    calls = []
+
+    def rewrite(*args, **kwargs):
+        calls.append(kwargs)
+        return "SELECT 7"
+
+    monkeypatch.setattr("sidemantic.sql.query_rewriter.rewrite_semantic_input", rewrite)
+    rewriter = QueryRewriter(_graph(), use_rust_rewriter=True, rust_no_fallback=False, enforce_visibility=True)
+    attributes = {"subject": "O'Reilly"}
+    assert rewriter.rewrite("SELECT orders.revenue FROM metrics", user_attributes=attributes) == "SELECT 7"
+    assert calls == [{"input_dialect": "duckdb", "user_attributes": attributes, "enforce_visibility": True}]
+    assert rewriter.last_engine_selection == {"engine": "rust", "reason": None}
+
+
+@pytest.mark.parametrize("no_fallback", [True, False])
+def test_security_errors_never_fall_back(monkeypatch, no_fallback):
+    from sidemantic.core.semantic_layer import SecurityError
+
+    def deny(*args, **kwargs):
+        raise SecurityError("Access denied")
+
+    monkeypatch.setattr("sidemantic.sql.query_rewriter.rewrite_semantic_input", deny)
+    rewriter = QueryRewriter(_graph(), use_rust_rewriter=True, rust_no_fallback=no_fallback)
+    with pytest.raises(SecurityError, match="Access denied"):
+        rewriter.rewrite("SELECT orders.revenue FROM metrics", user_attributes={})
+    assert rewriter.rust_fallback_reason is None
 
 
 def test_explicit_python_overrides_legacy_environment(monkeypatch):
@@ -121,3 +141,16 @@ def test_plain_query_explanation_does_not_claim_rust_compilation():
     explanation = rewriter.explain("SELECT 1")
     assert explanation.chosen_plan == "passthrough_plain_sql"
     assert rewriter.last_engine_selection["engine"] == "passthrough"
+
+
+def test_old_extension_cannot_silently_drop_caller_context():
+    from sidemantic.rust_bridge import rewrite_semantic_input
+
+    class OldExtension:
+        def rewrite_with_semantic_input(self, *args):
+            pytest.fail("Legacy entrypoint must not receive a contextual request")
+
+    with pytest.raises(RustBackendUnavailableError, match="rewrite_with_semantic_input_context"):
+        rewrite_semantic_input(
+            _graph(), "SELECT orders.revenue FROM metrics", user_attributes={}, rust_module=OldExtension()
+        )

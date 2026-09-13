@@ -75,8 +75,8 @@ bypass rollups, including when routing was requested. Rollup routing through
 this boundary is not yet qualified. The legacy Rust materialization helper
 rejects models with invariant filters instead of discarding those filters.
 
-Remaining capability gates include policy-bearing SQL rewrite requests,
-non-DuckDB policy output, many-to-many role paths, computed primary-key
+Remaining capability gates include policy-bearing SQL outside the scoped
+`FROM metrics` subset, non-DuckDB policy output, many-to-many role paths, computed primary-key
 dimensions, unsafe dimension/measure alias collisions across aggregate grains,
 complete-expression measure filters, null-fill options, raw cumulative windows,
 and unqualified conversion, retention, cohort, and non-additive metric shapes.
@@ -90,6 +90,19 @@ For CLI semantic SQL, scoped `SELECT ... FROM metrics` queries with column
 projections and aliases use the structured compiler, including cross-model
 calculations, role dimensions and temporal metrics. The wrapper preserves the
 requested output columns, ordering by projected fields, and pagination.
+Caller attributes and opt-in visibility reach the same Rust policy planner as
+structured queries. Access gates, row filters, invariants, and relationship-role
+populations therefore also apply to supported scoped rewrites. Policy-bearing
+requests with nested queries, set operations, or other source shapes remain
+unsupported; they cannot enter the legacy Rust rewrite path. Security failures
+never trigger fallback.
+
+CLI `query` and `rewrite` accept `--user-attrs-file attributes.json` containing a
+JSON object and `--enforce-visibility`. These apply equally to execution,
+`query --dry-run`, and SQL-only rewriting. Attribute files supply local caller
+context; missing required attributes fail closed. Secured CLI requests bypass
+pre-aggregations.
+
 Expressions or additional clauses outside this subset report an unsupported
 rewrite capability. This is a bounded rewrite path, not full semantic-SQL parity.
 

@@ -219,8 +219,9 @@ relationship cardinality, missing or duplicate edge identity, unusable key
 arrays, non-unique relationship targets, and conflicting metric definitions.
 Synthesis also refuses metric filters, null filling, non-additive/time/window
 modifiers, unresolved inheritance, security restrictions, private fields,
-custom join SQL, and inactive relationships. These runtime settings cannot be
-silently reduced to an unfiltered aggregate or a key-only join. Model-owned
+custom join SQL, inactive relationships, and relationship role aliases. These
+runtime settings cannot be silently reduced to an unfiltered aggregate or a
+key-only join. Model-owned
 columnless aggregates such as `COUNT(*)` are refused because Ossie has no metric
 owner field to preserve their dataset binding.
 

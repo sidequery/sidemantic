@@ -1031,7 +1031,6 @@ mod tests {
             ),
             Err(SidemanticError::Validation(_))
         ));
-        let mut source = source;
         source["models"][0]["metrics"][0]["public"] = json!(true);
         source["models"][0]["dimensions"][0]["public"] = json!(false);
         assert!(matches!(

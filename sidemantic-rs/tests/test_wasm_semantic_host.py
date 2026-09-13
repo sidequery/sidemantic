@@ -120,4 +120,4 @@ def test_reference_validation_is_not_authorization():
 
 
 if __name__ == "__main__":
-    raise SystemExit(pytest.main([__file__, "-q"]))
+    raise SystemExit(pytest.main([__file__, "-q", "-o", "addopts="]))

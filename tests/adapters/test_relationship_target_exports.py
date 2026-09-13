@@ -13,10 +13,12 @@ from sidemantic.adapters.holistics import HolisticsAdapter
 from sidemantic.adapters.metricflow import MetricFlowAdapter
 from sidemantic.adapters.omni import OmniAdapter
 from sidemantic.adapters.osi import OSIAdapter
+from sidemantic.adapters.ossie import OssieAdapter
 from sidemantic.adapters.snowflake import SnowflakeAdapter
 from sidemantic.adapters.thoughtspot import ThoughtSpotAdapter
 from sidemantic.adapters.tmdl import TMDLAdapter
 from sidemantic.core.semantic_graph import SemanticGraph
+from sidemantic.interchange.ossie import OssieSynthesisError
 
 
 def _aliased_graph() -> SemanticGraph:
@@ -91,15 +93,29 @@ def test_atscale_export_preserves_role_and_uses_canonical_dimension(tmp_path):
     assert "billing_customer" not in model["dimensions"]
 
 
-def test_osi_export_preserves_role_name_and_uses_canonical_target(tmp_path):
+@pytest.mark.parametrize("adapter_class", [OSIAdapter, OssieAdapter])
+def test_ossie_export_preserves_role_name_and_uses_canonical_target(tmp_path, adapter_class):
     output = tmp_path / "osi.yaml"
-    OSIAdapter().export(_aliased_graph(), output)
+    graph = _aliased_graph()
+    adapter = adapter_class(export_scope_name="commerce", expression_dialect="ANSI_SQL")
 
-    relationship = yaml.safe_load(output.read_text())["semantic_model"][0]["relationships"][0]
-    assert relationship["name"] == "orders_to_billing_customer"
-    assert relationship["from"] == "orders"
-    assert relationship["to"] == "customers"
-    assert relationship["to_columns"] == ["customer_key"]
+    with pytest.raises(OssieSynthesisError) as error:
+        adapter.export(graph, output, portable_only=True)
+    assert any(d.code == "ossie.synthesis.relationship_semantics_unsupported" for d in error.value.diagnostics)
+    assert not output.exists()
+
+    with pytest.warns(UserWarning, match="requires Sidemantic runtime extension"):
+        adapter.export(graph, output)
+    restored = adapter.parse(output)
+    relationship = restored.models["orders"].relationships[0]
+    assert relationship == graph.models["orders"].relationships[0]
+    assert relationship.name == "billing_customer"
+    assert relationship.related_model == "customers"
+    path = restored.find_relationship_path("orders", "billing_customer")
+    assert len(path) == 1
+    assert path[0].to_target_model == "customers"
+    assert path[0].from_columns == ["customer_id"]
+    assert path[0].to_columns == ["customer_key"]
 
 
 def test_gooddata_export_rejects_role_alias_without_independent_target_slot(tmp_path):

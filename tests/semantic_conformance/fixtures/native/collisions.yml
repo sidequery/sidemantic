@@ -1,0 +1,13 @@
+version: 1
+models:
+- name: collisions
+  table: collisions
+  primary_key: id
+  dimensions:
+  - name: amount
+    type: numeric
+    sql: amount * 10
+  metrics:
+  - name: raw_revenue
+    agg: sum
+    sql: amount

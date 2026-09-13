@@ -101,6 +101,72 @@ type PyRelationshipPath = Vec<(String, String, Vec<String>, Vec<String>, String)
 
 static REGISTRY_CONTEXTVAR: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
 
+pyo3::create_exception!(
+    sidemantic_rs,
+    UnsupportedSemanticFeaturesError,
+    PyRuntimeError
+);
+pyo3::create_exception!(sidemantic_rs, SecurityError, PyRuntimeError);
+pyo3::create_exception!(sidemantic_rs, QueryValidationError, PyValueError);
+
+fn semantic_input_error(py: Python<'_>, error: SidemanticError) -> PyErr {
+    match error {
+        SidemanticError::Security(message) => SecurityError::new_err(message),
+        SidemanticError::UnsupportedSemanticFeatures { capabilities } => {
+            let error = UnsupportedSemanticFeaturesError::new_err(format!(
+                "Unsupported semantic features: {}",
+                capabilities.join(", ")
+            ));
+            if let Err(attribute_error) = error.value(py).setattr("capabilities", capabilities) {
+                return attribute_error;
+            }
+            error
+        }
+        SidemanticError::Validation(_) | SidemanticError::ValidationIssue { .. } => {
+            QueryValidationError::new_err(error.to_string())
+        }
+        SidemanticError::InvalidConfig(_) => PyValueError::new_err(error.to_string()),
+        _ => PyRuntimeError::new_err(error.to_string()),
+    }
+}
+
+#[pyfunction]
+fn compile_with_semantic_input(
+    py: Python<'_>,
+    input_json: &str,
+    query_json: &str,
+) -> PyResult<String> {
+    crate::semantic_input::compile_with_semantic_input(input_json, query_json)
+        .map_err(|error| semantic_input_error(py, error))
+}
+
+#[pyfunction]
+fn validate_with_semantic_input(
+    py: Python<'_>,
+    input_json: &str,
+    query_json: &str,
+) -> PyResult<Vec<String>> {
+    crate::semantic_input::validate_with_semantic_input(input_json, query_json)
+        .map_err(|error| semantic_input_error(py, error))
+}
+
+#[pyfunction]
+fn rewrite_with_semantic_input(py: Python<'_>, input_json: &str, sql: &str) -> PyResult<String> {
+    crate::semantic_input::rewrite_with_semantic_input(input_json, sql)
+        .map_err(|error| semantic_input_error(py, error))
+}
+
+#[pyfunction]
+fn rewrite_with_semantic_input_context(
+    py: Python<'_>,
+    input_json: &str,
+    sql: &str,
+    context_json: &str,
+) -> PyResult<String> {
+    crate::semantic_input::rewrite_with_semantic_input_context(input_json, sql, context_json)
+        .map_err(|error| semantic_input_error(py, error))
+}
+
 fn registry_contextvar(py: Python<'_>) -> PyResult<&Py<PyAny>> {
     REGISTRY_CONTEXTVAR.get_or_try_init(py, || {
         let contextvars = py.import("contextvars")?;
@@ -1399,6 +1465,19 @@ fn ossie_select_scope(
 /// Python module entrypoint.
 #[pymodule]
 fn sidemantic_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add("SecurityError", m.py().get_type::<SecurityError>())?;
+    m.add(
+        "QueryValidationError",
+        m.py().get_type::<QueryValidationError>(),
+    )?;
+    m.add(
+        "UnsupportedSemanticFeaturesError",
+        m.py().get_type::<UnsupportedSemanticFeaturesError>(),
+    )?;
+    m.add_function(wrap_pyfunction!(compile_with_semantic_input, m)?)?;
+    m.add_function(wrap_pyfunction!(validate_with_semantic_input, m)?)?;
+    m.add_function(wrap_pyfunction!(rewrite_with_semantic_input, m)?)?;
+    m.add_function(wrap_pyfunction!(rewrite_with_semantic_input_context, m)?)?;
     m.add_function(wrap_pyfunction!(rewrite_with_yaml, m)?)?;
     m.add_function(wrap_pyfunction!(compile_with_yaml, m)?)?;
     m.add_function(wrap_pyfunction!(load_graph_with_yaml, m)?)?;

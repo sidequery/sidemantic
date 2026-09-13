@@ -1,8 +1,12 @@
 //! SQL generator: compiles semantic queries to SQL
 
+mod aggregate_plan;
+mod join_kind;
+mod temporal;
+
 use std::collections::{HashMap, HashSet};
 
-use polyglot_sql::expressions::{Expression, Literal, Raw};
+use polyglot_sql::expressions::{Expression, Identifier, Literal, Raw};
 use polyglot_sql::DialectType;
 
 use crate::core::{
@@ -10,6 +14,7 @@ use crate::core::{
     MetricType, Model, RelationshipType, RelativeDate, SemanticGraph, SqlDialect, SymmetricAggType,
     TableCalculation,
 };
+use crate::core::{parse_semantic_expression, semantic_column_references};
 use crate::error::{Result, SidemanticError};
 
 type CtePushdownClassification = (HashMap<String, Vec<String>>, Vec<String>);
@@ -33,6 +38,8 @@ pub struct SemanticQuery {
     pub preagg_database: Option<String>,
     pub preagg_schema: Option<String>,
     pub skip_default_time_dimensions: bool,
+    #[doc(hidden)]
+    pub prepared_policies: crate::core::PreparedPolicies,
 }
 
 impl SemanticQuery {
@@ -149,6 +156,9 @@ impl<'a> SqlGenerator<'a> {
 
     /// Generate SQL from a semantic query
     pub fn generate(&self, query: &SemanticQuery) -> Result<String> {
+        if let Some(sql) = aggregate_plan::try_generate(self, query)? {
+            return Ok(sql);
+        }
         let effective_dimensions = if query.skip_default_time_dimensions {
             query.dimensions.clone()
         } else {
@@ -171,6 +181,7 @@ impl<'a> SqlGenerator<'a> {
 
         // Find all required models
         let mut required_models = self.find_required_models(&dimension_refs, &metric_refs)?;
+        required_models.extend(query.prepared_policies.model_names().cloned());
         let segment_filters = self.resolve_segments(&query.segments)?;
         let all_filters: Vec<String> = query
             .filters
@@ -201,7 +212,11 @@ impl<'a> SqlGenerator<'a> {
         }
 
         // Try pre-aggregation routing for single-model aggregate queries.
-        if query.use_preaggregations && !query.ungrouped && required_models.len() == 1 {
+        if query.use_preaggregations
+            && !query.prepared_policies.has_row_filters()
+            && !query.ungrouped
+            && required_models.len() == 1
+        {
             if let Some(model_name) = required_models.iter().next() {
                 if let Some(preagg_sql) = self.try_use_preaggregation(
                     model_name,
@@ -221,10 +236,8 @@ impl<'a> SqlGenerator<'a> {
 
         // Dimension-first base selection preserves the queried dimension domain,
         // including zero-count rows for related metric models.
-        let base_model = dimension_refs
-            .first()
-            .map(|d| d.model.clone())
-            .or_else(|| metric_refs.first().map(|m| m.model.clone()))
+        let base_model = self
+            .query_base_model(&dimension_refs, &metric_refs)
             .ok_or_else(|| {
                 SidemanticError::Validation(
                     "Query must have at least one metric or dimension".into(),
@@ -323,14 +336,14 @@ impl<'a> SqlGenerator<'a> {
                 raw_expr = format!("CASE WHEN {metric_filter} THEN {raw_expr} END");
             }
             raw_model_columns
-                .entry(model_name)
+                .entry(model_name.clone())
                 .or_default()
                 .push(format!(
                     "{raw_expr} AS {}",
                     self.quote_identifier(&raw_alias)
                 ));
             raw_model_aliases
-                .entry(model.name.clone())
+                .entry(model_name)
                 .or_default()
                 .insert(raw_alias);
         }
@@ -383,15 +396,25 @@ impl<'a> SqlGenerator<'a> {
                 } else {
                     "SELECT *".to_string()
                 };
-                let cte_where = if let Some(filters) = cte_where_filters.get(model_name) {
-                    let filter_sql = self.expand_filters_for_cte(model_name, filters)?;
+                let cte_where = {
+                    let mut filter_sql = self.expand_filters_for_cte(
+                        model_name,
+                        cte_where_filters
+                            .get(model_name)
+                            .map(Vec::as_slice)
+                            .unwrap_or_default(),
+                    )?;
+                    filter_sql.extend(
+                        query
+                            .prepared_policies
+                            .filters_for_model(model_name)
+                            .cloned(),
+                    );
                     if filter_sql.is_empty() {
                         String::new()
                     } else {
                         format!("\n  WHERE {}", filter_sql.join(" AND "))
                     }
-                } else {
-                    String::new()
                 };
                 cte_defs.push(format!(
                     "{model_name}_cte AS (\n  {cte_select}\n  FROM {cte_source}{cte_where}\n)"
@@ -469,6 +492,19 @@ impl<'a> SqlGenerator<'a> {
                 MetricType::Simple if query.ungrouped => raw_col.clone(),
                 MetricType::Simple if use_symmetric => {
                     // Use symmetric aggregate to prevent fan-out inflation
+                    if self.graph.has_strict_metric_scope() && model.primary_keys().len() != 1 {
+                        if model.primary_keys().is_empty() {
+                            return Err(SidemanticError::Validation(format!(
+                                "Model '{}' has no primary key for fanout-safe aggregation",
+                                model.name
+                            )));
+                        }
+                        return Err(SidemanticError::UnsupportedSemanticFeatures {
+                            capabilities: vec![
+                                "aggregation.requires_single_primary_key".to_string()
+                            ],
+                        });
+                    }
                     let primary_key_expr = self.model_primary_key_expr(model, Some(&alias));
                     match metric.agg {
                         Some(Aggregation::Sum) => build_symmetric_aggregate_sql_with_key_expr(
@@ -594,14 +630,22 @@ impl<'a> SqlGenerator<'a> {
                     )?
                 };
 
-                let join_type = if cte_where_filters
-                    .get(&step.to_model)
-                    .is_some_and(|filters| !filters.is_empty())
-                {
-                    "INNER JOIN"
-                } else {
-                    "LEFT JOIN"
-                };
+                let join_type =
+                    if let Some(explicit) = join_kind::explicit_join_type(self.graph, step)? {
+                        explicit
+                    } else if cte_where_filters
+                        .get(&step.to_model)
+                        .is_some_and(|filters| !filters.is_empty())
+                        || query
+                            .prepared_policies
+                            .filters_for_model(&step.to_model)
+                            .next()
+                            .is_some()
+                    {
+                        "INNER JOIN"
+                    } else {
+                        "LEFT JOIN"
+                    };
                 sql.push_str(&format!(
                     "{join_type} {}_cte AS {} ON {}\n",
                     step.to_model, to_alias, join_condition
@@ -808,10 +852,7 @@ impl<'a> SqlGenerator<'a> {
         self.ensure_queryable_sources(&required_models)?;
 
         // Dimension-first base selection, mirroring `generate`.
-        let base_model = dimension_refs
-            .first()
-            .map(|d| d.model.clone())
-            .or_else(|| metric_refs.first().map(|m| m.model.clone()));
+        let base_model = self.query_base_model(dimension_refs, metric_refs);
         if let Some(base_model) = base_model {
             self.build_join_paths(&base_model, &required_models)?;
         }
@@ -943,6 +984,9 @@ impl<'a> SqlGenerator<'a> {
         visiting: &mut HashSet<String>,
     ) -> Result<Vec<String>> {
         if !visiting.insert(reference.to_string()) {
+            if self.graph.has_strict_metric_scope() {
+                return Err(SidemanticError::CircularDependency(reference.to_string()));
+            }
             return Ok(Vec::new());
         }
 
@@ -957,6 +1001,9 @@ impl<'a> SqlGenerator<'a> {
         metric: &Metric,
         visiting: &mut HashSet<String>,
     ) -> Result<Vec<String>> {
+        if self.graph.has_strict_metric_scope() {
+            return self.strict_graph_metric_owners(reference, metric, visiting);
+        }
         let mut owners = HashSet::new();
 
         for fragment in [
@@ -1033,6 +1080,95 @@ impl<'a> SqlGenerator<'a> {
             });
         }
         Ok(owners)
+    }
+
+    fn strict_graph_metric_owners(
+        &self,
+        reference: &str,
+        metric: &Metric,
+        visiting: &mut HashSet<String>,
+    ) -> Result<Vec<String>> {
+        let mut owners = HashSet::new();
+        if let Some(owner) = self.graph.metric_owner(reference) {
+            owners.insert(owner.to_string());
+        }
+        for fragment in [
+            metric.sql.as_deref(),
+            metric.base_metric.as_deref(),
+            metric.numerator.as_deref(),
+            metric.denominator.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .chain(metric.filters.iter().map(String::as_str))
+        {
+            for column in semantic_column_references(fragment)? {
+                if let Some(model) = &column.model {
+                    if self.graph.get_model(model).is_none() {
+                        return Err(SidemanticError::InvalidConfig(format!(
+                            "Unknown model '{model}' in metric '{reference}'"
+                        )));
+                    }
+                    owners.insert(model.clone());
+                } else if metric.r#type != MetricType::Simple && !column.aggregate_input {
+                    let local_owner = self.graph.metric_owner(reference).filter(|owner| {
+                        self.graph
+                            .get_model(owner)
+                            .is_some_and(|model| model.get_metric(&column.field).is_some())
+                    });
+                    if let Some(owner) = local_owner {
+                        owners.insert(owner.to_string());
+                    } else if let Some(dependency) = self.graph.get_metric(&column.field) {
+                        owners.extend(self.graph_metric_owner_models_inner(
+                            &column.field,
+                            dependency,
+                            visiting,
+                        )?);
+                    } else {
+                        let candidates: Vec<_> = self
+                            .graph
+                            .models()
+                            .filter(|model| model.get_metric(&column.field).is_some())
+                            .collect();
+                        if candidates.len() > 1 {
+                            return Err(SidemanticError::AmbiguousReference {
+                                field: column.field,
+                                models: candidates
+                                    .iter()
+                                    .map(|model| model.name.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join(", "),
+                            });
+                        }
+                        owners.extend(candidates.iter().map(|model| model.name.clone()));
+                    }
+                }
+            }
+        }
+        if owners.len() != 1 {
+            return Err(SidemanticError::UnsupportedSemanticFeatures {
+                capabilities: vec![format!("metric.graph_scope.{reference}")],
+            });
+        }
+        Ok(owners.into_iter().collect())
+    }
+
+    fn metric_reference_tokens(&self, expression: &str) -> Result<Vec<String>> {
+        if self.graph.has_strict_metric_scope() {
+            return Ok(semantic_column_references(expression)?
+                .into_iter()
+                .filter(|column| !column.aggregate_input)
+                .map(|column| column.name())
+                .collect());
+        }
+        let references = regex::Regex::new(
+            r"\b([A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*|[A-Za-z_][A-Za-z0-9_]*)\b",
+        )
+        .expect("valid metric token regex");
+        Ok(references
+            .find_iter(expression)
+            .map(|token| token.as_str().to_string())
+            .collect())
     }
 
     fn graph_metric_dependency_fragments<'b>(&self, metric: &'b Metric) -> Vec<&'b str> {
@@ -1142,6 +1278,30 @@ impl<'a> SqlGenerator<'a> {
     }
 
     /// Find all models required by the query
+    fn query_base_model(
+        &self,
+        dimensions: &[DimensionRef],
+        metrics: &[MetricRef],
+    ) -> Option<String> {
+        // A role describes rows of its owner when that owner supplies the measures.
+        // Otherwise preserve dimension-first domain selection.
+        if let Some(metric) = metrics.first() {
+            if metrics
+                .iter()
+                .all(|candidate| candidate.model == metric.model)
+                && dimensions.iter().any(|dimension| {
+                    self.graph.role_root_owner(&dimension.model) == Some(metric.model.as_str())
+                })
+            {
+                return Some(metric.model.clone());
+            }
+        }
+        dimensions
+            .first()
+            .map(|dimension| dimension.model.clone())
+            .or_else(|| metrics.first().map(|metric| metric.model.clone()))
+    }
+
     fn find_required_models(
         &self,
         dimension_refs: &[DimensionRef],
@@ -1210,7 +1370,7 @@ impl<'a> SqlGenerator<'a> {
         .collect();
 
         for expr in &exprs {
-            self.collect_models_from_sql_references(expr, models);
+            self.collect_models_from_sql_references(expr, models)?;
         }
 
         if metric.r#type == MetricType::Simple {
@@ -1218,16 +1378,9 @@ impl<'a> SqlGenerator<'a> {
             return Ok(());
         }
 
-        let ref_re = regex::Regex::new(
-            r"\b([A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*|[A-Za-z_][A-Za-z0-9_]*)\b",
-        )
-        .expect("valid metric token regex");
         for expr in exprs {
-            for cap in ref_re.captures_iter(expr) {
-                let Some(token_match) = cap.get(1) else {
-                    continue;
-                };
-                let token = token_match.as_str();
+            for token in self.metric_reference_tokens(expr)? {
+                let token = token.as_str();
                 if Self::is_sql_keyword_or_function(token) {
                     continue;
                 }
@@ -1253,7 +1406,21 @@ impl<'a> SqlGenerator<'a> {
         Ok(())
     }
 
-    fn collect_models_from_sql_references(&self, expr: &str, models: &mut HashSet<String>) {
+    fn collect_models_from_sql_references(
+        &self,
+        expr: &str,
+        models: &mut HashSet<String>,
+    ) -> Result<()> {
+        if self.graph.has_strict_metric_scope() {
+            for column in semantic_column_references(expr)? {
+                if let Some(model) = column.model {
+                    if self.graph.get_model(&model).is_some() {
+                        models.insert(model);
+                    }
+                }
+            }
+            return Ok(());
+        }
         let ref_re = regex::Regex::new(r"\b([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\b")
             .expect("valid model.field regex");
         for cap in ref_re.captures_iter(expr) {
@@ -1265,6 +1432,7 @@ impl<'a> SqlGenerator<'a> {
                 models.insert(model_name.to_string());
             }
         }
+        Ok(())
     }
 
     /// Build join paths from base model to all other required models
@@ -1276,7 +1444,9 @@ impl<'a> SqlGenerator<'a> {
         let mut paths = HashMap::new();
 
         for model in required_models {
-            let path = self.graph.find_join_path(base_model, model)?;
+            let path =
+                self.graph
+                    .find_join_path_with_context(base_model, model, Some(required_models))?;
             paths.insert(model.clone(), path);
         }
 
@@ -1408,16 +1578,8 @@ impl<'a> SqlGenerator<'a> {
         deps: &mut HashSet<(String, String, bool)>,
         visiting: &mut HashSet<(String, String, bool)>,
     ) -> Result<()> {
-        let ref_re = regex::Regex::new(
-            r"\b([A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*|[A-Za-z_][A-Za-z0-9_]*)\b",
-        )
-        .expect("valid metric token regex");
-
-        for cap in ref_re.captures_iter(expr) {
-            let Some(token_match) = cap.get(1) else {
-                continue;
-            };
-            let token = token_match.as_str();
+        for token in self.metric_reference_tokens(expr)? {
+            let token = token.as_str();
             let Some((model, name, graph_metric)) =
                 self.resolve_metric_reference_location(token, default_model)?
             else {
@@ -1455,6 +1617,32 @@ impl<'a> SqlGenerator<'a> {
 
         let metric = self.metric_for_ref(metric_ref)?;
 
+        if self.graph.has_strict_metric_scope() && metric.r#type == MetricType::Derived {
+            for column in semantic_column_references(metric.sql_expr())? {
+                if column.aggregate_input {
+                    deps.insert((
+                        column.model.unwrap_or_else(|| metric_ref.model.clone()),
+                        column.field,
+                    ));
+                } else if let Some((model, name, graph_metric)) =
+                    self.resolve_metric_reference_location(&column.name(), &metric_ref.model)?
+                {
+                    self.collect_inline_metric_column_dependencies(
+                        &MetricRef {
+                            model,
+                            name: name.clone(),
+                            alias: name,
+                            graph_metric,
+                        },
+                        deps,
+                        visiting,
+                    )?;
+                }
+            }
+            visiting.remove(&key);
+            return Ok(());
+        }
+
         match metric.r#type {
             MetricType::Derived if Self::is_inline_aggregate_expression(metric.sql_expr()) => {
                 self.collect_inline_metric_column_dependencies_from_expr(
@@ -1464,15 +1652,8 @@ impl<'a> SqlGenerator<'a> {
                 )?;
             }
             MetricType::Derived => {
-                let ref_re = regex::Regex::new(
-                    r"\b([A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*|[A-Za-z_][A-Za-z0-9_]*)\b",
-                )
-                .expect("valid metric token regex");
-                for cap in ref_re.captures_iter(metric.sql_expr()) {
-                    let Some(token_match) = cap.get(1) else {
-                        continue;
-                    };
-                    let token = token_match.as_str();
+                for token in self.metric_reference_tokens(metric.sql_expr())? {
+                    let token = token.as_str();
                     let Some((model, name, graph_metric)) =
                         self.resolve_metric_reference_location(token, &metric_ref.model)?
                     else {
@@ -1524,6 +1705,15 @@ impl<'a> SqlGenerator<'a> {
         default_model: &str,
         deps: &mut HashSet<(String, String)>,
     ) -> Result<()> {
+        if self.graph.has_strict_metric_scope() {
+            for column in semantic_column_references(expr)? {
+                let model = column.model.unwrap_or_else(|| default_model.to_string());
+                if self.graph.get_model(&model).is_some() {
+                    deps.insert((model, column.field));
+                }
+            }
+            return Ok(());
+        }
         let ref_re = regex::Regex::new(r"\b([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\b")
             .expect("valid model.field regex");
         for cap in ref_re.captures_iter(expr) {
@@ -1574,6 +1764,19 @@ impl<'a> SqlGenerator<'a> {
         reference: &str,
         default_model: &str,
     ) -> Result<Option<(String, String, bool)>> {
+        if self.graph.has_strict_metric_scope()
+            && !reference.contains('.')
+            && self
+                .graph
+                .get_model(default_model)
+                .is_some_and(|model| model.get_metric(reference).is_some())
+        {
+            return Ok(Some((
+                default_model.to_string(),
+                reference.to_string(),
+                false,
+            )));
+        }
         if let Some((model_name, metric_name, graph_metric)) =
             self.exact_metric_reference(reference)?
         {
@@ -1822,7 +2025,7 @@ impl<'a> SqlGenerator<'a> {
         for model_name in &model_order {
             let cte_name = format!("{model_name}_preagg");
             cte_names.push(cte_name.clone());
-            let subquery = SemanticQuery::new()
+            let mut subquery = SemanticQuery::new()
                 .with_metrics(
                     metrics_by_model
                         .get(model_name)
@@ -1845,6 +2048,7 @@ impl<'a> SqlGenerator<'a> {
                 })
                 .with_ungrouped(false)
                 .with_skip_default_time_dimensions(true);
+            subquery.prepared_policies = query.prepared_policies.clone();
             let subquery_sql = self.generate(&subquery)?;
             cte_defs.push(format!("{cte_name} AS (\n{subquery_sql}\n)"));
         }
@@ -1981,14 +2185,7 @@ impl<'a> SqlGenerator<'a> {
         let mut cohort_metrics: Vec<MetricRef> = Vec::new();
 
         for metric_ref in metric_refs {
-            let model = self.graph.get_model(&metric_ref.model).ok_or_else(|| {
-                let available: Vec<&str> = self.graph.models().map(|m| m.name.as_str()).collect();
-                SidemanticError::model_not_found(&metric_ref.model, &available)
-            })?;
-            let metric = model.get_metric(&metric_ref.name).ok_or_else(|| {
-                let available: Vec<&str> = model.metrics.iter().map(|m| m.name.as_str()).collect();
-                SidemanticError::metric_not_found(&metric_ref.model, &metric_ref.name, &available)
-            })?;
+            let metric = self.metric_for_ref(metric_ref)?;
 
             match metric.r#type {
                 MetricType::Cumulative => {
@@ -2146,12 +2343,13 @@ impl<'a> SqlGenerator<'a> {
             );
         }
 
-        let inner_query = SemanticQuery::new()
+        let mut inner_query = SemanticQuery::new()
             .with_metrics(base_metrics.clone())
             .with_dimensions(effective_dimensions.to_vec())
             .with_filters(query.filters.clone())
             .with_segments(query.segments.clone())
             .with_ungrouped(false);
+        inner_query.prepared_policies = query.prepared_policies.clone();
 
         let inner_sql = self.generate(&inner_query)?;
         let mut select_exprs: Vec<String> = Vec::new();
@@ -2168,15 +2366,9 @@ impl<'a> SqlGenerator<'a> {
             lag_cte_columns.push(alias);
         }
 
+        let mut cumulative_selects = Vec::new();
         for metric_ref in &cumulative_metrics {
-            let model = self.graph.get_model(&metric_ref.model).ok_or_else(|| {
-                let available: Vec<&str> = self.graph.models().map(|m| m.name.as_str()).collect();
-                SidemanticError::model_not_found(&metric_ref.model, &available)
-            })?;
-            let metric = model.get_metric(&metric_ref.name).ok_or_else(|| {
-                let available: Vec<&str> = model.metrics.iter().map(|m| m.name.as_str()).collect();
-                SidemanticError::metric_not_found(&metric_ref.model, &metric_ref.name, &available)
-            })?;
+            let metric = self.metric_for_ref(metric_ref)?;
 
             let (order_col, _) = if let Some(window_order) = metric.window_order.as_ref() {
                 (format!("base.{window_order}"), None)
@@ -2217,35 +2409,14 @@ impl<'a> SqlGenerator<'a> {
                 _ => "SUM",
             };
 
-            let window_clause = if let Some(grain) = metric.grain_to_date.as_ref() {
-                let grain = match grain {
-                    crate::core::TimeGrain::Day => "day",
-                    crate::core::TimeGrain::Week => "week",
-                    crate::core::TimeGrain::Month => "month",
-                    crate::core::TimeGrain::Quarter => "quarter",
-                    crate::core::TimeGrain::Year => "year",
-                };
-                format!(
-                    "PARTITION BY DATE_TRUNC('{grain}', {order_col}) ORDER BY {order_col} ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW"
-                )
-            } else if let Some(window) = metric.window.as_ref() {
-                let parts: Vec<&str> = window.split_whitespace().collect();
-                if parts.len() == 2 {
-                    format!(
-                        "ORDER BY {order_col} RANGE BETWEEN INTERVAL '{}' PRECEDING AND CURRENT ROW",
-                        parts.join(" ")
-                    )
-                } else {
-                    format!("ORDER BY {order_col} ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW")
-                }
-            } else {
-                format!("ORDER BY {order_col} ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW")
-            };
+            let window_clause = self.cumulative_window_sql(metric, dimension_refs, &order_col)?;
 
-            select_exprs.push(format!(
+            let expression = format!(
                 "{agg_sql}({base_col}) OVER ({window_clause}) AS {}",
                 metric_ref.alias
-            ));
+            );
+            select_exprs.push(expression.clone());
+            cumulative_selects.push((expression, metric_ref.alias.clone()));
         }
 
         let mut sql = if !offset_ratio_metrics.is_empty() || !time_comparison_metrics.is_empty() {
@@ -2253,22 +2424,13 @@ impl<'a> SqlGenerator<'a> {
                 .iter()
                 .map(|column| format!("base.{column}"))
                 .collect();
+            for (expression, alias) in cumulative_selects {
+                lag_selects.push(expression);
+                lag_cte_columns.push(alias);
+            }
 
             for metric_ref in &time_comparison_metrics {
-                let model = self.graph.get_model(&metric_ref.model).ok_or_else(|| {
-                    let available: Vec<&str> =
-                        self.graph.models().map(|m| m.name.as_str()).collect();
-                    SidemanticError::model_not_found(&metric_ref.model, &available)
-                })?;
-                let metric = model.get_metric(&metric_ref.name).ok_or_else(|| {
-                    let available: Vec<&str> =
-                        model.metrics.iter().map(|m| m.name.as_str()).collect();
-                    SidemanticError::metric_not_found(
-                        &metric_ref.model,
-                        &metric_ref.name,
-                        &available,
-                    )
-                })?;
+                let metric = self.metric_for_ref(metric_ref)?;
                 let (time_col, time_granularity) =
                     self.find_time_order_column(dimension_refs, None)?;
                 let base_ref = metric.base_metric.as_ref().ok_or_else(|| {
@@ -2285,27 +2447,23 @@ impl<'a> SqlGenerator<'a> {
                 let prev_alias = format!("{}_prev_value", metric_ref.alias);
                 let window_clause =
                     self.lag_window_clause(dimension_refs, &time_col, Some(lag_offset));
-                lag_selects.push(format!(
-                    "LAG(base.{base_alias}, {lag_offset}) OVER ({window_clause}) AS {prev_alias}"
-                ));
+                let prior = self
+                    .calendar_prior_value(
+                        metric,
+                        dimension_refs,
+                        &time_col,
+                        time_granularity.as_deref(),
+                        &format!("base.{base_alias}"),
+                    )?
+                    .unwrap_or_else(|| {
+                        format!("LAG(base.{base_alias}, {lag_offset}) OVER ({window_clause})")
+                    });
+                lag_selects.push(format!("{prior} AS {prev_alias}"));
             }
 
             for metric_ref in &offset_ratio_metrics {
-                let model = self.graph.get_model(&metric_ref.model).ok_or_else(|| {
-                    let available: Vec<&str> =
-                        self.graph.models().map(|m| m.name.as_str()).collect();
-                    SidemanticError::model_not_found(&metric_ref.model, &available)
-                })?;
-                let metric = model.get_metric(&metric_ref.name).ok_or_else(|| {
-                    let available: Vec<&str> =
-                        model.metrics.iter().map(|m| m.name.as_str()).collect();
-                    SidemanticError::metric_not_found(
-                        &metric_ref.model,
-                        &metric_ref.name,
-                        &available,
-                    )
-                })?;
-                let (time_col, _) = self.find_time_order_column(dimension_refs, None)?;
+                let metric = self.metric_for_ref(metric_ref)?;
+                let (time_col, granularity) = self.find_time_order_column(dimension_refs, None)?;
                 let denominator = metric.denominator.as_ref().ok_or_else(|| {
                     SidemanticError::Validation(format!(
                         "offset ratio metric '{}' requires denominator",
@@ -2315,9 +2473,16 @@ impl<'a> SqlGenerator<'a> {
                 let denom_alias = self.metric_alias_from_ref(denominator);
                 let prev_alias = format!("{}_prev_denom", metric_ref.alias);
                 let window_clause = self.lag_window_clause(dimension_refs, &time_col, None);
-                lag_selects.push(format!(
-                    "LAG(base.{denom_alias}) OVER ({window_clause}) AS {prev_alias}"
-                ));
+                let prior = self
+                    .calendar_prior_value(
+                        metric,
+                        dimension_refs,
+                        &time_col,
+                        granularity.as_deref(),
+                        &format!("base.{denom_alias}"),
+                    )?
+                    .unwrap_or_else(|| format!("LAG(base.{denom_alias}) OVER ({window_clause})"));
+                lag_selects.push(format!("{prior} AS {prev_alias}"));
             }
 
             let mut lag_cte_sql = String::new();
@@ -2330,20 +2495,7 @@ impl<'a> SqlGenerator<'a> {
             let mut final_selects = lag_cte_columns.clone();
 
             for metric_ref in &time_comparison_metrics {
-                let model = self.graph.get_model(&metric_ref.model).ok_or_else(|| {
-                    let available: Vec<&str> =
-                        self.graph.models().map(|m| m.name.as_str()).collect();
-                    SidemanticError::model_not_found(&metric_ref.model, &available)
-                })?;
-                let metric = model.get_metric(&metric_ref.name).ok_or_else(|| {
-                    let available: Vec<&str> =
-                        model.metrics.iter().map(|m| m.name.as_str()).collect();
-                    SidemanticError::metric_not_found(
-                        &metric_ref.model,
-                        &metric_ref.name,
-                        &available,
-                    )
-                })?;
+                let metric = self.metric_for_ref(metric_ref)?;
                 let base_ref = metric.base_metric.as_ref().ok_or_else(|| {
                     SidemanticError::Validation(format!(
                         "time_comparison metric '{}' requires 'base_metric' field",
@@ -2365,27 +2517,17 @@ impl<'a> SqlGenerator<'a> {
                         metric_ref.alias
                     ),
                     crate::core::ComparisonCalculation::Ratio => {
-                        format!("({base_alias} / NULLIF({prev_value_col}, 0)) AS {}", metric_ref.alias)
+                        format!(
+                            "({base_alias} / NULLIF({prev_value_col}, 0)) AS {}",
+                            metric_ref.alias
+                        )
                     }
                 };
                 final_selects.push(expr);
             }
 
             for metric_ref in &offset_ratio_metrics {
-                let model = self.graph.get_model(&metric_ref.model).ok_or_else(|| {
-                    let available: Vec<&str> =
-                        self.graph.models().map(|m| m.name.as_str()).collect();
-                    SidemanticError::model_not_found(&metric_ref.model, &available)
-                })?;
-                let metric = model.get_metric(&metric_ref.name).ok_or_else(|| {
-                    let available: Vec<&str> =
-                        model.metrics.iter().map(|m| m.name.as_str()).collect();
-                    SidemanticError::metric_not_found(
-                        &metric_ref.model,
-                        &metric_ref.name,
-                        &available,
-                    )
-                })?;
+                let metric = self.metric_for_ref(metric_ref)?;
                 let numerator = metric.numerator.as_ref().ok_or_else(|| {
                     SidemanticError::Validation(format!(
                         "offset ratio metric '{}' requires numerator",
@@ -2502,7 +2644,10 @@ impl<'a> SqlGenerator<'a> {
             if dim.r#type == crate::core::DimensionType::Time {
                 return Ok((
                     format!("base.{}", dim_ref.alias),
-                    dim_ref.granularity.clone(),
+                    dim_ref
+                        .granularity
+                        .clone()
+                        .or_else(|| dim.granularity.clone()),
                 ));
             }
         }
@@ -3470,7 +3615,7 @@ impl<'a> SqlGenerator<'a> {
     }
 
     fn validate_identifier(&self, value: &str, label: &str) -> Result<()> {
-        let valid = regex::Regex::new(r"^[a-zA-Z_][a-zA-Z0-9_.]*$")
+        let valid = regex::Regex::new(r"^[a-zA-Z_][a-zA-Z0-9_.$]*$")
             .expect("valid identifier regex")
             .is_match(value);
         if valid {
@@ -4303,7 +4448,12 @@ impl<'a> SqlGenerator<'a> {
         if Self::is_simple_identifier(identifier) {
             identifier.to_string()
         } else {
-            format!("\"{}\"", identifier.replace('"', "\"\""))
+            // A quoted identifier is a leaf AST node with no unsupported operations.
+            polyglot_sql::generate(
+                &Expression::Identifier(Identifier::quoted(identifier)),
+                self.dialect,
+            )
+            .expect("quoted identifier generation is infallible")
         }
     }
 
@@ -4454,6 +4604,9 @@ impl<'a> SqlGenerator<'a> {
         default_model: &str,
         visited: &mut HashSet<(String, String, bool)>,
     ) -> Result<String> {
+        if self.graph.has_strict_metric_scope() {
+            return self.expand_strict_derived_metric(expr, default_model, visited);
+        }
         if Self::is_inline_aggregate_expression(expr) {
             return self.rewrite_inline_aggregate_expression(expr, default_model);
         }
@@ -4499,6 +4652,46 @@ impl<'a> SqlGenerator<'a> {
         }
 
         Ok(result)
+    }
+
+    fn expand_strict_derived_metric(
+        &self,
+        expression: &str,
+        default_model: &str,
+        visited: &mut HashSet<(String, String, bool)>,
+    ) -> Result<String> {
+        let parsed = parse_semantic_expression(expression)?;
+        let columns = semantic_column_references(expression)?;
+        let has_aggregate = columns.iter().any(|column| column.aggregate_input);
+        let mut replacements = HashMap::new();
+        for column in columns {
+            let replacement = if column.aggregate_input {
+                let model = column.model.as_deref().unwrap_or(default_model);
+                format!(
+                    "{}.{}",
+                    self.model_alias(model),
+                    self.quote_identifier(&column.field)
+                )
+            } else {
+                if has_aggregate {
+                    return Err(SidemanticError::UnsupportedSemanticFeatures {
+                        capabilities: vec!["metric.mixed_aggregate_inputs".into()],
+                    });
+                }
+                let expanded = self
+                    .metric_expression_for_reference(&column.name(), default_model, visited)?
+                    .ok_or_else(|| {
+                        SidemanticError::Validation(format!(
+                            "Metric not found: '{}'",
+                            column.name()
+                        ))
+                    })?;
+                format!("({expanded})")
+            };
+            replacements.insert((column.model, column.field), replacement);
+        }
+        let rewritten = crate::core::replace_semantic_columns(parsed, &replacements)?;
+        self.emit_expression(&rewritten)
     }
 
     fn should_error_for_unresolved_derived_token(&self, token: &str) -> bool {
@@ -5118,7 +5311,7 @@ models:
     }
 
     #[test]
-    fn test_time_comparison_lag_partitions_by_non_time_dimensions() {
+    fn test_time_comparison_calendar_lookup_partitions_by_non_time_dimensions() {
         let mut graph = SemanticGraph::new();
         let orders = Model::new("orders", "order_id")
             .with_table("orders")
@@ -5144,9 +5337,9 @@ models:
 
         assert!(
             sql.contains(
-                "LAG(base.revenue, 1) OVER (PARTITION BY base.status ORDER BY base.order_date__month)"
+                "MAX(base.revenue) OVER (PARTITION BY base.status ORDER BY base.order_date__month RANGE BETWEEN INTERVAL '1 month' PRECEDING AND INTERVAL '1 month' PRECEDING)"
             ),
-            "time comparison lag must partition by non-time dimensions: {sql}"
+            "calendar comparison must partition by non-time dimensions: {sql}"
         );
     }
 
@@ -5441,6 +5634,8 @@ models:
             .with_metric(Metric::sum("revenue", "amount"))
             .with_relationship(Relationship {
                 name: "products".to_string(),
+                target_model: None,
+                active: true,
                 edge_id: None,
                 r#type: RelationshipType::ManyToMany,
                 foreign_key: None,

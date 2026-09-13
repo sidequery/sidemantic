@@ -1,0 +1,14 @@
+version: 1
+models:
+  - name: collisions
+    table: collisions
+    primary_key: id
+    dimensions:
+      - name: amount
+        type: numeric
+        sql: amount * 10
+    metrics:
+      - name: filtered_revenue
+        sql: SUM(amount)
+        sql_is_complete: true
+        filters: ['amount = 2']

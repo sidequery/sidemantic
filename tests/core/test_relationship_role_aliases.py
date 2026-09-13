@@ -9,8 +9,8 @@ from sidemantic.core.model import Model
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.core.semantic_layer import SemanticLayer
+from sidemantic.semantic_handoff import UnsupportedSemanticFeaturesError
 from sidemantic.sql.generator import SQLGenerator
-from sidemantic.validation import QueryValidationError
 
 
 def _flight_graph() -> SemanticGraph:
@@ -317,16 +317,24 @@ def test_inactive_and_unresolved_roles_do_not_scope_the_only_active_role():
     assert "flights$airport" not in graph._role_models
 
 
-def test_auto_engine_bypasses_rust_validation_and_generation_for_roles(monkeypatch):
+class _UnsupportedRoleBackend:
+    def validate_with_semantic_input(self, _input_json, _query_json):
+        raise UnsupportedSemanticFeaturesError(["relationship.roles"])
+
+    def compile_with_semantic_input(self, _input_json, _query_json):
+        raise UnsupportedSemanticFeaturesError(["relationship.roles"])
+
+
+def test_optional_rust_modes_fall_back_when_backend_rejects_roles(monkeypatch):
     layer = SemanticLayer(engine="python")
     layer.graph = _flight_graph()
+    layer._rust_module = _UnsupportedRoleBackend()
     layer._use_rust_query_validation = True
     layer._use_rust_sql_generator = True
 
     def unexpected(*_args, **_kwargs):
-        raise AssertionError("role aliases must stay on the Python path")
+        raise AssertionError("Rust compilation must not run after validation requests fallback")
 
-    monkeypatch.setattr("sidemantic.rust_bridge.validate_query_with_rust", unexpected)
     monkeypatch.setattr(layer, "_compile_with_rust", unexpected)
 
     sql = layer.compile(
@@ -335,20 +343,23 @@ def test_auto_engine_bypasses_rust_validation_and_generation_for_roles(monkeypat
         use_preaggregations=False,
     )
     assert "origin_cte" in sql
+    assert layer.last_engine_selection["engine"] == "python"
+    assert "relationship.roles" in layer.last_engine_selection["reason"]
 
 
-def test_strict_rust_modes_fail_closed_for_role_aliases():
-    validation_layer = SemanticLayer(engine="python")
-    validation_layer.graph = _flight_graph()
-    validation_layer._use_rust_query_validation = True
-    validation_layer._strict_rust_query_validation = True
-    with pytest.raises(QueryValidationError, match="does not support relationship role aliases"):
-        validation_layer.compile(metrics=["flights.flight_count"], dimensions=["origin.city"])
+@pytest.mark.parametrize("stage", ["validation", "generation"])
+def test_strict_rust_modes_propagate_backend_role_rejection(stage, monkeypatch):
+    layer = SemanticLayer(engine="python")
+    layer.graph = _flight_graph()
+    layer._rust_module = _UnsupportedRoleBackend()
+    layer._use_rust_query_validation = stage == "validation"
+    layer._strict_rust_query_validation = stage == "validation"
+    layer._use_rust_sql_generator = stage == "generation"
+    layer._strict_rust_sql_generator_entrypoint = stage == "generation"
 
-    generation_layer = SemanticLayer(engine="python")
-    generation_layer.graph = _flight_graph()
-    generation_layer._use_rust_query_validation = False
-    generation_layer._use_rust_sql_generator = True
-    generation_layer._strict_rust_sql_generator_entrypoint = True
-    with pytest.raises(ValueError, match="does not support relationship role aliases"):
-        generation_layer.compile(metrics=["flights.flight_count"], dimensions=["origin.city"])
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("Strict Rust selection must not fall back to Python")
+
+    monkeypatch.setattr(layer, "_compile_with_python", unexpected)
+    with pytest.raises(UnsupportedSemanticFeaturesError, match="relationship.roles"):
+        layer.compile(metrics=["flights.flight_count"], dimensions=["origin.city"])

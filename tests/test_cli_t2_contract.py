@@ -743,10 +743,10 @@ def test_validate_rust_failures_preserve_requested_output(
     output_mode: str,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    def fail_to_load(_directory: Path):
+    def fail_to_load(*args, **kwargs):
         raise RuntimeError("bridge unavailable")
 
-    monkeypatch.setattr("sidemantic.rust_bridge.load_graph_from_directory_with_rust", fail_to_load)
+    monkeypatch.setattr("sidemantic.rust_bridge.validate_semantic_input", fail_to_load)
     arguments = ["validate", "--project", str(project), "--engine", "rust"]
     arguments.extend(["--plain"] if output_mode == "plain" else ["--format", output_mode])
 
@@ -756,19 +756,16 @@ def test_validate_rust_failures_preserve_requested_output(
     if output_mode == "json":
         payload = json.loads(result.stdout)
         assert payload["valid"] is False
-        assert payload["errors"] == ["Rust validation failed: bridge unavailable"]
+        assert payload["errors"] == ["Rust compatibility failed: bridge unavailable"]
     elif output_mode == "jsonl":
-        assert json.loads(result.stdout) == {
-            "level": "error",
-            "message": "Rust validation failed: bridge unavailable",
-        }
+        records = [json.loads(line) for line in result.stdout.splitlines()]
+        assert {"level": "error", "message": "Rust compatibility failed: bridge unavailable"} in records
     elif output_mode == "csv":
-        assert list(csv.reader(io.StringIO(result.stdout))) == [
-            ["level", "message"],
-            ["error", "Rust validation failed: bridge unavailable"],
-        ]
+        rows = list(csv.reader(io.StringIO(result.stdout)))
+        assert rows[0] == ["level", "message"]
+        assert ["error", "Rust compatibility failed: bridge unavailable"] in rows
     else:
-        assert "Rust validation failed: bridge unavailable" in result.stdout
+        assert "Rust compatibility failed: bridge unavailable" in result.stdout
 
 
 def test_empty_jsonl_result_emits_no_blank_record(tmp_path: Path):

@@ -1,0 +1,15 @@
+version: 1
+models:
+  - name: purchases
+    table: policy_purchases
+    primary_key: id
+    dimensions: [{name: id, type: numeric}]
+    metrics: [{name: total, agg: sum, sql: amount}]
+    relationships:
+      - {name: accounts, type: many_to_one, foreign_key: account_id}
+  - name: accounts
+    table: policy_accounts
+    primary_key: id
+    dimensions: [{name: label, type: categorical}]
+    security:
+      row_filters: ['tenant = {{ user.tenant }}']

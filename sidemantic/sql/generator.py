@@ -1668,6 +1668,20 @@ class SQLGenerator:
                 for model_name in self._extract_models_from_sql(metric.sql):
                     add_model(model_name)
 
+        # Role dimensions describe rows of their declaring model, not the full
+        # population of the reused lookup table. Anchor at that model when it
+        # also owns the selected measures; an explicit explore base still wins.
+        aggregate_models = self._find_aggregate_metric_models(metrics)
+        if len(aggregate_models) == 1:
+            metric_model = next(iter(aggregate_models))
+            for dim in dimensions:
+                owner = self.graph._role_owners.get(dim.split(".")[0])
+                while owner in self.graph._role_owners:
+                    owner = self.graph._role_owners[owner]
+                if owner == metric_model:
+                    add_model(metric_model)
+                    break
+
         # Collect from dimensions first (since they define the grain)
         for dim in dimensions:
             # Remove granularity suffix if present
@@ -2730,18 +2744,12 @@ class SQLGenerator:
         Returns:
             True if pre-aggregation is needed
         """
-        if not metrics or len(metrics) < 2:
+        if not metrics:
             return False
 
-        # Get unique metric models
-        metric_models = set()
-        for metric_ref in metrics:
-            try:
-                model_name, _ = self.graph.resolve_metric_reference(metric_ref)
-            except KeyError:
-                model_name = None
-            if model_name:
-                metric_models.add(model_name)
+        # Calculated metrics can span multiple grains even when only one output
+        # is selected (for example order revenue divided by customer count).
+        metric_models = self._find_aggregate_metric_models(metrics)
 
         if len(metric_models) < 2:
             return False
@@ -2811,9 +2819,62 @@ class SQLGenerator:
         aliases = aliases or {}
         parsed_dims = self._parse_dimension_refs(dimensions)
 
+        calculations: dict[str, str] = {}
+        leaf_refs: list[str] = []
+
+        def expand_metric(reference: str, context: str | None = None, stack: tuple[str, ...] = ()) -> str:
+            if "." not in reference and context and self.graph.get_model(context).get_metric(reference):
+                reference = f"{context}.{reference}"
+            if reference in stack:
+                raise ValueError(f"Circular metric dependency involving {reference}")
+            model_name, metric = self.graph.resolve_metric_reference(reference)
+            aggregate_models = self._find_aggregate_metric_models([reference])
+            if model_name is not None and aggregate_models == {model_name}:
+                if reference not in leaf_refs:
+                    leaf_refs.append(reference)
+                source_name = aliases.get(reference) or metric.name
+                calculations[reference] = f"{model_name}_preagg.{self._quote_identifier(source_name)}"
+                return calculations[reference]
+            stack = (*stack, reference)
+            if metric.type == "ratio":
+                numerator = expand_metric(metric.numerator, model_name, stack)
+                denominator = expand_metric(metric.denominator, model_name, stack)
+                formula = self._safe_divide_sql(numerator, denominator)
+            elif metric.type == "derived" or (not metric.type and metric.sql):
+                replacements = {
+                    dependency: expand_metric(dependency, model_name, stack)
+                    for dependency in metric.get_dependencies(self.graph, model_name)
+                }
+                if model_name:
+                    replacements.update(
+                        {
+                            reference.split(".", 1)[1]: expression
+                            for reference, expression in replacements.items()
+                            if reference.startswith(f"{model_name}.")
+                        }
+                    )
+                formula = self._rewrite_having_filter(metric.sql, replacements)
+            else:
+                raise ValueError(f"Metric {reference} cannot be safely split across aggregate grains")
+            calculations[reference] = self._wrap_with_fill_nulls(formula, metric)
+            return calculations[reference]
+
+        for metric_ref in metrics:
+            calculations[metric_ref] = expand_metric(metric_ref)
+        # Filters need projected aggregate leaves even when they are not selected.
+        for filter_expr in filters or []:
+            for column in _parse_fragment(filter_expr, self.dialect).find_all(exp.Column):
+                reference = f"{column.table}.{column.name}" if column.table else column.name
+                if reference not in calculations:
+                    try:
+                        self.graph.resolve_metric_reference(reference)
+                    except KeyError:
+                        continue
+                    calculations[reference] = expand_metric(reference)
+
         # Group metrics by their model
         metrics_by_model: dict[str, list[str]] = {}
-        for metric_ref in metrics:
+        for metric_ref in leaf_refs:
             try:
                 model_name, _ = self.graph.resolve_metric_reference(metric_ref)
             except KeyError:
@@ -2843,15 +2904,45 @@ class SQLGenerator:
         segment_filters = self._resolve_segments(segments or [])
         all_filters = (filters or []) + segment_filters
 
+        calculation_filters = []
+        row_or_leaf_filters = []
+        # Model-local leaves still use the established metric/window filter
+        # routing. Only expressions combining aggregate grains require the
+        # outer calculation filter path.
+        calculation_refs = set(calculations) - set(leaf_refs)
+        for filter_expr in all_filters:
+            parsed = _parse_fragment(filter_expr, self.dialect)
+            conjuncts = list(parsed.flatten()) if isinstance(parsed, exp.And) else [parsed]
+            for conjunct in conjuncts:
+                references_calculation = any(
+                    (f"{column.table}.{column.name}" if column.table else column.name) in calculation_refs
+                    for column in conjunct.find_all(exp.Column)
+                )
+                if references_calculation:
+                    for column in conjunct.find_all(exp.Column):
+                        reference = f"{column.table}.{column.name}" if column.table else column.name
+                        if reference in dimensions:
+                            continue
+                        try:
+                            self.graph.resolve_metric_reference(reference)
+                        except KeyError as exc:
+                            raise ValueError(
+                                "Cannot combine row-level fields and calculated aggregate metrics in one "
+                                "filter expression across aggregate grains; use separate AND filters"
+                            ) from exc
+                target_filters = calculation_filters if references_calculation else row_or_leaf_filters
+                conjunct_sql = conjunct.sql(dialect=self.dialect)
+                target_filters.append(f"({conjunct_sql})" if isinstance(conjunct, exp.Or) else conjunct_sql)
+
         # Query-level row filters define one population, so every child query must
         # see them. Otherwise sibling metrics in the final row can describe different
         # populations. Metric filters remain at the outer aggregate grain.
         all_model_names = set(metrics_by_model.keys())
         pushdown_by_model, shared_filters, window_dim_filters = self._classify_filters_for_pushdown(
-            all_filters, all_model_names
+            row_or_leaf_filters, all_model_names
         )
         child_filters = [filter_expr for model_filters in pushdown_by_model.values() for filter_expr in model_filters]
-        outer_filters = []
+        outer_filters = calculation_filters
         for filter_expr in shared_filters:
             if self._filter_references_metric(filter_expr, all_model_names):
                 outer_filters.append(filter_expr)
@@ -2936,15 +3027,17 @@ class SQLGenerator:
 
         # Check for metric name collisions across models
         metric_name_counts: dict[str, int] = {}
-        for model_metrics in metrics_by_model.values():
-            for metric_ref in model_metrics:
-                metric_name = metric_ref.split(".", 1)[1] if "." in metric_ref else metric_ref
-                metric_name_counts[metric_name] = metric_name_counts.get(metric_name, 0) + 1
+        for metric_ref in metrics:
+            _, metric = self.graph.resolve_metric_reference(metric_ref)
+            metric_name_counts[metric.name] = metric_name_counts.get(metric.name, 0) + 1
 
-        # Add metrics from each CTE
+        # Add metrics in requested order, including calculations over child CTEs.
+        metric_selects: dict[str, str] = {}
         for model_name, model_metrics in metrics_by_model.items():
             cte_name = f"{model_name}_preagg"
             for metric_ref in model_metrics:
+                if metric_ref not in metrics:
+                    continue
                 metric_name = metric_ref.split(".", 1)[1] if "." in metric_ref else metric_ref
                 source_name = metric_source_name(metric_ref, metric_name)
                 # Check for custom alias first
@@ -2956,7 +3049,21 @@ class SQLGenerator:
                 else:
                     alias = metric_name
                 register_output_name(alias, metric_ref, f"{model_name}.{metric_name}", metric_name, alias)
-                select_exprs.append(f"{cte_name}.{self._quote_identifier(source_name)} AS {self._quote_alias(alias)}")
+                metric_selects[metric_ref] = (
+                    f"{cte_name}.{self._quote_identifier(source_name)} AS {self._quote_alias(alias)}"
+                )
+
+        for metric_ref in metrics:
+            if metric_ref in leaf_refs:
+                continue
+            model_name, metric = self.graph.resolve_metric_reference(metric_ref)
+            default_alias = (
+                f"{model_name}_{metric.name}" if model_name and metric_name_counts[metric.name] > 1 else metric.name
+            )
+            alias = aliases.get(metric_ref) or default_alias
+            register_output_name(alias, metric_ref, metric.name, alias)
+            metric_selects[metric_ref] = f"{calculations[metric_ref]} AS {self._quote_alias(alias)}"
+        select_exprs.extend(metric_selects[metric_ref] for metric_ref in metrics)
 
         # Build FROM clause with FULL OUTER JOINs (or CROSS JOIN if no dimensions)
         # Start with first CTE
@@ -2993,6 +3100,12 @@ class SQLGenerator:
         # sqlglot AST rewriting so we don't accidentally mangle column names
         # that happen to contain a model name as a substring.
         if shared_filters:
+            filter_expressions = dict(calculations)
+            for dim_ref, gran in parsed_dims:
+                dim_name = dim_ref.split(".", 1)[-1]
+                source_name = self._quote_identifier(dimension_output_name(dim_ref, dim_name, gran))
+                full_ref = f"{dim_ref}__{gran}" if gran else dim_ref
+                filter_expressions[full_ref] = f"COALESCE({', '.join(f'{cte}.{source_name}' for cte in cte_names)})"
             preagg_table_map = {}
             for model_name in metrics_by_model:
                 preagg_table_map[model_name] = f"{model_name}_preagg"
@@ -3000,6 +3113,7 @@ class SQLGenerator:
 
             rewritten = []
             for f in shared_filters:
+                f = self._rewrite_having_filter(f, filter_expressions)
                 try:
                     parsed = _parse_fragment(f, self.dialect)
                     for col in parsed.find_all(exp.Column):
@@ -3178,7 +3292,11 @@ class SQLGenerator:
             if replacement_sql is None:
                 continue
             try:
-                column.replace(_parse_fragment(replacement_sql, self.dialect))
+                replacement = _parse_fragment(replacement_sql, self.dialect)
+                if column is parsed:
+                    parsed = replacement
+                else:
+                    column.replace(exp.Paren(this=replacement))
             except SqlglotError:
                 continue
         return parsed.sql(dialect=self.dialect)
@@ -6260,11 +6378,25 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
             if not time_dim:
                 raise ValueError(f"Cumulative metric {m} requires a time dimension for ordering")
 
+            partition_cols = []
+            for dim_ref, gran in parsed_dims:
+                if "." not in dim_ref:
+                    continue
+                partition_model, dim_name = dim_ref.split(".", 1)
+                dimension = self.graph.get_model(partition_model).get_dimension(dim_name)
+                if dimension and dimension.type == "time":
+                    continue
+                alias = f"{dim_name}__{gran}" if gran else dim_name
+                column = f"base.{self._quote_alias(alias)}"
+                if column != time_dim and column not in partition_cols:
+                    partition_cols.append(column)
+            partition_clause = f"PARTITION BY {', '.join(partition_cols)} " if partition_cols else ""
+
             # Option C: Raw window_expression passthrough
             if metric.window_expression:
                 order_col = time_dim
                 frame = metric.window_frame or "ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW"
-                window_value = f"{metric.window_expression} OVER (ORDER BY {order_col} {frame})"
+                window_value = f"{metric.window_expression} OVER ({partition_clause}ORDER BY {order_col} {frame})"
                 window_expr = f"{self._wrap_with_fill_nulls(window_value, metric)} AS {metric_alias}"
                 select_exprs.append(window_expr)
                 cumulative_window_entries.append((window_expr, metric_alias))
@@ -6313,7 +6445,7 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
                 # Grain-to-date: MTD, QTD, YTD
                 # Partition by the grain period and order within it
                 grain = metric.grain_to_date
-                partition = self._date_trunc(grain, time_dim)
+                partition = ", ".join([*partition_cols, self._date_trunc(grain, time_dim)])
 
                 window_value = f"{agg_func}({base_col}) OVER (PARTITION BY {partition} ORDER BY {time_dim} ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)"
             elif metric.window:
@@ -6322,13 +6454,13 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
                 if len(window_parts) == 2:
                     num, unit = window_parts
                     # For date-based windows, use RANGE
-                    window_value = f"{agg_func}({base_col}) OVER (ORDER BY {time_dim} RANGE BETWEEN INTERVAL '{num} {unit}' PRECEDING AND CURRENT ROW)"
+                    window_value = f"{agg_func}({base_col}) OVER ({partition_clause}ORDER BY {time_dim} RANGE BETWEEN INTERVAL '{num} {unit}' PRECEDING AND CURRENT ROW)"
                 else:
                     # Fallback to rows
-                    window_value = f"{agg_func}({base_col}) OVER (ORDER BY {time_dim} ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)"
+                    window_value = f"{agg_func}({base_col}) OVER ({partition_clause}ORDER BY {time_dim} ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)"
             else:
                 # Running total (unbounded window)
-                window_value = f"{agg_func}({base_col}) OVER (ORDER BY {time_dim} ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)"
+                window_value = f"{agg_func}({base_col}) OVER ({partition_clause}ORDER BY {time_dim} ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)"
 
             window_expr = f"{self._wrap_with_fill_nulls(window_value, metric)} AS {metric_alias}"
             select_exprs.append(window_expr)
@@ -6439,11 +6571,7 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
                     lag_input_expr,
                     time_dim,
                     partition_clause,
-                    (
-                        self._comparison_period_interval(metric, time_dim_gran)
-                        if time_dim_gran or metric.time_offset
-                        else None
-                    ),
+                    self._comparison_period_interval(metric, time_dim_gran),
                 )
                 if exact_lookup is None:
                     lag_offset = self._calculate_lag_offset(metric.comparison_type, time_dim_gran)

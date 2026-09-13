@@ -1504,6 +1504,8 @@ fn compile_scope(
         let target_name = models[to_index].name.clone();
         models[from_index].relationships.push(Relationship {
             name: target_name,
+            target_model: None,
+            active: true,
             edge_id: Some(edge_id.to_string()),
             r#type: RelationshipType::ManyToOne,
             foreign_key: from_columns.first().cloned(),

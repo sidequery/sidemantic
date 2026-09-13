@@ -1,0 +1,23 @@
+version: 1
+models:
+  - name: a
+    table: path_a
+    primary_key: id
+    metrics: [{name: amount, agg: sum, sql: amount}]
+    relationships:
+      - {name: b, type: many_to_one, foreign_key: b_id}
+      - {name: c, type: many_to_one, foreign_key: c_id}
+  - name: b
+    table: path_b
+    primary_key: id
+    relationships:
+      - {name: d, type: many_to_one, foreign_key: d_id}
+  - name: c
+    table: path_c
+    primary_key: id
+    relationships:
+      - {name: d, type: many_to_one, foreign_key: d_id}
+  - name: d
+    table: path_d
+    primary_key: id
+    dimensions: [{name: label, type: categorical}]

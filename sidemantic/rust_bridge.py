@@ -9,6 +9,11 @@ from pathlib import Path
 import yaml
 
 from sidemantic.core.semantic_graph import SemanticGraph
+from sidemantic.semantic_handoff import (
+    RustBackendUnavailableError,
+    UnsupportedSemanticFeaturesError,
+    graph_to_semantic_json,
+)
 from sidemantic.yaml_compat import safe_load as _yaml_safe_load
 
 # Lambda-only PreAggregation fields absent from the sidemantic-rs YAML schema
@@ -30,13 +35,127 @@ def get_rust_module() -> object:
     """Import and return sidemantic_rs extension module."""
     try:
         import sidemantic_rs
-    except ImportError as e:
-        raise ValueError(
+    except ModuleNotFoundError as e:
+        if e.name != "sidemantic_rs":
+            raise
+        raise RustBackendUnavailableError(
             "Rust backend requires the sidemantic_rs Python extension. "
             "Build it with: uv run --with maturin maturin develop "
             "--manifest-path sidemantic-rs/Cargo.toml --features python-adbc"
         ) from e
     return sidemantic_rs
+
+
+def _call_semantic_entrypoint(rust_module, name: str, *args):
+    entrypoint = getattr(rust_module, name, None)
+    if not callable(entrypoint):
+        raise RustBackendUnavailableError(
+            f"Installed Rust backend does not provide {name}; rebuild the extension for semantic input version 1"
+        )
+    unsupported_type = getattr(rust_module, "UnsupportedSemanticFeaturesError", None)
+    unsupported_errors = (
+        (unsupported_type,) if isinstance(unsupported_type, type) and issubclass(unsupported_type, Exception) else ()
+    )
+    security_type = getattr(rust_module, "SecurityError", None)
+    security_errors = (
+        (security_type,) if isinstance(security_type, type) and issubclass(security_type, Exception) else ()
+    )
+    validation_type = getattr(rust_module, "QueryValidationError", None)
+    validation_errors = (
+        (validation_type,) if isinstance(validation_type, type) and issubclass(validation_type, Exception) else ()
+    )
+    try:
+        return entrypoint(*args)
+    except security_errors as error:
+        from sidemantic.core.semantic_layer import SecurityError
+
+        raise SecurityError(str(error)) from error
+    except validation_errors as error:
+        from sidemantic.validation import QueryValidationError
+
+        raise QueryValidationError(str(error)) from error
+    except unsupported_errors as error:
+        capabilities = error.capabilities
+        if (
+            not isinstance(capabilities, list)
+            or not capabilities
+            or not all(isinstance(capability, str) for capability in capabilities)
+        ):
+            raise TypeError("Rust unsupported-feature error has an invalid capabilities payload") from error
+        raise UnsupportedSemanticFeaturesError(capabilities) from error
+
+
+def compile_semantic_input(
+    graph: SemanticGraph,
+    query: dict,
+    *,
+    input_dialect: str = "duckdb",
+    rust_module=None,
+) -> str:
+    """Compile through the versioned graph contract; Rust owns SQL generation."""
+    module = rust_module if rust_module is not None else get_rust_module()
+    sql = _call_semantic_entrypoint(
+        module,
+        "compile_with_semantic_input",
+        graph_to_semantic_json(graph, input_dialect=input_dialect),
+        json.dumps(query, allow_nan=False),
+    )
+    if not isinstance(sql, str):
+        raise TypeError("Rust compiler returned a non-string SQL result")
+    return sql
+
+
+def validate_semantic_input(
+    graph: SemanticGraph,
+    metrics: list[str],
+    dimensions: list[str],
+    *,
+    input_dialect: str = "duckdb",
+    rust_module=None,
+) -> list[str]:
+    """Validate references through the same input contract used by compilation."""
+    module = rust_module if rust_module is not None else get_rust_module()
+    errors = _call_semantic_entrypoint(
+        module,
+        "validate_with_semantic_input",
+        graph_to_semantic_json(graph, input_dialect=input_dialect),
+        json.dumps({"metrics": metrics, "dimensions": dimensions}, allow_nan=False),
+    )
+    if not isinstance(errors, list) or not all(isinstance(error, str) for error in errors):
+        raise TypeError("Rust validator returned an invalid errors payload")
+    return errors
+
+
+def rewrite_semantic_input(
+    graph: SemanticGraph,
+    sql: str,
+    *,
+    input_dialect: str = "duckdb",
+    user_attributes: dict | None = None,
+    enforce_visibility: bool = False,
+    rust_module=None,
+) -> str:
+    """Rewrite SQL with caller context through the versioned graph contract."""
+    module = rust_module if rust_module is not None else get_rust_module()
+    context_required = (
+        user_attributes is not None
+        or enforce_visibility
+        or any(model.security is not None or model.invariant_filters for model in graph.models.values())
+    )
+    args = [graph_to_semantic_json(graph, input_dialect=input_dialect), sql]
+    entrypoint = "rewrite_with_semantic_input"
+    if context_required:
+        entrypoint = "rewrite_with_semantic_input_context"
+        args.append(
+            json.dumps(
+                {"user_attributes": user_attributes, "enforce_visibility": enforce_visibility},
+                allow_nan=False,
+            )
+        )
+    rewritten = _call_semantic_entrypoint(module, entrypoint, *args)
+    if not isinstance(rewritten, str):
+        raise TypeError("Rust rewriter returned a non-string SQL result")
+    return rewritten
 
 
 def graph_to_rust_yaml(graph: SemanticGraph) -> str:
@@ -446,14 +565,14 @@ def models_to_rust_yaml(
     models_by_name = {m.name: m for m in models}
 
     for model in models:
-        primary_key_columns = model.primary_key if isinstance(model.primary_key, list) else [model.primary_key]
+        primary_key_columns = model.primary_key_columns
         model_data = {
             "name": model.name,
             "extends": model.extends if include_extends else None,
             "table": model.table,
             "sql": model.sql,
             "source_uri": model.source_uri,
-            "primary_key": primary_key_columns[0] if primary_key_columns else "id",
+            "primary_key": primary_key_columns[0] if primary_key_columns else None,
             "primary_key_columns": primary_key_columns,
             "unique_keys": model.unique_keys,
             "description": model.description,
@@ -1432,6 +1551,8 @@ def match_preaggregation_with_rust(
 
 def generate_preaggregation_materialization_sql_with_rust(model, pre_aggregation) -> str:
     """Generate pre-aggregation materialization SQL using sidemantic-rs."""
+    if model.invariant_filters:
+        raise UnsupportedSemanticFeaturesError(["preaggregation.invariant_filters"])
     rust_module = get_rust_module()
     model_for_materialization = model.model_copy(deep=True) if hasattr(model, "model_copy") else model.copy(deep=True)
     preagg_name = pre_aggregation.name

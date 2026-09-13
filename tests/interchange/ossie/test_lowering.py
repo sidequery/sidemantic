@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from sidemantic.core.registry import get_current_layer, reset_current_layer, set_current_layer
 from sidemantic.core.semantic_layer import SemanticLayer
 from sidemantic.interchange.ossie import (
     OssieImportPolicy,
@@ -207,6 +208,100 @@ semantic_model:
 
     graph = lower_ossie_document(parsed, target_dialect="bigquery").catalog["warehouse"].graph
     assert graph.get_model("events").get_dimension("occurred_on").sql == "DATE(occurred_at)"
+
+
+@pytest.mark.parametrize(
+    ("dialect", "expression"),
+    [
+        ("bigquery", "SUM(IFNULL(`orders`.`amount`, 0))"),
+        ("snowflake", "SUM(orders.amount::NUMBER(18, 2))"),
+        ("databricks", "SUM(CAST(`orders`.`amount` AS DOUBLE))"),
+    ],
+)
+def test_metric_preserves_selected_dialect_expression(dialect: str, expression: str) -> None:
+    source = {
+        "version": "0.2.0.dev0",
+        "semantic_model": [
+            {
+                "name": "commerce",
+                "datasets": [{"name": "orders", "source": "analytics.orders"}],
+                "metrics": [
+                    {
+                        "name": "revenue",
+                        "expression": {
+                            "dialects": [
+                                {"dialect": "ANSI_SQL", "expression": "SUM(orders.amount)"},
+                                {"dialect": dialect.upper(), "expression": expression},
+                            ]
+                        },
+                    }
+                ],
+            }
+        ],
+    }
+
+    lowered = lower_ossie_document(_parse(json.dumps(source)), target_dialect=dialect)
+
+    assert lowered.valid, lowered.diagnostics
+    scope = lowered.catalog["commerce"]
+    metric = scope.graph.get_metric("revenue")
+    assert metric.sql == expression
+    assert metric.agg is None
+    assert metric.sql_is_complete
+    assert metric.metadata == {"ossie_expression_dialect": dialect.upper(), "ossie_target_dialect": dialect}
+    assert scope.target_dialect == dialect
+    assert lowered.document.to_parsed_data() == source
+
+
+def test_complete_metrics_execute_in_isolated_scopes_without_ambient_registration() -> None:
+    source = {
+        "version": "0.2.0.dev0",
+        "semantic_model": [
+            {
+                "name": scope_name,
+                "datasets": [
+                    {
+                        "name": "orders",
+                        "source": f"SELECT {amount} AS amount UNION ALL SELECT {amount} AS amount",
+                        "fields": [
+                            {
+                                "name": "amount",
+                                "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "amount"}]},
+                            }
+                        ],
+                    }
+                ],
+                "metrics": [
+                    {
+                        "name": "revenue",
+                        "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "sum(orders.amount)"}]},
+                    }
+                ],
+            }
+            for scope_name, amount in [("finance", 10), ("marketing", 3)]
+        ],
+    }
+    ambient = SemanticLayer(auto_register=False)
+    token = set_current_layer(ambient)
+    try:
+        lowered = lower_ossie_document(_parse(json.dumps(source)), target_dialect="duckdb")
+        assert get_current_layer() is ambient
+    finally:
+        reset_current_layer(token)
+
+    assert lowered.valid, lowered.diagnostics
+    assert ambient.graph.models == {}
+    assert ambient.graph.metrics == {}
+    for scope_name, expected in [("finance", 20), ("marketing", 6)]:
+        graph = lowered.catalog[scope_name].graph
+        metric = graph.get_metric("revenue")
+        assert metric.sql == "sum(orders.amount)"
+        assert metric.agg is None
+        assert metric.sql_is_complete
+        assert metric.metadata == {"ossie_expression_dialect": "ANSI_SQL", "ossie_target_dialect": "duckdb"}
+        assert graph.get_model("orders").metrics == []
+        layer = SemanticLayer.from_catalog(lowered.catalog, scope_id=scope_name, auto_register=False)
+        assert layer.query(metrics=["revenue"]).fetchall() == [(expected,)]
 
 
 def test_lowers_named_relationship_without_fabricating_keys() -> None:

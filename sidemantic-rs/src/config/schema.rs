@@ -83,11 +83,11 @@ pub struct ModelConfig {
 }
 
 fn default_primary_key() -> String {
-    "id".to_string()
+    String::new()
 }
 
 fn default_primary_key_config() -> KeyConfig {
-    KeyConfig::Single(default_primary_key())
+    KeyConfig::Multiple(Vec::new())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -95,6 +95,7 @@ fn default_primary_key_config() -> KeyConfig {
 pub enum KeyConfig {
     Single(String),
     Multiple(Vec<String>),
+    Unknown(()),
 }
 
 impl KeyConfig {
@@ -102,6 +103,7 @@ impl KeyConfig {
         match self {
             Self::Single(value) => vec![value],
             Self::Multiple(values) => values,
+            Self::Unknown(()) => Vec::new(),
         }
     }
 }
@@ -225,6 +227,10 @@ pub struct CohortInnerMetricConfig {
 #[serde(deny_unknown_fields)]
 pub struct RelationshipConfig {
     pub name: String,
+    #[serde(default)]
+    pub target_model: Option<String>,
+    #[serde(default = "default_public")]
+    pub active: bool,
     #[serde(default)]
     pub edge_id: Option<String>,
     #[serde(default, rename = "type")]
@@ -522,7 +528,6 @@ impl ModelConfig {
     pub fn into_model(self) -> Model {
         let primary_key_columns = self
             .primary_key_columns
-            .filter(|columns| !columns.is_empty())
             .unwrap_or_else(|| self.primary_key.into_columns());
         let primary_key = primary_key_columns
             .first()
@@ -719,6 +724,7 @@ impl MetricConfig {
             r#type: metric_type,
             agg,
             sql,
+            sql_is_complete: false,
             numerator: self.numerator,
             denominator: self.denominator,
             offset_window: self.offset_window,
@@ -783,6 +789,8 @@ impl RelationshipConfig {
 
         Relationship {
             name: self.name,
+            target_model: self.target_model,
+            active: self.active,
             edge_id: self.edge_id,
             r#type: rel_type,
             foreign_key: foreign_key_columns

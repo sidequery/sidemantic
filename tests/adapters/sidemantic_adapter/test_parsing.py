@@ -10,6 +10,88 @@ from sidemantic.adapters.sidemantic import SidemanticAdapter
 from sidemantic.core.semantic_layer import SemanticLayer
 
 
+@pytest.mark.parametrize("declared_is_time", [True, False, None])
+def test_native_roundtrip_preserves_semantic_fields(tmp_path, declared_is_time):
+    adapter = SidemanticAdapter()
+    source = tmp_path / "source.yml"
+    expression = "sum(orders.amount)"
+    source.write_text(
+        yaml.safe_dump(
+            {
+                "models": [
+                    {
+                        "name": "orders",
+                        "sql": "SELECT 10 AS amount, 1 AS customer_id, DATE '2026-01-01' AS day",
+                        "dimensions": [
+                            {
+                                "name": "day",
+                                "type": "time" if declared_is_time is not False else "categorical",
+                                "logical_data_type": "Date",
+                                "declared_is_time": declared_is_time,
+                                "sql": "day",
+                            }
+                        ],
+                        "metrics": [
+                            {
+                                "name": "local_total",
+                                "sql": "sum(amount)",
+                                "sql_is_complete": True,
+                                "logical_data_type": "Decimal",
+                            }
+                        ],
+                        "relationships": [
+                            {
+                                "name": "customers",
+                                "type": "many_to_one",
+                                "foreign_key": "customer_id",
+                                "primary_key": "id",
+                                "edge_id": "order_customer",
+                                "active": False,
+                            }
+                        ],
+                    },
+                    {"name": "customers", "sql": "SELECT 1 AS id", "primary_key": "id"},
+                ],
+                "metrics": [
+                    {
+                        "name": "total",
+                        "sql": expression,
+                        "sql_is_complete": True,
+                        "logical_data_type": "Decimal",
+                    }
+                ],
+            }
+        )
+    )
+
+    graph = adapter.parse(source)
+    exported = tmp_path / "exported.yml"
+    adapter.export(graph, exported)
+    restored = adapter.parse(exported)
+
+    for candidate in [graph, restored]:
+        orders = candidate.get_model("orders")
+        day = orders.get_dimension("day")
+        assert day.logical_data_type == "Date"
+        assert day.declared_is_time is declared_is_time
+        assert day.type == ("time" if declared_is_time is not False else "categorical")
+        relationship = orders.relationships[0]
+        assert relationship.edge_id == "order_customer"
+        assert relationship.active is False
+        for metric, sql in [
+            (orders.get_metric("local_total"), "sum(amount)"),
+            (candidate.get_metric("total"), expression),
+        ]:
+            assert metric.sql == sql
+            assert metric.sql_is_complete
+            assert metric.agg is None
+            assert metric.logical_data_type == "Decimal"
+        layer = SemanticLayer(auto_register=False)
+        layer.graph = candidate
+        assert layer.query(metrics=["total"]).fetchall() == [(10,)]
+        assert layer.query(metrics=["orders.local_total"]).fetchall() == [(10,)]
+
+
 def test_parse_native_yaml():
     """Test parsing native Sidemantic YAML."""
     adapter = SidemanticAdapter()

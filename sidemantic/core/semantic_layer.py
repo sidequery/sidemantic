@@ -8,8 +8,6 @@ from contextvars import ContextVar, Token
 from pathlib import Path
 from typing import Any
 
-import yaml
-
 from sidemantic.core.consumption import (
     Explore,
     SavedQuery,
@@ -20,11 +18,10 @@ from sidemantic.core.consumption import (
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.semantic_graph import SemanticGraph
-from sidemantic.rust_bridge import get_rust_module, graph_to_rust_yaml
+from sidemantic.rust_bridge import get_rust_module
 from sidemantic.rust_parity import is_strict_for
+from sidemantic.semantic_handoff import RustBackendUnavailableError, UnsupportedSemanticFeaturesError
 from sidemantic.sql.generator import SQLGenerator
-
-_RUST_SQL_OUTPUT_DIALECT = "duckdb"
 
 
 class PreaggregationStrictError(RuntimeError):
@@ -118,7 +115,8 @@ class SemanticLayer:
             engine: Runtime engine for native query validation/compilation.
                 Supported values are "python", "rust", and "auto". If omitted,
                 legacy SIDEMANTIC_RS_* environment flags are honored.
-            fallback: Whether explicit Rust/auto engine mode may fall back to Python.
+            fallback: Whether an unavailable Rust backend or a known unsupported capability
+                may fall back to Python. Invalid input and unexpected compiler failures propagate.
                 Defaults to False for engine="rust" and True for engine="auto".
             default_limit: Opt-in row limit applied when a query specifies no explicit
                 limit (default: None, i.e. unlimited). Safety cap to avoid accidental
@@ -148,7 +146,7 @@ class SemanticLayer:
         # compiled semantic scope. Ordinary/native layers remain catalog-free.
         self.catalog = None
         self.compiled_scope = None
-        self._sql_rewrite_cache: dict[tuple[object, ...], str] = {}
+        self._sql_rewrite_cache: dict[tuple[object, ...], tuple[str, dict[str, str | None] | None]] = {}
         self._sql_rewrite_cache_limit = 256
         # Monotonic counter bumped whenever the model/metric graph or query-affecting
         # config mutates. Included in result-cache keys so cached Arrow results are
@@ -159,6 +157,7 @@ class SemanticLayer:
         self.preagg_database = preagg_database
         self.preagg_schema = preagg_schema
         self.engine = engine or "python"
+        self._explicit_engine = engine is not None
         self.default_limit = default_limit
         self.max_limit = max_limit
         self.allow_non_additive_unsafe = allow_non_additive_unsafe
@@ -192,13 +191,16 @@ class SemanticLayer:
                 and not self._strict_rust_sql_generator_entrypoint
             )
             self._rust_no_fallback = os.getenv("SIDEMANTIC_RS_NO_FALLBACK", "0") == "1"
+        self.last_engine_selection: dict[str, str | None] | None = None
+        self._rust_unavailable_reason: str | None = None
         self._rust_module = None
         if self._use_rust_sql_generator:
             try:
                 self._rust_module = get_rust_module()
-            except Exception:
+            except RustBackendUnavailableError as exc:
                 if self._rust_no_fallback or self._strict_rust_sql_generator_entrypoint:
                     raise
+                self._rust_unavailable_reason = str(exc)
 
         # Initialize adapter from connection string or use provided adapter
         if isinstance(connection, BaseDatabaseAdapter):
@@ -1163,6 +1165,7 @@ class SemanticLayer:
         """
         from sidemantic.validation import QueryValidationError, validate_query
 
+        self.last_engine_selection = None
         (
             metrics,
             dimensions,
@@ -1202,10 +1205,43 @@ class SemanticLayer:
         if not with_totals:
             limit = self._resolve_row_limit(limit)
 
-        # Validate query
-        errors = self._validate_query(metrics, dimensions, validate_query)
+        # Decide capability support before sending the graph to Rust validation.
+        unsupported = []
+        if timezone:
+            unsupported.append("query.timezone")
+        if with_totals:
+            unsupported.append("query.totals")
+        if consumption_base_model is not None:
+            unsupported.append("query.consumption_base_model")
+        if aliases:
+            unsupported.append("query.aliases")
+
+        rust_requested = self._use_rust_sql_generator or self._use_rust_query_validation
+        allow_rust = True
+        if rust_requested and unsupported:
+            error = UnsupportedSemanticFeaturesError(unsupported)
+            if (
+                self._rust_no_fallback
+                or self._strict_rust_sql_generator_entrypoint
+                or self._strict_rust_query_validation
+            ):
+                raise error
+            allow_rust = False
+            self.last_engine_selection = {"engine": "python", "reason": str(error)}
+        elif self._use_rust_sql_generator and self._rust_module is None:
+            error = RustBackendUnavailableError(
+                self._rust_unavailable_reason or "Rust SQL generator backend is not initialized"
+            )
+            if self._rust_no_fallback or self._strict_rust_sql_generator_entrypoint:
+                raise error
+            allow_rust = False
+            self.last_engine_selection = {"engine": "python", "reason": str(error)}
+
+        errors = self._validate_query(metrics, dimensions, validate_query, allow_rust=allow_rust)
         if errors:
             raise QueryValidationError("Query validation failed:\n" + "\n".join(f"  - {e}" for e in errors))
+        if self.last_engine_selection is not None and self.last_engine_selection["reason"] is not None:
+            allow_rust = False
 
         # Visibility: when enforce_visibility is set, requesting a non-public field is rejected
         # before any SQL is generated.
@@ -1223,37 +1259,8 @@ class SemanticLayer:
         if security_active:
             use_preaggs = False
 
-        # The Rust SQL generator does not enforce security policies or column visibility,
-        # so any active control keeps compilation on the policy-aware Python path.
-        role_forces_python = self._graph_has_relationship_roles()
-        if (
-            role_forces_python
-            and self._use_rust_sql_generator
-            and (self._strict_rust_sql_generator_entrypoint or self._rust_no_fallback)
-        ):
-            raise ValueError(
-                "Rust SQL generation does not support relationship role aliases; use engine='python' or enable fallback"
-            )
-
-        security_forces_python = (
-            self.enforce_visibility
-            or user_attributes is not None
-            or self._query_touches_secured_model(metrics, dimensions, filters, segments)
-            or self._query_touches_invariant_model(metrics, dimensions, filters, segments)
-            or role_forces_python
-        )
-
         inner_sql = None
-        # The Rust generator implements neither query-timezone bucketing nor with_totals
-        # GROUPING SETS, so use the Python path when either is requested.
-        # (Pre-agg bypass for timezone queries is enforced inside SQLGenerator.generate.)
-        if (
-            self._use_rust_sql_generator
-            and not timezone
-            and not with_totals
-            and not security_forces_python
-            and consumption_base_model is None
-        ):
+        if self._use_rust_sql_generator and allow_rust:
             inner_sql = self._compile_with_rust(
                 metrics=metrics,
                 dimensions=dimensions,
@@ -1267,9 +1274,12 @@ class SemanticLayer:
                 parameters=parameters,
                 use_preaggregations=use_preaggs,
                 aliases=aliases,
+                user_attributes=user_attributes,
             )
-            if inner_sql is None and self._strict_rust_sql_generator_entrypoint:
-                raise ValueError("Rust SQL generator returned no SQL in strict mode")
+            if inner_sql is None and self.last_engine_selection is None:
+                raise ValueError("Rust SQL generator returned no SQL")
+            if inner_sql is not None:
+                self.last_engine_selection = {"engine": "rust", "reason": None}
             if inner_sql is not None and self._rust_sql_verify:
                 python_sql = self._compile_with_python(
                     metrics=metrics,
@@ -1285,13 +1295,14 @@ class SemanticLayer:
                     use_preaggregations=use_preaggs,
                     aliases=aliases,
                     base_model=consumption_base_model,
+                    user_attributes=user_attributes,
                 )
                 if inner_sql.strip() != python_sql.strip():
-                    if self._rust_no_fallback or self._strict_rust_sql_generator_entrypoint:
-                        raise ValueError("Rust SQL generator output mismatch with Python SQL generator")
-                    inner_sql = python_sql
+                    raise ValueError("Rust SQL generator output mismatch with Python SQL generator")
 
         if inner_sql is None:
+            if self.last_engine_selection is None:
+                self.last_engine_selection = {"engine": "python", "reason": None}
             inner_sql = self._compile_with_python(
                 metrics=metrics,
                 dimensions=dimensions,
@@ -1318,25 +1329,20 @@ class SemanticLayer:
         metrics: list[str],
         dimensions: list[str],
         python_validate_query: Callable[[list[str], list[str], SemanticGraph], list[str]],
+        *,
+        allow_rust: bool = True,
     ) -> list[str]:
-        from sidemantic.validation import QueryValidationError
-
-        if self._graph_has_relationship_roles():
-            if self._use_rust_query_validation and (self._strict_rust_query_validation or self._rust_no_fallback):
-                raise QueryValidationError(
-                    "Rust query validation does not support relationship role aliases; use engine='python' "
-                    "or enable fallback"
-                )
-            return python_validate_query(metrics, dimensions, self.graph)
-
-        if self._use_rust_query_validation:
+        if self._use_rust_query_validation and allow_rust:
             try:
-                from sidemantic.rust_bridge import validate_query_with_rust
+                from sidemantic.rust_bridge import validate_semantic_input
 
-                return validate_query_with_rust(self.graph, metrics, dimensions)
-            except Exception as e:
+                return validate_semantic_input(
+                    self.graph, metrics, dimensions, input_dialect=self.dialect, rust_module=self._rust_module
+                )
+            except (RustBackendUnavailableError, UnsupportedSemanticFeaturesError) as exc:
                 if self._strict_rust_query_validation or self._rust_no_fallback:
-                    raise QueryValidationError(f"Rust query validation failed: {e}") from e
+                    raise
+                self.last_engine_selection = {"engine": "python", "reason": str(exc)}
 
         return python_validate_query(metrics, dimensions, self.graph)
 
@@ -1436,14 +1442,6 @@ class SemanticLayer:
             if model_name in self.graph.models
         )
 
-    def _graph_has_relationship_roles(self) -> bool:
-        """Whether the graph requires role-aware Python validation and SQL generation."""
-        return any(
-            relationship.target_model is not None
-            for model in self.graph.models.values()
-            for relationship in model.relationships
-        )
-
     def _query_has_active_row_filters(
         self,
         metrics: list[str] | None,
@@ -1516,14 +1514,17 @@ class SemanticLayer:
         parameters: dict[str, Any] | None,
         use_preaggregations: bool,
         aliases: dict[str, str] | None,
+        user_attributes: dict[str, Any] | None = None,
     ) -> str | None:
         if not self._rust_module:
             if self._rust_no_fallback or self._strict_rust_sql_generator_entrypoint:
-                raise ValueError("Rust SQL generator backend is not initialized")
+                raise RustBackendUnavailableError("Rust SQL generator backend is not initialized")
+            self.last_engine_selection = {"engine": "python", "reason": "Rust backend is not initialized"}
             return None
         if aliases:
             if self._rust_no_fallback or self._strict_rust_sql_generator_entrypoint:
-                raise ValueError("Rust SQL generator backend does not support compile aliases")
+                raise UnsupportedSemanticFeaturesError(["query.aliases"])
+            self.last_engine_selection = {"engine": "python", "reason": "query.aliases"}
             return None
 
         payload = {
@@ -1539,20 +1540,17 @@ class SemanticLayer:
             "use_preaggregations": bool(use_preaggregations),
             "preagg_database": self.preagg_database,
             "preagg_schema": self.preagg_schema,
+            "user_attributes": user_attributes,
+            "enforce_visibility": self.enforce_visibility,
         }
 
         try:
-            models_yaml = graph_to_rust_yaml(self.graph)
-            query_yaml = yaml.safe_dump(payload, sort_keys=False)
-            sql = self._rust_module.compile_with_yaml(models_yaml, query_yaml)
+            from sidemantic.rust_bridge import compile_semantic_input
 
-            target_dialect = dialect or self.dialect
-            if target_dialect != _RUST_SQL_OUTPUT_DIALECT:
-                import sqlglot
-
-                sql = sqlglot.transpile(sql, read=_RUST_SQL_OUTPUT_DIALECT, write=target_dialect)[0]
-                if target_dialect == "bigquery":
-                    sql = sql.replace("TIMESTAMP_TRUNC(", "DATE_TRUNC(")
+            payload["dialect"] = dialect or self.dialect
+            sql = compile_semantic_input(self.graph, payload, input_dialect=self.dialect, rust_module=self._rust_module)
+            if not sql.strip():
+                raise ValueError("Rust SQL generator returned empty SQL")
 
             if "-- sidemantic:" not in sql:
                 generator = SQLGenerator(
@@ -1576,9 +1574,10 @@ class SemanticLayer:
                 )
 
             return sql
-        except Exception as e:
+        except (RustBackendUnavailableError, UnsupportedSemanticFeaturesError) as exc:
             if self._rust_no_fallback or self._strict_rust_sql_generator_entrypoint:
-                raise ValueError(f"Rust SQL generator failed: {e}") from e
+                raise
+            self.last_engine_selection = {"engine": "python", "reason": str(exc)}
             return None
 
     def _apply_post_process(self, inner_sql: str, post_process: str | None) -> str:
@@ -2190,12 +2189,18 @@ class SemanticLayer:
             self.dialect,
             self.use_preaggregations,
             self.enforce_visibility,
+            self._explicit_engine,
+            self._use_rust_sql_generator,
+            self._rust_no_fallback,
             os.getenv("SIDEMANTIC_RS_REWRITER", "0"),
             os.getenv("SIDEMANTIC_RS_NO_FALLBACK", "0"),
             query,
         )
-        rewritten_sql = self._sql_rewrite_cache.get(cache_key) if use_cache else None
-        if rewritten_sql is None:
+        cached = self._sql_rewrite_cache.get(cache_key) if use_cache else None
+        if cached is not None:
+            rewritten_sql, selection = cached
+            self.last_engine_selection = dict(selection) if selection is not None else None
+        else:
             rewritten_sql = rewrite_transport_sql(
                 self,
                 query,
@@ -2205,7 +2210,8 @@ class SemanticLayer:
             if use_cache:
                 if len(self._sql_rewrite_cache) >= self._sql_rewrite_cache_limit:
                     self._sql_rewrite_cache.pop(next(iter(self._sql_rewrite_cache)))
-                self._sql_rewrite_cache[cache_key] = rewritten_sql
+                selection = dict(self.last_engine_selection) if self.last_engine_selection is not None else None
+                self._sql_rewrite_cache[cache_key] = (rewritten_sql, selection)
 
         def recompile_raw():
             return rewrite_transport_sql(
@@ -2242,8 +2248,12 @@ class SemanticLayer:
             dialect=self.dialect,
             use_preaggregations=self.use_preaggregations,
             enforce_visibility=self.enforce_visibility,
+            use_rust_rewriter=self._use_rust_sql_generator if self._explicit_engine else None,
+            rust_no_fallback=self._rust_no_fallback,
         )
-        return rewriter.explain(query, strict=strict)
+        explanation = rewriter.explain(query, strict=strict)
+        self.last_engine_selection = rewriter.last_engine_selection
+        return explanation
 
     def to_yaml(self, path: str | Path) -> None:
         """Export semantic layer to native YAML file.

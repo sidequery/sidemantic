@@ -1,0 +1,28 @@
+version: 1
+models:
+- name: items
+  table: items
+  primary_key:
+  - order_id
+  - line_number
+  dimensions:
+  - name: label
+    type: categorical
+- name: shipments
+  table: shipments
+  primary_key: id
+  dimensions:
+  - name: id
+    type: numeric
+  metrics:
+  - name: shipment_count
+    agg: count
+  relationships:
+  - name: items
+    type: many_to_one
+    foreign_key:
+    - order_id
+    - line_number
+    primary_key:
+    - order_id
+    - line_number

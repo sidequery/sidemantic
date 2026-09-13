@@ -479,7 +479,7 @@ def _lower_scope(
                     )
                 )
                 continue
-            expression, _ = selected
+            expression, expression_dialect = selected
             expression_error = _sql_expression_error(expression, target_dialect)
             if expression_error is not None:
                 diagnostics.append(
@@ -499,6 +499,12 @@ def _lower_scope(
                 metric_object = Metric(
                     name=metric_name,
                     sql=expression,
+                    # The selected target SQL must bypass Metric's implicit DuckDB extraction.
+                    sql_is_complete=True,
+                    metadata={
+                        "ossie_expression_dialect": expression_dialect,
+                        "ossie_target_dialect": _normalize_dialect(target_dialect),
+                    },
                     logical_data_type=(metric.get("datatype") if isinstance(metric.get("datatype"), str) else None),
                     description=metric.get("description") if isinstance(metric.get("description"), str) else None,
                 )

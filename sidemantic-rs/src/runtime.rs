@@ -153,6 +153,10 @@ struct GraphPathModelPayload {
 struct GraphPathRelationshipPayload {
     name: String,
     #[serde(default)]
+    target_model: Option<String>,
+    #[serde(default)]
+    active: Option<bool>,
+    #[serde(default)]
     edge_id: Option<String>,
     #[serde(default, rename = "type")]
     relationship_type: Option<String>,
@@ -5730,6 +5734,8 @@ fn semantic_graph_from_graph_path_payload(
 
             model.relationships.push(Relationship {
                 name: relationship_payload.name.clone(),
+                target_model: relationship_payload.target_model.clone(),
+                active: relationship_payload.active.unwrap_or(true),
                 edge_id: relationship_payload.edge_id.clone(),
                 r#type: normalized_type,
                 foreign_key: foreign_key_columns
@@ -5930,12 +5936,19 @@ pub fn validate_query_references(
         .into_iter()
         .filter(|model_name| graph.get_model(model_name).is_some())
         .collect();
+    let query_models = valid_model_names.iter().cloned().collect();
     for (index, model_a) in valid_model_names.iter().enumerate() {
         for model_b in valid_model_names.iter().skip(index + 1) {
-            if graph.find_join_path(model_a, model_b).is_err() {
-                errors.push(format!(
-                    "No join path found between models '{model_a}' and '{model_b}'. Add relationships to enable joining these models."
-                ));
+            if let Err(error) =
+                graph.find_join_path_with_context(model_a, model_b, Some(&query_models))
+            {
+                if matches!(error, SidemanticError::AmbiguousJoinPath { .. }) {
+                    errors.push(error.to_string());
+                } else {
+                    errors.push(format!(
+                        "No join path found between models '{model_a}' and '{model_b}'. Add relationships to enable joining these models."
+                    ));
+                }
             }
         }
     }

@@ -39,7 +39,7 @@ def validate_directory(directory: str | Path, *, ossie_scope_id: str | None = No
     directory = Path(directory)
     report = ValidationReport(directory=directory)
 
-    layer = SemanticLayer()
+    layer = SemanticLayer(engine="python")
     load_from_directory(layer, str(directory), ossie_scope_id=ossie_scope_id)
 
     if not layer.graph.models:

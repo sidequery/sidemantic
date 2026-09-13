@@ -5,6 +5,7 @@ mod graph;
 mod inheritance;
 mod model;
 mod parameter;
+mod policy;
 mod relative_date;
 mod segment;
 pub mod symmetric_agg;
@@ -12,7 +13,8 @@ mod table_calc;
 
 pub use dependency::{
     check_circular_dependencies, extract_column_references_from_expr, extract_dependencies,
-    extract_dependencies_with_context,
+    extract_dependencies_with_context, parse_semantic_expression, replace_semantic_columns,
+    semantic_column_references, SemanticColumnReference,
 };
 pub use graph::{JoinPath, JoinStep, SemanticGraph};
 pub use inheritance::{merge_model, resolve_model_inheritance};
@@ -22,6 +24,7 @@ pub use model::{
     RefreshKey, Relationship, RelationshipType, TimeGrain,
 };
 pub use parameter::{Parameter, ParameterType};
+pub use policy::{AccessRule, PolicyError, PreparedPolicies, SecurityPolicy};
 pub use relative_date::RelativeDate;
 pub use segment::Segment;
 pub use symmetric_agg::{

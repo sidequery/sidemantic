@@ -7,26 +7,14 @@ Rust engine mode is the explicit product surface for opting into the native Rust
 | Mode | Behavior |
 |---|---|
 | `python` | Use Python validation, compilation, and rewrite paths. |
-| `rust` | Use Rust native runtime paths and fail if Rust is unavailable unless fallback is enabled. |
-| `auto` | Try Rust first and fall back to Python by default. |
+| `rust` | Use the versioned Rust semantic-input path; reject unavailable or unsupported requirements unless fallback is enabled. |
+| `auto` | Select Rust when supported; permit Python fallback for typed unavailable or unsupported requirements. |
 
-## Python API
-
-```python
-layer = SemanticLayer(engine="rust")
-```
-
-This enables:
-
-- Rust-backed query reference validation.
-- Rust-backed structured query compilation.
-- No Python SQL string verification, because Rust and Python SQL do not need byte-for-byte parity.
-
-```python
-layer = SemanticLayer(engine="rust", fallback=True)
-```
-
-This attempts Rust and falls back to Python if the Rust extension is unavailable or the Rust compile path rejects the query.
+The current supported boundary and conformance evidence are documented in
+[Semantic input contract](semantic-input.md). Invalid definitions and unexpected
+compiler failures remain errors in every mode. Automatic fallback does not hide
+those failures. Fallback diagnostics are written to stderr; SQL and data remain
+on stdout.
 
 ## CLI
 
@@ -63,6 +51,26 @@ runtime:
 ```
 
 CLI `--engine` and `--fallback/--no-fallback` override config values for the command invocation.
+
+## Python API
+
+```python
+layer = SemanticLayer(engine="rust")
+```
+
+This enables:
+
+- Rust-backed query reference validation.
+- Rust-backed structured query compilation.
+- No Python SQL string verification, because Rust and Python SQL do not need byte-for-byte parity.
+
+```python
+layer = SemanticLayer(engine="rust", fallback=True)
+```
+
+This permits Python fallback when the Rust extension's versioned entrypoints are
+unavailable or a required capability is unsupported. Other compiler errors
+propagate. `layer.last_engine_selection` reports the selected engine and reason.
 
 ## Legacy Env Vars
 

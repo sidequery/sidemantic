@@ -161,6 +161,12 @@ Runtime engine: python, rust, or auto
 \fB\-\-fallback, \-\-no\-fallback\fR
 Allow Rust engine fallback to Python
 .TP
+\fB\-\-user\-attrs\-file PATH\fR
+JSON object with caller attributes for model access and row policies
+.TP
+\fB\-\-enforce\-visibility\fR
+Reject semantic fields declared public: false
+.TP
 \fB\-\-use\-preaggregations\fR
 Enable automatic pre\-aggregation routing
 .SH "SIDEMANTIC CONVERT"
@@ -238,6 +244,12 @@ Runtime engine: python, rust, or auto
 .TP
 \fB\-\-fallback, \-\-no\-fallback\fR
 Allow Rust engine fallback to Python
+.TP
+\fB\-\-user\-attrs\-file PATH\fR
+JSON object with caller attributes for model access and row policies
+.TP
+\fB\-\-enforce\-visibility\fR
+Reject semantic fields declared public: false
 .TP
 \fB\-\-use\-preaggregations\fR
 Enable automatic pre\-aggregation routing

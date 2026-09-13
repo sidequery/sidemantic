@@ -1951,19 +1951,15 @@ def test_explain_yardstick_route(monkeypatch, semantic_layer):
 
 
 def test_explain_rust_rewriter_route(monkeypatch, semantic_layer):
-    class FakeRustModule:
-        def __init__(self):
-            self.calls = []
+    calls = []
 
-        def rewrite_with_yaml(self, yaml_text: str, sql_text: str) -> str:
-            self.calls.append((yaml_text, sql_text))
-            return "SELECT 1 AS from_rust"
+    def rewrite(graph, sql, **kwargs):
+        calls.append((graph, sql, kwargs))
+        return "SELECT 1 AS from_rust"
 
-    fake = FakeRustModule()
     monkeypatch.setenv("SIDEMANTIC_RS_REWRITER", "1")
     monkeypatch.delenv("SIDEMANTIC_RS_NO_FALLBACK", raising=False)
-    monkeypatch.setattr("sidemantic.sql.query_rewriter.get_rust_module", lambda: fake)
-    monkeypatch.setattr("sidemantic.sql.query_rewriter.graph_to_rust_yaml", lambda _graph: "models: []")
+    monkeypatch.setattr("sidemantic.sql.query_rewriter.rewrite_semantic_input", rewrite)
 
     explanation = QueryRewriter(semantic_layer.graph, dialect="duckdb").explain("SELECT orders.revenue FROM orders")
     candidates = _candidate_by_name(explanation)
@@ -1972,7 +1968,13 @@ def test_explain_rust_rewriter_route(monkeypatch, semantic_layer):
     assert explanation.source_kind == "rust"
     assert explanation.rewritten_sql == "SELECT 1 AS from_rust"
     assert candidates["rust_semantic_rewriter"].valid is True
-    assert fake.calls == [("models: []", "SELECT orders.revenue FROM orders")]
+    assert calls == [
+        (
+            semantic_layer.graph,
+            "SELECT orders.revenue FROM orders",
+            {"input_dialect": "duckdb", "user_attributes": None, "enforce_visibility": False},
+        )
+    ]
 
 
 def test_trivial_wrapper_uses_direct_semantic_plan(semantic_layer):

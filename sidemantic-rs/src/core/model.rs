@@ -238,6 +238,9 @@ pub struct Metric {
     pub agg: Option<Aggregation>,
     /// SQL expression
     pub sql: Option<String>,
+    /// Source expression is already complete and must not be reinterpreted as an aggregation input.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub sql_is_complete: bool,
     /// Numerator metric (for ratio metrics)
     pub numerator: Option<String>,
     /// Denominator metric (for ratio metrics)
@@ -362,6 +365,7 @@ impl Metric {
             r#type: MetricType::Simple,
             agg: Some(Aggregation::Sum),
             sql: None,
+            sql_is_complete: false,
             numerator: None,
             denominator: None,
             offset_window: None,
@@ -621,8 +625,12 @@ pub enum RelationshipType {
 /// A relationship defines how models join together
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Relationship {
-    /// Target model name
+    /// Query role name, or target model name when no role is declared.
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_model: Option<String>,
+    #[serde(default = "default_true")]
+    pub active: bool,
     /// Stable identity of the declared edge, independent of target model name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub edge_id: Option<String>,
@@ -667,6 +675,8 @@ impl Relationship {
     pub fn new(target: impl Into<String>) -> Self {
         Self {
             name: target.into(),
+            target_model: None,
+            active: true,
             edge_id: None,
             r#type: RelationshipType::ManyToOne,
             foreign_key: None,
@@ -685,6 +695,10 @@ impl Relationship {
 
     pub fn many_to_one(target: impl Into<String>) -> Self {
         Self::new(target)
+    }
+
+    pub fn related_model(&self) -> &str {
+        self.target_model.as_deref().unwrap_or(&self.name)
     }
 
     pub fn one_to_many(target: impl Into<String>) -> Self {

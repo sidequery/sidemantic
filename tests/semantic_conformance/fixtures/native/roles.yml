@@ -1,0 +1,23 @@
+version: 1
+models:
+- name: flights
+  table: flights
+  primary_key: id
+  metrics:
+  - name: flight_count
+    agg: count
+  relationships:
+  - name: origin
+    target_model: airports
+    type: many_to_one
+    foreign_key: origin_id
+  - name: destination
+    target_model: airports
+    type: many_to_one
+    foreign_key: destination_id
+- name: airports
+  table: airports
+  primary_key: id
+  dimensions:
+  - name: city
+    type: categorical

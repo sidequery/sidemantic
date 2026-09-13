@@ -1,6 +1,7 @@
 """Test that time_comparison metrics defined in model.metrics are auto-registered at graph level."""
 
 import duckdb
+import pytest
 
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.metric import Metric
@@ -8,6 +9,58 @@ from sidemantic.core.model import Model
 from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.sql.generator import SQLGenerator
 from tests.utils import fetch_dicts
+
+
+@pytest.mark.parametrize(
+    ("comparison_type", "prior", "current"),
+    [
+        ("dod", "2024-03-01", "2024-03-02"),
+        ("wow", "2024-03-01", "2024-03-08"),
+        ("mom", "2024-03-01", "2024-04-01"),
+        ("qoq", "2024-03-01", "2024-06-01"),
+        ("yoy", "2023-03-01", "2024-03-01"),
+    ],
+)
+def test_named_calendar_comparison_without_declared_granularity(comparison_type, prior, current):
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="sales",
+            table="sales",
+            primary_key="id",
+            dimensions=[Dimension(name="day", type="time"), Dimension(name="category", type="categorical")],
+            metrics=[Metric(name="revenue", agg="sum", sql="amount")],
+        )
+    )
+    graph.add_metric(
+        Metric(
+            name="change",
+            type="time_comparison",
+            base_metric="sales.revenue",
+            comparison_type=comparison_type,
+            calculation="difference",
+        )
+    )
+    sql = SQLGenerator(graph).generate(metrics=["change"], dimensions=["sales.day", "sales.category"])
+    with duckdb.connect() as conn:
+        conn.execute("create table sales(id integer, day date, category varchar, amount integer)")
+        conn.executemany(
+            "insert into sales values (?, ?, ?, ?)",
+            [
+                (1, "2020-01-01", "a", 100),
+                (2, prior, "a", 180),
+                (3, current, "a", 210),
+                (4, "2020-01-01", None, 10),
+                (5, prior, None, 30),
+                (6, current, None, 50),
+            ],
+        )
+        records = fetch_dicts(conn.execute(sql))
+    by_key = {(str(row["day"]), row["category"]): row["change"] for row in records}
+    assert by_key[prior, "a"] is None
+    assert by_key[prior, None] is None
+    assert by_key[current, "a"] == 30
+    assert by_key[current, None] == 20
 
 
 def test_model_level_time_comparison_metric():
@@ -21,7 +74,8 @@ def test_model_level_time_comparison_metric():
             UNION ALL SELECT '2024-04', 180
         """,
         primary_key="month",
-        dimensions=[Dimension(name="month", sql="month", type="time")],
+        # Source months are strings; declare their calendar meaning explicitly.
+        dimensions=[Dimension(name="calendar_month", sql="CAST(month || '-01' AS DATE)", type="time")],
         metrics=[
             Metric(name="revenue", agg="sum", sql="revenue"),
             # Time comparison metric defined at model level - should be auto-registered at graph
@@ -44,7 +98,7 @@ def test_model_level_time_comparison_metric():
 
     # Verify it works in SQL generation
     generator = SQLGenerator(graph)
-    sql = generator.generate(metrics=["revenue_mom_change"], dimensions=["sales.month"])
+    sql = generator.generate(metrics=["revenue_mom_change"], dimensions=["sales.calendar_month"])
 
     print("\nMoM Difference SQL:")
     print(sql)

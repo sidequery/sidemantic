@@ -1,0 +1,23 @@
+version: 1
+models:
+- name: keyless
+  table: keyless
+  primary_key: null
+  dimensions:
+  - name: group_id
+    type: numeric
+  metrics:
+  - name: revenue
+    agg: sum
+    sql: amount
+  relationships:
+  - name: labels
+    type: one_to_many
+    primary_key: group_id
+    foreign_key: group_id
+- name: labels
+  table: labels
+  primary_key: id
+  dimensions:
+  - name: label
+    type: categorical

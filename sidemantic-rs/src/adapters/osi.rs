@@ -482,6 +482,8 @@ fn add_relationship_to_model(rel_def: &Json, models: &mut [Model]) {
 
     let relationship = Relationship {
         name: to_model.to_string(),
+        target_model: None,
+        active: true,
         edge_id: None,
         r#type: RelationshipType::ManyToOne,
         foreign_key: foreign_key_columns.first().cloned(),

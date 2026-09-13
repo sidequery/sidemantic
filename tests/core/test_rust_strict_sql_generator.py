@@ -1,9 +1,11 @@
 """Strict-mode behavior tests for Rust SQL generator entrypoint."""
 
+import json
+
 import pytest
-import yaml
 
 import sidemantic.core.semantic_layer as semantic_layer_module
+import sidemantic.rust_bridge as rust_bridge
 import sidemantic.rust_parity as rust_parity
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
@@ -35,6 +37,7 @@ def _build_layer(monkeypatch) -> SemanticLayer:
             metrics=[Metric(name="revenue", agg="sum", sql="amount")],
         )
     )
+    monkeypatch.setattr(rust_bridge, "get_rust_module", lambda: layer._rust_module)
     return layer
 
 
@@ -73,7 +76,7 @@ def test_strict_sql_entrypoint_rejects_python_fallback(monkeypatch):
         lambda **_kwargs: (_ for _ in ()).throw(AssertionError("python fallback should not run")),
     )
 
-    with pytest.raises(ValueError, match="returned no SQL in strict mode"):
+    with pytest.raises(ValueError, match="returned no SQL"):
         layer.compile(metrics=["orders.revenue"])
 
 
@@ -89,8 +92,8 @@ def test_rust_compile_payload_includes_preaggregation_flags(monkeypatch):
     captured = {}
 
     class FakeRustModule:
-        def compile_with_yaml(self, _models_yaml, query_yaml):
-            captured.update(yaml.safe_load(query_yaml))
+        def compile_with_semantic_input(self, _models_yaml, query_yaml):
+            captured.update(json.loads(query_yaml))
             return "SELECT 1"
 
     layer._rust_module = FakeRustModule()
@@ -104,14 +107,15 @@ def test_rust_compile_payload_includes_preaggregation_flags(monkeypatch):
     assert "preagg_schema" in captured
 
 
-def test_rust_compile_transpiles_from_rust_output_dialect(monkeypatch):
+def test_rust_compile_passes_dialect_without_python_transpilation(monkeypatch):
     _configure_strict_sql_entrypoint(monkeypatch)
     layer = _build_layer(monkeypatch)
     layer.dialect = "bigquery"
 
     class FakeRustModule:
-        def compile_with_yaml(self, _models_yaml, _query_yaml):
-            return "SELECT DATE_TRUNC('month', order_date) AS order_month FROM orders_cte"
+        def compile_with_semantic_input(self, _models_yaml, _query_yaml):
+            assert json.loads(_query_yaml)["dialect"] == "bigquery"
+            return "SELECT DATE_TRUNC(order_date, MONTH) AS order_month FROM orders_cte"
 
     layer._rust_module = FakeRustModule()
     sql = layer.compile(metrics=["orders.revenue"], dialect=None)
@@ -157,10 +161,11 @@ def test_rust_compile_payload_includes_complex_metric_fields(monkeypatch):
         )
     )
     captured = {}
+    monkeypatch.setattr(rust_bridge, "get_rust_module", lambda: layer._rust_module)
 
     class FakeRustModule:
-        def compile_with_yaml(self, models_yaml, _query_yaml):
-            captured.update(yaml.safe_load(models_yaml))
+        def compile_with_semantic_input(self, models_yaml, _query_yaml):
+            captured.update(json.loads(models_yaml))
             return "SELECT 1"
 
     layer._rust_module = FakeRustModule()

@@ -47,7 +47,7 @@ def test_query_validation_routes_to_rust(monkeypatch):
     _clear_strict_cache()
 
     layer = _build_layer()
-    monkeypatch.setattr(rust_bridge, "validate_query_with_rust", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(rust_bridge, "validate_semantic_input", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(
         validation_module,
         "validate_query",
@@ -69,13 +69,11 @@ def test_query_validation_strict_raises_without_fallback(monkeypatch):
     layer = _build_layer()
     monkeypatch.setattr(
         rust_bridge,
-        "validate_query_with_rust",
+        "validate_semantic_input",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("rust validation failure")),
     )
 
-    with pytest.raises(
-        validation_module.QueryValidationError, match="Rust query validation failed: rust validation failure"
-    ):
+    with pytest.raises(RuntimeError, match="rust validation failure"):
         layer.compile(metrics=["orders.revenue"], dimensions=["orders.status"])
 
 
@@ -102,8 +100,8 @@ def test_query_validation_with_rust_accepts_subhour_time_granularities(monkeypat
     _clear_strict_cache()
     monkeypatch.setattr(
         rust_bridge,
-        "validate_query_with_rust",
-        lambda _graph, metrics, dimensions: []
+        "validate_semantic_input",
+        lambda _graph, metrics, dimensions, **kwargs: []
         if metrics == ["orders.revenue"] and dimensions == ["orders.created_at__minute"]
         else ["unexpected query"],
     )

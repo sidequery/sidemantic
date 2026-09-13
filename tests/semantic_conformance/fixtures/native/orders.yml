@@ -1,0 +1,33 @@
+version: 1
+models:
+- name: orders
+  table: orders
+  primary_key: id
+  metrics:
+  - name: revenue
+    agg: sum
+    sql: amount
+  - name: customer_proxy
+    type: derived
+    sql: customers.customer_count
+  relationships:
+  - name: customers
+    type: many_to_one
+    foreign_key: customer_id
+- name: customers
+  table: customers
+  primary_key: id
+  dimensions:
+  - name: region
+    type: categorical
+  metrics:
+  - name: customer_count
+    agg: count
+metrics:
+- name: proxied_customers
+  type: derived
+  sql: orders.customer_proxy
+- name: revenue_per_customer
+  type: ratio
+  numerator: orders.revenue
+  denominator: customers.customer_count

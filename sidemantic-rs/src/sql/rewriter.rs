@@ -14,20 +14,39 @@ use polyglot_sql::{
 
 use crate::core::{DimensionType, MetricType, SemanticGraph};
 use crate::error::{Result, SidemanticError};
+use crate::sql::SemanticQuery;
+use polyglot_sql::traversal::ExpressionWalk;
+
+type QueryPreparer<'a> = &'a dyn Fn(&mut SemanticQuery) -> Result<()>;
 
 /// SQL query rewriter using semantic definitions
 pub struct QueryRewriter<'a> {
     graph: &'a SemanticGraph,
+    query_preparer: Option<QueryPreparer<'a>>,
 }
 
 impl<'a> QueryRewriter<'a> {
     pub fn new(graph: &'a SemanticGraph) -> Self {
-        Self { graph }
+        Self {
+            graph,
+            query_preparer: None,
+        }
+    }
+
+    /// Apply request policies before semantic planning. Other SQL shapes are
+    /// rejected because the legacy expression rewriter cannot enforce them.
+    pub(crate) fn with_query_preparer(mut self, prepare: QueryPreparer<'a>) -> Self {
+        self.query_preparer = Some(prepare);
+        self
     }
 
     /// Rewrite a SQL query using semantic layer definitions
     pub fn rewrite(&self, sql: &str) -> Result<String> {
-        let statements = parse_sql_with_large_stack(sql)?;
+        self.rewrite_with_dialect(sql, DialectType::Generic)
+    }
+
+    pub fn rewrite_with_dialect(&self, sql: &str, dialect: DialectType) -> Result<String> {
+        let statements = parse_sql_with_dialect(sql, dialect)?;
 
         if statements.is_empty() {
             return Err(SidemanticError::SqlParse("Empty SQL".into()));
@@ -36,13 +55,27 @@ impl<'a> QueryRewriter<'a> {
         let mut rewritten_statements = Vec::new();
         for statement in statements {
             let rewritten = self.rewrite_statement(statement)?;
-            rewritten_statements.push(expr_to_sql(&rewritten)?);
+            rewritten_statements.push(
+                polyglot_generate(&rewritten, dialect)
+                    .map_err(|e| SidemanticError::SqlGeneration(e.to_string()))?,
+            );
         }
 
         Ok(rewritten_statements.join(";\n"))
     }
 
     fn rewrite_statement(&self, statement: Expression) -> Result<Expression> {
+        if self.query_preparer.is_some()
+            && (!matches!(&statement, Expression::Select(select) if is_from_metrics(select.from.as_ref()))
+                || statement
+                    .dfs()
+                    .skip(1)
+                    .any(|node| matches!(node, Expression::Select(_) | Expression::Subquery(_))))
+        {
+            return Err(SidemanticError::UnsupportedSemanticFeatures {
+                capabilities: vec!["rewrite.policy_select_shape".into()],
+            });
+        }
         match statement {
             Expression::Select(select) => {
                 let rewritten_select = self.rewrite_select(*select)?;
@@ -53,6 +86,11 @@ impl<'a> QueryRewriter<'a> {
     }
 
     fn rewrite_select(&self, mut select: Select) -> Result<Select> {
+        if (self.graph.has_strict_metric_scope() || self.query_preparer.is_some())
+            && is_from_metrics(select.from.as_ref())
+        {
+            return self.rewrite_scoped_metrics_select(select);
+        }
         if let Some(mut with_clause) = select.with.take() {
             for cte in &mut with_clause.ctes {
                 cte.this = self.rewrite_nested_query_expr(cte.this.clone())?;
@@ -222,6 +260,242 @@ impl<'a> QueryRewriter<'a> {
         select = self.wrap_simple_select_with_cte(select, &model_refs)?;
 
         Ok(select)
+    }
+
+    /// Keep scoped graph metrics and relationship roles in the semantic compiler.
+    /// The legacy row-expression rewrite cannot preserve their aggregate grains.
+    fn rewrite_scoped_metrics_select(&self, select: Select) -> Result<Select> {
+        use crate::core::{replace_semantic_columns, semantic_column_references};
+        use crate::sql::generator::{SemanticQuery, SqlGenerator};
+
+        let unsupported = || SidemanticError::UnsupportedSemanticFeatures {
+            capabilities: vec!["rewrite.scoped_select_shape".into()],
+        };
+        // Remove exactly the clauses handled below; reject other dialect or
+        // query controls instead of silently dropping them from the wrapper.
+        let mut remaining = select.clone();
+        remaining.expressions.clear();
+        remaining.from = None;
+        remaining.where_clause = None;
+        remaining.having = None;
+        remaining.order_by = None;
+        remaining.limit = None;
+        remaining.offset = None;
+        remaining.leading_comments.clear();
+        remaining.post_select_comments.clear();
+        if serde_json::to_value(&remaining)
+            .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))?
+            != serde_json::to_value(Select::new())
+                .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))?
+            || select
+                .from
+                .as_ref()
+                .is_some_and(|from| from.expressions.len() != 1)
+        {
+            return Err(unsupported());
+        }
+        let mut query = SemanticQuery::new();
+        let mut projections = Vec::new();
+        for expression in &select.expressions {
+            let (expression, alias) = match expression {
+                Expression::Alias(alias) => (&alias.this, Some(alias.alias.name.clone())),
+                expression => (expression, None),
+            };
+            let Expression::Column(column) = expression else {
+                return Err(unsupported());
+            };
+            let name = &column.name.name;
+            let reference = column
+                .table
+                .as_ref()
+                .map_or_else(|| name.clone(), |table| format!("{}.{name}", table.name));
+            let is_metric = if let Some(table) = &column.table {
+                let model = self.graph.get_model(&table.name).ok_or_else(|| {
+                    SidemanticError::Validation(format!("Model '{}' not found", table.name))
+                })?;
+                if model.get_metric(name).is_some() {
+                    true
+                } else {
+                    let base_name = name
+                        .split_once("__")
+                        .map_or(name.as_str(), |(name, _)| name);
+                    if model.get_dimension(base_name).is_none() {
+                        return Err(SidemanticError::Validation(format!(
+                            "Field '{reference}' not found"
+                        )));
+                    }
+                    false
+                }
+            } else if self.graph.get_metric(name).is_some() {
+                true
+            } else {
+                return Err(SidemanticError::Validation(format!(
+                    "Graph metric '{name}' not found; model fields must be qualified"
+                )));
+            };
+            let references = if is_metric {
+                &mut query.metrics
+            } else {
+                &mut query.dimensions
+            };
+            if !references.contains(&reference) {
+                references.push(reference.clone());
+            }
+            projections.push((column.clone(), reference, alias));
+        }
+        if let Some(filter) = &select.where_clause {
+            query.filters.push(
+                polyglot_generate(&filter.this, DialectType::DuckDB)
+                    .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))?,
+            );
+        }
+        if let Some(filter) = &select.having {
+            query.filters.push(
+                polyglot_generate(&filter.this, DialectType::DuckDB)
+                    .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))?,
+            );
+        }
+        if let Some(prepare) = self.query_preparer {
+            for filter in &query.filters {
+                self.validate_contextual_references(filter)?;
+            }
+            // Policies must see semantic ORDER BY references, including private
+            // fields that the projection wrapper cannot otherwise support.
+            let aliases: HashMap<_, _> = projections
+                .iter()
+                .filter_map(|(_, reference, alias)| {
+                    alias
+                        .as_ref()
+                        .map(|alias| ((None, alias.clone()), reference.clone()))
+                })
+                .collect();
+            if let Some(order) = &select.order_by {
+                for item in &order.expressions {
+                    let expression = replace_semantic_columns(item.this.clone(), &aliases)?;
+                    let order_sql = polyglot_generate(&expression, DialectType::DuckDB)
+                        .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))?;
+                    self.validate_contextual_references(&order_sql)?;
+                    query.order_by.push(order_sql);
+                }
+            }
+            prepare(&mut query)?;
+            query.order_by.clear();
+        }
+        let sql = SqlGenerator::new(self.graph).generate(&query)?;
+        let compiled = parse_sql_with_dialect(&sql, DialectType::DuckDB)?;
+        let Some(Expression::Select(compiled)) = compiled.first() else {
+            return Err(SidemanticError::SqlGeneration(
+                "Expected compiled SELECT".into(),
+            ));
+        };
+        let compiled_names: HashSet<_> = compiled
+            .expressions
+            .iter()
+            .filter_map(|expression| match expression {
+                Expression::Alias(alias) => Some(alias.alias.name.clone()),
+                Expression::Column(column) => Some(column.name.name.clone()),
+                _ => None,
+            })
+            .collect();
+        let mut names = HashMap::new();
+        for reference in query.metrics.iter().chain(&query.dimensions) {
+            let name = reference.rsplit('.').next().unwrap_or(reference);
+            *names.entry(name.to_string()).or_insert(0usize) += 1;
+        }
+        let mut replacements = HashMap::new();
+        let mut output_expressions = Vec::new();
+        for (column, reference, alias) in projections {
+            let name = &column.name.name;
+            let compiled_name = if names[name] > 1 {
+                column
+                    .table
+                    .as_ref()
+                    .map_or_else(|| name.clone(), |table| format!("{}_{name}", table.name))
+            } else {
+                name.clone()
+            };
+            if !compiled_names.contains(&compiled_name) {
+                return Err(SidemanticError::SqlGeneration(format!(
+                    "Compiled query did not project '{reference}' as '{compiled_name}'"
+                )));
+            }
+            let expression = Expression::qualified_column("__semantic_query", compiled_name);
+            let binding = polyglot_generate(&expression, DialectType::DuckDB)
+                .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))?;
+            replacements.insert(
+                (
+                    column.table.as_ref().map(|table| table.name.clone()),
+                    name.clone(),
+                ),
+                binding.clone(),
+            );
+            if let Some(alias) = &alias {
+                replacements.insert((None, alias.clone()), binding);
+            }
+            output_expressions.push(expression.alias(alias.unwrap_or_else(|| name.clone())));
+        }
+        // Keep pagination and ordering outside the compiler result, after the
+        // requested projection. Temporal helper measures never escape SELECT.
+        let mut wrapper = parse_sql_with_dialect(
+            &format!("SELECT * FROM ({sql}) AS __semantic_query"),
+            DialectType::DuckDB,
+        )?;
+        let Expression::Select(mut outer) = wrapper.remove(0) else {
+            return Err(SidemanticError::SqlGeneration(
+                "Expected projection wrapper".into(),
+            ));
+        };
+        outer.expressions = output_expressions;
+        outer.limit = select.limit;
+        outer.offset = select.offset;
+        outer.order_by = select.order_by;
+        if let Some(order) = &mut outer.order_by {
+            for item in &mut order.expressions {
+                let expression_sql = polyglot_generate(&item.this, DialectType::DuckDB)
+                    .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))?;
+                if semantic_column_references(&expression_sql)?
+                    .iter()
+                    .any(|column| {
+                        !replacements.contains_key(&(column.model.clone(), column.field.clone()))
+                    })
+                {
+                    return Err(SidemanticError::UnsupportedSemanticFeatures {
+                        capabilities: vec!["rewrite.unprojected_order_by".into()],
+                    });
+                }
+                item.this = replace_semantic_columns(item.this.clone(), &replacements)?;
+            }
+        }
+        Ok(*outer)
+    }
+
+    /// Contextual SQL refers only to declared semantic fields. Physical columns
+    /// are permitted inside trusted model declarations, not user filter text.
+    fn validate_contextual_references(&self, sql: &str) -> Result<()> {
+        for column in crate::core::semantic_column_references(sql)? {
+            let valid = if let Some(owner) = &column.model {
+                self.graph.get_model(owner).is_some_and(|model| {
+                    let base_name = column
+                        .field
+                        .split_once("__")
+                        .map_or(column.field.as_str(), |(name, _)| name);
+                    model.get_metric(&column.field).is_some()
+                        || model.get_dimension(base_name).is_some()
+                })
+            } else {
+                self.graph.get_metric(&column.field).is_some()
+            };
+            if !valid {
+                let reference = column.model.as_ref().map_or_else(
+                    || column.field.clone(),
+                    |model| format!("{model}.{}", column.field),
+                );
+                return Err(SidemanticError::Validation(format!(
+                    "Field '{reference}' not found; model fields must be qualified"
+                )));
+            }
+        }
+        Ok(())
     }
 
     fn wrap_simple_select_with_cte(
@@ -1021,9 +1295,13 @@ impl<'a> QueryRewriter<'a> {
 }
 
 pub(super) fn parse_sql_with_large_stack(sql: &str) -> Result<Vec<Expression>> {
+    parse_sql_with_dialect(sql, DialectType::Generic)
+}
+
+fn parse_sql_with_dialect(sql: &str, dialect: DialectType) -> Result<Vec<Expression>> {
     #[cfg(target_arch = "wasm32")]
     {
-        let _ = sql;
+        let _ = (sql, dialect);
         return Err(SidemanticError::SqlParse(
             "operation not supported on this platform".to_string(),
         ));
@@ -1034,9 +1312,7 @@ pub(super) fn parse_sql_with_large_stack(sql: &str) -> Result<Vec<Expression>> {
         let sql_owned = sql.to_string();
         let handle = std::thread::Builder::new()
             .stack_size(16 * 1024 * 1024)
-            .spawn(move || {
-                polyglot_parse(&sql_owned, DialectType::Generic).map_err(|e| e.to_string())
-            })
+            .spawn(move || polyglot_parse(&sql_owned, dialect).map_err(|e| e.to_string()))
             .map_err(|e| SidemanticError::SqlParse(e.to_string()))?;
 
         let parse_result = handle
@@ -1061,11 +1337,6 @@ fn parse_where_expr(condition_sql: &str) -> Option<Expression> {
     let statement = statements.first()?;
     let select = statement.as_select()?;
     select.where_clause.as_ref().map(|w| w.this.clone())
-}
-
-fn expr_to_sql(expr: &Expression) -> Result<String> {
-    polyglot_generate(expr, DialectType::Generic)
-        .map_err(|e| SidemanticError::SqlGeneration(e.to_string()))
 }
 
 fn resolve_model_ref<'a>(
@@ -1361,6 +1632,47 @@ mod tests {
         assert!(rewritten.contains("public.orders"));
         assert!(rewritten.contains("SUM("));
         assert!(rewritten.contains("GROUP BY"));
+    }
+
+    #[test]
+    fn scoped_graph_metric_select_preserves_alias_order_and_pagination() {
+        let mut graph = create_test_graph();
+        graph
+            .add_metric_unvalidated(Metric::derived("total", "orders.revenue"))
+            .unwrap();
+        graph.set_metric_scopes(HashMap::new()).unwrap();
+        let sql = QueryRewriter::new(&graph)
+            .rewrite_with_dialect(
+                "SELECT total AS amount FROM metrics ORDER BY amount DESC LIMIT 2 OFFSET 1",
+                DialectType::DuckDB,
+            )
+            .unwrap();
+        let parsed = parse_sql_with_dialect(&sql, DialectType::DuckDB).unwrap();
+        let Expression::Select(select) = &parsed[0] else {
+            panic!("expected select")
+        };
+        assert_eq!(select.expressions.len(), 1);
+        assert!(
+            matches!(&select.expressions[0], Expression::Alias(alias) if alias.alias.name == "amount")
+        );
+        assert!(select.limit.is_some());
+        assert!(select.offset.is_some());
+        assert!(sql.contains("__semantic_query.total DESC"));
+    }
+
+    #[test]
+    fn scoped_metrics_rejects_unhandled_clauses_and_invalid_fields_separately() {
+        let mut graph = create_test_graph();
+        graph.set_metric_scopes(HashMap::new()).unwrap();
+        let rewriter = QueryRewriter::new(&graph);
+        assert!(matches!(
+            rewriter.rewrite("SELECT orders.revenue FROM metrics QUALIFY 1 = 1"),
+            Err(SidemanticError::UnsupportedSemanticFeatures { .. })
+        ));
+        assert!(matches!(
+            rewriter.rewrite("SELECT orders.missing FROM metrics"),
+            Err(SidemanticError::Validation(_))
+        ));
     }
 
     #[test]

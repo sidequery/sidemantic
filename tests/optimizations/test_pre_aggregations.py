@@ -45,6 +45,18 @@ def test_preaggregation_table_name():
     assert table_name == "orders_preagg_daily_summary"
 
 
+def test_materialization_rejects_state_alias_collision():
+    model = Model(
+        name="orders",
+        table="orders",
+        dimensions=[Dimension(name="revenue_raw", type="numeric", sql="amount")],
+        metrics=[Metric(name="revenue", agg="sum", sql="amount")],
+    )
+    rollup = PreAggregation(name="invalid", dimensions=["revenue_raw"], measures=["revenue"])
+    with pytest.raises(ValueError, match="colliding dimension and aggregate state"):
+        rollup.generate_materialization_sql(model)
+
+
 def test_model_with_preaggregation():
     """Test model with pre-aggregations."""
     preagg = PreAggregation(

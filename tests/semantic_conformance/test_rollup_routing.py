@@ -1,6 +1,6 @@
 """Actual rollup builds and routed execution with independent population contracts."""
 
-from datetime import datetime
+from datetime import date, datetime
 
 import pytest
 
@@ -97,7 +97,7 @@ def assert_result(layer, query, rows, *, routed):
                 "dimensions": ["orders.created__month"],
                 "order_by": ["orders.created__month"],
             },
-            [(datetime(2026, 1, 1), 970), (datetime(2026, 2, 1), None)],
+            [(date(2026, 1, 1), 970), (date(2026, 2, 1), None)],
         ),
         ({"metrics": ["orders.revenue"], "filters": ["orders.status in ('paid')"]}, [(930,)]),
     ],
@@ -188,7 +188,7 @@ def test_week_rollup_cannot_serve_calendar_month(layer):
     assert_result(
         layer,
         {"metrics": ["orders.revenue"], "dimensions": ["orders.created__month"], "order_by": ["orders.created__month"]},
-        [(datetime(2026, 1, 1), 970), (datetime(2026, 2, 1), None)],
+        [(date(2026, 1, 1), 970), (date(2026, 2, 1), None)],
         routed=False,
     )
 
@@ -197,3 +197,44 @@ def test_empty_rollup_retains_zero_count(layer):
     layer.adapter.execute("delete from orders")
     materialize(layer)
     assert_result(layer, {"metrics": ["orders.revenue", "orders.count"]}, [(None, 0)], routed=True)
+
+
+def test_declared_grain_applies_to_rollup_raw_time_dimension(layer):
+    model = layer.graph.models["orders"]
+    model.get_dimension("created").granularity = "day"
+    model.pre_aggregations = [PreAggregation(name="daily", measures=["revenue"], dimensions=["created"])]
+    materialize(layer)
+    raw = layer.compile(
+        metrics=["orders.revenue"],
+        dimensions=["orders.created"],
+        order_by=["orders.created"],
+        use_preaggregations=False,
+    )
+    routed = layer.compile(
+        metrics=["orders.revenue"], dimensions=["orders.created"], order_by=["orders.created"], use_preaggregations=True
+    )
+    assert "used_preagg=true" in routed
+    raw_rows = layer.adapter.execute(raw).fetchall()
+    rows = layer.adapter.execute(routed).fetchall()
+    assert rows == raw_rows
+    assert [(str(row[0])[:10], row[1]) for row in rows] == [
+        ("2026-01-01", 30),
+        ("2026-01-02", 940),
+        ("2026-02-01", None),
+    ]
+
+
+@pytest.mark.parametrize("rust_build", [False, True])
+def test_colliding_state_and_dimension_aliases_cannot_materialize_or_route(layer, rust_build):
+    model = layer.graph.models["orders"]
+    model.dimensions.append(Dimension(name="revenue_raw", type="numeric", sql="amount"))
+    model.pre_aggregations = [PreAggregation(name="daily", measures=["revenue"], dimensions=["revenue_raw"])]
+    import sidemantic_rs
+
+    error = sidemantic_rs.UnsupportedSemanticFeaturesError if rust_build else ValueError
+    with pytest.raises(error, match="colliding|output_alias_collision"):
+        materialize(layer, rust=rust_build)
+    # Poison an external table with the colliding dimension value; it must not
+    # become aggregate state even if someone created it outside either builder.
+    layer.adapter.execute("create table orders_preagg_daily as select 99999 as revenue_raw")
+    assert_result(layer, {"metrics": ["orders.revenue"]}, [(970,)], routed=False)

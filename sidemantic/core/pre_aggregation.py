@@ -198,6 +198,13 @@ class PreAggregation(BaseModel):
             where = " AND ".join(f"({predicate})" for predicate in invariant_filters)
             return f"SELECT * FROM {source}" + (f"\nWHERE {where}" if where else "")
 
+        output_columns = list(self.dimensions or [])
+        if self.time_dimension and self.granularity:
+            output_columns.append(f"{self.time_dimension}_{self.granularity}")
+        output_columns.extend(f"{measure}_raw" for measure in self.measures or [])
+        if len({column.lower() for column in output_columns}) != len(output_columns):
+            raise ValueError(f"Pre-aggregation '{self.name}' has colliding dimension and aggregate state columns")
+
         select_exprs = []
         group_by_positions = []
         pos = 1

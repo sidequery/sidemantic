@@ -905,6 +905,25 @@ pub struct PreAggregation {
 }
 
 impl PreAggregation {
+    /// SQL result columns must identify one dimension or aggregate state each.
+    pub fn has_unique_output_names(&self) -> bool {
+        let mut names = std::collections::HashSet::new();
+        for dimension in self.dimensions.iter().flatten() {
+            if !names.insert(dimension.to_lowercase()) {
+                return false;
+            }
+        }
+        if let (Some(dimension), Some(grain)) = (&self.time_dimension, &self.granularity) {
+            if !names.insert(format!("{dimension}_{grain}").to_lowercase()) {
+                return false;
+            }
+        }
+        self.measures
+            .iter()
+            .flatten()
+            .all(|measure| names.insert(format!("{measure}_raw").to_lowercase()))
+    }
+
     /// Returns pre-aggregation table name in [database.][schema.]model_preagg_name form.
     pub fn table_name(
         &self,

@@ -5159,6 +5159,9 @@ impl SidemanticRuntime {
         let unsupported = |feature: &str| SidemanticError::UnsupportedSemanticFeatures {
             capabilities: vec![format!("preaggregation.materialization.{feature}")],
         };
+        if !preagg.has_unique_output_names() {
+            return Err(unsupported("output_alias_collision"));
+        }
         if preagg.preagg_type != crate::core::PreAggregationType::Rollup || preagg.sql.is_some() {
             return Err(unsupported("type_or_custom_sql"));
         }
@@ -8086,26 +8089,33 @@ models:
             "partition_granularity: day",
             "build_range_start: '2024-01-01'",
             "time_dimension: created_at",
-            "measures: [missing]",
-            "dimensions: [missing]",
         ] {
             let yaml = format!(
                 r#"
 models:
   - name: orders
     table: orders
+    dimensions:
+      - name: created_at
+        type: time
     pre_aggregations:
       - name: totals
         {definition}
 "#
             );
             let runtime = SidemanticRuntime::from_yaml(&yaml).unwrap();
+            let error = runtime
+                .generate_preaggregation_materialization_sql("orders", "totals")
+                .unwrap_err();
             assert!(
-                runtime
-                    .generate_preaggregation_materialization_sql("orders", "totals")
-                    .is_err(),
-                "{definition}"
+                matches!(error, SidemanticError::UnsupportedSemanticFeatures { .. }),
+                "{definition}: {error}"
             );
+        }
+        for definition in ["measures: [missing]", "dimensions: [missing]"] {
+            let yaml = format!("models:\n  - name: orders\n    table: orders\n    pre_aggregations:\n      - name: totals\n        {definition}\n");
+            let error = SidemanticRuntime::from_yaml(&yaml).unwrap_err();
+            assert!(error.to_string().contains("missing"), "{error}");
         }
     }
 

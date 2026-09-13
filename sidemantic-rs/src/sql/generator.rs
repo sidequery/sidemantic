@@ -3838,6 +3838,7 @@ impl<'a> SqlGenerator<'a> {
     ) -> bool {
         // Only ordinary, complete-source materializations have this state contract.
         if preagg.preagg_type != crate::core::PreAggregationType::Rollup
+            || !preagg.has_unique_output_names()
             || preagg.sql.is_some()
             || preagg.build_range_start.is_some()
             || preagg.build_range_end.is_some()
@@ -3872,12 +3873,24 @@ impl<'a> SqlGenerator<'a> {
             if dimension.model != model.name {
                 return false;
             }
-            if let Some(grain) = dimension.granularity.as_deref() {
-                if preagg.time_dimension.as_deref() != Some(dimension.name.as_str())
-                    || !preagg
-                        .granularity
-                        .as_deref()
-                        .is_some_and(|stored| self.is_granularity_compatible(grain, stored))
+            let definition = model
+                .get_dimension(&dimension.name)
+                .expect("validated dimension");
+            let effective_grain = dimension.granularity.as_deref().or_else(|| {
+                (definition.r#type == crate::core::DimensionType::Time)
+                    .then_some(definition.granularity.as_deref())
+                    .flatten()
+            });
+            if let Some(grain) = effective_grain {
+                if Self::granularity_level(grain).is_none() {
+                    return false;
+                }
+                if !preagg_dims.contains(&dimension.name)
+                    && (preagg.time_dimension.as_deref() != Some(dimension.name.as_str())
+                        || !preagg
+                            .granularity
+                            .as_deref()
+                            .is_some_and(|stored| self.is_granularity_compatible(grain, stored)))
                 {
                     return false;
                 }
@@ -4103,15 +4116,32 @@ impl<'a> SqlGenerator<'a> {
             .join(".");
         let mut select_parts = Vec::new();
         for dimension in dimension_refs {
-            let column = if let Some(grain) = dimension.granularity.as_deref() {
-                let stored_grain = preagg.granularity.as_deref().expect("matched time grain");
-                let column = self.quote_identifier(&format!("{}_{stored_grain}", dimension.name));
-                if grain == stored_grain {
-                    column
+            let definition = model
+                .get_dimension(&dimension.name)
+                .expect("validated dimension");
+            let effective_grain = dimension.granularity.as_deref().or_else(|| {
+                (definition.r#type == crate::core::DimensionType::Time)
+                    .then_some(definition.granularity.as_deref())
+                    .flatten()
+            });
+            let raw_dimension = preagg
+                .dimensions
+                .as_ref()
+                .is_some_and(|dimensions| dimensions.contains(&dimension.name));
+            let column = if let Some(grain) = effective_grain {
+                if raw_dimension {
+                    self.date_trunc_sql(grain, &self.quote_identifier(&dimension.name))
                 } else {
-                    self.emit_expression(&parse_semantic_expression(&format!(
-                        "DATE_TRUNC('{grain}', {column})"
-                    ))?)?
+                    let stored_grain = preagg.granularity.as_deref().expect("matched time grain");
+                    let column =
+                        self.quote_identifier(&format!("{}_{stored_grain}", dimension.name));
+                    if grain == stored_grain {
+                        column
+                    } else {
+                        self.emit_expression(&parse_semantic_expression(&format!(
+                            "DATE_TRUNC('{grain}', {column})"
+                        ))?)?
+                    }
                 }
             } else {
                 self.quote_identifier(&dimension.name)

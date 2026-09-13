@@ -47,6 +47,8 @@ const DIALECTS_0_2_0: &[&str] = &[
     "DATABRICKS",
     "MAQL",
     "BIGQUERY",
+    "SIGMA",
+    "THOUGHTSPOT",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -494,12 +496,45 @@ fn validate_logical_root(
     diagnostics: &mut Vec<OssieDiagnostic>,
 ) {
     let validation_version = profile.map(|profile| profile.validation_schema_version.as_str());
-    let allowed_root = if validation_version == Some("0.1.1") {
-        &["version", "dialects", "vendors", "semantic_model"][..]
+    reject_unknown(
+        root,
+        &["version", "dialects", "vendors", "semantic_model"],
+        "",
+        diagnostics,
+        None,
+    );
+    let allowed_dialects = if validation_version == Some("0.2.0.dev0") {
+        DIALECTS_0_2_0
     } else {
-        &["version", "semantic_model"][..]
+        DIALECTS_0_1_1
     };
-    reject_unknown(root, allowed_root, "", diagnostics, None);
+    if let Some(dialects) = optional_array(root, "dialects", "", diagnostics, None) {
+        for (index, dialect) in dialects.iter().enumerate() {
+            if !dialect
+                .as_str()
+                .is_some_and(|value| allowed_dialects.contains(&value))
+            {
+                diagnostics.push(diagnostic(
+                    "ossie.schema.enum",
+                    "Unsupported document dialect for this profile.",
+                    format!("/dialects/{index}"),
+                    None,
+                ));
+            }
+        }
+    }
+    if let Some(vendors) = optional_array(root, "vendors", "", diagnostics, None) {
+        for (index, vendor) in vendors.iter().enumerate() {
+            if !vendor.is_string() {
+                diagnostics.push(diagnostic(
+                    "ossie.schema.type",
+                    "Expected a vendor string.",
+                    format!("/vendors/{index}"),
+                    None,
+                ));
+            }
+        }
+    }
 
     let Some(scopes) = required_array(root, "semantic_model", "", diagnostics, None) else {
         return;
@@ -984,6 +1019,14 @@ fn validate_semantics(
                 diagnostics,
             );
             for (dataset_index, dataset) in datasets.iter().enumerate() {
+                if let Some(dataset) = dataset.as_object() {
+                    validate_declared_keys(
+                        dataset,
+                        &format!("{scope_pointer}/datasets/{dataset_index}"),
+                        scope_id.as_deref(),
+                        diagnostics,
+                    );
+                }
                 if let Some(fields) = dataset
                     .as_object()
                     .and_then(|dataset| dataset.get("fields"))
@@ -1023,6 +1066,85 @@ fn validate_semantics(
                 scope_id.as_deref(),
                 diagnostics,
             );
+        }
+    }
+}
+
+fn validate_declared_keys(
+    dataset: &Map<String, Value>,
+    pointer: &str,
+    scope: Option<&str>,
+    diagnostics: &mut Vec<OssieDiagnostic>,
+) {
+    let fields = dataset
+        .get("fields")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|field| field.get("name").and_then(Value::as_str))
+        .map(normalize_identifier)
+        .collect::<BTreeSet<_>>();
+    let mut keys = Vec::new();
+    if let Some(key) = dataset.get("primary_key").and_then(Value::as_array) {
+        keys.push(("primary_key".to_string(), key));
+    }
+    if let Some(unique_keys) = dataset.get("unique_keys").and_then(Value::as_array) {
+        for (index, key) in unique_keys.iter().enumerate() {
+            if let Some(key) = key.as_array() {
+                keys.push((format!("unique_keys/{index}"), key));
+            }
+        }
+    }
+    let mut seen_unique_keys = BTreeSet::new();
+    for (path, columns) in keys {
+        let key_pointer = format!("{pointer}/{path}");
+        if columns.is_empty() {
+            diagnostics.push(diagnostic(
+                "ossie.semantic.dataset.key_empty",
+                "Declared primary and unique keys must contain at least one field.",
+                &key_pointer,
+                scope,
+            ));
+            continue;
+        }
+        let mut valid = true;
+        let mut seen_columns = BTreeSet::new();
+        for (index, column) in columns.iter().enumerate() {
+            let Some(column) = column.as_str() else {
+                valid = false;
+                continue;
+            };
+            let normalized = normalize_identifier(column);
+            if !fields.contains(&normalized) {
+                valid = false;
+                diagnostics.push(diagnostic(
+                    "ossie.semantic.dataset.key_field_unknown",
+                    format!("Declared key field {column:?} is not declared in this dataset."),
+                    format!("{key_pointer}/{index}"),
+                    scope,
+                ));
+            }
+            if !seen_columns.insert(normalized) {
+                valid = false;
+                diagnostics.push(diagnostic(
+                    "ossie.semantic.dataset.key_column_duplicate",
+                    format!(
+                        "Declared key repeats field {column:?} after identifier normalization."
+                    ),
+                    format!("{key_pointer}/{index}"),
+                    scope,
+                ));
+            }
+        }
+        // A primary key may also be listed as a unique key. Duplicate unique
+        // declarations compare column sets, independently of declaration order.
+        if valid && path.starts_with("unique_keys/") && !seen_unique_keys.insert(seen_columns) {
+            diagnostics.push(diagnostic(
+                "ossie.semantic.dataset.key_duplicate",
+                "Declared unique key duplicates an earlier unique key.",
+                key_pointer,
+                scope,
+            ));
         }
     }
 }
@@ -1100,14 +1222,14 @@ fn validate_relationship_references(
             );
             if valid_target {
                 if let Some(target) = to_dataset {
-                    let target_columns = normalized_strings(to_columns);
+                    let target_columns = normalized_column_set(to_columns);
                     let mut declared = Vec::new();
                     if let Some(key) = target.get("primary_key").and_then(Value::as_array) {
-                        declared.push(normalized_strings(key));
+                        declared.push(normalized_column_set(key));
                     }
                     if let Some(keys) = target.get("unique_keys").and_then(Value::as_array) {
                         for key in keys.iter().filter_map(Value::as_array) {
-                            declared.push(normalized_strings(key));
+                            declared.push(normalized_column_set(key));
                         }
                     }
                     if !declared.contains(&target_columns) {
@@ -1578,6 +1700,10 @@ fn normalized_strings(values: &[Value]) -> Vec<String> {
         .filter_map(Value::as_str)
         .map(normalize_identifier)
         .collect()
+}
+
+fn normalized_column_set(values: &[Value]) -> BTreeSet<String> {
+    normalized_strings(values).into_iter().collect()
 }
 
 fn reject_unknown(

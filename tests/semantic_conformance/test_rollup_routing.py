@@ -4,7 +4,7 @@ from datetime import date, datetime
 
 import pytest
 
-from sidemantic import Dimension, Metric, Model, PreAggregation, SecurityPolicy, SemanticLayer
+from sidemantic import Dimension, Metric, Model, PreAggregation, Relationship, SecurityPolicy, SemanticLayer
 from sidemantic.core.semantic_layer import SecurityError
 from sidemantic.rust_bridge import generate_preaggregation_materialization_sql_with_rust
 
@@ -123,6 +123,32 @@ def test_compatible_rollup_executes(layer, rust_build, query, rows):
 def test_incompatible_rollup_uses_raw_source(layer, query, rows):
     materialize(layer)
     assert_result(layer, query, rows, routed=False)
+
+
+def test_relationship_foreign_key_dimension_declines_unrelated_rollup(layer):
+    model = layer.graph.models["orders"]
+    model.relationships.append(Relationship(name="customers", type="many_to_one", foreign_key="customer_id"))
+    layer.add_model(Model(name="customers", table="customers", primary_key="id"))
+    layer.adapter.execute("""
+        alter table orders add column customer_id integer;
+        update orders set customer_id = case when id <= 2 then 10 when id <= 4 then 20 else null end;
+        create table customers(id integer);
+        insert into customers values (10), (20);
+    """)
+    # The relationship makes this physical FK queryable without a Dimension
+    # declaration. The status/day rollup cannot recover its grouping population.
+    assert model.get_dimension("customer_id") is None
+    materialize(layer)
+    assert_result(
+        layer,
+        {
+            "metrics": ["orders.revenue"],
+            "dimensions": ["orders.customer_id"],
+            "order_by": ["orders.customer_id"],
+        },
+        [(10, 30), (20, 940), (None, None)],
+        routed=False,
+    )
 
 
 @pytest.mark.parametrize("restriction", ["invariant", "policy", "both"])

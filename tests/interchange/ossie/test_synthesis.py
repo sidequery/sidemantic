@@ -225,6 +225,23 @@ def test_synthesis_refuses_relationship_behavior_not_expressed_by_keys(options: 
     assert any(d.code == "ossie.synthesis.relationship_semantics_unsupported" for d in result.diagnostics)
 
 
+def test_synthesis_refuses_to_erase_relationship_role_instances() -> None:
+    graph = _graph()
+    relationship = graph.models["orders"].relationships[0]
+    relationship.name = "billing_customer"
+    relationship.target_model = "customers"
+
+    result = synthesize_ossie_document(graph, scope_name="commerce", expression_dialect="ANSI_SQL")
+
+    assert result.document is None
+    assert any(
+        d.code == "ossie.synthesis.relationship_semantics_unsupported"
+        and "billing_customer" in d.message
+        and "customers" in d.message
+        for d in result.diagnostics
+    )
+
+
 @pytest.mark.parametrize("key_kind", ["primary_key", "unique_keys"])
 def test_synthesis_accepts_reordered_unique_key_without_reordering_join_pairs(key_kind: str) -> None:
     graph = _graph()

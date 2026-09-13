@@ -293,6 +293,15 @@ def _relationships(models: dict[str, Model], diagnostics: list[OssieDiagnostic])
         for relationship in from_model.relationships:
             pointer = f"/semantic_model/0/relationships/{relationship_index}"
             relationship_index += 1
+            if relationship.target_model is not None:
+                diagnostics.append(
+                    _error(
+                        "ossie.synthesis.relationship_semantics_unsupported",
+                        f"Relationship role {relationship.name!r} targets {relationship.target_model!r}; Ossie synthesis cannot preserve its distinct query instance.",
+                        pointer,
+                    )
+                )
+                continue
             if relationship.sql is not None or not relationship.active:
                 diagnostics.append(
                     _error(

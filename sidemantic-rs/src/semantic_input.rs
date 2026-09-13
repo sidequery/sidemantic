@@ -442,13 +442,12 @@ fn validate_semantic_dependencies(graph: &SemanticGraph, graph_metrics: &[Metric
                     let model = graph
                         .get_model(model_name)
                         .ok_or_else(|| invalid(&name, format!("unknown model '{model_name}'")))?;
-                    if column.aggregate_input {
-                        if model
+                    if column.aggregate_input
+                        && model
                             .get_dimension(&column.field)
                             .is_some_and(|dimension| dimension.sql_expr() != column.field)
-                        {
-                            return Err(unsupported("metric.raw_computed_column"));
-                        }
+                    {
+                        return Err(unsupported("metric.raw_computed_column"));
                     }
                 }
                 if metric.r#type == crate::core::MetricType::Simple || column.aggregate_input {
@@ -822,14 +821,12 @@ mod tests {
                 Err(SidemanticError::ValidationIssue { .. })
             ));
         }
-        for field in ["schema_exposure"] {
-            let mut source = input();
-            source["models"][0][field] = json!({});
-            assert!(matches!(
-                SemanticInput::from_json(&source.to_string()),
-                Err(SidemanticError::UnsupportedSemanticFeatures { .. })
-            ));
-        }
+        let mut source = input();
+        source["models"][0]["schema_exposure"] = json!({});
+        assert!(matches!(
+            SemanticInput::from_json(&source.to_string()),
+            Err(SidemanticError::UnsupportedSemanticFeatures { .. })
+        ));
         let mut source = input();
         source["models"][0]["invariant_filters"] = json!(["tenant_id = 1"]);
         assert!(matches!(

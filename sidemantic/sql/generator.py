@@ -2906,7 +2906,10 @@ class SQLGenerator:
 
         calculation_filters = []
         row_or_leaf_filters = []
-        calculation_refs = set(calculations)
+        # Model-local leaves still use the established metric/window filter
+        # routing. Only expressions combining aggregate grains require the
+        # outer calculation filter path.
+        calculation_refs = set(calculations) - set(leaf_refs)
         for filter_expr in all_filters:
             parsed = _parse_fragment(filter_expr, self.dialect)
             conjuncts = list(parsed.flatten()) if isinstance(parsed, exp.And) else [parsed]

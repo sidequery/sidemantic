@@ -2,6 +2,7 @@
 
 mod aggregate_plan;
 mod join_kind;
+mod temporal;
 
 use std::collections::{HashMap, HashSet};
 
@@ -2184,14 +2185,7 @@ impl<'a> SqlGenerator<'a> {
         let mut cohort_metrics: Vec<MetricRef> = Vec::new();
 
         for metric_ref in metric_refs {
-            let model = self.graph.get_model(&metric_ref.model).ok_or_else(|| {
-                let available: Vec<&str> = self.graph.models().map(|m| m.name.as_str()).collect();
-                SidemanticError::model_not_found(&metric_ref.model, &available)
-            })?;
-            let metric = model.get_metric(&metric_ref.name).ok_or_else(|| {
-                let available: Vec<&str> = model.metrics.iter().map(|m| m.name.as_str()).collect();
-                SidemanticError::metric_not_found(&metric_ref.model, &metric_ref.name, &available)
-            })?;
+            let metric = self.metric_for_ref(metric_ref)?;
 
             match metric.r#type {
                 MetricType::Cumulative => {
@@ -2372,15 +2366,9 @@ impl<'a> SqlGenerator<'a> {
             lag_cte_columns.push(alias);
         }
 
+        let mut cumulative_selects = Vec::new();
         for metric_ref in &cumulative_metrics {
-            let model = self.graph.get_model(&metric_ref.model).ok_or_else(|| {
-                let available: Vec<&str> = self.graph.models().map(|m| m.name.as_str()).collect();
-                SidemanticError::model_not_found(&metric_ref.model, &available)
-            })?;
-            let metric = model.get_metric(&metric_ref.name).ok_or_else(|| {
-                let available: Vec<&str> = model.metrics.iter().map(|m| m.name.as_str()).collect();
-                SidemanticError::metric_not_found(&metric_ref.model, &metric_ref.name, &available)
-            })?;
+            let metric = self.metric_for_ref(metric_ref)?;
 
             let (order_col, _) = if let Some(window_order) = metric.window_order.as_ref() {
                 (format!("base.{window_order}"), None)
@@ -2421,35 +2409,14 @@ impl<'a> SqlGenerator<'a> {
                 _ => "SUM",
             };
 
-            let window_clause = if let Some(grain) = metric.grain_to_date.as_ref() {
-                let grain = match grain {
-                    crate::core::TimeGrain::Day => "day",
-                    crate::core::TimeGrain::Week => "week",
-                    crate::core::TimeGrain::Month => "month",
-                    crate::core::TimeGrain::Quarter => "quarter",
-                    crate::core::TimeGrain::Year => "year",
-                };
-                format!(
-                    "PARTITION BY DATE_TRUNC('{grain}', {order_col}) ORDER BY {order_col} ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW"
-                )
-            } else if let Some(window) = metric.window.as_ref() {
-                let parts: Vec<&str> = window.split_whitespace().collect();
-                if parts.len() == 2 {
-                    format!(
-                        "ORDER BY {order_col} RANGE BETWEEN INTERVAL '{}' PRECEDING AND CURRENT ROW",
-                        parts.join(" ")
-                    )
-                } else {
-                    format!("ORDER BY {order_col} ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW")
-                }
-            } else {
-                format!("ORDER BY {order_col} ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW")
-            };
+            let window_clause = self.cumulative_window_sql(metric, dimension_refs, &order_col)?;
 
-            select_exprs.push(format!(
+            let expression = format!(
                 "{agg_sql}({base_col}) OVER ({window_clause}) AS {}",
                 metric_ref.alias
-            ));
+            );
+            select_exprs.push(expression.clone());
+            cumulative_selects.push((expression, metric_ref.alias.clone()));
         }
 
         let mut sql = if !offset_ratio_metrics.is_empty() || !time_comparison_metrics.is_empty() {
@@ -2457,22 +2424,13 @@ impl<'a> SqlGenerator<'a> {
                 .iter()
                 .map(|column| format!("base.{column}"))
                 .collect();
+            for (expression, alias) in cumulative_selects {
+                lag_selects.push(expression);
+                lag_cte_columns.push(alias);
+            }
 
             for metric_ref in &time_comparison_metrics {
-                let model = self.graph.get_model(&metric_ref.model).ok_or_else(|| {
-                    let available: Vec<&str> =
-                        self.graph.models().map(|m| m.name.as_str()).collect();
-                    SidemanticError::model_not_found(&metric_ref.model, &available)
-                })?;
-                let metric = model.get_metric(&metric_ref.name).ok_or_else(|| {
-                    let available: Vec<&str> =
-                        model.metrics.iter().map(|m| m.name.as_str()).collect();
-                    SidemanticError::metric_not_found(
-                        &metric_ref.model,
-                        &metric_ref.name,
-                        &available,
-                    )
-                })?;
+                let metric = self.metric_for_ref(metric_ref)?;
                 let (time_col, time_granularity) =
                     self.find_time_order_column(dimension_refs, None)?;
                 let base_ref = metric.base_metric.as_ref().ok_or_else(|| {
@@ -2489,27 +2447,23 @@ impl<'a> SqlGenerator<'a> {
                 let prev_alias = format!("{}_prev_value", metric_ref.alias);
                 let window_clause =
                     self.lag_window_clause(dimension_refs, &time_col, Some(lag_offset));
-                lag_selects.push(format!(
-                    "LAG(base.{base_alias}, {lag_offset}) OVER ({window_clause}) AS {prev_alias}"
-                ));
+                let prior = self
+                    .calendar_prior_value(
+                        metric,
+                        dimension_refs,
+                        &time_col,
+                        time_granularity.as_deref(),
+                        &format!("base.{base_alias}"),
+                    )?
+                    .unwrap_or_else(|| {
+                        format!("LAG(base.{base_alias}, {lag_offset}) OVER ({window_clause})")
+                    });
+                lag_selects.push(format!("{prior} AS {prev_alias}"));
             }
 
             for metric_ref in &offset_ratio_metrics {
-                let model = self.graph.get_model(&metric_ref.model).ok_or_else(|| {
-                    let available: Vec<&str> =
-                        self.graph.models().map(|m| m.name.as_str()).collect();
-                    SidemanticError::model_not_found(&metric_ref.model, &available)
-                })?;
-                let metric = model.get_metric(&metric_ref.name).ok_or_else(|| {
-                    let available: Vec<&str> =
-                        model.metrics.iter().map(|m| m.name.as_str()).collect();
-                    SidemanticError::metric_not_found(
-                        &metric_ref.model,
-                        &metric_ref.name,
-                        &available,
-                    )
-                })?;
-                let (time_col, _) = self.find_time_order_column(dimension_refs, None)?;
+                let metric = self.metric_for_ref(metric_ref)?;
+                let (time_col, granularity) = self.find_time_order_column(dimension_refs, None)?;
                 let denominator = metric.denominator.as_ref().ok_or_else(|| {
                     SidemanticError::Validation(format!(
                         "offset ratio metric '{}' requires denominator",
@@ -2519,9 +2473,16 @@ impl<'a> SqlGenerator<'a> {
                 let denom_alias = self.metric_alias_from_ref(denominator);
                 let prev_alias = format!("{}_prev_denom", metric_ref.alias);
                 let window_clause = self.lag_window_clause(dimension_refs, &time_col, None);
-                lag_selects.push(format!(
-                    "LAG(base.{denom_alias}) OVER ({window_clause}) AS {prev_alias}"
-                ));
+                let prior = self
+                    .calendar_prior_value(
+                        metric,
+                        dimension_refs,
+                        &time_col,
+                        granularity.as_deref(),
+                        &format!("base.{denom_alias}"),
+                    )?
+                    .unwrap_or_else(|| format!("LAG(base.{denom_alias}) OVER ({window_clause})"));
+                lag_selects.push(format!("{prior} AS {prev_alias}"));
             }
 
             let mut lag_cte_sql = String::new();
@@ -2534,20 +2495,7 @@ impl<'a> SqlGenerator<'a> {
             let mut final_selects = lag_cte_columns.clone();
 
             for metric_ref in &time_comparison_metrics {
-                let model = self.graph.get_model(&metric_ref.model).ok_or_else(|| {
-                    let available: Vec<&str> =
-                        self.graph.models().map(|m| m.name.as_str()).collect();
-                    SidemanticError::model_not_found(&metric_ref.model, &available)
-                })?;
-                let metric = model.get_metric(&metric_ref.name).ok_or_else(|| {
-                    let available: Vec<&str> =
-                        model.metrics.iter().map(|m| m.name.as_str()).collect();
-                    SidemanticError::metric_not_found(
-                        &metric_ref.model,
-                        &metric_ref.name,
-                        &available,
-                    )
-                })?;
+                let metric = self.metric_for_ref(metric_ref)?;
                 let base_ref = metric.base_metric.as_ref().ok_or_else(|| {
                     SidemanticError::Validation(format!(
                         "time_comparison metric '{}' requires 'base_metric' field",
@@ -2569,27 +2517,17 @@ impl<'a> SqlGenerator<'a> {
                         metric_ref.alias
                     ),
                     crate::core::ComparisonCalculation::Ratio => {
-                        format!("({base_alias} / NULLIF({prev_value_col}, 0)) AS {}", metric_ref.alias)
+                        format!(
+                            "({base_alias} / NULLIF({prev_value_col}, 0)) AS {}",
+                            metric_ref.alias
+                        )
                     }
                 };
                 final_selects.push(expr);
             }
 
             for metric_ref in &offset_ratio_metrics {
-                let model = self.graph.get_model(&metric_ref.model).ok_or_else(|| {
-                    let available: Vec<&str> =
-                        self.graph.models().map(|m| m.name.as_str()).collect();
-                    SidemanticError::model_not_found(&metric_ref.model, &available)
-                })?;
-                let metric = model.get_metric(&metric_ref.name).ok_or_else(|| {
-                    let available: Vec<&str> =
-                        model.metrics.iter().map(|m| m.name.as_str()).collect();
-                    SidemanticError::metric_not_found(
-                        &metric_ref.model,
-                        &metric_ref.name,
-                        &available,
-                    )
-                })?;
+                let metric = self.metric_for_ref(metric_ref)?;
                 let numerator = metric.numerator.as_ref().ok_or_else(|| {
                     SidemanticError::Validation(format!(
                         "offset ratio metric '{}' requires numerator",
@@ -2706,7 +2644,10 @@ impl<'a> SqlGenerator<'a> {
             if dim.r#type == crate::core::DimensionType::Time {
                 return Ok((
                     format!("base.{}", dim_ref.alias),
-                    dim_ref.granularity.clone(),
+                    dim_ref
+                        .granularity
+                        .clone()
+                        .or_else(|| dim.granularity.clone()),
                 ));
             }
         }
@@ -5370,7 +5311,7 @@ models:
     }
 
     #[test]
-    fn test_time_comparison_lag_partitions_by_non_time_dimensions() {
+    fn test_time_comparison_calendar_lookup_partitions_by_non_time_dimensions() {
         let mut graph = SemanticGraph::new();
         let orders = Model::new("orders", "order_id")
             .with_table("orders")
@@ -5396,9 +5337,9 @@ models:
 
         assert!(
             sql.contains(
-                "LAG(base.revenue, 1) OVER (PARTITION BY base.status ORDER BY base.order_date__month)"
+                "MAX(base.revenue) OVER (PARTITION BY base.status ORDER BY base.order_date__month RANGE BETWEEN INTERVAL '1 month' PRECEDING AND INTERVAL '1 month' PRECEDING)"
             ),
-            "time comparison lag must partition by non-time dimensions: {sql}"
+            "calendar comparison must partition by non-time dimensions: {sql}"
         );
     }
 

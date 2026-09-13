@@ -229,7 +229,15 @@ fn decode_metric(value: Value, path: &str) -> Result<Metric> {
         raw.remove("filters");
     }
     if let Some(kind) = raw.get("type").and_then(Value::as_str) {
-        if !["simple", "derived", "ratio"].contains(&kind) {
+        if ![
+            "simple",
+            "derived",
+            "ratio",
+            "cumulative",
+            "time_comparison",
+        ]
+        .contains(&kind)
+        {
             return Err(unsupported(format!("metric.{kind}")));
         }
     }
@@ -253,6 +261,7 @@ fn decode_metric(value: Value, path: &str) -> Result<Metric> {
     exemplar.logical_data_type = Some(String::new());
     exemplar.sql_is_complete = true;
     let metric = project(raw, exemplar, path)?;
+    SqlGenerator::validate_temporal_metric(&metric)?;
     Ok(metric)
 }
 
@@ -1243,20 +1252,5 @@ mod tests {
                 .unwrap();
         assert!(sql.contains("orders_cte.amount"), "{sql}");
         assert!(!sql.contains("orders.amount"), "{sql}");
-    }
-    #[test]
-    fn temporal_handoff_metrics_are_explicitly_unsupported() {
-        for kind in ["cumulative", "time_comparison"] {
-            let mut source = input();
-            source["models"][0]["metrics"]
-                .as_array_mut()
-                .unwrap()
-                .push(json!({
-                    "name":"running", "type":kind, "base_metric":"revenue"
-                }));
-            assert!(matches!(SemanticInput::from_json(&source.to_string()),
-                Err(SidemanticError::UnsupportedSemanticFeatures { capabilities })
-                    if capabilities == vec![format!("metric.{kind}")]));
-        }
     }
 }

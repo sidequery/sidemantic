@@ -61,17 +61,18 @@ supports:
   kinds retain their direction and row-preservation behavior.
 - Model access policies, SQL-literal-safe user attributes, row policies,
   invariant filters, and opt-in field visibility. Restrictions reach the source
-  CTEs of participating source queries; temporal child-query support is added
-  with the temporal compiler layer.
+  CTEs of aggregate and temporal child queries.
+- Running, rolling, and grain-to-date aggregates over period outputs, plus
+  calendar comparisons and offset ratios. Windows partition by the selected
+  non-time dimensions. Named comparisons use calendar intervals even without
+  a declared grain; `prior_period` without a resolved grain retains previous-row
+  semantics. Summing period-level distinct counts is not a distinct count over
+  the combined underlying rows.
 
 Configured rollups can be bypassed for raw queries. Active row policies always
 bypass rollups, including when routing was requested. Rollup routing through
 this boundary is not yet qualified. The legacy Rust materialization helper
 rejects models with invariant filters instead of discarding those filters.
-
-This layer does not yet qualify advanced period windows and calendar comparison metrics.
-These feature families must remain unsupported until their compiler and result
-contracts are introduced in the later layers.
 
 Remaining capability gates include policy-bearing SQL rewrite requests,
 non-DuckDB policy output, many-to-many role paths, computed primary-key

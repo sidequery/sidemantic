@@ -6378,11 +6378,25 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
             if not time_dim:
                 raise ValueError(f"Cumulative metric {m} requires a time dimension for ordering")
 
+            partition_cols = []
+            for dim_ref, gran in parsed_dims:
+                if "." not in dim_ref:
+                    continue
+                partition_model, dim_name = dim_ref.split(".", 1)
+                dimension = self.graph.get_model(partition_model).get_dimension(dim_name)
+                if dimension and dimension.type == "time":
+                    continue
+                alias = f"{dim_name}__{gran}" if gran else dim_name
+                column = f"base.{self._quote_alias(alias)}"
+                if column != time_dim and column not in partition_cols:
+                    partition_cols.append(column)
+            partition_clause = f"PARTITION BY {', '.join(partition_cols)} " if partition_cols else ""
+
             # Option C: Raw window_expression passthrough
             if metric.window_expression:
                 order_col = time_dim
                 frame = metric.window_frame or "ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW"
-                window_value = f"{metric.window_expression} OVER (ORDER BY {order_col} {frame})"
+                window_value = f"{metric.window_expression} OVER ({partition_clause}ORDER BY {order_col} {frame})"
                 window_expr = f"{self._wrap_with_fill_nulls(window_value, metric)} AS {metric_alias}"
                 select_exprs.append(window_expr)
                 cumulative_window_entries.append((window_expr, metric_alias))
@@ -6431,7 +6445,7 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
                 # Grain-to-date: MTD, QTD, YTD
                 # Partition by the grain period and order within it
                 grain = metric.grain_to_date
-                partition = self._date_trunc(grain, time_dim)
+                partition = ", ".join([*partition_cols, self._date_trunc(grain, time_dim)])
 
                 window_value = f"{agg_func}({base_col}) OVER (PARTITION BY {partition} ORDER BY {time_dim} ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)"
             elif metric.window:
@@ -6440,13 +6454,13 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
                 if len(window_parts) == 2:
                     num, unit = window_parts
                     # For date-based windows, use RANGE
-                    window_value = f"{agg_func}({base_col}) OVER (ORDER BY {time_dim} RANGE BETWEEN INTERVAL '{num} {unit}' PRECEDING AND CURRENT ROW)"
+                    window_value = f"{agg_func}({base_col}) OVER ({partition_clause}ORDER BY {time_dim} RANGE BETWEEN INTERVAL '{num} {unit}' PRECEDING AND CURRENT ROW)"
                 else:
                     # Fallback to rows
-                    window_value = f"{agg_func}({base_col}) OVER (ORDER BY {time_dim} ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)"
+                    window_value = f"{agg_func}({base_col}) OVER ({partition_clause}ORDER BY {time_dim} ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)"
             else:
                 # Running total (unbounded window)
-                window_value = f"{agg_func}({base_col}) OVER (ORDER BY {time_dim} ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)"
+                window_value = f"{agg_func}({base_col}) OVER ({partition_clause}ORDER BY {time_dim} ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)"
 
             window_expr = f"{self._wrap_with_fill_nulls(window_value, metric)} AS {metric_alias}"
             select_exprs.append(window_expr)
@@ -6557,11 +6571,7 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
                     lag_input_expr,
                     time_dim,
                     partition_clause,
-                    (
-                        self._comparison_period_interval(metric, time_dim_gran)
-                        if time_dim_gran or metric.time_offset
-                        else None
-                    ),
+                    self._comparison_period_interval(metric, time_dim_gran),
                 )
                 if exact_lookup is None:
                     lag_offset = self._calculate_lag_offset(metric.comparison_type, time_dim_gran)

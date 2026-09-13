@@ -10,6 +10,68 @@ import pytest
 from sidemantic import Dimension, Metric, Model
 
 
+@pytest.mark.parametrize(
+    ("options", "expected"),
+    [
+        ({}, [1, 3, 7]),
+        ({"window": "2 days"}, [1, 2, 6]),
+        ({"grain_to_date": "month"}, [1, 3, 4]),
+        ({"window_expression": "SUM(base.revenue)"}, [1, 3, 7]),
+    ],
+    ids=["running", "rolling", "month_to_date", "window_expression"],
+)
+@pytest.mark.parametrize("with_comparison", [False, True])
+def test_cumulative_partitions_groups_and_nulls(layer, options, expected, with_comparison):
+    """Each group has its own temporal window, including the null group."""
+    layer.conn.execute("create table grouped_sales (id integer, day date, category varchar, amount integer)")
+    dates = ["2024-01-28", "2024-01-31", "2024-02-01"]
+    groups = [("a", 100), ("b", 10), (None, 1)]
+    rows = [
+        (group_index * 3 + day_index, day, category, factor * amount)
+        for group_index, (category, factor) in enumerate(groups)
+        for day_index, (day, amount) in enumerate(zip(dates, [1, 2, 4]))
+    ]
+    layer.conn.executemany("insert into grouped_sales values (?, ?, ?, ?)", rows)
+    layer.add_model(
+        Model(
+            name="grouped_sales",
+            table="grouped_sales",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="day", type="time", granularity="day"),
+                Dimension(name="category", type="categorical"),
+            ],
+            metrics=[Metric(name="revenue", agg="sum", sql="amount")],
+        )
+    )
+    layer.add_metric(Metric(name="cumulative", type="cumulative", sql="grouped_sales.revenue", **options))
+    metrics = ["cumulative"]
+    if with_comparison:
+        layer.add_metric(
+            Metric(
+                name="daily_change",
+                type="time_comparison",
+                base_metric="grouped_sales.revenue",
+                comparison_type="dod",
+                calculation="difference",
+            )
+        )
+        metrics.append("daily_change")
+
+    result = layer.query(metrics=metrics, dimensions=["grouped_sales.day", "grouped_sales.category"])
+    columns = [column[0] for column in result.description]
+    records = [dict(zip(columns, row)) for row in result.fetchall()]
+    by_group_day = {(row["category"], str(row["day"])): row for row in records}
+    assert len(by_group_day) == 9
+    for category, factor in groups:
+        for day, amount in zip(dates, expected):
+            assert by_group_day[category, day]["cumulative"] == factor * amount
+        if with_comparison:
+            assert by_group_day[category, dates[0]]["daily_change"] is None
+            assert by_group_day[category, dates[1]]["daily_change"] is None
+            assert by_group_day[category, dates[2]]["daily_change"] == factor * 2
+
+
 @pytest.fixture
 def timeseries_db():
     """Create test database with time-series order data."""
@@ -363,7 +425,8 @@ def test_cumulative_with_time_comparison(layer):
             UNION ALL SELECT '2024-04', 180
         """,
         primary_key="month",
-        dimensions=[Dimension(name="month", sql="month", type="time")],
+        # Source months are strings; declare their calendar meaning explicitly.
+        dimensions=[Dimension(name="calendar_month", sql="CAST(month || '-01' AS DATE)", type="time")],
         metrics=[Metric(name="revenue", agg="sum", sql="revenue")],
     )
 
@@ -391,7 +454,7 @@ def test_cumulative_with_time_comparison(layer):
     gen = SQLGenerator(graph)
     sql = gen.generate(
         metrics=["running_revenue", "revenue_mom"],
-        dimensions=["sales.month"],
+        dimensions=["sales.calendar_month"],
     )
 
     assert "running_revenue" in sql

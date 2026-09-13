@@ -103,6 +103,26 @@
   - - 4
     - other
     - 1
+- name: sparse_month_comparison
+  source: native/monthly
+  query:
+    metrics:
+    - revenue_mom
+    dimensions:
+    - monthly.sale_date__month
+    order_by:
+    - monthly.sale_date__month
+  columns:
+  - sale_date__month
+  - revenue
+  - revenue_mom
+  rows:
+  - - '2024-01-01'
+    - 100
+    - null
+  - - '2024-03-01'
+    - 180
+    - null
 - name: computed_physical_collision
   source: native/collisions
   query:

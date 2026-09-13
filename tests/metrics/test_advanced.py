@@ -596,7 +596,8 @@ def test_mom_difference():
             UNION ALL SELECT '2024-04', 180
         """,
         primary_key="month",
-        dimensions=[Dimension(name="month", sql="month", type="time")],
+        # Give the source month label an explicit calendar date for MoM lookup.
+        dimensions=[Dimension(name="calendar_month", sql="CAST(month || '-01' AS DATE)", type="time")],
         metrics=[Metric(name="revenue", agg="sum", sql="revenue")],
     )
 
@@ -615,7 +616,7 @@ def test_mom_difference():
     graph.add_metric(revenue_mom)
 
     generator = SQLGenerator(graph)
-    sql = generator.generate(metrics=["revenue_mom_change"], dimensions=["sales.month"])
+    sql = generator.generate(metrics=["revenue_mom_change"], dimensions=["sales.calendar_month"])
 
     print("\nMoM Difference SQL:")
     print(sql)

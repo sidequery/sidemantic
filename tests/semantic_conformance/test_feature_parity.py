@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from sidemantic import SemanticLayer
+from sidemantic import SecurityPolicy, SemanticLayer
 from sidemantic.adapters.sidemantic import SidemanticAdapter
 from sidemantic.core.semantic_layer import SecurityError
 from sidemantic.validation import QueryValidationError
@@ -142,3 +142,87 @@ def test_inactive_relationship_cannot_be_requested(layer_for):
     layer = layer_for("migration_roles")
     with pytest.raises(QueryValidationError):
         layer.compile(metrics=["journeys.journey_count"], dimensions=["archived.city"])
+
+
+def test_sparse_comparison_uses_calendar_month_and_category(layer_for):
+    layer = layer_for("migration_time")
+    assert_result(
+        layer,
+        {
+            "metrics": ["month_change"],
+            "dimensions": ["sales.day__month", "sales.category"],
+            "order_by": ["sales.category", "sales.day__month"],
+        },
+        ["day__month", "category", "revenue", "month_change"],
+        [
+            ("2024-01-01", "a", 100, None),
+            ("2024-03-01", "a", 180, None),
+            ("2024-04-01", "a", 210, 30),
+            ("2024-01-01", "b", 10, None),
+            ("2024-03-01", "b", 30, None),
+            ("2024-04-01", "b", 50, 20),
+        ],
+    )
+
+
+def test_named_calendar_comparison_without_declared_granularity(layer_for):
+    layer = layer_for("migration_time")
+    layer.graph.models["sales"].dimensions[0].granularity = None
+    assert_result(
+        layer,
+        {
+            "metrics": ["month_change"],
+            "dimensions": ["sales.day", "sales.category"],
+            "order_by": ["sales.category", "sales.day"],
+        },
+        ["day", "category", "revenue", "month_change"],
+        [
+            ("2024-01-01", "a", 100, None),
+            ("2024-03-01", "a", 180, None),
+            ("2024-04-01", "a", 210, 30),
+            ("2024-01-01", "b", 10, None),
+            ("2024-03-01", "b", 30, None),
+            ("2024-04-01", "b", 50, 20),
+        ],
+    )
+
+
+def test_rolling_sum_partitions_categories(layer_for):
+    layer = layer_for("migration_time")
+    assert_result(
+        layer,
+        {
+            "metrics": ["rolling_revenue"],
+            "dimensions": ["sales.day__month", "sales.category"],
+            "order_by": ["sales.category", "sales.day__month"],
+        },
+        ["day__month", "category", "revenue", "rolling_revenue"],
+        [
+            ("2024-01-01", "a", 100, 100),
+            ("2024-03-01", "a", 180, 280),
+            ("2024-04-01", "a", 210, 390),
+            ("2024-01-01", "b", 10, 10),
+            ("2024-03-01", "b", 30, 40),
+            ("2024-04-01", "b", 50, 80),
+        ],
+    )
+
+
+def test_policy_survives_temporal_child_queries(layer_for):
+    layer = layer_for("migration_time")
+    layer.graph.models["sales"].security = SecurityPolicy(row_filters=["category = {{ user.category }}"])
+    assert_result(
+        layer,
+        {
+            "metrics": ["rolling_revenue", "month_change"],
+            "dimensions": ["sales.day__month"],
+            "order_by": ["sales.day__month"],
+            "user_attributes": {"category": "a"},
+        },
+        ["day__month", "revenue", "rolling_revenue", "month_change"],
+        [
+            ("2024-01-01", 100, 100, None),
+            ("2024-03-01", 180, 280, None),
+            ("2024-04-01", 210, 390, 30),
+        ],
+    )

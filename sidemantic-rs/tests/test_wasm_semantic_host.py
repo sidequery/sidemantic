@@ -128,6 +128,7 @@ def test_reference_validation_is_not_authorization():
     [
         ("(" * 1000 + "1" + ")" * 1000, "nesting limit"),
         ("NOT " * 1000 + "true", "operator-chain limit"),
+        (("NOT " * 20 + "(") * 4 + "true" + ")" * 4, "combined-depth limit"),
     ],
 )
 def test_parser_work_limits_return_errors_not_traps(method, expression, diagnostic):

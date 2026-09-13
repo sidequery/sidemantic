@@ -7,6 +7,7 @@ use polyglot_sql::{dialects::Dialect, DialectType, TokenType};
 
 pub(crate) const MAX_NESTING: usize = 16;
 pub(crate) const MAX_OPERATORS: usize = 32;
+pub(crate) const MAX_COMBINED_DEPTH: usize = 48;
 
 pub(crate) fn check(sql: &str, dialect: DialectType) -> Result<()> {
     let tokens = Dialect::get(dialect)
@@ -130,6 +131,13 @@ pub(crate) fn check(sql: &str, dialect: DialectType) -> Result<()> {
                 operators = parent_operators.pop().unwrap_or(0);
             }
             _ => {}
+        }
+        // Parent expression chains remain live while a nested child parses.
+        // Bound their combined ancestry, not just each frame independently.
+        if nesting + operators + parent_operators.iter().sum::<usize>() > MAX_COMBINED_DEPTH {
+            return Err(SidemanticError::SqlParse(format!(
+                "WASM SQL parser combined-depth limit exceeded ({MAX_COMBINED_DEPTH})"
+            )));
         }
     }
     Ok(())

@@ -333,7 +333,8 @@ available inner columns; other aggregate contexts are not silently inferred.
 
 The WASM SQL parser has a host-specific admission limit of 16 nested
 parenthesis/bracket/brace/CASE constructs, 32 operators per expression chain,
-and 16 set operations per parser input. Flat projections and independent
+16 set operations per parser input, and 48 combined live nesting/operator
+ancestors. Flat projections and independent
 clauses do not share an operator budget; long unary chains do.
 These are conservative fixed-host-stack limits, not limits on native compilation
 or source-file bytes. Dialect tokenization keeps strings, quoted identifiers,

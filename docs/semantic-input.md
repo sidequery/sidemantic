@@ -295,4 +295,3 @@ key; composite measure keys fail with `aggregation.requires_single_primary_key`.
 Junction policies are applied to each role instance using the canonical
 junction declaration. Measures retain their source-key grain across duplicate
 junction rows. Inactive relationships remain excluded.
-

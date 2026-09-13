@@ -102,7 +102,6 @@ impl<'a, 'g> Plan<'a, 'g> {
         if metric.sql_is_complete
             || metric.non_additive_dimension.is_some()
             || metric.offset_window.is_some()
-            || metric.fill_nulls_with.is_some()
         {
             return Err(unsupported("calculation_shape"));
         }
@@ -183,6 +182,7 @@ impl<'a, 'g> Plan<'a, 'g> {
             }
             _ => return Err(unsupported("calculation_shape")),
         };
+        let expression = self.generator.fill_metric_expression(metric, expression)?;
         self.active.remove(&resolved.reference);
         if metric.r#type != MetricType::Simple
             && resolved

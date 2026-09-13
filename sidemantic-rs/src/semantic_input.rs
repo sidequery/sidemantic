@@ -249,10 +249,26 @@ fn decode_metric(value: Value, path: &str) -> Result<Metric> {
         "window_expression",
         "window_frame",
         "window_order",
-        "fill_nulls_with",
     ] {
         if raw.get(field).is_some_and(|value| !neutral(value)) {
             return Err(unsupported(format!("metric.{field}")));
+        }
+    }
+    if let Some(fill) = raw.get("fill_nulls_with").filter(|value| !value.is_null()) {
+        if !fill.is_number() && !fill.is_string() {
+            return Err(invalid(path, "fill_nulls_with must be a number or string"));
+        }
+        let kind = raw.get("type").and_then(Value::as_str).unwrap_or("simple");
+        if !matches!(kind, "simple" | "derived" | "ratio")
+            || raw
+                .get("offset_window")
+                .is_some_and(|value| !neutral(value))
+            || raw.get("window").is_some_and(|value| !neutral(value))
+            || raw
+                .get("grain_to_date")
+                .is_some_and(|value| !neutral(value))
+        {
+            return Err(unsupported("metric.fill_nulls_shape"));
         }
     }
     // The optional provenance fields are omitted by core serialization when None.
@@ -1413,12 +1429,15 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_null_fills_complete_filters_and_raw_collisions_are_explicit() {
+    fn null_fill_literals_are_checked_and_other_restrictions_remain_explicit() {
         let mut source = input();
         source["models"][0]["metrics"][0]["fill_nulls_with"] = json!(0);
-        assert!(
-            matches!(SemanticInput::from_json(&source.to_string()), Err(SidemanticError::UnsupportedSemanticFeatures { capabilities }) if capabilities == vec!["metric.fill_nulls_with"])
-        );
+        assert!(SemanticInput::from_json(&source.to_string()).is_ok());
+        source["models"][0]["metrics"][0]["fill_nulls_with"] = json!({"sql":"unsafe"});
+        assert!(matches!(
+            SemanticInput::from_json(&source.to_string()),
+            Err(SidemanticError::ValidationIssue { .. })
+        ));
         source = input();
         source["models"][0]["metrics"] = json!([{"name":"paid", "sql":"SUM(amount)", "sql_is_complete":true, "filters":["status = 'paid'"]}]);
         assert!(

@@ -474,7 +474,7 @@ impl<'a> SqlGenerator<'a> {
 
             select_parts.push(format!(
                 "  {} AS {}",
-                sql_expr,
+                self.fill_metric_expression(metric, sql_expr)?,
                 self.quote_identifier(&output_alias)
             ));
         }
@@ -1931,6 +1931,7 @@ impl<'a> SqlGenerator<'a> {
     fn has_cumulative_metrics(&self, metric_refs: &[MetricRef]) -> Result<bool> {
         for metric_ref in metric_refs {
             let metric = self.metric_for_ref(metric_ref)?;
+            Self::validate_metric_fill(metric)?;
             if metric.r#type == MetricType::Cumulative
                 || metric.r#type == MetricType::TimeComparison
                 || metric.r#type == MetricType::Conversion
@@ -2093,8 +2094,11 @@ impl<'a> SqlGenerator<'a> {
                 metric_ref.name.clone()
             };
             select_parts.push(format!(
-                "  {cte_name}.{} AS {}",
-                self.quote_identifier(&metric_ref.name),
+                "  {} AS {}",
+                self.fill_metric_expression(
+                    self.metric_for_ref(metric_ref)?,
+                    format!("{cte_name}.{}", self.quote_identifier(&metric_ref.name)),
+                )?,
                 self.quote_identifier(&output_alias)
             ));
         }
@@ -4661,7 +4665,52 @@ impl<'a> SqlGenerator<'a> {
         };
 
         visited.remove(&key);
-        Ok(Some(expanded))
+        Ok(Some(self.fill_metric_expression(metric, expanded)?))
+    }
+
+    fn validate_metric_fill(metric: &Metric) -> Result<()> {
+        let Some(value) = &metric.fill_nulls_with else {
+            return Ok(());
+        };
+        if !value.is_number() && !value.is_string() {
+            return Err(SidemanticError::Validation(
+                "fill_nulls_with must be a number or string".into(),
+            ));
+        }
+        if !matches!(
+            metric.r#type,
+            MetricType::Simple | MetricType::Derived | MetricType::Ratio
+        ) || metric.offset_window.is_some()
+            || metric.window.is_some()
+            || metric.window_expression.is_some()
+            || metric.window_frame.is_some()
+            || metric.window_order.is_some()
+            || metric.grain_to_date.is_some()
+            || metric.non_additive_dimension.is_some()
+        {
+            return Err(SidemanticError::UnsupportedSemanticFeatures {
+                capabilities: vec!["metric.fill_nulls_shape".into()],
+            });
+        }
+        Ok(())
+    }
+
+    /// Fill aggregate results, including absent leaves after source recombination.
+    /// Defaults are SQL literals, never executable expression text.
+    fn fill_metric_expression(&self, metric: &Metric, sql: String) -> Result<String> {
+        Self::validate_metric_fill(metric)?;
+        let Some(value) = &metric.fill_nulls_with else {
+            return Ok(sql);
+        };
+        let literal = match value {
+            serde_json::Value::Number(value) => Literal::Number(value.to_string()),
+            serde_json::Value::String(value) => Literal::String(value.clone()),
+            _ => unreachable!("validated fill literal"),
+        };
+        Ok(format!(
+            "COALESCE({sql}, {})",
+            self.emit_expression(&Expression::Literal(literal))?
+        ))
     }
 
     /// Expand a derived metric expression, replacing metric references with their SQL

@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 from sqlglot import exp
+from sqlglot.errors import SqlglotError
 
 from sidemantic import SemanticLayer
 from sidemantic.adapters.yardstick import YardstickAdapter
@@ -359,64 +360,32 @@ def _assert_query_rows_match(query: _QueryBlock, actual_rows: list[tuple[object,
 
 
 def _execute_statement_sql(layer: SemanticLayer, adapter: YardstickAdapter, sql: str) -> None:
-    try:
-        parsed = adapter._parse_statements(sql)
-    except Exception:
-        parsed = None
+    from tests.queries.yardstick_replay_runtime import replay_runtime
 
-    if parsed:
-        statement = parsed[0]
-        if isinstance(statement, exp.Create) and (statement.args.get("kind") or "").upper() == "VIEW":
-            select = statement.expression
-            if isinstance(select, exp.Select):
-                if sum(part is not None for part in parsed) > 1:
-                    raise NotImplementedError(
-                        "Yardstick replay does not support multi-statement view lifecycle records"
-                    )
-                model = adapter._model_from_create_view(statement, select)
-                if model is not None:
-                    layer.add_model(model)
-                    create_view = "CREATE OR REPLACE VIEW" if statement.args.get("replace") else "CREATE VIEW"
-                    view_name = statement.this.sql(dialect=adapter.dialect)
-                    if model.sql:
-                        layer.adapter.execute(f"{create_view} {view_name} AS {model.sql}")
-                    elif model.table and model.table != model.name:
-                        layer.adapter.execute(f"{create_view} {view_name} AS SELECT * FROM {model.table}")
-                    return
-
-    statement_head = sql.lstrip().upper()
-    if statement_head.startswith(("SEMANTIC ", "SELECT ", "WITH ")) or "AGGREGATE" in statement_head:
-        layer.sql(sql)
-        return
-
-    layer.adapter.execute(sql)
+    replay_runtime(layer, adapter).execute(sql)
 
 
-def _create_view_model_from_statement(
+def _create_view_models_from_statement(
     adapter: YardstickAdapter,
     sql: str,
-) -> tuple[exp.Create, exp.Select, object] | None:
-    try:
-        parsed = adapter._parse_statements(sql)
-    except Exception:
-        return None
+) -> list[tuple[exp.Create, exp.Select, object]]:
+    from tests.queries.yardstick_replay_runtime import split_replay_sql
 
-    if not parsed:
-        return None
-
-    statement = parsed[0]
-    if not isinstance(statement, exp.Create) or (statement.args.get("kind") or "").upper() != "VIEW":
-        return None
-
-    select = statement.expression
-    if not isinstance(select, exp.Select):
-        return None
-
-    model = adapter._model_from_create_view(statement, select)
-    if model is None:
-        return None
-
-    return statement, select, model
+    models = []
+    for text in split_replay_sql(sql, adapter.dialect):
+        try:
+            statement = adapter._parse_statements(text)[0]
+        except SqlglotError:
+            continue
+        if not isinstance(statement, exp.Create) or (statement.args.get("kind") or "").upper() != "VIEW":
+            continue
+        select = statement.expression
+        if not isinstance(select, exp.Select):
+            continue
+        model = adapter._model_from_create_view(statement, select)
+        if model is not None:
+            models.append((statement, select, model))
+    return models
 
 
 def _expected_model_source(select: exp.Select, dialect: str) -> tuple[str | None, str | None]:
@@ -679,50 +648,48 @@ def _expected_projections(
 
 
 def _assert_definition_blocks_match(path: Path) -> None:
-    statements, _queries = _parse_measures_test(path)
+    statements, queries = _parse_measures_test(path)
     adapter = YardstickAdapter()
     checked_models: list[str] = []
 
-    for statement_block in statements:
-        parsed_model = _create_view_model_from_statement(adapter, statement_block.sql)
-        if parsed_model is None:
-            continue
+    for statement_block in sorted([*statements, *queries], key=lambda block: block.line):
+        for create_statement, select, model in _create_view_models_from_statement(adapter, statement_block.sql):
+            expected_source_table, expected_source_sql = _expected_model_source(select, adapter.dialect)
+            expected_dimensions, expected_metrics = _expected_projections(select, adapter.dialect)
+            view_name = create_statement.this.name if isinstance(create_statement.this, exp.Table) else None
+            context = f"{path}:{statement_block.line}"
+            if view_name:
+                context = f"{context} ({view_name})"
 
-        create_statement, select, model = parsed_model
-        expected_source_table, expected_source_sql = _expected_model_source(select, adapter.dialect)
-        expected_dimensions, expected_metrics = _expected_projections(select, adapter.dialect)
-        view_name = create_statement.this.name if isinstance(create_statement.this, exp.Table) else None
-        context = f"{path}:{statement_block.line}"
-        if view_name:
-            context = f"{context} ({view_name})"
+            assert model.name == view_name, context
+            assert model.primary_key == (expected_dimensions[0].name if expected_dimensions else "id"), context
+            assert model.table == (expected_source_table or (view_name if expected_source_sql is None else None)), (
+                context
+            )
+            assert model.sql == expected_source_sql, context
 
-        assert model.name == view_name, context
-        assert model.primary_key == (expected_dimensions[0].name if expected_dimensions else "id"), context
-        assert model.table == (expected_source_table or (view_name if expected_source_sql is None else None)), context
-        assert model.sql == expected_source_sql, context
+            yardstick_metadata = (model.metadata or {}).get("yardstick")
+            assert isinstance(yardstick_metadata, dict), context
+            assert yardstick_metadata.get("view_sql") == select.sql(dialect=adapter.dialect), context
+            assert yardstick_metadata.get("base_table") == expected_source_table, context
+            assert yardstick_metadata.get("base_relation_sql") == expected_source_sql, context
 
-        yardstick_metadata = (model.metadata or {}).get("yardstick")
-        assert isinstance(yardstick_metadata, dict), context
-        assert yardstick_metadata.get("view_sql") == select.sql(dialect=adapter.dialect), context
-        assert yardstick_metadata.get("base_table") == expected_source_table, context
-        assert yardstick_metadata.get("base_relation_sql") == expected_source_sql, context
+            assert len(model.dimensions) == len(expected_dimensions), context
+            for actual_dimension, expected_dimension in zip(model.dimensions, expected_dimensions, strict=True):
+                assert actual_dimension.name == expected_dimension.name, context
+                assert actual_dimension.sql == expected_dimension.sql, context
+                assert actual_dimension.type == expected_dimension.type, context
+                assert actual_dimension.granularity == expected_dimension.granularity, context
 
-        assert len(model.dimensions) == len(expected_dimensions), context
-        for actual_dimension, expected_dimension in zip(model.dimensions, expected_dimensions, strict=True):
-            assert actual_dimension.name == expected_dimension.name, context
-            assert actual_dimension.sql == expected_dimension.sql, context
-            assert actual_dimension.type == expected_dimension.type, context
-            assert actual_dimension.granularity == expected_dimension.granularity, context
+            assert len(model.metrics) == len(expected_metrics), context
+            for actual_metric, expected_metric in zip(model.metrics, expected_metrics, strict=True):
+                assert actual_metric.name == expected_metric.name, context
+                assert actual_metric.agg == expected_metric.agg, context
+                assert actual_metric.sql == expected_metric.sql, context
+                assert actual_metric.filters == expected_metric.filters, context
+                assert actual_metric.type == expected_metric.type, context
 
-        assert len(model.metrics) == len(expected_metrics), context
-        for actual_metric, expected_metric in zip(model.metrics, expected_metrics, strict=True):
-            assert actual_metric.name == expected_metric.name, context
-            assert actual_metric.agg == expected_metric.agg, context
-            assert actual_metric.sql == expected_metric.sql, context
-            assert actual_metric.filters == expected_metric.filters, context
-            assert actual_metric.type == expected_metric.type, context
-
-        checked_models.append(model.name)
+            checked_models.append(model.name)
 
     assert checked_models, f"No Yardstick CREATE VIEW ... AS MEASURE definitions found in {path}"
 
@@ -772,31 +739,38 @@ def _replay_yardstick_sql_test(path: Path) -> None:
     layer = SemanticLayer(connection="duckdb:///:memory:")
     adapter = YardstickAdapter()
 
-    statement_index = 0
-    for query in queries:
-        while statement_index < len(statements) and statements[statement_index].line < query.line:
-            statement = statements[statement_index]
-            _apply_statement(layer, adapter, statement)
-            statement_index += 1
+    try:
+        statement_index = 0
+        for query in queries:
+            while statement_index < len(statements) and statements[statement_index].line < query.line:
+                statement = statements[statement_index]
+                _apply_statement(layer, adapter, statement)
+                statement_index += 1
 
-        try:
-            actual_rows = fetch_rows(layer.sql(query.sql))
-        except Exception as exc:
-            pytest.fail(
-                "\n".join(
-                    [
-                        f"Execution failed for query at {path}:{query.line}: {query.header}",
-                        "SQL:",
-                        query.sql,
-                        f"Error: {exc}",
-                    ]
+            try:
+                from tests.queries.yardstick_replay_runtime import replay_runtime
+
+                actual_rows = replay_runtime(layer, adapter).execute(query.sql)
+            except Exception as exc:
+                pytest.fail(
+                    "\n".join(
+                        [
+                            f"Execution failed for query at {path}:{query.line}: {query.header}",
+                            "SQL:",
+                            query.sql,
+                            f"Error: {exc}",
+                        ]
+                    )
                 )
-            )
-        _assert_query_rows_match(query, actual_rows)
+            _assert_query_rows_match(query, actual_rows)
 
-    # Setup/error assertions following the final query are still executable records.
-    for statement in statements[statement_index:]:
-        _apply_statement(layer, adapter, statement)
+        # Setup/error assertions following the final query are still executable records.
+        for statement in statements[statement_index:]:
+            _apply_statement(layer, adapter, statement)
+    finally:
+        layer.adapter.close()
+        if hasattr(layer, "_yardstick_replay_runtime"):
+            del layer._yardstick_replay_runtime
 
 
 def test_yardstick_measures_test_replay():
@@ -841,7 +815,7 @@ def test_parse_statement_record_preserves_batch_and_unterminated_error(tmp_path)
 def test_statement_error_regex_is_checked_against_actual_error():
     layer = SemanticLayer(connection="duckdb:///:memory:")
     adapter = YardstickAdapter()
-    statement = _StatementBlock(1, "statement error", "SELECT (", True, ["<REGEX>:Failed to parse SQL:.*Paren.*"])
+    statement = _StatementBlock(1, "statement error", "SELECT (", True, ["<REGEX>:Parser Error:.*Paren.*"])
     _apply_statement(layer, adapter, statement)
     statement.expected_error_lines = ["<REGEX>:.*unrelated_error.*"]
     with pytest.raises(pytest.fail.Exception, match="Error text mismatch"):
@@ -884,15 +858,42 @@ def test_measure_view_replay_preserves_create_or_replace():
     assert fetch_rows(layer.sql("SEMANTIC SELECT AGGREGATE(revenue) FROM sales_v")) == [(30,)]
 
 
-def test_create_first_batch_is_rejected_before_partial_execution():
+def test_create_first_batch_registers_view_and_executes_insert():
     layer = SemanticLayer(connection="duckdb:///:memory:")
     adapter = YardstickAdapter()
     layer.adapter.execute("CREATE TABLE sales(amount INTEGER)")
-    with pytest.raises(NotImplementedError, match="multi-statement view lifecycle"):
+    _execute_statement_sql(
+        layer,
+        adapter,
+        "CREATE VIEW sales_v AS SELECT SUM(amount) AS MEASURE revenue FROM sales; INSERT INTO sales VALUES (99);",
+    )
+    assert fetch_rows(layer.sql("SELECT AGGREGATE(revenue) FROM sales_v")) == [(99,)]
+
+
+def test_successful_batch_does_not_satisfy_statement_error():
+    layer = SemanticLayer(connection="duckdb:///:memory:")
+    layer.adapter.execute("CREATE TABLE sales(amount INTEGER)")
+    statement = _StatementBlock(
+        1,
+        "statement error",
+        "CREATE VIEW sales_v AS SELECT SUM(amount) AS MEASURE revenue FROM sales; SELECT 1;",
+        True,
+        [],
+    )
+    with pytest.raises(pytest.fail.Exception, match="DID NOT RAISE"):
+        _apply_statement(layer, YardstickAdapter(), statement)
+
+
+def test_failed_batch_rolls_back_database_and_measure_registry():
+    layer = SemanticLayer(connection="duckdb:///:memory:")
+    adapter = YardstickAdapter()
+    layer.adapter.execute("CREATE TABLE sales(amount INTEGER)")
+    with pytest.raises(Exception, match="missing_table"):
         _execute_statement_sql(
             layer,
             adapter,
-            "CREATE VIEW sales_v AS SELECT SUM(amount) AS MEASURE revenue FROM sales; INSERT INTO sales VALUES (99);",
+            "CREATE VIEW sales_v AS SELECT SUM(amount) AS MEASURE revenue FROM sales; "
+            "INSERT INTO sales VALUES (99); SELECT * FROM missing_table;",
         )
     assert "sales_v" not in layer.graph.models
     assert fetch_rows(layer.adapter.execute("SELECT count(*) FROM sales")) == [(0,)]
@@ -901,14 +902,102 @@ def test_create_first_batch_is_rejected_before_partial_execution():
     ) == [(0,)]
 
 
-def test_unsupported_batch_does_not_satisfy_statement_error():
+def test_temporary_measure_batch_restores_shadowed_permanent_model():
+    from tests.queries.yardstick_replay_runtime import replay_runtime
+
     layer = SemanticLayer(connection="duckdb:///:memory:")
-    statement = _StatementBlock(
-        1,
-        "statement error",
-        "CREATE VIEW sales_v AS SELECT SUM(amount) AS MEASURE revenue FROM sales; SELECT 1;",
-        True,
-        [],
+    runtime = replay_runtime(layer, YardstickAdapter())
+    runtime.execute("CREATE TABLE sales(amount INTEGER); INSERT INTO sales VALUES (10), (20)")
+    runtime.execute("CREATE VIEW sales_v AS SELECT SUM(amount) AS MEASURE revenue FROM sales")
+    runtime.execute(
+        "CREATE TEMP VIEW sales_v AS SELECT COUNT(*) AS MEASURE row_count FROM sales; "
+        "CREATE TABLE temporary_result AS SELECT AGGREGATE(row_count) AT (ALL) AS n FROM sales_v"
     )
-    with pytest.raises(NotImplementedError, match="multi-statement view lifecycle"):
-        _apply_statement(layer, YardstickAdapter(), statement)
+    assert runtime.execute("SELECT n FROM temporary_result") == [(2,)]
+    assert runtime.execute("SELECT AGGREGATE(revenue) FROM sales_v") == [(30,)]
+    assert list(layer.graph.models["sales_v"].metrics)[0].name == "revenue"
+
+
+def test_temporary_measure_view_cannot_escape_direct_query_batch():
+    from tests.queries.yardstick_replay_runtime import replay_runtime
+
+    layer = SemanticLayer(connection="duckdb:///:memory:")
+    runtime = replay_runtime(layer, YardstickAdapter())
+    runtime.execute("CREATE TABLE sales(amount INTEGER); INSERT INTO sales VALUES (10)")
+    with pytest.raises(RuntimeError, match="TEMPORARY AS MEASURE views"):
+        runtime.execute(
+            "CREATE TEMP VIEW sales_v AS SELECT SUM(amount) AS MEASURE revenue FROM sales; "
+            "SELECT AGGREGATE(revenue) FROM sales_v"
+        )
+    assert "sales_v" not in layer.graph.models
+    assert runtime.execute("SELECT count(*) FROM information_schema.views WHERE table_name = 'sales_v'") == [(0,)]
+
+
+def test_definition_inspection_covers_all_views_before_modifier_query():
+    models = _create_view_models_from_statement(
+        YardstickAdapter(),
+        "CREATE VIEW one_v AS SELECT SUM(amount) AS MEASURE revenue FROM sales; "
+        "SEMANTIC CREATE VIEW two_v AS SELECT COUNT(*) AS MEASURE row_count FROM sales; "
+        "SELECT AGGREGATE(revenue) AT (ALL) FROM one_v;",
+    )
+    assert [model.name for _, _, model in models] == ["one_v", "two_v"]
+
+
+def test_prepared_measure_insert_defers_warnings_until_execute():
+    from tests.queries.yardstick_replay_runtime import replay_runtime
+
+    layer = SemanticLayer(connection="duckdb:///:memory:")
+    runtime = replay_runtime(layer, YardstickAdapter())
+    runtime.execute("CREATE TABLE sales(region TEXT, year INTEGER, amount INTEGER)")
+    runtime.execute("INSERT INTO sales VALUES ('west', 2023, 10), ('east', 2022, 20)")
+    runtime.execute("CREATE VIEW sales_v AS SELECT region, year, SUM(amount) AS MEASURE revenue FROM sales")
+    runtime.execute("CREATE TABLE totals(value INTEGER)")
+    runtime.execute("SET warnings_as_errors = true")
+    runtime.execute(
+        "PREPARE insert_total AS INSERT INTO totals "
+        "SELECT AGGREGATE(revenue) AT (ALL region) FROM sales_v WHERE year = 2023"
+    )
+    with pytest.raises(RuntimeError, match="filter"):
+        runtime.execute("EXECUTE insert_total")
+    assert runtime.execute("SELECT count(*) FROM totals") == [(0,)]
+    runtime.execute("SET warnings_as_errors = false")
+    runtime.execute("EXECUTE insert_total")
+    assert runtime.execute("SELECT value FROM totals") == [(30,)]
+    runtime.execute("DEALLOCATE insert_total")
+
+
+def test_qualified_drop_preserves_temporary_measure_shadow():
+    from tests.queries.yardstick_replay_runtime import replay_runtime
+
+    layer = SemanticLayer(connection="duckdb:///:memory:")
+    runtime = replay_runtime(layer, YardstickAdapter())
+    runtime.execute("CREATE TABLE sales(amount INTEGER); INSERT INTO sales VALUES (10), (20)")
+    runtime.execute("CREATE VIEW sales_v AS SELECT SUM(amount) AS MEASURE revenue FROM sales")
+    runtime.execute(
+        "CREATE TEMP VIEW sales_v AS SELECT COUNT(*) AS MEASURE row_count FROM sales; "
+        "DROP VIEW main.sales_v; "
+        "CREATE TABLE temporary_result AS SELECT AGGREGATE(row_count) AS n FROM sales_v"
+    )
+    assert runtime.execute("SELECT n FROM temporary_result") == [(2,)]
+    assert "sales_v" not in layer.graph.models
+    assert runtime.execute("SELECT count(*) FROM information_schema.views WHERE table_name = 'sales_v'") == [(0,)]
+
+
+@pytest.mark.parametrize("fail_after_query", [False, True])
+def test_replay_closes_connection_on_success_and_failure(tmp_path, monkeypatch, fail_after_query):
+    import duckdb
+
+    layer = SemanticLayer(connection="duckdb:///:memory:")
+    monkeypatch.setattr(__name__ + ".SemanticLayer", lambda **kwargs: layer)
+    path = tmp_path / "cleanup.test"
+    sql = "query I\nSELECT 1;\n----\n1\n"
+    if fail_after_query:
+        sql += "\nstatement ok\nSELECT * FROM missing_cleanup_table;\n"
+    path.write_text(sql)
+    if fail_after_query:
+        with pytest.raises(Exception, match="missing_cleanup_table"):
+            _replay_yardstick_sql_test(path)
+    else:
+        _replay_yardstick_sql_test(path)
+    with pytest.raises(duckdb.ConnectionException, match="closed"):
+        layer.adapter.execute("SELECT 1")

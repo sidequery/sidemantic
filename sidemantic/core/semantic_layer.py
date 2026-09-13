@@ -2180,7 +2180,11 @@ class SemanticLayer:
             >>> layer.sql("SELECT orders.revenue, orders.status FROM orders WHERE orders.status = 'completed'")
         """
         from sidemantic.core.transport_security import rewrite_transport_sql
+        from sidemantic.sql.query_rewriter import yardstick_warnings_may_apply
 
+        # Recompile warning-sensitive queries so changing a warnings policy also
+        # applies to repeated SQL, rather than silently returning cached rewrites.
+        use_cache = user_attributes is None and not yardstick_warnings_may_apply(self.graph, query)
         cache_key = (
             getattr(self.graph, "_version", 0),
             self.dialect,
@@ -2190,7 +2194,7 @@ class SemanticLayer:
             os.getenv("SIDEMANTIC_RS_NO_FALLBACK", "0"),
             query,
         )
-        rewritten_sql = self._sql_rewrite_cache.get(cache_key) if user_attributes is None else None
+        rewritten_sql = self._sql_rewrite_cache.get(cache_key) if use_cache else None
         if rewritten_sql is None:
             rewritten_sql = rewrite_transport_sql(
                 self,
@@ -2198,7 +2202,7 @@ class SemanticLayer:
                 user_attributes=user_attributes,
                 transport="SemanticLayer.sql()",
             )
-            if user_attributes is None:
+            if use_cache:
                 if len(self._sql_rewrite_cache) >= self._sql_rewrite_cache_limit:
                     self._sql_rewrite_cache.pop(next(iter(self._sql_rewrite_cache)))
                 self._sql_rewrite_cache[cache_key] = rewritten_sql

@@ -38,15 +38,15 @@ def _supported_metric_aggs() -> set[str]:
     return _extract_literal_strings(annotation)
 
 
-def _strip_measure_tokens(sql: str, dialect: str = "duckdb") -> tuple[str, set[str]]:
+def _strip_measure_tokens(sql: str, dialect: str = "duckdb") -> tuple[str, set[int]]:
     """Remove MEASURE keyword from ``AS MEASURE <alias>`` sequences.
 
     Uses sqlglot's tokenizer so string literals and comments are handled
-    correctly. Returns the cleaned SQL and the set of measure alias names.
+    correctly. Returns the cleaned SQL and the source offsets of measure aliases.
     """
     dialect_instance = Dialect.get_or_raise(dialect)
     tokens = list(dialect_instance.tokenize(sql))
-    measure_names: set[str] = set()
+    measure_alias_starts: set[int] = set()
     remove_indices: set[int] = set()
 
     for i in range(len(tokens) - 2):
@@ -56,7 +56,7 @@ def _strip_measure_tokens(sql: str, dialect: str = "duckdb") -> tuple[str, set[s
             and tokens[i + 1].text.upper() == "MEASURE"
             and tokens[i + 2].token_type in (TokenType.VAR, TokenType.STRING, TokenType.IDENTIFIER)
         ):
-            measure_names.add(tokens[i + 2].text.strip('"'))
+            measure_alias_starts.add(tokens[i + 2].start)
             remove_indices.add(i + 1)
 
     if not remove_indices:
@@ -71,7 +71,7 @@ def _strip_measure_tokens(sql: str, dialect: str = "duckdb") -> tuple[str, set[s
         end = tok.end + 1
         for j in range(start, min(end, len(result))):
             result[j] = " "
-    return "".join(result), measure_names
+    return "".join(result), measure_alias_starts
 
 
 class YardstickAdapter(BaseAdapter):
@@ -145,17 +145,20 @@ class YardstickAdapter(BaseAdapter):
                 graph.add_model(model)
 
     def _parse_statements(self, sql: str) -> list[exp.Expression | None]:
-        cleaned, measure_names = _strip_measure_tokens(sql, dialect=self.dialect)
+        cleaned, measure_alias_starts = _strip_measure_tokens(sql, dialect=self.dialect)
         statements = sqlglot.parse(cleaned, read=self.dialect)
 
-        if measure_names:
+        if measure_alias_starts:
             for stmt in statements:
                 if stmt:
                     # Only tag aliases in SELECT projections of CREATE VIEW
                     select = stmt.expression if isinstance(stmt, exp.Create) else stmt
                     if isinstance(select, exp.Select):
                         for proj in select.expressions:
-                            if isinstance(proj, exp.Alias) and proj.output_name in measure_names:
+                            if (
+                                isinstance(proj, exp.Alias)
+                                and proj.args["alias"].meta.get("start") in measure_alias_starts
+                            ):
                                 proj.set("yardstick_measure", True)
 
         return statements

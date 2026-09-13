@@ -5197,7 +5197,7 @@ impl SidemanticRuntime {
                     "Unknown rollup time dimension '{time_dimension}'"
                 ))
             })?;
-            let expression = source_expression(&time_dim.sql_expr())?;
+            let expression = source_expression(time_dim.sql_expr())?;
             select_exprs.push(format!(
                 "DATE_TRUNC('{granularity}', {expression}) as {time_dimension}_{granularity}"
             ));
@@ -5209,7 +5209,7 @@ impl SidemanticRuntime {
             })?;
             select_exprs.push(format!(
                 "{} as {dim_name}",
-                source_expression(&dim.sql_expr())?
+                source_expression(dim.sql_expr())?
             ));
             group_by_positions.push(select_exprs.len().to_string());
         }
@@ -5241,7 +5241,7 @@ impl SidemanticRuntime {
             let mut expression = if count_rows {
                 "*".to_owned()
             } else {
-                source_expression(&measure.sql_expr())?
+                source_expression(measure.sql_expr())?
             };
             if !measure.filters.is_empty() {
                 let predicates = measure
@@ -8125,9 +8125,11 @@ models:
       - name: totals
         measures: [revenue]
 "#,
-        )
-        .err()
-        .expect("native invariant declarations must not be discarded");
+        );
+        let error = match error {
+            Err(error) => error,
+            Ok(_) => panic!("native invariant declarations must not be discarded"),
+        };
         assert!(error.to_string().contains("invariant_filters"));
     }
 

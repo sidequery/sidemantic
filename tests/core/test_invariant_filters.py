@@ -152,8 +152,19 @@ def test_partitioned_preaggregation_scopes_bucket_discovery_and_materialization(
     assert layer.adapter.execute("SELECT SUM(revenue_raw) FROM scoped_orders_preagg_monthly").fetchone()[0] == 40
 
 
-def test_inheritance_conjoins_invariants_and_rust_rewriter_falls_back():
-    parent = Model(name="base", table="records", invariant_filters=["tenant_id = 1"])
+def test_inheritance_conjoins_invariants_and_rust_rewriter_falls_back(monkeypatch):
+    from sidemantic.semantic_handoff import RustBackendUnavailableError
+
+    def unavailable(*args, **kwargs):
+        raise RustBackendUnavailableError("test backend unavailable")
+
+    monkeypatch.setattr("sidemantic.sql.query_rewriter.rewrite_semantic_input", unavailable)
+    parent = Model(
+        name="base",
+        table="records",
+        invariant_filters=["tenant_id = 1"],
+        metrics=[Metric(name="revenue", agg="sum", sql="amount")],
+    )
     child = Model(name="child", extends="base", invariant_filters=["active"])
     merged = merge_model(child, parent)
 
@@ -163,9 +174,16 @@ def test_inheritance_conjoins_invariants_and_rust_rewriter_falls_back():
     assert adapter._parse_model(exported).invariant_filters == merged.invariant_filters
     layer = SemanticLayer(auto_register=False)
     layer.add_model(merged)
-    rewriter = QueryRewriter(layer.graph, use_rust_rewriter=True)
-    assert rewriter._use_rust_rewriter is False
-    assert rewriter.rust_fallback_reason == "model invariant filters require the Python rewriter"
+    layer.adapter.execute("CREATE TABLE records (tenant_id INT, active BOOLEAN, amount INT)")
+    layer.adapter.execute("INSERT INTO records VALUES (1, true, 10), (1, false, 20), (2, true, 30)")
+    try:
+        rewriter = QueryRewriter(layer.graph, use_rust_rewriter=True, rust_no_fallback=False)
+        rewritten = rewriter.rewrite("SELECT child.revenue FROM metrics")
+        assert layer.adapter.execute(rewritten).fetchall() == [(10,)]
+        assert rewriter.last_engine_selection["engine"] == "python"
+        assert rewriter.rust_fallback_reason is not None
+    finally:
+        layer.adapter.close()
 
 
 def test_native_yaml_roundtrip_preserves_invariants(tmp_path):

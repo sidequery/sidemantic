@@ -971,7 +971,9 @@ pub fn rewrite_with_semantic_input_context(
                 query,
                 context.user_attributes.as_ref(),
                 context.enforce_visibility,
-                output_dialect,
+                // Rewriter compiles and reparses a DuckDB intermediate AST;
+                // only the final emission targets the requested output dialect.
+                DialectType::DuckDB,
             )?;
             Ok(())
         };

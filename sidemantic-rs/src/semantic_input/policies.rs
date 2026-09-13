@@ -128,7 +128,12 @@ pub(crate) fn prepare(
                 let qualified = rendered
                     .iter()
                     .map(|filter| {
-                        source_predicate(&filter.replace("{model}", instance), instance, model)
+                        source_predicate(
+                            &filter.replace("{model}", instance),
+                            instance,
+                            model,
+                            output_dialect,
+                        )
                     })
                     .collect::<Result<Vec<_>>>()?;
                 prepared.row_filters.insert(instance.clone(), qualified);
@@ -139,7 +144,12 @@ pub(crate) fn prepare(
                 .invariant_filters
                 .iter()
                 .map(|filter| {
-                    source_predicate(&filter.replace("{model}", instance), instance, model)
+                    source_predicate(
+                        &filter.replace("{model}", instance),
+                        instance,
+                        model,
+                        output_dialect,
+                    )
                 })
                 .collect::<Result<Vec<_>>>()?;
             prepared
@@ -493,7 +503,12 @@ fn outer_columns(expression: Expression) -> Result<Vec<Column>> {
 
 /// Resolve policy fields against the source CTE without rewriting SQL text.
 /// Subquery scopes retain their own columns and literals remain byte-exact.
-fn source_predicate(predicate: &str, instance: &str, model: &Model) -> Result<String> {
+fn source_predicate(
+    predicate: &str,
+    instance: &str,
+    model: &Model,
+    output_dialect: DialectType,
+) -> Result<String> {
     fn expand(value: &mut Value, instance: &str, model: &Model, dimensions: bool) -> Result<()> {
         match value {
             Value::Object(fields) => {
@@ -553,9 +568,33 @@ fn source_predicate(predicate: &str, instance: &str, model: &Model) -> Result<St
     let mut ast = serde_json::to_value(parse_semantic_expression(&predicate)?)
         .map_err(|error| SidemanticError::SqlParse(error.to_string()))?;
     expand(&mut ast, instance, model, true)?;
+    // Raw SQL has no dialect semantics and the emitter copies it verbatim.
+    // It cannot establish PostgreSQL policy equivalence.
+    fn reject_raw(value: &Value) -> Result<()> {
+        match value {
+            Value::Object(fields) => {
+                if fields.len() == 1 && fields.contains_key("raw") {
+                    return Err(SidemanticError::UnsupportedSemanticFeatures {
+                        capabilities: vec!["policy.raw_output_expression".into()],
+                    });
+                }
+                for child in fields.values() {
+                    reject_raw(child)?;
+                }
+            }
+            Value::Array(values) => {
+                for child in values {
+                    reject_raw(child)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+    reject_raw(&ast)?;
     let expression: Expression = serde_json::from_value(ast)
         .map_err(|error| SidemanticError::SqlParse(error.to_string()))?;
-    polyglot_sql::generate(&expression, DialectType::DuckDB)
+    polyglot_sql::generate(&expression, output_dialect)
         .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))
 }
 
@@ -759,12 +798,35 @@ mod tests {
             "accounts.tenant = 1 AND label = 'accounts.tenant' AND id IN (SELECT id FROM allowed)",
             "buyer",
             &model,
+            DialectType::DuckDB,
         )
         .unwrap();
         assert!(filter.contains("tenant_id = 1"), "{filter}");
         assert!(filter.contains("label = 'accounts.tenant'"), "{filter}");
         assert!(filter.contains("SELECT id FROM allowed"), "{filter}");
         assert!(!filter.contains("buyer"), "{filter}");
+    }
+
+    #[test]
+    fn postgres_predicate_emits_date_diff_in_target_syntax() {
+        let model = Model::new("orders", "id");
+        let predicate = source_predicate(
+            "date_diff('day', DATE '2025-01-01', occurred) <= 1",
+            "orders",
+            &model,
+            DialectType::PostgreSQL,
+        )
+        .unwrap();
+        assert!(predicate.to_uppercase().contains("EXTRACT"), "{predicate}");
+        assert!(
+            !predicate.to_uppercase().contains("DATE_DIFF("),
+            "{predicate}"
+        );
+        assert!(polyglot_sql::parse_one(
+            &format!("SELECT 1 WHERE {predicate}"),
+            DialectType::PostgreSQL,
+        )
+        .is_ok());
     }
 
     #[test]

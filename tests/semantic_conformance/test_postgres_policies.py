@@ -135,3 +135,27 @@ def test_other_policy_output_dialects_remain_unsupported(postgres, graph, mode):
     attributes = {"role": "analyst", "tenant": 1, "enabled": True, "subject": "alice"}
     with pytest.raises(UnsupportedSemanticFeaturesError):
         policy_sql(graph, mode, attributes, output="bigquery")
+
+
+@pytest.mark.parametrize("mode", ["compile", "rewrite"])
+def test_postgres_translates_date_diff_in_policy_and_invariant(postgres, graph, mode):
+    postgres.execute("drop table if exists pg_policy_dates")
+    postgres.execute(
+        "create temporary table pg_policy_dates (id integer, tenant integer, amount integer, occurred date)"
+    )
+    postgres.execute(
+        "insert into pg_policy_dates values "
+        "(1, 1, 400, '2024-12-31'), (2, 1, 10, '2025-01-01'), "
+        "(3, 1, 20, '2025-01-02'), (4, 1, 90, '2025-01-03'), (5, 2, 1000, '2025-01-01')"
+    )
+    model = graph.models["secured"]
+    model.table = "pg_policy_dates"
+    model.invariant_filters = ["date_diff('day', DATE '2025-01-01', occurred) >= 0"]
+    model.security.row_filters = [
+        "tenant = {{ user.tenant }}",
+        "date_diff('day', DATE '2025-01-01', occurred) <= {{ user.days }}",
+    ]
+    sql = policy_sql(graph, mode, {"role": "analyst", "tenant": 1, "days": 1})
+    assert "DATE_DIFF(" not in sql.upper(), sql
+    assert "EXTRACT" in sql.upper(), sql
+    assert postgres.execute(sql).fetchall() == [(30,)]

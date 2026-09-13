@@ -433,8 +433,8 @@ jobs:
           cc -std=c11 -Wall -Wextra -I include tests/c_abi_smoke.c "$SIDEMANTIC_STATICLIB" -lpthread -ldl -lm -lrt -o /tmp/sidemantic_c_abi_smoke
           /tmp/sidemantic_c_abi_smoke
 
-      - name: Check WASM build
-        run: cargo check --no-default-features --features wasm --target wasm32-unknown-unknown --lib
+      - name: Build WASM host module
+        run: cargo build --no-default-features --features wasm --target wasm32-unknown-unknown --lib
 
       - name: Install wasm-bindgen test runner
         run: |
@@ -443,6 +443,11 @@ jobs:
 
       - name: Run WASM runtime tests
         run: CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner cargo test --target wasm32-unknown-unknown --features wasm --test wasm_bindgen_runtime
+
+      - name: Execute SemanticInput through the public WASM module
+        run: |
+          wasm-bindgen ../target/wasm32-unknown-unknown/debug/sidemantic.wasm --target nodejs --out-dir ../target/semantic-host
+          SIDEMANTIC_WASM_MODULE="$PWD/../target/semantic-host/sidemantic.js" uv run --no-project tests/test_wasm_semantic_host.py
 
       - name: Check Python extension build
         run: uvx maturin build --out dist

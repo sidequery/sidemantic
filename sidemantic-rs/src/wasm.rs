@@ -38,6 +38,41 @@ fn wasm_error(err: impl std::fmt::Display) -> JsValue {
     JsValue::from_str(&err.to_string())
 }
 
+/// Compile the same versioned, policy-aware request accepted by the Python host.
+#[wasm_bindgen]
+pub fn wasm_compile_with_semantic_input(
+    input_json: &str,
+    query_json: &str,
+) -> Result<String, JsValue> {
+    crate::semantic_input::compile_with_semantic_input(input_json, query_json).map_err(wasm_error)
+}
+
+/// Reference validation only; compilation remains the authorization boundary.
+#[wasm_bindgen]
+pub fn wasm_validate_with_semantic_input(
+    input_json: &str,
+    query_json: &str,
+) -> Result<String, JsValue> {
+    let errors = crate::semantic_input::validate_with_semantic_input(input_json, query_json)
+        .map_err(wasm_error)?;
+    serde_json::to_string(&errors).map_err(wasm_error)
+}
+
+#[wasm_bindgen]
+pub fn wasm_rewrite_with_semantic_input(input_json: &str, sql: &str) -> Result<String, JsValue> {
+    crate::semantic_input::rewrite_with_semantic_input(input_json, sql).map_err(wasm_error)
+}
+
+#[wasm_bindgen]
+pub fn wasm_rewrite_with_semantic_input_context(
+    input_json: &str,
+    sql: &str,
+    context_json: &str,
+) -> Result<String, JsValue> {
+    crate::semantic_input::rewrite_with_semantic_input_context(input_json, sql, context_json)
+        .map_err(wasm_error)
+}
+
 #[wasm_bindgen]
 pub fn wasm_compile_with_yaml_query(yaml: &str, query_yaml: &str) -> Result<String, JsValue> {
     compile_with_yaml_query(yaml, query_yaml).map_err(wasm_error)

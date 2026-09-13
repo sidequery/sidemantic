@@ -163,3 +163,20 @@ This contract does not change the default engine, retire the Python compiler,
 or claim that WASM, the DuckDB extension, and the Python binding already expose
 identical capabilities. Each host needs corresponding acceptance evidence
 before its default or implementation ownership changes.
+
+### WASM host
+
+The generated WASM module exposes `wasm_compile_with_semantic_input`,
+`wasm_validate_with_semantic_input`, `wasm_rewrite_with_semantic_input`, and
+`wasm_rewrite_with_semantic_input_context`. Arguments are the same JSON strings
+as the Python boundary; compilation returns SQL and failures throw a message.
+Validation returns a JSON array of reference errors and does not authorize a
+query. Caller attributes and visibility enforcement belong in the structured
+query or rewrite context. The context-free rewrite does not bypass mandatory
+policies.
+
+CI executes the generated Node module and runs its SQL in DuckDB against an
+independently expected tenant-filtered population. This qualifies that host
+boundary for the tested subset, not browser packaging, DuckDB-extension host
+parity, or every semantic feature. WASM uses its host stack directly; it does
+not spawn the native semantic compiler worker thread.

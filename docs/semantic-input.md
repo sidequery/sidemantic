@@ -110,16 +110,20 @@ custom SQL, partitioned builds and partial build ranges. Lambda freshness behavi
 remains explicitly unsupported by the versioned boundary.
 
 Filtered complete measures are supported when their SQL AST is exactly
-`SUM(column)`, `COUNT(column)`, `MIN(column)`, or `MAX(column)` over one local
+`SUM(column)`, `AVG(column)`, `COUNT(column)`, `COUNT(DISTINCT column)`,
+`MIN(column)`, or `MAX(column)` over one local
 physical column. The source declaration remains unchanged; its executable copy
 uses the ordinary per-measure filtered aggregate path. Local qualified columns
 are normalized without changing string literals, and each filter is parenthesized
 before conjunction. Filters use physical values even when a semantic dimension
 shares the column name. Independent measures retain independent populations.
+Average counts each qualifying non-null source row in its denominator, while
+distinct count collapses repeated qualifying values and excludes nulls. These
+states use the existing keyed fanout-safe aggregate planner.
 
 This checked lowering accepts ordinary local comparisons, boolean combinations,
 null checks, ranges, and literal lists. Filtered complete `COUNT(*)`, constant or
-conditional aggregate inputs, aggregate combinations, distinct counts, windows,
+conditional aggregate inputs, aggregate combinations, distinct averages, windows,
 subqueries, foreign-model inputs or predicates, and unresolved templates remain
 explicitly unsupported. Unowned graph measures also remain unsupported on this path.
 

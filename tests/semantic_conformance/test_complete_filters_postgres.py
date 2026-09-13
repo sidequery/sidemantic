@@ -14,6 +14,10 @@ from sidemantic.rust_bridge import compile_semantic_input
     [
         ("SUM(orders.Amount)", "orders.Amount > 0", 5),
         ('SUM(orders."Amount")', 'orders."Amount" > 0', 30),
+        ("AVG(orders.Amount)", "orders.Amount > 0", 2.5),
+        ('AVG(orders."Amount")', 'orders."Amount" > 0', 15),
+        ('COUNT(DISTINCT orders."Amount")', 'orders."Amount" > 0', 2),
+        ("COUNT(DISTINCT orders.Amount)", "orders.Amount > 0", 2),
         (
             "SUM(orders.Amount)",
             """orders.Amount > 0 AND orders."Amount" = 10 AND orders.label = 'orders.Amount'""",

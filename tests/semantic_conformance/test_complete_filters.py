@@ -4,7 +4,7 @@ from copy import deepcopy
 
 import pytest
 
-from sidemantic import Dimension, Metric, Model, SemanticLayer
+from sidemantic import Dimension, Metric, Model, Relationship, SecurityPolicy, SemanticLayer
 from sidemantic.semantic_handoff import UnsupportedSemanticFeaturesError, graph_to_semantic_input
 
 
@@ -48,6 +48,8 @@ def layer(request):
 def assert_result(layer, query, columns, expected):
     source = deepcopy(graph_to_semantic_input(layer.graph))
     sql = layer.compile(**query)
+    if layer.engine == "rust":
+        assert layer.last_engine_selection["engine"] == "rust"
     assert graph_to_semantic_input(layer.graph) == source
     result = layer.adapter.execute(sql)
     assert [column[0] for column in result.description] == columns
@@ -131,7 +133,10 @@ def test_filter_conjunction_preserves_disjunction_grouping(layer):
         "SUM(amount) OVER ()",
         "SUM((SELECT amount))",
         "SUM(other.amount)",
-        "COUNT(DISTINCT amount)",
+        "COUNT(DISTINCT amount + 1)",
+        "AVG(DISTINCT amount)",
+        "AVG(amount) OVER ()",
+        "AVG(other.amount)",
     ],
 )
 def test_unproven_complete_filter_shapes_fail_explicitly(expression):
@@ -170,3 +175,109 @@ def test_foreign_filter_population_fails_explicitly():
         assert "metric.complete_filters" in caught.value.capabilities
     finally:
         layer.adapter.close()
+
+
+@pytest.fixture
+def average_distinct_layer(layer):
+    layer.graph.models["orders"].metrics.extend(
+        [
+            Metric(name="paid_avg", sql="AVG(amount)", sql_is_complete=True, filters=["status = 'paid'"]),
+            Metric(
+                name="paid_distinct", sql="COUNT(DISTINCT amount)", sql_is_complete=True, filters=["status = 'paid'"]
+            ),
+        ]
+    )
+    # Repeated values belong to different source rows. AVG keeps both rows;
+    # COUNT DISTINCT collapses their values. NULLs enter neither denominator.
+    layer.adapter.execute("insert into complete_orders values (7, 1, 'paid', 'north')")
+    return layer
+
+
+def test_filtered_average_and_distinct_keep_different_denominators(average_distinct_layer):
+    assert_result(
+        average_distinct_layer,
+        {"metrics": ["orders.paid_avg", "orders.paid_distinct", "orders.total"]},
+        ["paid_avg", "paid_distinct", "total"],
+        [(pytest.approx(4 / 3), 2, 14)],
+    )
+
+
+def test_filtered_average_and_distinct_preserve_empty_measure_groups(average_distinct_layer):
+    average_distinct_layer.adapter.execute("insert into complete_orders values (8, null, 'paid', 'west')")
+    assert_result(
+        average_distinct_layer,
+        {
+            "metrics": ["orders.paid_avg", "orders.paid_distinct"],
+            "dimensions": ["orders.region"],
+            "order_by": ["orders.region"],
+        },
+        ["region", "paid_avg", "paid_distinct"],
+        [("north", pytest.approx(4 / 3), 2), ("south", None, 0), ("west", None, 0)],
+    )
+
+
+def test_filtered_average_and_distinct_keep_independent_populations(average_distinct_layer):
+    layer = average_distinct_layer
+    layer.graph.models["orders"].get_metric("paid_avg").filters = ["status = 'canceled'"]
+    assert_result(
+        layer,
+        {"metrics": ["orders.paid_avg", "orders.paid_distinct"]},
+        ["paid_avg", "paid_distinct"],
+        [(9.0, 2)],
+    )
+
+
+def test_filtered_average_and_distinct_filters_use_physical_column_values(average_distinct_layer):
+    layer = average_distinct_layer
+    for name in ["paid_avg", "paid_distinct"]:
+        layer.graph.models["orders"].get_metric(name).filters.append("amount = 2")
+    assert_result(
+        layer,
+        {"metrics": ["orders.paid_avg", "orders.paid_distinct"]},
+        ["paid_avg", "paid_distinct"],
+        [(2.0, 1)],
+    )
+
+
+def test_filtered_average_and_distinct_obey_source_policies(average_distinct_layer):
+    layer = average_distinct_layer
+    layer.graph.models["orders"].security = SecurityPolicy(row_filters=["id <= {{ user.max_id }}"])
+    layer.graph.models["orders"].invariant_filters = ["id != 1"]
+    assert_result(
+        layer,
+        {"metrics": ["orders.paid_avg", "orders.paid_distinct"], "user_attributes": {"max_id": 3}},
+        ["paid_avg", "paid_distinct"],
+        [(2.0, 1)],
+    )
+
+
+def test_filtered_average_and_distinct_survive_unequal_join_fanout(average_distinct_layer):
+    layer = average_distinct_layer
+    layer.graph.models["orders"].relationships.append(
+        Relationship(name="items", type="one_to_many", foreign_key="order_id")
+    )
+    layer.add_model(
+        Model(
+            name="items",
+            table="complete_items",
+            primary_key="id",
+            dimensions=[Dimension(name="category", type="categorical")],
+        )
+    )
+    layer.adapter.execute("""
+        create table complete_items(id integer, order_id integer, category varchar);
+        insert into complete_items values
+            (1,1,'a'), (2,1,'a'), (3,1,'a'), (4,2,'a'),
+            (5,3,'a'), (6,7,'a'), (7,7,'a'), (8,4,'b');
+    """)
+    assert_result(
+        layer,
+        {
+            "metrics": ["orders.paid_avg", "orders.paid_distinct"],
+            "dimensions": ["items.category"],
+            "filters": ["items.category IS NOT NULL"],
+            "order_by": ["items.category"],
+        },
+        ["category", "paid_avg", "paid_distinct"],
+        [("a", pytest.approx(4 / 3), 2), ("b", None, 0)],
+    )

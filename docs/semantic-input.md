@@ -56,7 +56,12 @@ keyed joins, complete aggregate expressions, and graph metric binding. It also
 supports:
 
 - Independent source aggregation for cross-model ratios and derived metrics,
-  including source filters, aggregate filters, and grouped results.
+  including source filters, aggregate filters, and grouped results. Child outputs
+  are normalized before recombination, so dimensions and measures from different
+  owners can share a basename without changing their grouping or population.
+  Public collisions use owner-qualified names; qualified ordering and filters
+  retain their semantic binding. Truly duplicate child output names remain an
+  explicit unsupported shape.
 - Separate relationship role instances, nested and scoped role names, inactive
   edge exclusion, and rejection of ambiguous join paths. Explicit adapter join
   kinds retain their direction and row-preservation behavior.
@@ -90,7 +95,7 @@ remains explicitly unsupported by the versioned boundary.
 
 Remaining capability gates include policy-bearing SQL outside the scoped
 `FROM metrics` subset, non-DuckDB policy output, many-to-many role paths, computed primary-key
-dimensions, unsafe dimension/measure alias collisions across aggregate grains,
+dimensions, genuinely duplicate child output aliases,
 complete-expression measure filters, null-fill options, raw cumulative windows,
 and unqualified conversion, retention, cohort, and non-additive metric shapes.
 Deserialization alone is not evidence of executable support.

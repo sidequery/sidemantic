@@ -150,6 +150,39 @@ mod tests {
     use crate::core::Dimension;
 
     #[test]
+    fn key_classification_uses_resolved_direction_and_composite_defaults() {
+        use crate::core::{Relationship, RelationshipType};
+        for role in [false, true] {
+            for kind in [RelationshipType::ManyToOne, RelationshipType::OneToMany] {
+                let mut graph = SemanticGraph::new();
+                let target = Model::new("accounts", "account_key")
+                    .with_primary_key_columns(vec!["tenant".into(), "account_key".into()]);
+                graph.add_model(target).unwrap();
+                let mut relationship = Relationship::new(if role { "buyer" } else { "accounts" });
+                relationship.target_model = role.then(|| "accounts".into());
+                relationship.r#type = kind;
+                relationship.foreign_key_columns =
+                    Some(vec!["tenant_ref".into(), "account_ref".into()]);
+                let source = Model::new("events", "event_key")
+                    .with_primary_key_columns(vec!["tenant".into(), "event_key".into()])
+                    .with_relationship(relationship);
+                graph.add_model(source).unwrap();
+                let accounts = semantic_key_names(&graph, graph.get_model("accounts").unwrap());
+                let events = semantic_key_names(&graph, graph.get_model("events").unwrap());
+                assert!(!accounts.contains("id"));
+                assert!(!events.contains("id"));
+                if kind == RelationshipType::ManyToOne {
+                    assert!(events.contains("account_ref"));
+                    assert!(!accounts.contains("account_ref"));
+                } else {
+                    assert!(accounts.contains("account_ref"));
+                    assert!(!events.contains("account_ref"));
+                }
+            }
+        }
+    }
+
+    #[test]
     fn computed_identity_binds_every_input_without_recursing_into_its_own_name() {
         let model = Model::new("accounts", "id")
             .with_dimension(Dimension::new("id").with_sql("{model}.tenant * 100 + id"));

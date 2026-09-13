@@ -186,7 +186,7 @@ fixtures:
         expected_result: expected/result.json
         result_columns: [status, total_credit_limit]
         sql_contains: [JOIN, orders, total_credit_limit]
-        rust_sql_contains: ["SUM(DISTINCT", "HASH(customers_cte.customer_id)"]
+        rust_sql_contains: ["SUM(CASE", "ROW_NUMBER() OVER", "customers_cte.customer_id"]
 
   - name: source_uri_model
     valid: true

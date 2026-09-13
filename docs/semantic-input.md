@@ -119,7 +119,10 @@ before conjunction. Filters use physical values even when a semantic dimension
 shares the column name. Independent measures retain independent populations.
 Average counts each qualifying non-null source row in its denominator, while
 distinct count collapses repeated qualifying values and excludes nulls. These
-states use the existing keyed fanout-safe aggregate planner.
+states use the keyed fanout-safe aggregate planner. For fanout SUM and AVG,
+that planner selects one joined row per requested group and source primary key
+before aggregating the original filtered value. It preserves floating-point
+values and returns null for groups containing no qualifying non-null values.
 
 This checked lowering accepts ordinary local comparisons, boolean combinations,
 null checks, ranges, and literal lists. Filtered complete `COUNT(*)`, constant or

@@ -1,5 +1,10 @@
 //! Qualification boundary for the existing two-event conversion algorithm.
 use super::*;
+use crate::core::{replace_semantic_columns, validate_row_expression};
+
+fn quote(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
+}
 
 fn unsupported(shape: &str) -> SidemanticError {
     SidemanticError::UnsupportedSemanticFeatures {
@@ -8,6 +13,77 @@ fn unsupported(shape: &str) -> SidemanticError {
 }
 
 impl SqlGenerator<'_> {
+    fn conversion_source_expression(&self, model: &Model, expression: &str) -> Result<String> {
+        if let Some(dimension) = model.get_dimension(expression.trim()) {
+            if dimension.window.is_some() {
+                return Err(unsupported("non_row_expression"));
+            }
+            if dimension.sql_expr() == dimension.name {
+                return Ok(quote(&dimension.name));
+            }
+            let source = self.raw_dimension_sql(model, dimension.sql_expr());
+            let parsed = parse_semantic_expression(&source)?;
+            validate_row_expression(&parsed, "metric.conversion_non_row_expression")?;
+            for column in semantic_column_references(&source)? {
+                if column
+                    .model
+                    .as_ref()
+                    .is_some_and(|owner| owner != &model.name && owner != "t")
+                {
+                    return Err(unsupported("joined_expression"));
+                }
+            }
+            return self.emit_expression(&parsed);
+        }
+        let expression = expression.replace("{model}", &model.name);
+        let parsed = parse_semantic_expression(&expression)?;
+        validate_row_expression(&parsed, "metric.conversion_non_row_expression")?;
+        let mut replacements = HashMap::new();
+        for column in semantic_column_references(&expression)? {
+            if column
+                .model
+                .as_ref()
+                .is_some_and(|owner| owner != &model.name && owner != "t")
+            {
+                return Err(unsupported("joined_expression"));
+            }
+            if model
+                .get_dimension(&column.field)
+                .is_some_and(|dimension| dimension.window.is_some())
+            {
+                return Err(unsupported("non_row_expression"));
+            }
+            let source = model.get_dimension(&column.field).map_or_else(
+                || quote(&column.field),
+                |dimension| {
+                    if dimension.sql_expr() == dimension.name {
+                        quote(&dimension.name)
+                    } else {
+                        self.raw_dimension_sql(model, dimension.sql_expr())
+                    }
+                },
+            );
+            validate_row_expression(
+                &parse_semantic_expression(&source)?,
+                "metric.conversion_non_row_expression",
+            )?;
+            for source_column in semantic_column_references(&source)? {
+                if source_column
+                    .model
+                    .as_ref()
+                    .is_some_and(|owner| owner != &model.name && owner != "t")
+                {
+                    return Err(unsupported("joined_expression"));
+                }
+            }
+            replacements.insert((column.model, column.field), format!("({source})"));
+        }
+        self.emit_expression(&replace_semantic_columns(
+            parse_semantic_expression(&expression)?,
+            &replacements,
+        )?)
+    }
+
     pub(super) fn generate_scoped_conversion(
         &self,
         query: &SemanticQuery,
@@ -132,30 +208,54 @@ impl SqlGenerator<'_> {
         }
         self.validate_interval_parts(parts[0], parts[1])?;
 
-        // Prepared policies already contain physical source expressions and escaped
-        // caller literals. Apply them once before either event population is formed.
-        let predicates: Vec<_> = query
-            .prepared_policies
-            .filters_for_model(&model.name)
-            .map(|predicate| format!("({predicate})"))
-            .collect();
-        let mut graph = self.graph.clone();
+        // Resolve caller/metric filters once, preserving SQL literals. The legacy
+        // filter helper rewrites text, so it must never see these physical predicates.
+        let mut predicates = Vec::new();
+        for filter in filters.iter().chain(&metric.filters) {
+            predicates.push(format!(
+                "({})",
+                self.conversion_source_expression(model, filter)?
+            ));
+        }
+        predicates.extend(
+            query
+                .prepared_policies
+                .filters_for_model(&model.name)
+                .map(|predicate| format!("({predicate})")),
+        );
+        let mut secured = model.clone();
+        for dimension in dimensions {
+            let expression = self.conversion_source_expression(model, &dimension.name)?;
+            secured
+                .dimensions
+                .iter_mut()
+                .find(|field| field.name == dimension.name)
+                .unwrap()
+                .sql = Some(expression);
+        }
         if !predicates.is_empty() {
-            let mut secured = model.clone();
             secured.sql = Some(format!(
                 "SELECT * FROM {} WHERE {}",
                 self.model_from_clause(model, Some("t")),
                 predicates.join(" AND ")
             ));
             secured.table = None;
-            graph.replace_model(secured)?;
         }
+        secured
+            .metrics
+            .iter_mut()
+            .find(|candidate| candidate.name == metric.name)
+            .unwrap()
+            .filters
+            .clear();
+        let mut graph = self.graph.clone();
+        graph.replace_model(secured)?;
         SqlGenerator::new(&graph)
             .with_dialect(self.dialect)
             .generate_conversion_query(
                 reference,
                 dimensions,
-                &filters,
+                &[],
                 &ordering,
                 query.limit,
                 query.offset,

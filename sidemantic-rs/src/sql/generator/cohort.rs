@@ -100,6 +100,8 @@ impl SqlGenerator<'_> {
         outer: bool,
     ) -> Result<String> {
         let expression = expression.replace("{model}", "cohort_sub");
+        let parsed = parse_semantic_expression(&expression)?;
+        validate_row_expression(&parsed, "metric.cohort_result_non_row_expression")?;
         let mut replacements = HashMap::new();
         for column in semantic_column_references(&expression)? {
             if !fields
@@ -122,10 +124,7 @@ impl SqlGenerator<'_> {
                 },
             );
         }
-        self.emit_expression(&replace_semantic_columns(
-            parse_semantic_expression(&expression)?,
-            &replacements,
-        )?)
+        self.emit_expression(&replace_semantic_columns(parsed, &replacements)?)
     }
 
     pub(super) fn generate_scoped_cohort(

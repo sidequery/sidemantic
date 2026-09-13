@@ -216,3 +216,17 @@ def test_rust_output_alias_collision_ignores_case(layer):
     layer.graph.models["events"].dimensions.append(Dimension(name="QUALIFIED", sql="region", type="categorical"))
     with pytest.raises(ValueError, match="output_alias_collision"):
         layer.compile(metrics=["events.qualified"], dimensions=["events.QUALIFIED"], user_attributes={"tenant": 1})
+
+
+@pytest.mark.parametrize("layer", ["rust"], indirect=True)
+@pytest.mark.parametrize("context", ["having", "sql"])
+@pytest.mark.parametrize("expression", ["SUM(amount)", "SUM(amount) OVER ()", "(SELECT amount)"])
+def test_rust_cohort_result_context_requires_scalar_expression(layer, context, expression):
+    metric = layer.graph.models["events"].metrics[0]
+    if context == "having":
+        metric.having = f"{expression} > 20"
+    else:
+        metric.agg = "sum"
+        metric.sql = expression
+    with pytest.raises(ValueError, match="metric.cohort_result_non_row_expression"):
+        layer.compile(metrics=["events.qualified"], user_attributes={"tenant": 1})

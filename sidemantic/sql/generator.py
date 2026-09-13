@@ -6096,6 +6096,15 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
             # Classify metric by type
             if metric and metric.type == "cumulative":
                 add_unique(cumulative_metrics, m)
+                if metric.window_expression:
+                    expression = sqlglot.parse_one(metric.window_expression, read=self.dialect)
+                    for column in expression.find_all(exp.Column):
+                        if column.table.lower() != "base":
+                            continue
+                        dependency = canonical_ref(column.name, resolved_context)
+                        dependency_metric, dependency_context = resolve_metric_ref(dependency, resolved_context)
+                        if dependency_metric is not None:
+                            add_unique(base_metrics, canonical_ref(dependency, dependency_context))
                 # Add the base measure/metric to base_metrics
                 if metric.sql:
                     add_unique(base_metrics, canonical_ref(metric.sql, resolved_context))
@@ -6375,7 +6384,12 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
 
             # Allow window_order to override auto-detected time dimension
             if metric.window_order:
-                time_dim = f"base.{metric.window_order}"
+                output_aliases = {
+                    f"{ref.split('.')[-1]}__{gran}" if gran else ref.split(".")[-1] for ref, gran in parsed_dims
+                } | {metric_ref_alias(ref) for ref in base_metrics}
+                if metric.window_order not in output_aliases:
+                    raise ValueError("window_order must name a selected period output column")
+                time_dim = f"base.{self._quote_alias(metric.window_order)}"
 
             if not time_dim:
                 raise ValueError(f"Cumulative metric {m} requires a time dimension for ordering")
@@ -6398,6 +6412,18 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
             if metric.window_expression:
                 order_col = time_dim
                 frame = metric.window_frame or "ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW"
+                # Parse the complete window and reject clause/statement escapes before
+                # interpolating a user-authored frame into the generated query.
+                parsed_window = sqlglot.parse(f"SELECT SUM(x) OVER (ORDER BY y {frame})", read=self.dialect)
+                if (
+                    len(parsed_window) != 1
+                    or not isinstance(parsed_window[0], exp.Select)
+                    or len(parsed_window[0].expressions) != 1
+                    or not isinstance(parsed_window[0].expressions[0], exp.Window)
+                    or parsed_window[0].expressions[0].args.get("spec") is None
+                    or any(value for key, value in parsed_window[0].args.items() if key != "expressions")
+                ):
+                    raise ValueError("Invalid window_frame")
                 window_value = f"{metric.window_expression} OVER ({partition_clause}ORDER BY {order_col} {frame})"
                 window_expr = f"{self._wrap_with_fill_nulls(window_value, metric)} AS {metric_alias}"
                 select_exprs.append(window_expr)

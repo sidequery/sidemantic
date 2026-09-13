@@ -382,12 +382,6 @@ fn decode_metric(value: Value, path: &str, owner: Option<&str>) -> Result<Metric
     if raw.get("agg") == Some(&json!("approx_count_distinct")) {
         return Err(unsupported("metric.approx_count_distinct"));
     }
-    // These change aggregation grain or temporal semantics and are not promoted yet.
-    for field in ["window_expression", "window_frame", "window_order"] {
-        if raw.get(field).is_some_and(|value| !neutral(value)) {
-            return Err(unsupported(format!("metric.{field}")));
-        }
-    }
     if let Some(fill) = raw.get("fill_nulls_with").filter(|value| !value.is_null()) {
         if !fill.is_number() && !fill.is_string() {
             return Err(invalid(path, "fill_nulls_with must be a number or string"));

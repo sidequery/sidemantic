@@ -1418,6 +1418,7 @@ impl<'a> SqlGenerator<'a> {
             .map(|expression| {
                 self.metric_refs_from_window_expression(expression, &metric_ref.model)
             })
+            .transpose()?
             .unwrap_or_default();
         let mut exprs: Vec<&str> = [
             metric.sql.as_deref(),
@@ -2311,7 +2312,7 @@ impl<'a> SqlGenerator<'a> {
                     cumulative_metrics.push(metric_ref.clone());
                     if let Some(window_expr) = metric.window_expression.as_ref() {
                         for base_ref in
-                            self.metric_refs_from_window_expression(window_expr, &metric_ref.model)
+                            self.metric_refs_from_window_expression(window_expr, &metric_ref.model)?
                         {
                             if seen_metrics.insert(base_ref.clone()) {
                                 base_metrics.push(base_ref);
@@ -2494,20 +2495,42 @@ impl<'a> SqlGenerator<'a> {
             let metric = self.metric_for_ref(metric_ref)?;
 
             let (order_col, _) = if let Some(window_order) = metric.window_order.as_ref() {
-                (format!("base.{window_order}"), None)
+                if !dimension_refs
+                    .iter()
+                    .any(|dimension| &dimension.alias == window_order)
+                    && !base_metrics
+                        .iter()
+                        .any(|reference| self.metric_alias_from_ref(reference) == *window_order)
+                {
+                    return Err(SidemanticError::Validation(
+                        "window_order must name a selected period output column".into(),
+                    ));
+                }
+                (
+                    format!("base.{}", self.quote_identifier(window_order)),
+                    None,
+                )
             } else {
                 self.find_time_order_column(dimension_refs, Some(&metric_ref.model))?
             };
 
             if let Some(window_expr) = metric.window_expression.as_ref() {
+                let partitions = self.temporal_partition_columns(dimension_refs, &order_col);
+                let partition = if partitions.is_empty() {
+                    String::new()
+                } else {
+                    format!("PARTITION BY {} ", partitions.join(", "))
+                };
                 let frame = metric
                     .window_frame
                     .as_deref()
                     .unwrap_or("ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW");
-                select_exprs.push(format!(
-                    "{window_expr} OVER (ORDER BY {order_col} {frame}) AS {}",
+                let expression = format!(
+                    "{window_expr} OVER ({partition}ORDER BY {order_col} {frame}) AS {}",
                     metric_ref.alias
-                ));
+                );
+                select_exprs.push(expression.clone());
+                cumulative_selects.push((expression, metric_ref.alias.clone()));
                 continue;
             }
 
@@ -2709,22 +2732,35 @@ impl<'a> SqlGenerator<'a> {
         Ok(sql.trim_end().to_string())
     }
 
-    fn metric_refs_from_window_expression(&self, expr: &str, default_model: &str) -> Vec<String> {
-        let base_re =
-            regex::Regex::new(r"\bbase\.([A-Za-z_][A-Za-z0-9_]*)\b").expect("valid base ref regex");
-        let mut refs = Vec::new();
-        let mut seen = HashSet::new();
-        for cap in base_re.captures_iter(expr) {
-            let Some(metric_match) = cap.get(1) else {
-                continue;
-            };
-            let metric_name = metric_match.as_str();
-            let qualified = self.metric_ref_for_inner_query(metric_name, default_model);
-            if seen.insert(qualified.clone()) {
-                refs.push(qualified);
+    fn metric_refs_from_window_expression(
+        &self,
+        expr: &str,
+        default_model: &str,
+    ) -> Result<Vec<String>> {
+        if !self.graph.has_strict_metric_scope() {
+            let pattern = regex::Regex::new(r"\bbase\.([A-Za-z_][A-Za-z0-9_]*)\b")
+                .expect("valid legacy base output reference pattern");
+            let mut references = Vec::new();
+            for captures in pattern.captures_iter(expr) {
+                let reference = self.metric_ref_for_inner_query(&captures[1], default_model);
+                if !references.contains(&reference) {
+                    references.push(reference);
+                }
             }
+            return Ok(references);
         }
-        refs
+        let name = temporal::window_output_reference(expr)?;
+        let reference = self.metric_ref_for_inner_query(&name, default_model);
+        // Resolve against declared metrics, not similarly named physical columns.
+        if self
+            .resolve_metric_reference_location(&reference, default_model)?
+            .is_none()
+        {
+            return Err(SidemanticError::Validation(format!(
+                "Unknown period output metric '{name}'"
+            )));
+        }
+        Ok(vec![reference])
     }
 
     fn metric_ref_for_inner_query(&self, reference: &str, default_model: &str) -> String {

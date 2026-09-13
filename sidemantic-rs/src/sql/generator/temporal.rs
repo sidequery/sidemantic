@@ -10,6 +10,13 @@ fn unsupported(feature: &str) -> SidemanticError {
 }
 
 pub(crate) fn validate_metric(metric: &Metric) -> Result<()> {
+    if metric.r#type != MetricType::Cumulative
+        && (metric.window_expression.is_some()
+            || metric.window_frame.is_some()
+            || metric.window_order.is_some())
+    {
+        return Err(unsupported("window_fields_without_cumulative"));
+    }
     if metric.r#type == MetricType::Cumulative {
         if !matches!(
             metric.agg,
@@ -17,11 +24,13 @@ pub(crate) fn validate_metric(metric: &Metric) -> Result<()> {
         ) {
             return Err(unsupported("cumulative_aggregation"));
         }
-        if metric.window_expression.is_some()
-            || metric.window_frame.is_some()
-            || metric.window_order.is_some()
-        {
-            return Err(unsupported("cumulative_raw_window"));
+        if let Some(expression) = &metric.window_expression {
+            window_output_reference(expression)?;
+            if let Some(frame) = &metric.window_frame {
+                validate_output_frame(frame)?;
+            }
+        } else if metric.window_frame.is_some() {
+            return Err(unsupported("window_frame_without_expression"));
         }
         if let Some(window) = &metric.window {
             period_interval(window)?;
@@ -34,6 +43,33 @@ pub(crate) fn validate_metric(metric: &Metric) -> Result<()> {
         period_interval(offset)?;
     }
     Ok(())
+}
+
+/// The promoted contract consumes one grouped output, never a physical row column.
+pub(super) fn window_output_reference(expression: &str) -> Result<String> {
+    let pattern = regex::Regex::new(
+        r#"(?i)^\s*(?:SUM|AVG|MIN|MAX|COUNT)\s*\(\s*base\.(?:([A-Za-z_][A-Za-z0-9_]*)|"([A-Za-z_][A-Za-z0-9_]*)")\s*\)\s*$"#,
+    ).expect("valid period output expression pattern");
+    let captures = pattern
+        .captures(expression)
+        .ok_or_else(|| unsupported("window_expression"))?;
+    Ok(captures
+        .get(1)
+        .or_else(|| captures.get(2))
+        .unwrap()
+        .as_str()
+        .replace("\"\"", "\""))
+}
+
+fn validate_output_frame(frame: &str) -> Result<()> {
+    let pattern = regex::Regex::new(
+        r"(?i)^\s*(?:ROWS\s+BETWEEN\s+(?:UNBOUNDED|[0-9]+)\s+PRECEDING|RANGE\s+BETWEEN\s+(?:UNBOUNDED|INTERVAL\s+(?:'[0-9]+\s+(?:DAY|WEEK|MONTH|YEAR)S?'|[0-9]+\s+(?:DAY|WEEK|MONTH|YEAR)S?))\s+PRECEDING)\s+AND\s+CURRENT\s+ROW\s*$",
+    ).expect("valid period output frame pattern");
+    if pattern.is_match(frame) {
+        Ok(())
+    } else {
+        Err(unsupported("window_frame"))
+    }
 }
 
 fn period_interval(value: &str) -> Result<(u32, String)> {
@@ -324,7 +360,7 @@ mod tests {
     }
 
     #[test]
-    fn cumulative_ambiguous_aggregations_and_raw_frames_are_explicitly_unsupported() {
+    fn cumulative_ambiguous_aggregations_are_explicitly_unsupported() {
         for aggregation in [Aggregation::Count, Aggregation::CountDistinct] {
             let mut metric = Metric::cumulative("running", "sales.revenue");
             metric.agg = Some(aggregation);
@@ -335,9 +371,28 @@ mod tests {
         }
         let mut metric = Metric::cumulative("running", "sales.revenue");
         metric.window_expression = Some("SUM(base.revenue)".into());
-        assert!(matches!(
-            validate_metric(&metric),
-            Err(SidemanticError::UnsupportedSemanticFeatures { .. })
-        ));
+        assert!(validate_metric(&metric).is_ok());
+        assert_eq!(
+            window_output_reference(r#"AVG(base."daily_revenue")"#).unwrap(),
+            "daily_revenue"
+        );
+        for expression in [
+            "SUM(amount)",
+            "SUM(base.amount) + 1",
+            "SUM(base.amount); SELECT 1",
+        ] {
+            metric.window_expression = Some(expression.into());
+            assert!(validate_metric(&metric).is_err());
+        }
+        metric.window_expression = Some("SUM(base.revenue)".into());
+        for frame in [
+            "ROWS BETWEEN 1 PRECEDING AND CURRENT ROW",
+            "RANGE BETWEEN INTERVAL 2 DAY PRECEDING AND CURRENT ROW",
+        ] {
+            metric.window_frame = Some(frame.into());
+            assert!(validate_metric(&metric).is_ok());
+        }
+        metric.window_frame = Some("ROWS BETWEEN -1 PRECEDING AND CURRENT ROW".into());
+        assert!(validate_metric(&metric).is_err());
     }
 }

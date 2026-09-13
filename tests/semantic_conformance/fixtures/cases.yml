@@ -202,4 +202,3 @@
   query: {metrics: [collisions.filtered_revenue]}
   columns: [filtered_revenue]
   rows: [[2]]
-  rust_unsupported: [metric.complete_filters]

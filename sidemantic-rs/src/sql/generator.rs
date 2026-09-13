@@ -342,7 +342,7 @@ impl<'a> SqlGenerator<'a> {
                     &metric.filters,
                     &model_name,
                     &self.model_alias(&model_name),
-                );
+                )?;
                 raw_expr = format!("CASE WHEN {metric_filter} THEN {raw_expr} END");
             }
             raw_model_columns
@@ -3948,7 +3948,7 @@ impl<'a> SqlGenerator<'a> {
     // Admit row predicates whose entire syntax and referenced population are known.
     // In particular, aggregate/window functions and subqueries cannot slip through
     // an empty or incomplete set of regex-extracted column names.
-    fn preaggregation_filter_shape(expression: &Expression) -> bool {
+    pub(crate) fn preaggregation_filter_shape(expression: &Expression) -> bool {
         match expression {
             Expression::Column(column) => !column.join_mark,
             Expression::Literal(_) => true,
@@ -4483,18 +4483,50 @@ impl<'a> SqlGenerator<'a> {
         filters: &[String],
         model_name: &str,
         alias: &str,
-    ) -> String {
+    ) -> Result<String> {
+        // Walk the serialized AST because polyglot 0.1.15's visitor omits
+        // typed function children. Only column qualifiers change; literals do not.
+        fn normalize_columns(value: &mut serde_json::Value, qualifiers: &[&str]) {
+            match value {
+                serde_json::Value::Object(fields) => {
+                    if let Some(serde_json::Value::Object(column)) = fields.get_mut("column") {
+                        if column
+                            .get("table")
+                            .and_then(|table| table.get("name"))
+                            .and_then(serde_json::Value::as_str)
+                            .is_some_and(|owner| qualifiers.contains(&owner))
+                        {
+                            column.insert("table".into(), serde_json::Value::Null);
+                        }
+                    } else {
+                        for child in fields.values_mut() {
+                            normalize_columns(child, qualifiers);
+                        }
+                    }
+                }
+                serde_json::Value::Array(children) => {
+                    for child in children {
+                        normalize_columns(child, qualifiers);
+                    }
+                }
+                _ => {}
+            }
+        }
         let mut rendered = Vec::with_capacity(filters.len());
         for filter in filters {
-            let mut f = filter.clone();
-            f = f.replace("{model}.", "");
-            f = f.replace("{model}", alias);
-            f = f.replace(&format!("{model_name}."), "");
-            f = f.replace(&format!("{model_name}_cte."), "");
-            f = f.replace(&format!("{alias}."), "");
-            rendered.push(f);
+            let filter = filter.replace("{model}.", "").replace("{model}", alias);
+            let expression = parse_semantic_expression(&filter)?;
+            let mut value = serde_json::to_value(expression)
+                .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))?;
+            normalize_columns(
+                &mut value,
+                &[model_name, alias, &format!("{model_name}_cte")],
+            );
+            let expression: Expression = serde_json::from_value(value)
+                .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))?;
+            rendered.push(format!("({})", self.emit_expression(&expression)?));
         }
-        rendered.join(" AND ")
+        Ok(rendered.join(" AND "))
     }
 
     fn normalize_cte_source_expression(&self, expr: &str) -> String {

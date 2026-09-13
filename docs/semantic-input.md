@@ -35,7 +35,7 @@ exports: logical data types, declared temporal roles, and relationship edge
 identities. A model's `primary_key` is always either null or an ordered list of
 columns. Unknown uniqueness never becomes an implicit `id` column.
 
-Metric SQL is copied verbatim. `sql_is_complete` distinguishes a complete
+Metric SQL is copied verbatim into the source snapshot. `sql_is_complete` distinguishes a complete
 expression from aggregation shorthand. Source dialect metadata is preserved;
 unsupported expression contexts must be rejected rather than reinterpreted.
 
@@ -97,10 +97,24 @@ and non-null value count populations, and rejects unsupported states such as AVG
 custom SQL, partitioned builds and partial build ranges. Lambda freshness behavior
 remains explicitly unsupported by the versioned boundary.
 
+Filtered complete measures are supported when their SQL AST is exactly
+`SUM(column)`, `COUNT(column)`, `MIN(column)`, or `MAX(column)` over one local
+physical column. The source declaration remains unchanged; its executable copy
+uses the ordinary per-measure filtered aggregate path. Local qualified columns
+are normalized without changing string literals, and each filter is parenthesized
+before conjunction. Filters use physical values even when a semantic dimension
+shares the column name. Independent measures retain independent populations.
+
+This checked lowering accepts ordinary local comparisons, boolean combinations,
+null checks, ranges, and literal lists. Filtered complete `COUNT(*)`, constant or
+conditional aggregate inputs, aggregate combinations, distinct counts, windows,
+subqueries, foreign-model inputs or predicates, and unresolved templates remain
+explicitly unsupported. Unowned graph measures also remain unsupported on this path.
+
 Remaining capability gates include policy-bearing SQL outside the scoped
 `FROM metrics` subset, non-DuckDB policy output, many-to-many role paths, computed primary-key
 dimensions, genuinely duplicate child output aliases,
-complete-expression measure filters, temporal/null-fill combinations, raw cumulative windows,
+unsupported complete-expression filter shapes, temporal/null-fill combinations, raw cumulative windows,
 and unqualified conversion, retention, cohort, and non-additive metric shapes.
 Deserialization alone is not evidence of executable support.
 

@@ -1297,6 +1297,31 @@ pub fn rewrite_with_semantic_input_context(
     sql: &str,
     context_json: &str,
 ) -> Result<String> {
+    rewrite_semantic_input_diagnostics(input_json, sql, context_json).map(|report| report.sql)
+}
+
+#[derive(serde::Serialize)]
+struct RewriteDiagnostics {
+    sql: String,
+    warnings: Vec<String>,
+}
+
+/// Companion report for hosts that expose compiler warnings. The original
+/// String-returning SQL entrypoints remain unchanged for native/FFI callers.
+pub fn rewrite_with_semantic_input_context_diagnostics(
+    input_json: &str,
+    sql: &str,
+    context_json: &str,
+) -> Result<String> {
+    let report = rewrite_semantic_input_diagnostics(input_json, sql, context_json)?;
+    serde_json::to_string(&report).map_err(|error| invalid("rewrite.diagnostics", error))
+}
+
+fn rewrite_semantic_input_diagnostics(
+    input_json: &str,
+    sql: &str,
+    context_json: &str,
+) -> Result<RewriteDiagnostics> {
     with_semantic_stack(|| {
         let input = SemanticInput::decode_scoped(input_json, true)?;
         let context: RewriteContext = runtime_request(context_json, "rewrite.context")?;
@@ -1340,7 +1365,11 @@ pub fn rewrite_with_semantic_input_context(
             rewriter =
                 rewriter.with_query_preparer(&prepare, &policy_definitions, security_controls);
         }
-        rewriter.rewrite_with_output_dialect(sql, DialectType::DuckDB, output_dialect)
+        let sql = rewriter.rewrite_with_output_dialect(sql, DialectType::DuckDB, output_dialect)?;
+        Ok(RewriteDiagnostics {
+            sql,
+            warnings: rewriter.take_warnings(),
+        })
     })
 }
 

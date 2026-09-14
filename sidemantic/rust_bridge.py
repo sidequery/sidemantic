@@ -64,12 +64,20 @@ def _call_semantic_entrypoint(rust_module, name: str, *args):
     validation_errors = (
         (validation_type,) if isinstance(validation_type, type) and issubclass(validation_type, Exception) else ()
     )
+    yardstick_type = getattr(rust_module, "YardstickBindingError", None)
+    yardstick_errors = (
+        (yardstick_type,) if isinstance(yardstick_type, type) and issubclass(yardstick_type, Exception) else ()
+    )
     try:
         return entrypoint(*args)
     except security_errors as error:
         from sidemantic.core.semantic_layer import SecurityError
 
         raise SecurityError(str(error)) from error
+    except yardstick_errors as error:
+        from sidemantic.sql.query_rewriter import YardstickBindingError
+
+        raise YardstickBindingError(str(error)) from error
     except validation_errors as error:
         from sidemantic.validation import QueryValidationError
 
@@ -196,8 +204,10 @@ def rewrite_semantic_input(
     if sql_dialect == "postgres":
         sql = _postgres_query_sql(sql)
     module = rust_module if rust_module is not None else get_rust_module()
+    has_diagnostics = callable(getattr(module, "rewrite_with_semantic_input_context_diagnostics", None))
     context_required = (
-        output_dialect is not None
+        has_diagnostics
+        or output_dialect is not None
         or user_attributes is not None
         or enforce_visibility
         or any(model.security is not None or model.invariant_filters for model in graph.models.values())
@@ -205,7 +215,11 @@ def rewrite_semantic_input(
     args = [graph_to_semantic_json(graph, input_dialect=input_dialect), sql]
     entrypoint = "rewrite_with_semantic_input"
     if context_required:
-        entrypoint = "rewrite_with_semantic_input_context"
+        entrypoint = (
+            "rewrite_with_semantic_input_context_diagnostics"
+            if has_diagnostics
+            else "rewrite_with_semantic_input_context"
+        )
         args.append(
             json.dumps(
                 {
@@ -219,6 +233,25 @@ def rewrite_semantic_input(
     rewritten = _call_semantic_entrypoint(module, entrypoint, *args)
     if not isinstance(rewritten, str):
         raise TypeError("Rust rewriter returned a non-string SQL result")
+    if has_diagnostics:
+        import warnings
+
+        from sidemantic.sql.query_rewriter import YardstickWarning
+
+        try:
+            report = json.loads(rewritten)
+        except json.JSONDecodeError as error:
+            raise TypeError("Rust rewriter returned invalid diagnostics JSON") from error
+        if (
+            not isinstance(report, dict)
+            or not isinstance(report.get("sql"), str)
+            or not isinstance(report.get("warnings"), list)
+            or not all(isinstance(message, str) for message in report["warnings"])
+        ):
+            raise TypeError("Rust rewriter returned invalid diagnostics")
+        for message in report["warnings"]:
+            warnings.warn(message, YardstickWarning, stacklevel=2)
+        return report["sql"]
     return rewritten
 
 

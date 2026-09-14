@@ -182,6 +182,18 @@ class QueryRewriter:
         uses_yardstick = self.would_use_yardstick_rewrite(sql) or bool(
             re.search(r"\byardstick\s*\(", sql, re.IGNORECASE)
         )
+        if uses_yardstick and (
+            self.enforce_visibility
+            or any(model.security is not None or model.invariant_filters for model in self.graph.models.values())
+        ):
+            tokens = sqlglot.tokenize(sql, read=self.dialect)
+            if any(
+                token.token_type != TokenType.STRING
+                and token.text.upper() == "YARDSTICK"
+                and tokens[index + 1].token_type == TokenType.L_PAREN
+                for index, token in enumerate(tokens[:-1])
+            ):
+                raise ValueError("yardstick() is not supported while semantic security controls are active")
         if not uses_yardstick:
             try:
                 statements = [
@@ -266,14 +278,16 @@ class QueryRewriter:
         if rewritten is not None:
             if self.last_engine_selection["engine"] == "passthrough":
                 return self._passthrough_explanation(sql, reason=self.last_engine_selection["reason"])
+            yardstick = self.would_use_yardstick_rewrite(sql) or bool(
+                re.search(r"\byardstick\s*\(", sql, re.IGNORECASE)
+            )
+            chosen_plan = "yardstick_semantic_sql" if yardstick else "rust_semantic_rewriter"
             return RewriteExplanation(
                 input_sql=sql,
                 rewritten_sql=rewritten,
-                chosen_plan="rust_semantic_rewriter",
-                source_kind="rust",
-                candidate_plans=[
-                    CandidatePlan(name="rust_semantic_rewriter", valid=True, reason="Rust engine selected")
-                ],
+                chosen_plan=chosen_plan,
+                source_kind="yardstick" if yardstick else "rust",
+                candidate_plans=[CandidatePlan(name=chosen_plan, valid=True, reason="Rust engine selected")],
             )
         selection = self.last_engine_selection
         result = self._explain_python(sql, strict=strict, user_attributes=user_attributes)

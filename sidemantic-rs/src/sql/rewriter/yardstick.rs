@@ -4,8 +4,14 @@
 //! Only those extension tokens are normalized here. Every measure reference,
 //! modifier expression, query, and generated subquery uses Polyglot's AST.
 
-use super::*;
+use std::collections::{HashMap, HashSet};
+
+use super::{parse_sql_with_dialect, table_name_and_alias, QueryRewriter};
+use crate::core::MetricType;
+use crate::error::{Result, SidemanticError};
+use polyglot_sql::expressions::{GroupBy, Identifier, Select, Where};
 use polyglot_sql::tokens::{Token, TokenType, Tokenizer};
+use polyglot_sql::{generate as polyglot_generate, DialectType, Expression};
 use serde_json::Value;
 
 #[derive(Clone)]
@@ -103,6 +109,13 @@ impl Lowerer<'_, '_> {
         let statements = parse_sql_with_dialect(&format!("SELECT {sql}"), self.dialect)?;
         match statements.as_slice() {
             [Expression::Select(select)] if select.expressions.len() == 1 => {
+                let mut remainder = (**select).clone();
+                remainder.expressions.clear();
+                remainder.leading_comments.clear();
+                remainder.post_select_comments.clear();
+                if remainder != Select::new() {
+                    return Err(invalid(format!("Expected one Yardstick expression: {sql}")));
+                }
                 Ok(select.expressions[0].clone())
             }
             _ => Err(invalid(format!("Expected one Yardstick expression: {sql}"))),
@@ -248,7 +261,7 @@ impl Lowerer<'_, '_> {
             }
             Ok(node)
         })?;
-        self.sql(&decode(value)?)
+        self.sql(&decode(value)?).map(|sql| sql.to_lowercase())
     }
 
     fn resolve(
@@ -265,7 +278,7 @@ impl Lowerer<'_, '_> {
             .filter(|(model, alias)| {
                 qualifier
                     .as_ref()
-                    .is_none_or(|qualifier| qualifier == model || qualifier == alias)
+                    .is_none_or(|qualifier| qualifier == alias || (!implicit && qualifier == model))
                     && self.rewriter.graph.get_model(model).is_some_and(|model| {
                         (!implicit
                             || model
@@ -279,7 +292,10 @@ impl Lowerer<'_, '_> {
         match matches.as_slice() {
             [(model, alias)] => Ok(Some((model.clone(), alias.clone(), name))),
             [] => Ok(None),
-            _ => Err(invalid(format!("Ambiguous Yardstick measure '{name}'"))),
+            _ if implicit => Ok(None),
+            _ => Err(SidemanticError::YardstickBinding(format!(
+                "Ambiguous Yardstick measure '{name}'"
+            ))),
         }
     }
 
@@ -315,7 +331,18 @@ impl Lowerer<'_, '_> {
         for join in &mut select.joins {
             self.table_function(&mut join.this)?;
         }
-        let mut sources = self.rewriter.find_model_references(select.from.as_ref());
+        let mut sources = select
+            .from
+            .as_ref()
+            .map(|from| {
+                from.expressions
+                    .iter()
+                    .filter_map(table_name_and_alias)
+                    .filter(|(name, _)| self.rewriter.graph.get_model(name).is_some())
+                    .map(|(name, alias)| (name.clone(), alias.unwrap_or(name)))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
         for join in &select.joins {
             if let Some((name, alias)) = table_name_and_alias(&join.this) {
                 if self.rewriter.graph.get_model(&name).is_some() {
@@ -389,8 +416,8 @@ impl Lowerer<'_, '_> {
             return Ok(select);
         }
         if sources.is_empty() {
-            return Err(invalid(
-                "Yardstick query must reference a known semantic model in FROM/JOIN",
+            return Err(SidemanticError::YardstickBinding(
+                "Yardstick query must reference a known semantic model in FROM/JOIN".into(),
             ));
         }
         // Match transport_security: Yardstick's independent evaluation contexts
@@ -557,7 +584,7 @@ impl Lowerer<'_, '_> {
             let (model, alias, measure) = self
                 .resolve(&call.argument, &sources, false)?
                 .ok_or_else(|| {
-                    invalid(format!(
+                    SidemanticError::YardstickBinding(format!(
                         "Unknown Yardstick measure {}",
                         self.sql(&call.argument).unwrap_or_default()
                     ))
@@ -943,6 +970,17 @@ impl Lowerer<'_, '_> {
                 _ => return Err(invalid(format!("Unsupported AT modifier: {modifier}"))),
             }
         }
+        self.warn_dropped_filters(
+            model,
+            alias,
+            name,
+            call,
+            outer_where,
+            &active,
+            &where_predicates,
+            &set_predicates,
+            visible,
+        )?;
         let mut base = where_predicates;
         if visible {
             if let Some(predicate) = outer_where {
@@ -986,6 +1024,136 @@ impl Lowerer<'_, '_> {
         };
         visiting.remove(name);
         self.expression(&sql)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn warn_dropped_filters(
+        &self,
+        model: &crate::core::Model,
+        alias: &str,
+        name: &str,
+        call: &Call,
+        outer_where: Option<&Where>,
+        active: &[(String, String, String)],
+        where_predicates: &[String],
+        set_predicates: &std::collections::BTreeMap<String, String>,
+        visible: bool,
+    ) -> Result<()> {
+        let Some(outer_where) = outer_where else {
+            return Ok(());
+        };
+        if visible
+            || !call.modifiers.iter().any(|modifier| {
+                modifier
+                    .split_whitespace()
+                    .next()
+                    .is_some_and(|head| head.eq_ignore_ascii_case("ALL"))
+            })
+        {
+            return Ok(());
+        }
+        let mut source_names = model
+            .dimensions
+            .iter()
+            .map(|dimension| dimension.name.to_lowercase())
+            .collect::<HashSet<_>>();
+        for dimension in &model.dimensions {
+            let expression = self.expression(&dimension.sql_expr().replace("{model}", alias))?;
+            map_columns(&mut encode(expression)?, &mut |node| {
+                if let Some((_, name)) = reference(&node) {
+                    source_names.insert(name.to_lowercase());
+                }
+                Ok(node)
+            })?;
+        }
+        let source_columns = |expression: &Expression| -> Result<HashSet<String>> {
+            let mut columns = HashSet::new();
+            map_columns(&mut encode(expression)?, &mut |node| {
+                if let Some((table, name)) = reference(&node) {
+                    if source_names.contains(&name.to_lowercase())
+                        && table.as_ref().is_none_or(|table| {
+                            table.eq_ignore_ascii_case(alias)
+                                || table.eq_ignore_ascii_case(&model.name)
+                                || table.eq_ignore_ascii_case("_inner")
+                        })
+                    {
+                        columns.insert(name.to_lowercase());
+                    }
+                }
+                Ok(node)
+            })?;
+            Ok(columns)
+        };
+        let outer_columns = source_columns(&outer_where.this)?;
+        if outer_columns.is_empty() {
+            return Ok(());
+        }
+        let mut encoded = HashSet::new();
+        for (_, inner, _) in active {
+            let expression = self.expression(inner)?;
+            if reference(&expression).is_some() {
+                encoded.extend(source_columns(&expression)?);
+            }
+        }
+        for predicate in where_predicates {
+            encoded.extend(source_columns(&self.expression(predicate)?)?);
+        }
+        let mut outer_signatures = HashSet::new();
+        self.collect_signatures(&encode(&outer_where.this)?, &mut outer_signatures)?;
+        for predicate in set_predicates.values() {
+            let expression = self.expression(predicate)?;
+            let mut target = match expression {
+                Expression::NullSafeEq(eq) | Expression::Eq(eq) => eq.left,
+                Expression::In(in_expr) => in_expr.this,
+                _ => continue,
+            };
+            while let Expression::Paren(paren) = target {
+                target = paren.this;
+            }
+            if reference(&target).is_some()
+                || outer_signatures.contains(&self.signature(target.clone())?)
+            {
+                encoded.extend(source_columns(&target)?);
+            }
+        }
+        let mut dropped = outer_columns
+            .difference(&encoded)
+            .cloned()
+            .collect::<Vec<_>>();
+        dropped.sort();
+        if !dropped.is_empty() {
+            self.rewriter.warnings.borrow_mut().push(format!(
+                "AT (ALL ...) on AGGREGATE({name}) does not preserve outer WHERE filter(s) on ungrouped dimension(s): {}. Add the filter dimension(s) to SELECT/GROUP BY or use an explicit AT modifier that encodes the intended denominator.", dropped.join(", ")
+            ));
+        }
+        Ok(())
+    }
+
+    fn collect_signatures(&self, value: &Value, signatures: &mut HashSet<String>) -> Result<()> {
+        match value {
+            Value::Object(fields) => {
+                if fields.len() == 1
+                    && (fields.contains_key("select") || fields.contains_key("subquery"))
+                {
+                    return Ok(());
+                }
+                if fields.len() == 1 {
+                    if let Ok(expression) = decode::<Expression>(value.clone()) {
+                        signatures.insert(self.signature(expression)?);
+                    }
+                }
+                for child in fields.values() {
+                    self.collect_signatures(child, signatures)?;
+                }
+            }
+            Value::Array(children) => {
+                for child in children {
+                    self.collect_signatures(child, signatures)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
     }
 
     fn fixed_context(&self, expression: &Expression, fixed: &mut HashSet<String>) -> Result<()> {

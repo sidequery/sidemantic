@@ -25,6 +25,7 @@ pub struct QueryRewriter<'a> {
     policy_definitions: &'a str,
     rename_only: bool,
     security_controls: bool,
+    warnings: std::cell::RefCell<Vec<String>>,
 }
 
 impl<'a> QueryRewriter<'a> {
@@ -35,7 +36,12 @@ impl<'a> QueryRewriter<'a> {
             policy_definitions: "",
             rename_only: false,
             security_controls: false,
+            warnings: std::cell::RefCell::new(Vec::new()),
         }
+    }
+
+    pub(crate) fn take_warnings(&self) -> Vec<String> {
+        self.warnings.take()
     }
 
     /// Apply request policies to each semantic leaf before retaining its

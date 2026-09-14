@@ -74,6 +74,7 @@ impl QueryRewriter<'_> {
             policy_definitions: &reserved,
             rename_only: true,
             security_controls: false,
+            warnings: std::cell::RefCell::new(Vec::new()),
         };
         rewriter.rewrite_policy_statement(statement)
     }

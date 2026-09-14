@@ -108,10 +108,12 @@ pyo3::create_exception!(
 );
 pyo3::create_exception!(sidemantic_rs, SecurityError, PyRuntimeError);
 pyo3::create_exception!(sidemantic_rs, QueryValidationError, PyValueError);
+pyo3::create_exception!(sidemantic_rs, YardstickBindingError, PyValueError);
 
 fn semantic_input_error(py: Python<'_>, error: SidemanticError) -> PyErr {
     match error {
         SidemanticError::Security(message) => SecurityError::new_err(message),
+        SidemanticError::YardstickBinding(message) => YardstickBindingError::new_err(message),
         SidemanticError::UnsupportedSemanticFeatures { capabilities } => {
             let error = UnsupportedSemanticFeaturesError::new_err(format!(
                 "Unsupported semantic features: {}",
@@ -165,6 +167,21 @@ fn rewrite_with_semantic_input_context(
 ) -> PyResult<String> {
     crate::semantic_input::rewrite_with_semantic_input_context(input_json, sql, context_json)
         .map_err(|error| semantic_input_error(py, error))
+}
+
+#[pyfunction]
+fn rewrite_with_semantic_input_context_diagnostics(
+    py: Python<'_>,
+    input_json: &str,
+    sql: &str,
+    context_json: &str,
+) -> PyResult<String> {
+    crate::semantic_input::rewrite_with_semantic_input_context_diagnostics(
+        input_json,
+        sql,
+        context_json,
+    )
+    .map_err(|error| semantic_input_error(py, error))
 }
 
 fn registry_contextvar(py: Python<'_>) -> PyResult<&Py<PyAny>> {
@@ -1467,6 +1484,10 @@ fn ossie_select_scope(
 fn sidemantic_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("SecurityError", m.py().get_type::<SecurityError>())?;
     m.add(
+        "YardstickBindingError",
+        m.py().get_type::<YardstickBindingError>(),
+    )?;
+    m.add(
         "QueryValidationError",
         m.py().get_type::<QueryValidationError>(),
     )?;
@@ -1478,6 +1499,10 @@ fn sidemantic_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(validate_with_semantic_input, m)?)?;
     m.add_function(wrap_pyfunction!(rewrite_with_semantic_input, m)?)?;
     m.add_function(wrap_pyfunction!(rewrite_with_semantic_input_context, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        rewrite_with_semantic_input_context_diagnostics,
+        m
+    )?)?;
     m.add_function(wrap_pyfunction!(rewrite_with_yaml, m)?)?;
     m.add_function(wrap_pyfunction!(compile_with_yaml, m)?)?;
     m.add_function(wrap_pyfunction!(load_graph_with_yaml, m)?)?;

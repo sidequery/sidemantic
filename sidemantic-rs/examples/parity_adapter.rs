@@ -732,7 +732,9 @@ fn postgres_type_for_dimension(
 
 fn postgres_type_for_metric(aggregation: Option<&Aggregation>) -> &'static str {
     match aggregation {
-        Some(Aggregation::Count | Aggregation::CountDistinct) => "BIGINT",
+        Some(
+            Aggregation::Count | Aggregation::CountDistinct | Aggregation::ApproxCountDistinct,
+        ) => "BIGINT",
         _ => "NUMERIC",
     }
 }
@@ -742,6 +744,7 @@ fn metric_aggregation_name(aggregation: Option<&Aggregation>) -> &'static str {
         Some(Aggregation::Sum) => "sum",
         Some(Aggregation::Count) => "count",
         Some(Aggregation::CountDistinct) => "count_distinct",
+        Some(Aggregation::ApproxCountDistinct) => "approx_count_distinct",
         Some(Aggregation::Avg) => "avg",
         Some(Aggregation::Min) => "min",
         Some(Aggregation::Max) => "max",
@@ -782,4 +785,39 @@ fn main() {
         .unwrap_or_else(|error| Response::Error { error });
 
     println!("{}", serde_json::to_string(&response).unwrap());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn catalog_preserves_approximate_count_metadata() {
+        let metric: Metric = serde_json::from_value(json!({
+            "name": "users",
+            "agg": "approx_count_distinct",
+            "sql": "user_id"
+        }))
+        .unwrap();
+        let mut graph = SemanticGraph::new();
+        graph
+            .add_model(
+                Model::new("events", "id")
+                    .with_table("events")
+                    .with_metric(metric),
+            )
+            .unwrap();
+
+        let catalog = catalog_metadata(&graph, "analytics");
+        let column = catalog["columns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|column| column["column_name"] == "users")
+            .unwrap();
+        assert_eq!(column["aggregation"], "approx_count_distinct");
+        assert_eq!(column["data_type"], "BIGINT");
+        assert_eq!(column["numeric_precision"], 64);
+        assert_eq!(column["numeric_scale"], 0);
+    }
 }

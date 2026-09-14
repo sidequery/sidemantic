@@ -5,7 +5,7 @@
 //! give a different answer when a relationship multiplies rows.
 
 use super::*;
-use crate::core::{Aggregation, Metric};
+use crate::core::Metric;
 use crate::sql::SqlGenerator;
 use polyglot_sql::expressions::Column;
 
@@ -191,6 +191,7 @@ impl Bindings {
         })?;
         let normalized = transform_nodes(expression.clone(), &mut |node| {
             if matches!(node, Expression::Select(_) | Expression::Subquery(_)) {
+                self.validate_subquery_correlations(node.clone(), &HashSet::new())?;
                 return Ok(Some(node.clone()));
             }
             let Expression::Column(column) = node else {
@@ -226,9 +227,9 @@ impl Bindings {
                 break name;
             }
         };
-        let mut metric = Metric::new(&name);
-        metric.agg = Some(Aggregation::Expression);
-        metric.sql = Some(expression_sql(&normalized)?);
+        // A complete aggregate belongs in the grouped SELECT, never in the
+        // raw-row CTE beside primary keys and other nonaggregated columns.
+        let mut metric = Metric::derived(&name, expression_sql(&normalized)?);
         metric.sql_is_complete = true;
         model.metrics.push(metric);
         self.graph.replace_model(model)?;
@@ -238,6 +239,7 @@ impl Bindings {
     fn expression(&mut self, expression: Expression) -> Result<Expression> {
         transform_nodes(expression, &mut |node| {
             if matches!(node, Expression::Select(_) | Expression::Subquery(_)) {
+                self.validate_subquery_correlations(node.clone(), &HashSet::new())?;
                 return Ok(Some(node.clone()));
             }
             if aggregate_name(node).is_some() {
@@ -253,6 +255,7 @@ impl Bindings {
     fn filter(&self, expression: Expression) -> Result<String> {
         let expression = transform_nodes(expression, &mut |node| {
             if matches!(node, Expression::Select(_) | Expression::Subquery(_)) {
+                self.validate_subquery_correlations(node.clone(), &HashSet::new())?;
                 return Ok(Some(node.clone()));
             }
             let Expression::Column(column) = node else {
@@ -287,6 +290,121 @@ impl Bindings {
             Ok(Some(Expression::qualified_column(owner, field)))
         })?;
         expression_sql(&expression)
+    }
+
+    fn validate_subquery_correlations(
+        &self,
+        expression: Expression,
+        inherited_sources: &HashSet<String>,
+    ) -> Result<()> {
+        // The wrapper removes semantic source aliases. Reject references that
+        // would be left dangling, while allowing local aliases to shadow them.
+        let mut root = true;
+        let mut local_sources = inherited_sources.clone();
+        if let Expression::Select(select) = &expression {
+            for source in select
+                .from
+                .iter()
+                .flat_map(|from| &from.expressions)
+                .chain(select.joins.iter().map(|join| &join.this))
+            {
+                let name = match source {
+                    Expression::Table(table) => {
+                        Some(table.alias.as_ref().unwrap_or(&table.name).name.clone())
+                    }
+                    Expression::Alias(alias) => Some(alias.alias.name.clone()),
+                    Expression::Subquery(query) => {
+                        query.alias.as_ref().map(|name| name.name.clone())
+                    }
+                    _ => None,
+                };
+                if let Some(name) = name {
+                    local_sources.insert(name);
+                }
+            }
+        }
+        transform_nodes(expression, &mut |node| {
+            if root {
+                root = false;
+                return Ok(None);
+            }
+            if matches!(node, Expression::Select(_) | Expression::Subquery(_)) {
+                self.validate_subquery_correlations(node.clone(), &local_sources)?;
+                return Ok(Some(node.clone()));
+            }
+            if let Expression::Column(column) = node {
+                if let Some(table) = &column.table {
+                    if !local_sources.contains(&table.name)
+                        && resolve_model_ref(&table.name, &self.sources).is_some()
+                    {
+                        return Err(SidemanticError::Validation(format!(
+                            "Correlated subquery references semantic source '{}'; correlated semantic subqueries are not supported",
+                            table.name
+                        )));
+                    }
+                }
+            }
+            Ok(None)
+        })?;
+        Ok(())
+    }
+
+    fn validate_group_by(
+        &self,
+        group: &polyglot_sql::expressions::GroupBy,
+        projected_references: &HashMap<String, Identifier>,
+    ) -> Result<()> {
+        let dimensions: HashSet<_> = self.query.dimensions.iter().cloned().collect();
+        let mut names: HashMap<String, HashSet<String>> = HashMap::new();
+        for reference in &dimensions {
+            let (_, field) = reference.split_once('.').expect("dimension reference");
+            names
+                .entry(field.into())
+                .or_default()
+                .insert(reference.clone());
+            if let Some(alias) = projected_references.get(reference) {
+                names
+                    .entry(alias.name.clone())
+                    .or_default()
+                    .insert(reference.clone());
+            }
+        }
+        let mut grouped = HashSet::new();
+        if group.all.is_some() || group.totals {
+            return Err(SidemanticError::Validation(
+                "GROUP BY modifiers are not supported for semantic queries".into(),
+            ));
+        }
+        for expression in &group.expressions {
+            let Expression::Column(column) = expression else {
+                return Err(SidemanticError::Validation("GROUP BY is only supported when it repeats selected semantic dimensions exactly".into()));
+            };
+            let reference = if column.table.is_some() {
+                self.resolve(column)?
+            } else {
+                let matches = names.get(&column.name.name);
+                if matches.is_some_and(|matches| matches.len() > 1) {
+                    return Err(SidemanticError::Validation(format!(
+                        "GROUP BY field '{}' is ambiguous; use a qualified semantic field",
+                        column.name.name
+                    )));
+                }
+                matches
+                    .and_then(|matches| matches.iter().next())
+                    .cloned()
+                    .unwrap_or_default()
+            };
+            if !dimensions.contains(&reference) {
+                return Err(SidemanticError::Validation("GROUP BY is only supported when it repeats selected semantic dimensions exactly".into()));
+            }
+            grouped.insert(reference);
+        }
+        if grouped != dimensions {
+            return Err(SidemanticError::Validation(
+                "GROUP BY must include exactly the selected semantic dimensions".into(),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -385,6 +503,9 @@ impl QueryRewriter<'_> {
                 }
             }
             projections.push(expression);
+        }
+        if let Some(group) = &select.group_by {
+            bindings.validate_group_by(group, &projected_references)?;
         }
         if let Some(order) = &mut select.order_by {
             for item in &mut order.expressions {

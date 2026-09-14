@@ -142,7 +142,7 @@ impl SqlGenerator<'_> {
         }
         #[cfg(target_arch = "wasm32")]
         crate::wasm_sql_guard::check(&sql, self.dialect)?;
-        let Expression::Select(select) = polyglot_sql::parse_one(&sql, self.dialect)
+        let Expression::Select(select) = crate::semantic_input::dialects::parse(&sql, self.dialect)
             .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))?
         else {
             return Err(SidemanticError::UnsupportedSemanticFeatures {
@@ -195,8 +195,9 @@ impl SqlGenerator<'_> {
         );
         #[cfg(target_arch = "wasm32")]
         crate::wasm_sql_guard::check(&wrapper, self.dialect)?;
-        let Expression::Select(mut outer) = polyglot_sql::parse_one(&wrapper, self.dialect)
-            .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))?
+        let Expression::Select(mut outer) =
+            crate::semantic_input::dialects::parse(&wrapper, self.dialect)
+                .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))?
         else {
             unreachable!()
         };

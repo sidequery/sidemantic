@@ -146,14 +146,15 @@ def compile_semantic_input(
     rust_module=None,
 ) -> str:
     """Compile through the versioned graph contract; Rust owns SQL generation."""
-    if query_dialect not in {None, "duckdb", "postgres"}:
-        raise UnsupportedSemanticFeaturesError([f"query.input_dialect.{query_dialect}"])
     if query_dialect == "postgres":
         query = dict(query)
         query["filters"] = [_postgres_query_sql(filter_sql, clause="WHERE") for filter_sql in query.get("filters", [])]
         query["order_by"] = [
             _postgres_query_sql(order_sql, clause="ORDER BY") for order_sql in query.get("order_by", [])
         ]
+        query["query_dialect"] = "duckdb"
+    elif query_dialect is not None:
+        query = {**query, "query_dialect": query_dialect}
     module = rust_module if rust_module is not None else get_rust_module()
     sql = _call_semantic_entrypoint(
         module,
@@ -199,15 +200,15 @@ def rewrite_semantic_input(
     rust_module=None,
 ) -> str:
     """Rewrite SQL with caller context through the versioned graph contract."""
-    if sql_dialect not in {None, "duckdb", "postgres"}:
-        raise UnsupportedSemanticFeaturesError([f"query.input_dialect.{sql_dialect}"])
     if sql_dialect == "postgres":
         sql = _postgres_query_sql(sql)
+        sql_dialect = "duckdb"
     module = rust_module if rust_module is not None else get_rust_module()
     has_diagnostics = callable(getattr(module, "rewrite_with_semantic_input_context_diagnostics", None))
     context_required = (
         has_diagnostics
         or output_dialect is not None
+        or sql_dialect is not None
         or user_attributes is not None
         or enforce_visibility
         or any(model.security is not None or model.invariant_filters for model in graph.models.values())
@@ -226,6 +227,7 @@ def rewrite_semantic_input(
                     "user_attributes": user_attributes,
                     "enforce_visibility": enforce_visibility,
                     **({"output_dialect": output_dialect} if output_dialect is not None else {}),
+                    **({"sql_dialect": sql_dialect} if sql_dialect is not None else {}),
                 },
                 allow_nan=False,
             )

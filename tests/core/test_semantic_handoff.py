@@ -295,6 +295,24 @@ def test_postgres_structured_fragments_keep_input_dictionary_unchanged(source_gr
     assert query["filters"] == [r"""events."Region" = E'O\'Brien' """]
 
 
+def test_other_query_dialects_are_forwarded_without_python_translation(source_graph):
+    received = []
+
+    def compile_input(graph_json, query_json):
+        received.append(json.loads(query_json))
+        return "SELECT 1"
+
+    query = {"metrics": ["events.total"], "filters": ["`events`.`Region` = 'west'"]}
+    compile_semantic_input(
+        source_graph,
+        query,
+        query_dialect="bigquery",
+        rust_module=SimpleNamespace(compile_with_semantic_input=compile_input),
+    )
+    assert received == [{**query, "query_dialect": "bigquery"}]
+    assert "query_dialect" not in query
+
+
 @pytest.mark.parametrize(
     "field,fragment",
     [

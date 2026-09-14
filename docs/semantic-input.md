@@ -45,11 +45,15 @@ semantic fields cannot be silently discarded during projection.
 
 ## Executable boundary
 
-The first version accepts DuckDB input expressions and provides Rust compile,
-reference-validation, and semantic-SQL rewrite entrypoints. Structured query
-output dialect selection belongs to Rust SQL generation. Support for another
-output dialect is not evidence that its warehouse has passed live execution
-tests.
+The versioned boundary provides Rust compile, reference-validation, and
+semantic-SQL rewrite entrypoints. Declared input dialects are normalized through
+polyglot into DuckDB syntax before semantic binding; the source envelope remains
+unchanged. Structured query `query_dialect` and rewrite context `sql_dialect`
+can select request syntax independently of graph syntax and output dialect.
+Graph expression metadata prefers `ossie_target_dialect` when present, otherwise
+`ossie_expression_dialect`. Output dialect selection belongs to Rust SQL
+generation. Generated target SQL is not evidence that its warehouse has passed
+live execution tests.
 
 The structured compiler supports basic aggregations, filtered measures, declared
 keyed joins, complete aggregate expressions, and graph metric binding. It also
@@ -163,7 +167,7 @@ complete-expression path for `COUNT` and `COUNT_BIG`. TSQL filtered complete row
 counts are not qualified by this change.
 
 Remaining capability gates include policy-bearing SQL outside the scoped
-`FROM metrics` subset, policy output outside DuckDB/PostgreSQL, many-to-many paths without explicit keyed junctions or with custom join SQL,
+`FROM metrics` subset, many-to-many paths without explicit keyed junctions or with custom join SQL,
 unsupported computed-key query shapes, genuinely duplicate child output aliases,
 unsupported complete-expression filter shapes, temporal/null-fill combinations, cumulative windows outside the bounded subset,
 and unqualified conversion, cohort, and non-additive metric shapes. Retention
@@ -402,9 +406,9 @@ null-fill options, and other output dialects remain gated.
 The versioned bridge can generate PostgreSQL output for policy-bearing structured
 queries (`query.dialect = "postgres"`) and scoped semantic SQL rewrites
 (`rewrite` context `output_dialect = "postgres"`; Python bridge keyword
-`output_dialect="postgres"`). Input expressions and input semantic SQL remain
-DuckDB dialect. This does not enable PostgreSQL input expressions or change CLI
-engine defaults. Access checks, typed caller attributes, row filters, invariants,
+`output_dialect="postgres"`). Input expressions and semantic SQL can declare
+their source dialect independently. This does not change CLI engine defaults.
+Access checks, typed caller attributes, row filters, invariants,
 and opt-in visibility use the same policy preparation as DuckDB output.
 
 The Rust CI job executes both output paths against a PostgreSQL 16 service using
@@ -414,7 +418,9 @@ boolean and null attributes, access denial, and visibility. Local runs without
 `SIDEMANTIC_TEST_POSTGRES_DSN` skip this host test; a configured job fails if the
 service, driver, extension or expected rows are unavailable. PostgreSQL parity
 is not qualified until that execution job passes. Other policy output dialects
-remain typed unsupported requirements.
+use polyglot target generation. The conformance corpus checks DuckDB, PostgreSQL,
+BigQuery, Snowflake, MySQL, Spark and TSQL output through a test-only translation
+back to DuckDB; this does not qualify live warehouse execution.
 
 PostgreSQL policy predicates emit target SQL before structured CTE assembly.
 The rewrite path preserves its DuckDB intermediate and emits PostgreSQL only
@@ -430,8 +436,9 @@ request SQL and structured filter/order expressions are normalized explicitly
 to the compiler's input syntax. This conversion preserves quoted identifiers,
 escaped strings and resolved null ordering; it does not bind semantic references
 or rewrite graph definitions. Multiple statements and trailing scalar clauses
-are rejected. Explicit non-DuckDB graph-expression dialect metadata remains
-unsupported. The PostgreSQL CI corpus exercises `SemanticLayer.compile`,
+are rejected. Other declared request dialects pass to Rust for normalization,
+and graph-expression dialect metadata is normalized in an executable copy.
+The PostgreSQL CI corpus exercises `SemanticLayer.compile`,
 `query`, `sql`, and `QueryRewriter` with a real PostgreSQL adapter and Rust runtime.
 Named many-to-many relationships use a separate junction SQL instance for each
 role, even when roles share the same physical junction table. They require an

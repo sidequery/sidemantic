@@ -246,7 +246,7 @@ class QueryRewriter:
                 input_dialect="duckdb" if self.dialect == "postgres" else self.dialect,
                 user_attributes=user_attributes,
                 enforce_visibility=self.enforce_visibility,
-                **({"sql_dialect": "postgres", "output_dialect": "postgres"} if self.dialect == "postgres" else {}),
+                **({"sql_dialect": self.dialect, "output_dialect": self.dialect} if self.dialect != "duckdb" else {}),
             )
             self.last_engine_selection = {"engine": "rust", "reason": None}
             return rewritten

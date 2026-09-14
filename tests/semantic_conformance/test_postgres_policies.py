@@ -136,10 +136,13 @@ def test_postgres_visibility_is_enforced_only_when_requested(postgres, graph, mo
 
 
 @pytest.mark.parametrize("mode", ["compile", "rewrite"])
-def test_other_policy_output_dialects_remain_unsupported(postgres, graph, mode):
+def test_other_policy_output_dialects_preserve_population(postgres, graph, mode):
+    import sqlglot
+
     attributes = {"role": "analyst", "tenant": 1, "enabled": True, "subject": "alice"}
-    with pytest.raises(UnsupportedSemanticFeaturesError):
-        policy_sql(graph, mode, attributes, output="bigquery")
+    sql = policy_sql(graph, mode, attributes, output="bigquery")
+    executable = sqlglot.transpile(sql, read="bigquery", write="postgres")[0]
+    assert postgres.execute(executable).fetchall() == [(10,)]
 
 
 @pytest.mark.parametrize("mode", ["compile", "rewrite"])
@@ -221,20 +224,29 @@ def test_postgres_public_denial_does_not_fall_back(postgres, graph, mode):
     assert not layer.last_engine_selection or layer.last_engine_selection["engine"] != "python"
 
 
-def test_postgres_transport_does_not_relabel_declared_graph_dialect(postgres, graph):
+def test_postgres_transport_normalizes_declared_graph_dialect(postgres, graph):
     graph.models["secured"].metrics[0].metadata = {"ossie_target_dialect": "POSTGRESQL"}
     layer = SemanticLayer(connection=postgres, engine="rust", fallback=False, auto_register=False)
     layer.graph = graph
-    with pytest.raises(UnsupportedSemanticFeaturesError, match="input_dialect"):
-        layer.compile(
-            metrics=["secured.total"],
-            user_attributes={"role": "analyst", "tenant": 1, "enabled": True, "subject": "alice"},
-        )
+    sql = layer.compile(
+        metrics=["secured.total"],
+        user_attributes={"role": "analyst", "tenant": 1, "enabled": True, "subject": "alice"},
+    )
+    assert postgres.execute(sql).fetchall() == [(10,)]
+    assert graph.models["secured"].metrics[0].metadata["ossie_target_dialect"] == "POSTGRESQL"
 
 
-def test_explicit_postgres_graph_input_stays_unsupported(postgres, graph):
-    with pytest.raises(UnsupportedSemanticFeaturesError, match="input_dialect.postgres"):
-        compile_semantic_input(graph, {"metrics": ["secured.total"], "dialect": "postgres"}, input_dialect="postgres")
+def test_explicit_postgres_graph_input_preserves_policy_results(postgres, graph):
+    sql = compile_semantic_input(
+        graph,
+        {
+            "metrics": ["secured.total"],
+            "dialect": "postgres",
+            "user_attributes": {"role": "analyst", "tenant": 1, "enabled": True, "subject": "alice"},
+        },
+        input_dialect="postgres",
+    )
+    assert postgres.execute(sql).fetchall() == [(10,)]
 
 
 @pytest.mark.parametrize("mode", ["query", "sql"])

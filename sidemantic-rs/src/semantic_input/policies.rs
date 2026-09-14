@@ -20,15 +20,37 @@ use crate::sql::SemanticQuery;
 pub(crate) struct ModelPolicies {
     pub security: Option<SecurityPolicy>,
     pub invariant_filters: Vec<String>,
+    #[serde(skip)]
+    source_dialect: Option<DialectType>,
 }
 
 use crate::core::PreparedPolicies;
 
 /// Decode only policy declarations; the ordinary decoder still validates every
 /// other model field. Keep this map beside the graph, keyed by canonical model.
-pub(crate) fn decode(models: &[Value]) -> Result<HashMap<String, ModelPolicies>> {
+#[cfg(test)]
+fn decode(models: &[Value]) -> Result<HashMap<String, ModelPolicies>> {
+    decode_with_dialect(models, DialectType::DuckDB)
+}
+
+pub(crate) fn decode_with_dialect(
+    models: &[Value],
+    source: DialectType,
+) -> Result<HashMap<String, ModelPolicies>> {
     let mut policies = HashMap::new();
     for model in models {
+        let dialect_name = model
+            .get("metadata")
+            .and_then(|metadata| {
+                metadata
+                    .get("ossie_target_dialect")
+                    .or_else(|| metadata.get("ossie_expression_dialect"))
+            })
+            .and_then(Value::as_str);
+        let source_dialect = dialect_name
+            .map(super::dialects::parse_dialect)
+            .transpose()?
+            .unwrap_or(source);
         let name = model
             .get("name")
             .and_then(Value::as_str)
@@ -52,6 +74,7 @@ pub(crate) fn decode(models: &[Value]) -> Result<HashMap<String, ModelPolicies>>
             ModelPolicies {
                 security,
                 invariant_filters,
+                source_dialect: Some(source_dialect),
             },
         );
     }
@@ -167,14 +190,22 @@ fn prepare_with_dialects(
         };
         if let Some(security) = &policy.security {
             let rendered = security
-                .render_for_model(instance, user_attributes)
+                .render_for_model_with_dialect(
+                    instance,
+                    user_attributes,
+                    policy.source_dialect.unwrap_or(DialectType::DuckDB),
+                )
                 .map_err(|error| SidemanticError::Security(error.to_string()))?;
             if !rendered.is_empty() {
                 let qualified = rendered
                     .iter()
                     .map(|filter| {
                         source_predicate(
-                            &filter.replace("{model}", instance),
+                            &super::dialects::fragment(
+                                &filter.replace("{model}", instance),
+                                policy.source_dialect.unwrap_or(DialectType::DuckDB),
+                                super::dialects::Fragment::Scalar,
+                            )?,
                             instance,
                             model,
                             (output_dialect, emission_dialect),
@@ -190,7 +221,11 @@ fn prepare_with_dialects(
                 .iter()
                 .map(|filter| {
                     source_predicate(
-                        &filter.replace("{model}", instance),
+                        &super::dialects::fragment(
+                            &filter.replace("{model}", instance),
+                            policy.source_dialect.unwrap_or(DialectType::DuckDB),
+                            super::dialects::Fragment::Scalar,
+                        )?,
                         instance,
                         model,
                         (output_dialect, emission_dialect),
@@ -201,15 +236,6 @@ fn prepare_with_dialects(
                 .invariant_filters
                 .insert(instance.clone(), qualified);
         }
-    }
-    if !matches!(
-        output_dialect,
-        DialectType::DuckDB | DialectType::PostgreSQL
-    ) && prepared.model_names().next().is_some()
-    {
-        return Err(SidemanticError::UnsupportedSemanticFeatures {
-            capabilities: vec![format!("policy.output_dialect.{output_dialect}")],
-        });
     }
     Ok(prepared)
 }
@@ -661,8 +687,7 @@ fn source_predicate(
     prepare_target(&mut ast, output_dialect == DialectType::PostgreSQL)?;
     let expression: Expression = serde_json::from_value(ast)
         .map_err(|error| SidemanticError::SqlParse(error.to_string()))?;
-    polyglot_sql::generate(&expression, emission_dialect)
-        .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))
+    super::dialects::emit(expression, DialectType::DuckDB, emission_dialect)
 }
 
 fn qualify_predicate(predicate: &str, model: &str, canonical_model: &str) -> Result<String> {
@@ -800,7 +825,7 @@ mod tests {
     }
 
     #[test]
-    fn postgres_policy_output_preserves_predicates_and_other_dialects_stay_gated() {
+    fn policy_output_preserves_predicates_across_dialects() {
         let graph = graph();
         let policies = decode(&[json!({
             "name":"orders", "security":{"row_filters":["tenant = {{ user.tenant }}"]},
@@ -820,17 +845,23 @@ mod tests {
         .unwrap();
         assert!(prepared.row_filters["orders"][0].contains("tenant = 1"));
         assert!(prepared.invariant_filters["orders"][0].contains("deleted"));
-        assert!(matches!(
-            prepare(
+        for dialect in [
+            DialectType::BigQuery,
+            DialectType::Snowflake,
+            DialectType::MySQL,
+        ] {
+            let prepared = prepare(
                 &graph,
                 &policies,
                 &query,
                 attributes.as_object(),
                 false,
-                DialectType::BigQuery
-            ),
-            Err(SidemanticError::UnsupportedSemanticFeatures { .. })
-        ));
+                dialect,
+            )
+            .unwrap();
+            assert!(prepared.row_filters["orders"][0].contains("tenant = 1"));
+            assert!(prepared.invariant_filters["orders"][0].contains("deleted"));
+        }
     }
 
     #[test]

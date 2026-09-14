@@ -5158,7 +5158,7 @@ impl<'a> SqlGenerator<'a> {
     }
 
     fn emit_expression(&self, expression: &Expression) -> Result<String> {
-        polyglot_sql::generate(expression, self.dialect)
+        crate::semantic_input::dialects::emit(expression.clone(), SOURCE_DIALECT, self.dialect)
             .map(|sql| sql.trim_end().to_string())
             .map_err(|e| {
                 SidemanticError::SqlGeneration(format!(

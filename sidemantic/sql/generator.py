@@ -1116,7 +1116,7 @@ class SQLGenerator:
             # routes them into this model's CTE (scoping rows before joins/aggregation).
             rendered_filters: list[str] = []
             for filter_template in policy.row_filters:
-                rendered = render_row_filter(filter_template, user_attributes)
+                rendered = render_row_filter(filter_template, user_attributes, dialect=self.dialect)
                 try:
                     parsed = _parse_fragment(rendered, self.dialect)
                 except SqlglotError as exc:
@@ -4407,7 +4407,9 @@ class SQLGenerator:
             select_exprs.append(f"GROUPING({self._cte_ref(first_model_name, first_col_name)}) AS _is_total")
 
         # Build query using builder API
-        query = select(*select_exprs).from_(self._quote_identifier(self._cte_name(base_model_name)))
+        query = select(*select_exprs, dialect=self.dialect).from_(
+            self._quote_identifier(self._cte_name(base_model_name))
+        )
 
         # Add joins (supports multi-hop)
         query = self._add_join_paths_to_query(query, base_model_name, other_models, models_with_filters)

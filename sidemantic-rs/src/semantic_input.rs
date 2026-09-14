@@ -14,10 +14,13 @@ use crate::core::{
 };
 use crate::error::{Result, SidemanticError};
 use crate::runtime::{
-    interpolate_query_filters, validate_query_references, QueryValidationContext,
+    interpolate_query_filters_with_dialect, validate_query_references, QueryValidationContext,
 };
 use crate::sql::{QueryRewriter, SemanticQuery, SqlGenerator};
 mod calculations;
+mod dates;
+pub(crate) mod dialects;
+mod literals;
 mod policies;
 
 #[derive(Debug, Deserialize)]
@@ -52,6 +55,7 @@ pub struct SemanticInput {
     pub source: Value,
     validation_context: QueryValidationContext,
     policies: HashMap<String, policies::ModelPolicies>,
+    input_dialect: DialectType,
 }
 
 fn invalid(path: &str, message: impl std::fmt::Display) -> SidemanticError {
@@ -848,20 +852,20 @@ impl SemanticInput {
 
     fn decode_scoped(input: &str, query_scoped: bool) -> Result<Self> {
         let source: Value = serde_json::from_str(input).map_err(|error| invalid("input", error))?;
-        let envelope: Envelope = deserialize(source.clone(), "input")?;
+        let mut envelope: Envelope = deserialize(source.clone(), "input")?;
         if envelope.version != 1 {
             return Err(invalid("version", "supported semantic input version is 1"));
         }
-        if envelope.input_dialect != "duckdb" {
-            return Err(unsupported(format!(
-                "input_dialect.{}",
-                envelope.input_dialect
-            )));
-        }
+        let input_dialect = dialects::parse_dialect(&envelope.input_dialect)?;
+        let policies = policies::decode_with_dialect(&envelope.models, input_dialect)?;
+        dialects::normalize(&mut envelope, input_dialect)?;
         let unsupported_capabilities: Vec<String> = envelope
             .required_capabilities
             .into_iter()
             .filter(|capability| {
+                if let Some(name) = capability.strip_prefix("input_dialect.") {
+                    return dialects::parse_dialect(name).is_err();
+                }
                 if query_scoped
                     && matches!(
                         capability.as_str(),
@@ -912,7 +916,6 @@ impl SemanticInput {
             }
         }
         let _ = envelope.import_warnings; // Descriptive state remains in source.
-        let policies = policies::decode(&envelope.models)?;
         let mut graph = SemanticGraph::new();
         let mut models = Vec::new();
         for (index, model) in envelope.models.into_iter().enumerate() {
@@ -1075,6 +1078,7 @@ impl SemanticInput {
             source,
             validation_context: QueryValidationContext::from_top_level_metrics(&metrics),
             policies,
+            input_dialect,
         })
     }
 }
@@ -1113,6 +1117,7 @@ struct QueryInput {
     #[serde(default)]
     parameter_values: HashMap<String, serde_yaml::Value>,
     dialect: Option<String>,
+    query_dialect: Option<String>,
     user_attributes: Option<Map<String, Value>>,
     #[serde(default)]
     enforce_visibility: bool,
@@ -1120,6 +1125,31 @@ struct QueryInput {
 
 fn query_input(query: &str) -> Result<QueryInput> {
     runtime_request(query, "query")
+}
+
+fn prepare_query_input(mut query: QueryInput, input: &SemanticInput) -> Result<QueryInput> {
+    let dialect = query
+        .query_dialect
+        .as_deref()
+        .map(dialects::parse_dialect)
+        .transpose()?
+        .unwrap_or(input.input_dialect);
+    query.filters = interpolate_query_filters_with_dialect(
+        &input.graph,
+        query.filters,
+        &query.parameter_values,
+        dialect,
+    )
+    .map_err(|error| invalid("query.parameter_values", error))?
+    .iter()
+    .map(|sql| dialects::fragment(sql, dialect, dialects::Fragment::Scalar))
+    .collect::<Result<Vec<_>>>()?;
+    query.order_by = query
+        .order_by
+        .iter()
+        .map(|sql| dialects::fragment(sql, dialect, dialects::Fragment::Order))
+        .collect::<Result<Vec<_>>>()?;
+    Ok(query)
 }
 
 fn runtime_request<T: DeserializeOwned>(input: &str, path: &str) -> Result<T> {
@@ -1149,21 +1179,18 @@ pub fn compile_with_semantic_input(input_json: &str, query_json: &str) -> Result
 
 fn compile_semantic_input(input_json: &str, query_json: &str) -> Result<String> {
     let input = SemanticInput::decode_scoped(input_json, true)?;
-    let payload = query_input(query_json)?;
+    let payload = prepare_query_input(query_input(query_json)?, &input)?;
     let dialect = payload
         .dialect
         .as_deref()
         .unwrap_or("duckdb")
         .parse::<DialectType>()
         .map_err(|error| invalid("query.dialect", error))?;
-    let filters =
-        interpolate_query_filters(&input.graph, payload.filters, &payload.parameter_values)
-            .map_err(|error| invalid("query.parameter_values", error))?;
     let mut query = SemanticQuery {
         consumption_base_model: payload.consumption_base_model,
         metrics: payload.metrics,
         dimensions: payload.dimensions,
-        filters,
+        filters: payload.filters,
         segments: payload.segments,
         order_by: payload.order_by,
         aliases: payload.aliases,
@@ -1230,22 +1257,20 @@ fn validate_semantic_input(input_json: &str, query_json: &str) -> Result<Vec<Str
             || query.timezone.is_some()
             || query.with_totals)
     {
+        let query = prepare_query_input(query, &input)?;
         let dialect = query
             .dialect
             .as_deref()
             .unwrap_or("duckdb")
             .parse::<DialectType>()
             .map_err(|error| invalid("query.dialect", error))?;
-        let filters =
-            interpolate_query_filters(&input.graph, query.filters, &query.parameter_values)
-                .map_err(|error| invalid("query.parameter_values", error))?;
         // Reference validation checks the selected result contract without
         // authorizing a caller or preparing row policies.
         let semantic_query = SemanticQuery {
             consumption_base_model: query.consumption_base_model,
             metrics: query.metrics,
             dimensions: query.dimensions,
-            filters,
+            filters: query.filters,
             segments: query.segments,
             order_by: query.order_by,
             aliases: query.aliases,
@@ -1286,6 +1311,7 @@ pub fn rewrite_with_semantic_input(input_json: &str, sql: &str) -> Result<String
 #[serde(deny_unknown_fields)]
 struct RewriteContext {
     output_dialect: Option<String>,
+    sql_dialect: Option<String>,
     user_attributes: Option<Map<String, Value>>,
     #[serde(default)]
     enforce_visibility: bool,
@@ -1330,14 +1356,13 @@ fn rewrite_semantic_input_diagnostics(
             .unwrap_or("duckdb")
             .parse::<DialectType>()
             .map_err(|error| invalid("rewrite.context.output_dialect", error))?;
-        if !matches!(
-            output_dialect,
-            DialectType::DuckDB | DialectType::PostgreSQL
-        ) {
-            return Err(unsupported(format!(
-                "rewrite.output_dialect.{output_dialect}"
-            )));
-        }
+        let sql_dialect = context
+            .sql_dialect
+            .as_deref()
+            .map(dialects::parse_dialect)
+            .transpose()?
+            .unwrap_or(input.input_dialect);
+        let sql = dialects::query(sql, sql_dialect)?;
         let security_controls = context.enforce_visibility
             || input
                 .policies
@@ -1364,7 +1389,8 @@ fn rewrite_semantic_input_diagnostics(
             rewriter =
                 rewriter.with_query_preparer(&prepare, &policy_definitions, security_controls);
         }
-        let sql = rewriter.rewrite_with_output_dialect(sql, DialectType::DuckDB, output_dialect)?;
+        let sql =
+            rewriter.rewrite_with_output_dialect(&sql, DialectType::DuckDB, output_dialect)?;
         Ok(RewriteDiagnostics {
             sql,
             warnings: rewriter.take_warnings(),
@@ -1813,10 +1839,9 @@ mod tests {
         );
         source = input();
         source["input_dialect"] = json!("snowflake");
-        assert!(matches!(
-            SemanticInput::from_json(&source.to_string()),
-            Err(SidemanticError::UnsupportedSemanticFeatures { .. })
-        ));
+        assert!(SemanticInput::from_json(&source.to_string()).is_ok());
+        source["input_dialect"] = json!("unknown_vendor");
+        assert!(SemanticInput::from_json(&source.to_string()).is_err());
     }
 
     #[test]
@@ -1990,13 +2015,11 @@ mod tests {
     }
 
     #[test]
-    fn expression_metadata_cannot_override_input_context() {
+    fn expression_metadata_is_translated_without_mutating_source() {
         let mut source = input();
         source["models"][0]["metrics"][0]["metadata"] = json!({"ossie_target_dialect":"BIGQUERY"});
-        assert!(matches!(
-            SemanticInput::from_json(&source.to_string()),
-            Err(SidemanticError::UnsupportedSemanticFeatures { .. })
-        ));
+        let decoded = SemanticInput::from_json(&source.to_string()).unwrap();
+        assert_eq!(decoded.source, source);
         source["models"][0]["metrics"][0]["metadata"] =
             json!({"ossie_target_dialect":"DUCKDB", "ossie_expression_dialect":"BIGQUERY"});
         assert!(SemanticInput::from_json(&source.to_string()).is_ok());

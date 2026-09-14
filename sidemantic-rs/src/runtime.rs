@@ -928,6 +928,7 @@ fn interpolate_simple_filter(
     filter: &str,
     parameters_by_name: &HashMap<String, &Parameter>,
     parameter_values: &HashMap<String, serde_yaml::Value>,
+    dialect: DialectType,
 ) -> std::result::Result<String, String> {
     let pattern = Regex::new(r"\{\{\s*(\w+)\s*\}\}").expect("valid parameter regex");
     let mut interpolation_error: Option<String> = None;
@@ -955,7 +956,20 @@ fn interpolate_simple_filter(
             };
 
             let value = parameter_runtime_value(parameter, parameter_values);
-            match format_parameter_value(parameter, &value) {
+            let formatted = if dialect != DialectType::DuckDB
+                && matches!(
+                    parameter.parameter_type,
+                    ParameterType::String | ParameterType::Date
+                ) {
+                let literal = polyglot_sql::Expression::Literal(
+                    polyglot_sql::expressions::Literal::String(yaml_value_to_python_str(&value)),
+                );
+                crate::semantic_input::dialects::emit(literal, DialectType::DuckDB, dialect)
+                    .map_err(|error| error.to_string())
+            } else {
+                format_parameter_value(parameter, &value)
+            };
+            match formatted {
                 Ok(formatted) => Cow::Owned(formatted),
                 Err(err) => {
                     interpolation_error = Some(err);
@@ -982,18 +996,28 @@ fn interpolate_sql_with_parameters_impl(
     sql: &str,
     parameters_by_name: &HashMap<String, &Parameter>,
     parameter_values: &HashMap<String, serde_yaml::Value>,
+    dialect: DialectType,
 ) -> std::result::Result<String, String> {
     if is_sql_template(sql) && has_jinja_control_markers(sql) {
         let context = build_runtime_context(parameters_by_name, parameter_values);
         return render_template_with_context(sql, &context);
     }
-    interpolate_simple_filter(sql, parameters_by_name, parameter_values)
+    interpolate_simple_filter(sql, parameters_by_name, parameter_values, dialect)
 }
 
 pub fn interpolate_query_filters(
     graph: &SemanticGraph,
     filters: Vec<String>,
     parameter_values: &HashMap<String, serde_yaml::Value>,
+) -> std::result::Result<Vec<String>, String> {
+    interpolate_query_filters_with_dialect(graph, filters, parameter_values, DialectType::DuckDB)
+}
+
+pub(crate) fn interpolate_query_filters_with_dialect(
+    graph: &SemanticGraph,
+    filters: Vec<String>,
+    parameter_values: &HashMap<String, serde_yaml::Value>,
+    dialect: DialectType,
 ) -> std::result::Result<Vec<String>, String> {
     let parameters_by_name: HashMap<String, &Parameter> = graph
         .parameters()
@@ -1003,7 +1027,12 @@ pub fn interpolate_query_filters(
     filters
         .into_iter()
         .map(|filter| {
-            interpolate_sql_with_parameters_impl(&filter, &parameters_by_name, parameter_values)
+            interpolate_sql_with_parameters_impl(
+                &filter,
+                &parameters_by_name,
+                parameter_values,
+                dialect,
+            )
         })
         .collect()
 }
@@ -1043,7 +1072,7 @@ pub fn interpolate_sql_with_parameters_with_yaml(
         .map(|parameter| (parameter.name.clone(), parameter))
         .collect();
 
-    interpolate_sql_with_parameters_impl(sql, &parameters_by_name, &values)
+    interpolate_sql_with_parameters_impl(sql, &parameters_by_name, &values, DialectType::DuckDB)
         .map_err(SidemanticError::Validation)
 }
 

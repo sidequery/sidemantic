@@ -88,10 +88,11 @@ impl<'a> QueryRewriter<'a> {
         let mut rewritten_statements = Vec::new();
         for statement in statements {
             let rewritten = self.rewrite_statement(statement)?;
-            rewritten_statements.push(
-                polyglot_generate(&rewritten, output_dialect)
-                    .map_err(|e| SidemanticError::SqlGeneration(e.to_string()))?,
-            );
+            rewritten_statements.push(crate::semantic_input::dialects::emit(
+                rewritten,
+                input_dialect,
+                output_dialect,
+            )?);
         }
 
         Ok(rewritten_statements.join(";\n"))

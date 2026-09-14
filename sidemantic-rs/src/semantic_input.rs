@@ -568,12 +568,11 @@ fn decode_metric(
 
 fn decode_relationship(value: Value, path: &str) -> Result<Relationship> {
     let mut raw = object(value, path)?;
-    if raw.get("type") == Some(&json!("many_to_many")) {
-        if raw.get("through").is_none_or(Value::is_null)
-            && raw.get("foreign_key").is_none_or(Value::is_null)
-        {
-            return Err(unsupported("relationship.many_to_many.without_through"));
-        }
+    if raw.get("type") == Some(&json!("many_to_many"))
+        && raw.get("through").is_none_or(Value::is_null)
+        && raw.get("foreign_key").is_none_or(Value::is_null)
+    {
+        return Err(unsupported("relationship.many_to_many.without_through"));
     }
     for field in [
         "foreign_key",

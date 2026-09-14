@@ -89,10 +89,14 @@ pub(crate) fn materialization_sql(
         let aggregate = match measure.agg.as_ref() {
             Some(Aggregation::Sum | Aggregation::Avg) => "SUM",
             Some(Aggregation::Count) => "COUNT",
+            Some(Aggregation::CountDistinct)
+                if preagg.preagg_type == PreAggregationType::Rollup =>
+            {
+                "COUNT"
+            }
             Some(Aggregation::Min) => "MIN",
             Some(Aggregation::Max) => "MAX",
-            // Distinct counts and distribution statistics cannot be stored
-            // as blindly reaggregatable scalar values.
+            // Lambda and distribution states need mergeable state, not distinct scalars.
             _ => return Err(unsupported("measure_aggregation")),
         };
         let count_rows = measure.agg == Some(Aggregation::Count)
@@ -126,6 +130,9 @@ pub(crate) fn materialization_sql(
                 "CASE WHEN {} THEN {input} ELSE NULL END",
                 predicates.join(" AND ")
             );
+        }
+        if measure.agg == Some(Aggregation::CountDistinct) {
+            expression = format!("DISTINCT {expression}");
         }
         select_exprs.push(format!("{aggregate}({expression}) as {measure_name}_raw"));
     }
@@ -302,6 +309,29 @@ mod tests {
             DialectType::DuckDB
         )
         .is_err());
+    }
+
+    #[test]
+    fn distinct_materialization_filters_input_and_declines_lambda() {
+        let model: Model = serde_json::from_value(serde_json::json!({
+            "name":"orders", "table":"orders", "primary_key":"id", "metrics":[
+                {"name":"people", "agg":"count_distinct", "sql":"person", "filters":["paid"]}
+            ]
+        }))
+        .unwrap();
+        let mut preagg: PreAggregation = serde_json::from_value(serde_json::json!({
+            "name":"state", "measures":["people"]
+        }))
+        .unwrap();
+        let sql = materialization_sql(&model, &preagg, None).unwrap();
+        assert!(
+            sql.contains(
+                "COUNT(DISTINCT CASE WHEN (paid) THEN person ELSE NULL END) as people_raw"
+            ),
+            "{sql}"
+        );
+        preagg.preagg_type = PreAggregationType::Lambda;
+        assert!(materialization_sql(&model, &preagg, None).is_err());
     }
 
     #[test]

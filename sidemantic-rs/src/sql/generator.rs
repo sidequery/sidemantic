@@ -4029,6 +4029,14 @@ impl<'a> SqlGenerator<'a> {
         let Some(model) = self.graph.get_model(model_name) else {
             return Ok(None);
         };
+        // A remote grouping can merge multiple stored key groups.
+        if metric_refs.iter().any(|metric| {
+            model
+                .get_metric(&metric.name)
+                .is_some_and(|metric| metric.agg == Some(Aggregation::CountDistinct))
+        }) {
+            return Ok(None);
+        }
         let remote_names: HashSet<_> = dimension_refs
             .iter()
             .filter(|dimension| &dimension.model != model_name)
@@ -4439,6 +4447,51 @@ impl<'a> SqlGenerator<'a> {
         if !filter_columns.is_subset(&preagg_dims) {
             return false;
         }
+        if query_metrics.iter().any(|name| {
+            model
+                .get_metric(name)
+                .is_some_and(|metric| metric.agg == Some(Aggregation::CountDistinct))
+        }) {
+            // Distinct scalar states are valid only when every stored group
+            // survives unchanged. Filter-only dimensions cannot restore that grain.
+            let query_dims: HashSet<_> = dimension_refs
+                .iter()
+                .filter(|dimension| {
+                    preagg.time_dimension.as_deref() != Some(dimension.name.as_str())
+                })
+                .map(|dimension| dimension.name.clone())
+                .collect();
+            if preagg.preagg_type != crate::core::PreAggregationType::Rollup
+                || query_dims != preagg_dims
+            {
+                return false;
+            }
+            for dimension in dimension_refs {
+                let definition = model
+                    .get_dimension(&dimension.name)
+                    .expect("validated dimension");
+                let grain = dimension.granularity.as_deref().or_else(|| {
+                    (definition.r#type == crate::core::DimensionType::Time)
+                        .then_some(definition.granularity.as_deref())
+                        .flatten()
+                });
+                let stored = if preagg.time_dimension.as_deref() == Some(dimension.name.as_str()) {
+                    preagg.granularity.as_deref()
+                } else {
+                    None
+                };
+                if grain != stored {
+                    return false;
+                }
+            }
+            if preagg.time_dimension.as_ref().is_some_and(|time| {
+                !dimension_refs
+                    .iter()
+                    .any(|dimension| &dimension.name == time)
+            }) {
+                return false;
+            }
+        }
         query_metrics.iter().all(|name| {
             self.preaggregation_metric_expression(model, preagg, name, &mut HashSet::new())
                 .is_some()
@@ -4484,6 +4537,11 @@ impl<'a> SqlGenerator<'a> {
                     match metric.agg {
                         Some(Aggregation::Sum) => Some(format!("SUM({column})")),
                         Some(Aggregation::Count) => Some(format!("COALESCE(SUM({column}), 0)")),
+                        // Only direct distinct metrics are admitted; dependencies
+                        // inside derived/ratio expressions keep the raw planner.
+                        Some(Aggregation::CountDistinct) if visiting.len() == 1 => {
+                            Some(format!("COALESCE(MAX({column}), 0)"))
+                        }
                         Some(Aggregation::Min) => Some(format!("MIN({column})")),
                         Some(Aggregation::Max) => Some(format!("MAX({column})")),
                         Some(Aggregation::Avg) => {
@@ -6116,6 +6174,40 @@ mod tests {
             query.with_dimensions(vec!["orders.status".into(), "customers.name".into()]);
         let sql = generator.generate(&local_first).unwrap();
         assert!(!sql.contains("orders_preagg_daily"), "{sql}");
+    }
+
+    #[test]
+    fn distinct_rollup_requires_exact_projected_grain() {
+        let mut model = rollup_model();
+        model.metrics.push(
+            serde_json::from_value(serde_json::json!({
+                "name":"people", "agg":"count_distinct", "sql":"person"
+            }))
+            .unwrap(),
+        );
+        model.pre_aggregations[0].measures = Some(vec!["people".into()]);
+        let mut graph = SemanticGraph::new();
+        graph.add_model(model.clone()).unwrap();
+        let query = SemanticQuery::new()
+            .with_metrics(vec!["orders.people".into()])
+            .with_dimensions(vec!["orders.status".into(), "orders.created__day".into()])
+            .with_use_preaggregations(true);
+        let sql = SqlGenerator::new(&graph).generate(&query).unwrap();
+        assert!(sql.contains("used_preagg=true"), "{sql}");
+        for dimensions in [
+            vec!["orders.created__day".into()],
+            vec!["orders.status".into(), "orders.created__month".into()],
+        ] {
+            let sql = SqlGenerator::new(&graph)
+                .generate(&query.clone().with_dimensions(dimensions))
+                .unwrap();
+            assert!(!sql.contains("used_preagg=true"), "{sql}");
+        }
+        model.pre_aggregations[0].preagg_type = crate::core::PreAggregationType::Lambda;
+        let mut graph = SemanticGraph::new();
+        graph.add_model(model).unwrap();
+        let sql = SqlGenerator::new(&graph).generate(&query).unwrap();
+        assert!(!sql.contains("used_preagg=true"), "{sql}");
     }
 
     #[test]

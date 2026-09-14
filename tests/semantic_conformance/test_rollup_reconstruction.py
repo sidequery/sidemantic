@@ -471,3 +471,51 @@ def test_join_rollup_preserves_local_and_role_source_population(layer, anchor):
     assert columns == [column[0] for column in cursor.description]
     assert sorted(rows, key=str) == sorted(cursor.fetchall(), key=str)
     assert all("empty" not in row for row in rows)
+
+
+@pytest.mark.parametrize("mode", ["exact", "coarser-time", "omitted-dimension", "lambda"])
+@pytest.mark.parametrize("rust_build", [False, True], ids=["python-build", "rust-build"])
+def test_distinct_rollup_preserves_exact_grain_only(layer, mode, rust_build):
+    model = layer.graph.models["orders"]
+    model.metrics.append(Metric(name="people", agg="count_distinct", sql="customer_id"))
+    rollup = model.pre_aggregations[0]
+    rollup.dimensions = ["status"]
+    rollup.measures = ["people"]
+    layer.adapter.execute("update rollup_orders set customer_id = null where id = 6")
+    if mode == "lambda":
+        # Build ordinary batch state first; routing must still decline the lambda declaration.
+        build(layer, rust=rust_build)
+        rollup.type = "lambda"
+        rollup.build_range_end = "'2026-01-02 12:00:00'"
+        rollup.union_with_source_data = True
+    else:
+        build(layer, rust=rust_build)
+    dimensions = ["orders.status", "orders.created__day"]
+    if mode == "coarser-time":
+        dimensions = ["orders.status", "orders.created__month"]
+    elif mode == "omitted-dimension":
+        dimensions = ["orders.created__day"]
+    query = {"metrics": ["orders.people"], "dimensions": dimensions, "order_by": dimensions}
+    raw = layer.adapter.execute(layer.compile(**query, use_preaggregations=False))
+    expected = ([column[0] for column in raw.description], raw.fetchall())
+    routed = mode == "exact" or (mode == "lambda" and layer.engine == "python")
+    assert execute(layer, query, routed=routed) == expected
+    if mode == "exact":
+        assert [row[-1] for row in expected[1]] == [1, 2, 1, 0]
+    elif mode == "coarser-time":
+        assert [row[-1] for row in expected[1]] == [1, 2, 0]
+
+
+@pytest.mark.parametrize("empty", [False, True])
+def test_global_filtered_distinct_rollup_count_population(layer, empty):
+    model = layer.graph.models["orders"]
+    model.metrics.append(Metric(name="people", agg="count_distinct", sql="customer_id", filters=["status = 'paid'"]))
+    rollup = model.pre_aggregations[0]
+    rollup.dimensions = []
+    rollup.time_dimension = None
+    rollup.granularity = None
+    rollup.measures = ["people"]
+    if empty:
+        layer.adapter.execute("delete from rollup_orders")
+    build(layer)
+    assert execute(layer, {"metrics": ["orders.people"]}) == (["people"], [(0 if empty else 3,)])

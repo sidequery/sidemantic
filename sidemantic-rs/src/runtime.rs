@@ -7974,13 +7974,7 @@ models:
 
     #[test]
     fn test_materialization_rejects_unsafe_aggregate_states() {
-        for agg in [
-            "count_distinct",
-            "median",
-            "stddev",
-            "variance",
-            "expression",
-        ] {
+        for agg in ["median", "stddev", "variance", "expression"] {
             let yaml = format!(
                 r#"
 models:

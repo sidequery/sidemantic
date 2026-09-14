@@ -122,6 +122,9 @@ stored sum and a compatible count. Count compatibility checks the actual nullabl
 input and metric filters, not the count's name. COUNT(*) is a valid denominator
 only when the AVG input is provably non-null, such as COALESCE(amount, 0).
 An incompatible denominator falls back to the raw AVG in both engines.
+Native COUNT(DISTINCT input) rollups retain scalar state only at the exact stored
+dimensions and time grain. Omitted dimensions, coarser buckets, lambda freshness,
+join regrouping, and derived dependencies use raw planning for distinct counts.
 Derived and ratio metrics reconstruct their source-local aggregate dependencies;
 metric predicates become HAVING over those reconstructed states. Empty count
 populations return zero, while nullable sums and averages remain null.

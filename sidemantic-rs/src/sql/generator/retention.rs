@@ -119,9 +119,6 @@ impl SqlGenerator<'_> {
         if !query.dimensions.is_empty() || query.ungrouped || !query.table_calculations.is_empty() {
             return Err(unsupported("query_shape"));
         }
-        if self.dialect != DialectType::DuckDB {
-            return Err(unsupported("output_dialect"));
-        }
         let model = self.graph.get_model(&reference.model).ok_or_else(|| {
             SidemanticError::Validation(format!("Unknown retention source '{}'", reference.model))
         })?;
@@ -154,10 +151,17 @@ impl SqlGenerator<'_> {
         let timestamp_sql = self.retention_source_expression(model, timestamp.sql_expr(), false)?;
         let granularity = metric.retention_granularity.as_deref().unwrap_or("day");
         let periods = metric.periods.unwrap_or(28);
+        // Both operands are DATE values projected below. Preserve Python's
+        // explicit date-difference syntax and operand order for these targets.
+        let day_difference = match self.dialect {
+            DialectType::BigQuery => "DATE_DIFF(a.active_date, c.cohort_date, DAY)",
+            DialectType::Snowflake => "DATEDIFF('day', c.cohort_date, a.active_date)",
+            _ => "(a.active_date - c.cohort_date)",
+        };
         let (date_sql, difference, label) = match granularity {
             "day" => (
                 format!("CAST({timestamp_sql} AS DATE)"),
-                "a.active_date - c.cohort_date".to_string(),
+                day_difference.to_string(),
                 "days_since",
             ),
             "week" => (
@@ -165,7 +169,7 @@ impl SqlGenerator<'_> {
                     "CAST({} AS DATE)",
                     self.date_trunc_sql("week", &timestamp_sql)?
                 ),
-                "(a.active_date - c.cohort_date) / 7".to_string(),
+                format!("({day_difference}) / 7"),
                 "weeks_since",
             ),
             "month" => (
@@ -382,6 +386,35 @@ mod tests {
                 compile_with_semantic_input(&input.to_string(), &query().to_string()),
                 Err(SidemanticError::Validation(_))
             ));
+        }
+    }
+
+    #[test]
+    fn retention_compiles_calendar_periods_for_supported_output_dialects() {
+        for (dialect, dialect_type) in [
+            ("duckdb", DialectType::DuckDB),
+            ("postgres", DialectType::PostgreSQL),
+            ("bigquery", DialectType::BigQuery),
+            ("snowflake", DialectType::Snowflake),
+        ] {
+            for grain in ["day", "week", "month"] {
+                let mut input = input();
+                input["models"][0]["metrics"][0]["retention_granularity"] = json!(grain);
+                let mut query = query();
+                query["dialect"] = json!(dialect);
+                let sql =
+                    compile_with_semantic_input(&input.to_string(), &query.to_string()).unwrap();
+                polyglot_sql::parse_one(&sql, dialect_type).unwrap();
+                assert!(sql.contains(&format!("{grain}s_since")), "{sql}");
+                if grain != "month" {
+                    let difference = match dialect_type {
+                        DialectType::BigQuery => "DATE_DIFF(a.active_date, c.cohort_date, DAY)",
+                        DialectType::Snowflake => "DATEDIFF('day', c.cohort_date, a.active_date)",
+                        _ => "(a.active_date - c.cohort_date)",
+                    };
+                    assert!(sql.contains(difference), "{sql}");
+                }
+            }
         }
     }
 }

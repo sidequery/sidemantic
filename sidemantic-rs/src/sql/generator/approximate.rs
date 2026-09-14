@@ -54,49 +54,88 @@ impl SqlGenerator<'_> {
         &self,
         expression: Expression,
     ) -> Result<Expression> {
-        polyglot_sql::transform_map(expression, &|node| {
-            let mut aggregate = match node {
-                Expression::ApproxCountDistinct(aggregate)
-                | Expression::ApproxDistinct(aggregate) => aggregate,
-                other => return Ok(other),
-            };
-            aggregate.name = None;
-            // Approximate distinct ignores NULL inputs. Express FILTER as a
-            // nullable input before target lowering so function-name transforms
-            // cannot discard the predicate (notably ClickHouse's uniq mapping).
-            if let Some(predicate) = aggregate.filter.take() {
-                aggregate.this = Expression::Case(Box::new(polyglot_sql::expressions::Case {
-                    operand: None,
-                    whens: vec![(predicate, aggregate.this)],
-                    else_: None,
-                    comments: Vec::new(),
-                    inferred_type: None,
-                }));
+        fn lower(value: &mut serde_json::Value, generator: &SqlGenerator<'_>) -> Result<()> {
+            match value {
+                serde_json::Value::Object(fields) => {
+                    for child in fields.values_mut() {
+                        lower(child, generator)?;
+                    }
+                    if fields.len() == 1
+                        && (fields.contains_key("approx_count_distinct")
+                            || fields.contains_key("approx_distinct"))
+                    {
+                        let node: Expression = serde_json::from_value(value.clone())
+                            .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))?;
+                        let aggregate = match node {
+                            Expression::ApproxCountDistinct(aggregate)
+                            | Expression::ApproxDistinct(aggregate) => aggregate,
+                            _ => unreachable!("matched serialized approximate aggregate"),
+                        };
+                        *value = serde_json::to_value(
+                            generator.lower_approximate_aggregate(*aggregate)?,
+                        )
+                        .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))?;
+                    }
+                }
+                serde_json::Value::Array(values) => {
+                    for child in values {
+                        lower(child, generator)?;
+                    }
+                }
+                _ => {}
             }
-            let expression = match self.dialect {
-                DialectType::DuckDB
-                | DialectType::Snowflake
-                | DialectType::BigQuery
-                | DialectType::Spark
-                | DialectType::Databricks
-                | DialectType::Hive => Expression::ApproxCountDistinct(aggregate),
-                DialectType::ClickHouse => Expression::AggregateFunction(Box::new(
-                    polyglot_sql::expressions::AggregateFunction {
-                        name: "APPROX_COUNT_DISTINCT".into(),
-                        args: vec![aggregate.this],
-                        distinct: aggregate.distinct,
-                        filter: aggregate.filter,
-                        order_by: aggregate.order_by,
-                        limit: aggregate.limit,
-                        ignore_nulls: aggregate.ignore_nulls,
-                        inferred_type: aggregate.inferred_type,
-                    },
-                )),
-                _ => Expression::ApproxDistinct(aggregate),
-            };
-            polyglot_sql::Dialect::get(self.dialect).transform(expression)
-        })
-        .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))
+            Ok(())
+        }
+        // The pinned polyglot visitor skips some typed-function children. Walk
+        // complete serialized AST nodes so nesting cannot hide an aggregate.
+        let mut value = serde_json::to_value(expression)
+            .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))?;
+        lower(&mut value, self)?;
+        serde_json::from_value(value)
+            .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))
+    }
+
+    fn lower_approximate_aggregate(
+        &self,
+        mut aggregate: polyglot_sql::expressions::AggFunc,
+    ) -> Result<Expression> {
+        aggregate.name = None;
+        // Approximate distinct ignores NULL inputs. Express FILTER as a
+        // nullable input before target lowering so function-name transforms
+        // cannot discard the predicate (notably ClickHouse's uniq mapping).
+        if let Some(predicate) = aggregate.filter.take() {
+            aggregate.this = Expression::Case(Box::new(polyglot_sql::expressions::Case {
+                operand: None,
+                whens: vec![(predicate, aggregate.this)],
+                else_: None,
+                comments: Vec::new(),
+                inferred_type: None,
+            }));
+        }
+        let expression = match self.dialect {
+            DialectType::DuckDB
+            | DialectType::Snowflake
+            | DialectType::BigQuery
+            | DialectType::Spark
+            | DialectType::Databricks
+            | DialectType::Hive => Expression::ApproxCountDistinct(Box::new(aggregate)),
+            DialectType::ClickHouse => Expression::AggregateFunction(Box::new(
+                polyglot_sql::expressions::AggregateFunction {
+                    name: "APPROX_COUNT_DISTINCT".into(),
+                    args: vec![aggregate.this],
+                    distinct: aggregate.distinct,
+                    filter: aggregate.filter,
+                    order_by: aggregate.order_by,
+                    limit: aggregate.limit,
+                    ignore_nulls: aggregate.ignore_nulls,
+                    inferred_type: aggregate.inferred_type,
+                },
+            )),
+            _ => Expression::ApproxDistinct(Box::new(aggregate)),
+        };
+        polyglot_sql::Dialect::get(self.dialect)
+            .transform(expression)
+            .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))
     }
 
     // Resolve without requiring a graph calculation to have a single owner.
@@ -335,6 +374,44 @@ mod tests {
                 "{dialect}: {filtered}"
             );
             polyglot_sql::parse_one(&format!("SELECT {filtered}"), dialect).unwrap();
+        }
+    }
+
+    #[test]
+    fn typed_function_nesting_cannot_hide_approximate_aggregates() {
+        let graph = graph_with(json!({"name":"total", "agg":"sum", "sql":"amount"}));
+        for (dialect, name) in output_dialects() {
+            let generator = SqlGenerator::new(&graph).with_dialect(dialect);
+            // Construct the typed node explicitly: parser versions may retain
+            // some functions as generic nodes that the old visitor did handle.
+            let typed_round = Expression::Round(Box::new(polyglot_sql::expressions::RoundFunc {
+                this: parse_semantic_expression("COALESCE(APPROX_COUNT_DISTINCT(user_id), 0)")
+                    .unwrap(),
+                decimals: None,
+            }));
+            let rounded = generator.emit_expression(&typed_round).unwrap();
+            assert!(
+                rounded.to_uppercase().contains(name),
+                "{dialect}: {rounded}"
+            );
+            for source in [
+                "ROUND(COALESCE(APPROX_COUNT_DISTINCT(user_id), 0), 0)",
+                "GREATEST(APPROX_COUNT_DISTINCT(user_id), 0)",
+                "NULLIF(APPROX_COUNT_DISTINCT(user_id), 0)",
+                "ROUND(APPROX_COUNT_DISTINCT(user_id) OVER (PARTITION BY region), 0)",
+            ] {
+                let sql = generator
+                    .emit_expression(&parse_semantic_expression(source).unwrap())
+                    .unwrap();
+                assert!(sql.to_uppercase().contains(name), "{dialect}: {sql}");
+                if name != "APPROX_COUNT_DISTINCT" {
+                    assert!(
+                        !sql.to_uppercase().contains("APPROX_COUNT_DISTINCT"),
+                        "{dialect}: {sql}"
+                    );
+                }
+                polyglot_sql::parse_one(&format!("SELECT {sql}"), dialect).unwrap();
+            }
         }
     }
 

@@ -166,13 +166,18 @@ APPROXIMATE_DIALECTS = [
         "cumulative",
         "complete",
         "complete_filtered",
+        "nested_complete",
         "window",
     ],
 )
 def test_approximate_dialect_rendering_and_population_results(layer, dialect, function, shape):
     import sqlglot
 
-    if layer.engine == "python" and shape in {"complete", "complete_filtered"} and dialect == "redshift":
+    if (
+        layer.engine == "python"
+        and shape in {"complete", "complete_filtered", "nested_complete"}
+        and dialect == "redshift"
+    ):
         pytest.skip("Python reparses completed Redshift aggregates with its generic SQL parser")
     model = layer.graph.get_model("events")
     metric = "events.users"
@@ -210,8 +215,10 @@ def test_approximate_dialect_rendering_and_population_results(layer, dialect, fu
             model.metrics.append(Metric(name="implicit", agg="approx_count_distinct"))
             metric = "events.implicit"
             expected_sql = "select count(*) from approx_events"
-    elif shape in {"complete", "complete_filtered"}:
+    elif shape in {"complete", "complete_filtered", "nested_complete"}:
         expression = "APPROX_COUNT_DISTINCT(user_id)"
+        if shape == "nested_complete":
+            expression = "ROUND(COALESCE(APPROX_COUNT_DISTINCT(user_id), 0), 0)"
         if shape == "complete_filtered":
             expression += " FILTER (WHERE paid)"
             expected_sql = "select approx_count_distinct(case when paid then user_id end) from approx_events group by category order by category"

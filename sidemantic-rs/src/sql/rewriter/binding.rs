@@ -219,7 +219,8 @@ impl Bindings {
             .expect("validated base model")
             .clone();
         let name = loop {
-            let name = format!("__sd_adhoc_metric_{}", self.next_metric);
+            // Double underscores delimit time granularities in field references.
+            let name = format!("sd_adhoc_metric_{}", self.next_metric);
             self.next_metric += 1;
             if model.get_metric(&name).is_none() && model.get_dimension(&name).is_none() {
                 break name;

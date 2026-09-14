@@ -3,7 +3,7 @@
 import pytest
 import yaml
 
-from sidemantic import Parameter
+from sidemantic import Metric, Model, Parameter
 from tests.rust_layer_adapter import RustSemanticLayerAdapter
 
 
@@ -50,3 +50,15 @@ def test_post_process_requires_inner_placeholder(layer):
     layer, _ = layer
     with pytest.raises(ValueError, match="must contain a"):
         layer.compile(metrics=["orders.total"], post_process="select 99")
+
+
+def test_unowned_graph_metric_keeps_its_registration_scope(layer):
+    layer, requests = layer
+    layer.add_model(Model(name="orders", table="orders", primary_key="id"))
+    layer.add_model(Model(name="customers", table="customers", primary_key="id"))
+    layer.add_metric(Metric(name="total_orders", type="derived", sql="COUNT(*)"))
+    document = yaml.safe_load(requests[-1]["models_yaml"])
+    assert [metric["name"] for metric in document["graph_metrics"]] == ["total_orders"]
+    assert "metrics" not in document
+    assert all(not model["metrics"] for model in document["models"])
+    assert layer.graph.metrics["total_orders"].sql == "COUNT(*)"

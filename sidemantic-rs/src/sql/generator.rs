@@ -826,11 +826,8 @@ impl<'a> SqlGenerator<'a> {
             having_filters = rewritten_having;
         }
 
-        // GROUP BY clause (if we have aggregations)
-        if !query.ungrouped
-            && !dimension_refs.is_empty()
-            && (!metric_refs.is_empty() || query.with_totals)
-        {
+        // Semantic dimensions define groups even when no metrics are selected.
+        if !query.ungrouped && !dimension_refs.is_empty() {
             let group_by_indices: Vec<String> =
                 (1..=dimension_refs.len()).map(|i| i.to_string()).collect();
             if query.with_totals {

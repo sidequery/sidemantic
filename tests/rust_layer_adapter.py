@@ -264,7 +264,7 @@ class RustSemanticLayerAdapter:
         return yaml.safe_dump(
             {
                 "models": [_model_to_rust_dict(model) for model in self.graph.models.values()],
-                "metrics": [_metric_to_rust_dict(metric) for metric in self.graph.metrics.values()],
+                "graph_metrics": [_metric_to_rust_dict(metric) for metric in self.graph.metrics.values()],
                 "parameters": [parameter.model_dump(exclude_none=True) for parameter in self.graph.parameters.values()],
             },
             sort_keys=False,

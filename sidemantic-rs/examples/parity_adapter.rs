@@ -5,10 +5,10 @@ use polyglot_sql::DialectType;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sidemantic::{
-    build_symmetric_aggregate_sql, config::SidemanticConfig, load_from_string, Aggregation,
-    DimensionType, Metric, Model, OssieConsumerProfile, OssieForwardAdapter, OssieSerialization,
-    OssieTarget, QueryRewriter, RelationshipType, SemanticGraph, SemanticQuery, SqlDialect,
-    SqlGenerator, SymmetricAggType, TableCalculation,
+    build_symmetric_aggregate_sql, config::SidemanticConfig, Aggregation, DimensionType, Metric,
+    Model, OssieConsumerProfile, OssieForwardAdapter, OssieSerialization, OssieTarget,
+    QueryRewriter, RelationshipType, SemanticGraph, SemanticQuery, SqlDialect, SqlGenerator,
+    SymmetricAggType, TableCalculation,
 };
 
 #[derive(Debug, Deserialize)]
@@ -526,6 +526,30 @@ fn parse_single_metric(metric_yaml: &str) -> sidemantic::Result<Metric> {
     Ok(metric)
 }
 
+// Python graph metrics are registered directly. Native-format top-level metrics
+// instead require model ownership inference, which is a different contract.
+fn load_from_string(models_yaml: &str) -> sidemantic::Result<SemanticGraph> {
+    #[derive(Deserialize)]
+    struct GraphMetrics {
+        #[serde(default)]
+        graph_metrics: Vec<Metric>,
+    }
+
+    let transport: GraphMetrics = serde_yaml::from_str(models_yaml)?;
+    let mut document: serde_yaml::Value = serde_yaml::from_str(models_yaml)?;
+    if let Some(mapping) = document.as_mapping_mut() {
+        mapping.remove(serde_yaml::Value::String("graph_metrics".into()));
+    }
+    let mut graph = sidemantic::load_from_string(&serde_yaml::to_string(&document)?)?;
+    for metric in &transport.graph_metrics {
+        graph.add_metric_unvalidated(metric.clone())?;
+    }
+    for metric in &transport.graph_metrics {
+        graph.validate_metric_dependencies(metric)?;
+    }
+    Ok(graph)
+}
+
 fn load_graph_with_table_calculations(
     models_yaml: &str,
     table_calculations_json: Vec<Value>,
@@ -809,6 +833,33 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn graph_metric_transport_does_not_invent_model_ownership() {
+        let document = r#"
+models:
+  - name: orders
+    table: orders
+    primary_key: id
+  - name: customers
+    table: customers
+    primary_key: id
+graph_metrics:
+  - name: total_orders
+    type: derived
+    sql: COUNT(*)
+"#;
+        let graph = load_from_string(document).unwrap();
+        assert!(graph.get_metric("total_orders").is_some());
+        for model in graph.models() {
+            assert!(model.get_metric("total_orders").is_none());
+        }
+        let native_document = document.replace("graph_metrics:", "metrics:");
+        assert!(sidemantic::load_from_string(&native_document)
+            .unwrap_err()
+            .to_string()
+            .contains("Cannot determine single owning model"));
+    }
 
     #[test]
     fn catalog_preserves_approximate_count_metadata() {

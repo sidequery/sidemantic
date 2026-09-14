@@ -77,10 +77,21 @@ pub(crate) fn with_semantic_stack<T: Send>(
 ) -> Result<T> {
     #[cfg(not(target_arch = "wasm32"))]
     {
+        std::thread_local! {
+            // Compiler children reuse the protected worker rather than spawning
+            // another OS thread for every aggregate or temporal subquery.
+            static SEMANTIC_WORKER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        }
+        if SEMANTIC_WORKER.get() {
+            return operation();
+        }
         std::thread::scope(|scope| {
             std::thread::Builder::new()
                 .stack_size(16 * 1024 * 1024)
-                .spawn_scoped(scope, operation)
+                .spawn_scoped(scope, || {
+                    SEMANTIC_WORKER.set(true);
+                    operation()
+                })
                 .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))?
                 .join()
                 .map_err(|_| {

@@ -161,7 +161,10 @@ impl<'a> SqlGenerator<'a> {
 
     /// Generate SQL from a semantic query
     pub fn generate(&self, query: &SemanticQuery) -> Result<String> {
-        self.generate_from_model(query, None)
+        // Native callers can use this API without the SemanticInput host. Keep
+        // parsing, AST transformation, serialization and destruction on the same
+        // protected stack instead of returning a deep AST to the caller stack.
+        crate::semantic_input::with_semantic_stack(|| self.generate_from_model(query, None))
     }
 
     /// Aggregate children retain their own source population independently of

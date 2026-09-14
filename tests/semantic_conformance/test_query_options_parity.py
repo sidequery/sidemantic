@@ -1,6 +1,7 @@
 """Query options execute through both semantic compilers without fallback."""
 
 import pytest
+import sqlglot
 
 from sidemantic import Dimension, Metric, Model, Relationship, SemanticLayer
 from sidemantic.core.table_calculation import TableCalculation
@@ -247,7 +248,7 @@ def test_totals_empty_population_keeps_the_grand_total(layer):
 @pytest.mark.parametrize(
     "suffix,expected",
     [
-        ("", [("a", 30), ("b", 30)]),
+        ("", [(None, 40), ("a", 30)]),
         (" desc", [("b", 30), ("a", 30)]),
         (" asc nulls first", [(None, 40), ("a", 30)]),
         ("\tDESC\tNULLS\tLAST", [("b", 30), ("a", 30)]),
@@ -263,7 +264,6 @@ def test_spaced_output_alias_ordering_keeps_full_names(layer, alias, suffix, exp
         dimensions=["orders.category"],
         aliases={"orders.category": alias},
         order_by=[alias + suffix],
-        filters=["orders.category IS NOT NULL"] if not suffix else None,
         table_calculations=["running"] if calculations else None,
         limit=2,
     )
@@ -275,3 +275,52 @@ def test_spaced_output_alias_ordering_keeps_full_names(layer, alias, suffix, exp
         assert rows == [(*first, first[1]), (*second, first[1] + second[1])]
     else:
         assert rows == expected
+
+
+@pytest.mark.parametrize(
+    "suffix",
+    [
+        "",
+        " ASC",
+        " DESC",
+        " NULLS FIRST",
+        " NULLS LAST",
+        " ASC NULLS FIRST",
+        " ASC NULLS LAST",
+        " DESC NULLS FIRST",
+        " DESC NULLS LAST",
+    ],
+)
+@pytest.mark.parametrize("offset", [0, 1])
+@pytest.mark.parametrize("aliased", [False, True])
+@pytest.mark.parametrize("dialect", ["duckdb", "postgres"])
+def test_calculation_pagination_preserves_ordinary_null_order(layer, suffix, offset, aliased, dialect):
+    layer.graph.add_table_calculation(TableCalculation(name="running", type="running_total", field="revenue"))
+    field = "Category label" if aliased else "orders.category"
+    query = dict(
+        metrics=["orders.revenue"],
+        dimensions=["orders.category"],
+        aliases={"orders.category": "Category label"} if aliased else None,
+        order_by=[field + suffix],
+        dialect=dialect,
+        limit=2,
+        offset=offset,
+    )
+    descending = suffix.strip().startswith("DESC")
+    nulls_first = suffix.endswith("NULLS FIRST") or ("NULLS" not in suffix and not descending)
+    ordered = [("b", 30), ("a", 30)] if descending else [("a", 30), ("b", 30)]
+    ordered.insert(0 if nulls_first else len(ordered), (None, 40))
+    expected = ordered[offset : offset + 2]
+
+    def rows(**options):
+        compiled = layer.compile(**query, **options)
+        # Execute PostgreSQL output with its source NULL defaults preserved.
+        executable = sqlglot.transpile(compiled, read=dialect, write="duckdb")[0]
+        return layer.adapter.execute(executable).fetchall()
+
+    ordinary = rows()
+    calculated = rows(table_calculations=["running"])
+    assert ordinary == expected
+    assert calculated == [(*expected[0], expected[0][1]), (*expected[1], sum(row[1] for row in expected))]
+    if layer.engine == "rust":
+        assert layer.last_engine_selection["engine"] == "rust"

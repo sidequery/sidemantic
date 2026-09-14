@@ -214,6 +214,17 @@ pub(super) fn wrap(
             ));
         }
     }
+    // The semantic result has already applied pagination with this order.
+    // Preserve its direction and NULL placement in the calculation ordinal.
+    let Expression::Select(result_select) = polyglot_sql::parse_one(&sql, dialect)
+        .map_err(|error| invalid("query.table_calculations", error))?
+    else {
+        return Err(unsupported("table_calculation.result_projection"));
+    };
+    let result_ordering = result_select
+        .order_by
+        .map(|order| order.expressions)
+        .unwrap_or_default();
     let mut ordering = Vec::new();
     let order_names: Vec<_> = columns
         .iter()
@@ -221,8 +232,8 @@ pub(super) fn wrap(
         .chain(aliases.values())
         .map(String::as_str)
         .collect();
-    for item in order_by {
-        let (field, suffix) = crate::sql::split_order_field(item, &order_names);
+    for (index, item) in order_by.iter().enumerate() {
+        let (field, _suffix) = crate::sql::split_order_field(item, &order_names);
         if field.is_empty() {
             return Err(invalid("query.order_by", "empty ordering"));
         }
@@ -250,7 +261,22 @@ pub(super) fn wrap(
         } else {
             field.rsplit('.').next().unwrap_or(field)
         };
-        ordering.push(format!("{} {suffix}", reference(field, &columns)?));
+        let ordered = result_ordering.get(index).ok_or_else(|| {
+            invalid(
+                "query.order_by",
+                "ordering is missing from the semantic result",
+            )
+        })?;
+        let direction = if ordered.desc { "DESC" } else { "ASC" };
+        let nulls = match ordered.nulls_first {
+            Some(true) => " NULLS FIRST",
+            Some(false) => " NULLS LAST",
+            None => "",
+        };
+        ordering.push(format!(
+            "{} {direction}{nulls}",
+            reference(field, &columns)?
+        ));
     }
     let ordinal = quote(&format!("{prefix}ordinal"));
     let window_order = if ordering.is_empty() {

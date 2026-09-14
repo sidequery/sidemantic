@@ -2081,9 +2081,34 @@ impl<'a> SqlGenerator<'a> {
         metric_refs: &[MetricRef],
         alias_collisions: &HashMap<String, usize>,
     ) -> String {
-        let trimmed = item.trim();
-        let head_len = trimmed.find(char::is_whitespace).unwrap_or(trimmed.len());
-        let (head, suffix) = trimmed.split_at(head_len);
+        let mut known_fields = Vec::new();
+        for metric in metric_refs {
+            known_fields.extend([
+                metric.name.clone(),
+                metric.alias.clone(),
+                format!("{}.{}", metric.model, metric.name),
+            ]);
+        }
+        for dimension in dimension_refs {
+            known_fields.extend([
+                dimension.name.clone(),
+                dimension.alias.clone(),
+                format!("{}.{}", dimension.model, dimension.alias),
+            ]);
+        }
+        let names: Vec<_> = known_fields.iter().map(String::as_str).collect();
+        let (head, suffix) = crate::sql::split_order_field(item, &names);
+        // Resolve the field and NULL placement from the same suffix. Python's
+        // ordinary SQLGlot builder defaults to ascending NULLs first, descending last.
+        let suffix = if suffix.contains("NULLS") {
+            format!(" {suffix}")
+        } else if suffix == "DESC" {
+            " DESC NULLS LAST".to_owned()
+        } else if suffix == "ASC" {
+            " ASC NULLS FIRST".to_owned()
+        } else {
+            " NULLS FIRST".to_owned()
+        };
 
         for metric_ref in metric_refs {
             if metric_ref.name == head || metric_ref.alias == head {
@@ -2094,7 +2119,7 @@ impl<'a> SqlGenerator<'a> {
         }
 
         let Ok((model, field, granularity)) = self.graph.parse_reference(head) else {
-            return trimmed.to_string();
+            return format!("{head}{suffix}");
         };
 
         for dim_ref in dimension_refs {
@@ -2116,7 +2141,7 @@ impl<'a> SqlGenerator<'a> {
             }
         }
 
-        trimmed.to_string()
+        format!("{head}{suffix}")
     }
 
     fn key_sql(&self, model: &Model, key: &str, alias: Option<&str>) -> Result<String> {
@@ -5997,7 +6022,7 @@ models:
         let sql = generator.generate(&query).unwrap();
 
         assert!(
-            sql.contains("ORDER BY revenue DESC, status ASC"),
+            sql.contains("ORDER BY revenue DESC NULLS LAST, status ASC NULLS FIRST"),
             "expected semantic order by refs to use output aliases: {sql}"
         );
         assert!(

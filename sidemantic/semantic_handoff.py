@@ -63,7 +63,17 @@ def graph_to_semantic_input(graph: SemanticGraph, *, input_dialect: str = "duckd
         "version": SEMANTIC_INPUT_VERSION,
         "input_dialect": input_dialect,
         "models": models,
-        "metrics": [_definition(metric) for metric in graph.metrics.values()],
+        "metrics": [
+            _definition(metric)
+            for metric in graph.metrics.values()
+            # add_model exposes these same objects through graph.metrics for
+            # unqualified lookup. The native model index already does that.
+            if not (
+                metric.type in ("time_comparison", "conversion")
+                and metric.name not in graph.metric_owners
+                and any(metric is owned for model in graph.models.values() for owned in model.metrics)
+            )
+        ],
         "metric_owners": dict(graph.metric_owners),
         "parameters": [_definition(parameter) for parameter in graph.parameters.values()],
         "table_calculations": [_definition(calculation) for calculation in graph.table_calculations.values()],

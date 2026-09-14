@@ -748,7 +748,8 @@ fn validate_semantic_dependencies(graph: &SemanticGraph, graph_metrics: &[Metric
         .into_iter()
         .flatten()
         {
-            for column in crate::core::semantic_column_references(expression)? {
+            let expression = crate::core::replace_model_placeholder(expression, context)?;
+            for column in crate::core::semantic_column_references(&expression)? {
                 let model_name = column.model.as_deref().or(context);
                 if let Some(model_name) = model_name {
                     let model = graph
@@ -1443,6 +1444,19 @@ mod tests {
                 "metrics": [{"name": "revenue", "agg": "sum", "sql": "amount"}]
             }], "metrics": [], "metric_owners": {}, "metadata": {"source": "orders.yml"}
         })
+    }
+
+    #[test]
+    fn dependency_validation_binds_model_tokens_without_rewriting_literals() {
+        let mut source = input();
+        source["models"][0]["metrics"] = json!([
+            {"name":"average", "sql":"sum({model}.amount) / count(*)", "sql_is_complete":true},
+            {"name":"literal", "sql":"sum(CASE WHEN '{model}.missing' = 'x' THEN 1 ELSE 0 END)", "sql_is_complete":true}
+        ]);
+        let query = r#"{"metrics":["orders.average"]}"#;
+        assert!(validate_with_semantic_input(&source.to_string(), query)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

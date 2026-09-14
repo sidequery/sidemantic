@@ -22,6 +22,33 @@ from sidemantic.semantic_handoff import (
 from sidemantic.validation import QueryValidationError
 
 
+@pytest.mark.parametrize(
+    "definition",
+    [
+        {"type": "conversion", "entity": "id", "base_event": "signup", "conversion_event": "purchase"},
+        {"type": "time_comparison", "base_metric": "events.count"},
+    ],
+)
+def test_snapshot_does_not_duplicate_automatically_indexed_model_metrics(definition):
+    graph = SemanticGraph()
+    metric = Metric(name="special", **definition)
+    graph.add_model(Model(name="events", table="events", metrics=[metric]))
+    payload = graph_to_semantic_input(graph)
+    assert payload["metrics"] == []
+    assert [item["name"] for item in payload["models"][0]["metrics"]] == ["special"]
+    assert graph.metrics["special"] is metric
+
+
+def test_snapshot_keeps_explicit_graph_metric_even_when_model_uses_same_object():
+    graph = SemanticGraph()
+    metric = Metric(name="revenue", agg="sum", sql="amount")
+    graph.add_model(Model(name="orders", table="orders", metrics=[metric]))
+    graph.add_metric(metric, model_name="orders")
+    payload = graph_to_semantic_input(graph)
+    assert [item["name"] for item in payload["metrics"]] == ["revenue"]
+    assert payload["metric_owners"] == {"revenue": "orders"}
+
+
 @pytest.fixture
 def source_graph():
     graph = SemanticGraph()

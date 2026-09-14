@@ -19,8 +19,9 @@ impl SqlGenerator<'_> {
         if *kind != Aggregation::ApproxCountDistinct {
             return Ok(format!("{}({input})", kind.as_sql()));
         }
-        let statement = crate::semantic_input::dialects::parse(&format!("SELECT {input}"), self.dialect)
-            .map_err(|error| SidemanticError::SqlParse(error.to_string()))?;
+        let statement =
+            crate::semantic_input::dialects::parse(&format!("SELECT {input}"), self.dialect)
+                .map_err(|error| SidemanticError::SqlParse(error.to_string()))?;
         let Expression::Select(mut select) = statement else {
             return Err(SidemanticError::SqlParse("Expected aggregate input".into()));
         };

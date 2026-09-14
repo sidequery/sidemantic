@@ -1386,16 +1386,27 @@ mod tests {
             assert!(compile_with_semantic_input(&source, &query.to_string()).is_err());
             assert!(validate_with_semantic_input(&source, &query.to_string()).is_err());
         }
-        let query =
-            json!({"consumption_base_model":"orders", "metrics":["orders.revenue", "items.value"]});
-        for result in [
-            compile_with_semantic_input(&source, &query.to_string()).map(|_| ()),
-            validate_with_semantic_input(&source, &query.to_string()).map(|_| ()),
-        ] {
-            assert!(
-                matches!(result, Err(SidemanticError::UnsupportedSemanticFeatures { capabilities })
-                if capabilities.contains(&"query.consumption_base_model.independent_aggregates".to_string()))
+        for (anchor, other) in [("orders", "items"), ("items", "orders")] {
+            let query = json!({
+                "consumption_base_model": anchor,
+                "metrics":["orders.revenue", "items.value"],
+                "filters":["orders.status = 'open'"]
+            });
+            let sql = compile_with_semantic_input(&source, &query.to_string()).unwrap();
+            // Each independent aggregate must read the chosen population;
+            // reverting to the metric's own source would admit orphan rows.
+            assert!(sql.contains("orders_preagg AS"), "{sql}");
+            assert!(sql.contains("items_preagg AS"), "{sql}");
+            assert_eq!(
+                sql.matches(&format!("FROM {anchor}_cte")).count(),
+                2,
+                "{sql}"
             );
+            assert!(!sql.contains(&format!("FROM {other}_cte")), "{sql}");
+            assert_eq!(sql.matches("'open'").count(), 2, "{sql}");
+            assert!(validate_with_semantic_input(&source, &query.to_string())
+                .unwrap()
+                .is_empty());
         }
     }
 

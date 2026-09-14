@@ -426,10 +426,20 @@ def test_cohort_output_dialects_preserve_qualified_populations(layer, dialect, s
     elif shape == "month":
         query = {"dimensions": ["events.day__month"], "order_by": ["events.day__month"]}
         expected = [("2024-01-01", 1), ("2024-02-01", 2)]
+    if layer.engine == "rust" and dialect == "postgres" and shape in {"inner_approximate", "outer_approximate"}:
+        with pytest.raises(Exception, match="metric.approx_count_distinct_output_dialect"):
+            layer.compile(metrics=[cohort_reference(layer)], user_attributes={"tenant": 1}, dialect=dialect, **query)
+        return
     sql = layer.compile(metrics=[cohort_reference(layer)], user_attributes={"tenant": 1}, dialect=dialect, **query)
     parsed = sqlglot.parse_one(sql, read=dialect)
-    # This validates compiler output through target parsing and DuckDB execution
-    # of its translation; it does not qualify a live warehouse's HAVING support.
+    if layer.engine == "rust" and dialect == "postgres":
+        from sqlglot import exp
+
+        having = parsed.find(exp.Having)
+        assert having is not None
+        assert having.find(exp.AggFunc) is not None
+        assert all(column.name != "platforms" for column in having.find_all(exp.Column))
+    # Target AST binding plus translated execution; no live warehouse execution.
     cursor = layer.adapter.execute(parsed.sql(dialect="duckdb"))
     actual = [
         tuple(value.isoformat()[:10] if isinstance(value, (date, datetime)) else value for value in row)

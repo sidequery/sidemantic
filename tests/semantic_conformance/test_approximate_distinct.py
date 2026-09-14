@@ -245,6 +245,10 @@ def test_approximate_dialect_rendering_and_population_results(layer, dialect, fu
             metric = "events.running"
             dimensions = ["events.created_at__day"]
             expected_sql = "with daily as (select created_at, approx_count_distinct(user_id) as users from approx_events group by created_at) select approx_count_distinct(users) over (order by created_at rows between unbounded preceding and current row) from daily order by created_at"
+    if layer.engine == "rust" and dialect in {"postgres", "mysql", "sqlite"}:
+        with pytest.raises(Exception, match="metric.approx_count_distinct_output_dialect"):
+            layer.compile(metrics=[metric], dimensions=dimensions, order_by=dimensions, dialect=dialect)
+        return
     sql = layer.compile(metrics=[metric], dimensions=dimensions, order_by=dimensions, dialect=dialect)
     parsed = sqlglot.parse_one(sql, read=dialect)
     # Python's snapshot route leaves the aggregate name canonical until SQL

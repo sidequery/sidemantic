@@ -100,6 +100,7 @@ impl SqlGenerator<'_> {
         &self,
         mut aggregate: polyglot_sql::expressions::AggFunc,
     ) -> Result<Expression> {
+        self.validate_approximate_dialect()?;
         aggregate.name = None;
         // Approximate distinct ignores NULL inputs. Express FILTER as a
         // nullable input before target lowering so function-name transforms
@@ -118,8 +119,7 @@ impl SqlGenerator<'_> {
             | DialectType::Snowflake
             | DialectType::BigQuery
             | DialectType::Spark
-            | DialectType::Databricks
-            | DialectType::Hive => Expression::ApproxCountDistinct(Box::new(aggregate)),
+            | DialectType::Databricks => Expression::ApproxCountDistinct(Box::new(aggregate)),
             DialectType::ClickHouse => Expression::AggregateFunction(Box::new(
                 polyglot_sql::expressions::AggregateFunction {
                     name: "APPROX_COUNT_DISTINCT".into(),
@@ -132,11 +132,29 @@ impl SqlGenerator<'_> {
                     inferred_type: aggregate.inferred_type,
                 },
             )),
-            _ => Expression::ApproxDistinct(Box::new(aggregate)),
+            DialectType::Trino | DialectType::Presto | DialectType::Redshift => {
+                Expression::ApproxDistinct(Box::new(aggregate))
+            }
+            _ => return Err(unsupported("output_dialect")),
         };
         polyglot_sql::Dialect::get(self.dialect)
             .transform(expression)
             .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))
+    }
+
+    fn validate_approximate_dialect(&self) -> Result<()> {
+        match self.dialect {
+            DialectType::DuckDB
+            | DialectType::Snowflake
+            | DialectType::BigQuery
+            | DialectType::Spark
+            | DialectType::Databricks
+            | DialectType::ClickHouse
+            | DialectType::Trino
+            | DialectType::Presto
+            | DialectType::Redshift => Ok(()),
+            _ => Err(unsupported("output_dialect")),
+        }
     }
 
     // Resolve without requiring a graph calculation to have a single owner.
@@ -230,6 +248,7 @@ impl SqlGenerator<'_> {
         if !self.contains_approximate_metric(reference, context, &mut HashSet::new())? {
             return Ok(());
         }
+        self.validate_approximate_dialect()?;
         if metric.agg == Some(Aggregation::ApproxCountDistinct) {
             if metric.sql.as_deref().is_some_and(|sql| sql.trim() == "*") {
                 return Err(unsupported("explicit_expression"));
@@ -305,10 +324,9 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn output_dialects() -> [(DialectType, &'static str); 11] {
+    fn output_dialects() -> [(DialectType, &'static str); 8] {
         [
             (DialectType::DuckDB, "APPROX_COUNT_DISTINCT"),
-            (DialectType::PostgreSQL, "APPROX_DISTINCT"),
             (DialectType::BigQuery, "APPROX_COUNT_DISTINCT"),
             (DialectType::Snowflake, "APPROX_COUNT_DISTINCT"),
             (DialectType::Trino, "APPROX_DISTINCT"),
@@ -316,9 +334,41 @@ mod tests {
             (DialectType::Databricks, "APPROX_COUNT_DISTINCT"),
             (DialectType::Redshift, "APPROXIMATE COUNT"),
             (DialectType::ClickHouse, "UNIQ"),
-            (DialectType::MySQL, "APPROX_DISTINCT"),
-            (DialectType::SQLite, "APPROX_DISTINCT"),
         ]
+    }
+
+    #[test]
+    fn unsupported_native_approximate_targets_are_typed_errors() {
+        let graph = graph_with(json!({"name":"total", "agg":"sum", "sql":"amount"}));
+        for dialect in [
+            DialectType::PostgreSQL,
+            DialectType::MySQL,
+            DialectType::SQLite,
+        ] {
+            let generator = SqlGenerator::new(&graph).with_dialect(dialect);
+            for sql in [
+                "APPROX_COUNT_DISTINCT(user_id)",
+                "ROUND(APPROX_COUNT_DISTINCT(user_id), 0)",
+            ] {
+                assert!(matches!(
+                    generator.emit_expression(&parse_semantic_expression(sql).unwrap()),
+                    Err(SidemanticError::UnsupportedSemanticFeatures { .. })
+                ));
+            }
+            assert!(matches!(
+                generator.generate(&SemanticQuery {
+                    metrics: vec!["events.users".into()],
+                    ..Default::default()
+                }),
+                Err(SidemanticError::UnsupportedSemanticFeatures { .. })
+            ));
+            generator
+                .generate(&SemanticQuery {
+                    metrics: vec!["events.total".into()],
+                    ..Default::default()
+                })
+                .unwrap();
+        }
     }
 
     #[test]

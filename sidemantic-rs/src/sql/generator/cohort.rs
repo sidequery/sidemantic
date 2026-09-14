@@ -106,6 +106,7 @@ impl SqlGenerator<'_> {
         model: &str,
         fields: &HashSet<String>,
         outer: bool,
+        inner_expressions: &HashMap<String, String>,
     ) -> Result<String> {
         let expression = expression.replace("{model}", "cohort_sub");
         let parsed = parse_semantic_expression(&expression)?;
@@ -124,11 +125,14 @@ impl SqlGenerator<'_> {
             }
             let field = quote(&column.field);
             replacements.insert(
-                (column.model, column.field),
+                (column.model, column.field.clone()),
                 if outer {
                     format!("cohort_sub.{field}")
                 } else {
-                    field
+                    inner_expressions
+                        .get(&column.field.to_ascii_lowercase())
+                        .cloned()
+                        .ok_or_else(|| unsupported("result_reference"))?
                 },
             );
         }
@@ -168,6 +172,10 @@ impl SqlGenerator<'_> {
         let mut fields = HashSet::from([entity.to_string()]);
         let mut folded_fields = HashSet::from([entity.to_ascii_lowercase()]);
         let mut inner_select = vec![format!("{entity_sql} AS {}", quote(entity))];
+        // HAVING cannot depend on SELECT aliases on PostgreSQL and several
+        // other targets. Bind every inner output to its source expression.
+        let mut inner_expressions =
+            HashMap::from([(entity.to_ascii_lowercase(), entity_sql.clone())]);
         let mut inner_group = vec![entity_sql];
         let mut output_dimensions = Vec::new();
         for name in metric.entity_dimensions.iter().flatten() {
@@ -207,6 +215,7 @@ impl SqlGenerator<'_> {
             if folded_fields.insert(dimension.alias.to_ascii_lowercase()) {
                 fields.insert(dimension.alias.clone());
                 inner_select.push(format!("{sql} AS {}", quote(&dimension.alias)));
+                inner_expressions.insert(dimension.alias.to_ascii_lowercase(), sql.clone());
                 inner_group.push(sql);
             } else if dimension.name != entity || dimension.granularity.is_some() {
                 return Err(unsupported("inner_alias_collision"));
@@ -233,17 +242,16 @@ impl SqlGenerator<'_> {
                     )))
                 }
             };
-            inner_select.push(format!(
-                "{} AS {}",
-                aggregate(self, kind, &expression)?,
-                quote(&inner.name)
-            ));
+            let aggregate = aggregate(self, kind, &expression)?;
+            inner_expressions.insert(inner.name.to_ascii_lowercase(), format!("({aggregate})"));
+            inner_select.push(format!("{aggregate} AS {}", quote(&inner.name)));
         }
         let having = metric
             .having
             .as_deref()
             .ok_or_else(|| SidemanticError::Validation("cohort requires having".into()))?;
-        let having = self.cohort_result_expression(having, &model.name, &fields, false)?;
+        let having =
+            self.cohort_result_expression(having, &model.name, &fields, false, &inner_expressions)?;
         let mut filters = query.filters.clone();
         filters.extend(self.resolve_segments(&query.segments)?);
         filters.extend(metric.filters.clone());
@@ -281,7 +289,9 @@ impl SqlGenerator<'_> {
         };
         let outer_kind = metric.agg.as_ref().unwrap_or(&Aggregation::Count);
         let outer_expression = match metric.sql.as_deref() {
-            Some(sql) => self.cohort_result_expression(sql, &model.name, &fields, true)?,
+            Some(sql) => {
+                self.cohort_result_expression(sql, &model.name, &fields, true, &HashMap::new())?
+            }
             None if *outer_kind == Aggregation::Count => "*".into(),
             None if *outer_kind == Aggregation::CountDistinct => {
                 format!("cohort_sub.{}", quote(entity))
@@ -350,6 +360,34 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn postgres_having_expands_inner_aggregate_aliases() {
+        let graph = SemanticGraph::new();
+        let generator = SqlGenerator::new(&graph).with_dialect(DialectType::PostgreSQL);
+        let fields = HashSet::from(["platforms".into(), "person".into()]);
+        let inputs = HashMap::from([
+            ("platforms".into(), "(COUNT(DISTINCT t.platform))".into()),
+            ("person".into(), "t.user_id".into()),
+        ]);
+        let sql = generator
+            .cohort_result_expression(
+                "platforms >= 2 AND person > 0",
+                "events",
+                &fields,
+                false,
+                &inputs,
+            )
+            .unwrap();
+        assert!(sql.contains("COUNT(DISTINCT t.platform)"), "{sql}");
+        assert!(sql.contains("t.user_id"), "{sql}");
+        assert!(!sql.contains("platforms"), "{sql}");
+        polyglot_sql::parse_one(
+            &format!("SELECT COUNT(*) FROM events t GROUP BY t.user_id HAVING {sql}"),
+            DialectType::PostgreSQL,
+        )
+        .unwrap();
+    }
+
+    #[test]
     fn cohort_target_identifiers_and_approximate_aggregates_compile() {
         for (dialect, dialect_type) in [
             ("duckdb", DialectType::DuckDB),
@@ -383,8 +421,15 @@ mod tests {
                     "metrics": ["events.qualified"], "dimensions": ["events.group"],
                     "order_by": ["events.group"], "dialect": dialect,
                 });
-                let sql =
-                    compile_with_semantic_input(&input.to_string(), &query.to_string()).unwrap();
+                let result = compile_with_semantic_input(&input.to_string(), &query.to_string());
+                if dialect_type == DialectType::PostgreSQL {
+                    assert!(matches!(
+                        result,
+                        Err(SidemanticError::UnsupportedSemanticFeatures { .. })
+                    ));
+                    continue;
+                }
+                let sql = result.unwrap();
                 polyglot_sql::parse_one(&sql, dialect_type).unwrap();
                 let quoted = if dialect_type == DialectType::BigQuery {
                     "`group`"

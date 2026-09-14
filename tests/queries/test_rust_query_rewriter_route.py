@@ -86,6 +86,55 @@ def test_strict_rust_passes_yardstick_sql_to_rust(monkeypatch, method):
     assert rewriter.last_engine_selection["engine"] == "rust"
 
 
+@pytest.mark.parametrize(
+    "sql,message",
+    [("SELECT *", "requires a FROM clause"), ("SELECT FROM orders", "select at least one")],
+)
+def test_rust_route_validates_empty_projection_and_source(monkeypatch, sql, message):
+    def reject(*args, **kwargs):
+        raise AssertionError("Invalid query framing must be rejected before native compilation")
+
+    monkeypatch.setattr("sidemantic.sql.query_rewriter.rewrite_semantic_input", reject)
+    rewriter = QueryRewriter(_graph(), use_rust_rewriter=True, rust_no_fallback=True)
+    with pytest.raises(ValueError, match=message):
+        rewriter.rewrite(sql)
+    assert rewriter.rewrite(sql, strict=False) == sql
+
+
+def test_nonstrict_yardstick_validation_returns_original_sql(monkeypatch):
+    def invalid(*args, **kwargs):
+        raise ValueError("Unknown Yardstick measure revenue")
+
+    monkeypatch.setattr("sidemantic.sql.query_rewriter.rewrite_semantic_input", invalid)
+    rewriter = QueryRewriter(_graph(), use_rust_rewriter=True, rust_no_fallback=True)
+    sql = "SELECT AGGREGATE(revenue) FROM orders"
+    assert rewriter.rewrite(sql, strict=False) == sql
+    assert rewriter.last_engine_selection["engine"] == "passthrough"
+
+
+@pytest.mark.parametrize("query", ["SELECT AGGREGATE(revenue) FROM orders", "SELECT revenue FROM orders"])
+@pytest.mark.parametrize("engine", ["python", "rust"])
+def test_secured_transport_rejects_yardstick_before_native_compilation(monkeypatch, query, engine):
+    from sidemantic import SecurityPolicy, SemanticLayer
+    from sidemantic.core.semantic_layer import SecurityError
+
+    def reject(*args, **kwargs):
+        raise AssertionError("Secured Yardstick queries must not reach the compiler")
+
+    monkeypatch.setattr("sidemantic.sql.query_rewriter.rewrite_semantic_input", reject)
+    monkeypatch.setattr("sidemantic.core.semantic_layer.get_rust_module", lambda: object())
+    layer = SemanticLayer(engine=engine, fallback=False, auto_register=False)
+    model = _graph().models["orders"]
+    model.metadata = {"yardstick": {}}
+    model.security = SecurityPolicy(row_filters=["tenant = 1"])
+    layer.add_model(model)
+    try:
+        with pytest.raises(SecurityError, match="Yardstick"):
+            layer.sql(query)
+    finally:
+        layer.adapter.close()
+
+
 def test_caller_context_reaches_rust_without_fallback(monkeypatch):
     calls = []
 

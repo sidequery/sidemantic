@@ -200,6 +200,15 @@ class QueryRewriter:
                 if strict:
                     raise ValueError("Only SELECT queries are supported")
                 return sql
+            if isinstance(parsed, exp.Select):
+                if not parsed.expressions:
+                    if strict:
+                        raise ValueError("Query must select at least one metric or dimension")
+                    return sql
+                if parsed.args.get("from_") is None and any(isinstance(expr, exp.Star) for expr in parsed.expressions):
+                    if strict:
+                        raise ValueError("SELECT * requires a FROM clause with a single table")
+                    return sql
             if not self._expression_tree_references_semantic_model(parsed):
                 self.last_engine_selection = {"engine": "passthrough", "reason": "No semantic model reference"}
                 return sql
@@ -235,6 +244,11 @@ class QueryRewriter:
             self.rust_fallback_reason = f"{type(exc).__name__}: {exc}"
             self.last_engine_selection = {"engine": "python", "reason": self.rust_fallback_reason}
             return None
+        except ValueError:
+            if uses_yardstick and not strict:
+                self.last_engine_selection = {"engine": "passthrough", "reason": "Invalid Yardstick query"}
+                return sql
+            raise
 
     def rewrite(self, sql: str, strict: bool = True, user_attributes: dict | None = None) -> str:
         """Rewrite with the requested engine, falling back only for typed capability failures."""

@@ -329,7 +329,6 @@ impl Lowerer<'_, '_> {
                 .from
                 .as_ref()
                 .is_some_and(|from| from.expressions.len() == 1);
-        let default = single.then(|| sources[0].1.clone());
         // Implicit measures apply to projection/HAVING/ORDER only. WHERE columns
         // remain row predicates, unless the caller used an explicit AT call.
         for projection in &mut select.expressions {
@@ -394,12 +393,30 @@ impl Lowerer<'_, '_> {
                 "Yardstick query must reference a known semantic model in FROM/JOIN",
             ));
         }
-        if self.rewriter.query_preparer.is_some() {
-            return Err(SidemanticError::UnsupportedSemanticFeatures {
-                capabilities: vec!["rewrite.yardstick_policy_context".into()],
-            });
+        // Match transport_security: Yardstick's independent evaluation contexts
+        // cannot enter a request with semantic access or row-security controls.
+        if self.rewriter.security_controls {
+            return Err(SidemanticError::Security(
+                "Yardstick SQL is not supported while semantic security controls are active".into(),
+            ));
         }
         self.changed = true;
+        let output_aliases = select
+            .expressions
+            .iter()
+            .filter_map(|projection| {
+                if let Expression::Alias(alias) = projection {
+                    Some(alias.alias.name.clone())
+                } else {
+                    None
+                }
+            })
+            .collect::<HashSet<_>>();
+        let original_names = select
+            .expressions
+            .iter()
+            .map(|projection| reference(projection).map(|(_, name)| name))
+            .collect::<Vec<_>>();
         // Expand declared dimension expressions before computing context keys.
         map_columns(&mut value, &mut |node| {
             let Some((table, name)) = reference(&node) else {
@@ -424,12 +441,22 @@ impl Lowerer<'_, '_> {
                     return self.remap(expression, &[model_name, alias], alias, true);
                 }
                 if table.is_none() && single {
+                    if output_aliases.contains(&name) {
+                        return Ok(node);
+                    }
                     return self.remap(node, &[], alias, true);
                 }
             }
             Ok(node)
         })?;
         select = decode(value)?;
+        for (projection, original_name) in select.expressions.iter_mut().zip(original_names) {
+            if let Some(name) = original_name {
+                if !scope_calls.contains(&name) {
+                    *projection = projection.clone().alias(name);
+                }
+            }
+        }
         let contains_call = |expression: &Expression| -> Result<bool> {
             let mut found = false;
             map_columns(&mut encode(expression)?, &mut |node| {
@@ -494,6 +521,36 @@ impl Lowerer<'_, '_> {
             .as_ref()
             .map(|group| group.expressions.clone())
             .unwrap_or_default();
+        let mut context_aliases = HashMap::new();
+        for projection in &mut select.expressions {
+            if !matches!(
+                projection,
+                Expression::Alias(_)
+                    | Expression::Column(_)
+                    | Expression::Literal(_)
+                    | Expression::Null(_)
+                    | Expression::Boolean(_)
+            ) && !contains_call(projection)?
+            {
+                let mut columns = false;
+                map_columns(&mut encode(&*projection)?, &mut |node| {
+                    columns = true;
+                    Ok(node)
+                })?;
+                if columns {
+                    let alias = format!("__ysdim_{}", context_aliases.len());
+                    *projection = projection.clone().alias(alias);
+                }
+            }
+            if let Expression::Alias(alias) = projection {
+                if !contains_call(&alias.this)? {
+                    context_aliases.insert(
+                        self.signature(alias.this.clone())?,
+                        alias.alias.name.clone(),
+                    );
+                }
+            }
+        }
         let mut replacements = HashMap::new();
         for name in &scope_calls {
             let call = &self.calls[name];
@@ -513,6 +570,7 @@ impl Lowerer<'_, '_> {
                 &groups,
                 select.where_clause.as_ref(),
                 single,
+                &context_aliases,
                 &mut HashSet::new(),
             )?;
             replacements.insert(name.clone(), expression);
@@ -527,6 +585,34 @@ impl Lowerer<'_, '_> {
             Ok(node)
         })?;
         select = decode(value)?;
+        let aliases = select
+            .expressions
+            .iter()
+            .filter_map(|projection| {
+                if let Expression::Alias(alias) = projection {
+                    Some((alias.alias.name.clone(), alias.this.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect::<HashMap<_, _>>();
+        if let Some(order) = &mut select.order_by {
+            for ordered in &mut order.expressions {
+                if reference(&ordered.this).is_some_and(|(_, name)| aliases.contains_key(&name)) {
+                    continue;
+                }
+                let mut value = encode(&ordered.this)?;
+                map_columns(&mut value, &mut |node| {
+                    if let Some((None, name)) = reference(&node) {
+                        if let Some(expression) = aliases.get(&name) {
+                            return Ok(expression.clone());
+                        }
+                    }
+                    Ok(node)
+                })?;
+                ordered.this = decode(value)?;
+            }
+        }
         // Rewrite only current source relations; already-lowered nested queries
         // retain their independently bound contexts.
         if let Some(from) = &mut select.from {
@@ -537,7 +623,6 @@ impl Lowerer<'_, '_> {
         for join in &mut select.joins {
             self.source(&mut join.this)?;
         }
-        let _ = default;
         Ok(select)
     }
 
@@ -576,9 +661,9 @@ impl Lowerer<'_, '_> {
         if !function.name.eq_ignore_ascii_case("yardstick") {
             return Ok(());
         }
-        if self.rewriter.query_preparer.is_some() {
-            return Err(invalid(
-                "yardstick() is not supported while semantic security controls are active",
+        if self.rewriter.security_controls {
+            return Err(SidemanticError::Security(
+                "yardstick() is not supported while semantic security controls are active".into(),
             ));
         }
         let [Expression::Literal(polyglot_sql::expressions::Literal::String(sql))] =
@@ -642,6 +727,7 @@ impl Lowerer<'_, '_> {
         groups: &[Expression],
         outer_where: Option<&Where>,
         single: bool,
+        context_aliases: &HashMap<String, String>,
         visiting: &mut HashSet<String>,
     ) -> Result<Expression> {
         let model = self.rewriter.graph.get_model(model_name).unwrap();
@@ -672,6 +758,7 @@ impl Lowerer<'_, '_> {
                             groups,
                             outer_where,
                             single,
+                            context_aliases,
                             visiting,
                         );
                     }
@@ -739,7 +826,20 @@ impl Lowerer<'_, '_> {
                     .filter_map(|(table, _)| table.as_deref())
                     .collect::<Vec<_>>();
                 let inner = self.remap(group.clone(), &aliases, "_inner", single)?;
-                let outer = self.remap(group, &[model_name], alias, single)?;
+                let mut outer = self.remap(group, &[model_name], alias, single)?;
+                if let Some(output_alias) = context_aliases.get(&signature) {
+                    let unsafe_alias = model.dimensions.iter().any(|dimension| {
+                        dimension.name.eq_ignore_ascii_case(output_alias)
+                            && self
+                                .expression(dimension.sql_expr())
+                                .ok()
+                                .and_then(|expression| reference(&expression))
+                                .is_some_and(|(_, name)| name.eq_ignore_ascii_case(output_alias))
+                    });
+                    if !unsafe_alias {
+                        outer = Expression::Identifier(Identifier::new(output_alias));
+                    }
+                }
                 context.push((signature, self.sql(&inner)?, self.sql(&outer)?));
             }
         }
@@ -1102,7 +1202,8 @@ impl QueryRewriter<'_> {
         if statements.len() != 1 {
             return Err(invalid("Yardstick requires a single statement"));
         }
-        let mut value = encode(statements.remove(0))?;
+        let statement = self.rename_user_ctes(statements.remove(0))?;
+        let mut value = encode(statement)?;
         lowerer.scopes(&mut value)?;
         if !lowerer.changed {
             if semantic {

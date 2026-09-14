@@ -99,31 +99,44 @@ impl<'a, 'g> Plan<'a, 'g> {
             return Err(SidemanticError::CircularDependency(resolved.reference));
         }
         let metric = &resolved.metric;
-        if metric.sql_is_complete
-            || metric.non_additive_dimension.is_some()
-            || metric.offset_window.is_some()
-        {
+        if metric.non_additive_dimension.is_some() || metric.offset_window.is_some() {
             return Err(unsupported("calculation_shape"));
         }
-        if metric.r#type != MetricType::Simple && !metric.filters.is_empty() {
+        if metric.r#type != MetricType::Simple
+            && !metric.sql_is_complete
+            && !metric.filters.is_empty()
+        {
             return Err(unsupported("calculation_filters"));
         }
-        let expression = match metric.r#type {
+        let leaf_type = if metric.sql_is_complete {
+            MetricType::Simple
+        } else {
+            metric.r#type.clone()
+        };
+        let expression = match leaf_type {
             MetricType::Simple => {
                 let model = resolved
                     .context
                     .clone()
                     .ok_or_else(|| unsupported("unscoped_leaf"))?;
-                if metric.agg.is_none() || metric.agg == Some(Aggregation::Expression) {
+                if !metric.sql_is_complete
+                    && (metric.agg.is_none() || metric.agg == Some(Aggregation::Expression))
+                {
                     return Err(unsupported("inline_aggregate"));
                 }
                 // A leaf is source-local. Qualified raw inputs from another
                 // source need a separate row-grain plan, not this aggregate split.
                 if let Some(sql) = &metric.sql {
                     if sql != "*"
-                        && semantic_column_references(sql)?.iter().any(|column| {
-                            column.model.as_deref().is_some_and(|owner| owner != model)
-                        })
+                        && semantic_column_references(&sql.replace("{model}", &model))?
+                            .iter()
+                            .any(|column| {
+                                column.model.as_deref().is_some_and(|owner| {
+                                    owner != model
+                                        && !(metric.sql_is_complete
+                                            && owner == format!("{model}_cte"))
+                                })
+                            })
                     {
                         return Err(unsupported("cross_source_raw_input"));
                     }
@@ -148,7 +161,11 @@ impl<'a, 'g> Plan<'a, 'g> {
                 // SUM/MIN and other nullable aggregates retain their NULL value.
                 if matches!(
                     metric.agg,
-                    Some(Aggregation::Count | Aggregation::CountDistinct)
+                    Some(
+                        Aggregation::Count
+                            | Aggregation::CountDistinct
+                            | Aggregation::ApproxCountDistinct
+                    )
                 ) {
                     format!("COALESCE({output}, 0)")
                 } else {
@@ -311,7 +328,33 @@ pub(super) fn try_generate(
             }
         }
     }
-    if plan.models.len() < 2 && !plan.cross_source_calculation {
+    let mut effective_query;
+    let query = if plan.models.len() == 1 && !query.skip_default_time_dimensions {
+        effective_query = query.clone();
+        effective_query.dimensions =
+            generator.apply_default_time_dimensions(&query.metrics, &query.dimensions)?;
+        effective_query.skip_default_time_dimensions = true;
+        &effective_query
+    } else {
+        query
+    };
+    let dimensions = generator.parse_dimension_refs(&query.dimensions)?;
+    let mut fanout_models = HashSet::new();
+    for model in &plan.models {
+        let mut required = HashSet::from([model.clone()]);
+        required.extend(dimensions.iter().map(|dimension| dimension.model.clone()));
+        required.extend(query.prepared_policies.model_names().cloned());
+        required.extend(generator.find_filter_models(&all_filters));
+        let paths = generator.build_join_paths(model, &required)?;
+        if !query.ungrouped && generator.detect_fan_out_risk(model, &paths).contains(model) {
+            fanout_models.insert(model.clone());
+        }
+    }
+    if plan.models.len() < 2
+        && !plan.cross_source_calculation
+        && fanout_models.is_empty()
+        && !plan.leaves.iter().any(|leaf| leaf.metric.sql_is_complete)
+    {
         return Ok(None);
     }
     if query.use_preaggregations {
@@ -352,7 +395,6 @@ pub(super) fn try_generate(
     for model in plan.models.iter().skip(1) {
         generator.graph.find_join_path(&plan.models[0], model)?;
     }
-    let dimensions = generator.parse_dimension_refs(&query.dimensions)?;
     for dimension in &dimensions {
         if generator
             .graph
@@ -426,43 +468,6 @@ pub(super) fn try_generate(
             .iter()
             .filter(|leaf| &leaf.model == model)
             .collect();
-        let mut projection = child_projection(generator, &dimensions, &leaves)?;
-        if query.with_totals && !dimensions.is_empty() {
-            projection.push("__sidemantic_source._is_total AS _is_total".into());
-        }
-        // Reuse the ordinary source-local compiler only where its fanout contract
-        // is proven: single declared keys and aggregates with symmetric support.
-        let mut required = HashSet::from([model.clone()]);
-        required.extend(dimensions.iter().map(|dimension| dimension.model.clone()));
-        required.extend(query.prepared_policies.model_names().cloned());
-        required.extend(generator.find_filter_models(&row_filters));
-        let paths = generator.build_join_paths(model, &required)?;
-        if generator.detect_fan_out_risk(model, &paths).contains(model) {
-            let source = generator.graph.get_model(model).unwrap();
-            if source.primary_keys().is_empty() {
-                return Err(SidemanticError::Validation(format!(
-                    "Model '{model}' has no primary key; cannot safely aggregate across a fanout join"
-                )));
-            }
-            if source.primary_keys().len() != 1 {
-                return Err(unsupported("requires_single_primary_key"));
-            }
-            if leaves.iter().any(|leaf| {
-                !matches!(
-                    leaf.metric.agg,
-                    Some(
-                        Aggregation::Sum
-                            | Aggregation::Count
-                            | Aggregation::CountDistinct
-                            | Aggregation::Avg
-                            | Aggregation::Min
-                            | Aggregation::Max
-                    )
-                )
-            }) {
-                return Err(unsupported("fanout_aggregate_kind"));
-            }
-        }
         let mut child = query.clone();
         child.metrics = leaves.iter().map(|leaf| leaf.reference.clone()).collect();
         child.filters = row_filters.clone();
@@ -474,11 +479,35 @@ pub(super) fn try_generate(
         // Materialized routing is qualified for whole single-source queries.
         // Cross-source child populations need separate grain/domain acceptance.
         child.use_preaggregations = false;
-        let child_sql = generator.generate_from_model(&child, Some(model))?;
+        let entity_rows =
+            fanout_models.contains(model) || leaves.iter().any(|leaf| leaf.metric.sql_is_complete);
+        let child_sql = if entity_rows {
+            let metrics: Vec<_> = leaves
+                .iter()
+                .map(|leaf| (&leaf.metric, leaf.alias.as_str()))
+                .collect();
+            super::fanout_complete::generate_entity_aggregates(
+                generator,
+                &child,
+                model,
+                &dimensions,
+                &metrics,
+                fanout_models.contains(model),
+            )?
+        } else {
+            let mut projection = child_projection(generator, &dimensions, &leaves)?;
+            if query.with_totals && !dimensions.is_empty() {
+                projection.push("__sidemantic_source._is_total AS _is_total".into());
+            }
+            let sql = generator.generate_from_model(&child, Some(model))?;
+            format!(
+                "SELECT {}\nFROM (\n{sql}\n) AS __sidemantic_source",
+                projection.join(", ")
+            )
+        };
         ctes.push(format!(
-            "{} AS (\nSELECT {}\nFROM (\n{child_sql}\n) AS __sidemantic_source\n)",
+            "{} AS (\n{child_sql}\n)",
             generator.quote_identifier(&format!("{model}_preagg")),
-            projection.join(", ")
         ));
     }
     let mut names = HashMap::new();

@@ -78,37 +78,69 @@ def test_query_filters_and_empty_populations(layer, filters, grouped):
         assert expected == [(0, 0)]
 
 
-def test_rust_rejects_unqualified_shapes(layer):
+def test_rust_rejects_unsupported_dialects(layer):
     if layer.engine != "rust":
-        pytest.skip("Rust qualification boundary")
+        pytest.skip("Rust dialect qualification boundary")
     for dialect in ["postgres", "bigquery", "snowflake"]:
         with pytest.raises(UnsupportedSemanticFeaturesError, match="approx_count_distinct_dialect"):
             layer.compile(metrics=["events.users"], dialect=dialect)
-    with pytest.raises(UnsupportedSemanticFeaturesError, match="approx_count_distinct_query_shape"):
-        layer.compile(metrics=["events.users"], ungrouped=True)
-    with pytest.raises(UnsupportedSemanticFeaturesError, match="approx_count_distinct_metric_filter"):
-        layer.compile(metrics=["events.rows"], filters=["events.users > 0"])
+
+
+def test_aggregate_filters_wrappers_and_stored_scalar_fallback(layer):
+    expected = layer.adapter.execute("select approx_count_distinct(user_id) from approx_events").fetchone()[0]
+    sql = layer.compile(metrics=["events.users", "events.rows"], filters=["events.users > 0"])
+    assert layer.adapter.execute(sql).fetchall() == [(expected, 30005)]
     model = layer.graph.get_model("events")
     model.metrics.append(Metric(name="derived", type="derived", sql="users + 1"))
-    with pytest.raises(UnsupportedSemanticFeaturesError, match="approx_count_distinct_calculation_shape"):
-        layer.compile(metrics=["events.derived"])
+    sql = layer.compile(metrics=["events.derived"])
+    assert layer.adapter.execute(sql).fetchall() == [(expected + 1,)]
     model.pre_aggregations.append(PreAggregation(name="stored", measures=["users"], dimensions=["category"]))
-    with pytest.raises(UnsupportedSemanticFeaturesError, match="approx_count_distinct_preaggregation"):
-        layer.compile(metrics=["events.users"], use_preaggregations=True)
-    # Raw-source execution is still available even with a stored scalar count.
-    sql = layer.compile(metrics=["events.users"], use_preaggregations=False)
+    sql = layer.compile(metrics=["events.users"], use_preaggregations=True)
     assert "APPROX_COUNT_DISTINCT" in sql.upper()
+    assert layer.adapter.execute(sql).fetchall() == [(expected,)]
 
 
 @pytest.mark.parametrize("relationship_type", ["many_to_one", "one_to_many"])
-def test_rust_rejects_joined_populations(layer, relationship_type):
-    if layer.engine != "rust":
-        pytest.skip("Rust qualification boundary")
+def test_joined_populations(layer, relationship_type):
+    layer.adapter.execute("create table users as select i as id, 'region' as region from range(10000) t(i)")
     layer.add_model(
         Model(name="users", table="users", primary_key="id", dimensions=[Dimension(name="region", type="categorical")])
     )
     layer.graph.get_model("events").relationships.append(
-        Relationship(name="users", type=relationship_type, foreign_key="user_id")
+        Relationship(name="users", type=relationship_type, sql="user_id", foreign_key="id")
     )
-    with pytest.raises(UnsupportedSemanticFeaturesError, match="approx_count_distinct_join"):
-        layer.compile(metrics=["events.users"], dimensions=["users.region"])
+    sql = layer.compile(metrics=["events.users"], dimensions=["users.region"], filters=["events.user_id is not null"])
+    expected = layer.adapter.execute("""
+        select region, approx_count_distinct(user_id)
+        from approx_events left join users on user_id = users.id where user_id is not null group by region
+    """).fetchall()
+    assert sorted(layer.adapter.execute(sql).fetchall(), key=str) == sorted(expected, key=str)
+
+
+@pytest.mark.parametrize("window_expression", [None, "sum(base.users)"])
+def test_cumulative_approximate_counts_use_grouped_outputs(layer, window_expression):
+    layer.adapter.execute("alter table approx_events add column created_at date")
+    layer.adapter.execute("update approx_events set created_at = date '2025-01-01' + cast(id // 10000 as integer)")
+    model = layer.graph.get_model("events")
+    model.dimensions.append(Dimension(name="created_at", type="time", granularity="day"))
+    model.metrics.append(
+        Metric(
+            name="running_users",
+            type="cumulative",
+            window="7 days",
+            sql="users" if window_expression is None else None,
+            window_expression=window_expression,
+        )
+    )
+    sql = layer.compile(metrics=["events.running_users"], dimensions=["events.created_at__day"])
+    expected = layer.adapter.execute("""
+        with daily as (
+            select created_at, approx_count_distinct(user_id) as users
+            from approx_events group by created_at
+        )
+        select sum(users) over (order by created_at rows between unbounded preceding and current row)
+        from daily order by created_at
+    """).fetchall()
+    result = layer.adapter.execute(sql)
+    index = [column[0] for column in result.description].index("running_users")
+    assert [(row[index],) for row in sorted(result.fetchall())] == expected

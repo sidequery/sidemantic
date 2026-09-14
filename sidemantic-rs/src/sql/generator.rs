@@ -5,6 +5,7 @@ mod approximate;
 mod cohort;
 mod conversion;
 mod fanout_aggregate;
+mod fanout_complete;
 mod join_kind;
 mod options;
 mod retention;
@@ -1714,7 +1715,7 @@ impl<'a> SqlGenerator<'a> {
         model: &crate::core::Model,
     ) -> Result<String> {
         match metric.agg {
-            Some(Aggregation::CountDistinct)
+            Some(Aggregation::CountDistinct | Aggregation::ApproxCountDistinct)
                 if metric.sql.as_deref().is_none_or(str::is_empty)
                     || metric.sql.as_deref() == Some("*") =>
             {
@@ -2512,7 +2513,9 @@ impl<'a> SqlGenerator<'a> {
                                 base_metrics.push(base_ref);
                             }
                         }
-                        continue;
+                        if metric.sql.is_none() && metric.base_metric.is_none() {
+                            continue;
+                        }
                     }
                     let base_ref = metric
                         .sql
@@ -2723,14 +2726,6 @@ impl<'a> SqlGenerator<'a> {
             };
 
             if let Some(window_expr) = metric.window_expression.as_ref() {
-                let window_expr = if self.graph.has_strict_metric_scope() {
-                    // Input expressions use DuckDB syntax; regenerate their AST
-                    // so quoted output references follow the target dialect.
-                    let expression = parse_semantic_expression(window_expr)?;
-                    self.emit_expression(&expression)?
-                } else {
-                    window_expr.clone()
-                };
                 let partitions = self.temporal_partition_columns(dimension_refs, &order_col);
                 let partition = if partitions.is_empty() {
                     String::new()
@@ -2743,7 +2738,7 @@ impl<'a> SqlGenerator<'a> {
                     .unwrap_or("ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW");
                 let value = self.fill_metric_expression(
                     metric,
-                    format!("{window_expr} OVER ({partition}ORDER BY {order_col} {frame})"),
+                    self.output_window_expression(window_expr, &partition, &order_col, frame)?,
                 )?;
                 let expression = format!("{value} AS {}", metric_ref.alias);
                 select_exprs.push(expression.clone());
@@ -2762,13 +2757,23 @@ impl<'a> SqlGenerator<'a> {
                     ))
                 })?;
             let base_alias = self.metric_alias_from_ref(base_ref);
-            let base_col = format!("base.{base_alias}");
+            let base_col = if metric.agg == Some(Aggregation::CountDistinct) {
+                format!("DISTINCT base.{base_alias}")
+            } else {
+                format!("base.{base_alias}")
+            };
 
             let agg_sql = match metric.agg {
                 Some(Aggregation::Avg) => "AVG",
                 Some(Aggregation::Min) => "MIN",
                 Some(Aggregation::Max) => "MAX",
-                Some(Aggregation::Count) | Some(Aggregation::CountDistinct) => "SUM",
+                Some(Aggregation::Count) | Some(Aggregation::CountDistinct) => "COUNT",
+                Some(Aggregation::Median) => "MEDIAN",
+                Some(Aggregation::Stddev) => "STDDEV_SAMP",
+                Some(Aggregation::StddevPop) => "STDDEV_POP",
+                Some(Aggregation::Variance) => "VAR_SAMP",
+                Some(Aggregation::VariancePop) => "VAR_POP",
+                Some(Aggregation::ApproxCountDistinct) => "APPROX_COUNT_DISTINCT",
                 _ => "SUM",
             };
 
@@ -2953,30 +2958,25 @@ impl<'a> SqlGenerator<'a> {
         expr: &str,
         default_model: &str,
     ) -> Result<Vec<String>> {
-        if !self.graph.has_strict_metric_scope() {
-            let pattern = regex::Regex::new(r"\bbase\.([A-Za-z_][A-Za-z0-9_]*)\b")
-                .expect("valid legacy base output reference pattern");
-            let mut references = Vec::new();
-            for captures in pattern.captures_iter(expr) {
-                let reference = self.metric_ref_for_inner_query(&captures[1], default_model);
-                if !references.contains(&reference) {
-                    references.push(reference);
-                }
+        let mut references = Vec::new();
+        for name in temporal::window_output_references(expr)? {
+            let reference = self.metric_ref_for_inner_query(&name, default_model);
+            if self
+                .resolve_metric_reference_location(&reference, default_model)?
+                .is_some()
+            {
+                references.push(reference);
+            } else if self
+                .graph
+                .get_model(default_model)
+                .is_none_or(|model| model.get_dimension(&name).is_none())
+            {
+                return Err(SidemanticError::Validation(format!(
+                    "Unknown period output metric '{name}'"
+                )));
             }
-            return Ok(references);
         }
-        let name = temporal::window_output_reference(expr)?;
-        let reference = self.metric_ref_for_inner_query(&name, default_model);
-        // Resolve against declared metrics, not similarly named physical columns.
-        if self
-            .resolve_metric_reference_location(&reference, default_model)?
-            .is_none()
-        {
-            return Err(SidemanticError::Validation(format!(
-                "Unknown period output metric '{name}'"
-            )));
-        }
-        Ok(vec![reference])
+        Ok(references)
     }
 
     fn metric_ref_for_inner_query(&self, reference: &str, default_model: &str) -> String {
@@ -5032,32 +5032,6 @@ impl<'a> SqlGenerator<'a> {
                 "fill_nulls_with must be a number or string".into(),
             ));
         }
-        if !matches!(
-            metric.r#type,
-            MetricType::Simple
-                | MetricType::Derived
-                | MetricType::Ratio
-                | MetricType::Cumulative
-                | MetricType::TimeComparison
-                | MetricType::Cohort
-        ) || (!matches!(
-            metric.r#type,
-            MetricType::TimeComparison | MetricType::Ratio
-        ) && metric.offset_window.is_some())
-            || ((matches!(metric.r#type, MetricType::Cumulative | MetricType::Cohort)
-                || metric.non_additive_dimension.is_some())
-                && metric.time_offset.is_some())
-            || (metric.r#type != MetricType::Cumulative
-                && (metric.window.is_some()
-                    || metric.window_expression.is_some()
-                    || metric.window_frame.is_some()
-                    || metric.window_order.is_some()
-                    || metric.grain_to_date.is_some()))
-        {
-            return Err(SidemanticError::UnsupportedSemanticFeatures {
-                capabilities: vec!["metric.fill_nulls_shape".into()],
-            });
-        }
         Ok(())
     }
 
@@ -5194,7 +5168,7 @@ impl<'a> SqlGenerator<'a> {
 
     fn is_inline_aggregate_expression(expr: &str) -> bool {
         let aggregate_re = regex::Regex::new(
-            r"(?i)\b(SUM|AVG|COUNT|MIN|MAX|MEDIAN|MODE|PERCENTILE_CONT|PERCENTILE_DISC|QUANTILE_CONT|QUANTILE_DISC|STDDEV|STDDEV_POP|VARIANCE|VARIANCE_POP|VAR_POP)\s*\(",
+            r"(?i)\b(SUM|AVG|COUNT|APPROX_COUNT_DISTINCT|MIN|MAX|MEDIAN|MODE|PERCENTILE_CONT|PERCENTILE_DISC|QUANTILE_CONT|QUANTILE_DISC|STDDEV|STDDEV_SAMP|STDDEV_POP|VAR_SAMP|VARIANCE|VARIANCE_POP|VAR_POP)\s*\(",
         )
         .expect("valid aggregate regex");
         aggregate_re.is_match(expr)

@@ -185,3 +185,23 @@ def test_offset_ratio_default_applies_after_sparse_prior_division(layer, offset,
         fill_nulls_with=-9,
     )
     assert values(layer, metric) == expected
+
+
+@pytest.mark.parametrize("controls", [{"time_offset": "1 day"}, {"offset_window": "1 day"}])
+def test_cumulative_fill_keeps_python_precedence_for_unused_offsets(layer, controls):
+    metric = Metric(name="filled", type="cumulative", sql="events.amount", fill_nulls_with=-9, **controls)
+    assert values(layer, metric) == [-9, 0, 6, 8, -9, -9]
+
+
+@pytest.mark.parametrize("controls", [{"window": "1 day"}, {"grain_to_date": "month"}])
+def test_comparison_fill_keeps_python_precedence_for_cumulative_controls(layer, controls):
+    metric = Metric(
+        name="filled",
+        type="time_comparison",
+        base_metric="events.amount",
+        comparison_type="dod",
+        calculation="difference",
+        fill_nulls_with=-9,
+        **controls,
+    )
+    assert values(layer, metric) == [-9, -9, 6, -9, -9, -9]

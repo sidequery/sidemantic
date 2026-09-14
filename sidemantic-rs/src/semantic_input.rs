@@ -426,6 +426,53 @@ fn lower_complete_filter(
     Ok(())
 }
 
+/// Complete expressions outside the simple lowering retain their physical row
+/// inputs. The entity aggregate planner applies filters to each projected input
+/// before evaluating the authored formula, just as the Python compiler does.
+fn validate_complete_filter_inputs(
+    raw: &Map<String, Value>,
+    owner: Option<&str>,
+    path: &str,
+) -> Result<()> {
+    let owner = owner.ok_or_else(|| unsupported("metric.complete_filters"))?;
+    let sql = raw
+        .get("sql")
+        .and_then(Value::as_str)
+        .ok_or_else(|| invalid(path, "complete metric requires SQL"))?
+        .replace("{model}", owner);
+    let columns = crate::core::semantic_column_references(&sql)
+        .map_err(|_| unsupported("metric.complete_filters"))?;
+    // A filtered opaque constant has no row input to attach the predicate to.
+    if columns.is_empty()
+        || columns.iter().any(|column| {
+            column
+                .model
+                .as_deref()
+                .is_some_and(|model| model != owner && model != format!("{owner}_cte"))
+        })
+    {
+        return Err(unsupported("metric.complete_filters"));
+    }
+    let filters: Vec<String> = deserialize(raw.get("filters").cloned().unwrap_or_default(), path)?;
+    for filter in filters {
+        let filter = filter.replace("{model}", owner);
+        let expression = parse_semantic_expression(&filter)?;
+        crate::core::validate_row_expression(&expression, "metric.complete_filters")?;
+        if crate::core::semantic_column_references(&filter)?
+            .iter()
+            .any(|column| {
+                column
+                    .model
+                    .as_deref()
+                    .is_some_and(|model| model != owner && model != format!("{owner}_cte"))
+            })
+        {
+            return Err(unsupported("metric.complete_filters"));
+        }
+    }
+    Ok(())
+}
+
 fn decode_metric(
     value: Value,
     path: &str,
@@ -445,8 +492,17 @@ fn decode_metric(
                 "sql_is_complete cannot also declare an aggregation",
             ));
         }
-        lower_complete_filter(&mut raw, owner, path)?;
-        complete = false;
+        let mut lowered = raw.clone();
+        match lower_complete_filter(&mut lowered, owner, path) {
+            Ok(()) => {
+                raw = lowered;
+                complete = false;
+            }
+            Err(SidemanticError::UnsupportedSemanticFeatures { .. }) => {
+                validate_complete_filter_inputs(&raw, owner, path)?;
+            }
+            Err(error) => return Err(error),
+        }
     }
     if raw.get("type").is_none_or(Value::is_null) {
         let kind = if raw.get("agg").is_some_and(|value| !value.is_null()) && !complete {
@@ -484,27 +540,6 @@ fn decode_metric(
     if let Some(fill) = raw.get("fill_nulls_with").filter(|value| !value.is_null()) {
         if !fill.is_number() && !fill.is_string() {
             return Err(invalid(path, "fill_nulls_with must be a number or string"));
-        }
-        let kind = raw.get("type").and_then(Value::as_str).unwrap_or("simple");
-        if !matches!(
-            kind,
-            "simple" | "derived" | "ratio" | "cumulative" | "time_comparison" | "cohort"
-        ) || (!matches!(kind, "time_comparison" | "ratio")
-            && raw
-                .get("offset_window")
-                .is_some_and(|value| !neutral(value)))
-            || ((matches!(kind, "cumulative" | "cohort")
-                || raw
-                    .get("non_additive_dimension")
-                    .is_some_and(|value| !neutral(value)))
-                && raw.get("time_offset").is_some_and(|value| !neutral(value)))
-            || (kind != "cumulative"
-                && (raw.get("window").is_some_and(|value| !neutral(value))
-                    || raw
-                        .get("grain_to_date")
-                        .is_some_and(|value| !neutral(value))))
-        {
-            return Err(unsupported("metric.fill_nulls_shape"));
         }
     }
     // The optional provenance fields are omitted by core serialization when None.
@@ -2199,7 +2234,6 @@ mod tests {
     fn complete_filtered_aggregate_rejects_unproven_populations() {
         for sql in [
             "COUNT(DISTINCT *)",
-            "COUNT(*) FILTER (WHERE amount > 0)",
             "COUNT(*) OVER ()",
             "COUNT(other.*)",
             "COUNT(ALL *)",
@@ -2207,28 +2241,41 @@ mod tests {
             "COUNT(DISTINCT 1)",
             "COUNT(DISTINCT NULL)",
             "SUM(1)",
-            "SUM(CAST(amount AS DOUBLE))",
-            "SUM(amount / 2)",
-            "COUNT(COALESCE(amount, '{model}'))",
-            "COUNT(CASE WHEN amount > 0 THEN 'prefix{model}.value' ELSE 'other' END)",
             "SUM(COALESCE(other.amount, amount))",
             "SUM(CASE WHEN amount > 0 THEN other.amount ELSE 0 END)",
-            "SUM(COALESCE(SUM(amount), 0))",
-            "SUM(amount) + COUNT(amount)",
-            "SUM(amount) OVER ()",
             "SUM((SELECT amount))",
             "SUM(other.amount)",
-            "COUNT(DISTINCT ABS(amount))",
-            "AVG(DISTINCT amount)",
-            "AVG(amount) OVER ()",
             "AVG(other.amount)",
-            "SUM(amount) FILTER (WHERE amount > 0)",
         ] {
             let mut source = input();
             source["models"][0]["metrics"] = json!([{"name":"paid", "sql":sql, "sql_is_complete":true, "filters":["amount = 2"]}]);
             assert!(
                 matches!(SemanticInput::from_json(&source.to_string()), Err(SidemanticError::UnsupportedSemanticFeatures { capabilities }) if capabilities == vec!["metric.complete_filters"]),
                 "{sql}"
+            );
+        }
+    }
+
+    #[test]
+    fn complete_filtered_formulas_keep_physical_inputs_for_entity_planning() {
+        for sql in [
+            "MEDIAN(amount)",
+            "SUM(amount) / NULLIF(COUNT(amount), 0)",
+            "COUNT(DISTINCT ABS(amount))",
+            "AVG(DISTINCT amount)",
+            "SUM(amount) FILTER (WHERE amount > 0)",
+        ] {
+            let mut source = input();
+            source["models"][0]["metrics"] = json!([{"name":"paid", "sql":sql, "sql_is_complete":true, "filters":["amount > 0"]}]);
+            let decoded = SemanticInput::from_json(&source.to_string()).unwrap();
+            assert!(
+                decoded
+                    .graph
+                    .get_model("orders")
+                    .unwrap()
+                    .get_metric("paid")
+                    .unwrap()
+                    .sql_is_complete
             );
         }
     }

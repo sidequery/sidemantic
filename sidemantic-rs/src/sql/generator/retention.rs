@@ -58,7 +58,6 @@ impl SqlGenerator<'_> {
             || metric.entity_dimensions.is_some()
             || metric.having.is_some()
             || metric.non_additive_dimension.is_some()
-            || metric.fill_nulls_with.is_some()
         {
             return Err(unsupported("metric_shape"));
         }

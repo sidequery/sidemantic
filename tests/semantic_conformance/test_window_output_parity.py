@@ -248,17 +248,25 @@ def test_window_dependency_cycles_return_validation_errors(rust_layer, reference
 
 
 @pytest.mark.parametrize("controls", [{"window": "7 days"}, {"grain_to_date": "month"}])
-def test_window_expression_rejects_ignored_temporal_controls(rust_layer, controls):
-    rust_layer.graph.models["events"].metrics.append(
+def test_window_expression_preserves_python_precedence(layer, controls):
+    layer.graph.models["events"].metrics.append(
         Metric(
             name="windowed",
             type="cumulative",
             window_expression="SUM(base.daily_amount)",
+            fill_nulls_with=0,
             **controls,
         )
     )
-    with pytest.raises(Exception, match="window_expression_controls"):
-        rust_layer.compile(metrics=["events.windowed"], dimensions=["events.day"], user_attributes={"tenant": 1})
+    cursor = layer.adapter.execute(
+        layer.compile(
+            metrics=["events.windowed"],
+            dimensions=["events.day"],
+            order_by=["events.day"],
+            user_attributes={"tenant": 1},
+        )
+    )
+    assert [row[-1] for row in cursor.fetchall()] == [15, 42, 82]
 
 
 def test_graph_window_infers_unique_period_metric_owner(layer):
@@ -304,3 +312,48 @@ def test_graph_window_rejects_missing_or_ambiguous_period_metric(rust_layer, ref
     rust_layer.add_metric(Metric(name="graph_window", type="cumulative", window_expression=f"SUM(base.{reference})"))
     with pytest.raises(Exception, match="possible definitions|[Aa]mbiguous"):
         rust_layer.compile(metrics=["graph_window"], dimensions=["events.day"], user_attributes={"tenant": 1})
+
+
+@pytest.mark.parametrize("aggregation", ["count", "count_distinct"])
+def test_cumulative_count_counts_nonnull_period_values(layer, aggregation):
+    assert [row[2] for row in run(layer, aggregation=aggregation)] == [1, 2, 2, 1, 2, 3]
+
+
+@pytest.mark.parametrize(
+    "expression,expected",
+    [
+        ("SUM(base.daily_amount * 2) FILTER (WHERE base.daily_amount >= 7)", [None, 14, 14, 20, 60, 140]),
+        ("COUNT(DISTINCT base.daily_amount)", [1, 2, 2, 1, 2, 3]),
+        ("SUM(COALESCE(base.daily_amount, 1))", [5, 12, 13, 10, 30, 70]),
+    ],
+)
+def test_window_expression_arithmetic_filter_and_null_arguments(layer, expression, expected):
+    assert [row[2] for row in run(layer, expression=expression)] == expected
+
+
+@pytest.mark.parametrize(
+    "frame,expected",
+    [
+        ("ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING", [12, 7, None, 70, 60, 40]),
+        ("ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING EXCLUDE CURRENT ROW", [7, 5, 7, 20, 50, 20]),
+    ],
+)
+def test_following_and_excluded_window_frames(layer, frame, expected):
+    assert [row[2] for row in run(layer, frame=frame)] == expected
+
+
+def test_window_expression_binds_multiple_grouped_dependencies(layer):
+    layer.graph.models["events"].metrics.append(
+        Metric(name="windowed", type="cumulative", window_expression="SUM(base.daily_amount + base.daily_people)")
+    )
+    cursor = layer.adapter.execute(
+        layer.compile(
+            metrics=["events.windowed"],
+            dimensions=["events.day", "events.category"],
+            order_by=["events.category", "events.day"],
+            user_attributes={"tenant": 1},
+        )
+    )
+    columns = [column[0] for column in cursor.description]
+    assert set(columns) == {"day", "category", "daily_amount", "daily_people", "windowed"}
+    assert [row[columns.index("windowed")] for row in cursor.fetchall()] == [7, 15, 15, 11, 32, 73]

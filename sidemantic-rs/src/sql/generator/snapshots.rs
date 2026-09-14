@@ -1,10 +1,81 @@
 //! Per-leaf snapshot selection before aggregation; sibling measures retain all rows.
 use super::*;
+use crate::core::replace_semantic_columns;
 
 fn unsupported(shape: &str) -> SidemanticError {
     SidemanticError::UnsupportedSemanticFeatures {
         capabilities: vec![format!("metric.non_additive_{shape}")],
     }
+}
+
+// Bind calculations only after each simple leaf has selected and aggregated its
+// own snapshot rows. A wrapper must never turn into a raw-row calculation.
+fn output_expression(
+    generator: &SqlGenerator<'_>,
+    reference: &MetricRef,
+    leaves: &HashMap<(String, String, bool), String>,
+    visiting: &mut HashSet<(String, String, bool)>,
+) -> Result<String> {
+    let key = (
+        reference.model.clone(),
+        reference.name.clone(),
+        reference.graph_metric,
+    );
+    if let Some(expression) = leaves.get(&key) {
+        return Ok(expression.clone());
+    }
+    if !visiting.insert(key.clone()) {
+        return Err(SidemanticError::CircularDependency(reference.name.clone()));
+    }
+    let metric = generator.metric_for_ref(reference)?;
+    if metric.sql_is_complete || !metric.filters.is_empty() || metric.offset_window.is_some() {
+        return Err(unsupported("wrapper_shape"));
+    }
+    let expression = match metric.r#type {
+        MetricType::Derived => metric
+            .sql
+            .clone()
+            .ok_or_else(|| unsupported("wrapper_expression"))?,
+        MetricType::Ratio => format!(
+            "({}) / NULLIF(({}), 0)",
+            metric
+                .numerator
+                .as_deref()
+                .ok_or_else(|| unsupported("wrapper_expression"))?,
+            metric
+                .denominator
+                .as_deref()
+                .ok_or_else(|| unsupported("wrapper_expression"))?
+        ),
+        _ => return Err(unsupported("wrapper_shape")),
+    };
+    let mut replacements = HashMap::new();
+    for column in semantic_column_references(&expression)? {
+        if column.aggregate_input {
+            return Err(unsupported("wrapper_inline_aggregate"));
+        }
+        let (model, name, graph_metric) = generator
+            .resolve_metric_reference_location(&column.name(), &reference.model)?
+            .ok_or_else(|| unsupported("wrapper_raw_input"))?;
+        let expanded = output_expression(
+            generator,
+            &MetricRef {
+                model,
+                alias: name.clone(),
+                name,
+                graph_metric,
+            },
+            leaves,
+            visiting,
+        )?;
+        replacements.insert((column.model, column.field), format!("({expanded})"));
+    }
+    let expression = generator.emit_expression(&replace_semantic_columns(
+        parse_semantic_expression(&expression)?,
+        &replacements,
+    )?)?;
+    visiting.remove(&key);
+    generator.fill_metric_expression(metric, expression)
 }
 
 pub(super) fn try_generate(
@@ -81,8 +152,19 @@ pub(super) fn try_generate(
     {
         return Err(unsupported("query_shape"));
     }
-    let owner = &metrics[0].model;
-    for reference in &metrics {
+    let mut leaf_keys: Vec<_> = leaves.into_iter().collect();
+    leaf_keys.sort();
+    let leaf_refs: Vec<_> = leaf_keys
+        .into_iter()
+        .map(|(model, name, graph_metric)| MetricRef {
+            model,
+            alias: name.clone(),
+            name,
+            graph_metric,
+        })
+        .collect();
+    let owner = &leaf_refs[0].model;
+    for reference in &leaf_refs {
         let metric = generator.metric_for_ref(reference)?;
         if reference.model != *owner
             || reference.graph_metric
@@ -100,7 +182,7 @@ pub(super) fn try_generate(
     };
     let output_dimensions = generator.parse_dimension_refs(&dimensions)?;
     let mut raw_dimensions = dimensions.clone();
-    for reference in &metrics {
+    for reference in &leaf_refs {
         let metric = generator.metric_for_ref(reference)?;
         if let Some(dimension) = &metric.non_additive_dimension {
             if !matches!(
@@ -136,7 +218,7 @@ pub(super) fn try_generate(
     for alias in raw_refs
         .iter()
         .map(|dimension| &dimension.alias)
-        .chain(metrics.iter().map(|metric| &metric.alias))
+        .chain(leaf_refs.iter().map(|metric| &metric.alias))
     {
         if !aliases.insert(alias) {
             return Err(unsupported("alias_collision"));
@@ -157,9 +239,9 @@ pub(super) fn try_generate(
             }
         }
     }
-    let mut required = generator.find_required_models(&raw_refs, &metrics)?;
+    let mut required = generator.find_required_models(&raw_refs, &leaf_refs)?;
     required.extend(generator.find_filter_models(&filters));
-    for reference in &metrics {
+    for reference in &leaf_refs {
         generator.collect_metric_referenced_models(
             reference,
             &mut required,
@@ -183,6 +265,10 @@ pub(super) fn try_generate(
     }
     graph.replace_model(model)?;
     let mut child = query.clone();
+    child.metrics = leaf_refs
+        .iter()
+        .map(|reference| format!("{}.{}", reference.model, reference.name))
+        .collect();
     child.dimensions = raw_dimensions.clone();
     child.ungrouped = true;
     child.with_totals = false;
@@ -198,7 +284,7 @@ pub(super) fn try_generate(
         .iter()
         .map(|dimension| quote(&dimension.alias))
         .collect();
-    for reference in &metrics {
+    for reference in &leaf_refs {
         let metric = generator.metric_for_ref(reference)?;
         let mut value = quote(&reference.alias);
         if let Some(dimension) = &metric.non_additive_dimension {
@@ -270,7 +356,8 @@ pub(super) fn try_generate(
         .iter()
         .map(|dimension| quote(&dimension.alias))
         .collect();
-    for reference in &metrics {
+    let mut leaf_expressions = HashMap::new();
+    for reference in &leaf_refs {
         let metric = generator.metric_for_ref(reference)?;
         let value = quote(&reference.alias);
         let aggregate = match metric.agg.as_ref() {
@@ -279,7 +366,26 @@ pub(super) fn try_generate(
             None => return Err(unsupported("aggregation")),
         };
         let aggregate = generator.fill_metric_expression(metric, aggregate)?;
-        selections.push(format!("{aggregate} AS {value}"));
+        leaf_expressions.insert(
+            (
+                reference.model.clone(),
+                reference.name.clone(),
+                reference.graph_metric,
+            ),
+            aggregate,
+        );
+    }
+    let mut public_aliases: HashSet<_> = output_dimensions
+        .iter()
+        .map(|dimension| dimension.alias.clone())
+        .collect();
+    for reference in &metrics {
+        if !public_aliases.insert(reference.alias.clone()) {
+            return Err(unsupported("alias_collision"));
+        }
+        let expression =
+            output_expression(generator, reference, &leaf_expressions, &mut HashSet::new())?;
+        selections.push(format!("{expression} AS {}", quote(&reference.alias)));
     }
     if query.with_totals && !output_dimensions.is_empty() {
         selections.push(format!(
@@ -409,6 +515,62 @@ mod tests {
             assert_eq!(sql.matches("COALESCE").count(), 1, "{sql}");
             polyglot_sql::parse_one(&sql, DialectType::DuckDB)
                 .map_err(|error| SidemanticError::SqlParse(error.to_string()))?;
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn graph_and_local_wrappers_aggregate_snapshot_leaves_before_arithmetic() {
+        crate::semantic_input::with_semantic_stack(|| {
+            let mut graph = graph();
+            let mut model = graph.get_model("snapshots").unwrap().clone();
+            model
+                .metrics
+                .push(Metric::derived("doubled", "balance * 2"));
+            model
+                .metrics
+                .push(Metric::ratio("share", "balance", "activity"));
+            graph.replace_model(model)?;
+            graph.add_metric_unvalidated(Metric::derived("wrapped", "snapshots.doubled"))?;
+            graph.add_metric_unvalidated(Metric::derived(
+                "nested",
+                "wrapped + snapshots.activity",
+            ))?;
+            graph.set_metric_scopes(HashMap::new())?;
+            let sql = SqlGenerator::new(&graph).generate(
+                &SemanticQuery::new().with_metrics(vec!["nested".into(), "snapshots.share".into()]),
+            )?;
+            assert!(
+                sql.contains("MAX(day) OVER () THEN balance END AS balance"),
+                "{sql}"
+            );
+            assert!(sql.contains("SUM(balance)"), "{sql}");
+            assert!(sql.contains("SUM(activity)"), "{sql}");
+            assert!(sql.contains("AS nested"), "{sql}");
+            assert!(sql.contains("NULLIF"), "{sql}");
+            assert!(!sql.contains("doubled_raw"), "{sql}");
+            polyglot_sql::parse_one(&sql, DialectType::DuckDB)
+                .map_err(|error| SidemanticError::SqlParse(error.to_string()))?;
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn snapshot_wrapper_with_raw_column_is_rejected() {
+        crate::semantic_input::with_semantic_stack(|| {
+            let mut graph = graph();
+            graph.add_metric_unvalidated(Metric::derived(
+                "mixed",
+                "snapshots.balance + snapshots.amount",
+            ))?;
+            let result = SqlGenerator::new(&graph)
+                .generate(&SemanticQuery::new().with_metrics(vec!["mixed".into()]));
+            assert!(matches!(
+                result,
+                Err(SidemanticError::UnsupportedSemanticFeatures { .. })
+            ));
             Ok(())
         })
         .unwrap();

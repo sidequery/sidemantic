@@ -200,3 +200,11 @@ def test_selected_calculations_preserve_retention_fixed_projection(layer):
             )
             == []
         )
+
+
+@pytest.mark.parametrize("fill", [0, -99, "missing"])
+def test_retention_accepts_fill_metadata_without_changing_its_fixed_output_schema(layer, fill):
+    # Python retention has a fixed table output and does not apply metric fills.
+    layer.graph.models["events"].metrics[0].fill_nulls_with = fill
+    assert result(layer) == (DAY_COLUMNS, DAY_ROWS)
+    assert result(layer, filters=["events.event_label != 'signup'"]) == (DAY_COLUMNS, [])

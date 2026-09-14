@@ -110,16 +110,23 @@ custom SQL, partitioned builds and partial build ranges. Lambda freshness behavi
 remains explicitly unsupported by the versioned boundary.
 
 Filtered complete measures are supported when their SQL AST is exactly
-`SUM(column)`, `COUNT(column)`, `MIN(column)`, or `MAX(column)` over one local
+`SUM(column)`, `AVG(column)`, `COUNT(column)`, `COUNT(DISTINCT column)`,
+`MIN(column)`, or `MAX(column)` over one local
 physical column. The source declaration remains unchanged; its executable copy
 uses the ordinary per-measure filtered aggregate path. Local qualified columns
 are normalized without changing string literals, and each filter is parenthesized
 before conjunction. Filters use physical values even when a semantic dimension
 shares the column name. Independent measures retain independent populations.
+Average counts each qualifying non-null source row in its denominator, while
+distinct count collapses repeated qualifying values and excludes nulls. These
+states use the keyed fanout-safe aggregate planner. For fanout SUM and AVG,
+that planner selects one joined row per requested group and source primary key
+before aggregating the original filtered value. It preserves floating-point
+values and returns null for groups containing no qualifying non-null values.
 
 This checked lowering accepts ordinary local comparisons, boolean combinations,
 null checks, ranges, and literal lists. Filtered complete `COUNT(*)`, constant or
-conditional aggregate inputs, aggregate combinations, distinct counts, windows,
+conditional aggregate inputs, aggregate combinations, distinct averages, windows,
 subqueries, foreign-model inputs or predicates, and unresolved templates remain
 explicitly unsupported. Unowned graph measures also remain unsupported on this path.
 
@@ -266,9 +273,38 @@ and divides by distinct base entities. Empty denominators return null. Grouping
 attributes are attributed to the base event. Query filters, metric filters,
 invariants, and caller policies constrain both event populations.
 
-Multi-step funnels, joined populations, graph-scoped conversion metrics,
+Joined populations, graph-scoped two-event conversion metrics,
 calculated wrappers, mapped entity/event/time source names, quoted output names,
 and other output dialects remain gated in this first qualified subset.
+
+### Multi-step conversion
+
+Direct model conversion metrics with two or more `steps` predicates use the
+existing sequential funnel algorithm through the strict DuckDB boundary. Each
+step finds the earliest qualifying event at or after the previous step's timestamp;
+equal timestamps qualify. There is no conversion-window option for this form.
+Selected grouping values belong to the first step and remain attached when later
+events have different values. The first event is chosen per entity and selected
+group, so an entity entering multiple groups belongs to each group's population.
+Each group advances from its own first-step timestamp; the same later event can
+qualify for multiple groups. Group counts therefore need not sum to the ungrouped
+distinct count. Repeated events within a group do not multiply entity counts.
+
+Outputs are selected dimensions, `total_entities`, each `step_N_count`, and the
+metric name containing the final step count. The denominator includes only
+distinct non-null first-step entities. A first-step entity with a null timestamp
+can enter the denominator but cannot advance. Empty ungrouped populations return
+zero counts. Ordering and pagination use these output columns.
+
+Entity and time dimensions can map to row-local source expressions. Step predicates
+refer to physical source columns; query and metric filters resolve declared dimensions.
+All steps read the same policy-, invariant-, query-, and metric-filtered population.
+The strict wrapper validates expressions and projects internal source columns before
+calling the existing sequential generator. Graph-scoped metrics, mixed metrics,
+joined populations, aggregate/window/subquery source expressions, colliding output
+names (including dimensions named `entity` or `step_N_ts`), rollup routing,
+null-fill options, and other output dialects remain gated.
+
 ## PostgreSQL policy output
 
 The versioned bridge can generate PostgreSQL output for policy-bearing structured
@@ -330,3 +366,14 @@ and aggregates hidden in source dimensions, inner SQL or row filters are
 rejected. Joined populations, graph-scoped cohorts, calculated wrappers and
 null-fill options remain gated. HAVING and outer expressions must reference
 available inner columns; other aggregate contexts are not silently inferred.
+
+The WASM SQL parser has a host-specific admission limit of 16 nested
+parenthesis/bracket/brace/CASE constructs, 32 operators per expression chain,
+16 set operations per parser input, and 48 combined live nesting/operator
+ancestors. Flat projections and independent
+clauses do not share an operator budget; long unary chains do.
+These are conservative fixed-host-stack limits, not limits on native compilation
+or source-file bytes. Dialect tokenization keeps strings, quoted identifiers,
+and comments out of structural nesting counts. Excess inputs return a SQL parse
+error before recursive parsing; generated intermediate SQL is subject to the same
+limits. Native hosts retain the existing larger worker stack.

@@ -3646,6 +3646,7 @@ fn parse_engine_sql_with_large_stack(
 ) -> std::result::Result<(), String> {
     #[cfg(target_arch = "wasm32")]
     {
+        crate::wasm_sql_guard::check(source_sql, dialect).map_err(|error| error.to_string())?;
         return polyglot_parse_one(source_sql, dialect)
             .map(|_| ())
             .map_err(|err| err.to_string());

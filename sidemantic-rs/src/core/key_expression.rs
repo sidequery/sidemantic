@@ -160,7 +160,7 @@ mod tests {
                 graph.add_model(target).unwrap();
                 let mut relationship = Relationship::new(if role { "buyer" } else { "accounts" });
                 relationship.target_model = role.then(|| "accounts".into());
-                relationship.r#type = kind;
+                relationship.r#type = kind.clone();
                 relationship.foreign_key_columns =
                     Some(vec!["tenant_ref".into(), "account_ref".into()]);
                 let source = Model::new("events", "event_key")

@@ -14,6 +14,9 @@ on:
   pull_request:
     paths:
       - "sidemantic-wasm/**"
+      - "sidemantic-rs/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
       - ".github/workflows/wasm-package-release.yml"
 
 permissions:
@@ -37,11 +40,6 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: .
 
       - name: Install wasm-bindgen-cli matching the crate
         working-directory: .
@@ -75,8 +73,17 @@ jobs:
           bun run scripts/smoke_client.mjs
           bun run scripts/smoke_vite.mjs
 
-      - name: Check package contents
-        run: npm pack --dry-run
+      - name: Pack and smoke test shipped package
+        run: |
+          bun pm pack --ignore-scripts --filename sidemantic-wasm.tgz
+          bun run scripts/smoke_package.mjs sidemantic-wasm.tgz
+
+      - name: Upload tested package
+        uses: actions/upload-artifact@v4
+        with:
+          name: sidemantic-wasm-package
+          path: sidemantic-wasm/sidemantic-wasm.tgz
+          if-no-files-found: error
 
       - name: Set up npm registry
         if: ${{ (github.event_name == 'workflow_dispatch' && inputs.publish_npm == true) || startsWith(github.ref, 'refs/tags/sidemantic-wasm-v') }}
@@ -94,5 +101,5 @@ jobs:
             echo "NPM_TOKEN not set; skipping publish."
             exit 0
           fi
-          # wasm/ is already built above; --ignore-scripts avoids a redundant rebuild.
-          npm publish --access public --ignore-scripts
+          # Publish the exact tarball exercised by the isolated consumer above.
+          npm publish sidemantic-wasm.tgz --access public --ignore-scripts

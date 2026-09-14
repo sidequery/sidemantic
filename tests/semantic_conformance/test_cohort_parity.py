@@ -202,6 +202,15 @@ def test_inner_source_dimension_arithmetic_preserves_precedence(layer):
     assert result(layer) == (["qualified"], [(218,)])
 
 
+@pytest.mark.parametrize("expression", ["amount", '"amount"', "events.amount"])
+def test_inner_source_dimension_root_resolves_physical_expression(layer, expression):
+    metric = layer.graph.models["events"].metrics[0]
+    metric.inner_metrics[1]["sql"] = expression
+    metric.agg = "sum"
+    metric.sql = "amount"
+    assert result(layer) == (["qualified"], [(103,)])
+
+
 @pytest.mark.parametrize("layer", ["rust"], indirect=True)
 @pytest.mark.parametrize("alias", ["AMOUNT", "USER_ID", "REGION"])
 def test_rust_inner_alias_collisions_ignore_case(layer, alias):

@@ -1,112 +1,82 @@
-# Rust Native Runtime Packaging
+# Rust runtime packaging
 
-The Rust native runtime is packaged separately from the main `sidemantic` Python package. It supports native Sidemantic YAML and SQL projects only. Python remains the importer and migration layer for external formats.
+Runtime artifacts have separate release paths. The presence of a workflow or an
+installation command below does not establish that a version is published.
+Python remains the default engine; installing the Rust bindings does not promote it.
 
-## Artifacts
+| Artifact | Metadata | Release workflow | Qualification |
+|---|---|---|---|
+| Python `sidemantic` | Root `pyproject.toml` | `publish.yml` | Full suite, built wheel and DAX smoke; separate Pyodide CI |
+| Python `sidemantic-rs` (`sidemantic_rs` import) | `sidemantic-rs/pyproject.toml` | `sidemantic-rs-wheels.yml` | Install and smoke each actual native wheel, plus sdist creation |
+| Rust `sidemantic` crate and base CLI | `sidemantic-rs/Cargo.toml` | `rust-runtime-release.yml` | Crate package/dry-run, packaged CLI compilation smoke |
+| Rust CLI and companion binaries | `sidemantic-rs/Cargo.toml` | `release-rust-binaries.yml` | Explicit existing release tag, matching crate version, binary smoke |
+| Browser `sidemantic-wasm` | `sidemantic-wasm/package.json` | `wasm-package-release.yml` | WASM and consumer smoke tests |
+| DuckDB extension | `sidemantic-duckdb/Makefile` | `duckdb-extension-release.yml` | Pinned DuckDB build and sqllogictests |
 
-| Artifact | Package name | Current version | Release path |
-|---|---|---:|---|
-| Main Python package | `sidemantic` | `0.10.0` | `.github/workflows/publish.yml` |
-| Rust runtime crate and CLI | `sidemantic` crate, `sidemantic` binary | `0.1.0` | `.github/workflows/rust-runtime-release.yml` |
-| Python extension wheel | `sidemantic-rs`, module `sidemantic_rs` | `0.1.0` | `.github/workflows/sidemantic-rs-wheels.yml` |
-| DuckDB extension | `sidemantic.duckdb_extension` | `0.1.0` source package | `.github/workflows/duckdb-extension-release.yml` |
-| Native format | YAML and SQL contract | `1` | `docs/native-format.md` |
+Workflow files live in `.github/workflows/`. Rust crate and wheel versions must
+match; package metadata tests enforce this. Root Python and WASM versions are
+separate. The DuckDB extension is tied to the DuckDB build version, currently
+`v1.5.5`. Do not use a release intended for a different DuckDB ABI.
 
-Keep the Rust crate version and `sidemantic-rs` Python extension version in lockstep. The package metadata test enforces this.
+## Install from a checkout or downloaded artifact
 
-## Rust CLI Install
+The Python CLI remains the normal entry point:
 
-Until the crate is published, install from source:
+```bash
+uv tool install .
+sidemantic validate ./models
+```
+
+For the optional Rust binding, install a compatible downloaded wheel into the
+same environment as Sidemantic. Source installation requires a Rust toolchain:
+
+```bash
+uv add ./sidemantic-rs
+sidemantic validate ./models --engine rust --no-fallback
+```
+
+The release wheel enables `python-adbc`. ADBC execution also requires an actual
+database driver; a successful compiler smoke does not establish driver availability.
+A compile-only binding can be built with
+`uvx maturin build --manifest-path sidemantic-rs/Cargo.toml --no-default-features --features python`.
+Core Python imports and Pyodide do not require either Rust wheel.
+
+For the standalone base Rust CLI:
 
 ```bash
 cargo install --path sidemantic-rs --locked
+sidemantic compile --models ./models --metric orders.revenue
 ```
 
-For a checked-out repository without installation:
+The Rust and Python CLIs both use the executable name `sidemantic`; choose an
+isolated installation or invoke the desired binary by its full path. The base
+Rust release uses default features and is a compiler/rewriter. It does not include
+ADBC execution or the optional server, MCP, LSP, and workbench binaries. The
+`release-rust-binaries.yml` workflow attaches a separate companion-binary bundle
+to an explicitly selected existing release. Its service features still do not
+enable ADBC. Neither artifact silently substitutes the Python CLI.
 
-```bash
-cargo run --manifest-path sidemantic-rs/Cargo.toml --bin sidemantic -- validate ./models
-```
+Rust directly accepts native YAML/SQL, Cube YAML, and OSI YAML. Other source
+formats continue through the Python import and migration path. See
+[rust-engine-mode.md](rust-engine-mode.md) for the graph handoff and engine contract.
 
-After the crate is published, the intended install path is:
+For DuckDB build/load instructions, use [duckdb-extension.md](duckdb-extension.md).
+The release workflow currently produces Linux amd64 artifacts only. Community
+registry publication, signing, and additional platforms remain separate work;
+`INSTALL sidemantic FROM community` is not an established installation path here.
 
-```bash
-cargo install sidemantic --version 0.1.0 --locked
-```
+## Release checks and publication boundaries
 
-GitHub release CLI binaries are produced by the `Rust Runtime Release` workflow for Linux, macOS, and Windows. Treat those binaries as release artifacts for the Rust native runtime, not as replacements for the main Python CLI.
+The Rust crate/CLI, wheel, and DuckDB workflows support manual qualification with
+publication inputs left false. Changes to those workflows also run qualification
+on pull requests. Wheel tests install the uploaded matrix outputs on matching
+Linux x86_64/arm64, macOS x86_64/arm64, and Windows x86_64 hosts; they do not rebuild
+a different wheel for acceptance. The CLI smoke compiles a model from a temporary
+directory using the packaged executable. Production release jobs do not restore
+or publish compiler caches.
 
-## Rust Runtime Release
-
-Use `.github/workflows/rust-runtime-release.yml`.
-
-The workflow is safe to run as a check:
-
-- `cargo test --locked --test package_metadata`
-- `cargo package --locked --no-verify`
-- `cargo publish --locked --dry-run`
-- release-mode CLI builds for Linux, macOS, and Windows
-
-Publishing to crates.io is opt-in. Run the workflow manually with `publish_crate: true`. If `CARGO_REGISTRY_TOKEN` is absent, the publish step exits successfully after printing a skip message.
-
-Tag pushes matching `sidemantic-rs-v*` or `rust-runtime-v*` build and attach CLI artifacts to a GitHub release. Manual runs can also set `create_github_release: true`.
-
-## Python Extension Wheels
-
-The Python extension package is named `sidemantic-rs` and imports as `sidemantic_rs`.
-
-Install from a published wheel:
-
-```bash
-uv add sidemantic-rs
-```
-
-Build and smoke-test locally:
-
-```bash
-cd sidemantic-rs
-uvx maturin build --release --out dist
-uv run --no-project --with dist/*.whl tests/python_wheel_smoke.py
-```
-
-Build the lightweight Python-only feature wheel:
-
-```bash
-cd sidemantic-rs
-uvx maturin build --no-default-features --features python --out dist-python
-uv run --no-project --with dist-python/*.whl tests/python_wheel_python_smoke.py
-```
-
-Build the ADBC-enabled wheel:
-
-```bash
-cd sidemantic-rs
-uvx maturin build --no-default-features --features python-adbc --out dist-adbc
-uv run --no-project --with dist-adbc/*.whl tests/python_wheel_adbc_smoke.py
-```
-
-Use `.github/workflows/sidemantic-rs-wheels.yml` for release wheels. It builds Linux, macOS, and Windows wheels plus an sdist, then smokes a host wheel. PyPI upload is opt-in with `publish_pypi: true`; if `MATURIN_PYPI_TOKEN` is absent, upload is skipped without failing the workflow.
-
-## DuckDB Extension Package
-
-The DuckDB extension is currently documented as a source-build path. Do not document `INSTALL sidemantic FROM community` as the primary path until community extension publication is complete.
-
-See `docs/duckdb-extension.md` for build and load commands.
-
-Use `.github/workflows/duckdb-extension-release.yml` to build a Linux extension artifact and run the sqllogictests. The repository currently supports DuckDB `v1.5.5` only, matching the vendored `extension-ci-tools` checkout. GitHub release upload is optional and controlled by `create_github_release`.
-
-Community extension publication remains a separate release step until repository signing, platform matrix, and DuckDB community registry metadata are finalized.
-
-## Version Compatibility
-
-| Python package | Rust runtime crate | `sidemantic-rs` wheel | Native format | DuckDB extension | DuckDB build target |
-|---|---:|---:|---:|---:|---:|
-| `0.10.0` | `0.1.0` | `0.1.0` | `1` | `0.1.0` source package | `1.4.2` |
-
-Compatibility rules:
-
-- Native format `1` is the contract shared by Python, Rust, WASM, and DuckDB extension paths.
-- Rust parses native YAML and native SQL definitions directly. It does not parse external adapter formats.
-- The Python extension wheel version must match the Rust crate version.
-- DuckDB extension artifacts are tied to the DuckDB version used at build time.
-- The main Python package should not depend on `sidemantic-rs` until Rust installation is reliable on supported platforms.
+Publishing remains an explicit operational action. Existing tag triggers can
+attach GitHub assets or publish the WASM package; manual publish/release flags
+must not be enabled for qualification. Some workflows skip publishing when their
+registry token is absent, so a green build alone does not prove publication.
+Verify registry and release assets separately after any authorized release.

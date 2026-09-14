@@ -5,6 +5,11 @@ on:
     branches: [main]
   pull_request:
 
+concurrency:
+  # Non-PR runs get a unique suffix so queued main runs are retained too.
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name == 'pull_request' && 'pr' || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   python:
     name: Python ${{ matrix.python-version }}
@@ -292,9 +297,60 @@ jobs:
           filters: |
             rust:
               - 'sidemantic-rs/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.cargo/**'
+              - 'rust-toolchain*'
+              - '.github/workflows/ci.yml'
+              # The installed-extension conformance job exercises Python callers,
+              # not just the crate. Keep its contract and fixture inputs gated.
+              - 'pyproject.toml'
+              - 'uv.lock'
+              - 'sidemantic/__init__.py'
+              - 'sidemantic/rust_bridge.py'
+              - 'sidemantic/rust_parity.py'
+              - 'sidemantic/semantic_handoff.py'
+              - 'sidemantic/core/**'
+              - 'sidemantic/sql/**'
+              - 'sidemantic/db/__init__.py'
+              - 'sidemantic/db/base.py'
+              - 'sidemantic/db/duckdb.py'
+              - 'sidemantic/db/postgres.py'
+              - 'sidemantic/db/unavailable.py'
+              - 'sidemantic/validation.py'
+              - 'sidemantic/validation_runner.py'
+              - 'sidemantic/cli.py'
+              - 'sidemantic/cli_contract.py'
+              - 'sidemantic/cli_polish.py'
+              - 'sidemantic/config.py'
+              - 'sidemantic/loaders.py'
+              - 'sidemantic/project.py'
+              - 'sidemantic/paths.py'
+              - 'sidemantic/formats.py'
+              - 'sidemantic/fidelity.py'
+              - 'sidemantic/yaml_compat.py'
+              # Imported native/Cube/Ossie fixtures are acceptance inputs too.
+              - 'sidemantic/adapters/__init__.py'
+              - 'sidemantic/adapters/base.py'
+              - 'sidemantic/adapters/sidemantic.py'
+              - 'sidemantic/adapters/cube.py'
+              - 'sidemantic/adapters/ossie.py'
+              - 'sidemantic/interchange/ossie/**'
+              - 'tests/conftest.py'
+              - 'tests/semantic_conformance/**/*.py'
+              - 'tests/semantic_conformance/fixtures/**'
             duckdb:
               - 'sidemantic-duckdb/**'
               - 'sidemantic-rs/**'
+              # The extension links the workspace crate; host tests and their
+              # shared SemanticInput fixture live under the two trees above.
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.cargo/**'
+              - 'rust-toolchain*'
+              - '.github/workflows/ci.yml'
+              - 'pyproject.toml'
+              - 'uv.lock'
             dax:
               - 'crates/**'
               - 'Cargo.toml'

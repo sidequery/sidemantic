@@ -549,7 +549,11 @@ class SQLGenerator:
                         for rcol in replacement.find_all(exp.Column):
                             if rcol.table and rcol.table.replace("_cte", "") == model.name:
                                 rcol.set("table", None)
-                        column.replace(exp.Paren(this=replacement))
+                        replacement = exp.Paren(this=replacement)
+                        if column is parsed:
+                            parsed = replacement
+                        else:
+                            column.replace(replacement)
                 result.append(parsed.sql(dialect=self.dialect))
             except SqlglotError:
                 result.append(f)
@@ -5791,7 +5795,7 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
         entity_sql_s = _normalize_expr_for_subquery(entity_sql_raw, "s", qualify_bare=True)
 
         # Normalize filters: strip model name prefixes and resolve dimension names
-        normalized_filters = self._strip_model_prefixes(filters or [], model.name)
+        normalized_filters = self._strip_model_prefixes([*(filters or []), *(metric.filters or [])], model.name)
         normalized_filters = self._resolve_filter_dimensions(normalized_filters, model)
 
         # Build WHERE filter clauses for step 1 and step N
@@ -5844,7 +5848,7 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
                 # for step 1 scope (SQL models alias as "t", table models have no alias)
                 norm_step = _normalize_expr_for_subquery(step_expr, "t" if model.sql else "")
 
-                # Step 1: find the earliest matching event per entity
+                # Step 1: find the earliest matching event per entity and selected group.
                 select_parts = [f"{entity_sql} AS entity", f"MIN({ts_sql}) AS step_1_ts"]
                 for alias, sql_col in dim_entries:
                     select_parts.append(f"{sql_col} AS {alias}")
@@ -5897,7 +5901,7 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
         metric_name_only = metric_name.split(".", 1)[-1] if "." in metric_name else metric_name
         final_select_parts = []
         for alias in dim_aliases:
-            final_select_parts.append(f"step_1.{alias}")
+            final_select_parts.append(f"step_1.{alias} AS {alias}")
         final_select_parts.append("COUNT(DISTINCT step_1.entity) AS total_entities")
         for i in range(1, num_steps + 1):
             final_select_parts.append(f"COUNT(DISTINCT step_{i}.entity) AS step_{i}_count")

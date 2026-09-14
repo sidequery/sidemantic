@@ -17,6 +17,10 @@ on:
     tags:
       - "sidemantic-duckdb-v*"
 
+  pull_request:
+    paths:
+      - ".github/workflows/duckdb-extension-release.yml"
+
 permissions:
   contents: read
 
@@ -59,11 +63,6 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: sidemantic-rs
 
       - name: Install build dependencies
         run: sudo apt-get update && sudo apt-get install -y ninja-build

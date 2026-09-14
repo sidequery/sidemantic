@@ -223,7 +223,10 @@ fn lower_complete_filter(
     let expression =
         parse_semantic_expression(sql).map_err(|_| unsupported("metric.complete_filters"))?;
     let (aggregation, input) = match &expression {
-        Expression::Sum(aggregate) | Expression::Min(aggregate) | Expression::Max(aggregate)
+        Expression::Sum(aggregate)
+        | Expression::Avg(aggregate)
+        | Expression::Min(aggregate)
+        | Expression::Max(aggregate)
             if !aggregate.distinct
                 && aggregate.filter.is_none()
                 && aggregate.order_by.is_empty()
@@ -233,19 +236,21 @@ fn lower_complete_filter(
         {
             let aggregation = match &expression {
                 Expression::Sum(_) => "sum",
+                Expression::Avg(_) => "avg",
                 Expression::Min(_) => "min",
                 _ => "max",
             };
             (aggregation, &aggregate.this)
         }
         Expression::Count(count)
-            if !count.star
-                && !count.distinct
-                && count.filter.is_none()
-                && count.ignore_nulls.is_none() =>
+            if !count.star && count.filter.is_none() && count.ignore_nulls.is_none() =>
         {
             (
-                "count",
+                if count.distinct {
+                    "count_distinct"
+                } else {
+                    "count"
+                },
                 count
                     .this
                     .as_ref()
@@ -1701,6 +1706,34 @@ mod tests {
     }
 
     #[test]
+    fn filtered_average_and_distinct_lower_to_ordinary_aggregate_states() {
+        for (sql, aggregation) in [
+            ("AVG(orders.\"Amount\")", crate::core::Aggregation::Avg),
+            (
+                "COUNT(DISTINCT orders.\"Amount\")",
+                crate::core::Aggregation::CountDistinct,
+            ),
+        ] {
+            let mut source = input();
+            source["models"][0]["metrics"] = json!([{
+                "name": "paid", "sql": sql, "sql_is_complete": true,
+                "filters": ["orders.\"Amount\" > 0"]
+            }]);
+            let decoded = SemanticInput::from_json(&source.to_string()).unwrap();
+            assert_eq!(decoded.source, source);
+            let metric = decoded
+                .graph
+                .get_model("orders")
+                .unwrap()
+                .get_metric("paid")
+                .unwrap();
+            assert_eq!(metric.agg, Some(aggregation));
+            assert_eq!(metric.sql.as_deref(), Some("\"Amount\""));
+            assert_eq!(metric.filters, vec!["(\"Amount\" > 0)"]);
+        }
+    }
+
+    #[test]
     fn complete_filtered_aggregate_rejects_unproven_populations() {
         for sql in [
             "COUNT(*)",
@@ -1711,7 +1744,10 @@ mod tests {
             "SUM(amount) OVER ()",
             "SUM((SELECT amount))",
             "SUM(other.amount)",
-            "COUNT(DISTINCT amount)",
+            "COUNT(DISTINCT amount + 1)",
+            "AVG(DISTINCT amount)",
+            "AVG(amount) OVER ()",
+            "AVG(other.amount)",
             "SUM(amount) FILTER (WHERE amount > 0)",
         ] {
             let mut source = input();

@@ -3,6 +3,7 @@
 mod aggregate_plan;
 mod cohort;
 mod conversion;
+mod fanout_aggregate;
 mod join_kind;
 mod retention;
 mod snapshots;
@@ -160,6 +161,16 @@ impl<'a> SqlGenerator<'a> {
 
     /// Generate SQL from a semantic query
     pub fn generate(&self, query: &SemanticQuery) -> Result<String> {
+        self.generate_from_model(query, None)
+    }
+
+    /// Aggregate children retain their own source population independently of
+    /// the order of requested grouping dimensions.
+    fn generate_from_model(
+        &self,
+        query: &SemanticQuery,
+        source_model: Option<&str>,
+    ) -> Result<String> {
         if let Some(sql) = aggregate_plan::try_generate(self, query)? {
             return Ok(sql);
         }
@@ -250,10 +261,11 @@ impl<'a> SqlGenerator<'a> {
             }
         }
 
-        // Dimension-first base selection preserves the queried dimension domain,
-        // including zero-count rows for related metric models.
-        let base_model = self
-            .query_base_model(&dimension_refs, &metric_refs)
+        // Ordinary queries preserve the dimension domain, including zero-count
+        // related rows. Aggregate children instead retain their source domain.
+        let base_model = source_model
+            .map(str::to_owned)
+            .or_else(|| self.query_base_model(&dimension_refs, &metric_refs))
             .ok_or_else(|| {
                 SidemanticError::Validation(
                     "Query must have at least one metric or dimension".into(),
@@ -275,7 +287,7 @@ impl<'a> SqlGenerator<'a> {
                 .entry(metric_ref.alias.clone())
                 .or_insert(0) += 1;
         }
-        let (where_filters, having_filters) =
+        let (where_filters, mut having_filters) =
             self.split_filters(&all_filters, &alias_collisions)?;
         let (cte_where_filters, where_filters) =
             self.classify_filters_for_cte_pushdown(&where_filters, &cte_models)?;
@@ -444,8 +456,27 @@ impl<'a> SqlGenerator<'a> {
         // Note: fan_out_at_risk is used below to apply symmetric aggregates
 
         // SELECT clause
+        let select_start = sql.len();
         sql.push_str("SELECT\n");
         let mut select_parts = Vec::new();
+        let mut group_expressions = Vec::new();
+        let mut aggregate_ranks = Vec::new();
+        let mut aggregate_names: HashSet<String> = dimension_refs
+            .iter()
+            .map(|field| self.output_alias(&field.model, &field.alias, &alias_collisions))
+            .chain(
+                metric_refs
+                    .iter()
+                    .map(|field| self.output_alias(&field.model, &field.alias, &alias_collisions)),
+            )
+            .chain(
+                query
+                    .table_calculations
+                    .iter()
+                    .map(|calculation| calculation.name.clone()),
+            )
+            .map(|name| name.to_ascii_lowercase())
+            .collect();
 
         // Add dimensions to SELECT
         for dim_ref in &dimension_refs {
@@ -491,6 +522,7 @@ impl<'a> SqlGenerator<'a> {
             };
             let output_alias = self.output_alias(&dim_ref.model, &dim_ref.alias, &alias_collisions);
 
+            group_expressions.push(sql_expr.clone());
             select_parts.push(format!(
                 "  {} AS {}",
                 sql_expr,
@@ -532,20 +564,27 @@ impl<'a> SqlGenerator<'a> {
                     }
                     let primary_key_expr = self.model_primary_key_expr(model, Some(&alias))?;
                     match metric.agg {
-                        Some(Aggregation::Sum) => build_symmetric_aggregate_sql_with_key_expr(
-                            &raw_alias,
-                            &primary_key_expr,
-                            SymmetricAggType::Sum,
-                            Some(&alias),
-                            self.symmetric_agg_dialect(),
-                        ),
-                        Some(Aggregation::Avg) => build_symmetric_aggregate_sql_with_key_expr(
-                            &raw_alias,
-                            &primary_key_expr,
-                            SymmetricAggType::Avg,
-                            Some(&alias),
-                            self.symmetric_agg_dialect(),
-                        ),
+                        Some(Aggregation::Sum | Aggregation::Avg) => {
+                            let mut index = aggregate_ranks.len();
+                            let rank = loop {
+                                let candidate = format!("__fanout_rank_{index}");
+                                if aggregate_names.insert(candidate.clone()) {
+                                    break candidate;
+                                }
+                                index += 1;
+                            };
+                            let mut partition = group_expressions.clone();
+                            partition.push(primary_key_expr.clone());
+                            aggregate_ranks.push((
+                                rank.clone(),
+                                format!(
+                                    "ROW_NUMBER() OVER (PARTITION BY {} ORDER BY {primary_key_expr}) AS {rank}",
+                                    partition.join(", ")
+                                ),
+                            ));
+                            let aggregation = metric.agg.as_ref().unwrap().as_sql();
+                            format!("{aggregation}(CASE WHEN {rank} = 1 THEN {raw_col} END)")
+                        }
                         Some(Aggregation::Count) => build_symmetric_aggregate_sql_with_key_expr(
                             &raw_alias,
                             &primary_key_expr,
@@ -619,6 +658,7 @@ impl<'a> SqlGenerator<'a> {
         sql.push('\n');
 
         // FROM clause
+        let source_start = sql.len();
         sql.push_str(&format!(
             "FROM {}_cte AS {}\n",
             base_model,
@@ -694,6 +734,18 @@ impl<'a> SqlGenerator<'a> {
         if !where_filters.is_empty() {
             let filter_sql = self.expand_filters(&where_filters)?;
             sql.push_str(&format!("WHERE {}\n", filter_sql.join(" AND ")));
+        }
+
+        if !aggregate_ranks.is_empty() {
+            let (ranked, rewritten_having) = self.ranked_aggregate_source(
+                &select_parts,
+                &having_filters,
+                &aggregate_ranks,
+                &sql[source_start..],
+            )?;
+            sql.truncate(select_start);
+            sql.push_str(&ranked);
+            having_filters = rewritten_having;
         }
 
         // GROUP BY clause (if we have aggregations)
@@ -3161,20 +3213,7 @@ impl<'a> SqlGenerator<'a> {
 
         let mut ctes = Vec::new();
         let first_from = self.model_from_clause(model, Some("t"));
-        let dim_source_aliases = dim_entries
-            .iter()
-            .enumerate()
-            .map(|(idx, (alias, sql_col))| (alias.clone(), format!("__dim_{idx}"), sql_col.clone()))
-            .collect::<Vec<_>>();
-        let mut source_projection_parts = vec![
-            "*".to_string(),
-            format!("{timestamp_sql} AS __ts"),
-            format!("{entity_sql} AS __entity"),
-        ];
-        for (_, source_alias, sql_col) in &dim_source_aliases {
-            source_projection_parts.push(format!("{sql_col} AS {source_alias}"));
-        }
-        let source_projection = source_projection_parts.join(", ");
+        let source_projection = format!("*, {timestamp_sql} AS __ts, {entity_sql} AS __entity");
 
         for (index, step_expr) in steps.iter().enumerate() {
             let step_number = index + 1;
@@ -3220,15 +3259,11 @@ impl<'a> SqlGenerator<'a> {
                 for alias in &dim_aliases {
                     group_parts.push(format!("{previous}.{alias}"));
                 }
-                let mut join_condition = format!(
+                // Later events retain the first step's attribution dimensions.
+                let join_condition = format!(
                     "s.__entity = {previous}.entity\n    AND s.__ts >= {previous}.step_{}_ts",
                     step_number - 1
                 );
-                for (alias, source_alias, _) in &dim_source_aliases {
-                    join_condition.push_str(&format!(
-                        "\n    AND s.{source_alias} IS NOT DISTINCT FROM {previous}.{alias}"
-                    ));
-                }
                 ctes.push(format!(
                     "step_{step_number} AS (\n  SELECT\n    {}\n  FROM {source_from}\n  JOIN {previous} ON {join_condition}\n  WHERE s.__step_match AND s.__filter_match\n  GROUP BY\n    {}\n)",
                     select_parts.join(",\n    "),
@@ -5055,6 +5090,8 @@ impl<'a> SqlGenerator<'a> {
 
     fn parse_where_expr(&self, expr_sql: &str) -> Result<Expression> {
         let sql = format!("SELECT 1 WHERE {expr_sql}");
+        #[cfg(target_arch = "wasm32")]
+        crate::wasm_sql_guard::check(&sql, SOURCE_DIALECT)?;
         let expression = polyglot_sql::parse_one(&sql, SOURCE_DIALECT)
             .map_err(|e| SidemanticError::SqlParse(e.to_string()))?;
 
@@ -5135,7 +5172,9 @@ impl<'a> SqlGenerator<'a> {
 
         for filter in filters {
             let relative_expanded = self.expand_relative_dates(filter);
-            if self.has_computed_key_models(&self.find_filter_models(&[filter.to_string()]))? {
+            if self
+                .has_computed_key_models(&self.find_filter_models(std::slice::from_ref(filter)))?
+            {
                 expanded.push(self.expand_filter_with_polyglot(&relative_expanded)?);
                 continue;
             }
@@ -5932,7 +5971,7 @@ models:
         assert!(sql.contains("step_2 AS"), "{sql}");
         assert!(sql.contains("s.__ts >= step_1.step_1_ts"), "{sql}");
         assert!(
-            sql.contains("s.__dim_0 IS NOT DISTINCT FROM step_1.region"),
+            !sql.contains("s.__dim_0 IS NOT DISTINCT FROM step_1.region"),
             "{sql}"
         );
         assert!(sql.contains("s.__step_match AND s.__filter_match"), "{sql}");
@@ -6238,14 +6277,16 @@ models:
 
         let sql = generator.generate(&query).unwrap();
 
-        // Should use symmetric aggregates for fan-out prevention
+        // Rank each source key inside the requested group before summing.
         assert!(
-            sql.contains("SUM(DISTINCT"),
-            "Expected symmetric aggregate in SQL: {sql}"
+            sql.contains("SUM(CASE WHEN __fanout_rank_0 = 1"),
+            "Expected per-key summation in SQL: {sql}"
         );
         assert!(
-            sql.contains("HASH(customers_cte.id)"),
-            "Expected hash on primary key: {sql}"
+            sql.contains(
+                "PARTITION BY orders_cte.status, customers_cte.id ORDER BY customers_cte.id"
+            ),
+            "Expected rank partitioned by output group and source key: {sql}"
         );
     }
 
@@ -6266,21 +6307,23 @@ models:
         graph.add_model(orders).unwrap();
         graph.add_model(customers).unwrap();
 
-        let generator = SqlGenerator::new(&graph).with_dialect(DialectType::PostgreSQL);
         let query = SemanticQuery::new()
             .with_metrics(vec!["customers.total_credit".into()])
             .with_dimensions(vec!["orders.status".into()]);
 
-        let sql = generator.generate(&query).unwrap();
+        for dialect in [DialectType::PostgreSQL, DialectType::Snowflake] {
+            let generator = SqlGenerator::new(&graph).with_dialect(dialect);
+            let sql = generator.generate(&query).unwrap();
 
-        assert!(
-            sql.contains("hashtext(customers_cte.id::text)::numeric"),
-            "Expected PostgreSQL symmetric aggregate hash: {sql}"
+            assert!(
+            sql.contains("ROW_NUMBER() OVER (PARTITION BY orders_cte.status, customers_cte.id ORDER BY customers_cte.id)"),
+            "Expected portable per-key rank: {sql}"
         );
-        assert!(
-            !sql.contains("CAST(HASH(customers_cte.id) AS HUGEINT)"),
-            "Should not hardcode DuckDB symmetric aggregate SQL: {sql}"
-        );
+            assert!(
+                !sql.contains("CAST(HASH(customers_cte.id) AS HUGEINT)"),
+                "Should not hardcode DuckDB symmetric aggregate SQL: {sql}"
+            );
+        }
     }
 
     #[test]
@@ -6393,7 +6436,8 @@ models:
             .with_dimensions(vec!["shipments.status".into()]);
 
         let sql = generator.generate(&query).unwrap();
-        assert!(sql.contains("HASH(CONCAT(COALESCE(CAST(order_items_cte.order_id AS VARCHAR), '')"));
+        assert!(sql.contains("CONCAT(COALESCE(CAST(order_items_cte.order_id AS VARCHAR), '')"));
+        assert!(sql.contains("ROW_NUMBER() OVER"));
         assert!(sql.contains("CAST(order_items_cte.item_id AS VARCHAR)"));
     }
 

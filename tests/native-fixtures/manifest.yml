@@ -186,7 +186,7 @@ fixtures:
         expected_result: expected/result.json
         result_columns: [status, total_credit_limit]
         sql_contains: [JOIN, orders, total_credit_limit]
-        rust_sql_contains: ["SUM(DISTINCT", "HASH(customers_cte.customer_id)"]
+        rust_sql_contains: ["SUM(CASE", "ROW_NUMBER() OVER", "customers_cte.customer_id"]
 
   - name: source_uri_model
     valid: true
@@ -317,7 +317,7 @@ fixtures:
         file: queries/signup_retention.query.yml
         expected_result: expected/signup_retention_result.json
         result_columns: [cohort_date, days_since, active_users, cohort_size, retention_pct]
-        sql_contains: ["WITH cohorts", retention_pct, days_since]
+        sql_contains: ["cohorts AS", retention_pct, days_since]
       - name: multi_platform_users
         file: queries/multi_platform_users.query.yml
         expected_result: expected/multi_platform_users_result.json

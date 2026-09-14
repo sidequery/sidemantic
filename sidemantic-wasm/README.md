@@ -107,6 +107,20 @@ The bundle is generated from the `sidemantic-rs` crate. Requires the Rust `wasm3
 bun run build   # runs scripts/build.sh -> wasm/
 ```
 
+To check the distributable after building:
+
+```bash
+bun pm pack --ignore-scripts --filename sidemantic-wasm.tgz
+bun run scripts/smoke_package.mjs sidemantic-wasm.tgz
+```
+
+The release workflow installs this tarball into an isolated consumer with lifecycle
+scripts disabled, imports the public entry points, checks bundled declaration and
+WASM files, and exercises compilation, rewriting, client transport, and the installed
+codegen CLI. It uploads the tested tarball and uses that same file for an authorized
+npm publish. These Node checks cover package completeness; browser runtime parity
+still requires the browser tests.
+
 ## License
 
 AGPL-3.0-only. See [LICENSE](./LICENSE).

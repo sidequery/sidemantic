@@ -2,7 +2,6 @@
 
 use std::collections::{HashMap, HashSet};
 
-#[cfg(not(target_arch = "wasm32"))]
 use polyglot_sql::parse as polyglot_parse;
 use polyglot_sql::{
     expressions::{
@@ -1334,10 +1333,9 @@ pub(super) fn parse_sql_with_large_stack(sql: &str) -> Result<Vec<Expression>> {
 fn parse_sql_with_dialect(sql: &str, dialect: DialectType) -> Result<Vec<Expression>> {
     #[cfg(target_arch = "wasm32")]
     {
-        let _ = (sql, dialect);
-        return Err(SidemanticError::SqlParse(
-            "operation not supported on this platform".to_string(),
-        ));
+        // Bound parser recursion before using the fixed WASM host stack.
+        crate::wasm_sql_guard::check(sql, dialect)?;
+        polyglot_parse(sql, dialect).map_err(|error| SidemanticError::SqlParse(error.to_string()))
     }
 
     #[cfg(not(target_arch = "wasm32"))]

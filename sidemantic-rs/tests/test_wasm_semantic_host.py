@@ -50,7 +50,8 @@ def test_compile_population_and_injection_value():
     assert rows(call("compile", query=query)["result"]) == [(None,)]
 
 
-def test_rewrite_population():
+@pytest.mark.parametrize("tenant,expected", [("a", [(10,)]), ("b", [(100,)]), ("a' OR 1=1 --", [(None,)])])
+def test_rewrite_population(tenant, expected):
     # Call the context-bearing public export using the same JSON IPC harness.
     module = str(Path(os.environ["SIDEMANTIC_WASM_MODULE"]).resolve())
     request = {
@@ -58,7 +59,7 @@ def test_rewrite_population():
         "args": [
             json.dumps(SOURCE),
             "select orders.revenue as total from metrics",
-            json.dumps({"user_attributes": {"tenant": "a"}, "enforce_visibility": True}),
+            json.dumps({"user_attributes": {"tenant": tenant}, "enforce_visibility": True}),
         ],
     }
     result = subprocess.run(
@@ -68,7 +69,9 @@ def test_rewrite_population():
         capture_output=True,
         check=True,
     )
-    assert rows(json.loads(result.stdout)["result"]) == [(10,)]
+    response = json.loads(result.stdout)
+    assert "error" not in response, response
+    assert rows(response["result"]) == expected
 
 
 @pytest.mark.parametrize("mutation", ["version", "envelope", "field", "key", "scope", "capability", "policy"])
@@ -117,6 +120,47 @@ def test_reference_validation_is_not_authorization():
     assert json.loads(call("validate", query={"metrics": ["orders.revenue"]})["result"]) == []
     assert "no user_attributes" in call("compile", query={"metrics": ["orders.revenue"]}).get("error", "")
     assert "no user_attributes" in call("rewrite", sql="select orders.revenue from metrics").get("error", "")
+
+
+@pytest.mark.parametrize("method", ["compile", "rewrite"])
+@pytest.mark.parametrize(
+    "expression,diagnostic",
+    [
+        ("(" * 1000 + "1" + ")" * 1000, "nesting limit"),
+        ("NOT " * 1000 + "true", "operator-chain limit"),
+        (("NOT " * 20 + "(") * 4 + "true" + ")" * 4, "combined-depth limit"),
+    ],
+)
+def test_parser_work_limits_return_errors_not_traps(method, expression, diagnostic):
+    model = copy.deepcopy(SOURCE)
+    del model["models"][0]["security"]
+    if method == "compile":
+        model["models"][0]["metrics"][0]["sql"] = expression
+        result = call(method, source=model, query={"metrics": ["orders.revenue"]})
+    else:
+        result = call(method, source=model, sql=f"select {expression}")
+    assert "SQL parse error: WASM SQL parser" in result.get("error", ""), result
+    assert diagnostic in result["error"]
+
+
+def test_near_nesting_limit_and_literal_delimiters_are_accepted():
+    model = copy.deepcopy(SOURCE)
+    del model["models"][0]["security"]
+    model["models"][0]["metrics"][0]["sql"] = "(" * 14 + "amount" + ")" * 14
+    assert rows(call("compile", source=model, query={"metrics": ["orders.revenue"]})["result"]) == [(110,)]
+    combined = "(" * 14 + "NOT " * 30 + "true" + ")" * 14
+    result = call("rewrite", source=model, sql=f"select {combined}")
+    assert "result" in result, result
+    result = call("rewrite", source=model, sql="select " + "NOT " * 30 + "true")
+    assert "result" in result, result
+    # Flat projections can exceed 256 tokens without recursive expression depth.
+    wide_sql = "select " + ", ".join(f"{i} as c{i}" for i in range(100))
+    assert "result" in call("rewrite", source=model, sql=wide_sql)
+    # Parentheses in literals and comments do not consume a nesting budget.
+    literal = "(" * 100
+    for expression in [f"'{literal}'", f"$tag${literal}$tag$"]:
+        result = call("rewrite", source=model, sql=f"select {expression} /* {literal} */ -- {literal}\n")
+        assert "result" in result, result
 
 
 if __name__ == "__main__":

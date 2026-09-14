@@ -84,6 +84,191 @@ impl SqlGenerator<'_> {
         )?)
     }
 
+    fn generate_scoped_multistep_conversion(
+        &self,
+        query: &SemanticQuery,
+        reference: &MetricRef,
+        dimensions: &[DimensionRef],
+        model: &Model,
+        metric: &Metric,
+    ) -> Result<String> {
+        let steps = metric.steps.as_ref().unwrap();
+        if steps.len() < 2 || metric.conversion_window.is_some() {
+            return Err(SidemanticError::Validation(
+                "multi-step conversion requires at least two steps and no conversion_window".into(),
+            ));
+        }
+        if metric.fill_nulls_with.is_some() {
+            return Err(unsupported("metric_shape"));
+        }
+        if query
+            .prepared_policies
+            .model_names()
+            .any(|name| name != &model.name)
+        {
+            return Err(unsupported("joined_policy"));
+        }
+        let entity = metric
+            .entity
+            .as_deref()
+            .ok_or_else(|| unsupported("entity"))?;
+        let time = self
+            .default_time_dimension(model)
+            .ok_or_else(|| unsupported("time_dimension"))?;
+        let mut projection = vec![
+            format!(
+                "{} AS __funnel_entity",
+                self.conversion_source_expression(model, entity)?
+            ),
+            format!(
+                "{} AS __funnel_time",
+                self.conversion_source_expression(model, &time.name)?
+            ),
+        ];
+        let mut secured = model.clone();
+        // The shared sequential generator sees only generated column names;
+        // its legacy filter normalization never rewrites caller expressions.
+        secured.dimensions = vec![crate::core::Dimension::time("__funnel_time")];
+        secured.default_time_dimension = Some("__funnel_time".into());
+        let mut output_names = HashSet::from(["total_entities".to_string()]);
+        for index in 1..=steps.len() {
+            output_names.insert(format!("step_{index}_count"));
+        }
+        if !output_names.insert(metric.name.to_ascii_lowercase()) {
+            return Err(unsupported("output_alias"));
+        }
+        let mut output = Vec::new();
+        let mut inner_dimensions = Vec::new();
+        for (index, dimension) in dimensions.iter().enumerate() {
+            if dimension.model != model.name || model.get_dimension(&dimension.name).is_none() {
+                return Err(unsupported("joined_dimension"));
+            }
+            if dimension.alias.eq_ignore_ascii_case("entity")
+                || (1..=steps.len()).any(|index| {
+                    dimension
+                        .alias
+                        .eq_ignore_ascii_case(&format!("step_{index}_ts"))
+                })
+                || !output_names.insert(dimension.alias.to_ascii_lowercase())
+            {
+                return Err(unsupported("output_alias"));
+            }
+            let mut expression = self.conversion_source_expression(model, &dimension.name)?;
+            if let Some(grain) = &dimension.granularity {
+                expression = self.date_trunc_sql(grain, &expression);
+            }
+            let internal = format!("__funnel_group_{index}");
+            projection.push(format!("{expression} AS {internal}"));
+            secured
+                .dimensions
+                .push(crate::core::Dimension::categorical(&internal));
+            inner_dimensions.push(DimensionRef {
+                model: model.name.clone(),
+                name: internal.clone(),
+                alias: internal.clone(),
+                granularity: None,
+            });
+            output.push(format!("{internal} AS {}", quote(&dimension.alias)));
+        }
+        // Step predicates refer to physical source columns in the Python contract.
+        // Resolve only owner qualifiers, preserving literals and guarding row scope.
+        let mut physical = model.clone();
+        physical.dimensions.clear();
+        let mut inner_metric = metric.clone();
+        inner_metric.entity = Some("__funnel_entity".into());
+        inner_metric.name = "__funnel_result".into();
+        inner_metric.filters.clear();
+        let mut inner_steps = Vec::new();
+        for (index, step) in steps.iter().enumerate() {
+            let expression = self.conversion_source_expression(&physical, step)?;
+            let internal = format!("__funnel_step_{index}");
+            projection.push(format!("({expression}) AS {internal}"));
+            inner_steps.push(internal);
+        }
+        inner_metric.steps = Some(inner_steps);
+        let filters: Vec<_> = query
+            .filters
+            .iter()
+            .cloned()
+            .chain(self.resolve_segments(&query.segments)?)
+            .chain(metric.filters.iter().cloned())
+            .collect();
+        let mut predicates = Vec::new();
+        for filter in &filters {
+            for column in semantic_column_references(filter)? {
+                if model.get_metric(&column.field).is_some()
+                    || self.graph.get_metric(&column.field).is_some()
+                {
+                    return Err(unsupported("aggregate_filter"));
+                }
+            }
+            predicates.push(format!(
+                "({})",
+                self.conversion_source_expression(model, filter)?
+            ));
+        }
+        predicates.extend(
+            query
+                .prepared_policies
+                .filters_for_model(&model.name)
+                .map(|predicate| format!("({predicate})")),
+        );
+        let restriction = if predicates.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {}", predicates.join(" AND "))
+        };
+        secured.sql = Some(format!(
+            "SELECT {} FROM {}{restriction}",
+            projection.join(", "),
+            self.model_from_clause(model, Some("t"))
+        ));
+        secured.table = None;
+        let inner = self.generate_multistep_conversion_query(
+            &secured,
+            &inner_metric,
+            reference,
+            &inner_dimensions,
+            &[],
+            &[],
+            None,
+            None,
+        )?;
+        output.push("total_entities".into());
+        output.extend((1..=steps.len()).map(|index| format!("step_{index}_count")));
+        output.push(format!("__funnel_result AS {}", quote(&metric.name)));
+        let mut sql = format!(
+            "SELECT {} FROM ({inner}) AS funnel_result",
+            output.join(", ")
+        );
+        let mut order = Vec::new();
+        for item in &query.order_by {
+            let (field, direction) = item
+                .rsplit_once(' ')
+                .filter(|(_, direction)| {
+                    direction.eq_ignore_ascii_case("asc") || direction.eq_ignore_ascii_case("desc")
+                })
+                .unwrap_or((item, ""));
+            let name = field
+                .strip_prefix(&format!("{}.", model.name))
+                .unwrap_or(field);
+            if !output_names.contains(&name.to_ascii_lowercase()) {
+                return Err(unsupported("order_by"));
+            }
+            order.push(format!("{} {direction}", quote(name)));
+        }
+        if !order.is_empty() {
+            sql.push_str(&format!(" ORDER BY {}", order.join(", ")));
+        }
+        if let Some(limit) = query.limit {
+            sql.push_str(&format!(" LIMIT {limit}"));
+        }
+        if let Some(offset) = query.offset {
+            sql.push_str(&format!(" OFFSET {offset}"));
+        }
+        Ok(sql)
+    }
+
     pub(super) fn generate_scoped_conversion(
         &self,
         query: &SemanticQuery,
@@ -103,7 +288,11 @@ impl SqlGenerator<'_> {
             .get_model(&reference.model)
             .ok_or_else(|| unsupported("owner"))?;
         let metric = self.metric_for_ref(reference)?;
-        if metric.steps.is_some() || metric.fill_nulls_with.is_some() {
+        if metric.steps.is_some() {
+            return self
+                .generate_scoped_multistep_conversion(query, reference, dimensions, model, metric);
+        }
+        if metric.fill_nulls_with.is_some() {
             return Err(unsupported("metric_shape"));
         }
         // The legacy algorithm addresses these source columns by their declared names.
@@ -272,7 +461,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn multistep_is_not_promoted_by_conversion_decoder() {
+    fn multistep_requires_a_time_dimension() {
         let mut metric = Metric::new("funnel");
         metric.r#type = MetricType::Conversion;
         metric.entity = Some("user_id".into());
@@ -295,7 +484,7 @@ mod tests {
             graph_metric: false,
         };
         assert!(
-            matches!(SqlGenerator::new(&graph).generate_scoped_conversion(&SemanticQuery::new(), &reference, &[]), Err(SidemanticError::UnsupportedSemanticFeatures { capabilities }) if capabilities == vec!["metric.conversion_metric_shape"])
+            matches!(SqlGenerator::new(&graph).generate_scoped_conversion(&SemanticQuery::new(), &reference, &[]), Err(SidemanticError::UnsupportedSemanticFeatures { capabilities }) if capabilities == vec!["metric.conversion_time_dimension"])
         );
     }
 }

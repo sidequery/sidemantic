@@ -121,6 +121,18 @@ fn invalid_escape() -> SidemanticError {
     SidemanticError::SqlParse("Invalid Snowflake string escape".into())
 }
 
+fn read_hex_escape(characters: &mut impl Iterator<Item = char>, digits: usize) -> Result<u32> {
+    let mut code = 0;
+    for _ in 0..digits {
+        let digit = characters
+            .next()
+            .and_then(|c| c.to_digit(16))
+            .ok_or_else(invalid_escape)?;
+        code = code * 16 + digit;
+    }
+    Ok(code)
+}
+
 /// Snowflake's documented escape table, including unknown-escape behavior:
 /// https://docs.snowflake.com/en/sql-reference/data-types-text#escape-sequences-in-single-quoted-string-constants
 fn decode_single_quoted(raw: &str) -> Result<String> {
@@ -162,13 +174,18 @@ fn decode_single_quoted(raw: &str) -> Result<String> {
             }
             'x' | 'u' => {
                 let digits = if escaped == 'x' { 2 } else { 4 };
-                let mut code = 0;
-                for _ in 0..digits {
-                    let digit = characters
-                        .next()
-                        .and_then(|c| c.to_digit(16))
-                        .ok_or_else(invalid_escape)?;
-                    code = code * 16 + digit;
+                let mut code = read_hex_escape(&mut characters, digits)?;
+                if (0xd800..=0xdbff).contains(&code) {
+                    // Snowflake represents supplementary characters with two
+                    // adjacent four-digit UTF-16 escapes (SSC-EWI-BQ0008).
+                    if characters.next() != Some('\\') || characters.next() != Some('u') {
+                        return Err(invalid_escape());
+                    }
+                    let low = read_hex_escape(&mut characters, 4)?;
+                    if !(0xdc00..=0xdfff).contains(&low) {
+                        return Err(invalid_escape());
+                    }
+                    code = 0x10000 + ((code - 0xd800) << 10) + (low - 0xdc00);
                 }
                 char::from_u32(code).ok_or_else(invalid_escape)?
             }
@@ -236,6 +253,28 @@ mod tests {
     }
 
     #[test]
+    fn paired_unicode_escapes_decode_supplementary_characters() {
+        for (source, expected) in [
+            (r"'\uD800\uDC00'", "\u{10000}"),
+            (r"'\uD83D\uDE00'", "\u{1f600}"),
+            (r"'\uDBC0\uDC00'", "\u{100000}"),
+            (r"'\uDBFF\uDFFF'", "\u{10ffff}"),
+            (
+                r"'é\ud83d\ude00\u0041\uD83D\uDE01!'",
+                "é\u{1f600}A\u{1f601}!",
+            ),
+            (r"'\\uD83D\\uDE00'", r"\uD83D\uDE00"),
+        ] {
+            let sql = format!("SELECT {source}");
+            let prepared = source_sql(&sql, DialectType::Snowflake).unwrap();
+            let generated = polyglot_sql::Dialect::get(DialectType::Snowflake)
+                .transpile_to(&prepared, DialectType::DuckDB)
+                .unwrap();
+            assert_eq!(first_literal(&generated[0], DialectType::DuckDB), expected);
+        }
+    }
+
+    #[test]
     fn preprocessing_preserves_unicode_offsets_identifiers_comments_and_dollars() {
         let sql = "SELECT 'é', '\\u26c4', $$raw\\n'$$, \"id\\n\" -- \\u1234\n";
         let prepared = source_sql(sql, DialectType::Snowflake).unwrap();
@@ -273,6 +312,14 @@ mod tests {
             r"SELECT '\u12G4'",
             r"SELECT '\uD800'",
             r"SELECT '\uDFFF'",
+            r"SELECT '\uD83D\u0041'",
+            r"SELECT '\uD83D\uD800'",
+            r"SELECT '\uDE00\uD83D'",
+            r"SELECT '\uD83D \uDE00'",
+            r"SELECT '\uD83D\\uDE00'",
+            r"SELECT '\uD83D\U0000DE00'",
+            r"SELECT '\uD83D\uDE0'",
+            r"SELECT '\uD83D\uDE0G'",
             r"SELECT '\04'",
         ] {
             assert!(source_sql(sql, DialectType::Snowflake).is_err(), "{sql}");

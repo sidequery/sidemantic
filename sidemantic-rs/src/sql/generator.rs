@@ -6355,7 +6355,6 @@ mod tests {
         for filter in [
             "orders.region IN ('west')",
             "orders.created >= '2024-01-15'",
-            "orders.revenue > 100",
         ] {
             let query = SemanticQuery::new()
                 .with_metrics(vec!["orders.revenue".into()])
@@ -6364,6 +6363,24 @@ mod tests {
             let sql = generator.generate(&query).unwrap();
             assert!(!sql.contains("used_preagg=true"), "{filter}: {sql}");
         }
+    }
+
+    #[test]
+    fn test_rollup_applies_metric_predicates_after_reaggregation() {
+        let mut graph = SemanticGraph::new();
+        graph.add_model(rollup_model()).unwrap();
+        let query = SemanticQuery::new()
+            .with_metrics(vec!["orders.revenue".into()])
+            .with_filters(vec!["orders.revenue > 100".into()])
+            .with_use_preaggregations(true);
+        let sql = SqlGenerator::new(&graph).generate(&query).unwrap();
+        assert!(sql.contains("used_preagg=true"), "{sql}");
+        let (_, predicate) = sql
+            .split_once("HAVING")
+            .expect("metric predicate uses HAVING");
+        assert!(predicate.contains("SUM(revenue_raw)"), "{sql}");
+        assert!(predicate.contains("> 100"), "{sql}");
+        assert!(!sql.contains("WHERE"), "{sql}");
     }
 
     #[test]

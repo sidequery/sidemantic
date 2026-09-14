@@ -103,6 +103,14 @@ def test_average_and_derived_having_reconstruct_unselected_dependencies(layer):
     assert execute(layer, query) == (["status", "avg_amount"], [("paid", 42.5)])
 
 
+@pytest.mark.parametrize("threshold,expected", [(100, [(210,)]), (250, [])])
+def test_sum_having_filters_reaggregated_rollup_total(layer, threshold, expected):
+    build(layer)
+    query = {"metrics": ["orders.revenue"], "filters": [f"orders.revenue > {threshold}"]}
+    assert execute(layer, query) == (["revenue"], expected)
+    assert layer.adapter.execute(layer.compile(**query, use_preaggregations=False)).fetchall() == expected
+
+
 def test_empty_rollup_count_is_zero_and_average_is_null(layer):
     layer.adapter.execute("delete from rollup_orders")
     build(layer)

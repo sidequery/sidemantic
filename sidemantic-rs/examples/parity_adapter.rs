@@ -529,22 +529,33 @@ fn parse_single_metric(metric_yaml: &str) -> sidemantic::Result<Metric> {
 // Python graph metrics are registered directly. Native-format top-level metrics
 // instead require model ownership inference, which is a different contract.
 fn load_from_string(models_yaml: &str) -> sidemantic::Result<SemanticGraph> {
-    #[derive(Deserialize)]
-    struct GraphMetrics {
-        #[serde(default)]
-        graph_metrics: Vec<Metric>,
-    }
-
-    let transport: GraphMetrics = serde_yaml::from_str(models_yaml)?;
     let mut document: serde_yaml::Value = serde_yaml::from_str(models_yaml)?;
-    if let Some(mapping) = document.as_mapping_mut() {
-        mapping.remove(serde_yaml::Value::String("graph_metrics".into()));
-    }
+    let graph_metrics = document
+        .as_mapping_mut()
+        .and_then(|mapping| mapping.remove(serde_yaml::Value::String("graph_metrics".into())));
+    // Apply the native metric schema's type/aggregation inference, without the
+    // native loader's separate top-level metric ownership assignment.
+    let mut metric_document = serde_yaml::Mapping::new();
+    metric_document.insert(
+        serde_yaml::Value::String("metrics".into()),
+        graph_metrics.unwrap_or(serde_yaml::Value::Sequence(Vec::new())),
+    );
+    let config: SidemanticConfig =
+        serde_yaml::from_value(serde_yaml::Value::Mapping(metric_document))?;
+    let (_, metrics, _) = config.into_parts()?;
     let mut graph = sidemantic::load_from_string(&serde_yaml::to_string(&document)?)?;
-    for metric in &transport.graph_metrics {
+    for metric in &metrics {
+        // Model conversion/time-comparison metrics are also indexed at graph
+        // scope by both implementations. Their serialized graph copy is not a
+        // second definition; conflicting definitions must still fail.
+        if let Some(existing) = graph.get_metric(&metric.name) {
+            if serde_yaml::to_value(existing)? == serde_yaml::to_value(metric)? {
+                continue;
+            }
+        }
         graph.add_metric_unvalidated(metric.clone())?;
     }
-    for metric in &transport.graph_metrics {
+    for metric in &metrics {
         graph.validate_metric_dependencies(metric)?;
     }
     Ok(graph)
@@ -833,6 +844,92 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn graph_metric_transport_validates_inferred_derived_dependencies() {
+        let error = load_from_string(
+            r#"
+models:
+  - name: orders
+    table: orders
+    primary_key: id
+graph_metrics:
+  - name: bad_metric
+    sql: orders.nonexistent
+"#,
+        )
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("measure 'nonexistent' not found"));
+    }
+
+    #[test]
+    fn graph_metric_transport_compiles_reference_with_cumulative_metric() {
+        let graph = load_from_string(
+            r#"
+models:
+  - name: orders
+    table: orders
+    primary_key: id
+    dimensions:
+      - name: order_date
+        type: time
+        granularity: day
+    metrics:
+      - name: daily_revenue
+        agg: sum
+        sql: amount
+graph_metrics:
+  - name: company.sales.revenue
+    sql: orders.daily_revenue
+  - name: running_total
+    type: cumulative
+    sql: orders.daily_revenue
+"#,
+        )
+        .unwrap();
+        let query = SemanticQuery::new()
+            .with_metrics(vec!["company.sales.revenue".into(), "running_total".into()])
+            .with_dimensions(vec!["orders.order_date".into()]);
+        let sql = SqlGenerator::new(&graph).generate(&query).unwrap();
+        assert!(sql.contains("amount AS daily_revenue_raw"), "{sql}");
+        assert!(sql.contains("\"company.sales.revenue\""), "{sql}");
+        assert!(
+            !sql.contains("SUM(orders_cte.orders.daily_revenue)"),
+            "{sql}"
+        );
+    }
+
+    #[test]
+    fn graph_metric_transport_accepts_indexed_copy_but_rejects_conflict() {
+        let document = r#"
+models:
+  - name: events
+    table: events
+    primary_key: id
+    metrics:
+      - name: conversion_rate
+        type: conversion
+        entity: user_id
+        base_event: signup
+        conversion_event: purchase
+graph_metrics:
+  - name: conversion_rate
+    type: conversion
+    entity: user_id
+    base_event: signup
+    conversion_event: purchase
+"#;
+        let graph = load_from_string(document).unwrap();
+        assert_eq!(graph.metrics().count(), 1);
+        let conflicting =
+            document.replacen("conversion_event: purchase", "conversion_event: paid", 1);
+        assert!(load_from_string(&conflicting)
+            .unwrap_err()
+            .to_string()
+            .contains("already exists"));
+    }
 
     #[test]
     fn graph_metric_transport_does_not_invent_model_ownership() {

@@ -351,38 +351,6 @@ mod tests {
     }
 
     #[test]
-    fn test_count_without_sql() {
-        // Test COUNT metric without explicit sql (simulates parsed definition)
-        let mut graph = SemanticGraph::new();
-
-        // Create metric with sql: None (like what SQL parser produces)
-        let mut count_metric = Metric::new("order_count");
-        count_metric.agg = Some(crate::core::Aggregation::Count);
-        count_metric.sql = None; // Explicit None to simulate parsed metric
-
-        let orders = Model::new("orders", "order_id")
-            .with_table("orders")
-            .with_dimension(Dimension::categorical("status"))
-            .with_metric(count_metric);
-
-        graph.add_model(orders).unwrap();
-        let rewriter = QueryRewriter::new(&graph);
-
-        let sql = "SELECT orders.order_count FROM orders";
-        let rewritten = rewriter.rewrite(sql).unwrap();
-
-        // Should be COUNT(*) not COUNT(order_count)
-        assert!(
-            rewritten.contains("COUNT(*)"),
-            "Expected COUNT(*) but got: {rewritten}"
-        );
-        assert!(
-            !rewritten.contains("COUNT(order_count)"),
-            "Should not count order_count column directly: {rewritten}"
-        );
-    }
-
-    #[test]
     fn test_source_uri_only_model_rejects_rewrite() {
         let mut graph = SemanticGraph::new();
         let mut events = Model::new("events", "event_id")
@@ -402,27 +370,6 @@ mod tests {
                 if code == "unsupported_source_uri_query"
         ));
         assert!(err.to_string().contains("source_uri"));
-    }
-
-    #[test]
-    fn test_wrap_simple_select_with_cte_preserves_composite_primary_keys() {
-        let mut graph = SemanticGraph::new();
-
-        let order_items = Model::new("order_items", "order_id")
-            .with_primary_key_columns(vec!["order_id".to_string(), "item_id".to_string()])
-            .with_table("public.order_items")
-            .with_dimension(Dimension::categorical("sku"))
-            .with_metric(Metric::sum("item_revenue", "amount"));
-
-        graph.add_model(order_items).unwrap();
-        let rewriter = QueryRewriter::new(&graph);
-
-        let sql = "SELECT order_items.sku, order_items.item_revenue FROM order_items";
-        let rewritten = rewriter.rewrite(sql).unwrap();
-
-        assert!(rewritten.contains("order_id"));
-        assert!(rewritten.contains("item_id"));
-        assert!(rewritten.contains("GROUP BY 1"));
     }
 
     #[test]

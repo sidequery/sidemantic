@@ -632,7 +632,12 @@ fn validate_semantic_dependencies(graph: &SemanticGraph, graph_metrics: &[Metric
         // its metric name with the same ownership and cycle rules as other refs.
         let window_dependency = SqlGenerator::window_output_dependency(metric)?;
         for expression in [
-            metric.sql.as_deref(),
+            // Cohort SQL consumes inner-result aliases; the cohort generator
+            // validates that separate namespace instead of metric dependencies.
+            metric
+                .sql
+                .as_deref()
+                .filter(|_| metric.r#type != crate::core::MetricType::Cohort),
             metric.numerator.as_deref(),
             metric.denominator.as_deref(),
             window_dependency.as_deref(),
@@ -885,6 +890,7 @@ impl SemanticInput {
                 false,
             )?;
             if metric.agg == Some(crate::core::Aggregation::CountDistinct)
+                && metric.r#type != crate::core::MetricType::Cohort
                 && metric
                     .sql
                     .as_deref()

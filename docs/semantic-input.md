@@ -366,7 +366,8 @@ junction declaration. Measures retain their source-key grain across duplicate
 junction rows. Inactive relationships remain excluded.
 ### Source-local cohorts
 
-Direct model cohort metrics can aggregate source rows per entity, apply `having`
+Direct model cohort metrics and graph metrics with an explicit `metric_owners`
+entry can aggregate source rows per entity, apply `having`
 to declared inner result columns, and aggregate the surviving groups. Query and
 entity dimensions are carried through both levels, including explicit time
 buckets. Outer `count` counts inner groups (including a qualifying null-entity
@@ -376,7 +377,10 @@ apply before the inner aggregation, with each predicate parenthesized.
 
 This subset requires row-local scalar source expressions. Subqueries, windows,
 and aggregates hidden in source dimensions, inner SQL or row filters are
-rejected. Joined populations, graph-scoped cohorts, calculated wrappers and
+rejected. Graph cohorts require their declared source owner; entity or output
+column names do not infer ownership. The declared owner also determines the
+mandatory restrictions applied to the source population. Joined populations,
+unowned graph cohorts, calculated wrappers and
 null-fill options remain gated. HAVING and outer expressions must reference
 available inner columns; other aggregate contexts are not silently inferred.
 

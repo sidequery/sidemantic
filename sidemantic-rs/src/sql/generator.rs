@@ -1195,6 +1195,17 @@ impl<'a> SqlGenerator<'a> {
         metric: &Metric,
         visiting: &mut HashSet<String>,
     ) -> Result<Vec<String>> {
+        // Cohort output expressions bind inner-result columns, not other metrics.
+        // Its source population must be declared, never inferred from those names.
+        if metric.r#type == MetricType::Cohort {
+            return self
+                .graph
+                .metric_owner(reference)
+                .map(|owner| vec![owner.to_string()])
+                .ok_or_else(|| SidemanticError::UnsupportedSemanticFeatures {
+                    capabilities: vec!["metric.cohort_owner".into()],
+                });
+        }
         let mut owners = HashSet::new();
         let window_dependency = Self::window_output_dependency(metric)?;
         if let Some(owner) = self.graph.metric_owner(reference) {
@@ -1478,7 +1489,10 @@ impl<'a> SqlGenerator<'a> {
             .transpose()?
             .unwrap_or_default();
         let mut exprs: Vec<&str> = [
-            metric.sql.as_deref(),
+            metric
+                .sql
+                .as_deref()
+                .filter(|_| metric.r#type != MetricType::Cohort),
             metric.numerator.as_deref(),
             metric.denominator.as_deref(),
             metric.base_metric.as_deref(),

@@ -5088,6 +5088,11 @@ class SQLGenerator:
                 metric = self.graph.get_metric(local_name)
             except KeyError:
                 pass
+            if metric and local_name in self.graph.metric_owners:
+                # An explicit source owner wins over entity/name inference.
+                # Invalid owners must fail instead of selecting another model.
+                model_name = self.graph.metric_owners[local_name]
+                model = self.graph.get_model(model_name)
 
         # Find the model that owns this metric if not already found
         if not model:

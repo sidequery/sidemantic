@@ -150,9 +150,6 @@ impl SqlGenerator<'_> {
             .get_model(&reference.model)
             .ok_or_else(|| unsupported("owner"))?;
         let metric = self.metric_for_ref(reference)?;
-        if metric.fill_nulls_with.is_some() {
-            return Err(unsupported("null_fill"));
-        }
         let entity = metric
             .entity
             .as_deref()
@@ -294,7 +291,7 @@ impl SqlGenerator<'_> {
             .collect();
         outer_select.push(format!(
             "{} AS {}",
-            aggregate(outer_kind, &outer_expression)?,
+            self.fill_metric_expression(metric, aggregate(outer_kind, &outer_expression)?)?,
             quote(&metric.name)
         ));
         let mut sql = format!("SELECT {}\nFROM (SELECT {}\nFROM {}{where_clause}\nGROUP BY {}\nHAVING {having}) AS cohort_sub", outer_select.join(", "), inner_select.join(", "), self.model_from_clause(model, Some("t")), inner_group.join(", "));

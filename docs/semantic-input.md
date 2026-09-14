@@ -25,7 +25,7 @@ The JSON envelope contains:
 | `metrics` | Graph-scoped metrics, retained separately from model metrics. |
 | `metric_owners` | Only explicitly declared model ownership for graph-addressable metrics. |
 | `parameters` | Parameter definitions. |
-| `table_calculations`, `explores`, `saved_queries` | Retained graph definitions, with explicit rejection when unsupported. |
+| `table_calculations`, `explores`, `saved_queries` | Retained named catalogs; unused entries do not block query compilation. |
 | `metadata`, `import_warnings` | Source and descriptive information. |
 | `required_capabilities` | Declared special requirements, independently checked against the definitions by the receiver. |
 
@@ -81,8 +81,13 @@ supports:
   calculation, including missing prior periods and zero prior denominators for
   ratios/percent changes. They do not fill the underlying period values or create
   missing periods. Existing window frames, partitions, ordering and policies
-  remain in effect. Filled offset ratios, non-additive and event-metric shapes
-  remain explicitly unsupported. Filled cumulative metrics reject comparison
+  remain in effect. Offset-ratio defaults apply after division by the prior-period
+  denominator, preserving NULLIF protection for zero denominators. Source-local
+  snapshot defaults apply after snapshot selection and the final aggregation;
+  they do not replace null inputs before count or average. Source-local cohort
+  defaults likewise wrap only the outer result, preserving inner values and HAVING.
+  Conversion and retention defaults remain explicitly unsupported.
+  Filled cumulative metrics reject comparison
   offsets; filled time comparisons reject cumulative windows and grain-to-date
   controls rather than silently ignoring them.
 - Existing cumulative `window_expression` fields accept `SUM`, `AVG`, `MIN`,
@@ -119,11 +124,15 @@ custom SQL, partitioned builds and partial build ranges. Lambda freshness behavi
 remains explicitly unsupported by the versioned boundary.
 
 Filtered complete measures are supported when their SQL AST is exactly
-`SUM(column)`, `AVG(column)`, `COUNT(column)`, `COUNT(DISTINCT column)`,
-`MIN(column)`, or `MAX(column)` over one local
-physical column, or exactly `COUNT(*)`, `COUNT(1)`, or `COUNT(NULL)`. Counts can
-be declared inside a model or as graph metrics with an explicit model owner. The source
-declaration remains unchanged; its executable copy
+`SUM(input)`, `AVG(input)`, `COUNT(input)`, `COUNT(DISTINCT input)`,
+`MIN(input)`, or `MAX(input)` over local physical row inputs, or exactly
+`COUNT(*)`, `COUNT(1)`, or `COUNT(NULL)`. Row inputs may use addition, subtraction,
+multiplication, modulo, `CASE`, and `COALESCE`, with local columns, literals,
+comparisons, boolean conditions, null checks, ranges, and literal lists. The whole
+input is filtered after evaluation, so excluded rows cannot contribute a `CASE`
+or `COALESCE` fallback. Each new expression must reference a local physical column.
+These aggregates can be declared inside a model or as graph metrics with an explicit
+model owner. The source declaration remains unchanged; its executable copy
 uses the ordinary per-measure filtered aggregate path. Local qualified columns
 are normalized without changing string literals, and each filter is parenthesized
 before conjunction. Filters use physical values even when a semantic dimension
@@ -135,7 +144,7 @@ qualifying source rows even when their values are null; it returns zero for an
 empty population, a group without matches, or an absent cross-source count leaf.
 Keyed joins count each qualifying source key once per selected group. `COUNT(NULL)`
 returns zero while still enforcing the owner's mandatory restrictions; it does
-not create groups excluded by those restrictions. Explicitly owned graph counts
+not create groups excluded by those restrictions. Explicitly owned graph aggregates
 use the same source population and retain their public output names.
 For fanout SUM and AVG,
 that planner selects one joined row per requested group and source primary key
@@ -143,8 +152,9 @@ before aggregating the original filtered value. It preserves floating-point
 values and returns null for groups containing no qualifying non-null values.
 
 This checked lowering accepts ordinary local comparisons, boolean combinations,
-null checks, ranges, and literal lists. Other filtered complete constant or
-conditional aggregate inputs, aggregate combinations, distinct averages, windows,
+null checks, ranges, and literal lists. Other filtered complete constant inputs,
+division (whose integer semantics vary by dialect), string literals containing the legacy `{model}` placeholder, casts,
+arbitrary functions, aggregate combinations, distinct averages, windows,
 subqueries, foreign-model inputs or predicates, and unresolved templates remain
 explicitly unsupported. Unowned graph measures also remain unsupported on this path.
 Row-count execution coverage targets DuckDB and PostgreSQL. TSQL count widths
@@ -160,6 +170,20 @@ and unqualified conversion, cohort, and non-additive metric shapes. Retention
 has a bounded dedicated path described below.
 
 Deserialization alone is not evidence of executable support.
+
+Structured query compilation, query-reference validation, and SQL rewriting
+preserve unused table-calculation, Explore, and saved-query declarations without
+executing them. Catalog entries must be objects with unique non-empty names;
+their execution fields remain in the source snapshot. Whole-graph
+`SemanticInput::from_json` validation still rejects unsupported catalogs.
+
+The Python layer resolves saved queries before dispatch, preserving their filters,
+visibility checks and prohibition on overrides. An active Explore still requires
+the unsupported `query.consumption_base_model` capability. Raw runtime requests
+that select `explore`, `saved_query`, or nonempty `table_calculations` fail with
+typed capability errors, including requests through rewrite context. Callers must
+resolve supported consumption contracts explicitly; catalog presence alone never
+activates them. Model policies and invariant filters remain mandatory.
 
 Model-owned retention metrics support one source in DuckDB, with `entity`,
 `cohort_event`, optional `activity_event`, and day/week/month periods. The first
@@ -283,8 +307,10 @@ of the snapshot dimension partition it. Grouping by the raw snapshot dimension
 needs no masking. Row restrictions apply before snapshot selection.
 
 Fanout, calculated wrappers, multiple metric owners, aggregate predicates,
-colliding output aliases, ungrouped output, rollup routing, and null-fill options
-remain gated for this snapshot path. This does not add raw-row cumulative
+colliding output aliases, ungrouped output, and rollup routing
+remain gated for this snapshot path. Null defaults apply only to the final
+aggregate after snapshot selection; null source inputs and additive sibling
+populations are preserved. This does not add raw-row cumulative
 semantics: cumulative references still operate on period outputs.
 ### Two-event conversion
 
@@ -389,8 +415,7 @@ and aggregates hidden in source dimensions, inner SQL or row filters are
 rejected. Graph cohorts require their declared source owner; entity or output
 column names do not infer ownership. The declared owner also determines the
 mandatory restrictions applied to the source population. Joined populations,
-unowned graph cohorts, calculated wrappers and
-null-fill options remain gated. HAVING and outer expressions must reference
+unowned graph cohorts and calculated wrappers remain gated. HAVING and outer expressions must reference
 available inner columns; other aggregate contexts are not silently inferred.
 
 The WASM SQL parser has a host-specific admission limit of 16 nested

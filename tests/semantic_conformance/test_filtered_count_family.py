@@ -208,17 +208,17 @@ def test_owned_count_private_leaf_names_do_not_shadow_public_fields(counts):
     model = layer.graph.models["orders"]
     model.dimensions.extend(
         [
-            Dimension(name="__SIDEMANTIC_COUNT_0", sql="region", type="categorical"),
-            Dimension(name="__sidemantic_count_1_raw", sql="region", type="categorical"),
+            Dimension(name="__SIDEMANTIC_FILTERED_0", sql="region", type="categorical"),
+            Dimension(name="__sidemantic_filtered_1_raw", sql="region", type="categorical"),
         ]
     )
-    model.metrics.append(Metric(name="__sidemantic_count_2", agg="count", sql="value"))
+    model.metrics.append(Metric(name="__sidemantic_filtered_2", agg="count", sql="value"))
     layer.graph.add_metric(
-        Metric(name="__sidemantic_count_3", sql="COUNT(1)", sql_is_complete=True, filters=["status = 'orders.vip'"]),
+        Metric(name="__sidemantic_filtered_3", sql="COUNT(1)", sql_is_complete=True, filters=["status = 'orders.vip'"]),
         model_name="orders",
     )
-    assert result(counts, metrics=[refs["one"], "orders.__sidemantic_count_2", "__sidemantic_count_3"]) == (
-        ["one", "__sidemantic_count_2", "__sidemantic_count_3"],
+    assert result(counts, metrics=[refs["one"], "orders.__sidemantic_filtered_2", "__sidemantic_filtered_3"]) == (
+        ["one", "__sidemantic_filtered_2", "__sidemantic_filtered_3"],
         [(3, 2, 1)],
     )
 

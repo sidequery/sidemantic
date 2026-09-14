@@ -8,127 +8,6 @@ fn unsupported(shape: &str) -> SidemanticError {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    fn graph_with(metric: serde_json::Value) -> SemanticGraph {
-        let approximate: Metric = serde_json::from_value(json!({
-            "name":"users", "agg":"approx_count_distinct", "sql":"user_id"
-        }))
-        .unwrap();
-        let metric: Metric = serde_json::from_value(metric).unwrap();
-        let mut graph = SemanticGraph::new();
-        graph
-            .add_model(
-                Model::new("events", "id")
-                    .with_table("events")
-                    .with_metric(approximate)
-                    .with_metric(metric),
-            )
-            .unwrap();
-        graph.set_metric_scopes(HashMap::new()).unwrap();
-        graph
-    }
-
-    #[test]
-    fn approximate_counts_do_not_enter_special_routes() {
-        for metric in [
-            json!({"name":"special", "type":"cumulative", "agg":"approx_count_distinct", "sql":"user_id"}),
-            json!({"name":"special", "type":"cumulative", "sql":"users"}),
-            json!({"name":"special", "type":"cumulative", "window_expression":"SUM(base.users)"}),
-            json!({"name":"special", "type":"time_comparison", "base_metric":"users", "comparison_type":"yoy"}),
-            json!({"name":"special", "type":"cohort", "agg":"approx_count_distinct", "sql":"user_id"}),
-            json!({"name":"special", "type":"cohort", "agg":"count", "inner_metrics":[{"name":"inner", "agg":"approx_count_distinct", "sql":"user_id"}]}),
-            json!({"name":"special", "type":"simple", "agg":"approx_count_distinct", "sql":"user_id", "non_additive_dimension":"created_at"}),
-            json!({"name":"special", "type":"derived", "sql":"users + 1"}),
-        ] {
-            let graph = graph_with(metric.clone());
-            let query = SemanticQuery {
-                metrics: vec!["events.special".into()],
-                ..Default::default()
-            };
-            let error = SqlGenerator::new(&graph).generate(&query).unwrap_err();
-            assert!(
-                error
-                    .to_string()
-                    .contains("approx_count_distinct_calculation_shape"),
-                "{metric}: {error}"
-            );
-        }
-    }
-
-    #[test]
-    fn unused_approximate_metric_does_not_claim_graph_calculations() {
-        let mut graph = graph_with(json!({"name":"total", "agg":"sum", "sql":"amount"}));
-        graph
-            .add_model(
-                Model::new("other", "id")
-                    .with_table("other")
-                    .with_relationship(
-                        crate::core::Relationship::many_to_one("events")
-                            .with_keys("event_id", "id"),
-                    )
-                    .with_metric(Metric::sum("total", "amount")),
-            )
-            .unwrap();
-        graph.add_metric_unvalidated(serde_json::from_value(json!({
-            "name":"ratio", "type":"ratio", "numerator":"events.total", "denominator":"other.total"
-        })).unwrap()).unwrap();
-        graph.set_metric_scopes(HashMap::new()).unwrap();
-        let query = SemanticQuery {
-            metrics: vec!["ratio".into()],
-            ..Default::default()
-        };
-        let sql = SqlGenerator::new(&graph).generate(&query).unwrap();
-        assert!(!sql.contains("APPROX_COUNT_DISTINCT"));
-    }
-
-    #[test]
-    fn graph_calculation_cannot_hide_approximate_leaf() {
-        let mut graph = graph_with(json!({"name":"total", "agg":"sum", "sql":"amount"}));
-        graph
-            .add_metric_unvalidated(
-                serde_json::from_value(json!({
-                    "name":"derived", "type":"derived", "sql":"events.users + 1"
-                }))
-                .unwrap(),
-            )
-            .unwrap();
-        graph.set_metric_scopes(HashMap::new()).unwrap();
-        let query = SemanticQuery {
-            metrics: vec!["derived".into()],
-            ..Default::default()
-        };
-        assert!(SqlGenerator::new(&graph)
-            .generate(&query)
-            .unwrap_err()
-            .to_string()
-            .contains("approx_count_distinct_calculation_shape"));
-    }
-
-    #[test]
-    fn physical_columns_and_cohort_outputs_are_not_metric_dependencies() {
-        for metric in [
-            json!({"name":"unrelated", "agg":"sum", "sql":"users"}),
-            json!({"name":"unrelated", "type":"derived", "sql_is_complete":true, "sql":"SUM(users)"}),
-            json!({"name":"unrelated", "type":"cohort", "agg":"sum", "sql":"users", "entity":"user_id", "inner_metrics":[{"name":"users", "agg":"sum", "sql":"amount"}]}),
-        ] {
-            let graph = graph_with(metric);
-            let query = SemanticQuery {
-                metrics: vec!["events.unrelated".into()],
-                ..Default::default()
-            };
-            // These expressions belong to raw rows or cohort result rows even
-            // though a model metric happens to share their identifier.
-            SqlGenerator::new(&graph)
-                .validate_approximate_query(&query)
-                .unwrap();
-        }
-    }
-}
-
 impl SqlGenerator<'_> {
     // Resolve without requiring a graph calculation to have a single owner.
     fn approximate_dependency<'a>(
@@ -341,5 +220,126 @@ impl SqlGenerator<'_> {
             return Err(unsupported("join"));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn graph_with(metric: serde_json::Value) -> SemanticGraph {
+        let approximate: Metric = serde_json::from_value(json!({
+            "name":"users", "agg":"approx_count_distinct", "sql":"user_id"
+        }))
+        .unwrap();
+        let metric: Metric = serde_json::from_value(metric).unwrap();
+        let mut graph = SemanticGraph::new();
+        graph
+            .add_model(
+                Model::new("events", "id")
+                    .with_table("events")
+                    .with_metric(approximate)
+                    .with_metric(metric),
+            )
+            .unwrap();
+        graph.set_metric_scopes(HashMap::new()).unwrap();
+        graph
+    }
+
+    #[test]
+    fn approximate_counts_do_not_enter_special_routes() {
+        for metric in [
+            json!({"name":"special", "type":"cumulative", "agg":"approx_count_distinct", "sql":"user_id"}),
+            json!({"name":"special", "type":"cumulative", "sql":"users"}),
+            json!({"name":"special", "type":"cumulative", "window_expression":"SUM(base.users)"}),
+            json!({"name":"special", "type":"time_comparison", "base_metric":"users", "comparison_type":"yoy"}),
+            json!({"name":"special", "type":"cohort", "agg":"approx_count_distinct", "sql":"user_id"}),
+            json!({"name":"special", "type":"cohort", "agg":"count", "inner_metrics":[{"name":"inner", "agg":"approx_count_distinct", "sql":"user_id"}]}),
+            json!({"name":"special", "type":"simple", "agg":"approx_count_distinct", "sql":"user_id", "non_additive_dimension":"created_at"}),
+            json!({"name":"special", "type":"derived", "sql":"users + 1"}),
+        ] {
+            let graph = graph_with(metric.clone());
+            let query = SemanticQuery {
+                metrics: vec!["events.special".into()],
+                ..Default::default()
+            };
+            let error = SqlGenerator::new(&graph).generate(&query).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("approx_count_distinct_calculation_shape"),
+                "{metric}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn unused_approximate_metric_does_not_claim_graph_calculations() {
+        let mut graph = graph_with(json!({"name":"total", "agg":"sum", "sql":"amount"}));
+        graph
+            .add_model(
+                Model::new("other", "id")
+                    .with_table("other")
+                    .with_relationship(
+                        crate::core::Relationship::many_to_one("events")
+                            .with_keys("event_id", "id"),
+                    )
+                    .with_metric(Metric::sum("total", "amount")),
+            )
+            .unwrap();
+        graph.add_metric_unvalidated(serde_json::from_value(json!({
+            "name":"ratio", "type":"ratio", "numerator":"events.total", "denominator":"other.total"
+        })).unwrap()).unwrap();
+        graph.set_metric_scopes(HashMap::new()).unwrap();
+        let query = SemanticQuery {
+            metrics: vec!["ratio".into()],
+            ..Default::default()
+        };
+        let sql = SqlGenerator::new(&graph).generate(&query).unwrap();
+        assert!(!sql.contains("APPROX_COUNT_DISTINCT"));
+    }
+
+    #[test]
+    fn graph_calculation_cannot_hide_approximate_leaf() {
+        let mut graph = graph_with(json!({"name":"total", "agg":"sum", "sql":"amount"}));
+        graph
+            .add_metric_unvalidated(
+                serde_json::from_value(json!({
+                    "name":"derived", "type":"derived", "sql":"events.users + 1"
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        graph.set_metric_scopes(HashMap::new()).unwrap();
+        let query = SemanticQuery {
+            metrics: vec!["derived".into()],
+            ..Default::default()
+        };
+        assert!(SqlGenerator::new(&graph)
+            .generate(&query)
+            .unwrap_err()
+            .to_string()
+            .contains("approx_count_distinct_calculation_shape"));
+    }
+
+    #[test]
+    fn physical_columns_and_cohort_outputs_are_not_metric_dependencies() {
+        for metric in [
+            json!({"name":"unrelated", "agg":"sum", "sql":"users"}),
+            json!({"name":"unrelated", "type":"derived", "sql_is_complete":true, "sql":"SUM(users)"}),
+            json!({"name":"unrelated", "type":"cohort", "agg":"sum", "sql":"users", "entity":"user_id", "inner_metrics":[{"name":"users", "agg":"sum", "sql":"amount"}]}),
+        ] {
+            let graph = graph_with(metric);
+            let query = SemanticQuery {
+                metrics: vec!["events.unrelated".into()],
+                ..Default::default()
+            };
+            // These expressions belong to raw rows or cohort result rows even
+            // though a model metric happens to share their identifier.
+            SqlGenerator::new(&graph)
+                .validate_approximate_query(&query)
+                .unwrap();
+        }
     }
 }

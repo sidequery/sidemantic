@@ -81,7 +81,6 @@ pub(super) fn try_generate(
             || metric.r#type != MetricType::Simple
             || metric.sql_is_complete
             || metric.agg == Some(Aggregation::Expression)
-            || metric.fill_nulls_with.is_some()
         {
             return Err(unsupported("metric_shape"));
         }
@@ -166,11 +165,13 @@ pub(super) fn try_generate(
     }
 
     // Reuse source projection, joins, row filters, and prepared mandatory policies.
-    // Only remove snapshot annotations from this private graph to prevent recursion.
+    // Clear snapshot annotations to prevent recursion, and defer null filling
+    // until after selection and aggregation rather than replacing raw inputs.
     let mut graph = generator.graph.clone();
     let mut model = graph.get_model(owner).unwrap().clone();
     for metric in &mut model.metrics {
         metric.non_additive_dimension = None;
+        metric.fill_nulls_with = None;
     }
     graph.replace_model(model)?;
     let mut child = query.clone();
@@ -268,6 +269,7 @@ pub(super) fn try_generate(
             Some(aggregation) => format!("{}({value})", aggregation.as_sql()),
             None => return Err(unsupported("aggregation")),
         };
+        let aggregate = generator.fill_metric_expression(metric, aggregate)?;
         selections.push(format!("{aggregate} AS {value}"));
     }
     let mut sql = format!(
@@ -364,6 +366,27 @@ mod tests {
             let sql = SqlGenerator::new(&graph).generate(&query)?;
             assert!(sql.contains("CASE WHEN day = MAX(day) OVER () THEN balance END AS balance"));
             assert!(sql.contains("SUM(activity) AS activity"));
+            polyglot_sql::parse_one(&sql, DialectType::DuckDB)
+                .map_err(|error| SidemanticError::SqlParse(error.to_string()))?;
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn snapshot_fill_is_applied_after_selection_and_aggregation() {
+        crate::semantic_input::with_semantic_stack(|| {
+            let mut graph = graph();
+            let mut model = graph.get_model("snapshots").unwrap().clone();
+            model.metrics[0].fill_nulls_with = Some(serde_json::json!(-9));
+            graph.replace_model(model)?;
+            let sql = SqlGenerator::new(&graph)
+                .generate(&SemanticQuery::new().with_metrics(vec!["snapshots.balance".into()]))?;
+            assert!(
+                sql.contains("COALESCE(SUM(balance), -9) AS balance"),
+                "{sql}"
+            );
+            assert_eq!(sql.matches("COALESCE").count(), 1, "{sql}");
             polyglot_sql::parse_one(&sql, DialectType::DuckDB)
                 .map_err(|error| SidemanticError::SqlParse(error.to_string()))?;
             Ok(())

@@ -287,22 +287,18 @@ mod tests {
                 .unwrap(),
             "COALESCE(value / NULLIF(prior, 0), 'missing''s value')"
         );
-        for kind in [
-            MetricType::Conversion,
-            MetricType::Retention,
-            MetricType::Cohort,
-        ] {
+        for kind in [MetricType::Conversion, MetricType::Retention] {
             comparison.r#type = kind;
             assert!(SqlGenerator::validate_metric_fill(&comparison).is_err());
         }
         let mut simple = Metric::sum("snapshot", "amount");
         simple.fill_nulls_with = Some(serde_json::json!(0));
         simple.non_additive_dimension = Some("day".into());
-        assert!(SqlGenerator::validate_metric_fill(&simple).is_err());
+        assert!(SqlGenerator::validate_metric_fill(&simple).is_ok());
         simple.non_additive_dimension = None;
         simple.r#type = MetricType::Ratio;
         simple.offset_window = Some("1 day".into());
-        assert!(SqlGenerator::validate_metric_fill(&simple).is_err());
+        assert!(SqlGenerator::validate_metric_fill(&simple).is_ok());
     }
 
     #[test]

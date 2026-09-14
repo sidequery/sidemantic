@@ -166,3 +166,22 @@ def test_mixed_temporal_outputs_retain_filled_cumulative_in_lag_cte(layer):
         (-9, -8),
         (-9, -8),
     ]
+
+
+@pytest.mark.parametrize(
+    "offset,expected",
+    [
+        ("1 day", [-9, -9, -9, -9, -9, -9]),
+        ("2 days", [-9, -9, -9, pytest.approx(1 / 3), -9, -9]),
+    ],
+)
+def test_offset_ratio_default_applies_after_sparse_prior_division(layer, offset, expected):
+    metric = Metric(
+        name="filled",
+        type="ratio",
+        numerator="events.amount",
+        denominator="events.amount",
+        offset_window=offset,
+        fill_nulls_with=-9,
+    )
+    assert values(layer, metric) == expected

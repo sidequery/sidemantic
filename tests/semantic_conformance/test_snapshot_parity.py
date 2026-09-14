@@ -176,3 +176,61 @@ def test_snapshot_count_and_distinct_count_mask_rows_not_entities(layer):
     layer.adapter.execute("insert into snapshot_rows values (10, 'B', 'east', '2024-01-25', 5, 9, true, 1)")
     # A tied latest row increases COUNT but not COUNT(DISTINCT account).
     assert result(layer, metrics=metrics) == [(4, 3, 9)]
+
+
+@pytest.mark.parametrize(
+    "aggregation,expected",
+    [
+        ("sum", [("A", 170), ("B", 80), ("C", -9), ("D", -9)]),
+        ("avg", [("A", 170), ("B", 80), ("C", -9), ("D", -9)]),
+        ("count", [("A", 1), ("B", 1), ("C", 0), ("D", 0)]),
+    ],
+)
+def test_snapshot_default_fills_final_aggregate_not_selected_null_inputs(layer, aggregation, expected):
+    metric = layer.graph.models["snapshots"].get_metric("closing")
+    metric.agg = aggregation
+    metric.fill_nulls_with = -9
+    assert (
+        result(layer, metrics=["snapshots.closing"], dimensions=["snapshots.account"], order_by=["snapshots.account"])
+        == expected
+    )
+
+
+def test_snapshot_default_handles_empty_totals_without_creating_groups(layer):
+    layer.graph.models["snapshots"].get_metric("closing").fill_nulls_with = -9
+    assert result(layer, metrics=["snapshots.closing"], user_attributes={"tenant": 99}) == [(-9,)]
+    assert (
+        result(layer, metrics=["snapshots.closing"], dimensions=["snapshots.account"], user_attributes={"tenant": 99})
+        == []
+    )
+
+
+def test_filled_snapshot_calculated_wrapper_stays_explicitly_unsupported_in_rust(layer):
+    from sidemantic import Metric
+    from sidemantic.semantic_handoff import UnsupportedSemanticFeaturesError
+
+    layer.graph.models["snapshots"].get_metric("closing").fill_nulls_with = -9
+    layer.add_metric(Metric(name="wrapped", type="derived", sql="snapshots.closing + 1"))
+    if layer.engine == "rust":
+        with pytest.raises(UnsupportedSemanticFeaturesError):
+            result(layer, metrics=["wrapped"])
+    else:
+        assert result(layer, metrics=["wrapped"]) == [(251,)]
+
+
+def test_snapshot_and_additive_sibling_keep_distinct_final_defaults(layer):
+    layer.graph.models["snapshots"].get_metric("closing").fill_nulls_with = -9
+    layer.graph.models["snapshots"].get_metric("activity").fill_nulls_with = -5
+    assert result(layer, metrics=["snapshots.closing", "snapshots.activity"], user_attributes={"tenant": 99}) == [
+        (-9, -5)
+    ]
+
+
+def test_snapshot_source_coalesce_is_distinct_from_final_count_default(layer):
+    metric = layer.graph.models["snapshots"].get_metric("closing")
+    metric.agg = "count"
+    metric.sql = "coalesce(balance, 0)"
+    metric.fill_nulls_with = -9
+    assert result(
+        layer, metrics=["snapshots.closing"], dimensions=["snapshots.account"], order_by=["snapshots.account"]
+    ) == [("A", 1), ("B", 1), ("C", 1), ("D", 0)]

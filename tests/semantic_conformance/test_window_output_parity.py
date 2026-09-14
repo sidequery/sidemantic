@@ -53,12 +53,15 @@ def run(
     dimensions=None,
     execute=True,
     dialect=None,
+    aggregation=None,
 ):
     layer.graph.models["events"].metrics.append(
         Metric(
             name="windowed",
             type="cumulative",
-            window_expression=expression,
+            window_expression=expression if aggregation is None else None,
+            agg=aggregation,
+            sql="daily_amount" if aggregation is not None else None,
             window_frame=frame,
             window_order=order,
         )
@@ -68,7 +71,7 @@ def run(
         dimensions=dimensions or ["events.day", "events.category"],
         filters=filters or [],
         user_attributes={"tenant": 1},
-        order_by=["events.category", "events.day"],
+        order_by=["events.category", dimensions[0] if dimensions else "events.day"],
         dialect=dialect,
     )
     if not execute:
@@ -130,6 +133,59 @@ def test_expression_alias_is_a_period_metric_and_not_a_physical_column(layer):
 def test_explicit_metric_output_order_overrides_chronological_order(layer):
     layer.adapter.execute("update events set amount = amount * 10 where day = '2024-01-01' and category = 'a'")
     assert [row[2] for row in run(layer, order="daily_amount")] == [57, 7, 57, 10, 30, 70]
+
+
+@pytest.mark.parametrize("order", ["day", "events.day", "day__month"])
+@pytest.mark.parametrize("aggregation", [None, "avg"])
+def test_window_order_resolves_the_selected_dimension_grain(layer, order, aggregation):
+    sql = run(
+        layer,
+        expression="AVG(base.daily_amount)",
+        aggregation=aggregation,
+        order=order,
+        dimensions=["events.day__month", "events.category"],
+        execute=False,
+    )
+    result = layer.adapter.execute(sql)
+    assert [column[0] for column in result.description] == ["day__month", "category", "daily_amount", "windowed"]
+    assert [row[1:] for row in result.fetchall()] == [("a", 12, 12), (None, 70, 70)]
+
+
+def test_window_order_rejects_multiple_selected_grains(layer):
+    with pytest.raises(Exception, match="window_order"):
+        run(
+            layer,
+            order="day",
+            dimensions=["events.day__day", "events.day__month", "events.category"],
+            execute=False,
+        )
+
+
+def test_aggregate_reference_honors_explicit_range_frame(layer):
+    rows = run(layer, aggregation="avg", frame="RANGE BETWEEN INTERVAL 1 DAY PRECEDING AND CURRENT ROW")
+    assert [row[2] for row in rows] == [5, 7, 7, 10, 20, 30]
+
+
+@pytest.mark.parametrize("frame", ["garbage", "ROWS BETWEEN 1 PRECEDING AND CURRENT ROW); SELECT 1; --"])
+def test_aggregate_reference_rejects_invalid_frame(layer, frame):
+    with pytest.raises(Exception):
+        run(layer, aggregation="sum", frame=frame, execute=False)
+
+
+@pytest.mark.parametrize("controls", [{"window": "7 days"}, {"grain_to_date": "month"}])
+def test_aggregate_reference_rejects_conflicting_frame_controls(layer, controls):
+    layer.graph.models["events"].metrics.append(
+        Metric(
+            name="windowed",
+            type="cumulative",
+            agg="sum",
+            sql="daily_amount",
+            window_frame="ROWS BETWEEN 1 PRECEDING AND CURRENT ROW",
+            **controls,
+        )
+    )
+    with pytest.raises(Exception, match="window_frame"):
+        layer.compile(metrics=["events.windowed"], dimensions=["events.day"], user_attributes={"tenant": 1})
 
 
 def test_distinct_period_counts_are_summed_not_combined_row_distincts(layer):

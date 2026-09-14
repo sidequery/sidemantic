@@ -184,11 +184,14 @@ def _resolve_engine_options(engine: str | None, fallback: bool | None) -> tuple[
         if resolved_fallback is None:
             resolved_fallback = _loaded_config.runtime.fallback
 
+    if resolved_engine is None:
+        from sidemantic.runtime import default_engine
+
+        resolved_engine = default_engine()
+
     if resolved_fallback is None:
         resolved_fallback = resolved_engine == "auto"
 
-    if resolved_engine is None and fallback is not None:
-        raise typer.BadParameter("--fallback/--no-fallback requires --engine or runtime.engine in config")
     if resolved_engine == "python" and resolved_fallback:
         raise typer.BadParameter("--fallback is only meaningful with the rust or auto engine")
 

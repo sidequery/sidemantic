@@ -69,7 +69,9 @@ jobs:
 
       - name: Smoke built wheel on its target host
         shell: bash
-        run: uv run --no-project --with sidemantic-rs/dist/*.whl sidemantic-rs/tests/python_wheel_smoke.py
+        run: |
+          uv run --no-project --with sidemantic-rs/dist/*.whl sidemantic-rs/tests/python_wheel_smoke.py
+          uv run --no-project --with sidemantic-rs/dist/*.whl sidemantic-rs/tests/python_wheel_python_smoke.py
 
       - name: Upload wheel
         uses: actions/upload-artifact@v4

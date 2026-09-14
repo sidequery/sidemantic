@@ -48,6 +48,21 @@ Rust does not parse these source formats directly:
 
 Those remain Python-owned import paths.
 
+## Default runtime and installation
+
+A normal `uv tool install sidemantic` includes the matching `sidemantic-rs`
+package. Native validation, compilation, and semantic SQL rewriting use Rust by
+default and report an error if it is unavailable or a capability is unsupported.
+Use `--engine python` to select Python, or `--engine auto` to allow fallback for
+known unsupported capabilities. Invalid input and unexpected failures still propagate.
+`SIDEMANTIC_ENGINE=python` sets a process-wide default; explicit engine selection
+and project runtime configuration take precedence.
+
+Pyodide excludes the native dependency and defaults to Python. The distributed
+Python extension uses the lightweight `python` feature; database execution
+continues through Python adapters. Rust ADBC execution requires a separate
+source build with `python-adbc`.
+
 ## Python API Engine Selection
 
 Python users can select the native runtime explicitly:

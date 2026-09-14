@@ -40,8 +40,7 @@ def get_rust_module() -> object:
             raise
         raise RustBackendUnavailableError(
             "Rust backend requires the sidemantic_rs Python extension. "
-            "Build it with: uv run --with maturin maturin develop "
-            "--manifest-path sidemantic-rs/Cargo.toml --features python-adbc"
+            "Install it with: uv pip install sidemantic-rs, or select --engine python."
         ) from e
     return sidemantic_rs
 

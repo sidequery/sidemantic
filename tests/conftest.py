@@ -19,6 +19,12 @@ def isolate_cli_color_environment(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.fixture(autouse=True)
+def python_reference_engine(monkeypatch):
+    """Keep the Python reference suite explicit; default-engine tests unset this."""
+    monkeypatch.setenv("SIDEMANTIC_ENGINE", "python")
+
+
+@pytest.fixture(autouse=True)
 def reset_registry():
     """Clear the global registry before and after each test.
 

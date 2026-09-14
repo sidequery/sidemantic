@@ -6,6 +6,7 @@ readme = "README.md"
 license = {file = "LICENSE"}
 requires-python = ">=3.11"
 dependencies = [
+    "sidemantic-rs==0.12.0; sys_platform != 'emscripten'",
     "antlr4-python3-runtime>=4.13.2",
     "sqlglot>=30.1.0",
     "pyyaml>=6.0",
@@ -247,6 +248,7 @@ prerelease = "if-necessary"
 required-environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
 
 [tool.uv.sources]
+sidemantic-rs = { path = "sidemantic-rs" }
 sidemantic-dax = { path = "crates/dax-pyo3" }
 
 [dependency-groups]

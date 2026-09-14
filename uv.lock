@@ -3626,6 +3626,7 @@ dependencies = [
     { name = "jinja2" },
     { name = "pydantic" },
     { name = "pyyaml" },
+    { name = "sidemantic-rs", marker = "sys_platform != 'emscripten'" },
     { name = "sqlglot" },
     { name = "typer" },
 ]
@@ -3848,6 +3849,7 @@ requires-dist = [
     { name = "sidemantic", extras = ["postgres", "bigquery", "snowflake", "clickhouse", "databricks", "spark", "adbc"], marker = "extra == 'all-databases'" },
     { name = "sidemantic", extras = ["workbench", "mcp", "apps", "charts", "lsp", "dax", "lookml", "malloy", "metricflow", "widget", "api", "ossie"], marker = "extra == 'full'" },
     { name = "sidemantic-dax", marker = "extra == 'dax'", directory = "crates/dax-pyo3" },
+    { name = "sidemantic-rs", marker = "sys_platform != 'emscripten'", directory = "sidemantic-rs" },
     { name = "snowflake-connector-python", marker = "extra == 'snowflake'", specifier = ">=3.0.0" },
     { name = "sqlglot", specifier = ">=30.1.0" },
     { name = "sqlglot", extras = ["c"], marker = "extra == 'dev'", specifier = ">=30.1.0" },
@@ -3890,6 +3892,11 @@ dev = [
 name = "sidemantic-dax"
 version = "0.12.0"
 source = { directory = "crates/dax-pyo3" }
+
+[[package]]
+name = "sidemantic-rs"
+version = "0.12.0"
+source = { directory = "sidemantic-rs" }
 
 [[package]]
 name = "six"

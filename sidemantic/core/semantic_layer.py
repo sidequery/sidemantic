@@ -18,6 +18,7 @@ from sidemantic.core.consumption import (
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.semantic_graph import SemanticGraph
+from sidemantic.runtime import default_engine
 from sidemantic.rust_bridge import get_rust_module
 from sidemantic.rust_parity import is_strict_for
 from sidemantic.semantic_handoff import RustBackendUnavailableError, UnsupportedSemanticFeaturesError
@@ -114,7 +115,8 @@ class SemanticLayer:
                 loading extensions, attaching catalogs, creating secrets)
             engine: Runtime engine for native query validation/compilation.
                 Supported values are "python", "rust", and "auto". If omitted,
-                legacy SIDEMANTIC_RS_* environment flags are honored.
+                defaults to Rust (Python in Pyodide). SIDEMANTIC_ENGINE overrides
+                the platform default; legacy SIDEMANTIC_RS_* flags remain supported.
             fallback: Whether an unavailable Rust backend or a known unsupported capability
                 may fall back to Python. Invalid input and unexpected compiler failures propagate.
                 Defaults to False for engine="rust" and True for engine="auto".
@@ -136,6 +138,10 @@ class SemanticLayer:
         """
         from sidemantic.db.base import BaseDatabaseAdapter
 
+        # Preserve explicitly configured legacy parity runs. Ordinary installs
+        # select the same native default as the CLI and project configuration.
+        if engine is None and not any(key.startswith("SIDEMANTIC_RS_") for key in os.environ):
+            engine = default_engine()
         if engine is not None:
             engine = engine.lower()
             if engine not in {"python", "rust", "auto"}:

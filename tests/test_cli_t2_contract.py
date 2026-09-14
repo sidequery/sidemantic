@@ -48,6 +48,8 @@ def _reset_cli_state(monkeypatch: pytest.MonkeyPatch):
         "CI",
     ):
         monkeypatch.delenv(name, raising=False)
+    # Presentation contracts exercise the Python reference engine.
+    monkeypatch.setenv("SIDEMANTIC_ENGINE", "python")
     yield
     cli_module._loaded_config = None
     cli_module._project_context = None

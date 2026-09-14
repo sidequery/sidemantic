@@ -595,16 +595,15 @@ def test_graph_complete_row_count_remains_explicitly_unsupported(owner):
 
 
 @pytest.mark.parametrize("layer", ["python"], indirect=True)
-@pytest.mark.parametrize("expression,function", [("COUNT(*)", "COUNT("), ("COUNT_BIG(*)", "COUNT_BIG(")])
-def test_tsql_complete_row_count_retains_function_identity(row_count_layer, expression, function):
+@pytest.mark.parametrize("expression", ["COUNT(*)", "COUNT_BIG(*)"])
+def test_tsql_complete_row_count_retains_existing_path(row_count_layer, expression):
     from sidemantic.sql.generator import SQLGenerator
 
     metric = row_count_layer.graph.models["orders"].get_metric("paid_rows")
     metric.sql = expression
     sql = SQLGenerator(row_count_layer.graph, dialect="tsql").generate(metrics=["orders.paid_rows"])
-    assert function in sql
-    if expression == "COUNT_BIG(*)":
-        assert "COUNT_BIG(*)" in sql
-    else:
-        assert "CASE WHEN" in sql
+    # Existing complete-expression generation emits COUNT_BIG for both inputs.
+    # This DuckDB/PostgreSQL qualification must leave that TSQL path untouched.
+    assert "COUNT_BIG(*)" in sql
+    assert "CASE WHEN" not in sql
     assert metric.sql == expression

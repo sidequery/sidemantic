@@ -246,9 +246,6 @@ EXPECTED_GAPS = {
     "tests.queries.test_sql_rewriter::test_post_process_cte_name_collision": (
         "Rust adapter does not yet support Python post_process SQL contracts"
     ),
-    "tests.queries.test_sql_rewriter::test_root_semantic_cte_name_collision": (
-        "Rust SQL rewriter does not yet support Python semantic-root validation contracts"
-    ),
     "tests.test_preaggregation_bugs::test_avg_metric_with_filtered_count_fails": (
         "Rust adapter does not yet support Python pre-aggregation routing bug contracts"
     ),

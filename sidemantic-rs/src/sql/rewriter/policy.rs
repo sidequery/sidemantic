@@ -134,6 +134,12 @@ impl QueryRewriter<'_> {
             unreachable!()
         };
         let mut with = select.with.take();
+        let user_cte_names: HashSet<String> = with
+            .as_ref()
+            .into_iter()
+            .flat_map(|with| &with.ctes)
+            .map(|cte| cte.alias.name.to_ascii_lowercase())
+            .collect();
         let ctes = self.rewrite_ctes(&mut with, inherited_ctes, names)?;
         if select.into.is_some() || !select.locks.is_empty() {
             return Err(unsupported());
@@ -169,6 +175,27 @@ impl QueryRewriter<'_> {
                 }
             }
             let mut compiled = self.compile_semantic_select(*select)?;
+            // Keep the existing semantic-root error contract even though the
+            // renamed input CTE would no longer capture the generated source.
+            // Only names actually emitted for this query are conflicts.
+            binding::transform_nodes(
+                Expression::Select(Box::new(compiled.clone())),
+                &mut |node| {
+                    if let Expression::Select(select) = node {
+                        if let Some(with) = &select.with {
+                            for cte in &with.ctes {
+                                if user_cte_names.contains(&cte.alias.name.to_ascii_lowercase()) {
+                                    return Err(SidemanticError::Validation(format!(
+                                        "CTE name '{}' conflicts with an internally generated name",
+                                        cte.alias.name
+                                    )));
+                                }
+                            }
+                        }
+                    }
+                    Ok(None)
+                },
+            )?;
             compiled.with = with;
             return Ok(Expression::Select(Box::new(compiled)));
         }

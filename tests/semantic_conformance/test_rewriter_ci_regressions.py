@@ -73,18 +73,40 @@ def test_group_by_accepts_exact_selected_dimensions_and_aliases(layer, group):
 
 
 @pytest.mark.parametrize(
-    "sql",
+    "sql,python_error,python_message",
     [
-        "select orders.status, (select count(*) from labels l where l.status = orders.status) as n from orders",
-        "select o.status, (select count(*) from labels l where l.status = o.status) as n from orders o",
-        "select orders.status from orders where exists (select 1 from labels l where l.status = orders.status)",
-        "select orders.status, (select (select count(*) from labels l where l.status = orders.status)) as n from orders",
+        (
+            "select orders.status, (select count(*) from labels l where l.status = orders.status) as n from orders",
+            KeyError,
+            "Model l not found",
+        ),
+        (
+            "select o.status, (select count(*) from labels l where l.status = o.status) as n from orders o",
+            KeyError,
+            "Model l not found",
+        ),
+        (
+            "select orders.status from orders where exists (select 1 from labels l where l.status = orders.status)",
+            ValueError,
+            "Query expressions cannot introduce physical data sources",
+        ),
+        (
+            "select orders.status, (select (select count(*) from labels l where l.status = orders.status)) as n from orders",
+            KeyError,
+            "Model l not found",
+        ),
     ],
 )
-def test_correlated_semantic_sources_fail_before_execution(layer, sql):
-    if layer.engine != "rust":
-        pytest.skip("Explicit native capability boundary; Python has independent subquery planning")
-    with pytest.raises(ValueError, match="Correlated subquery references semantic source"):
+def test_correlated_semantic_sources_fail_before_execution(layer, sql, python_error, python_message):
+    # The physical table really exists: these are unsupported semantic shapes,
+    # not failures caused by an absent subquery source.
+    layer.adapter.execute("create table labels(status varchar); insert into labels values ('done'), ('done')")
+    error, message = (
+        (ValueError, "Correlated subquery references semantic source")
+        if layer.engine == "rust"
+        else (python_error, python_message)
+    )
+    with pytest.raises(error, match=message):
         layer.sql(sql)
 
 

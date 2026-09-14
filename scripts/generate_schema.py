@@ -6,6 +6,8 @@ from copy import deepcopy
 from pathlib import Path
 
 from sidemantic import Dimension, Metric, Model, Parameter, Relationship, Segment
+from sidemantic.core.consumption import Explore, SavedQuery
+from sidemantic.core.table_calculation import TableCalculation
 
 
 def add_native_relationship_aliases(schema: dict) -> dict:
@@ -80,7 +82,7 @@ def generate_schema() -> dict:
                 "items": parameter_schema,
             },
         },
-        "required": ["models"],
+        "anyOf": [{"required": [name]} for name in ("models", "explores", "saved_queries", "table_calculations")],
         # Collect all $defs from sub-schemas
         "$defs": {
             **model_schema.get("$defs", {}),
@@ -93,6 +95,17 @@ def generate_schema() -> dict:
             "Parameter": Parameter.model_json_schema(),
         },
     }
+
+    for catalog, definition_type in (
+        ("explores", Explore),
+        ("saved_queries", SavedQuery),
+        ("table_calculations", TableCalculation),
+    ):
+        item_schema = definition_type.model_json_schema()
+        # Native authoring rejects unknown fields even for permissive API models.
+        item_schema["additionalProperties"] = False
+        schema["$defs"].update(item_schema.pop("$defs", {}))
+        schema["properties"][catalog] = {"type": "array", "items": item_schema}
 
     patch_relationship_schemas(schema)
 

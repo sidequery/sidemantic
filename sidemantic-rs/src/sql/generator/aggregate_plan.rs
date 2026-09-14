@@ -210,7 +210,13 @@ impl<'a, 'g> Plan<'a, 'g> {
             }
             _ => return Err(unsupported("calculation_shape")),
         };
-        let expression = self.generator.fill_metric_expression(metric, expression)?;
+        // Complete SQL is opaque inside another formula. Python applies its
+        // default only when that metric itself is selected, not at each use.
+        let expression = if metric.sql_is_complete {
+            expression
+        } else {
+            self.generator.fill_metric_expression(metric, expression)?
+        };
         self.active.remove(&resolved.reference);
         if metric.r#type != MetricType::Simple
             && resolved
@@ -311,6 +317,11 @@ pub(super) fn try_generate(
             Err(error) => return Err(error),
         };
         let metric = plan.resolve(reference, None)?.unwrap();
+        let expression = if metric.metric.sql_is_complete {
+            generator.fill_metric_expression(&metric.metric, expression)?
+        } else {
+            expression
+        };
         outputs.push((reference.clone(), metric, expression));
     }
     let all_filters: Vec<_> = query
@@ -442,7 +453,11 @@ pub(super) fn try_generate(
             let reference = column.name();
             if let Some(metric) = plan.resolve(&reference, None)? {
                 has_metric = true;
-                let expression = plan.expressions.get(&metric.reference).unwrap();
+                let expression = outputs
+                    .iter()
+                    .find(|(_, output, _)| output.reference == metric.reference)
+                    .map(|(_, _, expression)| expression)
+                    .unwrap_or_else(|| plan.expressions.get(&metric.reference).unwrap());
                 replacements.insert((column.model, column.field), format!("({expression})"));
             } else if let Some(expression) = dimension_expressions.get(&reference) {
                 replacements.insert((column.model, column.field), format!("({expression})"));

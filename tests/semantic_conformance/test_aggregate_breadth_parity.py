@@ -119,3 +119,29 @@ def test_filtered_complete_formulas_keep_python_row_inputs(layer, formula, expec
     rows = layer.query(metrics=["orders.formula"], dimensions=["items.category"] if fanout else []).fetchall()
     assert len(rows) == 1
     assert rows[0][-1] == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("fanout", [False, True])
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("filtered", [False, True])
+def test_complete_default_is_applied_at_selected_output_not_nested_formula(layer, fanout, reverse, filtered):
+    layer.adapter.execute("update raw_orders set amount = null")
+    layer.graph.models["orders"].metrics.extend(
+        [
+            Metric(name="filled_complete", sql="sum(amount)", sql_is_complete=True, fill_nulls_with=9),
+            Metric(name="wrapper", type="derived", sql="filled_complete + 1", fill_nulls_with=7),
+        ]
+    )
+    metrics = ["orders.filled_complete", "orders.wrapper"]
+    if reverse:
+        metrics.reverse()
+    cursor = layer.query(
+        metrics=metrics,
+        dimensions=["items.category"] if fanout else [],
+        filters=["orders.filled_complete = 9"] if filtered else [],
+    )
+    columns = [field[0] for field in cursor.description]
+    rows = cursor.fetchall()
+    assert len(rows) == 1
+    assert rows[0][columns.index("filled_complete")] == 9
+    assert rows[0][columns.index("wrapper")] == 7

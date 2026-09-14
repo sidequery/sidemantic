@@ -121,7 +121,8 @@ remains explicitly unsupported by the versioned boundary.
 Filtered complete measures are supported when their SQL AST is exactly
 `SUM(column)`, `AVG(column)`, `COUNT(column)`, `COUNT(DISTINCT column)`,
 `MIN(column)`, or `MAX(column)` over one local
-physical column, or exactly `COUNT(*)` declared inside a model. The source
+physical column, or exactly `COUNT(*)`, `COUNT(1)`, or `COUNT(NULL)`. Counts can
+be declared inside a model or as graph metrics with an explicit model owner. The source
 declaration remains unchanged; its executable copy
 uses the ordinary per-measure filtered aggregate path. Local qualified columns
 are normalized without changing string literals, and each filter is parenthesized
@@ -129,22 +130,23 @@ before conjunction. Filters use physical values even when a semantic dimension
 shares the column name. Independent measures retain independent populations.
 Average counts each qualifying non-null source row in its denominator, while
 distinct count collapses repeated qualifying values and excludes nulls. These
-states use the keyed fanout-safe aggregate planner. Filtered `COUNT(*)` counts
+states use the keyed fanout-safe aggregate planner. Filtered `COUNT(*)` and `COUNT(1)` count
 qualifying source rows even when their values are null; it returns zero for an
 empty population, a group without matches, or an absent cross-source count leaf.
-Keyed joins count each qualifying source key once per selected group.
+Keyed joins count each qualifying source key once per selected group. `COUNT(NULL)`
+returns zero while still enforcing the owner's mandatory restrictions; it does
+not create groups excluded by those restrictions. Explicitly owned graph counts
+use the same source population and retain their public output names.
 For fanout SUM and AVG,
 that planner selects one joined row per requested group and source primary key
 before aggregating the original filtered value. It preserves floating-point
 values and returns null for groups containing no qualifying non-null values.
 
 This checked lowering accepts ordinary local comparisons, boolean combinations,
-null checks, ranges, and literal lists. Filtered complete constant or
+null checks, ranges, and literal lists. Other filtered complete constant or
 conditional aggregate inputs, aggregate combinations, distinct averages, windows,
 subqueries, foreign-model inputs or predicates, and unresolved templates remain
 explicitly unsupported. Unowned graph measures also remain unsupported on this path.
-Filtered complete `COUNT(*)` graph declarations remain unsupported even with an
-explicit owner; this row-count qualification applies only to model declarations.
 Row-count execution coverage targets DuckDB and PostgreSQL. TSQL count widths
 require separate qualification, so Python TSQL retains its existing
 complete-expression path for `COUNT` and `COUNT_BIG`. TSQL filtered complete row

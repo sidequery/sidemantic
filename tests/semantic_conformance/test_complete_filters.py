@@ -126,7 +126,12 @@ def test_filter_conjunction_preserves_disjunction_grouping(layer):
     "expression",
     [
         "COUNT(DISTINCT *)",
-        "COUNT(1)",
+        "COUNT(2)",
+        "COUNT(DISTINCT 1)",
+        "COUNT(DISTINCT NULL)",
+        "COUNT(1 + 0)",
+        "COUNT(CAST(NULL AS INTEGER))",
+        "COUNT((SELECT 1))",
         "SUM(1)",
         "SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END)",
         "SUM(amount) + COUNT(amount)",
@@ -576,17 +581,15 @@ def test_complete_row_count_role_queries_preserve_caller_caches(row_count_layer)
         assert getattr(layer.graph, name) == original_values[name]
 
 
-@pytest.mark.parametrize("owner", [None, "orders"])
-def test_graph_complete_row_count_remains_explicitly_unsupported(owner):
+@pytest.mark.parametrize("expression", ["COUNT(*)", "COUNT(1)", "COUNT(NULL)"])
+def test_unowned_graph_complete_count_remains_explicitly_unsupported(expression):
     pytest.importorskip("sidemantic_rs")
     from sidemantic.rust_bridge import UnsupportedSemanticFeaturesError, compile_semantic_input
 
     layer = SemanticLayer(auto_register=False)
     try:
         layer.add_model(Model(name="orders", table="orders", primary_key="id"))
-        layer.graph.add_metric(
-            Metric(name="paid", sql="COUNT(*)", sql_is_complete=True, filters=["status = 'paid'"]), model_name=owner
-        )
+        layer.graph.add_metric(Metric(name="paid", sql=expression, sql_is_complete=True, filters=["status = 'paid'"]))
         with pytest.raises(UnsupportedSemanticFeaturesError) as error:
             compile_semantic_input(layer.graph, {"metrics": ["paid"]})
         assert "metric.complete_filters" in error.value.capabilities

@@ -415,7 +415,7 @@ def test_fanout_evaluates_complete_sql_over_deduplicated_entity_rows():
     assert conn.execute(sql).fetchall() == [("all", 150.0, 2)]
 
 
-def test_fanout_rejects_filtered_zero_column_complete_sql():
+def test_fanout_rejects_filtered_unqualified_constant_complete_sql():
     graph = SemanticGraph()
     graph.add_model(
         Model(
@@ -425,7 +425,7 @@ def test_fanout_rejects_filtered_zero_column_complete_sql():
             metrics=[
                 Metric(
                     name="completed_count",
-                    sql="COUNT(*)",
+                    sql="COUNT(2)",
                     sql_is_complete=True,
                     filters=["{model}.status = 'completed'"],
                 )

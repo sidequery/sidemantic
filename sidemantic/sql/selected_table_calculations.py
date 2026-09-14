@@ -13,7 +13,7 @@ import sqlglot
 from sidemantic.core.table_calculation import TableCalculation
 
 
-def wrap_table_calculations(sql, catalog, names, order_by, dialect):
+def wrap_table_calculations(sql, catalog, names, order_by, dialect, *, aliases=None):
     if not names:
         return sql
     if dialect not in {"duckdb", "postgres", "postgresql"}:
@@ -43,7 +43,14 @@ def wrap_table_calculations(sql, catalog, names, order_by, dialect):
         if not parts:
             raise ValueError("Invalid table calculation result ordering")
         field = parts[0]
-        if field not in available:
+        output_alias = (aliases or {}).get(field)
+        if output_alias is None and aliases and "." not in field and field not in available:
+            matches = {alias for key, alias in aliases.items() if key.rsplit(".", 1)[-1] == field}
+            if len(matches) == 1:
+                output_alias = matches.pop()
+        if output_alias is not None:
+            field = output_alias
+        elif field not in available:
             field = field.replace(".", "_") if field.replace(".", "_") in available else field.rsplit(".", 1)[-1]
         suffix = " ".join(parts[1:]).upper()
         if not re.fullmatch(r"(?:(?:ASC|DESC)(?: NULLS (?:FIRST|LAST))?|NULLS (?:FIRST|LAST))?", suffix):

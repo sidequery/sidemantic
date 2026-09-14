@@ -77,6 +77,37 @@ def test_postprocess_keeps_paginated_calculations(layer):
     assert_rows(actual, layer.query(**query).fetchall())
 
 
+@pytest.mark.parametrize("layer", ["python"], indirect=True)
+@pytest.mark.parametrize("alias", ["gross", "Gross Revenue"])
+@pytest.mark.parametrize("qualified", [True, False])
+def test_sequential_calculations_order_by_custom_output_aliases(layer, alias, qualified):
+    calculations = [
+        TableCalculation(name="running", type="running_total", field=alias),
+        TableCalculation(name="ranked", type="rank", field=alias),
+        TableCalculation(name="sequence", type="row_number"),
+        TableCalculation(name="moving", type="moving_average", field=alias, window_size=2),
+        TableCalculation(name="previous", type="percent_of_previous", field=alias),
+    ]
+    for calculation in calculations:
+        layer.graph.table_calculations[calculation.name] = calculation
+    query = {
+        "metrics": ["samples.value"],
+        "dimensions": ["samples.id"],
+        "aliases": {"samples.value": alias, "samples.id": "row_id"},
+        "order_by": ["samples.value DESC", "samples.id ASC"] if qualified else ["value DESC", "id ASC"],
+        "limit": 5,
+        "offset": 1,
+    }
+    base = layer.adapter.execute(layer.compile(**query))
+    columns = [column[0] for column in base.description]
+    expected, expected_columns = TableCalculationProcessor(calculations).process(base.fetchall(), columns)
+    actual = layer.adapter.execute(
+        layer.compile(**query, table_calculations=[calculation.name for calculation in calculations])
+    )
+    assert [column[0] for column in actual.description] == expected_columns
+    assert_rows(actual.fetchall(), expected)
+
+
 @pytest.mark.parametrize(
     "mutation",
     [

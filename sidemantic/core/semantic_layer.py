@@ -1314,7 +1314,12 @@ class SemanticLayer:
                     from sidemantic.sql.selected_table_calculations import wrap_table_calculations
 
                     python_sql = wrap_table_calculations(
-                        python_sql, self.graph.table_calculations, table_calculations, order_by, dialect or self.dialect
+                        python_sql,
+                        self.graph.table_calculations,
+                        table_calculations,
+                        order_by,
+                        dialect or self.dialect,
+                        aliases=aliases,
                     )
                 if inner_sql.strip() != python_sql.strip():
                     raise ValueError("Rust SQL generator output mismatch with Python SQL generator")
@@ -1345,7 +1350,12 @@ class SemanticLayer:
             from sidemantic.sql.selected_table_calculations import wrap_table_calculations
 
             inner_sql = wrap_table_calculations(
-                inner_sql, self.graph.table_calculations, table_calculations, order_by, dialect or self.dialect
+                inner_sql,
+                self.graph.table_calculations,
+                table_calculations,
+                order_by,
+                dialect or self.dialect,
+                aliases=aliases,
             )
         return self._apply_post_process(inner_sql, post_process)
 

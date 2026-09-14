@@ -470,6 +470,9 @@ class RustSemanticGraphFacade:
     def metrics(self):
         return self._adapter._graph.metrics
 
+    def add_metric(self, metric: Metric) -> None:
+        self._adapter.add_metric(metric)
+
     def get_model(self, name: str) -> Model:
         return self._adapter._graph.get_model(name)
 

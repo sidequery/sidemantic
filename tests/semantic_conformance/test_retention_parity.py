@@ -198,10 +198,8 @@ def test_selected_calculations_preserve_retention_fixed_projection(layer):
         # caller attributes; compile separately performs authorization.
         payload = {**query, "metrics": ["events.retained"], "table_calculations": [c.name for c in calculations]}
         assert (
-            json.loads(
-                sidemantic_rs.validate_with_semantic_input(
-                    json.dumps(graph_to_semantic_input(layer.graph)), json.dumps(payload)
-                )
+            sidemantic_rs.validate_with_semantic_input(
+                json.dumps(graph_to_semantic_input(layer.graph)), json.dumps(payload)
             )
             == []
         )

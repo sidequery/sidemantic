@@ -416,6 +416,9 @@ def _normalize_metric_type(metric_payload: dict, *, empty_filters_to_none: bool 
         normalized["type"] = None
     elif metric_type == "timecomparison":
         normalized["type"] = "time_comparison"
+    # Rust serializes an unset window as null; Python uses its default instead.
+    if normalized.get("non_additive_window") is None:
+        normalized.pop("non_additive_window", None)
     if empty_filters_to_none and normalized.get("filters") == []:
         normalized["filters"] = None
     return normalized

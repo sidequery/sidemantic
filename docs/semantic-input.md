@@ -81,8 +81,13 @@ supports:
   calculation, including missing prior periods and zero prior denominators for
   ratios/percent changes. They do not fill the underlying period values or create
   missing periods. Existing window frames, partitions, ordering and policies
-  remain in effect. Filled offset ratios, non-additive and event-metric shapes
-  remain explicitly unsupported. Filled cumulative metrics reject comparison
+  remain in effect. Offset-ratio defaults apply after division by the prior-period
+  denominator, preserving NULLIF protection for zero denominators. Source-local
+  snapshot defaults apply after snapshot selection and the final aggregation;
+  they do not replace null inputs before count or average. Source-local cohort
+  defaults likewise wrap only the outer result, preserving inner values and HAVING.
+  Conversion and retention defaults remain explicitly unsupported.
+  Filled cumulative metrics reject comparison
   offsets; filled time comparisons reject cumulative windows and grain-to-date
   controls rather than silently ignoring them.
 - Existing cumulative `window_expression` fields accept `SUM`, `AVG`, `MIN`,
@@ -403,8 +408,7 @@ and aggregates hidden in source dimensions, inner SQL or row filters are
 rejected. Graph cohorts require their declared source owner; entity or output
 column names do not infer ownership. The declared owner also determines the
 mandatory restrictions applied to the source population. Joined populations,
-unowned graph cohorts, calculated wrappers and
-null-fill options remain gated. HAVING and outer expressions must reference
+unowned graph cohorts and calculated wrappers remain gated. HAVING and outer expressions must reference
 available inner columns; other aggregate contexts are not silently inferred.
 
 The WASM SQL parser has a host-specific admission limit of 16 nested

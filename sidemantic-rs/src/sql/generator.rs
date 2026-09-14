@@ -2778,10 +2778,11 @@ impl<'a> SqlGenerator<'a> {
                 })?;
                 let numerator_alias = self.metric_alias_from_ref(numerator);
                 let prev_denom_col = format!("{}_prev_denom", metric_ref.alias);
-                final_selects.push(format!(
-                    "{numerator_alias} / NULLIF({prev_denom_col}, 0) AS {}",
-                    metric_ref.alias
-                ));
+                let value = self.fill_metric_expression(
+                    metric,
+                    format!("{numerator_alias} / NULLIF({prev_denom_col}, 0)"),
+                )?;
+                final_selects.push(format!("{value} AS {}", metric_ref.alias));
             }
 
             format!(
@@ -4911,15 +4912,20 @@ impl<'a> SqlGenerator<'a> {
                 | MetricType::Ratio
                 | MetricType::Cumulative
                 | MetricType::TimeComparison
-        ) || (metric.r#type != MetricType::TimeComparison && metric.offset_window.is_some())
-            || (metric.r#type == MetricType::Cumulative && metric.time_offset.is_some())
+                | MetricType::Cohort
+        ) || (!matches!(
+            metric.r#type,
+            MetricType::TimeComparison | MetricType::Ratio
+        ) && metric.offset_window.is_some())
+            || ((matches!(metric.r#type, MetricType::Cumulative | MetricType::Cohort)
+                || metric.non_additive_dimension.is_some())
+                && metric.time_offset.is_some())
             || (metric.r#type != MetricType::Cumulative
                 && (metric.window.is_some()
                     || metric.window_expression.is_some()
                     || metric.window_frame.is_some()
                     || metric.window_order.is_some()
                     || metric.grain_to_date.is_some()))
-            || metric.non_additive_dimension.is_some()
         {
             return Err(SidemanticError::UnsupportedSemanticFeatures {
                 capabilities: vec!["metric.fill_nulls_shape".into()],

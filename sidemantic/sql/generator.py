@@ -5347,7 +5347,7 @@ class SQLGenerator:
         inner_select = ",\n    ".join(inner_select_cols + inner_metric_selects)
         inner_group = ", ".join(inner_group_cols)
 
-        outer_select_cols.append(f"{outer_expr} AS {quote_alias(metric.name)}")
+        outer_select_cols.append(f"{self._wrap_with_fill_nulls(outer_expr, metric)} AS {quote_alias(metric.name)}")
 
         # Also add any additional outer metrics from inner_metrics that the user
         # might want (e.g., AVG(active_days) alongside COUNT)

@@ -431,12 +431,16 @@ fn decode_metric(
         let kind = raw.get("type").and_then(Value::as_str).unwrap_or("simple");
         if !matches!(
             kind,
-            "simple" | "derived" | "ratio" | "cumulative" | "time_comparison"
-        ) || (kind != "time_comparison"
+            "simple" | "derived" | "ratio" | "cumulative" | "time_comparison" | "cohort"
+        ) || (!matches!(kind, "time_comparison" | "ratio")
             && raw
                 .get("offset_window")
                 .is_some_and(|value| !neutral(value)))
-            || (kind == "cumulative" && raw.get("time_offset").is_some_and(|value| !neutral(value)))
+            || ((matches!(kind, "cumulative" | "cohort")
+                || raw
+                    .get("non_additive_dimension")
+                    .is_some_and(|value| !neutral(value)))
+                && raw.get("time_offset").is_some_and(|value| !neutral(value)))
             || (kind != "cumulative"
                 && (raw.get("window").is_some_and(|value| !neutral(value))
                     || raw

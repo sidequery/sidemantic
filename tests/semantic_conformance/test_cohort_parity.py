@@ -299,21 +299,29 @@ def test_nonexistent_explicit_owner_does_not_fall_back_to_entity_match(layer):
 
 
 @pytest.mark.parametrize("layer", ["rust_owned"], indirect=True)
-@pytest.mark.parametrize("mutation", ["unowned", "unknown_metric", "null_fill", "wrapper", "joined_dimension"])
+@pytest.mark.parametrize(
+    "mutation", ["unowned", "unknown_metric", "filled_ignored_offset", "wrapper", "joined_dimension"]
+)
 def test_owned_graph_cohort_unsupported_shapes_remain_gated(layer, mutation):
     query = {}
     if mutation == "unowned":
         layer.graph.metric_owners.clear()
     elif mutation == "unknown_metric":
         layer.graph.metric_owners["ghost"] = "events"
-    elif mutation == "null_fill":
+    elif mutation == "filled_ignored_offset":
         cohort_metric(layer).fill_nulls_with = 0
+        cohort_metric(layer).time_offset = "1 day"
     elif mutation == "wrapper":
         layer.graph.add_metric(Metric(name="wrapped", type="derived", sql="qualified * 2"))
         query["metrics"] = ["wrapped"]
     else:
         layer.add_model(
-            Model(name="other", table="must_not_read", primary_key="id", dimensions=[Dimension(name="region")])
+            Model(
+                name="other",
+                table="must_not_read",
+                primary_key="id",
+                dimensions=[Dimension(name="region", type="categorical")],
+            )
         )
         query["dimensions"] = ["other.region"]
     with pytest.raises(ValueError):
@@ -326,3 +334,33 @@ def test_owned_graph_cohort_visibility_is_enforced(layer):
     layer.enforce_visibility = True
     with pytest.raises(SecurityError):
         result(layer)
+
+
+@pytest.mark.parametrize("grouped", [False, True])
+def test_cohort_default_fills_outer_empty_aggregate_without_creating_groups(layer, grouped):
+    metric = cohort_metric(layer)
+    metric.agg = "sum"
+    metric.sql = "amount"
+    metric.fill_nulls_with = -9
+    metric.having = "platforms > 100"
+    dimensions = ["events.region"] if grouped else []
+    _, rows = result(layer, dimensions=dimensions)
+    assert rows == ([] if grouped else [(-9,)])
+
+
+def test_cohort_default_does_not_fill_inner_values_before_having(layer):
+    metric = cohort_metric(layer)
+    metric.agg = "avg"
+    metric.sql = "amount"
+    metric.having = "amount IS NULL"
+    metric.fill_nulls_with = -9
+    layer.adapter.execute("update events set raw_amount = null where tenant = 1")
+    _, rows = result(layer)
+    assert rows == [(-9,)]
+
+
+def test_cohort_count_zero_is_not_replaced_by_default(layer):
+    metric = cohort_metric(layer)
+    metric.fill_nulls_with = -9
+    metric.having = "platforms > 100"
+    assert result(layer)[1] == [(0,)]

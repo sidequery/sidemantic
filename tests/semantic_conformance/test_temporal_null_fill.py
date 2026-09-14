@@ -166,3 +166,15 @@ def test_mixed_temporal_outputs_retain_filled_cumulative_in_lag_cte(layer):
         (-9, -8),
         (-9, -8),
     ]
+
+
+def test_offset_ratio_default_applies_after_sparse_prior_division(layer):
+    metric = Metric(
+        name="filled",
+        type="ratio",
+        numerator="events.amount",
+        denominator="events.amount",
+        offset_window="2 days",
+        fill_nulls_with=-9,
+    )
+    assert values(layer, metric) == [-9, -9, -9, pytest.approx(1 / 3), -9, -9]

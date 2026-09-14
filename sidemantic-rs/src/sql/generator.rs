@@ -3322,7 +3322,7 @@ impl<'a> SqlGenerator<'a> {
             .map(|dimension| self.raw_dimension_sql(model, dimension.sql_expr()))
             .unwrap_or_else(|| entity.to_string());
 
-        let dim_entries = self.conversion_dimension_entries(model, dimension_refs);
+        let dim_entries = self.conversion_dimension_entries(model, dimension_refs)?;
         let dim_aliases: Vec<String> = dim_entries.iter().map(|(alias, _)| alias.clone()).collect();
         let mut all_filters = filters.to_vec();
         all_filters.extend(metric.filters.clone());
@@ -3634,7 +3634,7 @@ impl<'a> SqlGenerator<'a> {
         &self,
         model: &Model,
         dimension_refs: &[DimensionRef],
-    ) -> Vec<(String, String)> {
+    ) -> Result<Vec<(String, String)>> {
         let mut entries = Vec::new();
         for dim_ref in dimension_refs {
             if dim_ref.model != model.name {
@@ -3656,7 +3656,7 @@ impl<'a> SqlGenerator<'a> {
             };
             entries.push((alias, sql_col));
         }
-        entries
+        Ok(entries)
     }
 
     fn cohort_dimension_entries(

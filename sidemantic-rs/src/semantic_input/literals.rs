@@ -215,6 +215,27 @@ mod tests {
     }
 
     #[test]
+    fn unicode_escapes_follow_snowflake_four_digit_contract() {
+        // Snowflake explicitly does not support BigQuery's eight-digit escape:
+        // https://docs.snowflake.com/en/migrations/aim-for-datawarehouses/code-conversion/issues-and-troubleshooting/conversion-issues/bigqueryEWI#ssc-ewi-bq0008
+        // Unknown escapes drop only the backslash, per the string escape table.
+        for (source, expected) in [
+            (r"'\U0001F600'", "U0001F600"),
+            (r"'\U00110000'", "U00110000"),
+            (r"'\Uxyz'", "Uxyz"),
+            (r"'\u0000'", "\0"),
+            (r"'\uD7FF'", "\u{d7ff}"),
+            (r"'\uE000'", "\u{e000}"),
+            (r"'\uFFFF'", "\u{ffff}"),
+            (r"'\u0041B'", "AB"),
+        ] {
+            let sql = format!("SELECT {source}");
+            let prepared = source_sql(&sql, DialectType::Snowflake).unwrap();
+            assert_eq!(first_literal(&prepared, DialectType::Snowflake), expected);
+        }
+    }
+
+    #[test]
     fn preprocessing_preserves_unicode_offsets_identifiers_comments_and_dollars() {
         let sql = "SELECT 'é', '\\u26c4', $$raw\\n'$$, \"id\\n\" -- \\u1234\n";
         let prepared = source_sql(sql, DialectType::Snowflake).unwrap();
@@ -249,7 +270,9 @@ mod tests {
         for sql in [
             r"SELECT '\x2'",
             r"SELECT '\u123'",
+            r"SELECT '\u12G4'",
             r"SELECT '\uD800'",
+            r"SELECT '\uDFFF'",
             r"SELECT '\04'",
         ] {
             assert!(source_sql(sql, DialectType::Snowflake).is_err(), "{sql}");

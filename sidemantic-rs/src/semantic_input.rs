@@ -752,6 +752,10 @@ impl SemanticInput {
     }
 
     fn decode(input: &str) -> Result<Self> {
+        Self::decode_scoped(input, false)
+    }
+
+    fn decode_scoped(input: &str, query_scoped: bool) -> Result<Self> {
         let source: Value = serde_json::from_str(input).map_err(|error| invalid("input", error))?;
         let envelope: Envelope = deserialize(source.clone(), "input")?;
         if envelope.version != 1 {
@@ -767,6 +771,14 @@ impl SemanticInput {
             .required_capabilities
             .into_iter()
             .filter(|capability| {
+                if query_scoped
+                    && matches!(
+                        capability.as_str(),
+                        "graph.table_calculations" | "graph.explores" | "graph.saved_queries"
+                    )
+                {
+                    return false;
+                }
                 !matches!(
                     capability.as_str(),
                     "relationship.roles"
@@ -787,8 +799,25 @@ impl SemanticInput {
             ("explores", &envelope.explores),
             ("saved_queries", &envelope.saved_queries),
         ] {
-            if !values.is_empty() {
+            if !query_scoped && !values.is_empty() {
                 return Err(unsupported(name));
+            }
+            // These are named catalog entries, not implicit query operations.
+            // Keep their full declarations in source without executing them.
+            let mut names = std::collections::HashSet::new();
+            for (index, value) in values.iter().enumerate() {
+                let path = format!("{name}[{index}]");
+                let definition = value
+                    .as_object()
+                    .ok_or_else(|| invalid(&path, "expected a named definition object"))?;
+                let identity = definition
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .filter(|name| !name.trim().is_empty())
+                    .ok_or_else(|| invalid(&path, "definition requires a non-empty name"))?;
+                if !names.insert(identity) {
+                    return Err(invalid(&path, "duplicate definition name"));
+                }
             }
         }
         let _ = envelope.import_warnings; // Descriptive state remains in source.
@@ -963,7 +992,22 @@ struct QueryInput {
 }
 
 fn query_input(query: &str) -> Result<QueryInput> {
-    serde_json::from_str(query).map_err(|error| invalid("query", error))
+    runtime_request(query, "query")
+}
+
+fn runtime_request<T: DeserializeOwned>(input: &str, path: &str) -> Result<T> {
+    let value = serde_json::from_str(input).map_err(|error| invalid(path, error))?;
+    let mut value = object(value, path)?;
+    for name in ["explore", "saved_query", "table_calculations"] {
+        if let Some(request) = value.remove(name) {
+            let inactive = request.is_null()
+                || (name == "table_calculations" && request.as_array().is_some_and(Vec::is_empty));
+            if !inactive {
+                return Err(unsupported(format!("{path}.{name}")));
+            }
+        }
+    }
+    deserialize(Value::Object(value), path)
 }
 
 pub fn compile_with_semantic_input(input_json: &str, query_json: &str) -> Result<String> {
@@ -971,7 +1015,7 @@ pub fn compile_with_semantic_input(input_json: &str, query_json: &str) -> Result
 }
 
 fn compile_semantic_input(input_json: &str, query_json: &str) -> Result<String> {
-    let input = SemanticInput::decode(input_json)?;
+    let input = SemanticInput::decode_scoped(input_json, true)?;
     let payload = query_input(query_json)?;
     let dialect = payload
         .dialect
@@ -1024,7 +1068,7 @@ pub fn validate_with_semantic_input(input_json: &str, query_json: &str) -> Resul
 }
 
 fn validate_semantic_input(input_json: &str, query_json: &str) -> Result<Vec<String>> {
-    let input = SemanticInput::decode(input_json)?;
+    let input = SemanticInput::decode_scoped(input_json, true)?;
     let query = query_input(query_json)?;
     Ok(validate_query_references(
         &input.graph,
@@ -1053,9 +1097,8 @@ pub fn rewrite_with_semantic_input_context(
     context_json: &str,
 ) -> Result<String> {
     with_semantic_stack(|| {
-        let input = SemanticInput::decode(input_json)?;
-        let context: RewriteContext = serde_json::from_str(context_json)
-            .map_err(|error| invalid("rewrite.context", error))?;
+        let input = SemanticInput::decode_scoped(input_json, true)?;
+        let context: RewriteContext = runtime_request(context_json, "rewrite.context")?;
         let output_dialect = context
             .output_dialect
             .as_deref()
@@ -1111,6 +1154,39 @@ mod tests {
                 "metrics": [{"name": "revenue", "agg": "sum", "sql": "amount"}]
             }], "metrics": [], "metric_owners": {}, "metadata": {"source": "orders.yml"}
         })
+    }
+
+    #[test]
+    fn catalog_definitions_are_query_inert_but_full_handoff_remains_strict() {
+        let mut source = input();
+        source["table_calculations"] =
+            json!([{"name":"double","type":"formula","expression":"${revenue} * 2"}]);
+        source["explores"] =
+            json!([{"name":"paid","model":"orders","filters":["status = 'paid'"]}]);
+        source["saved_queries"] = json!([{"name":"total","metrics":["orders.revenue"]}]);
+        source["required_capabilities"] = json!([
+            "graph.table_calculations",
+            "graph.explores",
+            "graph.saved_queries"
+        ]);
+        let json = source.to_string();
+        assert!(matches!(
+            SemanticInput::from_json(&json),
+            Err(SidemanticError::UnsupportedSemanticFeatures { .. })
+        ));
+        let scoped = SemanticInput::decode_scoped(&json, true).unwrap();
+        assert_eq!(scoped.source, source);
+        assert!(
+            validate_with_semantic_input(&json, r#"{"metrics":["orders.revenue"]}"#)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(compile_with_semantic_input(&json, r#"{"metrics":["orders.revenue"]}"#).is_ok());
+        source["required_capabilities"] = json!(["future.capability"]);
+        assert!(matches!(
+            compile_with_semantic_input(&source.to_string(), r#"{"metrics":["orders.revenue"]}"#),
+            Err(SidemanticError::UnsupportedSemanticFeatures { .. })
+        ));
     }
 
     #[test]

@@ -25,7 +25,7 @@ The JSON envelope contains:
 | `metrics` | Graph-scoped metrics, retained separately from model metrics. |
 | `metric_owners` | Only explicitly declared model ownership for graph-addressable metrics. |
 | `parameters` | Parameter definitions. |
-| `table_calculations`, `explores`, `saved_queries` | Retained graph definitions, with explicit rejection when unsupported. |
+| `table_calculations`, `explores`, `saved_queries` | Retained named catalogs; unused entries do not block query compilation. |
 | `metadata`, `import_warnings` | Source and descriptive information. |
 | `required_capabilities` | Declared special requirements, independently checked against the definitions by the receiver. |
 
@@ -160,6 +160,20 @@ and unqualified conversion, cohort, and non-additive metric shapes. Retention
 has a bounded dedicated path described below.
 
 Deserialization alone is not evidence of executable support.
+
+Structured query compilation, query-reference validation, and SQL rewriting
+preserve unused table-calculation, Explore, and saved-query declarations without
+executing them. Catalog entries must be objects with unique non-empty names;
+their execution fields remain in the source snapshot. Whole-graph
+`SemanticInput::from_json` validation still rejects unsupported catalogs.
+
+The Python layer resolves saved queries before dispatch, preserving their filters,
+visibility checks and prohibition on overrides. An active Explore still requires
+the unsupported `query.consumption_base_model` capability. Raw runtime requests
+that select `explore`, `saved_query`, or nonempty `table_calculations` fail with
+typed capability errors, including requests through rewrite context. Callers must
+resolve supported consumption contracts explicitly; catalog presence alone never
+activates them. Model policies and invariant filters remain mandatory.
 
 Model-owned retention metrics support one source in DuckDB, with `entity`,
 `cohort_event`, optional `activity_event`, and day/week/month periods. The first

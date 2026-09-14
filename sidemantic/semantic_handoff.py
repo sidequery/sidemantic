@@ -81,10 +81,13 @@ def graph_to_semantic_json(graph: SemanticGraph, *, input_dialect: str = "duckdb
 
 
 def graph_handoff_requirements(graph: SemanticGraph, *, input_dialect: str = "duckdb") -> list[str]:
-    """Declare special execution requirements; the receiver also checks the data.
+    """Declare whole-graph requirements; the receiver also checks the data.
 
     This is not a claim that all other features are supported. The receiving
-    versioned decoder validates every field and the compiler validates queries.
+    versioned decoder validates executable fields and the compiler validates queries.
+    Named consumption and calculation catalogs are retained in every snapshot;
+    query entrypoints decide whether those definitions are active. Their mere
+    presence does not make a plain structured query execute a catalog entry.
     """
     requirements: set[str] = set()
     if input_dialect.lower() != "duckdb":

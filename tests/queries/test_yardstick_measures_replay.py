@@ -126,12 +126,35 @@ def _yardstick_upstream_checkout() -> Path:
     return checkout
 
 
+def _unmet_environment_requirements(path: Path) -> list[str]:
+    """Honor SQLLogicTest's file-level prerequisites before reading SQL records."""
+    unmet = []
+    for line in path.read_text().splitlines():
+        parts = line.strip().split(maxsplit=2)
+        if len(parts) < 2 or parts[0] != "require-env":
+            continue
+        variable = parts[1]
+        actual = os.environ.get(variable)
+        if actual is None or (len(parts) == 3 and actual != parts[2]):
+            unmet.append(" ".join(parts[1:]))
+    return unmet
+
+
 def _yardstick_upstream_sql_test_paths() -> list[Path]:
     checkout = _yardstick_upstream_checkout()
     paths = sorted((checkout / "test" / "sql").glob("*.test"))
     if not paths:
         pytest.fail(f"No upstream Yardstick SQL test files found under {checkout / 'test' / 'sql'}")
-    return paths
+    eligible = []
+    for path in paths:
+        unmet = _unmet_environment_requirements(path)
+        if unmet:
+            print(f"Upstream prerequisites unmet for {path.name}: {', '.join(unmet)}")
+        else:
+            eligible.append(path)
+    if not eligible:
+        pytest.fail(f"No upstream Yardstick SQL files satisfy their require-env prerequisites under {checkout}")
+    return eligible
 
 
 def _parse_measures_test(path: Path) -> tuple[list[_StatementBlock], list[_QueryBlock]]:
@@ -647,7 +670,7 @@ def _expected_projections(
     return expected_dimensions, expected_metrics
 
 
-def _assert_definition_blocks_match(path: Path) -> None:
+def _assert_definition_blocks_match(path: Path) -> int:
     statements, queries = _parse_measures_test(path)
     adapter = YardstickAdapter()
     checked_models: list[str] = []
@@ -691,7 +714,12 @@ def _assert_definition_blocks_match(path: Path) -> None:
 
             checked_models.append(model.name)
 
-    assert checked_models, f"No Yardstick CREATE VIEW ... AS MEASURE definitions found in {path}"
+    return len(checked_models)
+
+
+def _assert_definition_corpus_matches(paths: list[Path]) -> None:
+    checked_count = sum(_assert_definition_blocks_match(path) for path in paths)
+    assert checked_count, "No Yardstick CREATE VIEW ... AS MEASURE definitions found in eligible upstream corpus"
 
 
 def _apply_statement(layer: SemanticLayer, adapter: YardstickAdapter, statement: _StatementBlock) -> None:
@@ -779,8 +807,7 @@ def test_yardstick_measures_test_replay():
 
 @pytest.mark.yardstick_upstream
 def test_yardstick_upstream_create_view_definitions():
-    for path in _yardstick_upstream_sql_test_paths():
-        _assert_definition_blocks_match(path)
+    _assert_definition_corpus_matches(_yardstick_upstream_sql_test_paths())
 
 
 @pytest.mark.yardstick_upstream
@@ -1001,3 +1028,39 @@ def test_replay_closes_connection_on_success_and_failure(tmp_path, monkeypatch, 
         _replay_yardstick_sql_test(path)
     with pytest.raises(duckdb.ConnectionException, match="closed"):
         layer.adapter.execute("SELECT 1")
+
+
+def test_upstream_environment_requirements_control_file_eligibility(tmp_path, monkeypatch):
+    sql_dir = tmp_path / "test" / "sql"
+    sql_dir.mkdir(parents=True)
+    ordinary = sql_dir / "ordinary.test"
+    ordinary.write_text("query I\nselect 1\n----\n1\n")
+    native = sql_dir / "native.test"
+    native.write_text("require-env YARDSTICK_NATIVE_PEG 1\n\nquery I\nselect 2\n----\n2\n")
+    combined = sql_dir / "combined.test"
+    combined.write_text(
+        "require-env YARDSTICK_NATIVE_PEG 1\n\nrequire-env YARDSTICK_GRAMMAR_TEST_EXTENSION\n"
+        "\nquery I\nselect 3\n----\n3\n"
+    )
+    monkeypatch.setattr(__name__ + "._yardstick_upstream_checkout", lambda: tmp_path)
+    monkeypatch.delenv("YARDSTICK_NATIVE_PEG", raising=False)
+    monkeypatch.delenv("YARDSTICK_GRAMMAR_TEST_EXTENSION", raising=False)
+    assert _yardstick_upstream_sql_test_paths() == [ordinary]
+    monkeypatch.setenv("YARDSTICK_NATIVE_PEG", "0")
+    assert _yardstick_upstream_sql_test_paths() == [ordinary]
+    monkeypatch.setenv("YARDSTICK_NATIVE_PEG", "1")
+    assert _yardstick_upstream_sql_test_paths() == [native, ordinary]
+    monkeypatch.setenv("YARDSTICK_GRAMMAR_TEST_EXTENSION", "/tmp/grammar.duckdb_extension")
+    assert _yardstick_upstream_sql_test_paths() == [combined, native, ordinary]
+
+
+def test_definition_coverage_is_corpus_wide_without_dropping_plain_sql(tmp_path):
+    ordinary = tmp_path / "ordinary.test"
+    ordinary.write_text("query I\nselect 1\n----\n1\n")
+    measures = tmp_path / "measures.test"
+    measures.write_text("statement ok\ncreate view sales_v as select sum(amount) as measure revenue from sales;\n")
+    assert _assert_definition_blocks_match(ordinary) == 0
+    _assert_definition_corpus_matches([ordinary, measures])
+    _replay_yardstick_sql_test(ordinary)
+    with pytest.raises(AssertionError, match="eligible upstream corpus"):
+        _assert_definition_corpus_matches([ordinary])

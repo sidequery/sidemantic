@@ -16,6 +16,7 @@ import yaml
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.semantic_graph import SemanticGraph
+from sidemantic.core.semantic_layer import SemanticLayer as ProductionSemanticLayer
 from sidemantic.validation import MetricValidationError, ModelValidationError, QueryValidationError
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -114,6 +115,7 @@ class RustSemanticLayerAdapter:
         aliases: dict[str, str] | None = None,
         timezone: str | None = None,
         with_totals: bool = False,
+        post_process: str | None = None,
         **_kwargs: Any,
     ) -> str:
         if _kwargs:
@@ -123,8 +125,6 @@ class RustSemanticLayerAdapter:
         active_dialect = dialect or self.dialect
         if active_dialect not in {"duckdb", "bigquery"}:
             raise NotImplementedError(f"pure Rust test adapter does not support dialect '{active_dialect}' yet")
-        if parameters:
-            raise NotImplementedError("pure Rust test adapter does not support template parameters yet")
         effective_preaggregations = self.use_preaggregations if use_preaggregations is None else use_preaggregations
         if effective_preaggregations:
             raise NotImplementedError("pure Rust test adapter does not support pre-aggregation routing yet")
@@ -151,6 +151,7 @@ class RustSemanticLayerAdapter:
                 "ungrouped": ungrouped,
                 "skip_default_time_dimensions": skip_default_time_dimensions,
                 "dialect": active_dialect,
+                "parameter_values": parameters or {},
             }
         )
         if response["status"] == "error":
@@ -159,7 +160,7 @@ class RustSemanticLayerAdapter:
             if "unsupported_source_uri_query" in response["error"]:
                 raise ValueError(response["error"].replace("Rust SQL generation", "Python SQL generation"))
             raise QueryValidationError(response["error"])
-        return response["sql"]
+        return ProductionSemanticLayer._apply_post_process(self, response["sql"], post_process)
 
     def query(
         self,
@@ -264,6 +265,7 @@ class RustSemanticLayerAdapter:
             {
                 "models": [_model_to_rust_dict(model) for model in self.graph.models.values()],
                 "metrics": [_metric_to_rust_dict(metric) for metric in self.graph.metrics.values()],
+                "parameters": [parameter.model_dump(exclude_none=True) for parameter in self.graph.parameters.values()],
             },
             sort_keys=False,
         )
@@ -309,6 +311,9 @@ class RustSemanticGraphDirectAdapter:
     @property
     def metrics(self) -> dict[str, Metric]:
         return self._metrics
+
+    def add_parameter(self, parameter) -> None:
+        self.parameters[parameter.name] = parameter
 
     def add_model(self, model: Model) -> None:
         response = _rust_request(
@@ -434,7 +439,7 @@ class RustSemanticGraphDirectAdapter:
         ]
 
     def _models_yaml(self) -> str:
-        return _graph_yaml(self._models, self._metrics)
+        return _graph_yaml(self._models, self._metrics, self.parameters)
 
     def _table_calculations_json(self) -> list[dict[str, Any]]:
         return [_table_calculation_to_rust_dict(calc) for calc in self.table_calculations.values()]
@@ -472,6 +477,13 @@ class RustSemanticGraphFacade:
 
     def add_metric(self, metric: Metric) -> None:
         self._adapter.add_metric(metric)
+
+    @property
+    def parameters(self):
+        return self._adapter._graph.parameters
+
+    def add_parameter(self, parameter) -> None:
+        self._adapter._graph.add_parameter(parameter)
 
     def get_model(self, name: str) -> Model:
         return self._adapter._graph.get_model(name)
@@ -513,8 +525,6 @@ class RustSQLGeneratorAdapter:
         aliases: dict[str, str] | None = None,
         skip_default_time_dimensions: bool = False,
     ) -> str:
-        if parameters:
-            raise NotImplementedError("pure Rust test adapter does not support template parameters yet")
         if use_preaggregations:
             raise NotImplementedError("pure Rust test adapter does not support pre-aggregation routing yet")
         if aliases:
@@ -534,6 +544,7 @@ class RustSQLGeneratorAdapter:
                 "ungrouped": ungrouped,
                 "skip_default_time_dimensions": skip_default_time_dimensions,
                 "dialect": self.dialect,
+                "parameter_values": parameters or {},
             }
         )
         if response["status"] == "error":
@@ -858,18 +869,19 @@ def _single_metric_yaml(metric: Metric) -> str:
     return _graph_yaml({}, {metric.name: metric})
 
 
-def _graph_yaml(models: dict[str, Model], metrics: dict[str, Metric]) -> str:
+def _graph_yaml(models: dict[str, Model], metrics: dict[str, Metric], parameters: dict | None = None) -> str:
     return yaml.safe_dump(
         {
             "models": [_model_to_rust_dict(model) for model in models.values()],
             "metrics": [_metric_to_rust_dict(metric) for metric in metrics.values()],
+            "parameters": [parameter.model_dump(exclude_none=True) for parameter in (parameters or {}).values()],
         },
         sort_keys=False,
     )
 
 
 def _graph_yaml_from_graph(graph) -> str:
-    return _graph_yaml(graph.models, graph.metrics)
+    return _graph_yaml(graph.models, graph.metrics, graph.parameters)
 
 
 def _rust_request(payload: dict[str, Any]) -> dict[str, Any]:

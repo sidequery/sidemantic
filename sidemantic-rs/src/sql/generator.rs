@@ -5286,7 +5286,7 @@ impl<'a> SqlGenerator<'a> {
 
     /// Expand relative date expressions in a filter string
     fn expand_relative_dates(&self, filter: &str) -> String {
-        let comparison_re = regex::Regex::new(r#"^(.+?)\s*(>=|<=|>|<|=)\s*['"](.+?)['"]$"#)
+        let comparison_re = regex::Regex::new(r#"^(.+?)\s*(>=|<=|<>|!=|>|<|=)\s*['"](.+?)['"]$"#)
             .expect("valid relative date comparison regex");
         if let Some(cap) = comparison_re.captures(filter.trim()) {
             let column = cap.get(1).map(|m| m.as_str().trim()).unwrap_or("");
@@ -5298,7 +5298,14 @@ impl<'a> SqlGenerator<'a> {
                     if let Some(range_sql) = RelativeDate::to_range(value, column) {
                         return range_sql;
                     }
-                } else if matches!(operator, ">=" | ">") {
+                } else if matches!(operator, "!=" | "<>") {
+                    if let Some(range_sql) = RelativeDate::to_range(value, column) {
+                        return format!("NOT ({range_sql})");
+                    }
+                    if let Some(sql_date) = RelativeDate::parse(value) {
+                        return format!("{column} <> {sql_date}");
+                    }
+                } else if matches!(operator, ">=" | ">" | "<=" | "<") {
                     if let Some(sql_date) = RelativeDate::parse(value) {
                         return format!("{column} {operator} {sql_date}");
                     }

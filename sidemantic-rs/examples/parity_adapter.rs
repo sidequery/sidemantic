@@ -41,6 +41,8 @@ enum Request {
         #[serde(default)]
         skip_default_time_dimensions: bool,
         dialect: Option<String>,
+        #[serde(default)]
+        parameter_values: std::collections::HashMap<String, serde_yaml::Value>,
     },
     JoinPath {
         models_yaml: String,
@@ -169,8 +171,12 @@ fn handle(request: Request) -> sidemantic::Result<Response> {
             ungrouped,
             skip_default_time_dimensions,
             dialect,
+            parameter_values,
         } => {
             let graph = load_from_string(&models_yaml)?;
+            let filters =
+                sidemantic::runtime::interpolate_query_filters(&graph, filters, &parameter_values)
+                    .map_err(sidemantic::SidemanticError::Validation)?;
             let mut query = SemanticQuery::new()
                 .with_metrics(metrics)
                 .with_dimensions(dimensions)

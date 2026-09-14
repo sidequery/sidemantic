@@ -117,18 +117,6 @@ EXPECTED_GAPS = {
     "tests.test_validation::test_query_validation_reports_ambiguous_join_routes": (
         "Rust query validation does not yet reject ambiguous join routes"
     ),
-    "tests.dates.test_integration::test_not_equal_relative_date_single_day": (
-        "Rust SQL generator does not yet support the extended relative-date operators (!=/<>, </<=)"
-    ),
-    "tests.dates.test_integration::test_not_equal_relative_date_range": (
-        "Rust SQL generator does not yet support the extended relative-date operators (!=/<>, </<=)"
-    ),
-    "tests.queries.test_sql_rewriter::test_rewrite_not_equal_relative_date": (
-        "Rust SQL generator does not yet support the extended relative-date operators (!=/<>, </<=)"
-    ),
-    "tests.queries.test_sql_rewriter::test_rewrite_less_than_relative_date": (
-        "Rust SQL generator does not yet support the extended relative-date operators (!=/<>, </<=)"
-    ),
     "tests.core.test_auto_dimensions::test_auto_dimensions_from_table": (
         "Rust adapter does not yet support Python auto-dimension DB introspection"
     ),
@@ -224,27 +212,6 @@ EXPECTED_GAPS = {
     ),
     "tests.metrics.test_cumulative::test_cumulative_with_time_comparison": (
         "Rust strict model validation rejects this Python fixture's time dimension without granularity"
-    ),
-    "tests.templates.test_jinja_integration::test_simple_parameter_substitution": (
-        "Rust adapter does not yet support Python template parameter interpolation"
-    ),
-    "tests.templates.test_jinja_integration::test_jinja_conditional_with_parameters": (
-        "Rust adapter does not yet support Python template parameter interpolation"
-    ),
-    "tests.queries.test_sql_rewriter::test_compile_post_process": (
-        "Rust adapter does not yet support Python post_process SQL contracts"
-    ),
-    "tests.queries.test_sql_rewriter::test_query_post_process": (
-        "Rust adapter does not yet support Python post_process SQL contracts"
-    ),
-    "tests.queries.test_sql_rewriter::test_post_process_missing_placeholder": (
-        "Rust adapter does not yet support Python post_process SQL contracts"
-    ),
-    "tests.queries.test_sql_rewriter::test_post_process_with_own_ctes": (
-        "Rust adapter does not yet support Python post_process SQL contracts"
-    ),
-    "tests.queries.test_sql_rewriter::test_post_process_cte_name_collision": (
-        "Rust adapter does not yet support Python post_process SQL contracts"
     ),
     "tests.test_preaggregation_bugs::test_avg_metric_with_filtered_count_fails": (
         "Rust adapter does not yet support Python pre-aggregation routing bug contracts"

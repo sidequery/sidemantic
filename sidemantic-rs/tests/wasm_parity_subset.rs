@@ -97,6 +97,25 @@ models:
         .unwrap();
     assert!(rewritten.contains("SUM("));
     assert!(rewritten.contains("country"));
+
+    for sql in [
+        "SELECT * FROM orders",
+        "WITH base AS (SELECT * FROM orders) SELECT * FROM base",
+        "SELECT orders.status, orders.revenue FROM orders GROUP BY orders.status",
+        "SELECT orders.revenue FROM (SELECT * FROM orders) orders",
+    ] {
+        let rewritten = runtime.rewrite(sql).unwrap();
+        assert!(rewritten.contains("SUM("), "{rewritten}");
+        assert!(rewritten.contains("revenue"), "{rewritten}");
+    }
+    for sql in [
+        "SELECT SUM(orders.amount) AS revenue FROM orders",
+        "SELECT orders.missing FROM orders",
+        "SELECT * FROM metrics",
+        "SELECT (",
+    ] {
+        assert!(runtime.rewrite(sql).is_err(), "{sql}");
+    }
 }
 
 #[test]
@@ -662,11 +681,10 @@ dimensions: [orders.status]
     assert!(rewritten_with_positional_order.contains("ORDER BY"));
     assert!(rewritten_with_positional_order.contains("LIMIT 2"));
 
-    #[cfg(target_arch = "wasm32")]
     {
         let rewritten_with_aggregate = wasm_rewrite_with_yaml(
             yaml,
-            "SELECT SUM(orders.amount) AS total_revenue, orders.status FROM orders ORDER BY total_revenue DESC LIMIT 4",
+            "SELECT orders.revenue AS total_revenue, orders.status FROM orders ORDER BY total_revenue DESC LIMIT 4",
         )
         .unwrap();
         assert!(rewritten_with_aggregate.contains("SUM("));
@@ -674,17 +692,18 @@ dimensions: [orders.status]
         assert!(rewritten_with_aggregate.contains("LIMIT 4"));
     }
 
-    #[cfg(target_arch = "wasm32")]
     {
         let rewritten_with_expression = wasm_rewrite_with_yaml(
             yaml,
-            "SELECT SUM(amount) / COUNT(*) AS aov, status FROM orders ORDER BY aov DESC LIMIT 1",
+            "SELECT orders.revenue / orders.count AS aov, orders.status FROM orders ORDER BY aov DESC LIMIT 1",
         )
         .unwrap();
         assert!(rewritten_with_expression
             .to_ascii_uppercase()
             .contains("COUNT("));
-        assert!(rewritten_with_expression.contains("revenue / count AS aov"));
+        assert!(rewritten_with_expression.contains("SUM("));
+        assert!(rewritten_with_expression.contains(" / "));
+        assert!(rewritten_with_expression.contains(" AS aov"));
         assert!(rewritten_with_expression.contains("ORDER BY"));
         assert!(rewritten_with_expression.contains("LIMIT 1"));
     }

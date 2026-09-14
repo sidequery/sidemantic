@@ -157,13 +157,6 @@ static HUGGING_QUOTES: Lazy<Regex> = Lazy::new(|| {
         .expect("valid quoted policy placeholder pattern")
 });
 
-pub fn render_row_filter(
-    template: &str,
-    user_attributes: &Map<String, Value>,
-) -> Result<String, PolicyError> {
-    render_row_filter_in_dialect(template, user_attributes, DialectType::DuckDB)
-}
-
 fn render_row_filter_in_dialect(
     template: &str,
     user_attributes: &Map<String, Value>,
@@ -237,6 +230,13 @@ fn render_row_filter_in_dialect(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn render_row_filter(
+        template: &str,
+        user_attributes: &Map<String, Value>,
+    ) -> Result<String, PolicyError> {
+        render_row_filter_in_dialect(template, user_attributes, DialectType::DuckDB)
+    }
 
     fn attributes(value: Value) -> Map<String, Value> {
         value

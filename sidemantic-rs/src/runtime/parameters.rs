@@ -238,7 +238,7 @@ fn replace_outputs(
                 )
             {
                 let prefix = &sql[start..position];
-                if (prefix.len() - prefix.trim_end_matches('\\').len()) % 2 != 0 {
+                if !(prefix.len() - prefix.trim_end_matches('\\').len()).is_multiple_of(2) {
                     return Err(
                         "Parameter output cannot follow an unpaired SQL escape character".into(),
                     );

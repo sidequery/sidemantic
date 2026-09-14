@@ -116,23 +116,40 @@ supports:
   remain available through their existing paths.
 
 
-Configured ordinary rollups reach the Rust graph through this boundary. Routing
-supports single-source sum/count/min/max queries over compatible stored dimensions
-and time grains. Simple predicates on stored non-time dimensions are checked through
-the parsed expression, including IN, BETWEEN and IS NULL. Uncovered dimensions,
-time predicates, functions, unsupported measure states and incomplete rollup
-populations use raw source SQL, with `used_preagg=false`. A bucketed timestamp cannot
-serve a finer grain or an untruncated timestamp, and week buckets cannot serve months.
+Configured rollups reach the Rust graph through this boundary. Routing supports
+source-local sum/count/min/max and filtered states, plus AVG reconstructed from
+stored sum and a compatible count. Count compatibility checks the actual nullable
+input and metric filters, not the count's name. COUNT(*) is a valid denominator
+only when the AVG input is provably non-null, such as COALESCE(amount, 0).
+An incompatible denominator falls back to the raw AVG in both engines.
+Derived and ratio metrics reconstruct their source-local aggregate dependencies;
+metric predicates become HAVING over those reconstructed states. Empty count
+populations return zero, while nullable sums and averages remain null.
+
+One-hop many-to-one dimension queries can route through a rollup carrying every
+join key, including composite keys. The remote dimension model remains the query
+domain, so members with no facts retain zero counts. Explicit anchors requiring a
+different domain, explicit join kinds, colliding output aliases, uncovered join keys, multi-hop or fanout joins and row filters on
+this join route use ordinary source planning. Compatible stored dimensions and
+time grains retain their existing routing checks: bucketed timestamps cannot serve
+finer grains or untruncated timestamps, and week buckets cannot serve months.
 Cross-source aggregate child queries retain raw-source planning.
+
+Lambda rollups preserve their `rollups` round-trip metadata and support
+`union_with_source_data`. When `build_range_end`, a time dimension and a grain are
+present, the batch leg includes buckets strictly before the boundary bucket and
+the live leg rebuilds that entire bucket and later rows using the same additive
+state materializer. This avoids double-counting a mid-bucket boundary and permits
+coarser query grains. Without a boundary, routing reads only the stored rollup.
 
 Active row policies and invariant filters always bypass rollups, including when
 routing was requested. Access and visibility checks still run before routing.
 Python materialization preserves invariants; the legacy Rust materialization helper
-continues to reject models with invariant filters instead of discarding them. Rust
-materialization supports filtered sum/count/min/max states, including distinct row
-and non-null value count populations, and rejects unsupported states such as AVG,
-custom SQL, partitioned builds and partial build ranges. Lambda freshness behavior
-remains explicitly unsupported by the versioned boundary.
+continues to reject models with invariant filters instead of discarding them.
+Rust materialization supports filtered sum/count/min/max and AVG sum states, with
+separate count inputs defining the denominator. Custom SQL, partitioned builds,
+non-lambda partial build ranges and non-additive distribution states remain
+unsupported by that materializer.
 
 Filtered complete measures are supported when their SQL AST is exactly
 `SUM(input)`, `AVG(input)`, `COUNT(input)`, `COUNT(DISTINCT input)`,

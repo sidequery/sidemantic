@@ -1171,7 +1171,7 @@ def test_avg_preaggregation_rolls_up_with_sum_count_state(layer):
         SELECT
             category,
             SUM(price) AS avg_price_raw,
-            COUNT(*) AS count_raw
+            COUNT(price) AS count_raw
         FROM products
         GROUP BY category
     """)
@@ -1182,7 +1182,7 @@ def test_avg_preaggregation_rolls_up_with_sum_count_state(layer):
         dimensions=[Dimension(name="category", type="categorical", sql="category")],
         metrics=[
             Metric(name="avg_price", agg="avg", sql="price"),
-            Metric(name="count", agg="count"),
+            Metric(name="count", agg="count", sql="price"),
         ],
         pre_aggregations=[
             PreAggregation(
@@ -1296,7 +1296,7 @@ def test_ratio_metric_preaggregation_rebuilds_from_additive_leaves(layer):
     preagg_rows = layer.adapter.execute(preagg_sql).fetchall()
 
     assert "orders_preagg_by_status" in preagg_sql
-    assert "SUM(revenue_raw) / NULLIF(SUM(count_raw), 0)" in preagg_sql
+    assert "SUM(revenue_raw) / NULLIF(COALESCE(SUM(count_raw), 0), 0)" in preagg_sql
     assert preagg_rows == baseline_rows
 
 

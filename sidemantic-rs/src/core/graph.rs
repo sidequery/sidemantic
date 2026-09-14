@@ -1592,6 +1592,8 @@ mod tests {
             .with_pre_aggregation(PreAggregation {
                 name: "monthly".to_string(),
                 preagg_type: PreAggregationType::Rollup,
+                rollups: None,
+                union_with_source_data: false,
                 measures: Some(vec!["missing_revenue".to_string()]),
                 dimensions: Some(vec!["created_at".to_string()]),
                 time_dimension: Some("created_at".to_string()),

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import re
-
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.pre_aggregation import PreAggregation
@@ -292,37 +290,81 @@ class PreAggregationMatcher:
         Returns:
             Name of the count measure, or None if not found
         """
-        # Look for count measures in priority order:
-        # 1. Exact match: if avg is "avg_amount", look for "count_amount"
-        # 2. Exact match: if avg is "revenue_avg", look for "revenue_count"
-        # 3. Generic "count" measure
-        # 4. Any count measure (order_count, user_count, etc.)
-
-        # Try exact match with _count suffix (e.g., avg_amount -> count_amount)
+        candidates = []
         if avg_metric.name.startswith("avg_"):
-            base_name = avg_metric.name[4:]  # Remove "avg_" prefix
-            count_candidate = f"count_{base_name}"
-            if count_candidate in preagg_measures:
-                return count_candidate
-
-        # Try exact match with count_ prefix (e.g., revenue_avg -> revenue_count)
+            candidates.append(f"count_{avg_metric.name[4:]}")
         if "_avg" in avg_metric.name:
-            base_name = avg_metric.name.replace("_avg", "_count")
-            if base_name in preagg_measures:
-                return base_name
-
-        # Try generic "count"
-        if "count" in preagg_measures:
-            return "count"
-
-        # Accept any measure whose name contains "count" as a separate word
-        # (e.g., "order_count", "count_orders") but NOT substring matches
-        # like "discount_amount" where "count" is part of another word.
-        for measure in preagg_measures:
-            if re.search(r"(?:^|_)count(?:$|_)", measure):  # word-boundary match
-                return measure
-
+            candidates.append(avg_metric.name.replace("_avg", "_count"))
+        candidates.extend(["count", *preagg_measures])
+        for name in dict.fromkeys(candidates):
+            if name not in preagg_measures:
+                continue
+            count_metric = self.model.get_metric(name)
+            if count_metric and self._count_matches_average_population(avg_metric, count_metric):
+                return name
         return None
+
+    def _count_matches_average_population(self, average: Metric, count: Metric) -> bool:
+        """An AVG denominator must count the same qualifying non-null inputs."""
+        import sqlglot
+        from sqlglot import exp
+        from sqlglot.errors import SqlglotError
+
+        from sidemantic.sql.fragment import replace_outside_sql_protected
+
+        if count.agg != "count" or count.type not in (None, "simple") or count.sql_is_complete:
+            return False
+
+        def normalize(sql):
+            sql = replace_outside_sql_protected(sql, "{model}", self.model.name)
+            expression = sqlglot.parse_one(sql, read="duckdb")
+            for column in expression.find_all(exp.Column):
+                if len(column.parts) > 2 or column.table not in ("", self.model.name):
+                    return None
+                column.set("table", None)
+            return expression
+
+        def same_expression(left, right):
+            if left.strip() == right.strip():
+                return True
+            try:
+                normalized = normalize(left)
+                return normalized is not None and normalized == normalize(right)
+            except SqlglotError:
+                return False
+
+        if len(average.filters or []) != len(count.filters or []) or not all(
+            same_expression(left, right) for left, right in zip(average.filters or [], count.filters or [], strict=True)
+        ):
+            return False
+        count_input = count.sql or "*"
+        if same_expression(average.sql_expr, count_input):
+            return True
+
+        def nonnull(expression):
+            if isinstance(expression, (exp.Literal, exp.Boolean)):
+                return True
+            if isinstance(expression, (exp.Paren, exp.Neg)):
+                return nonnull(expression.this)
+            if isinstance(expression, (exp.Add, exp.Sub, exp.Mul)):
+                return nonnull(expression.this) and nonnull(expression.expression)
+            if isinstance(expression, exp.Coalesce):
+                return any(nonnull(value) for value in [expression.this, *expression.expressions])
+            if isinstance(expression, exp.Case):
+                default = expression.args.get("default")
+                return (
+                    default is not None
+                    and nonnull(default)
+                    and all(nonnull(branch.args["true"]) for branch in expression.args.get("ifs", []))
+                )
+            return False
+
+        try:
+            if not nonnull(normalize(average.sql_expr)):
+                return False
+            return count_input.strip() == "*" or nonnull(normalize(count_input))
+        except SqlglotError:
+            return False
 
     def _is_exact_grain(
         self,

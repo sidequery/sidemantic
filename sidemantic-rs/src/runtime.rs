@@ -5196,129 +5196,16 @@ impl SidemanticRuntime {
             ))
         })?;
 
-        let unsupported = |feature: &str| SidemanticError::UnsupportedSemanticFeatures {
-            capabilities: vec![format!("preaggregation.materialization.{feature}")],
-        };
-        if !preagg.has_unique_output_names() {
-            return Err(unsupported("output_alias_collision"));
-        }
-        if preagg.preagg_type != crate::core::PreAggregationType::Rollup || preagg.sql.is_some() {
-            return Err(unsupported("type_or_custom_sql"));
-        }
         if preagg.partition_granularity.is_some()
             || preagg.build_range_start.is_some()
-            || preagg.build_range_end.is_some()
+            || (preagg.build_range_end.is_some()
+                && preagg.preagg_type != crate::core::PreAggregationType::Lambda)
         {
-            return Err(unsupported("partition_or_build_range"));
+            return Err(SidemanticError::UnsupportedSemanticFeatures {
+                capabilities: vec!["preaggregation.materialization.partition_or_build_range".into()],
+            });
         }
-        if preagg.time_dimension.is_some() != preagg.granularity.is_some() {
-            return Err(unsupported("incomplete_time_grain"));
-        }
-
-        // Materialization operates on physical source expressions. Semantic metric
-        // references and request templates need query planning, not text substitution.
-        let source_expression = |expression: &str| -> Result<String> {
-            let expression = expression.replace("{model}.", "");
-            if expression.contains('{') || expression.contains('}') {
-                return Err(unsupported("expression_template"));
-            }
-            Ok(expression)
-        };
-        let mut select_exprs = Vec::new();
-        let mut group_by_positions = Vec::new();
-        if let (Some(time_dimension), Some(granularity)) =
-            (preagg.time_dimension.as_ref(), preagg.granularity.as_ref())
-        {
-            if !matches!(
-                granularity.as_str(),
-                "year" | "quarter" | "month" | "week" | "day" | "hour" | "minute" | "second"
-            ) {
-                return Err(unsupported("time_grain"));
-            }
-            let time_dim = model.get_dimension(time_dimension).ok_or_else(|| {
-                SidemanticError::Validation(format!(
-                    "Unknown rollup time dimension '{time_dimension}'"
-                ))
-            })?;
-            let expression = source_expression(time_dim.sql_expr())?;
-            select_exprs.push(format!(
-                "DATE_TRUNC('{granularity}', {expression}) as {time_dimension}_{granularity}"
-            ));
-            group_by_positions.push(select_exprs.len().to_string());
-        }
-        for dim_name in preagg.dimensions.iter().flatten() {
-            let dim = model.get_dimension(dim_name).ok_or_else(|| {
-                SidemanticError::Validation(format!("Unknown rollup dimension '{dim_name}'"))
-            })?;
-            select_exprs.push(format!(
-                "{} as {dim_name}",
-                source_expression(dim.sql_expr())?
-            ));
-            group_by_positions.push(select_exprs.len().to_string());
-        }
-        for measure_name in preagg.measures.iter().flatten() {
-            let measure = model.get_metric(measure_name).ok_or_else(|| {
-                SidemanticError::Validation(format!("Unknown rollup measure '{measure_name}'"))
-            })?;
-            if measure.r#type != MetricType::Simple
-                || measure.sql_is_complete
-                || measure.non_additive_dimension.is_some()
-            {
-                return Err(unsupported("measure_state"));
-            }
-            let aggregate = match measure.agg.as_ref() {
-                Some(Aggregation::Sum) => "SUM",
-                Some(Aggregation::Count) => "COUNT",
-                Some(Aggregation::Min) => "MIN",
-                Some(Aggregation::Max) => "MAX",
-                // AVG needs a compatible denominator and a shared additive-state
-                // contract; distinct counts and distribution statistics also cannot
-                // be stored as blindly reaggregatable scalar values.
-                _ => return Err(unsupported("measure_aggregation")),
-            };
-            let count_rows = measure.agg == Some(Aggregation::Count)
-                && measure
-                    .sql
-                    .as_deref()
-                    .is_none_or(|sql| sql.trim().is_empty() || sql.trim() == "*");
-            let mut expression = if count_rows {
-                "*".to_owned()
-            } else {
-                source_expression(measure.sql_expr())?
-            };
-            if !measure.filters.is_empty() {
-                let predicates = measure
-                    .filters
-                    .iter()
-                    .map(|filter| source_expression(filter).map(|filter| format!("({filter})")))
-                    .collect::<Result<Vec<_>>>()?;
-                let input = if count_rows { "1" } else { &expression };
-                expression = format!(
-                    "CASE WHEN {} THEN {input} ELSE NULL END",
-                    predicates.join(" AND ")
-                );
-            }
-            select_exprs.push(format!("{aggregate}({expression}) as {measure_name}_raw"));
-        }
-        if select_exprs.is_empty() {
-            return Err(unsupported("empty_rollup"));
-        }
-        let from_clause = if let Some(model_sql) = model.sql.as_ref() {
-            format!("({model_sql}) AS t")
-        } else {
-            model
-                .table
-                .clone()
-                .ok_or_else(|| unsupported("missing_source"))?
-        };
-        let mut sql = format!(
-            "SELECT\n  {}\nFROM {from_clause}",
-            select_exprs.join(",\n  ")
-        );
-        if !group_by_positions.is_empty() {
-            sql.push_str(&format!("\nGROUP BY {}", group_by_positions.join(", ")));
-        }
-        Ok(sql)
+        crate::core::preaggregation_materialization_sql(model, preagg, None)
     }
 
     /// Export semantic graph catalog metadata in Postgres-compatible format.
@@ -8088,7 +7975,6 @@ models:
     #[test]
     fn test_materialization_rejects_unsafe_aggregate_states() {
         for agg in [
-            "avg",
             "count_distinct",
             "median",
             "stddev",

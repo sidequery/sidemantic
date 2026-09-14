@@ -620,11 +620,7 @@ fn decode_model(value: Value, path: &str) -> Result<Model> {
             .enumerate()
             .map(|(index, value)| {
                 let path = format!("{path}.pre_aggregations[{index}]");
-                let mut raw = object(value, &path)?;
-                // Lambda freshness semantics have no executable core slot yet.
-                // Do not discard active behavior, even on an otherwise plain rollup.
-                reject_active(&mut raw, "rollups", "preaggregation.lambda")?;
-                reject_active(&mut raw, "union_with_source_data", "preaggregation.lambda")?;
+                let raw = object(value, &path)?;
                 let exemplar: PreAggregation = deserialize(json!({"name":""}), &path)?;
                 project(raw, exemplar, &path)
             })
@@ -1656,10 +1652,16 @@ mod tests {
             .unwrap()
             .remove("unexpected");
         source["models"][0]["pre_aggregations"][0]["union_with_source_data"] = json!(true);
-        assert!(matches!(
-            SemanticInput::from_json(&source.to_string()),
-            Err(SidemanticError::UnsupportedSemanticFeatures { .. })
-        ));
+        source["models"][0]["pre_aggregations"][0]["rollups"] = json!(["orders.historical"]);
+        let decoded = SemanticInput::from_json(&source.to_string()).unwrap();
+        assert!(
+            decoded.graph.get_model("orders").unwrap().pre_aggregations[0].union_with_source_data
+        );
+        assert_eq!(decoded.source, source);
+        assert_eq!(
+            decoded.graph.get_model("orders").unwrap().pre_aggregations[0].rollups,
+            Some(vec!["orders.historical".into()])
+        );
     }
 
     #[test]

@@ -1400,9 +1400,8 @@ class SQLGenerator:
                 processed_filters.append(f)
 
         filters = processed_filters
-        # Caller filters determine whether an already-scoped rollup can answer
-        # the query. Invariant filters are instead baked into every materialized
-        # rollup and must not be required as physical rollup columns.
+        # Rollup filters describe caller predicates. Mandatory restrictions
+        # bypass routing because an external rollup may predate those restrictions.
         routing_filters = list(filters)
 
         # Enforce model security policies once per compile, BEFORE any SQL is assembled or any
@@ -1416,7 +1415,10 @@ class SQLGenerator:
         security_model_names = self._find_required_models(metrics, dimensions, filters)
         if security_model_names:
             participating_models = self._participating_models(security_model_names)
-            for model_name, predicates in self._invariant_filters(participating_models).items():
+            invariant_filters = self._invariant_filters(participating_models)
+            if invariant_filters:
+                use_preaggregations = False
+            for model_name, predicates in invariant_filters.items():
                 filters = filters + predicates
             security_row_filters = self._enforce_security(participating_models, user_attributes)
             for model_name in sorted(security_row_filters):
@@ -7027,8 +7029,10 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
             return f"{numerator} / NULLIF({denominator}, 0)"
         if metric.type == "derived" or (not metric.type and not metric.agg and metric.sql):
             return self._preaggregation_derived_metric_expression(model, preagg, metric)
-        if metric.agg in {"sum", "count"}:
+        if metric.agg == "sum":
             return f"SUM({raw_col})"
+        if metric.agg == "count":
+            return f"COALESCE(SUM({raw_col}), 0)"
         if metric.agg == "avg":
             matcher = PreAggregationMatcher(model)
             count_measure = matcher._find_count_measure_for_avg(metric, preagg.measures or []) or "count"
@@ -7201,6 +7205,8 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
                 return None, "multi_hop_remote_dimension_not_supported"
             if path[0].relationship != "many_to_one":
                 return None, "remote_dimension_not_many_to_one"
+            if self._explicit_join_type_for_path(path[0]) is not None:
+                return None, "explicit_join_type_not_supported"
             if remote_model_name and remote_model_name != dim_model_name:
                 return None, "multiple_remote_models_not_supported"
 

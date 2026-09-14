@@ -7,93 +7,33 @@ from sidemantic import Dimension, Metric, Model, PreAggregation
 from tests.utils import fetch_dicts
 
 
-def test_avg_metric_with_filtered_count_fails(layer):
-    """Test that AVG metrics with filtered counts produce wrong results.
-
-    Bug: _generate_from_preaggregation hard-codes count_raw as denominator,
-    but pre-agg might have count_completed_raw instead.
-
-    This causes SQL to reference non-existent count_raw column or use wrong count.
-    """
-    conn = duckdb.connect(":memory:")
-
-    # Create orders table
-    conn.execute("""
-        CREATE TABLE orders (
-            order_id INTEGER,
-            amount DECIMAL(10, 2),
-            status VARCHAR
+def test_avg_metric_rejects_count_from_a_different_population(layer):
+    """A filtered denominator must not change an unfiltered AVG to 350 / 2."""
+    layer.conn.execute("""
+        create table orders(order_id integer, amount decimal(10,2), status varchar);
+        insert into orders values (1,100,'completed'),(2,200,'completed'),(3,50,'cancelled');
+        create table orders_preagg_rollup as
+        select sum(amount) as avg_amount_raw,
+          count(case when status = 'completed' then 1 end) as count_completed_raw
+        from orders;
+    """)
+    layer.add_model(
+        Model(
+            name="orders",
+            table="orders",
+            primary_key="order_id",
+            metrics=[
+                Metric(name="avg_amount", agg="avg", sql="amount"),
+                Metric(name="count_completed", agg="count", filters=["{model}.status = 'completed'"]),
+            ],
+            pre_aggregations=[PreAggregation(name="rollup", measures=["avg_amount", "count_completed"])],
         )
-    """)
-
-    conn.execute("""
-        INSERT INTO orders VALUES
-            (1, 100.00, 'completed'),
-            (2, 200.00, 'completed'),
-            (3, 50.00, 'cancelled')
-    """)
-
-    # Create pre-aggregation with filtered count
-    # Pre-agg table name follows pattern: {model}_preagg_{name}
-    conn.execute("""
-        CREATE TABLE orders_preagg_rollup AS
-        SELECT
-            SUM(amount) as total_amount_raw,
-            SUM(amount) as avg_amount_raw,
-            COUNT(CASE WHEN status = 'completed' THEN 1 END) as count_completed_raw
-        FROM orders
-    """)
-
-    layer.conn = conn
-
-    orders = Model(
-        name="orders",
-        table="orders",
-        primary_key="order_id",
-        metrics=[
-            Metric(name="total_amount", agg="sum", sql="amount"),
-            # Filtered count
-            Metric(name="count_completed", agg="count", filters=["{model}.status = 'completed'"]),
-            # AVG using the filtered count
-            Metric(name="avg_amount", agg="avg", sql="amount"),
-        ],
-        pre_aggregations=[
-            PreAggregation(
-                name="rollup",
-                # Include avg_amount in measures so it can be routed
-                measures=["total_amount", "count_completed", "avg_amount"],
-                dimensions=[],
-            )
-        ],
     )
-
-    layer.add_model(orders)
-
-    # This should fail or produce wrong results because it tries to use count_raw
-    # instead of count_completed_raw
-
-    # First check if it routes to pre-agg
     sql = layer.compile(metrics=["orders.avg_amount"], use_preaggregations=True)
-    print(f"Generated SQL:\n{sql}")
-
-    # If it routes to pre-agg, it should use count_completed_raw (the available count)
-    if "orders_preagg" in sql or "used_preagg=true" in sql:
-        # Fix: Now correctly uses count_completed_raw which exists in the rollup table
-        assert "count_completed_raw" in sql, "Should use count_completed_raw (available in pre-agg)"
-        assert "SUM(count_raw)" not in sql, "Should NOT use hard-coded count_raw"
-
-        # Executing this should work now (no column error)
-        result = layer.query(metrics=["orders.avg_amount"], use_preaggregations=True)
-        records = fetch_dicts(result)
-        assert len(records) == 1
-        # Note: This is using ALL amount (350) divided by completed count (2) = 175
-        # which is wrong semantically, but that's a data modeling issue
-        # (the pre-agg should have completed_amount_raw, not just total_amount_raw)
-        # The fix here is that it doesn't crash with "count_raw doesn't exist"
-        assert records[0]["avg_amount"] == 175.0  # (100+200+50) / 2
-    else:
-        # Didn't route to pre-agg (maybe matcher prevented it)
-        pytest.fail(f"Query should have routed to pre-aggregation. SQL:\n{sql}")
+    assert "orders_preagg_rollup" not in sql
+    assert layer.adapter.execute(sql).fetchall() == [(pytest.approx(350 / 3),)]
+    # Selecting the filtered count itself still uses exactly its declared population.
+    assert layer.query(metrics=["orders.count_completed"], use_preaggregations=True).fetchall() == [(2,)]
 
 
 def test_filter_on_unmaterialized_dimension(layer):
@@ -373,7 +313,7 @@ def test_avg_metric_needs_correct_count(layer):
         SELECT
             SUM(amount) as total_amount_raw,
             SUM(amount) as avg_amount_raw,
-            COUNT(*) as order_count_raw
+            COUNT(amount) as order_count_raw
         FROM orders
     """)
 
@@ -385,7 +325,7 @@ def test_avg_metric_needs_correct_count(layer):
         primary_key="order_id",
         metrics=[
             Metric(name="total_amount", agg="sum", sql="amount"),
-            Metric(name="order_count", agg="count"),
+            Metric(name="order_count", agg="count", sql="amount"),
             Metric(name="avg_amount", agg="avg", sql="amount"),
         ],
         pre_aggregations=[

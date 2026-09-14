@@ -7,6 +7,7 @@ mod key_expression;
 mod model;
 mod parameter;
 mod policy;
+mod preaggregation;
 mod relative_date;
 mod segment;
 pub mod symmetric_agg;
@@ -28,6 +29,10 @@ pub use model::{
 };
 pub use parameter::{Parameter, ParameterType};
 pub use policy::{AccessRule, PolicyError, PreparedPolicies, SecurityPolicy};
+pub(crate) use preaggregation::{
+    materialization_sql as preaggregation_materialization_sql,
+    source_expression as preaggregation_source_expression,
+};
 pub use relative_date::RelativeDate;
 pub use segment::Segment;
 pub use symmetric_agg::{

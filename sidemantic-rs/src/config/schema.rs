@@ -277,6 +277,10 @@ pub struct PreAggregationConfig {
     #[serde(default)]
     pub sql: Option<String>,
     #[serde(default)]
+    pub rollups: Option<Vec<String>>,
+    #[serde(default)]
+    pub union_with_source_data: bool,
+    #[serde(default)]
     pub measures: Option<Vec<String>>,
     #[serde(default)]
     pub dimensions: Option<Vec<String>>,
@@ -852,6 +856,8 @@ impl PreAggregationConfig {
         PreAggregation {
             name: self.name,
             preagg_type,
+            rollups: self.rollups,
+            union_with_source_data: self.union_with_source_data,
             sql: self.sql,
             measures: self.measures,
             dimensions: self.dimensions,

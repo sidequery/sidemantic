@@ -21,13 +21,21 @@ fn aggregate(generator: &SqlGenerator<'_>, kind: &Aggregation, expression: &str)
 }
 
 impl SqlGenerator<'_> {
+    fn cohort_target_identifier(&self, name: &str) -> String {
+        polyglot_sql::generate(
+            &Expression::Identifier(Identifier::quoted(name)),
+            self.dialect,
+        )
+        .expect("quoted identifier generation is infallible")
+    }
+
     fn cohort_source_expression(&self, model: &Model, expression: &str) -> Result<String> {
         if let Some(dimension) = model.get_dimension(expression.trim()) {
             if dimension.window.is_some() {
                 return Err(unsupported("non_row_expression"));
             }
             if dimension.sql_expr() == dimension.name {
-                return Ok(quote(&dimension.name));
+                return Ok(self.cohort_target_identifier(&dimension.name));
             }
             let source = self.raw_dimension_sql(model, dimension.sql_expr());
             let parsed = parse_semantic_expression(&source)?;
@@ -133,13 +141,12 @@ impl SqlGenerator<'_> {
         reference: &MetricRef,
         dimensions: &[DimensionRef],
     ) -> Result<String> {
-        if self.dialect != DialectType::DuckDB
-            || query.ungrouped
-            || query.use_preaggregations
-            || !query.table_calculations.is_empty()
-        {
+        if query.ungrouped || query.use_preaggregations || !query.table_calculations.is_empty() {
             return Err(unsupported("query_shape"));
         }
+        // Direct query identifiers use target syntax. The source-expression
+        // binders above retain canonical quotes until AST emission.
+        let quote = |name: &str| self.cohort_target_identifier(name);
         if reference.graph_metric
             && self.graph.metric_owner(&reference.name) != Some(reference.model.as_str())
         {
@@ -333,5 +340,61 @@ impl SqlGenerator<'_> {
             sql.push_str(&format!("\nOFFSET {offset}"));
         }
         Ok(sql)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::semantic_input::compile_with_semantic_input;
+    use serde_json::json;
+
+    #[test]
+    fn cohort_target_identifiers_and_approximate_aggregates_compile() {
+        for (dialect, dialect_type) in [
+            ("duckdb", DialectType::DuckDB),
+            ("postgres", DialectType::PostgreSQL),
+            ("bigquery", DialectType::BigQuery),
+            ("snowflake", DialectType::Snowflake),
+            ("trino", DialectType::Trino),
+            ("clickhouse", DialectType::ClickHouse),
+        ] {
+            for outer_approximate in [false, true] {
+                let input = json!({
+                    "version": 1, "input_dialect": "duckdb",
+                    "models": [{
+                        "name": "events", "table": "events", "primary_key": "id",
+                        "dimensions": [
+                            {"name": "person", "sql": "user_id", "type": "categorical"},
+                            {"name": "group", "sql": "region", "type": "categorical"}
+                        ],
+                        "metrics": [{
+                            "name": "qualified", "type": "cohort", "entity": "person",
+                            "agg": if outer_approximate { "approx_count_distinct" } else { "count" },
+                            "sql": if outer_approximate { json!("platforms") } else { json!(null) },
+                            "inner_metrics": [{
+                                "name": "platforms", "agg": "approx_count_distinct", "sql": "platform"
+                            }],
+                            "having": "platforms >= 2"
+                        }]
+                    }]
+                });
+                let query = json!({
+                    "metrics": ["events.qualified"], "dimensions": ["events.group"],
+                    "order_by": ["events.group"], "dialect": dialect,
+                });
+                let sql =
+                    compile_with_semantic_input(&input.to_string(), &query.to_string()).unwrap();
+                polyglot_sql::parse_one(&sql, dialect_type).unwrap();
+                let quoted = if dialect_type == DialectType::BigQuery {
+                    "`group`"
+                } else {
+                    "\"group\""
+                };
+                assert!(sql.contains(quoted), "{dialect}: {sql}");
+                assert!(sql.contains("user_id"), "{dialect}: {sql}");
+                assert!(sql.contains("HAVING"), "{dialect}: {sql}");
+            }
+        }
     }
 }

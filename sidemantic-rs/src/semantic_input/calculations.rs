@@ -1,7 +1,7 @@
 //! Result calculations wrap finalized (including paginated) semantic SQL.
 use std::collections::HashSet;
 
-use polyglot_sql::DialectType;
+use polyglot_sql::{DialectType, Expression};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -156,11 +156,35 @@ impl Formula<'_> {
     }
 }
 
+/// Special generators (retention and cohort entity dimensions) can expand the
+/// result beyond the requested metric/dimension lists. The finalized projection
+/// is authoritative for a post-result calculation's columns and their order.
+fn output_columns(sql: &str, dialect: DialectType) -> Result<Vec<String>> {
+    #[cfg(target_arch = "wasm32")]
+    crate::wasm_sql_guard::check(sql, dialect)?;
+    let expression = polyglot_sql::parse_one(sql, dialect)
+        .map_err(|error| invalid("query.table_calculations", error))?;
+    let Expression::Select(select) = expression else {
+        return Err(unsupported("table_calculation.result_projection"));
+    };
+    if select.expressions.is_empty() {
+        return Err(unsupported("table_calculation.result_projection"));
+    }
+    select
+        .expressions
+        .iter()
+        .map(|projection| match projection {
+            Expression::Alias(alias) => Ok(alias.alias.name.clone()),
+            Expression::Column(column) if column.name.name != "*" => Ok(column.name.name.clone()),
+            _ => Err(unsupported("table_calculation.result_projection")),
+        })
+        .collect()
+}
+
 pub(super) fn wrap(
     sql: String,
     catalog: &Value,
     names: &[String],
-    mut columns: Vec<String>,
     order_by: &[String],
     dialect: DialectType,
 ) -> Result<String> {
@@ -170,6 +194,7 @@ pub(super) fn wrap(
     if !matches!(dialect, DialectType::DuckDB | DialectType::PostgreSQL) {
         return Err(unsupported("table_calculation.output_dialect"));
     }
+    let mut columns = output_columns(&sql, dialect)?;
     let mut prefix = "__sidemantic_calc_".to_owned();
     while sql.to_ascii_lowercase().contains(&prefix)
         || columns
@@ -333,6 +358,27 @@ pub(super) fn wrap(
 mod tests {
     use super::*;
     use crate::semantic_input::compile_with_semantic_input;
+
+    #[test]
+    fn actual_projection_keeps_expanded_columns_and_quoted_aliases() {
+        for dialect in [DialectType::DuckDB, DialectType::PostgreSQL] {
+            assert_eq!(
+                output_columns("WITH inner_rows AS (SELECT 1 AS hidden) SELECT cohort_date, days_since, active_users, cohort_size, retention_pct FROM inner_rows", dialect).unwrap(),
+                ["cohort_date", "days_since", "active_users", "cohort_size", "retention_pct"]
+            );
+            assert_eq!(
+                output_columns("WITH inner_rows AS (SELECT 1 AS hidden) SELECT region AS \"Region Name\", COUNT(*) AS qualified FROM inner_rows GROUP BY region", dialect).unwrap(),
+                ["Region Name", "qualified"]
+            );
+            for sql in [
+                "SELECT * FROM inner_rows",
+                "SELECT inner_rows.* FROM inner_rows",
+                "SELECT 1 + 2 FROM inner_rows",
+            ] {
+                assert!(output_columns(sql, dialect).is_err());
+            }
+        }
+    }
 
     #[test]
     fn selected_kinds_compile_on_both_qualified_dialects() {

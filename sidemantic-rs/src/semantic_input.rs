@@ -1134,16 +1134,10 @@ fn compile_semantic_input(input_json: &str, query_json: &str) -> Result<String> 
     if payload.table_calculations.is_empty() {
         return Ok(sql);
     }
-    let columns = generator
-        .result_schema(&query)?
-        .into_iter()
-        .map(|(name, _)| name)
-        .collect();
     calculations::wrap(
         sql,
         &input.source["table_calculations"],
         &payload.table_calculations,
-        columns,
         &query.order_by,
         dialect,
     )
@@ -1194,16 +1188,10 @@ fn validate_semantic_input(input_json: &str, query_json: &str) -> Result<Vec<Str
         };
         let generator = SqlGenerator::new(&input.graph).with_dialect(dialect);
         let sql = generator.generate(&semantic_query)?;
-        let columns = generator
-            .result_schema(&semantic_query)?
-            .into_iter()
-            .map(|(name, _)| name)
-            .collect();
         calculations::wrap(
             sql,
             &input.source["table_calculations"],
             &query.table_calculations,
-            columns,
             &semantic_query.order_by,
             dialect,
         )?;

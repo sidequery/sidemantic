@@ -163,3 +163,40 @@ def test_rust_rejects_unpromoted_retention_shapes(layer, shape):
         query["metrics"] = ["events.wrapped"]
     with pytest.raises(UnsupportedSemanticFeaturesError):
         result(layer, **query)
+
+
+def test_selected_calculations_preserve_retention_fixed_projection(layer):
+    from sidemantic.core.table_calculation import TableCalculation
+    from sidemantic.sql.table_calc_processor import TableCalculationProcessor
+
+    calculations = [
+        TableCalculation(name="sequence", type="row_number"),
+        TableCalculation(name="running", type="running_total", field="active_users"),
+    ]
+    for calculation in calculations:
+        layer.graph.add_table_calculation(calculation)
+    query = {"order_by": ["cohort_date DESC", "days_since DESC"], "limit": 3, "offset": 1}
+    columns, rows = result(layer, **query)
+    expected_rows, expected_columns = TableCalculationProcessor(calculations).process(rows, columns)
+    assert result(layer, **query, table_calculations=[c.name for c in calculations]) == (
+        expected_columns,
+        expected_rows,
+    )
+    if layer.engine == "rust":
+        import json
+
+        import sidemantic_rs
+
+        from sidemantic.semantic_handoff import graph_to_semantic_input
+
+        # Reference validation keeps the complete output contract even without
+        # caller attributes; compile separately performs authorization.
+        payload = {**query, "metrics": ["events.retained"], "table_calculations": [c.name for c in calculations]}
+        assert (
+            json.loads(
+                sidemantic_rs.validate_with_semantic_input(
+                    json.dumps(graph_to_semantic_input(layer.graph)), json.dumps(payload)
+                )
+            )
+            == []
+        )

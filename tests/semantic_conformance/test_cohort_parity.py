@@ -364,3 +364,38 @@ def test_cohort_count_zero_is_not_replaced_by_default(layer):
     metric.fill_nulls_with = -9
     metric.having = "platforms > 100"
     assert result(layer)[1] == [(0,)]
+
+
+def test_selected_calculations_preserve_implicit_entity_dimensions(layer):
+    from sidemantic.core.table_calculation import TableCalculation
+    from sidemantic.sql.table_calc_processor import TableCalculationProcessor
+
+    cohort_metric(layer).entity_dimensions = ["region"]
+    calculations = [
+        TableCalculation(name="sequence", type="row_number"),
+        TableCalculation(name="running", type="running_total", field="qualified"),
+    ]
+    for calculation in calculations:
+        layer.graph.add_table_calculation(calculation)
+    query = {"order_by": ["events.region"]}
+    columns, rows = result(layer, **query)
+    assert columns == ["region", "qualified"]
+    expected_rows, expected_columns = TableCalculationProcessor(calculations).process(rows, columns)
+    assert result(layer, **query, table_calculations=[c.name for c in calculations]) == (
+        expected_columns,
+        expected_rows,
+    )
+    if layer.engine == "rust":
+        import json
+
+        import sidemantic_rs
+
+        payload = {**query, "metrics": [cohort_reference(layer)], "table_calculations": [c.name for c in calculations]}
+        assert (
+            json.loads(
+                sidemantic_rs.validate_with_semantic_input(
+                    json.dumps(graph_to_semantic_input(layer.graph)), json.dumps(payload)
+                )
+            )
+            == []
+        )

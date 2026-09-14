@@ -24,12 +24,11 @@ fn validate_generated_cte_names(select: &Select, user_names: &HashSet<String>) -
                     .get("alias")
                     .and_then(|alias| alias.get("name"))
                     .and_then(serde_json::Value::as_str)
+                    && user_names.contains(&name.to_ascii_lowercase())
                 {
-                    if user_names.contains(&name.to_ascii_lowercase()) {
-                        return Err(SidemanticError::Validation(format!(
-                            "CTE name '{name}' conflicts with an internally generated name"
-                        )));
-                    }
+                    return Err(SidemanticError::Validation(format!(
+                        "CTE name '{name}' conflicts with an internally generated name"
+                    )));
                 }
             }
         }
@@ -46,10 +45,10 @@ fn validate_generated_cte_names(select: &Select, user_names: &HashSet<String>) -
     while let Some(value) = pending.pop() {
         match value {
             serde_json::Value::Object(fields) => {
-                if fields.len() == 1 {
-                    if let Some(select) = fields.get("select") {
-                        check_select(select, user_names)?;
-                    }
+                if fields.len() == 1
+                    && let Some(select) = fields.get("select")
+                {
+                    check_select(select, user_names)?;
                 }
                 pending.extend(fields.values());
             }

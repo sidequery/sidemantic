@@ -1,0 +1,233 @@
+{
+  "source": {
+    "version": 1,
+    "input_dialect": "duckdb",
+    "models": [
+      {
+        "name": "samples",
+        "table": "samples",
+        "primary_key": "id",
+        "dimensions": [
+          {
+            "name": "id",
+            "type": "numeric"
+          },
+          {
+            "name": "bucket",
+            "type": "categorical"
+          }
+        ],
+        "metrics": [
+          {
+            "name": "value",
+            "agg": "sum",
+            "sql": "amount"
+          }
+        ]
+      }
+    ],
+    "table_calculations": [
+      {
+        "name": "formula",
+        "type": "formula",
+        "expression": "(${value} + 2) / (${value} - 2)"
+      },
+      {
+        "name": "total",
+        "type": "percent_of_total",
+        "field": "value"
+      },
+      {
+        "name": "partitioned",
+        "type": "percent_of_column_total",
+        "field": "value",
+        "partition_by": [
+          "bucket"
+        ]
+      },
+      {
+        "name": "running",
+        "type": "running_total",
+        "field": "value"
+      },
+      {
+        "name": "previous",
+        "type": "percent_of_previous",
+        "field": "value"
+      },
+      {
+        "name": "ranked",
+        "type": "rank",
+        "field": "value"
+      },
+      {
+        "name": "row",
+        "type": "row_number"
+      },
+      {
+        "name": "moving",
+        "type": "moving_average",
+        "field": "value",
+        "window_size": 3
+      },
+      {
+        "name": "median",
+        "type": "percentile",
+        "field": "value",
+        "percentile": 0.5
+      },
+      {
+        "name": "dependent",
+        "type": "formula",
+        "expression": "${running} / 2"
+      }
+    ]
+  },
+  "query": {
+    "dimensions": [
+      "samples.id",
+      "samples.bucket"
+    ],
+    "metrics": [
+      "samples.value"
+    ],
+    "order_by": [
+      "samples.id ASC NULLS LAST"
+    ],
+    "table_calculations": [
+      "formula",
+      "total",
+      "partitioned",
+      "running",
+      "previous",
+      "ranked",
+      "row",
+      "moving",
+      "median",
+      "dependent"
+    ]
+  },
+  "seed": "create table samples(id integer, bucket varchar, amount integer); insert into samples values (1,'a',10),(2,'a',null),(3,'a',0),(4,'b',null),(5,'b',0),(6,'b',-2),(7,'b',2),(8,'b',10)",
+  "expected": [
+    [
+      1,
+      "a",
+      10,
+      1.5,
+      50.0,
+      100.0,
+      10,
+      null,
+      1,
+      1,
+      10.0,
+      1.0,
+      5.0
+    ],
+    [
+      2,
+      "a",
+      null,
+      -1.0,
+      0.0,
+      0.0,
+      10,
+      null,
+      4,
+      2,
+      5.0,
+      1.0,
+      5.0
+    ],
+    [
+      3,
+      "a",
+      0,
+      -1.0,
+      0.0,
+      0.0,
+      10,
+      null,
+      5,
+      3,
+      3.3333333333333335,
+      1.0,
+      5.0
+    ],
+    [
+      4,
+      "b",
+      null,
+      -1.0,
+      0.0,
+      0.0,
+      10,
+      null,
+      6,
+      4,
+      0.0,
+      1.0,
+      5.0
+    ],
+    [
+      5,
+      "b",
+      0,
+      -1.0,
+      0.0,
+      0.0,
+      10,
+      null,
+      7,
+      5,
+      0.0,
+      1.0,
+      5.0
+    ],
+    [
+      6,
+      "b",
+      -2,
+      -0.0,
+      -10.0,
+      -20.0,
+      8,
+      null,
+      8,
+      6,
+      -0.6666666666666666,
+      1.0,
+      4.0
+    ],
+    [
+      7,
+      "b",
+      2,
+      null,
+      10.0,
+      20.0,
+      10,
+      -200.0,
+      3,
+      7,
+      0.0,
+      1.0,
+      5.0
+    ],
+    [
+      8,
+      "b",
+      10,
+      1.5,
+      50.0,
+      100.0,
+      20,
+      400.0,
+      1,
+      8,
+      3.3333333333333335,
+      1.0,
+      10.0
+    ]
+  ]
+}

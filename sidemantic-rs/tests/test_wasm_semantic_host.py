@@ -194,6 +194,16 @@ def test_explore_anchor_scopes_related_fields_and_policies():
         response = call("compile", source, query)
         assert "error" not in response, response
         assert connection.execute(response["result"]).fetchall() == [(12,)]
+        source["table_calculations"] = [{"name": "double", "type": "formula", "expression": "${value} * 2"}]
+        selected = {**query, "table_calculations": ["double"]}
+        calculated = call("compile", source, selected)
+        assert "error" not in calculated, calculated
+        assert connection.execute(calculated["result"]).fetchall() == [(12, 24)]
+        assert json.loads(call("validate", source, selected)["result"]) == []
+        # Validation retains reference-only semantics even for an anchored calculation.
+        assert json.loads(call("validate", source, {**selected, "user_attributes": None})["result"]) == []
+        assert "error" in call("validate", source, {**selected, "table_calculations": ["missing"]})
+        assert "error" in call("validate", source, {**selected, "consumption_base_model": "missing"})
         dimensions = {**query, "metrics": [], "dimensions": ["items.kind"]}
         response = call("compile", source, dimensions)
         assert "error" not in response, response
@@ -205,6 +215,47 @@ def test_explore_anchor_scopes_related_fields_and_policies():
     ).get("error", "")
     invalid = call("validate", source, {**query, "consumption_base_model": "missing"})
     assert "missing" in invalid.get("error", "")
+
+
+def test_selected_table_calculations_execute_all_kinds():
+    fixture = json.loads((ROOT / "fixtures/selected_calculations.json").read_text())
+    response = call("compile", source=fixture["source"], query=fixture["query"])
+    assert "error" not in response, response
+    with duckdb.connect() as connection:
+        connection.execute(fixture["seed"])
+        actual = connection.execute(response["result"]).fetchall()
+        assert len(actual) == len(fixture["expected"])
+        for row, expected in zip(actual, fixture["expected"]):
+            for value, oracle in zip(row, expected):
+                if isinstance(oracle, (int, float)):
+                    assert value == pytest.approx(oracle)
+                else:
+                    assert value == oracle
+
+
+@pytest.mark.parametrize("selection", [["absent"], ["dependent", "running"], ["running", "running"]])
+def test_selected_table_calculation_gates(selection):
+    fixture = json.loads((ROOT / "fixtures/selected_calculations.json").read_text())
+    fixture["query"]["table_calculations"] = selection
+    assert "error" in call("compile", source=fixture["source"], query=fixture["query"])
+
+
+@pytest.mark.parametrize("mutation", [None, "unknown", "dependency", "formula", "unknown_option"])
+def test_selected_calculation_validation(mutation):
+    fixture = json.loads((ROOT / "fixtures/selected_calculations.json").read_text())
+    if mutation == "unknown":
+        fixture["query"]["table_calculations"] = ["missing"]
+    elif mutation == "dependency":
+        fixture["query"]["table_calculations"] = ["dependent"]
+    elif mutation == "formula":
+        fixture["source"]["table_calculations"][0]["expression"] = "${value} ** 2"
+    elif mutation == "unknown_option":
+        fixture["source"]["table_calculations"][0]["unknown_window"] = "future"
+    result = call("validate", source=fixture["source"], query=fixture["query"])
+    if mutation is None:
+        assert json.loads(result["result"]) == []
+    else:
+        assert "error" in result, result
 
 
 if __name__ == "__main__":

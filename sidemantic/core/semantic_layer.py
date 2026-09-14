@@ -733,6 +733,7 @@ class SemanticLayer:
         user_attributes: dict | None = None,
         explore: str | None = None,
         saved_query: str | None = None,
+        table_calculations: list[str] | None = None,
     ):
         """Execute a query against the semantic layer.
 
@@ -742,6 +743,8 @@ class SemanticLayer:
             filters: List of filter expressions (e.g., ["orders.status = 'completed'"])
             segments: List of segment references (e.g., ["orders.active_users"])
             order_by: List of fields to order by
+            table_calculations: Named result calculations, applied in selection order after pagination.
+                Sequential calculations require explicit selected-column order_by.
             limit: Maximum number of rows to return
             offset: Number of rows to skip
             ungrouped: If True, return raw rows without aggregation (no GROUP BY)
@@ -787,6 +790,7 @@ class SemanticLayer:
             user_attributes=user_attributes,
             explore=explore,
             saved_query=saved_query,
+            table_calculations=table_calculations,
         )
         used_preagg = "used_preagg=true" in routing_sql
 
@@ -798,6 +802,8 @@ class SemanticLayer:
                 segments=segments,
                 order_by=order_by,
                 limit=limit,
+                offset=offset,
+                with_totals=with_totals,
                 ungrouped=ungrouped,
                 parameters=parameters,
                 use_preaggregations=use_preaggregations,
@@ -806,6 +812,7 @@ class SemanticLayer:
                 user_attributes=user_attributes,
                 explore=explore,
                 saved_query=saved_query,
+                table_calculations=table_calculations,
             )
         else:
             sql = routing_sql
@@ -818,6 +825,8 @@ class SemanticLayer:
                 segments=segments,
                 order_by=order_by,
                 limit=limit,
+                offset=offset,
+                with_totals=with_totals,
                 ungrouped=ungrouped,
                 parameters=parameters,
                 use_preaggregations=False,
@@ -826,6 +835,7 @@ class SemanticLayer:
                 user_attributes=user_attributes,
                 explore=explore,
                 saved_query=saved_query,
+                table_calculations=table_calculations,
             )
 
         return self._execute_with_preagg_fallback(
@@ -1126,6 +1136,7 @@ class SemanticLayer:
         user_attributes: dict | None = None,
         explore: str | None = None,
         saved_query: str | None = None,
+        table_calculations: list[str] | None = None,
     ) -> str:
         """Compile a query to SQL without executing.
 
@@ -1135,6 +1146,8 @@ class SemanticLayer:
             filters: List of filter expressions
             segments: List of segment references (e.g., ["orders.active_users"])
             order_by: List of fields to order by
+            table_calculations: Named result calculations, applied in selection order after pagination.
+                Sequential calculations require explicit selected-column order_by.
             limit: Maximum number of rows to return
             offset: Number of rows to skip
             dialect: SQL dialect override (defaults to layer's dialect)
@@ -1274,6 +1287,7 @@ class SemanticLayer:
                 aliases=aliases,
                 user_attributes=user_attributes,
                 base_model=consumption_base_model,
+                table_calculations=table_calculations,
             )
             if inner_sql is None and self.last_engine_selection is None:
                 raise ValueError("Rust SQL generator returned no SQL")
@@ -1296,6 +1310,12 @@ class SemanticLayer:
                     base_model=consumption_base_model,
                     user_attributes=user_attributes,
                 )
+                if table_calculations:
+                    from sidemantic.sql.selected_table_calculations import wrap_table_calculations
+
+                    python_sql = wrap_table_calculations(
+                        python_sql, self.graph.table_calculations, table_calculations, order_by, dialect or self.dialect
+                    )
                 if inner_sql.strip() != python_sql.strip():
                     raise ValueError("Rust SQL generator output mismatch with Python SQL generator")
 
@@ -1321,6 +1341,12 @@ class SemanticLayer:
                 base_model=consumption_base_model,
             )
 
+        if table_calculations and self.last_engine_selection["engine"] == "python":
+            from sidemantic.sql.selected_table_calculations import wrap_table_calculations
+
+            inner_sql = wrap_table_calculations(
+                inner_sql, self.graph.table_calculations, table_calculations, order_by, dialect or self.dialect
+            )
         return self._apply_post_process(inner_sql, post_process)
 
     def _validate_query(
@@ -1519,6 +1545,7 @@ class SemanticLayer:
         aliases: dict[str, str] | None,
         user_attributes: dict[str, Any] | None = None,
         base_model: str | None = None,
+        table_calculations: list[str] | None = None,
     ) -> str | None:
         if not self._rust_module:
             if self._rust_no_fallback or self._strict_rust_sql_generator_entrypoint:
@@ -1533,6 +1560,7 @@ class SemanticLayer:
 
         payload = {
             "consumption_base_model": base_model,
+            "table_calculations": table_calculations or [],
             "metrics": metrics or [],
             "dimensions": dimensions or [],
             "filters": list(filters or []),

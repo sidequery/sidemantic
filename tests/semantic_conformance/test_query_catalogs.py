@@ -113,10 +113,16 @@ def test_rewrite_preserves_policies_with_unused_catalogs(layer):
     "field,value", [("explore", "large_orders"), ("saved_query", "paid"), ("table_calculations", ["doubled"])]
 )
 def test_raw_active_catalog_requests_are_never_ignored(layer, field, value):
-    with pytest.raises(UnsupportedSemanticFeaturesError, match=f"query.{field}"):
-        compile_semantic_input(
+    if field == "table_calculations":
+        sql = compile_semantic_input(
             layer.graph, {"metrics": ["orders.revenue"], "user_attributes": {"tenant": "a"}, field: value}
         )
+        assert layer.adapter.execute(sql).fetchall() == [(37, 74)]
+    else:
+        with pytest.raises(UnsupportedSemanticFeaturesError, match=f"query.{field}"):
+            compile_semantic_input(
+                layer.graph, {"metrics": ["orders.revenue"], "user_attributes": {"tenant": "a"}, field: value}
+            )
     runtime = pytest.importorskip("sidemantic_rs")
     with pytest.raises(ValueError, match=f"rewrite.context.{field}"):
         runtime.rewrite_with_semantic_input_context(

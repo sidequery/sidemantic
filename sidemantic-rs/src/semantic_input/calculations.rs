@@ -215,14 +215,14 @@ pub(super) fn wrap(
         }
     }
     let mut ordering = Vec::new();
-    let names: Vec<_> = columns
+    let order_names: Vec<_> = columns
         .iter()
         .chain(aliases.keys())
         .chain(aliases.values())
         .map(String::as_str)
         .collect();
     for item in order_by {
-        let (field, suffix) = crate::sql::split_order_field(item, &names);
+        let (field, suffix) = crate::sql::split_order_field(item, &order_names);
         if field.is_empty() {
             return Err(invalid("query.order_by", "empty ordering"));
         }

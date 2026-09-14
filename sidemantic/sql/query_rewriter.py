@@ -217,8 +217,6 @@ class QueryRewriter:
             capabilities = []
             if self.use_preaggregations:
                 capabilities.append("query.preaggregations")
-            if uses_yardstick:
-                capabilities.append("query.yardstick_rewrite")
             if capabilities:
                 raise UnsupportedSemanticFeaturesError(capabilities)
             rewritten = rewrite_semantic_input(

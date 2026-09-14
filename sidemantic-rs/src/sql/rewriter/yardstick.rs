@@ -1,0 +1,1119 @@
+//! Yardstick evaluation contexts lowered into ordinary correlated SQL.
+//!
+//! Polyglot does not parse SEMANTIC, curly measure references, or AT chains.
+//! Only those extension tokens are normalized here. Every measure reference,
+//! modifier expression, query, and generated subquery uses Polyglot's AST.
+
+use super::*;
+use polyglot_sql::tokens::{Token, TokenType, Tokenizer};
+use serde_json::Value;
+
+#[derive(Clone)]
+struct Call {
+    argument: Expression,
+    modifiers: Vec<String>,
+    visible: bool,
+}
+
+struct Lowerer<'a, 'g> {
+    rewriter: &'a QueryRewriter<'g>,
+    dialect: DialectType,
+    calls: HashMap<String, Call>,
+    reserved: HashSet<String>,
+    changed: bool,
+}
+
+fn invalid(message: impl Into<String>) -> SidemanticError {
+    SidemanticError::Validation(message.into())
+}
+
+fn encode<T: serde::Serialize>(value: T) -> Result<Value> {
+    serde_json::to_value(value).map_err(|error| invalid(error.to_string()))
+}
+
+fn decode<T: serde::de::DeserializeOwned>(value: Value) -> Result<T> {
+    serde_json::from_value(value).map_err(|error| invalid(error.to_string()))
+}
+
+fn tokens(sql: &str) -> Result<Vec<Token>> {
+    Tokenizer::default_config()
+        .tokenize(sql)
+        .map_err(|error| SidemanticError::SqlParse(error.to_string()))
+}
+
+fn matching(tokens: &[Token], open: usize) -> Result<usize> {
+    let mut depth = 0;
+    for (index, token) in tokens.iter().enumerate().skip(open) {
+        match token.token_type {
+            TokenType::LParen | TokenType::LBrace => depth += 1,
+            TokenType::RParen | TokenType::RBrace => {
+                depth -= 1;
+                if depth == 0 {
+                    return Ok(index);
+                }
+            }
+            _ => {}
+        }
+    }
+    Err(invalid("Unclosed Yardstick expression"))
+}
+
+fn reference(expression: &Expression) -> Option<(Option<String>, String)> {
+    match expression {
+        Expression::Column(column) => Some((
+            column.table.as_ref().map(|table| table.name.clone()),
+            column.name.name.clone(),
+        )),
+        Expression::Identifier(identifier) => Some((None, identifier.name.clone())),
+        _ => None,
+    }
+}
+
+/// Walk the complete serialized AST: the pinned Polyglot public walker omits
+/// some typed aggregate children. SELECT boundaries must remain scope-local.
+fn map_columns(
+    value: &mut Value,
+    callback: &mut impl FnMut(Expression) -> Result<Expression>,
+) -> Result<()> {
+    match value {
+        Value::Object(fields) => {
+            if fields.len() == 1 && fields.contains_key("select") {
+                return Ok(());
+            }
+            if fields.len() == 1 && fields.contains_key("column") {
+                *value = encode(callback(decode(value.clone())?)?)?;
+                return Ok(());
+            }
+            for child in fields.values_mut() {
+                map_columns(child, callback)?;
+            }
+        }
+        Value::Array(children) => {
+            for child in children {
+                map_columns(child, callback)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+impl Lowerer<'_, '_> {
+    fn expression(&self, sql: &str) -> Result<Expression> {
+        let statements = parse_sql_with_dialect(&format!("SELECT {sql}"), self.dialect)?;
+        match statements.as_slice() {
+            [Expression::Select(select)] if select.expressions.len() == 1 => {
+                Ok(select.expressions[0].clone())
+            }
+            _ => Err(invalid(format!("Expected one Yardstick expression: {sql}"))),
+        }
+    }
+
+    fn sql(&self, expression: &Expression) -> Result<String> {
+        polyglot_generate(expression, self.dialect)
+            .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))
+    }
+
+    fn register(&mut self, call: Call) -> String {
+        let mut index = self.calls.len();
+        loop {
+            let name = format!("__sidemantic_yardstick_{index}");
+            index += 1;
+            if self.reserved.insert(name.clone()) {
+                self.calls.insert(name.clone(), call);
+                return name;
+            }
+        }
+    }
+
+    fn normalize(&mut self, sql: &str) -> Result<(String, bool)> {
+        let stream = tokens(sql)?;
+        self.reserved
+            .extend(stream.iter().map(|token| token.text.to_lowercase()));
+        let semantic = stream
+            .first()
+            .is_some_and(|token| token.text.eq_ignore_ascii_case("SEMANTIC"));
+        let mut cursor = if semantic { stream[0].span.end } else { 0 };
+        let mut index = usize::from(semantic);
+        let mut output = String::new();
+        while index < stream.len() {
+            let mut start = index;
+            let mut end = index;
+            let mut argument = None;
+            let mut visible = false;
+            if stream[index].text.eq_ignore_ascii_case("AGGREGATE")
+                && stream
+                    .get(index + 1)
+                    .is_some_and(|token| token.token_type == TokenType::LParen)
+            {
+                end = matching(&stream, index + 1)?;
+                let candidate = &sql[stream[index + 1].span.end..stream[end].span.start];
+                argument = self
+                    .expression(candidate)
+                    .ok()
+                    .filter(|expr| reference(expr).is_some());
+                visible = true;
+                if index >= 2 && stream[index - 1].token_type == TokenType::Dot {
+                    start = index - 2;
+                }
+            } else if stream[index].token_type == TokenType::LBrace {
+                end = matching(&stream, index)?;
+                let candidate = &sql[stream[index].span.end..stream[end].span.start];
+                argument = self
+                    .expression(candidate)
+                    .ok()
+                    .filter(|expr| reference(expr).is_some());
+                visible = true;
+            } else {
+                while stream
+                    .get(end + 1)
+                    .is_some_and(|token| token.token_type == TokenType::Dot)
+                    && end + 2 < stream.len()
+                {
+                    end += 2;
+                }
+                if stream
+                    .get(end + 1)
+                    .is_some_and(|token| token.text.eq_ignore_ascii_case("AT"))
+                    && stream
+                        .get(end + 2)
+                        .is_some_and(|token| token.token_type == TokenType::LParen)
+                {
+                    argument = self
+                        .expression(&sql[stream[index].span.start..stream[end].span.end])
+                        .ok()
+                        .filter(|expr| reference(expr).is_some());
+                }
+            }
+            let Some(argument) = argument else {
+                index += 1;
+                continue;
+            };
+            let mut modifiers = Vec::new();
+            while stream
+                .get(end + 1)
+                .is_some_and(|token| token.text.eq_ignore_ascii_case("AT"))
+                && stream
+                    .get(end + 2)
+                    .is_some_and(|token| token.token_type == TokenType::LParen)
+            {
+                let open = end + 2;
+                end = matching(&stream, open)?;
+                modifiers.extend(split_modifiers(
+                    &sql[stream[open].span.end..stream[end].span.start],
+                )?);
+            }
+            output.push_str(&sql[cursor..stream[start].span.start]);
+            output.push_str(&self.register(Call {
+                argument,
+                modifiers,
+                visible,
+            }));
+            cursor = stream[end].span.end;
+            index = end + 1;
+        }
+        output.push_str(&sql[cursor..]);
+        Ok((output, semantic))
+    }
+
+    fn remap(
+        &self,
+        expression: Expression,
+        aliases: &[&str],
+        target: &str,
+        unqualified: bool,
+    ) -> Result<Expression> {
+        let mut value = encode(expression)?;
+        map_columns(&mut value, &mut |node| {
+            if let Expression::Column(mut column) = node {
+                let table = column.table.as_ref().map(|table| table.name.as_str());
+                if table.is_some_and(|table| aliases.contains(&table))
+                    || (table.is_none() && unqualified)
+                {
+                    column.table = (!target.is_empty()).then(|| Identifier::new(target));
+                }
+                return Ok(Expression::Column(column));
+            }
+            Ok(node)
+        })?;
+        decode(value)
+    }
+
+    fn signature(&self, expression: Expression) -> Result<String> {
+        let mut value = encode(expression)?;
+        map_columns(&mut value, &mut |node| {
+            if let Expression::Column(mut column) = node {
+                column.table = None;
+                return Ok(Expression::Column(column));
+            }
+            Ok(node)
+        })?;
+        self.sql(&decode(value)?)
+    }
+
+    fn resolve(
+        &self,
+        expression: &Expression,
+        sources: &[(String, String)],
+        implicit: bool,
+    ) -> Result<Option<(String, String, String)>> {
+        let Some((qualifier, name)) = reference(expression) else {
+            return Ok(None);
+        };
+        let matches = sources
+            .iter()
+            .filter(|(model, alias)| {
+                qualifier
+                    .as_ref()
+                    .is_none_or(|qualifier| qualifier == model || qualifier == alias)
+                    && self.rewriter.graph.get_model(model).is_some_and(|model| {
+                        (!implicit
+                            || model
+                                .metadata
+                                .as_ref()
+                                .is_some_and(|metadata| metadata.get("yardstick").is_some()))
+                            && model.get_metric(&name).is_some()
+                    })
+            })
+            .collect::<Vec<_>>();
+        match matches.as_slice() {
+            [(model, alias)] => Ok(Some((model.clone(), alias.clone(), name))),
+            [] => Ok(None),
+            _ => Err(invalid(format!("Ambiguous Yardstick measure '{name}'"))),
+        }
+    }
+
+    fn scopes(&mut self, value: &mut Value) -> Result<()> {
+        match value {
+            Value::Object(fields) => {
+                for child in fields.values_mut() {
+                    self.scopes(child)?;
+                }
+                if fields.len() == 1 && fields.contains_key("select") {
+                    let Expression::Select(select) = decode(value.clone())? else {
+                        unreachable!()
+                    };
+                    *value = encode(Expression::Select(Box::new(self.select(*select)?)))?;
+                }
+            }
+            Value::Array(children) => {
+                for child in children {
+                    self.scopes(child)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn select(&mut self, mut select: Select) -> Result<Select> {
+        if let Some(from) = &mut select.from {
+            for source in &mut from.expressions {
+                self.table_function(source)?;
+            }
+        }
+        for join in &mut select.joins {
+            self.table_function(&mut join.this)?;
+        }
+        let mut sources = self.rewriter.find_model_references(select.from.as_ref());
+        for join in &select.joins {
+            if let Some((name, alias)) = table_name_and_alias(&join.this) {
+                if self.rewriter.graph.get_model(&name).is_some() {
+                    sources.push((name.clone(), alias.unwrap_or(name)));
+                }
+            }
+        }
+        let single = sources.len() == 1
+            && select.joins.is_empty()
+            && select
+                .from
+                .as_ref()
+                .is_some_and(|from| from.expressions.len() == 1);
+        let default = single.then(|| sources[0].1.clone());
+        // Implicit measures apply to projection/HAVING/ORDER only. WHERE columns
+        // remain row predicates, unless the caller used an explicit AT call.
+        for projection in &mut select.expressions {
+            let alias = self
+                .resolve(projection, &sources, true)?
+                .map(|(_, _, name)| name);
+            let mut value = encode(&*projection)?;
+            map_columns(&mut value, &mut |node| {
+                if self.resolve(&node, &sources, true)?.is_some() {
+                    let name = self.register(Call {
+                        argument: node,
+                        modifiers: vec![],
+                        visible: false,
+                    });
+                    self.expression(&name)
+                } else {
+                    Ok(node)
+                }
+            })?;
+            *projection = decode(value)?;
+            if let Some(alias) = alias {
+                *projection = Expression::alias(projection.clone(), alias);
+            }
+        }
+        for mut value in [encode(&select.having)?, encode(&select.order_by)?]
+            .into_iter()
+            .enumerate()
+        {
+            map_columns(&mut value.1, &mut |node| {
+                if self.resolve(&node, &sources, true)?.is_some() {
+                    let name = self.register(Call {
+                        argument: node,
+                        modifiers: vec![],
+                        visible: false,
+                    });
+                    self.expression(&name)
+                } else {
+                    Ok(node)
+                }
+            })?;
+            if value.0 == 0 {
+                select.having = decode(value.1)?;
+            } else {
+                select.order_by = decode(value.1)?;
+            }
+        }
+        let mut scope_calls = HashSet::new();
+        let mut value = encode(&select)?;
+        map_columns(&mut value, &mut |node| {
+            if let Some((None, name)) = reference(&node) {
+                if self.calls.contains_key(&name) {
+                    scope_calls.insert(name);
+                }
+            }
+            Ok(node)
+        })?;
+        if scope_calls.is_empty() {
+            return Ok(select);
+        }
+        if sources.is_empty() {
+            return Err(invalid(
+                "Yardstick query must reference a known semantic model in FROM/JOIN",
+            ));
+        }
+        if self.rewriter.query_preparer.is_some() {
+            return Err(SidemanticError::UnsupportedSemanticFeatures {
+                capabilities: vec!["rewrite.yardstick_policy_context".into()],
+            });
+        }
+        self.changed = true;
+        // Expand declared dimension expressions before computing context keys.
+        map_columns(&mut value, &mut |node| {
+            let Some((table, name)) = reference(&node) else {
+                return Ok(node);
+            };
+            if scope_calls.contains(&name) {
+                return Ok(node);
+            }
+            let matches = sources
+                .iter()
+                .filter(|(model, alias)| {
+                    table
+                        .as_ref()
+                        .map_or(single, |table| table == alias || table == model)
+                })
+                .collect::<Vec<_>>();
+            if let [(model_name, alias)] = matches.as_slice() {
+                let model = self.rewriter.graph.get_model(model_name).unwrap();
+                if let Some(dimension) = model.get_dimension(&name) {
+                    let expression =
+                        self.expression(&dimension.sql_expr().replace("{model}", alias))?;
+                    return self.remap(expression, &[model_name, alias], alias, true);
+                }
+                if table.is_none() && single {
+                    return self.remap(node, &[], alias, true);
+                }
+            }
+            Ok(node)
+        })?;
+        select = decode(value)?;
+        let contains_call = |expression: &Expression| -> Result<bool> {
+            let mut found = false;
+            map_columns(&mut encode(expression)?, &mut |node| {
+                found |= reference(&node).is_some_and(|(_, name)| scope_calls.contains(&name));
+                Ok(node)
+            })?;
+            Ok(found)
+        };
+        if select.group_by.is_none()
+            && select
+                .expressions
+                .iter()
+                .any(|expr| contains_call(expr).unwrap_or(false))
+        {
+            let mut groups = Vec::new();
+            for expression in &select.expressions {
+                let expression = match expression {
+                    Expression::Alias(alias) => &alias.this,
+                    other => other,
+                };
+                if !contains_call(expression)?
+                    && !matches!(
+                        expression,
+                        Expression::Literal(_) | Expression::Null(_) | Expression::Boolean(_)
+                    )
+                {
+                    groups.push(expression.clone());
+                }
+            }
+            if groups.is_empty() {
+                select.distinct = true;
+            } else {
+                select.group_by = Some(GroupBy {
+                    expressions: groups,
+                    all: None,
+                    totals: false,
+                    comments: vec![],
+                });
+            }
+        }
+        if let Some(group) = &mut select.group_by {
+            for expression in &mut group.expressions {
+                if let Ok(index) = self.sql(expression)?.parse::<usize>() {
+                    if let Some(projection) = index
+                        .checked_sub(1)
+                        .and_then(|index| select.expressions.get(index))
+                    {
+                        *expression = match projection {
+                            Expression::Alias(alias) => alias.this.clone(),
+                            other => other.clone(),
+                        };
+                    }
+                } else if let Some((None, name)) = reference(expression) {
+                    if let Some(Expression::Alias(alias)) = select.expressions.iter().find(|projection| matches!(projection, Expression::Alias(alias) if alias.alias.name == name)) {
+                        *expression = alias.this.clone();
+                    }
+                }
+            }
+        }
+        let groups = select
+            .group_by
+            .as_ref()
+            .map(|group| group.expressions.clone())
+            .unwrap_or_default();
+        let mut replacements = HashMap::new();
+        for name in &scope_calls {
+            let call = &self.calls[name];
+            let (model, alias, measure) = self
+                .resolve(&call.argument, &sources, false)?
+                .ok_or_else(|| {
+                    invalid(format!(
+                        "Unknown Yardstick measure {}",
+                        self.sql(&call.argument).unwrap_or_default()
+                    ))
+                })?;
+            let expression = self.measure(
+                &model,
+                &alias,
+                &measure,
+                call,
+                &groups,
+                select.where_clause.as_ref(),
+                single,
+                &mut HashSet::new(),
+            )?;
+            replacements.insert(name.clone(), expression);
+        }
+        let mut value = encode(&select)?;
+        map_columns(&mut value, &mut |node| {
+            if let Some((None, name)) = reference(&node) {
+                if let Some(replacement) = replacements.get(&name) {
+                    return Ok(replacement.clone());
+                }
+            }
+            Ok(node)
+        })?;
+        select = decode(value)?;
+        // Rewrite only current source relations; already-lowered nested queries
+        // retain their independently bound contexts.
+        if let Some(from) = &mut select.from {
+            for source in &mut from.expressions {
+                self.source(source)?;
+            }
+        }
+        for join in &mut select.joins {
+            self.source(&mut join.this)?;
+        }
+        let _ = default;
+        Ok(select)
+    }
+
+    fn source(&self, source: &mut Expression) -> Result<()> {
+        let Some((name, alias)) = table_name_and_alias(source) else {
+            return Ok(());
+        };
+        let Some(model) = self.rewriter.graph.get_model(&name) else {
+            return Ok(());
+        };
+        let source_sql = model
+            .sql
+            .as_ref()
+            .map(|sql| format!("({sql})"))
+            .unwrap_or_else(|| model.table_name().to_owned());
+        let alias = Identifier::new(alias.unwrap_or(name));
+        let alias_sql = self.sql(&Expression::Identifier(alias))?;
+        let parsed = parse_sql_with_dialect(
+            &format!("SELECT * FROM {source_sql} AS {alias_sql}"),
+            self.dialect,
+        )?;
+        let Expression::Select(select) = &parsed[0] else {
+            unreachable!()
+        };
+        *source = select.from.as_ref().unwrap().expressions[0].clone();
+        Ok(())
+    }
+
+    fn table_function(&mut self, source: &mut Expression) -> Result<()> {
+        if let Expression::Alias(alias) = source {
+            return self.table_function(&mut alias.this);
+        }
+        let Expression::Function(function) = source else {
+            return Ok(());
+        };
+        if !function.name.eq_ignore_ascii_case("yardstick") {
+            return Ok(());
+        }
+        if self.rewriter.query_preparer.is_some() {
+            return Err(invalid(
+                "yardstick() is not supported while semantic security controls are active",
+            ));
+        }
+        let [Expression::Literal(polyglot_sql::expressions::Literal::String(sql))] =
+            function.args.as_slice()
+        else {
+            return Err(invalid("yardstick() requires one literal SQL query"));
+        };
+        let mut validator = Lowerer {
+            rewriter: self.rewriter,
+            dialect: self.dialect,
+            calls: HashMap::new(),
+            reserved: HashSet::new(),
+            changed: false,
+        };
+        let (normalized, _) = validator.normalize(sql)?;
+        let statements = parse_sql_with_dialect(&normalized, self.dialect)?;
+        if statements.len() != 1
+            || !matches!(
+                statements[0],
+                Expression::Select(_)
+                    | Expression::Union(_)
+                    | Expression::Intersect(_)
+                    | Expression::Except(_)
+            )
+        {
+            return Err(invalid(
+                "yardstick() requires a single read-only SELECT query",
+            ));
+        }
+        let value = encode(&statements[0])?;
+        if [
+            "insert",
+            "update",
+            "delete",
+            "create",
+            "select_into",
+            "command",
+        ]
+        .iter()
+        .any(|kind| contains_kind(&value, kind))
+        {
+            return Err(invalid(
+                "yardstick() requires a single read-only SELECT query",
+            ));
+        }
+        let rewritten =
+            self.rewriter
+                .rewrite_with_output_dialect(sql, self.dialect, self.dialect)?;
+        *source = self.expression(&format!("({rewritten})"))?;
+        self.changed = true;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn measure(
+        &self,
+        model_name: &str,
+        alias: &str,
+        name: &str,
+        call: &Call,
+        groups: &[Expression],
+        outer_where: Option<&Where>,
+        single: bool,
+        visiting: &mut HashSet<String>,
+    ) -> Result<Expression> {
+        let model = self.rewriter.graph.get_model(model_name).unwrap();
+        let metric = model
+            .get_metric(name)
+            .ok_or_else(|| invalid(format!("Unknown measure '{name}'")))?;
+        if !visiting.insert(name.to_owned()) {
+            return Err(invalid(format!(
+                "Circular derived measure reference '{model_name}.{name}'"
+            )));
+        }
+        let raw = metric.sql_expr().replace("{model}", alias);
+        let mut expression = self.expression(&raw)?;
+        if metric.r#type == MetricType::Derived {
+            let mut value = encode(expression)?;
+            map_columns(&mut value, &mut |node| {
+                if let Some((table, dependency)) = reference(&node) {
+                    if table
+                        .as_ref()
+                        .is_none_or(|table| table == model_name || table == alias)
+                        && model.get_metric(&dependency).is_some()
+                    {
+                        return self.measure(
+                            model_name,
+                            alias,
+                            &dependency,
+                            call,
+                            groups,
+                            outer_where,
+                            single,
+                            visiting,
+                        );
+                    }
+                }
+                Ok(node)
+            })?;
+            visiting.remove(name);
+            return decode(value);
+        }
+        expression = self.remap(
+            expression,
+            &[model_name, alias, &format!("{model_name}_cte")],
+            "_inner",
+            true,
+        )?;
+        let expression_sql = self.sql(&expression)?;
+        let aggregate = match &metric.agg {
+            Some(crate::core::Aggregation::Expression) | None => expression_sql,
+            Some(crate::core::Aggregation::Count)
+                if metric.sql.is_none() || metric.sql.as_deref() == Some("*") =>
+            {
+                "COUNT(*)".into()
+            }
+            Some(crate::core::Aggregation::CountDistinct) => {
+                format!("COUNT(DISTINCT {expression_sql})")
+            }
+            Some(aggregation) => format!("{}({expression_sql})", aggregation.as_sql()),
+        };
+        let mut context = Vec::new();
+        for group in groups {
+            let mut expanded = Vec::new();
+            expand_groups(group, &mut expanded)?;
+            for group in expanded {
+                let mut columns = Vec::new();
+                map_columns(&mut encode(&group)?, &mut |node| {
+                    if let Some(reference) = reference(&node) {
+                        columns.push(reference);
+                    }
+                    Ok(node)
+                })?;
+                if columns.is_empty() {
+                    continue;
+                }
+                let foreign = columns.iter().any(|(table, _)| {
+                    table
+                        .as_ref()
+                        .is_some_and(|table| table != alias && table != model_name)
+                });
+                if foreign
+                    && columns
+                        .iter()
+                        .any(|(_, name)| model.get_dimension(name).is_none())
+                {
+                    continue;
+                }
+                if !single && columns.iter().all(|(table, _)| table.is_none()) {
+                    continue;
+                }
+                let signature = self.signature(group.clone())?;
+                if context.iter().any(|(key, _, _)| key == &signature) {
+                    continue;
+                }
+                let aliases = columns
+                    .iter()
+                    .filter_map(|(table, _)| table.as_deref())
+                    .collect::<Vec<_>>();
+                let inner = self.remap(group.clone(), &aliases, "_inner", single)?;
+                let outer = self.remap(group, &[model_name], alias, single)?;
+                context.push((signature, self.sql(&inner)?, self.sql(&outer)?));
+            }
+        }
+        let mut current = context
+            .iter()
+            .map(|(key, _, _)| key.clone())
+            .collect::<HashSet<_>>();
+        if let Some(predicate) = outer_where {
+            self.fixed_context(&predicate.this, &mut current)?;
+        }
+        let mut active = context.clone();
+        let mut visible = call.visible && call.modifiers.is_empty();
+        let mut where_predicates = Vec::new();
+        let mut set_predicates = std::collections::BTreeMap::new();
+        let mut removed = HashSet::new();
+        let has_set = call.modifiers.iter().any(|modifier| {
+            modifier
+                .split_whitespace()
+                .next()
+                .is_some_and(|head| head.eq_ignore_ascii_case("SET"))
+        });
+        let mut global_all = false;
+        for modifier in call.modifiers.iter().rev() {
+            let stream = tokens(modifier)?;
+            let Some(head) = stream.first() else { continue };
+            let body = modifier[head.span.end..].trim();
+            match head.text.to_ascii_uppercase().as_str() {
+                "ALL" if body.is_empty() => {
+                    active.clear();
+                    set_predicates.clear();
+                    where_predicates.clear();
+                    visible = false;
+                    global_all = true;
+                }
+                _ if global_all => {}
+                "ALL" => {
+                    for target in self.all_targets(body)? {
+                        let key = self.signature(target)?;
+                        active.retain(|(signature, _, _)| signature != &key);
+                        removed.insert(key);
+                    }
+                }
+                "VISIBLE" => {
+                    if !has_set {
+                        visible = true;
+                        where_predicates.clear();
+                    }
+                }
+                "WHERE" => {
+                    let expression =
+                        self.remap(self.expression(body)?, &[model_name], "_inner", single)?;
+                    where_predicates = vec![self.sql(&expression)?];
+                    visible = false;
+                    if call.modifiers.len() == 1 {
+                        active.clear();
+                    }
+                }
+                "SET" => {
+                    visible = false;
+                    let rewritten = self.current(body, &current)?;
+                    let expression = self.expression(&rewritten)?;
+                    match expression {
+                        Expression::Eq(eq) => {
+                            let key = self.signature(eq.left.clone())?;
+                            active.retain(|(signature, _, _)| signature != &key);
+                            if removed.contains(&key) {
+                                continue;
+                            }
+                            let left =
+                                self.remap(eq.left, &[model_name, alias], "_inner", single)?;
+                            let right = self.remap(eq.right, &[model_name], alias, single)?;
+                            set_predicates.insert(
+                                key,
+                                format!(
+                                    "({}) IS NOT DISTINCT FROM ({})",
+                                    self.sql(&left)?,
+                                    self.sql(&right)?
+                                ),
+                            );
+                        }
+                        Expression::In(in_expr) => {
+                            let key = self.signature(in_expr.this.clone())?;
+                            if removed.contains(&key) {
+                                continue;
+                            }
+                            active.retain(|(signature, _, _)| signature != &key);
+                            let expression = self.remap(
+                                Expression::In(in_expr),
+                                &[model_name],
+                                "_inner",
+                                single,
+                            )?;
+                            set_predicates.insert(key, self.sql(&expression)?);
+                        }
+                        _ => return Err(invalid(format!("Unsupported SET modifier: {modifier}"))),
+                    }
+                }
+                _ => return Err(invalid(format!("Unsupported AT modifier: {modifier}"))),
+            }
+        }
+        let mut base = where_predicates;
+        if visible {
+            if let Some(predicate) = outer_where {
+                let expression = self.remap(
+                    predicate.this.clone(),
+                    &[model_name, alias],
+                    "_inner",
+                    single,
+                )?;
+                base.push(self.sql(&expression)?);
+            }
+        }
+        for filter in &metric.filters {
+            let expression = self.expression(&filter.replace("{model}", "_inner"))?;
+            let expression = self.remap(expression, &[model_name, alias], "_inner", single)?;
+            base.push(self.sql(&expression)?);
+        }
+        let mut post = set_predicates.into_values().collect::<Vec<_>>();
+        post.extend(
+            active
+                .into_iter()
+                .map(|(_, inner, outer)| format!("({inner}) IS NOT DISTINCT FROM ({outer})")),
+        );
+        let source = model
+            .sql
+            .as_ref()
+            .map(|sql| format!("({sql})"))
+            .unwrap_or_else(|| model.table_name().to_owned());
+        let mut predicates = base.clone();
+        predicates.extend(post.clone());
+        let sql = if contains_kind(&encode(&expression)?, "window")
+            || contains_kind(&encode(&expression)?, "window_function")
+        {
+            let message = name.replace('\'', "''");
+            format!("(SELECT CASE WHEN COUNT(*) = 0 THEN NULL WHEN COUNT(DISTINCT __ys_window_value) = 1 THEN MIN(__ys_window_value) ELSE error('Window measure {message} returned multiple values for the evaluation context') END FROM (SELECT _inner.*, {aggregate} AS __ys_window_value FROM {source} AS _inner{}) AS _inner{})", predicate_clause(&base), predicate_clause(&post))
+        } else {
+            format!(
+                "(SELECT {aggregate} FROM {source} AS _inner{})",
+                predicate_clause(&predicates)
+            )
+        };
+        visiting.remove(name);
+        self.expression(&sql)
+    }
+
+    fn fixed_context(&self, expression: &Expression, fixed: &mut HashSet<String>) -> Result<()> {
+        match expression {
+            Expression::And(and) => {
+                self.fixed_context(&and.left, fixed)?;
+                self.fixed_context(&and.right, fixed)?;
+            }
+            Expression::Eq(eq) => {
+                if matches!(eq.right, Expression::Literal(_)) {
+                    fixed.insert(self.signature(eq.left.clone())?);
+                }
+                if matches!(eq.left, Expression::Literal(_)) {
+                    fixed.insert(self.signature(eq.right.clone())?);
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn current(&self, sql: &str, context: &HashSet<String>) -> Result<String> {
+        let stream = tokens(sql)?;
+        let mut output = String::new();
+        let mut cursor = 0;
+        let mut index = 0;
+        while index + 1 < stream.len() {
+            if !stream[index].text.eq_ignore_ascii_case("CURRENT") {
+                index += 1;
+                continue;
+            }
+            let start = index + 1;
+            let mut end = start;
+            let parenthesized = stream[start].token_type == TokenType::LParen;
+            if parenthesized {
+                end = matching(&stream, start)?;
+            } else if stream
+                .get(start + 1)
+                .is_some_and(|token| token.token_type == TokenType::LParen)
+            {
+                end = matching(&stream, start + 1)?;
+            } else {
+                while stream
+                    .get(end + 1)
+                    .is_some_and(|token| token.token_type == TokenType::Dot)
+                    && end + 2 < stream.len()
+                {
+                    end += 2;
+                }
+            }
+            let target = if parenthesized {
+                &sql[stream[start].span.end..stream[end].span.start]
+            } else {
+                &sql[stream[start].span.start..stream[end].span.end]
+            };
+            output.push_str(&sql[cursor..stream[index].span.start]);
+            let key = self.signature(self.expression(target)?)?;
+            output.push_str(if context.contains(&key) {
+                target
+            } else {
+                "NULL"
+            });
+            cursor = stream[end].span.end;
+            index = end + 1;
+        }
+        output.push_str(&sql[cursor..]);
+        Ok(output)
+    }
+
+    fn all_targets(&self, sql: &str) -> Result<Vec<Expression>> {
+        let stream = tokens(sql)?;
+        // Space-separated targets are an extension. Arithmetic remains a single
+        // ordinary SQL expression and is parsed without splitting it.
+        if stream.iter().any(|token| {
+            ["+", "-", "*", "/", "=", "AND", "OR"]
+                .contains(&token.text.to_ascii_uppercase().as_str())
+        }) {
+            return Ok(vec![self.expression(sql)?]);
+        }
+        let mut targets = Vec::new();
+        let mut index = 0;
+        while index < stream.len() {
+            if stream[index].token_type == TokenType::Comma {
+                index += 1;
+                continue;
+            }
+            let start = index;
+            if stream[index].token_type == TokenType::LParen {
+                index = matching(&stream, index)?;
+            } else if stream
+                .get(index + 1)
+                .is_some_and(|token| token.token_type == TokenType::LParen)
+            {
+                index = matching(&stream, index + 1)?;
+            } else {
+                while stream
+                    .get(index + 1)
+                    .is_some_and(|token| token.token_type == TokenType::Dot)
+                    && index + 2 < stream.len()
+                {
+                    index += 2;
+                }
+            }
+            targets.push(self.expression(&sql[stream[start].span.start..stream[index].span.end])?);
+            index += 1;
+        }
+        Ok(targets)
+    }
+}
+
+fn predicate_clause(predicates: &[String]) -> String {
+    if predicates.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " WHERE {}",
+            predicates
+                .iter()
+                .map(|predicate| format!("({predicate})"))
+                .collect::<Vec<_>>()
+                .join(" AND ")
+        )
+    }
+}
+
+fn contains_kind(value: &Value, kind: &str) -> bool {
+    match value {
+        Value::Object(fields) => {
+            fields.contains_key(kind) || fields.values().any(|child| contains_kind(child, kind))
+        }
+        Value::Array(children) => children.iter().any(|child| contains_kind(child, kind)),
+        _ => false,
+    }
+}
+
+fn expand_groups(expression: &Expression, output: &mut Vec<Expression>) -> Result<()> {
+    let value = encode(expression)?;
+    let Some(fields) = value.as_object() else {
+        return Ok(());
+    };
+    if let Some(group) = ["rollup", "cube", "grouping_sets", "tuple"]
+        .iter()
+        .find_map(|kind| fields.get(*kind))
+    {
+        if let Some(children) = group.get("expressions").and_then(Value::as_array) {
+            for child in children {
+                expand_groups(&decode(child.clone())?, output)?;
+            }
+            return Ok(());
+        }
+    }
+    output.push(expression.clone());
+    Ok(())
+}
+
+fn split_modifiers(sql: &str) -> Result<Vec<String>> {
+    let stream = tokens(sql)?;
+    let mut starts = vec![0];
+    let mut depth = 0;
+    for (index, token) in stream.iter().enumerate() {
+        match token.token_type {
+            TokenType::LParen => depth += 1,
+            TokenType::RParen => depth -= 1,
+            _ => {}
+        }
+        if index > 0
+            && depth == 0
+            && ["ALL", "SET", "WHERE", "VISIBLE"]
+                .iter()
+                .any(|word| token.text.eq_ignore_ascii_case(word))
+        {
+            starts.push(token.span.start);
+        }
+    }
+    starts.push(sql.len());
+    Ok(starts
+        .windows(2)
+        .map(|range| sql[range[0]..range[1]].trim().to_owned())
+        .filter(|part| !part.is_empty())
+        .collect())
+}
+
+impl QueryRewriter<'_> {
+    pub(super) fn rewrite_yardstick(
+        &self,
+        sql: &str,
+        input: DialectType,
+        output: DialectType,
+    ) -> Result<Option<String>> {
+        let mut lowerer = Lowerer {
+            rewriter: self,
+            dialect: input,
+            calls: HashMap::new(),
+            reserved: HashSet::new(),
+            changed: false,
+        };
+        let (normalized, semantic) = lowerer.normalize(sql)?;
+        if lowerer.calls.is_empty()
+            && !tokens(sql)?
+                .iter()
+                .any(|token| token.text.eq_ignore_ascii_case("yardstick"))
+            && !self.graph.models().any(|model| {
+                model
+                    .metadata
+                    .as_ref()
+                    .is_some_and(|metadata| metadata.get("yardstick").is_some())
+            })
+        {
+            if semantic {
+                return self
+                    .rewrite_with_output_dialect(&normalized, input, output)
+                    .map(Some);
+            }
+            return Ok(None);
+        }
+        let mut statements = parse_sql_with_dialect(&normalized, input)?;
+        if statements.len() != 1 {
+            return Err(invalid("Yardstick requires a single statement"));
+        }
+        let mut value = encode(statements.remove(0))?;
+        lowerer.scopes(&mut value)?;
+        if !lowerer.changed {
+            if semantic {
+                return self
+                    .rewrite_with_output_dialect(&normalized, input, output)
+                    .map(Some);
+            }
+            return Ok(None);
+        }
+        polyglot_generate(&decode(value)?, output)
+            .map(Some)
+            .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))
+    }
+}

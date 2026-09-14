@@ -16,6 +16,7 @@ type QueryPreparer<'a> = &'a dyn Fn(&SemanticGraph, &mut SemanticQuery) -> Resul
 
 mod binding;
 mod policy;
+mod yardstick;
 
 /// SQL query rewriter using semantic definitions
 pub struct QueryRewriter<'a> {
@@ -66,6 +67,9 @@ impl<'a> QueryRewriter<'a> {
         input_dialect: DialectType,
         output_dialect: DialectType,
     ) -> Result<String> {
+        if let Some(rewritten) = self.rewrite_yardstick(sql, input_dialect, output_dialect)? {
+            return Ok(rewritten);
+        }
         let statements = parse_sql_with_dialect(sql, input_dialect)?;
 
         if statements.is_empty() {

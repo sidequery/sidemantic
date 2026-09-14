@@ -72,10 +72,18 @@ def test_only_typed_failures_allow_fallback(monkeypatch, error, no_fallback):
 
 
 @pytest.mark.parametrize("method", ["rewrite", "explain"])
-def test_strict_rust_cannot_enter_python_yardstick_path(method):
+def test_strict_rust_passes_yardstick_sql_to_rust(monkeypatch, method):
+    calls = []
+
+    def rewrite(graph, sql, **kwargs):
+        calls.append(sql)
+        return "SELECT 1 AS revenue"
+
+    monkeypatch.setattr("sidemantic.sql.query_rewriter.rewrite_semantic_input", rewrite)
     rewriter = QueryRewriter(_graph(), use_rust_rewriter=True, rust_no_fallback=True)
-    with pytest.raises(UnsupportedSemanticFeaturesError, match="yardstick"):
-        getattr(rewriter, method)("SEMANTIC SELECT revenue FROM orders")
+    getattr(rewriter, method)("SEMANTIC SELECT revenue FROM orders")
+    assert calls == ["SEMANTIC SELECT revenue FROM orders"]
+    assert rewriter.last_engine_selection["engine"] == "rust"
 
 
 def test_caller_context_reaches_rust_without_fallback(monkeypatch):

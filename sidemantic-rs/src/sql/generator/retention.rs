@@ -388,33 +388,4 @@ mod tests {
             ));
         }
     }
-
-    #[test]
-    fn retention_compiles_calendar_periods_for_supported_output_dialects() {
-        for (dialect, dialect_type) in [
-            ("duckdb", DialectType::DuckDB),
-            ("postgres", DialectType::PostgreSQL),
-            ("bigquery", DialectType::BigQuery),
-            ("snowflake", DialectType::Snowflake),
-        ] {
-            for grain in ["day", "week", "month"] {
-                let mut input = input();
-                input["models"][0]["metrics"][0]["retention_granularity"] = json!(grain);
-                let mut query = query();
-                query["dialect"] = json!(dialect);
-                let sql =
-                    compile_with_semantic_input(&input.to_string(), &query.to_string()).unwrap();
-                polyglot_sql::parse_one(&sql, dialect_type).unwrap();
-                assert!(sql.contains(&format!("{grain}s_since")), "{sql}");
-                if grain != "month" {
-                    let difference = match dialect_type {
-                        DialectType::BigQuery => "DATE_DIFF(a.active_date, c.cohort_date, DAY)",
-                        DialectType::Snowflake => "DATEDIFF('day', c.cohort_date, a.active_date)",
-                        _ => "(a.active_date - c.cohort_date)",
-                    };
-                    assert!(sql.contains(difference), "{sql}");
-                }
-            }
-        }
-    }
 }

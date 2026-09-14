@@ -19,6 +19,8 @@ pub(crate) fn validate_metric(metric: &Metric) -> Result<()> {
     }
     if metric.r#type == MetricType::Cumulative {
         if let Some(expression) = &metric.window_expression {
+            validate_window_function(&parse_semantic_expression(expression)?)?;
+            // Python gives an explicit function precedence over window/grain_to_date.
             window_output_references(expression)?;
         }
         if let Some(frame) = &metric.window_frame {
@@ -38,6 +40,61 @@ pub(crate) fn validate_metric(metric: &Metric) -> Result<()> {
         period_interval(offset)?;
     }
     Ok(())
+}
+
+// OVER applies to a root aggregate/window function, not scalar arithmetic or
+// a column that merely contains an aggregate somewhere below it.
+fn validate_window_function(expression: &Expression) -> Result<()> {
+    match expression {
+        Expression::Count(_)
+        | Expression::Sum(_)
+        | Expression::Avg(_)
+        | Expression::Min(_)
+        | Expression::Max(_)
+        | Expression::GroupConcat(_)
+        | Expression::StringAgg(_)
+        | Expression::ListAgg(_)
+        | Expression::ArrayAgg(_)
+        | Expression::CountIf(_)
+        | Expression::SumIf(_)
+        | Expression::Stddev(_)
+        | Expression::StddevPop(_)
+        | Expression::StddevSamp(_)
+        | Expression::Variance(_)
+        | Expression::VarPop(_)
+        | Expression::VarSamp(_)
+        | Expression::Median(_)
+        | Expression::Mode(_)
+        | Expression::First(_)
+        | Expression::Last(_)
+        | Expression::AnyValue(_)
+        | Expression::ApproxDistinct(_)
+        | Expression::ApproxCountDistinct(_)
+        | Expression::ApproxPercentile(_)
+        | Expression::Percentile(_)
+        | Expression::LogicalAnd(_)
+        | Expression::LogicalOr(_)
+        | Expression::Skewness(_)
+        | Expression::ArrayConcatAgg(_)
+        | Expression::ArrayUniqueAgg(_)
+        | Expression::BoolXorAgg(_)
+        | Expression::RowNumber(_)
+        | Expression::Rank(_)
+        | Expression::DenseRank(_)
+        | Expression::NTile(_)
+        | Expression::Lead(_)
+        | Expression::Lag(_)
+        | Expression::FirstValue(_)
+        | Expression::LastValue(_)
+        | Expression::NthValue(_)
+        | Expression::PercentRank(_)
+        | Expression::CumeDist(_)
+        | Expression::PercentileCont(_)
+        | Expression::PercentileDisc(_)
+        | Expression::AggregateFunction(_) => Ok(()),
+        Expression::Filter(filter) => validate_window_function(&filter.this),
+        _ => Err(unsupported("window_expression")),
+    }
 }
 
 /// Extract grouped-output dependencies from the parsed expression, including
@@ -176,6 +233,7 @@ impl SqlGenerator<'_> {
             return Err(unsupported("window_expression"));
         };
         window.this = parse_semantic_expression(function)?;
+        validate_window_function(&window.this)?;
         window.over.frame = Some(frame);
         self.emit_expression(&expression)
     }
@@ -300,6 +358,35 @@ impl SqlGenerator<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explicit_window_requires_a_root_window_capable_function() {
+        for sql in [
+            "SUM(base.x + 1)",
+            "AVG(base.x)",
+            "LAG(base.x)",
+            "ROW_NUMBER()",
+            "SUM(base.x) FILTER (WHERE base.x > 0)",
+        ] {
+            validate_window_function(&parse_semantic_expression(sql).unwrap()).unwrap();
+        }
+        for sql in [
+            "base.x",
+            "1",
+            "base.x + 1",
+            "SUM(base.x) + 1",
+            "ABS(base.x)",
+            "SUM(base.x) OVER ()",
+        ] {
+            assert!(
+                matches!(
+                    validate_window_function(&parse_semantic_expression(sql).unwrap()),
+                    Err(SidemanticError::UnsupportedSemanticFeatures { .. })
+                ),
+                "{sql}"
+            );
+        }
+    }
 
     #[test]
     fn filled_temporal_metrics_accept_python_control_combinations() {

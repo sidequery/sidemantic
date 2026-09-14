@@ -23,7 +23,7 @@ struct Inputs<'a> {
 impl Inputs<'_> {
     fn add(&mut self, sql: String, filters: &[String]) -> String {
         let name = loop {
-            let candidate = format!("__sidemantic_input_{}", self.next);
+            let candidate = format!("sidemantic_input_{}", self.next);
             self.next += 1;
             if self.names.insert(candidate.clone()) {
                 break candidate;

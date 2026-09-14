@@ -357,3 +357,14 @@ def test_window_expression_binds_multiple_grouped_dependencies(layer):
     columns = [column[0] for column in cursor.description]
     assert set(columns) == {"day", "category", "daily_amount", "daily_people", "windowed"}
     assert [row[columns.index("windowed")] for row in cursor.fetchall()] == [7, 15, 15, 11, 32, 73]
+
+
+@pytest.mark.parametrize(
+    "expression", ["base.daily_amount", "base.daily_amount + 1", "SUM(base.daily_amount) + 1", "ABS(base.daily_amount)"]
+)
+def test_scalar_window_expression_is_typed_unsupported(rust_layer, expression):
+    rust_layer.graph.models["events"].metrics.append(
+        Metric(name="invalid_window", type="cumulative", window_expression=expression)
+    )
+    with pytest.raises(Exception, match="metric.window_expression"):
+        rust_layer.compile(metrics=["events.invalid_window"], dimensions=["events.day"], user_attributes={"tenant": 1})

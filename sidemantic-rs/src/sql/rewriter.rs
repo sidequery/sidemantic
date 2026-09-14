@@ -78,8 +78,7 @@ impl<'a> QueryRewriter<'a> {
         }
         // Yardstick must remove its extension syntax before the ordinary SQL
         // normalizer runs. Semantic binding and graph SQL share DuckDB syntax.
-        let sql = crate::semantic_input::dialects::query_batch(sql, input_dialect)?;
-        let statements = parse_sql_with_dialect(&sql, DialectType::DuckDB)?;
+        let statements = parse_rewrite_input(sql, input_dialect)?;
 
         if statements.is_empty() {
             return Err(SidemanticError::SqlParse("Empty SQL".into()));
@@ -111,26 +110,46 @@ pub(super) fn parse_sql_with_large_stack(sql: &str) -> Result<Vec<Expression>> {
 }
 
 fn parse_sql_with_dialect(sql: &str, dialect: DialectType) -> Result<Vec<Expression>> {
+    let sql = sql.to_owned();
+    run_parser(move || {
+        #[cfg(target_arch = "wasm32")]
+        crate::wasm_sql_guard::check(&sql, dialect)?;
+        polyglot_parse(&sql, dialect).map_err(|error| SidemanticError::SqlParse(error.to_string()))
+    })
+}
+
+fn parse_rewrite_input(sql: &str, input_dialect: DialectType) -> Result<Vec<Expression>> {
+    let sql = sql.to_owned();
+    run_parser(move || {
+        // Transpilation invokes the same recursive parser as the final parse.
+        // Keep both stages on the established parser worker; running source
+        // normalization on the caller bypassed its stack protection.
+        let sql = crate::semantic_input::dialects::query_batch(&sql, input_dialect)?;
+        #[cfg(target_arch = "wasm32")]
+        crate::wasm_sql_guard::check(&sql, DialectType::DuckDB)?;
+        polyglot_parse(&sql, DialectType::DuckDB)
+            .map_err(|error| SidemanticError::SqlParse(error.to_string()))
+    })
+}
+
+fn run_parser(
+    parse: impl FnOnce() -> Result<Vec<Expression>> + Send + 'static,
+) -> Result<Vec<Expression>> {
     #[cfg(target_arch = "wasm32")]
     {
-        // Bound parser recursion before using the fixed WASM host stack.
-        crate::wasm_sql_guard::check(sql, dialect)?;
-        polyglot_parse(sql, dialect).map_err(|error| SidemanticError::SqlParse(error.to_string()))
+        parse()
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let sql_owned = sql.to_string();
         let handle = std::thread::Builder::new()
             .stack_size(16 * 1024 * 1024)
-            .spawn(move || polyglot_parse(&sql_owned, dialect).map_err(|e| e.to_string()))
+            .spawn(parse)
             .map_err(|e| SidemanticError::SqlParse(e.to_string()))?;
 
-        let parse_result = handle
+        handle
             .join()
-            .map_err(|_| SidemanticError::SqlParse("Polyglot parser thread panicked".into()))?;
-
-        parse_result.map_err(SidemanticError::SqlParse)
+            .map_err(|_| SidemanticError::SqlParse("Polyglot parser thread panicked".into()))?
     }
 }
 
@@ -220,6 +239,33 @@ mod tests {
         assert!(rewritten.contains("public.orders"));
         assert!(rewritten.contains("SUM("));
         assert!(rewritten.contains("GROUP BY"));
+    }
+
+    #[test]
+    fn source_normalization_and_rewrite_work_on_standard_test_stack() {
+        // This test deliberately uses the ordinary harness thread. The input
+        // normalization stage must use the production parser worker too.
+        let graph = create_test_graph();
+        for dialect in [
+            DialectType::Generic,
+            DialectType::DuckDB,
+            DialectType::PostgreSQL,
+        ] {
+            let sql =
+                "SELECT orders.revenue, orders.status FROM orders ORDER BY orders.revenue DESC";
+            let statements = parse_rewrite_input(sql, dialect).unwrap();
+            assert_eq!(statements.len(), 1);
+            let Expression::Select(select) = &statements[0] else {
+                panic!("expected select")
+            };
+            assert_eq!(select.expressions.len(), 2);
+            assert!(select.order_by.is_some());
+            let rewritten = QueryRewriter::new(&graph)
+                .rewrite_with_dialect(sql, dialect)
+                .unwrap();
+            assert!(rewritten.contains("GROUP BY"), "{rewritten}");
+            assert!(rewritten.contains("ORDER BY revenue DESC"), "{rewritten}");
+        }
     }
 
     #[test]

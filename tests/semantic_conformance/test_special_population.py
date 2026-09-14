@@ -79,6 +79,11 @@ def test_independent_computed_populations_include_empty_anchor(layer):
     }
 
 
+def test_query_row_filter_restricts_every_independent_leaf(layer):
+    assert rows(layer, metrics=["quota", "events.revenue"], filters=["events.account_key = 101"]) == [(10, 7)]
+    assert rows(layer, metrics=["quota", "events.revenue"], filters=["tier = 'a'"]) == [(10, 7)]
+
+
 def test_cumulative_computed_population_excludes_orphans_and_hidden_rows(layer):
     result = rows(layer, metrics=["events.running"], dimensions=["events.day"], order_by=["events.day"])
     assert result == [(date(2024, 1, 1), 3, 3), (date(2024, 1, 2), 12, 15), (None, None, 15)]

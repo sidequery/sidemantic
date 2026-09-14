@@ -2297,8 +2297,22 @@ impl<'a> SqlGenerator<'a> {
             }
         }
 
-        let (pushdown_by_model, shared_filters) =
+        let (pushdown_by_model, remaining_filters) =
             self.classify_filters_for_cte_pushdown(&non_window_filters, &model_order)?;
+        // Query-level row predicates define one population across all leaves.
+        // A predicate owned by one model must still restrict its siblings.
+        let mut child_filters = model_order
+            .iter()
+            .flat_map(|model| pushdown_by_model.get(model).into_iter().flatten().cloned())
+            .collect::<Vec<_>>();
+        let mut shared_filters = Vec::new();
+        for filter in remaining_filters {
+            if self.filter_references_metric(&filter, &metric_model_set) {
+                shared_filters.push(filter);
+            } else {
+                child_filters.push(filter);
+            }
+        }
 
         let mut cte_defs = Vec::new();
         let mut cte_names = Vec::new();
@@ -2314,10 +2328,7 @@ impl<'a> SqlGenerator<'a> {
                 )
                 .with_dimensions(effective_dimensions.to_vec())
                 .with_filters({
-                    let mut model_filters = pushdown_by_model
-                        .get(model_name)
-                        .cloned()
-                        .unwrap_or_default();
+                    let mut model_filters = child_filters.clone();
                     model_filters.extend(
                         window_filters_by_model
                             .get(model_name)
@@ -5477,6 +5488,41 @@ mod tests {
         Aggregation, CohortInnerMetric, ComparisonType, Dimension, Metric, MetricType, Model,
         Relationship,
     };
+
+    #[test]
+    fn native_independent_children_share_row_filters_and_anchor() {
+        let mut graph = SemanticGraph::new();
+        graph
+            .add_model(
+                Model::new("accounts", "id")
+                    .with_table("accounts")
+                    .with_metric(Metric::sum("quota", "quota")),
+            )
+            .unwrap();
+        graph
+            .add_model(
+                Model::new("orders", "id")
+                    .with_table("orders")
+                    .with_dimension(Dimension::categorical("status"))
+                    .with_metric(Metric::sum("revenue", "amount"))
+                    .with_relationship(
+                        Relationship::many_to_one("accounts").with_keys("account_id", "id"),
+                    ),
+            )
+            .unwrap();
+        let mut query = SemanticQuery::new()
+            .with_metrics(vec!["accounts.quota".into(), "orders.revenue".into()])
+            .with_filters(vec!["orders.status = 'paid'".into()]);
+        query.consumption_base_model = Some("accounts".into());
+        let sql = SqlGenerator::new(&graph).generate(&query).unwrap();
+        assert_eq!(sql.matches("status = 'paid'").count(), 2, "{sql}");
+        assert_eq!(
+            sql.matches("FROM accounts_cte AS accounts_cte").count(),
+            2,
+            "{sql}"
+        );
+        polyglot_sql::parse_one(&sql, DialectType::DuckDB).unwrap();
+    }
 
     fn rollup_model() -> Model {
         let preagg = serde_json::from_value(serde_json::json!({

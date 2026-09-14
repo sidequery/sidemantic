@@ -271,7 +271,7 @@ mod tests {
             &model,
             "CASE WHEN {model}.\"Amount\" > 0 THEN 'é{model}.Amount' ELSE orders.\"Label\" END",
             Some("source"),
-            DialectType::Postgres,
+            DialectType::PostgreSQL,
         )
         .unwrap();
         assert!(expression.contains("'é{model}.Amount'"), "{expression}");

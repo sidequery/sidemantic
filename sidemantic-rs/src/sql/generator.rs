@@ -4257,6 +4257,7 @@ impl<'a> SqlGenerator<'a> {
         Ok(Some(format!("{sql}\n-- used_preagg=true")))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn try_use_preaggregation(
         &self,
         model_name: &str,
@@ -6240,7 +6241,7 @@ mod tests {
             .with_filters(vec!["orders.twice > 10".into()])
             .with_use_preaggregations(true);
         let sql = SqlGenerator::new(&graph)
-            .with_dialect(DialectType::Postgres)
+            .with_dialect(DialectType::PostgreSQL)
             .generate(&query)
             .unwrap();
         assert!(sql.contains("used_preagg=true"), "{sql}");

@@ -21,7 +21,7 @@ Detailed compatibility documents describe field-level limitations where they exi
 | `omni` | — | `file_or_directory` | `.yml`, `.yaml` | Registered | Yes | 4 | Registry summary only |
 | `ossie` | `apache-ossie`, `osi`, `open-semantic-interchange` | `file_or_directory` | `.yml`, `.yaml`, `.json` | Registered | Yes | 5 | [Detailed guide](ossie.md) |
 | `rill` | — | `file_or_directory` | `.yml`, `.yaml` | Registered | Yes | 8 | Registry summary only |
-| `sidemantic` | `native` | `file` | `.yml`, `.yaml`, `.sql` | Registered | Yes | 1 | Registry summary only |
+| `sidemantic` | `native` | `file` | `.yml`, `.yaml`, `.sql` | Registered | Yes | 2 | Registry summary only |
 | `snowflake` | `cortex`, `snowflake-cortex` | `file_or_directory` | `.yml`, `.yaml` | Registered | Yes | 8 | Registry summary only |
 | `superset` | — | `file_or_directory` | `.yml`, `.yaml` | Registered | Yes | 5 | Registry summary only |
 | `tableau` | — | `file_or_directory` | `.tds`, `.twb`, `.tdsx`, `.twbx` | Registered | No | 4 | Registry summary only |

@@ -1346,17 +1346,17 @@ class SemanticLayer:
                 base_model=consumption_base_model,
             )
 
-        if table_calculations and self.last_engine_selection["engine"] == "python":
-            from sidemantic.sql.selected_table_calculations import wrap_table_calculations
+            if table_calculations:
+                from sidemantic.sql.selected_table_calculations import wrap_table_calculations
 
-            inner_sql = wrap_table_calculations(
-                inner_sql,
-                self.graph.table_calculations,
-                table_calculations,
-                order_by,
-                dialect or self.dialect,
-                aliases=aliases,
-            )
+                inner_sql = wrap_table_calculations(
+                    inner_sql,
+                    self.graph.table_calculations,
+                    table_calculations,
+                    order_by,
+                    dialect or self.dialect,
+                    aliases=aliases,
+                )
         return self._apply_post_process(inner_sql, post_process)
 
     def _validate_query(

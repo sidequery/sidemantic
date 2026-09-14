@@ -88,14 +88,12 @@ def _engine_layer(monkeypatch, engine, fallback=None):
     [
         "query.timezone",
         "query.totals",
-        "query.consumption_base_model",
         "query.aliases",
     ],
 )
 def test_engine_selection_rejects_or_reports_each_unsupported_requirement(
     monkeypatch, engine, fallback, reject, capability
 ):
-    from sidemantic.core.consumption import Explore
     from sidemantic.semantic_handoff import UnsupportedSemanticFeaturesError
 
     layer = _engine_layer(monkeypatch, engine, fallback)
@@ -104,9 +102,6 @@ def test_engine_selection_rejects_or_reports_each_unsupported_requirement(
         kwargs.update(timezone="America/Los_Angeles", dimensions=["orders.created_at__day"])
     elif capability == "query.totals":
         kwargs.update(with_totals=True, dimensions=["orders.status"])
-    elif capability == "query.consumption_base_model":
-        layer.add_explore(Explore(name="sales", model="orders"))
-        kwargs["explore"] = "sales"
     elif capability == "query.aliases":
         kwargs["aliases"] = {"orders.revenue": "total_revenue"}
 
@@ -127,6 +122,27 @@ def test_engine_selection_rejects_or_reports_each_unsupported_requirement(
             assert capability in layer.last_engine_selection["reason"]
         else:
             assert layer.last_engine_selection["reason"] is None
+
+
+@pytest.mark.parametrize("engine,fallback", [("rust", None), ("auto", None), ("rust", True), ("auto", False)])
+def test_engine_selection_sends_resolved_explore_anchor_to_rust(monkeypatch, engine, fallback):
+    from sidemantic.core.consumption import Explore
+
+    layer = _engine_layer(monkeypatch, engine, fallback)
+    layer.add_explore(Explore(name="sales", model="orders", default_metrics=["orders.revenue"]))
+    compiled_queries = []
+
+    def compile_input(graph, query, **kwargs):
+        compiled_queries.append(query)
+        return "SELECT 1 AS from_rust"
+
+    monkeypatch.setattr(rust_bridge, "compile_semantic_input", compile_input)
+
+    assert layer.compile(explore="sales").startswith("SELECT 1 AS from_rust")
+    assert len(compiled_queries) == 1
+    assert compiled_queries[0]["consumption_base_model"] == "orders"
+    assert compiled_queries[0]["metrics"] == ["orders.revenue"]
+    assert layer.last_engine_selection == {"engine": "rust", "reason": None}
 
 
 @pytest.mark.parametrize(

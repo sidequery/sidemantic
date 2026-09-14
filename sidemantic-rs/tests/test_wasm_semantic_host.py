@@ -147,7 +147,9 @@ def test_near_nesting_limit_and_literal_delimiters_are_accepted():
     model = copy.deepcopy(SOURCE)
     del model["models"][0]["security"]
     model["models"][0]["metrics"][0]["sql"] = "(" * 14 + "amount" + ")" * 14
-    assert rows(call("compile", source=model, query={"metrics": ["orders.revenue"]})["result"]) == [(110,)]
+    compiled = call("compile", source=model, query={"metrics": ["orders.revenue"]})
+    assert "result" in compiled, compiled
+    assert rows(compiled["result"]) == [(110,)]
     combined = "(" * 14 + "NOT " * 30 + "true" + ")" * 14
     result = call("rewrite", source=model, sql=f"select {combined}")
     assert "result" in result, result

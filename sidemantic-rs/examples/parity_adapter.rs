@@ -30,7 +30,7 @@ enum Request {
         #[serde(default)]
         order_by: Vec<String>,
         #[serde(default)]
-        aliases: HashMap<String, String>,
+        aliases: Box<HashMap<String, String>>,
         timezone: Option<String>,
         #[serde(default)]
         with_totals: bool,
@@ -46,7 +46,7 @@ enum Request {
         preagg_database: Option<String>,
         preagg_schema: Option<String>,
         #[serde(default)]
-        parameter_values: std::collections::HashMap<String, serde_yaml::Value>,
+        parameter_values: Box<std::collections::HashMap<String, serde_yaml::Value>>,
     },
     JoinPath {
         models_yaml: String,
@@ -195,7 +195,7 @@ fn handle(request: Request) -> sidemantic::Result<Response> {
             query.use_preaggregations = use_preaggregations;
             query.preagg_database = preagg_database;
             query.preagg_schema = preagg_schema;
-            query.aliases = aliases;
+            query.aliases = *aliases;
             query.timezone = timezone;
             query.with_totals = with_totals;
             if let Some(limit) = limit {

@@ -177,13 +177,24 @@ executing them. Catalog entries must be objects with unique non-empty names;
 their execution fields remain in the source snapshot. Whole-graph
 `SemanticInput::from_json` validation still rejects unsupported catalogs.
 
-The Python layer resolves saved queries before dispatch, preserving their filters,
-visibility checks and prohibition on overrides. An active Explore still requires
-the unsupported `query.consumption_base_model` capability. Raw runtime requests
-that select `explore`, `saved_query`, or nonempty `table_calculations` fail with
-typed capability errors, including requests through rewrite context. Callers must
-resolve supported consumption contracts explicitly; catalog presence alone never
-activates them. Model policies and invariant filters remain mandatory.
+The Python layer resolves saved queries and Explores before dispatch, preserving
+visibility checks, selection and expression allowlists, mandatory filters,
+parameters, defaults, row limits, and saved-query immutability. The resolved
+`consumption_base_model` query field anchors ordinary Rust queries to the Explore
+model even when only related-model fields are selected. Base and intermediate
+model policies remain mandatory; related-only metrics and dimensions preserve
+the authorized base population. Same-owner derived and ratio metrics use this
+ordinary route. Independent cross-source aggregates, temporal metrics, and
+snapshot routes reject anchored requests with precise
+`query.consumption_base_model.*` capability errors until their population
+semantics are qualified.
+
+Raw runtime requests that select `explore`, `saved_query`, or nonempty
+`table_calculations` fail with typed capability errors, including requests through
+rewrite context. Resolve supported consumption contracts through the Python
+layer; raw `consumption_base_model` supplies the population anchor, not named
+contract authorization. Catalog presence alone never activates a contract.
+Model policies and invariant filters remain mandatory.
 
 Model-owned retention metrics support one source in DuckDB, with `entity`,
 `cohort_event`, optional `activity_event`, and day/week/month periods. The first

@@ -314,6 +314,7 @@ pub(super) fn try_generate(
     if plan.models.len() < 2 && !plan.cross_source_calculation {
         return Ok(None);
     }
+    generator.reject_consumption_route(query, "independent_aggregates")?;
     if query.ungrouped || !query.table_calculations.is_empty() {
         return Err(unsupported("cross_grain_query_shape"));
     }

@@ -104,6 +104,14 @@ fn prepare_with_dialects(
     (output_dialect, emission_dialect): (DialectType, DialectType),
 ) -> Result<PreparedPolicies> {
     let mut population = Population::new(graph);
+    if let Some(base) = &query.consumption_base_model {
+        if graph.get_model(base).is_none() {
+            return Err(SidemanticError::Validation(format!(
+                "Explore base model not found: '{base}'"
+            )));
+        }
+        population.add_model(base);
+    }
     for reference in &query.metrics {
         population.metric(reference, None)?;
     }

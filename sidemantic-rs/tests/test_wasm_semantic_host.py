@@ -163,5 +163,49 @@ def test_near_nesting_limit_and_literal_delimiters_are_accepted():
         assert "result" in result, result
 
 
+def test_explore_anchor_scopes_related_fields_and_policies():
+    source = copy.deepcopy(SOURCE)
+    source["models"][0]["relationships"] = [{"name": "items", "type": "one_to_many", "foreign_key": "order_id"}]
+    source["models"].append(
+        {
+            "name": "items",
+            "table": "items",
+            "primary_key": "id",
+            "dimensions": [{"name": "kind", "type": "categorical"}],
+            "metrics": [{"name": "value", "agg": "sum", "sql": "value"}],
+        }
+    )
+    source["explores"] = [{"name": "sales", "model": "orders"}]
+    query = {
+        "consumption_base_model": "orders",
+        "metrics": ["items.value"],
+        "user_attributes": {"tenant": "a"},
+        "enforce_visibility": True,
+    }
+    with duckdb.connect() as connection:
+        connection.execute("create table orders(id integer, tenant varchar, amount integer, deleted boolean)")
+        connection.execute(
+            "insert into orders values (1,'a',10,false),(2,'a',20,false),(3,'b',30,false),(4,'a',40,true)"
+        )
+        connection.execute("create table items(id integer, order_id integer, kind varchar, value integer)")
+        connection.execute(
+            "insert into items values (1,1,'paid',5),(2,1,'paid',7),(3,3,'hidden',100),(4,4,'deleted',200),(5,99,'orphan',1000)"
+        )
+        response = call("compile", source, query)
+        assert "error" not in response, response
+        assert connection.execute(response["result"]).fetchall() == [(12,)]
+        dimensions = {**query, "metrics": [], "dimensions": ["items.kind"]}
+        response = call("compile", source, dimensions)
+        assert "error" not in response, response
+        assert set(connection.execute(response["result"]).fetchall()) == {("paid",), (None,)}
+    assert json.loads(call("validate", source, query)["result"]) == []
+    assert "no user_attributes" in call("compile", source, {**query, "user_attributes": None}).get("error", "")
+    assert "consumption_base_model.independent_aggregates" in call(
+        "compile", source, {**query, "metrics": ["items.value", "orders.revenue"]}
+    ).get("error", "")
+    invalid = call("validate", source, {**query, "consumption_base_model": "missing"})
+    assert "missing" in invalid.get("error", "")
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q", "-o", "addopts="]))

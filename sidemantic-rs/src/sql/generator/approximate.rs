@@ -181,6 +181,7 @@ impl SqlGenerator<'_> {
         }
         let mut required = self.find_required_models(&dimensions, &references)?;
         required.extend(self.find_filter_models(&filters));
+        required.extend(query.consumption_base_model.iter().cloned());
         required.extend(query.prepared_policies.model_names().cloned());
         for reference in &references {
             self.collect_metric_referenced_models(reference, &mut required, &mut HashSet::new())?;

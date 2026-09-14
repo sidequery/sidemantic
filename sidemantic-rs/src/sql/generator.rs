@@ -29,6 +29,8 @@ const SOURCE_DIALECT: DialectType = DialectType::DuckDB;
 /// A semantic query definition
 #[derive(Debug, Clone, Default)]
 pub struct SemanticQuery {
+    /// Resolved Explore population anchor, including when no selected field belongs to it.
+    pub consumption_base_model: Option<String>,
     pub metrics: Vec<String>,
     pub dimensions: Vec<String>,
     pub filters: Vec<String>,
@@ -156,6 +158,15 @@ impl<'a> SqlGenerator<'a> {
         self
     }
 
+    fn reject_consumption_route(&self, query: &SemanticQuery, route: &str) -> Result<()> {
+        if query.consumption_base_model.is_some() {
+            return Err(SidemanticError::UnsupportedSemanticFeatures {
+                capabilities: vec![format!("query.consumption_base_model.{route}")],
+            });
+        }
+        Ok(())
+    }
+
     pub fn dialect(&self) -> DialectType {
         self.dialect
     }
@@ -175,6 +186,14 @@ impl<'a> SqlGenerator<'a> {
         query: &SemanticQuery,
         source_model: Option<&str>,
     ) -> Result<String> {
+        if query.consumption_base_model.is_some()
+            && query.metrics.is_empty()
+            && query.dimensions.is_empty()
+        {
+            return Err(SidemanticError::Validation(
+                "Query must have at least one metric or dimension".into(),
+            ));
+        }
         self.validate_approximate_query(query)?;
         if let Some(sql) = aggregate_plan::try_generate(self, query)? {
             return Ok(sql);
@@ -196,6 +215,7 @@ impl<'a> SqlGenerator<'a> {
 
         // Find all required models
         let mut required_models = self.find_required_models(&dimension_refs, &metric_refs)?;
+        required_models.extend(query.consumption_base_model.iter().cloned());
         required_models.extend(query.prepared_policies.model_names().cloned());
         let segment_filters = self.resolve_segments(&query.segments)?;
         let all_filters: Vec<String> = query
@@ -217,6 +237,7 @@ impl<'a> SqlGenerator<'a> {
         self.ensure_queryable_sources(&required_models)?;
 
         if self.has_cumulative_metrics(&metric_refs)? {
+            self.reject_consumption_route(query, "temporal")?;
             self.reject_computed_keys_for_special_route(&required_models)?;
             return self.generate_with_cumulative(
                 query,
@@ -227,6 +248,7 @@ impl<'a> SqlGenerator<'a> {
         }
 
         if self.needs_preaggregation_for_fanout(&metric_refs)? {
+            self.reject_consumption_route(query, "independent_aggregates")?;
             self.reject_computed_keys_for_special_route(&required_models)?;
             return self.generate_with_preaggregation(
                 query,
@@ -268,7 +290,10 @@ impl<'a> SqlGenerator<'a> {
 
         // Ordinary queries preserve the dimension domain, including zero-count
         // related rows. Aggregate children instead retain their source domain.
-        let base_model = source_model
+        let base_model = query
+            .consumption_base_model
+            .as_deref()
+            .or(source_model)
             .map(str::to_owned)
             .or_else(|| self.query_base_model(&dimension_refs, &metric_refs))
             .ok_or_else(|| {
@@ -897,6 +922,10 @@ impl<'a> SqlGenerator<'a> {
     /// Derive the output columns (alias + Postgres data type) a structured query projects,
     /// matching `generate()`'s aliasing: bare leaf, or `{model}_{leaf}` on a leaf collision.
     pub fn result_schema(&self, query: &SemanticQuery) -> Result<Vec<(String, String)>> {
+        // A consumption anchor changes route eligibility as well as joinability.
+        if query.consumption_base_model.is_some() {
+            self.generate(query)?;
+        }
         let effective_dimensions = if query.skip_default_time_dimensions {
             query.dimensions.clone()
         } else {
@@ -941,6 +970,8 @@ impl<'a> SqlGenerator<'a> {
         query: &SemanticQuery,
     ) -> Result<()> {
         let mut required_models = self.find_required_models(dimension_refs, metric_refs)?;
+        required_models.extend(query.consumption_base_model.iter().cloned());
+        required_models.extend(query.prepared_policies.model_names().cloned());
         let segment_filters = self.resolve_segments(&query.segments)?;
         let all_filters: Vec<String> = query
             .filters
@@ -960,8 +991,10 @@ impl<'a> SqlGenerator<'a> {
         }
         self.ensure_queryable_sources(&required_models)?;
 
-        // Dimension-first base selection, mirroring `generate`.
-        let base_model = self.query_base_model(dimension_refs, metric_refs);
+        let base_model = query
+            .consumption_base_model
+            .clone()
+            .or_else(|| self.query_base_model(dimension_refs, metric_refs));
         if let Some(base_model) = base_model {
             self.build_join_paths(&base_model, &required_models)?;
         }

@@ -1211,8 +1211,6 @@ class SemanticLayer:
             unsupported.append("query.timezone")
         if with_totals:
             unsupported.append("query.totals")
-        if consumption_base_model is not None:
-            unsupported.append("query.consumption_base_model")
         if aliases:
             unsupported.append("query.aliases")
 
@@ -1275,6 +1273,7 @@ class SemanticLayer:
                 use_preaggregations=use_preaggs,
                 aliases=aliases,
                 user_attributes=user_attributes,
+                base_model=consumption_base_model,
             )
             if inner_sql is None and self.last_engine_selection is None:
                 raise ValueError("Rust SQL generator returned no SQL")
@@ -1519,6 +1518,7 @@ class SemanticLayer:
         use_preaggregations: bool,
         aliases: dict[str, str] | None,
         user_attributes: dict[str, Any] | None = None,
+        base_model: str | None = None,
     ) -> str | None:
         if not self._rust_module:
             if self._rust_no_fallback or self._strict_rust_sql_generator_entrypoint:
@@ -1532,6 +1532,7 @@ class SemanticLayer:
             return None
 
         payload = {
+            "consumption_base_model": base_model,
             "metrics": metrics or [],
             "dimensions": dimensions or [],
             "filters": list(filters or []),
@@ -1569,6 +1570,7 @@ class SemanticLayer:
                     dialect=dialect or self.dialect,
                     preagg_database=self.preagg_database,
                     preagg_schema=self.preagg_schema,
+                    base_model=base_model,
                 )
                 segment_filters = generator._resolve_segments(segments or [])
                 all_filters = list(filters or []) + segment_filters

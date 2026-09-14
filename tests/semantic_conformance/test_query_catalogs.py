@@ -94,12 +94,8 @@ def test_invalid_active_saved_query_is_not_treated_as_unused(layer):
 
 
 @pytest.mark.parametrize("query", [{"explore": "large_orders"}, {"saved_query": "large"}])
-def test_active_explore_is_enforced_or_explicitly_unsupported(layer, query):
-    if layer.engine == "rust":
-        with pytest.raises(UnsupportedSemanticFeaturesError, match="query.consumption_base_model"):
-            rows(layer, **query)
-    else:
-        assert rows(layer, **query) == [(20,)]
+def test_active_explore_is_enforced(layer, query):
+    assert rows(layer, **query) == [(20,)]
 
 
 @pytest.mark.parametrize("layer", ["rust"], indirect=True)

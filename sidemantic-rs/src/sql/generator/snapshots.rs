@@ -66,6 +66,7 @@ pub(super) fn try_generate(
     if !has_snapshot {
         return Ok(None);
     }
+    generator.reject_consumption_route(query, "snapshot")?;
     if metrics.is_empty()
         || query.ungrouped
         || !query.table_calculations.is_empty()

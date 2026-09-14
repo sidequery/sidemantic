@@ -58,25 +58,26 @@ impl SqlGenerator<'_> {
         fn lower(value: &mut serde_json::Value, generator: &SqlGenerator<'_>) -> Result<()> {
             match value {
                 serde_json::Value::Object(fields) => {
-                    if generator.dialect == DialectType::Redshift && fields.len() == 1 {
-                        if let Some(window) = fields.get("window_function") {
-                            let window: polyglot_sql::expressions::WindowFunction =
-                                serde_json::from_value(window.clone()).map_err(|error| {
-                                    SidemanticError::SqlGeneration(error.to_string())
-                                })?;
-                            fn approximate_root(expression: &Expression) -> bool {
-                                match expression {
-                                    Expression::ApproxCountDistinct(_)
-                                    | Expression::ApproxDistinct(_) => true,
-                                    Expression::Filter(filter) => approximate_root(&filter.this),
-                                    _ => false,
-                                }
+                    if let Some(window) = fields
+                        .get("window_function")
+                        .filter(|_| generator.dialect == DialectType::Redshift && fields.len() == 1)
+                    {
+                        let window: polyglot_sql::expressions::WindowFunction =
+                            serde_json::from_value(window.clone()).map_err(|error| {
+                                SidemanticError::SqlGeneration(error.to_string())
+                            })?;
+                        fn approximate_root(expression: &Expression) -> bool {
+                            match expression {
+                                Expression::ApproxCountDistinct(_)
+                                | Expression::ApproxDistinct(_) => true,
+                                Expression::Filter(filter) => approximate_root(&filter.this),
+                                _ => false,
                             }
-                            // Redshift COUNT windows do not accept DISTINCT;
-                            // APPROXIMATE is only supported for COUNT DISTINCT.
-                            if approximate_root(&window.this) {
-                                return Err(unsupported("window_redshift"));
-                            }
+                        }
+                        // Redshift COUNT windows do not accept DISTINCT;
+                        // APPROXIMATE is only supported for COUNT DISTINCT.
+                        if approximate_root(&window.this) {
+                            return Err(unsupported("window_redshift"));
                         }
                     }
                     for child in fields.values_mut() {

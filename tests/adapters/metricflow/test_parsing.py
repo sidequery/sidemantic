@@ -1046,6 +1046,8 @@ def test_metricflow_inline_constant_count_anchored_to_model():
 
 def test_metricflow_keyless_inline_count_planner_contract():
     """Keyless inline row counts retain model context without a fabricated key."""
+    import duckdb
+
     graph = SemanticGraph()
     graph.add_model(Model(name="events", table="events"))
     graph.add_metric(Metric(name="row_count", agg="count"), model_name="events")
@@ -1061,9 +1063,14 @@ def test_metricflow_keyless_inline_count_planner_contract():
     assert ".none" not in row_count_sql.lower()
 
     active_count_sql = generator.generate(metrics=["active_count"])
-    assert "status as status" in active_count_sql.lower()
-    assert "events_cte.status = 'active'" in active_count_sql.lower()
     assert ".none" not in active_count_sql.lower()
+    with duckdb.connect() as connection:
+        connection.execute("create table events(status varchar)")
+        connection.execute("insert into events values ('active'), ('active'), ('inactive'), (null)")
+        assert connection.execute(row_count_sql).fetchall() == [(4,)]
+        assert connection.execute(active_count_sql).fetchall() == [(2,)]
+        connection.execute("delete from events where status = 'active'")
+        assert connection.execute(active_count_sql).fetchall() == [(0,)]
 
 
 def test_metricflow_inline_exprless_non_count_uses_metric_column():

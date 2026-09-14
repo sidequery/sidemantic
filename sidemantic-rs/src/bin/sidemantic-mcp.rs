@@ -855,6 +855,7 @@ fn format_join_condition(
     let model_name = model.name.as_str();
 
     match relationship.r#type {
+        RelationshipType::Cross => Some("TRUE".to_string()),
         RelationshipType::ManyToOne => {
             let fk = relationship
                 .foreign_key

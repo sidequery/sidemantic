@@ -2,7 +2,7 @@
 
 import pytest
 
-from sidemantic import Dimension, Metric, Model, SecurityPolicy, SemanticLayer
+from sidemantic import Dimension, Explore, Metric, Model, SecurityPolicy, SemanticLayer
 from sidemantic.core.semantic_layer import SecurityError
 
 
@@ -79,6 +79,11 @@ def test_attribution_uses_base_event_dimension(layer):
 
 def test_empty_base_population_is_null(layer):
     assert result(layer, filters=["events.event_type = 'absent'"]) == [(None,)]
+
+
+def test_source_anchored_explore_preserves_conversion_population(layer):
+    layer.graph.add_explore(Explore(name="conversion", model="events"))
+    assert result(layer, explore="conversion")[0][0] == pytest.approx(2 / 6)
 
 
 def test_row_filter_scopes_both_event_populations(layer):

@@ -14,10 +14,13 @@ use crate::core::{
 };
 use crate::error::{Result, SidemanticError};
 use crate::runtime::{
-    interpolate_query_filters, validate_query_references, QueryValidationContext,
+    interpolate_query_filters_with_dialect, validate_query_references, QueryValidationContext,
 };
 use crate::sql::{QueryRewriter, SemanticQuery, SqlGenerator};
 mod calculations;
+mod dates;
+pub(crate) mod dialects;
+mod literals;
 mod policies;
 
 #[derive(Debug, Deserialize)]
@@ -52,6 +55,8 @@ pub struct SemanticInput {
     pub source: Value,
     validation_context: QueryValidationContext,
     policies: HashMap<String, policies::ModelPolicies>,
+    input_dialect: DialectType,
+    deferred_segment_dialects: dialects::SegmentDialects,
 }
 
 fn invalid(path: &str, message: impl std::fmt::Display) -> SidemanticError {
@@ -426,6 +431,53 @@ fn lower_complete_filter(
     Ok(())
 }
 
+/// Complete expressions outside the simple lowering retain their physical row
+/// inputs. The entity aggregate planner applies filters to each projected input
+/// before evaluating the authored formula, just as the Python compiler does.
+fn validate_complete_filter_inputs(
+    raw: &Map<String, Value>,
+    owner: Option<&str>,
+    path: &str,
+) -> Result<()> {
+    let owner = owner.ok_or_else(|| unsupported("metric.complete_filters"))?;
+    let sql = raw
+        .get("sql")
+        .and_then(Value::as_str)
+        .ok_or_else(|| invalid(path, "complete metric requires SQL"))?
+        .replace("{model}", owner);
+    let columns = crate::core::semantic_column_references(&sql)
+        .map_err(|_| unsupported("metric.complete_filters"))?;
+    // A filtered opaque constant has no row input to attach the predicate to.
+    if columns.is_empty()
+        || columns.iter().any(|column| {
+            column
+                .model
+                .as_deref()
+                .is_some_and(|model| model != owner && model != format!("{owner}_cte"))
+        })
+    {
+        return Err(unsupported("metric.complete_filters"));
+    }
+    let filters: Vec<String> = deserialize(raw.get("filters").cloned().unwrap_or_default(), path)?;
+    for filter in filters {
+        let filter = filter.replace("{model}", owner);
+        let expression = parse_semantic_expression(&filter)?;
+        crate::core::validate_row_expression(&expression, "metric.complete_filters")?;
+        if crate::core::semantic_column_references(&filter)?
+            .iter()
+            .any(|column| {
+                column
+                    .model
+                    .as_deref()
+                    .is_some_and(|model| model != owner && model != format!("{owner}_cte"))
+            })
+        {
+            return Err(unsupported("metric.complete_filters"));
+        }
+    }
+    Ok(())
+}
+
 fn decode_metric(
     value: Value,
     path: &str,
@@ -445,8 +497,17 @@ fn decode_metric(
                 "sql_is_complete cannot also declare an aggregation",
             ));
         }
-        lower_complete_filter(&mut raw, owner, path)?;
-        complete = false;
+        let mut lowered = raw.clone();
+        match lower_complete_filter(&mut lowered, owner, path) {
+            Ok(()) => {
+                raw = lowered;
+                complete = false;
+            }
+            Err(SidemanticError::UnsupportedSemanticFeatures { .. }) => {
+                validate_complete_filter_inputs(&raw, owner, path)?;
+            }
+            Err(error) => return Err(error),
+        }
     }
     if raw.get("type").is_none_or(Value::is_null) {
         let kind = if raw.get("agg").is_some_and(|value| !value.is_null()) && !complete {
@@ -485,27 +546,6 @@ fn decode_metric(
         if !fill.is_number() && !fill.is_string() {
             return Err(invalid(path, "fill_nulls_with must be a number or string"));
         }
-        let kind = raw.get("type").and_then(Value::as_str).unwrap_or("simple");
-        if !matches!(
-            kind,
-            "simple" | "derived" | "ratio" | "cumulative" | "time_comparison" | "cohort"
-        ) || (!matches!(kind, "time_comparison" | "ratio")
-            && raw
-                .get("offset_window")
-                .is_some_and(|value| !neutral(value)))
-            || ((matches!(kind, "cumulative" | "cohort")
-                || raw
-                    .get("non_additive_dimension")
-                    .is_some_and(|value| !neutral(value)))
-                && raw.get("time_offset").is_some_and(|value| !neutral(value)))
-            || (kind != "cumulative"
-                && (raw.get("window").is_some_and(|value| !neutral(value))
-                    || raw
-                        .get("grain_to_date")
-                        .is_some_and(|value| !neutral(value))))
-        {
-            return Err(unsupported("metric.fill_nulls_shape"));
-        }
     }
     // The optional provenance fields are omitted by core serialization when None.
     let mut exemplar = Metric::new("");
@@ -533,16 +573,11 @@ fn decode_metric(
 
 fn decode_relationship(value: Value, path: &str) -> Result<Relationship> {
     let mut raw = object(value, path)?;
-    if raw.get("type") == Some(&json!("cross")) {
-        return Err(unsupported("relationship.cross"));
-    }
-    if raw.get("type") == Some(&json!("many_to_many")) {
-        if raw.get("through").is_none_or(Value::is_null) {
-            return Err(unsupported("relationship.many_to_many.without_through"));
-        }
-        if raw.get("sql").is_some_and(|value| !value.is_null()) {
-            return Err(unsupported("relationship.many_to_many.custom_sql"));
-        }
+    if raw.get("type") == Some(&json!("many_to_many"))
+        && raw.get("through").is_none_or(Value::is_null)
+        && raw.get("foreign_key").is_none_or(Value::is_null)
+    {
+        return Err(unsupported("relationship.many_to_many.without_through"));
     }
     for field in [
         "foreign_key",
@@ -585,11 +620,7 @@ fn decode_model(value: Value, path: &str) -> Result<Model> {
             .enumerate()
             .map(|(index, value)| {
                 let path = format!("{path}.pre_aggregations[{index}]");
-                let mut raw = object(value, &path)?;
-                // Lambda freshness semantics have no executable core slot yet.
-                // Do not discard active behavior, even on an otherwise plain rollup.
-                reject_active(&mut raw, "rollups", "preaggregation.lambda")?;
-                reject_active(&mut raw, "union_with_source_data", "preaggregation.lambda")?;
+                let raw = object(value, &path)?;
                 let exemplar: PreAggregation = deserialize(json!({"name":""}), &path)?;
                 project(raw, exemplar, &path)
             })
@@ -818,20 +849,20 @@ impl SemanticInput {
 
     fn decode_scoped(input: &str, query_scoped: bool) -> Result<Self> {
         let source: Value = serde_json::from_str(input).map_err(|error| invalid("input", error))?;
-        let envelope: Envelope = deserialize(source.clone(), "input")?;
+        let mut envelope: Envelope = deserialize(source.clone(), "input")?;
         if envelope.version != 1 {
             return Err(invalid("version", "supported semantic input version is 1"));
         }
-        if envelope.input_dialect != "duckdb" {
-            return Err(unsupported(format!(
-                "input_dialect.{}",
-                envelope.input_dialect
-            )));
-        }
+        let input_dialect = dialects::parse_dialect(&envelope.input_dialect)?;
+        let policies = policies::decode_with_dialect(&envelope.models, input_dialect)?;
+        let deferred_segment_dialects = dialects::normalize(&mut envelope, input_dialect)?;
         let unsupported_capabilities: Vec<String> = envelope
             .required_capabilities
             .into_iter()
             .filter(|capability| {
+                if let Some(name) = capability.strip_prefix("input_dialect.") {
+                    return dialects::parse_dialect(name).is_err();
+                }
                 if query_scoped
                     && matches!(
                         capability.as_str(),
@@ -882,7 +913,6 @@ impl SemanticInput {
             }
         }
         let _ = envelope.import_warnings; // Descriptive state remains in source.
-        let policies = policies::decode(&envelope.models)?;
         let mut graph = SemanticGraph::new();
         let mut models = Vec::new();
         for (index, model) in envelope.models.into_iter().enumerate() {
@@ -903,7 +933,9 @@ impl SemanticInput {
                         format!("unknown target {}", relationship.related_model()),
                     ));
                 }
-                if relationship.r#type == crate::core::RelationshipType::ManyToMany {
+                if relationship.r#type == crate::core::RelationshipType::ManyToMany
+                    && relationship.through.is_some()
+                {
                     let through = relationship
                         .through
                         .as_deref()
@@ -943,7 +975,33 @@ impl SemanticInput {
                     relationship.primary_key_columns = Some(target_keys);
                     continue;
                 }
-                if relationship.sql.is_some() {
+                if relationship.r#type == crate::core::RelationshipType::ManyToMany {
+                    let foreign = relationship.foreign_key_columns.clone().unwrap_or_default();
+                    let primary = relationship.primary_key_columns.clone().unwrap_or_default();
+                    let (local, remote) = if primary.is_empty() {
+                        // Legacy direct joins name the remote key as foreign_key.
+                        (keys[&model.name].clone(), foreign)
+                    } else {
+                        // An explicit primary_key records a local/remote key pair.
+                        (foreign, primary)
+                    };
+                    if relationship.sql.is_none()
+                        && (local.is_empty() || remote.is_empty() || local.len() != remote.len())
+                    {
+                        return Err(invalid(
+                            "relationships",
+                            "direct many-to-many join key arity mismatch",
+                        ));
+                    }
+                    relationship.foreign_key = local.first().cloned();
+                    relationship.foreign_key_columns = Some(local);
+                    relationship.primary_key = remote.first().cloned();
+                    relationship.primary_key_columns = Some(remote);
+                    continue;
+                }
+                if relationship.sql.is_some()
+                    || relationship.r#type == crate::core::RelationshipType::Cross
+                {
                     continue;
                 }
                 let foreign = relationship.foreign_key_columns.clone().unwrap_or_default();
@@ -1017,6 +1075,8 @@ impl SemanticInput {
             source,
             validation_context: QueryValidationContext::from_top_level_metrics(&metrics),
             policies,
+            input_dialect,
+            deferred_segment_dialects,
         })
     }
 }
@@ -1037,6 +1097,11 @@ struct QueryInput {
     segments: Vec<String>,
     #[serde(default)]
     order_by: Vec<String>,
+    #[serde(default)]
+    aliases: HashMap<String, String>,
+    timezone: Option<String>,
+    #[serde(default)]
+    with_totals: bool,
     limit: Option<usize>,
     offset: Option<usize>,
     #[serde(default)]
@@ -1050,6 +1115,7 @@ struct QueryInput {
     #[serde(default)]
     parameter_values: HashMap<String, serde_yaml::Value>,
     dialect: Option<String>,
+    query_dialect: Option<String>,
     user_attributes: Option<Map<String, Value>>,
     #[serde(default)]
     enforce_visibility: bool,
@@ -1057,6 +1123,68 @@ struct QueryInput {
 
 fn query_input(query: &str) -> Result<QueryInput> {
     runtime_request(query, "query")
+}
+
+fn prepare_query_input(mut query: QueryInput, input: &mut SemanticInput) -> Result<QueryInput> {
+    let dialect = query
+        .query_dialect
+        .as_deref()
+        .map(dialects::parse_dialect)
+        .transpose()?
+        .unwrap_or(input.input_dialect);
+    query.filters = interpolate_query_filters_with_dialect(
+        &input.graph,
+        query.filters,
+        &query.parameter_values,
+        dialect,
+    )
+    .map_err(|error| invalid("query.parameter_values", error))?
+    .iter()
+    .map(|sql| dialects::fragment(sql, dialect, dialects::Fragment::Scalar))
+    .collect::<Result<Vec<_>>>()?;
+    query.order_by = query
+        .order_by
+        .iter()
+        .map(|sql| dialects::fragment(sql, dialect, dialects::Fragment::Order))
+        .collect::<Result<Vec<_>>>()?;
+    let mut prepared_segments = std::collections::HashSet::new();
+    for reference in &query.segments {
+        let (instance, segment_name, _) = input.graph.parse_reference(reference)?;
+        let Some(mut model) = input.graph.get_model(&instance).cloned() else {
+            continue; // The generator reports unknown model/segment references.
+        };
+        let key = (model.name.clone(), segment_name.clone());
+        let Some(&source_dialect) = input.deferred_segment_dialects.get(&key) else {
+            continue;
+        };
+        if !prepared_segments.insert(key) {
+            continue; // Role instances share the canonical segment definition.
+        }
+        let Some(segment) = model
+            .segments
+            .iter_mut()
+            .find(|segment| segment.name == segment_name)
+        else {
+            continue;
+        };
+        let rendered = interpolate_query_filters_with_dialect(
+            &input.graph,
+            vec![segment.sql.clone()],
+            &query.parameter_values,
+            source_dialect,
+        )
+        .map_err(|error| invalid("query.parameter_values", error))?;
+        segment.sql = dialects::template_sql(
+            &rendered[0],
+            source_dialect,
+            Some(dialects::Fragment::Scalar),
+        )?;
+        // Keep selected segments on their trusted-definition path. Moving them
+        // into caller filters would reject their physical subqueries or change
+        // binding scope during policy preparation and recursive planning.
+        input.graph.replace_model(model)?;
+    }
+    Ok(query)
 }
 
 fn runtime_request<T: DeserializeOwned>(input: &str, path: &str) -> Result<T> {
@@ -1085,24 +1213,24 @@ pub fn compile_with_semantic_input(input_json: &str, query_json: &str) -> Result
 }
 
 fn compile_semantic_input(input_json: &str, query_json: &str) -> Result<String> {
-    let input = SemanticInput::decode_scoped(input_json, true)?;
-    let payload = query_input(query_json)?;
+    let mut input = SemanticInput::decode_scoped(input_json, true)?;
+    let payload = prepare_query_input(query_input(query_json)?, &mut input)?;
     let dialect = payload
         .dialect
         .as_deref()
         .unwrap_or("duckdb")
         .parse::<DialectType>()
         .map_err(|error| invalid("query.dialect", error))?;
-    let filters =
-        interpolate_query_filters(&input.graph, payload.filters, &payload.parameter_values)
-            .map_err(|error| invalid("query.parameter_values", error))?;
     let mut query = SemanticQuery {
         consumption_base_model: payload.consumption_base_model,
         metrics: payload.metrics,
         dimensions: payload.dimensions,
-        filters,
+        filters: payload.filters,
         segments: payload.segments,
         order_by: payload.order_by,
+        aliases: payload.aliases,
+        timezone: payload.timezone,
+        with_totals: payload.with_totals,
         limit: payload.limit,
         offset: payload.offset,
         ungrouped: payload.ungrouped,
@@ -1140,6 +1268,7 @@ fn compile_semantic_input(input_json: &str, query_json: &str) -> Result<String> 
         &payload.table_calculations,
         &query.order_by,
         dialect,
+        &query.aliases,
     )
 }
 
@@ -1148,7 +1277,7 @@ pub fn validate_with_semantic_input(input_json: &str, query_json: &str) -> Resul
 }
 
 fn validate_semantic_input(input_json: &str, query_json: &str) -> Result<Vec<String>> {
-    let input = SemanticInput::decode_scoped(input_json, true)?;
+    let mut input = SemanticInput::decode_scoped(input_json, true)?;
     let query = query_input(query_json)?;
     let errors = validate_query_references(
         &input.graph,
@@ -1157,26 +1286,31 @@ fn validate_semantic_input(input_json: &str, query_json: &str) -> Result<Vec<Str
         &input.validation_context,
     );
     if errors.is_empty()
-        && (query.consumption_base_model.is_some() || !query.table_calculations.is_empty())
+        && (query.consumption_base_model.is_some()
+            || !query.table_calculations.is_empty()
+            || !query.aliases.is_empty()
+            || query.timezone.is_some()
+            || query.with_totals)
     {
+        let query = prepare_query_input(query, &mut input)?;
         let dialect = query
             .dialect
             .as_deref()
             .unwrap_or("duckdb")
             .parse::<DialectType>()
             .map_err(|error| invalid("query.dialect", error))?;
-        let filters =
-            interpolate_query_filters(&input.graph, query.filters, &query.parameter_values)
-                .map_err(|error| invalid("query.parameter_values", error))?;
         // Reference validation checks the selected result contract without
         // authorizing a caller or preparing row policies.
         let semantic_query = SemanticQuery {
             consumption_base_model: query.consumption_base_model,
             metrics: query.metrics,
             dimensions: query.dimensions,
-            filters,
+            filters: query.filters,
             segments: query.segments,
             order_by: query.order_by,
+            aliases: query.aliases,
+            timezone: query.timezone,
+            with_totals: query.with_totals,
             limit: query.limit,
             offset: query.offset,
             ungrouped: query.ungrouped,
@@ -1188,7 +1322,7 @@ fn validate_semantic_input(input_json: &str, query_json: &str) -> Result<Vec<Str
         };
         let generator = SqlGenerator::new(&input.graph).with_dialect(dialect);
         if query.table_calculations.is_empty() {
-            generator.result_schema(&semantic_query)?;
+            generator.generate(&semantic_query)?;
         } else {
             let sql = generator.generate(&semantic_query)?;
             calculations::wrap(
@@ -1197,6 +1331,7 @@ fn validate_semantic_input(input_json: &str, query_json: &str) -> Result<Vec<Str
                 &query.table_calculations,
                 &semantic_query.order_by,
                 dialect,
+                &semantic_query.aliases,
             )?;
         }
     }
@@ -1211,6 +1346,7 @@ pub fn rewrite_with_semantic_input(input_json: &str, sql: &str) -> Result<String
 #[serde(deny_unknown_fields)]
 struct RewriteContext {
     output_dialect: Option<String>,
+    sql_dialect: Option<String>,
     user_attributes: Option<Map<String, Value>>,
     #[serde(default)]
     enforce_visibility: bool,
@@ -1221,6 +1357,31 @@ pub fn rewrite_with_semantic_input_context(
     sql: &str,
     context_json: &str,
 ) -> Result<String> {
+    rewrite_semantic_input_diagnostics(input_json, sql, context_json).map(|report| report.sql)
+}
+
+#[derive(serde::Serialize)]
+struct RewriteDiagnostics {
+    sql: String,
+    warnings: Vec<String>,
+}
+
+/// Companion report for hosts that expose compiler warnings. The original
+/// String-returning SQL entrypoints remain unchanged for native/FFI callers.
+pub fn rewrite_with_semantic_input_context_diagnostics(
+    input_json: &str,
+    sql: &str,
+    context_json: &str,
+) -> Result<String> {
+    let report = rewrite_semantic_input_diagnostics(input_json, sql, context_json)?;
+    serde_json::to_string(&report).map_err(|error| invalid("rewrite.diagnostics", error))
+}
+
+fn rewrite_semantic_input_diagnostics(
+    input_json: &str,
+    sql: &str,
+    context_json: &str,
+) -> Result<RewriteDiagnostics> {
     with_semantic_stack(|| {
         let input = SemanticInput::decode_scoped(input_json, true)?;
         let context: RewriteContext = runtime_request(context_json, "rewrite.context")?;
@@ -1230,23 +1391,21 @@ pub fn rewrite_with_semantic_input_context(
             .unwrap_or("duckdb")
             .parse::<DialectType>()
             .map_err(|error| invalid("rewrite.context.output_dialect", error))?;
-        if !matches!(
-            output_dialect,
-            DialectType::DuckDB | DialectType::PostgreSQL
-        ) {
-            return Err(unsupported(format!(
-                "rewrite.output_dialect.{output_dialect}"
-            )));
-        }
-        let requires_policies = context.user_attributes.is_some()
-            || context.enforce_visibility
+        let sql_dialect = context
+            .sql_dialect
+            .as_deref()
+            .map(dialects::parse_dialect)
+            .transpose()?
+            .unwrap_or(input.input_dialect);
+        let security_controls = context.enforce_visibility
             || input
                 .policies
                 .values()
                 .any(|policy| policy.security.is_some() || !policy.invariant_filters.is_empty());
-        let prepare = |query: &mut SemanticQuery| {
+        let requires_policies = context.user_attributes.is_some() || security_controls;
+        let prepare = |graph: &SemanticGraph, query: &mut SemanticQuery| {
             query.prepared_policies = policies::prepare_for_rewrite(
-                &input.graph,
+                graph,
                 &input.policies,
                 query,
                 context.user_attributes.as_ref(),
@@ -1261,9 +1420,14 @@ pub fn rewrite_with_semantic_input_context(
         let policy_definitions = serde_json::to_string(&input.policies)
             .map_err(|error| invalid("rewrite.policy_definitions", error))?;
         if requires_policies {
-            rewriter = rewriter.with_query_preparer(&prepare, &policy_definitions);
+            rewriter =
+                rewriter.with_query_preparer(&prepare, &policy_definitions, security_controls);
         }
-        rewriter.rewrite_with_output_dialect(sql, DialectType::DuckDB, output_dialect)
+        let sql = rewriter.rewrite_with_output_dialect(sql, sql_dialect, output_dialect)?;
+        Ok(RewriteDiagnostics {
+            sql,
+            warnings: rewriter.take_warnings(),
+        })
     })
 }
 
@@ -1310,16 +1474,27 @@ mod tests {
             assert!(compile_with_semantic_input(&source, &query.to_string()).is_err());
             assert!(validate_with_semantic_input(&source, &query.to_string()).is_err());
         }
-        let query =
-            json!({"consumption_base_model":"orders", "metrics":["orders.revenue", "items.value"]});
-        for result in [
-            compile_with_semantic_input(&source, &query.to_string()).map(|_| ()),
-            validate_with_semantic_input(&source, &query.to_string()).map(|_| ()),
-        ] {
-            assert!(
-                matches!(result, Err(SidemanticError::UnsupportedSemanticFeatures { capabilities })
-                if capabilities.contains(&"query.consumption_base_model.independent_aggregates".to_string()))
+        for (anchor, other) in [("orders", "items"), ("items", "orders")] {
+            let query = json!({
+                "consumption_base_model": anchor,
+                "metrics":["orders.revenue", "items.value"],
+                "filters":["orders.status = 'open'"]
+            });
+            let sql = compile_with_semantic_input(&source, &query.to_string()).unwrap();
+            // Each independent aggregate must read the chosen population;
+            // reverting to the metric's own source would admit orphan rows.
+            assert!(sql.contains("orders_preagg AS"), "{sql}");
+            assert!(sql.contains("items_preagg AS"), "{sql}");
+            assert_eq!(
+                sql.matches(&format!("FROM {anchor}_cte")).count(),
+                2,
+                "{sql}"
             );
+            assert!(!sql.contains(&format!("FROM {other}_cte")), "{sql}");
+            assert_eq!(sql.matches("'open'").count(), 2, "{sql}");
+            assert!(validate_with_semantic_input(&source, &query.to_string())
+                .unwrap()
+                .is_empty());
         }
     }
 
@@ -1378,6 +1553,31 @@ mod tests {
             compile_with_semantic_input(&source.to_string(), r#"{"metrics":["orders.revenue"]}"#),
             Err(SidemanticError::UnsupportedSemanticFeatures { .. })
         ));
+    }
+
+    #[test]
+    fn selected_segment_templates_prepare_only_the_execution_graph() {
+        let mut source = input();
+        source["input_dialect"] = json!("snowflake");
+        source["parameters"] = json!([
+            {"name":"minimum", "type":"number", "default_value":5},
+            {"name":"enabled", "type":"yesno", "default_value":true}
+        ]);
+        let template = "{% if enabled %}{model}.amount >= {{ minimum }}{% else %}FALSE{% endif %}";
+        source["models"][0]["segments"] = json!([
+            {"name":"selected", "sql":template},
+            {"name":"unused", "sql":"{% if missing"}
+        ]);
+        let mut input = SemanticInput::decode_scoped(&source.to_string(), true).unwrap();
+        let query = query_input(r#"{"metrics":["orders.revenue"],"segments":["orders.selected"],"parameter_values":{"minimum":20}}"#).unwrap();
+        let prepared = prepare_query_input(query, &mut input).unwrap();
+        assert!(prepared.filters.is_empty());
+        assert_eq!(prepared.segments, vec!["orders.selected"]);
+        assert_eq!(input.source, source);
+        let model = input.graph.get_model("orders").unwrap();
+        assert!(model.get_segment("selected").unwrap().sql.contains(">= 20"));
+        assert!(!model.get_segment("selected").unwrap().sql.contains("{%"));
+        assert_eq!(model.get_segment("unused").unwrap().sql, "{% if missing");
     }
 
     #[test]
@@ -1452,10 +1652,16 @@ mod tests {
             .unwrap()
             .remove("unexpected");
         source["models"][0]["pre_aggregations"][0]["union_with_source_data"] = json!(true);
-        assert!(matches!(
-            SemanticInput::from_json(&source.to_string()),
-            Err(SidemanticError::UnsupportedSemanticFeatures { .. })
-        ));
+        source["models"][0]["pre_aggregations"][0]["rollups"] = json!(["orders.historical"]);
+        let decoded = SemanticInput::from_json(&source.to_string()).unwrap();
+        assert!(
+            decoded.graph.get_model("orders").unwrap().pre_aggregations[0].union_with_source_data
+        );
+        assert_eq!(decoded.source, source);
+        assert_eq!(
+            decoded.graph.get_model("orders").unwrap().pre_aggregations[0].rollups,
+            Some(vec!["orders.historical".into()])
+        );
     }
 
     #[test]
@@ -1480,8 +1686,23 @@ mod tests {
         .is_err());
         assert!(matches!(
             rewrite_with_semantic_input(&input, "select revenue from orders"),
-            Err(SidemanticError::UnsupportedSemanticFeatures { .. })
+            Err(SidemanticError::Security(_))
         ));
+        let sql = rewrite_with_semantic_input_context(
+            &input,
+            "select revenue from orders",
+            r#"{"user_attributes":{"tenant":1}}"#,
+        )
+        .unwrap();
+        assert!(sql.contains("tenant = 1"), "{sql}");
+        assert!(sql.contains("NOT deleted"), "{sql}");
+        assert!(!sql.contains("all_orders"), "{sql}");
+        assert!(rewrite_with_semantic_input_context(
+            &input,
+            "select revenue from orders",
+            r#"{"user_attributes":{"tenant":1},"prepared_policies":{}}"#,
+        )
+        .is_err());
     }
 
     #[test]
@@ -1511,13 +1732,7 @@ mod tests {
     fn rewrite_context_rejects_unsupported_shapes_and_forged_controls() {
         let input = input().to_string();
         for sql in [
-            "select orders.revenue from orders",
-            "select orders.revenue from metrics union all select orders.revenue from metrics",
-            "with recursive x as (select orders.revenue from metrics) select * from x",
-            "with x as (select orders.revenue from metrics) select * from orders",
-            "select orders.revenue from metrics where orders.status in (select status from orders)",
             "select orders.revenue from metrics qualify 1 = 1",
-            "select orders.revenue + 1 from metrics",
             "delete from orders",
         ] {
             assert!(
@@ -1539,6 +1754,28 @@ mod tests {
                 context
             )
             .is_err());
+        }
+    }
+
+    #[test]
+    fn rewrite_context_compiles_nested_and_expression_shapes() {
+        let input = input().to_string();
+        for sql in [
+            "select orders.revenue from orders",
+            "select orders.revenue from metrics union all select orders.revenue from metrics",
+            "with recursive x as (select orders.revenue from metrics) select * from x",
+            "with x as (select orders.revenue from metrics) select * from orders",
+            "select orders.revenue from metrics where orders.status in (select status from orders)",
+            "select orders.revenue + 1 from metrics",
+        ] {
+            let rewritten =
+                rewrite_with_semantic_input_context(&input, sql, r#"{"user_attributes":{}}"#)
+                    .unwrap();
+            assert!(
+                !rewritten.to_ascii_lowercase().contains("from metrics"),
+                "{rewritten}"
+            );
+            assert!(rewritten.contains("SUM("), "{rewritten}");
         }
     }
 
@@ -1666,10 +1903,9 @@ mod tests {
         );
         source = input();
         source["input_dialect"] = json!("snowflake");
-        assert!(matches!(
-            SemanticInput::from_json(&source.to_string()),
-            Err(SidemanticError::UnsupportedSemanticFeatures { .. })
-        ));
+        assert!(SemanticInput::from_json(&source.to_string()).is_ok());
+        source["input_dialect"] = json!("unknown_vendor");
+        assert!(SemanticInput::from_json(&source.to_string()).is_err());
     }
 
     #[test]
@@ -1843,13 +2079,11 @@ mod tests {
     }
 
     #[test]
-    fn expression_metadata_cannot_override_input_context() {
+    fn expression_metadata_is_translated_without_mutating_source() {
         let mut source = input();
         source["models"][0]["metrics"][0]["metadata"] = json!({"ossie_target_dialect":"BIGQUERY"});
-        assert!(matches!(
-            SemanticInput::from_json(&source.to_string()),
-            Err(SidemanticError::UnsupportedSemanticFeatures { .. })
-        ));
+        let decoded = SemanticInput::from_json(&source.to_string()).unwrap();
+        assert_eq!(decoded.source, source);
         source["models"][0]["metrics"][0]["metadata"] =
             json!({"ossie_target_dialect":"DUCKDB", "ossie_expression_dialect":"BIGQUERY"});
         assert!(SemanticInput::from_json(&source.to_string()).is_ok());
@@ -2182,7 +2416,6 @@ mod tests {
     fn complete_filtered_aggregate_rejects_unproven_populations() {
         for sql in [
             "COUNT(DISTINCT *)",
-            "COUNT(*) FILTER (WHERE amount > 0)",
             "COUNT(*) OVER ()",
             "COUNT(other.*)",
             "COUNT(ALL *)",
@@ -2190,28 +2423,41 @@ mod tests {
             "COUNT(DISTINCT 1)",
             "COUNT(DISTINCT NULL)",
             "SUM(1)",
-            "SUM(CAST(amount AS DOUBLE))",
-            "SUM(amount / 2)",
-            "COUNT(COALESCE(amount, '{model}'))",
-            "COUNT(CASE WHEN amount > 0 THEN 'prefix{model}.value' ELSE 'other' END)",
             "SUM(COALESCE(other.amount, amount))",
             "SUM(CASE WHEN amount > 0 THEN other.amount ELSE 0 END)",
-            "SUM(COALESCE(SUM(amount), 0))",
-            "SUM(amount) + COUNT(amount)",
-            "SUM(amount) OVER ()",
             "SUM((SELECT amount))",
             "SUM(other.amount)",
-            "COUNT(DISTINCT ABS(amount))",
-            "AVG(DISTINCT amount)",
-            "AVG(amount) OVER ()",
             "AVG(other.amount)",
-            "SUM(amount) FILTER (WHERE amount > 0)",
         ] {
             let mut source = input();
             source["models"][0]["metrics"] = json!([{"name":"paid", "sql":sql, "sql_is_complete":true, "filters":["amount = 2"]}]);
             assert!(
                 matches!(SemanticInput::from_json(&source.to_string()), Err(SidemanticError::UnsupportedSemanticFeatures { capabilities }) if capabilities == vec!["metric.complete_filters"]),
                 "{sql}"
+            );
+        }
+    }
+
+    #[test]
+    fn complete_filtered_formulas_keep_physical_inputs_for_entity_planning() {
+        for sql in [
+            "MEDIAN(amount)",
+            "SUM(amount) / NULLIF(COUNT(amount), 0)",
+            "COUNT(DISTINCT ABS(amount))",
+            "AVG(DISTINCT amount)",
+            "SUM(amount) FILTER (WHERE amount > 0)",
+        ] {
+            let mut source = input();
+            source["models"][0]["metrics"] = json!([{"name":"paid", "sql":sql, "sql_is_complete":true, "filters":["amount > 0"]}]);
+            let decoded = SemanticInput::from_json(&source.to_string()).unwrap();
+            assert!(
+                decoded
+                    .graph
+                    .get_model("orders")
+                    .unwrap()
+                    .get_metric("paid")
+                    .unwrap()
+                    .sql_is_complete
             );
         }
     }

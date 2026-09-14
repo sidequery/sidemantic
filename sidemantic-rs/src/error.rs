@@ -8,6 +8,8 @@ pub enum SidemanticError {
     UnsupportedSemanticFeatures { capabilities: Vec<String> },
     #[error("{0}")]
     Security(String),
+    #[error("{0}")]
+    YardstickBinding(String),
     // Model errors
     #[error("Model not found: '{0}'. Available models: {1}")]
     ModelNotFound(String, String),

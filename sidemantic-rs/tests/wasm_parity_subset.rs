@@ -99,6 +99,7 @@ models:
     assert!(rewritten.contains("country"));
 
     for sql in [
+        "SELECT SUM(orders.amount) AS revenue FROM orders",
         "SELECT * FROM orders",
         "WITH base AS (SELECT * FROM orders) SELECT * FROM base",
         "SELECT orders.status, orders.revenue FROM orders GROUP BY orders.status",
@@ -109,7 +110,6 @@ models:
         assert!(rewritten.contains("revenue"), "{rewritten}");
     }
     for sql in [
-        "SELECT SUM(orders.amount) AS revenue FROM orders",
         "SELECT orders.missing FROM orders",
         "SELECT * FROM metrics",
         "SELECT (",

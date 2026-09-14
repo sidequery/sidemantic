@@ -35,6 +35,7 @@ use crate::core::{
 use crate::core::{TableCalcType, TableCalculation};
 use crate::error::{Result, SidemanticError};
 use crate::sql::{QueryRewriter, SemanticQuery, SqlGenerator};
+mod parameters;
 
 /// Query-validation context for unqualified metric semantics.
 #[derive(Debug, Clone, Default)]
@@ -574,6 +575,7 @@ fn parse_relationship_type_label(relationship_type: &str) -> RelationshipType {
         "one_to_one" => RelationshipType::OneToOne,
         "one_to_many" => RelationshipType::OneToMany,
         "many_to_many" => RelationshipType::ManyToMany,
+        "cross" => RelationshipType::Cross,
         _ => RelationshipType::ManyToOne,
     }
 }
@@ -807,6 +809,25 @@ fn format_parameter_value(
     }
 }
 
+fn format_parameter_value_in_dialect(
+    parameter: &Parameter,
+    value: &serde_yaml::Value,
+    dialect: DialectType,
+) -> std::result::Result<String, String> {
+    if matches!(
+        parameter.parameter_type,
+        ParameterType::String | ParameterType::Date
+    ) {
+        let literal = polyglot_sql::Expression::Literal(
+            polyglot_sql::expressions::Literal::String(yaml_value_to_python_str(value)),
+        );
+        crate::semantic_input::dialects::emit(literal, DialectType::DuckDB, dialect)
+            .map_err(|error| error.to_string())
+    } else {
+        format_parameter_value(parameter, value)
+    }
+}
+
 pub fn is_sql_template(sql: &str) -> bool {
     sql.contains("{{") || sql.contains("{%") || sql.contains("{#")
 }
@@ -927,6 +948,7 @@ fn interpolate_simple_filter(
     filter: &str,
     parameters_by_name: &HashMap<String, &Parameter>,
     parameter_values: &HashMap<String, serde_yaml::Value>,
+    dialect: DialectType,
 ) -> std::result::Result<String, String> {
     let pattern = Regex::new(r"\{\{\s*(\w+)\s*\}\}").expect("valid parameter regex");
     let mut interpolation_error: Option<String> = None;
@@ -954,7 +976,8 @@ fn interpolate_simple_filter(
             };
 
             let value = parameter_runtime_value(parameter, parameter_values);
-            match format_parameter_value(parameter, &value) {
+            let formatted = format_parameter_value_in_dialect(parameter, &value, dialect);
+            match formatted {
                 Ok(formatted) => Cow::Owned(formatted),
                 Err(err) => {
                     interpolation_error = Some(err);
@@ -981,18 +1004,27 @@ fn interpolate_sql_with_parameters_impl(
     sql: &str,
     parameters_by_name: &HashMap<String, &Parameter>,
     parameter_values: &HashMap<String, serde_yaml::Value>,
+    dialect: DialectType,
 ) -> std::result::Result<String, String> {
     if is_sql_template(sql) && has_jinja_control_markers(sql) {
-        let context = build_runtime_context(parameters_by_name, parameter_values);
-        return render_template_with_context(sql, &context);
+        return parameters::render(sql, parameters_by_name, parameter_values, dialect);
     }
-    interpolate_simple_filter(sql, parameters_by_name, parameter_values)
+    interpolate_simple_filter(sql, parameters_by_name, parameter_values, dialect)
 }
 
 pub fn interpolate_query_filters(
     graph: &SemanticGraph,
     filters: Vec<String>,
     parameter_values: &HashMap<String, serde_yaml::Value>,
+) -> std::result::Result<Vec<String>, String> {
+    interpolate_query_filters_with_dialect(graph, filters, parameter_values, DialectType::DuckDB)
+}
+
+pub(crate) fn interpolate_query_filters_with_dialect(
+    graph: &SemanticGraph,
+    filters: Vec<String>,
+    parameter_values: &HashMap<String, serde_yaml::Value>,
+    dialect: DialectType,
 ) -> std::result::Result<Vec<String>, String> {
     let parameters_by_name: HashMap<String, &Parameter> = graph
         .parameters()
@@ -1002,7 +1034,12 @@ pub fn interpolate_query_filters(
     filters
         .into_iter()
         .map(|filter| {
-            interpolate_sql_with_parameters_impl(&filter, &parameters_by_name, parameter_values)
+            interpolate_sql_with_parameters_impl(
+                &filter,
+                &parameters_by_name,
+                parameter_values,
+                dialect,
+            )
         })
         .collect()
 }
@@ -1042,7 +1079,7 @@ pub fn interpolate_sql_with_parameters_with_yaml(
         .map(|parameter| (parameter.name.clone(), parameter))
         .collect();
 
-    interpolate_sql_with_parameters_impl(sql, &parameters_by_name, &values)
+    interpolate_sql_with_parameters_impl(sql, &parameters_by_name, &values, DialectType::DuckDB)
         .map_err(SidemanticError::Validation)
 }
 
@@ -5159,129 +5196,16 @@ impl SidemanticRuntime {
             ))
         })?;
 
-        let unsupported = |feature: &str| SidemanticError::UnsupportedSemanticFeatures {
-            capabilities: vec![format!("preaggregation.materialization.{feature}")],
-        };
-        if !preagg.has_unique_output_names() {
-            return Err(unsupported("output_alias_collision"));
-        }
-        if preagg.preagg_type != crate::core::PreAggregationType::Rollup || preagg.sql.is_some() {
-            return Err(unsupported("type_or_custom_sql"));
-        }
         if preagg.partition_granularity.is_some()
             || preagg.build_range_start.is_some()
-            || preagg.build_range_end.is_some()
+            || (preagg.build_range_end.is_some()
+                && preagg.preagg_type != crate::core::PreAggregationType::Lambda)
         {
-            return Err(unsupported("partition_or_build_range"));
+            return Err(SidemanticError::UnsupportedSemanticFeatures {
+                capabilities: vec!["preaggregation.materialization.partition_or_build_range".into()],
+            });
         }
-        if preagg.time_dimension.is_some() != preagg.granularity.is_some() {
-            return Err(unsupported("incomplete_time_grain"));
-        }
-
-        // Materialization operates on physical source expressions. Semantic metric
-        // references and request templates need query planning, not text substitution.
-        let source_expression = |expression: &str| -> Result<String> {
-            let expression = expression.replace("{model}.", "");
-            if expression.contains('{') || expression.contains('}') {
-                return Err(unsupported("expression_template"));
-            }
-            Ok(expression)
-        };
-        let mut select_exprs = Vec::new();
-        let mut group_by_positions = Vec::new();
-        if let (Some(time_dimension), Some(granularity)) =
-            (preagg.time_dimension.as_ref(), preagg.granularity.as_ref())
-        {
-            if !matches!(
-                granularity.as_str(),
-                "year" | "quarter" | "month" | "week" | "day" | "hour" | "minute" | "second"
-            ) {
-                return Err(unsupported("time_grain"));
-            }
-            let time_dim = model.get_dimension(time_dimension).ok_or_else(|| {
-                SidemanticError::Validation(format!(
-                    "Unknown rollup time dimension '{time_dimension}'"
-                ))
-            })?;
-            let expression = source_expression(time_dim.sql_expr())?;
-            select_exprs.push(format!(
-                "DATE_TRUNC('{granularity}', {expression}) as {time_dimension}_{granularity}"
-            ));
-            group_by_positions.push(select_exprs.len().to_string());
-        }
-        for dim_name in preagg.dimensions.iter().flatten() {
-            let dim = model.get_dimension(dim_name).ok_or_else(|| {
-                SidemanticError::Validation(format!("Unknown rollup dimension '{dim_name}'"))
-            })?;
-            select_exprs.push(format!(
-                "{} as {dim_name}",
-                source_expression(dim.sql_expr())?
-            ));
-            group_by_positions.push(select_exprs.len().to_string());
-        }
-        for measure_name in preagg.measures.iter().flatten() {
-            let measure = model.get_metric(measure_name).ok_or_else(|| {
-                SidemanticError::Validation(format!("Unknown rollup measure '{measure_name}'"))
-            })?;
-            if measure.r#type != MetricType::Simple
-                || measure.sql_is_complete
-                || measure.non_additive_dimension.is_some()
-            {
-                return Err(unsupported("measure_state"));
-            }
-            let aggregate = match measure.agg.as_ref() {
-                Some(Aggregation::Sum) => "SUM",
-                Some(Aggregation::Count) => "COUNT",
-                Some(Aggregation::Min) => "MIN",
-                Some(Aggregation::Max) => "MAX",
-                // AVG needs a compatible denominator and a shared additive-state
-                // contract; distinct counts and distribution statistics also cannot
-                // be stored as blindly reaggregatable scalar values.
-                _ => return Err(unsupported("measure_aggregation")),
-            };
-            let count_rows = measure.agg == Some(Aggregation::Count)
-                && measure
-                    .sql
-                    .as_deref()
-                    .is_none_or(|sql| sql.trim().is_empty() || sql.trim() == "*");
-            let mut expression = if count_rows {
-                "*".to_owned()
-            } else {
-                source_expression(measure.sql_expr())?
-            };
-            if !measure.filters.is_empty() {
-                let predicates = measure
-                    .filters
-                    .iter()
-                    .map(|filter| source_expression(filter).map(|filter| format!("({filter})")))
-                    .collect::<Result<Vec<_>>>()?;
-                let input = if count_rows { "1" } else { &expression };
-                expression = format!(
-                    "CASE WHEN {} THEN {input} ELSE NULL END",
-                    predicates.join(" AND ")
-                );
-            }
-            select_exprs.push(format!("{aggregate}({expression}) as {measure_name}_raw"));
-        }
-        if select_exprs.is_empty() {
-            return Err(unsupported("empty_rollup"));
-        }
-        let from_clause = if let Some(model_sql) = model.sql.as_ref() {
-            format!("({model_sql}) AS t")
-        } else {
-            model
-                .table
-                .clone()
-                .ok_or_else(|| unsupported("missing_source"))?
-        };
-        let mut sql = format!(
-            "SELECT\n  {}\nFROM {from_clause}",
-            select_exprs.join(",\n  ")
-        );
-        if !group_by_positions.is_empty() {
-            sql.push_str(&format!("\nGROUP BY {}", group_by_positions.join(", ")));
-        }
-        Ok(sql)
+        crate::core::preaggregation_materialization_sql(model, preagg, None)
     }
 
     /// Export semantic graph catalog metadata in Postgres-compatible format.
@@ -5692,6 +5616,7 @@ fn relationship_type_label(relationship_type: &RelationshipType) -> &'static str
         RelationshipType::OneToOne => "one_to_one",
         RelationshipType::OneToMany => "one_to_many",
         RelationshipType::ManyToMany => "many_to_many",
+        RelationshipType::Cross => "cross",
     }
 }
 
@@ -8049,14 +7974,7 @@ models:
 
     #[test]
     fn test_materialization_rejects_unsafe_aggregate_states() {
-        for agg in [
-            "avg",
-            "count_distinct",
-            "median",
-            "stddev",
-            "variance",
-            "expression",
-        ] {
+        for agg in ["median", "stddev", "variance", "expression"] {
             let yaml = format!(
                 r#"
 models:

@@ -1218,28 +1218,8 @@ class SemanticLayer:
         if not with_totals:
             limit = self._resolve_row_limit(limit)
 
-        # Decide capability support before sending the graph to Rust validation.
-        unsupported = []
-        if timezone:
-            unsupported.append("query.timezone")
-        if with_totals:
-            unsupported.append("query.totals")
-        if aliases:
-            unsupported.append("query.aliases")
-
-        rust_requested = self._use_rust_sql_generator or self._use_rust_query_validation
         allow_rust = True
-        if rust_requested and unsupported:
-            error = UnsupportedSemanticFeaturesError(unsupported)
-            if (
-                self._rust_no_fallback
-                or self._strict_rust_sql_generator_entrypoint
-                or self._strict_rust_query_validation
-            ):
-                raise error
-            allow_rust = False
-            self.last_engine_selection = {"engine": "python", "reason": str(error)}
-        elif self._use_rust_sql_generator and self._rust_module is None:
+        if self._use_rust_sql_generator and self._rust_module is None:
             error = RustBackendUnavailableError(
                 self._rust_unavailable_reason or "Rust SQL generator backend is not initialized"
             )
@@ -1285,6 +1265,8 @@ class SemanticLayer:
                 parameters=parameters,
                 use_preaggregations=use_preaggs,
                 aliases=aliases,
+                timezone=timezone,
+                with_totals=with_totals,
                 user_attributes=user_attributes,
                 base_model=consumption_base_model,
                 table_calculations=table_calculations,
@@ -1307,6 +1289,8 @@ class SemanticLayer:
                     parameters=parameters,
                     use_preaggregations=use_preaggs,
                     aliases=aliases,
+                    timezone=timezone,
+                    with_totals=with_totals,
                     base_model=consumption_base_model,
                     user_attributes=user_attributes,
                 )
@@ -1556,18 +1540,14 @@ class SemanticLayer:
         user_attributes: dict[str, Any] | None = None,
         base_model: str | None = None,
         table_calculations: list[str] | None = None,
+        timezone: str | None = None,
+        with_totals: bool = False,
     ) -> str | None:
         if not self._rust_module:
             if self._rust_no_fallback or self._strict_rust_sql_generator_entrypoint:
                 raise RustBackendUnavailableError("Rust SQL generator backend is not initialized")
             self.last_engine_selection = {"engine": "python", "reason": "Rust backend is not initialized"}
             return None
-        if aliases:
-            if self._rust_no_fallback or self._strict_rust_sql_generator_entrypoint:
-                raise UnsupportedSemanticFeaturesError(["query.aliases"])
-            self.last_engine_selection = {"engine": "python", "reason": "query.aliases"}
-            return None
-
         payload = {
             "consumption_base_model": base_model,
             "table_calculations": table_calculations or [],
@@ -1577,6 +1557,9 @@ class SemanticLayer:
             "parameter_values": parameters or {},
             "segments": segments or [],
             "order_by": order_by or [],
+            "aliases": aliases or {},
+            "timezone": timezone,
+            "with_totals": with_totals,
             "limit": limit,
             "offset": offset,
             "ungrouped": ungrouped,

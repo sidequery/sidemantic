@@ -611,8 +611,8 @@ def test_tsql_complete_row_count_retains_existing_path(row_count_layer, expressi
     metric = row_count_layer.graph.models["orders"].get_metric("paid_rows")
     metric.sql = expression
     sql = SQLGenerator(row_count_layer.graph, dialect="tsql").generate(metrics=["orders.paid_rows"])
-    # Existing complete-expression generation emits COUNT_BIG for both inputs.
-    # This DuckDB/PostgreSQL qualification must leave that TSQL path untouched.
-    assert "COUNT_BIG(*)" in sql
+    # SQLGlot preserves the authored COUNT/COUNT_BIG width for TSQL.
+    # Filter lowering must leave that existing complete-expression path intact.
+    assert expression in sql
     assert "CASE WHEN" not in sql
     assert metric.sql == expression

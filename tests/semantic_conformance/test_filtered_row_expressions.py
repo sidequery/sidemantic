@@ -276,3 +276,28 @@ def test_filtered_expression_cross_source_leaf_keeps_count_zero(layer):
         ["region", "combined"],
         [("a", 13), ("b", 23), ("c", 30), ("d", 40)],
     )
+
+
+@pytest.mark.parametrize("dimension,sql_source,expected", [("plain", "price", 3), ("adjusted", "price + 1", 5)])
+def test_filter_column_formatting_preserves_expression_precedence(engine, dimension, sql_source, expected):
+    layer = SemanticLayer(engine=engine, fallback=False, auto_register=False)
+    layer.add_model(
+        Model(
+            name="values",
+            table="filter_precedence_values",
+            primary_key="id",
+            dimensions=[Dimension(name=dimension, type="numeric", sql=sql_source)],
+            metrics=[Metric(name="total", agg="sum", sql="price")],
+        )
+    )
+    try:
+        layer.adapter.execute("create table filter_precedence_values(id integer, price integer)")
+        layer.adapter.execute("insert into filter_precedence_values values (1, 1), (2, 2), (3, 3)")
+        sql = layer.compile(metrics=["values.total"], filters=[f"values.{dimension} * 2 > 5"])
+        if engine == "rust":
+            assert layer.last_engine_selection["engine"] == "rust"
+        if dimension == "plain":
+            assert "price * 2 > 5" in sql
+        assert layer.adapter.execute(sql).fetchall() == [(expected,)]
+    finally:
+        layer.adapter.close()

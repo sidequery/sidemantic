@@ -275,10 +275,56 @@ jobs:
           echo "SIDEMANTIC_TEST_ADBC_DUCKDB_DRIVER=/tmp/libduckdb/libduckdb.so" >> "$GITHUB_ENV"
 
       - name: Run Rust native fixtures
+        id: native_fixtures
         working-directory: sidemantic-rs
         run: |
           cargo test --test native_fixtures
           cargo test --features adbc-exec --test native_fixtures native_fixtures_execute_expected_results_with_duckdb_adbc
+
+      - name: Capture native fixture stack overflow
+        if: ${{ failure() && steps.native_fixtures.outcome == 'failure' }}
+        timeout-minutes: 5
+        working-directory: sidemantic-rs
+        run: |
+          set -euo pipefail
+          if ! command -v gdb >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y gdb
+          fi
+          fixture_target_dir="$(cargo metadata --no-deps --format-version 1 | jq -r .target_directory)"
+          fixture_binary=""
+          for candidate in "$fixture_target_dir"/debug/deps/native_fixtures-*; do
+            if [[ -f "$candidate" && -x "$candidate" && ( -z "$fixture_binary" || "$candidate" -nt "$fixture_binary" ) ]]; then
+              fixture_binary="$candidate"
+            fi
+          done
+          if [[ -z "$fixture_binary" ]]; then
+            echo 'No compiled native_fixtures binary found' >&2
+            exit 1
+          fi
+          printf 'Debugging existing binary: %s\n' "$fixture_binary"
+          timeout 120s gdb --batch --quiet \
+            -ex 'set pagination off' \
+            -ex 'set confirm off' \
+            -ex 'set debuginfod enabled off' \
+            -ex 'set print frame-arguments none' \
+            -ex 'handle SIGSEGV stop print nopass' \
+            -ex 'handle SIGABRT stop print nopass' \
+            -ex run \
+            -ex 'thread apply all bt 80' \
+            -ex 'info frame' \
+            -ex 'x/12i $pc' \
+            --args "$fixture_binary" native_fixtures_load_and_compile --exact --nocapture \
+            2>&1 | tee "$RUNNER_TEMP/native-fixture-backtrace.txt"
+
+      - name: Upload native fixture backtrace
+        if: ${{ always() && steps.native_fixtures.outcome == 'failure' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-fixture-backtrace-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/native-fixture-backtrace.txt
+          if-no-files-found: warn
+          retention-days: 7
 
   check-rust-changes:
     name: Check Rust/DuckDB changes

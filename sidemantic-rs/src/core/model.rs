@@ -630,6 +630,7 @@ pub enum RelationshipType {
     OneToOne,
     OneToMany,
     ManyToMany,
+    Cross,
 }
 
 /// A relationship defines how models join together
@@ -890,6 +891,10 @@ pub struct PreAggregation {
     pub preagg_type: PreAggregationType,
     #[serde(default)]
     pub sql: Option<String>,
+    #[serde(default)]
+    pub rollups: Option<Vec<String>>,
+    #[serde(default)]
+    pub union_with_source_data: bool,
     #[serde(default)]
     pub measures: Option<Vec<String>>,
     #[serde(default)]

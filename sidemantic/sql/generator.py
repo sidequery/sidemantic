@@ -22,6 +22,7 @@ from sidemantic.sql.fragment import (
     replace_outside_sql_protected,
     rewrite_sql_column_spans,
 )
+from sidemantic.sql.order_by import split_order_field
 from sidemantic.sql.parsing import parse_fragment as _parse_fragment
 from sidemantic.validation import QueryValidationError
 
@@ -779,6 +780,10 @@ class SQLGenerator:
                 replacement_table = replacement_column.table
                 if replacement_table and replacement_table.replace("_cte", "") == model_name:
                     replacement_column.set("table", exp.to_identifier(source_alias) if source_alias else None)
+            # Substitution must preserve the dimension's expression boundary:
+            # adjusted * 2 with adjusted = price + 1 means (price + 1) * 2.
+            if isinstance(replacement, (exp.Binary, exp.Unary, exp.Between, exp.In)):
+                replacement = exp.Paren(this=replacement)
             column.replace(replacement)
 
         return parsed.sql(dialect=self.dialect)
@@ -1111,7 +1116,7 @@ class SQLGenerator:
             # routes them into this model's CTE (scoping rows before joins/aggregation).
             rendered_filters: list[str] = []
             for filter_template in policy.row_filters:
-                rendered = render_row_filter(filter_template, user_attributes)
+                rendered = render_row_filter(filter_template, user_attributes, dialect=self.dialect)
                 try:
                     parsed = _parse_fragment(rendered, self.dialect)
                 except SqlglotError as exc:
@@ -1276,8 +1281,7 @@ class SQLGenerator:
         aliases = aliases or {}
 
         for field in order_by or []:
-            parts = field.rsplit(" ", 1)
-            field_ref = parts[0] if len(parts) == 2 and parts[1].upper() in {"ASC", "DESC"} else field
+            field_ref, _ = split_order_field(field, [*metrics, *dimensions, *aliases.values()])
             # Public semantic field references may contain spaces without SQL quoting.
             if field_ref not in [*metrics, *dimensions, *aliases.values()]:
                 parse_query_fragment(field, self.dialect, order_by=True)
@@ -1396,9 +1400,8 @@ class SQLGenerator:
                 processed_filters.append(f)
 
         filters = processed_filters
-        # Caller filters determine whether an already-scoped rollup can answer
-        # the query. Invariant filters are instead baked into every materialized
-        # rollup and must not be required as physical rollup columns.
+        # Rollup filters describe caller predicates. Mandatory restrictions
+        # bypass routing because an external rollup may predate those restrictions.
         routing_filters = list(filters)
 
         # Enforce model security policies once per compile, BEFORE any SQL is assembled or any
@@ -1412,7 +1415,10 @@ class SQLGenerator:
         security_model_names = self._find_required_models(metrics, dimensions, filters)
         if security_model_names:
             participating_models = self._participating_models(security_model_names)
-            for model_name, predicates in self._invariant_filters(participating_models).items():
+            invariant_filters = self._invariant_filters(participating_models)
+            if invariant_filters:
+                use_preaggregations = False
+            for model_name, predicates in invariant_filters.items():
                 filters = filters + predicates
             security_row_filters = self._enforce_security(participating_models, user_attributes)
             for model_name in sorted(security_row_filters):
@@ -3803,37 +3809,50 @@ class SQLGenerator:
             having_metric_expressions.setdefault(metric.name, aggregate)
 
         if with_totals and parsed_dims:
-            first_dim = f"{dedup_table}.{self._quote_identifier(dim_internal_names[0])}"
-            outer_select_exprs.append(f"GROUPING({first_dim}) AS _is_total")
+            outer_select_exprs.append("0 AS _is_total")
 
         outer_query = select(*outer_select_exprs).from_(inner_query.subquery(dedup_alias))
         if parsed_dims:
-            if with_totals:
-                positions = ", ".join(str(i) for i in range(1, len(parsed_dims) + 1))
-                outer_query = outer_query.group_by(f"GROUPING SETS (({positions}), ())")
-            else:
-                outer_query = outer_query.group_by(*range(1, len(parsed_dims) + 1))
+            outer_query = outer_query.group_by(*range(1, len(parsed_dims) + 1))
         for filter_expr in having_filters:
             outer_query = outer_query.having(
                 _parse_fragment(self._rewrite_having_filter(filter_expr, having_metric_expressions), self.dialect)
             )
 
+        result_query: exp.Query = outer_query
+        if with_totals and parsed_dims:
+            # A source key may belong to more than one dimension group. Removing
+            # dimensions from the DISTINCT state recomputes one global entity
+            # population instead of summing copies retained for separate groups.
+            total_rows = inner_query.copy().select(*inner_select_exprs[len(parsed_dims) :], append=False)
+            total_dimensions = []
+            for dim_ref, gran in parsed_dims:
+                reference = f"{dim_ref}__{gran}" if gran else dim_ref
+                total_dimensions.append(f"NULL AS {self._quote_alias(output_aliases[reference])}")
+            total_query = select(*total_dimensions, *outer_select_exprs[len(parsed_dims) : -1], "1 AS _is_total").from_(
+                total_rows.subquery(dedup_alias)
+            )
+            for filter_expr in having_filters:
+                total_query = total_query.having(
+                    _parse_fragment(self._rewrite_having_filter(filter_expr, having_metric_expressions), self.dialect)
+                )
+            result_query = exp.Union(this=outer_query, expression=total_query, distinct=False)
+
         if order_by:
             order_exprs = []
             for field in order_by:
-                parts = field.rsplit(" ", 1)
-                field_ref = parts[0] if len(parts) == 2 and parts[1].upper() in {"ASC", "DESC"} else field
-                direction = f" {parts[1].upper()}" if field_ref != field else ""
+                field_ref, suffix = split_order_field(field, [*output_aliases, *output_aliases.values()])
+                direction = f" {suffix}" if suffix else ""
                 output_alias = output_aliases.get(field_ref)
                 if output_alias is None and "." in field_ref:
                     output_alias = output_aliases.get(field_ref.split(".", 1)[1])
                 order_exprs.append(f"{self._quote_alias(output_alias or field_ref)}{direction}")
-            outer_query = outer_query.order_by(*order_exprs)
+            result_query = result_query.order_by(*order_exprs)
         if limit is not None:
-            outer_query = outer_query.limit(limit)
+            result_query = result_query.limit(limit)
         if offset is not None:
-            outer_query = outer_query.offset(offset)
-        return outer_query.sql(dialect=self.dialect, pretty=True)
+            result_query = result_query.offset(offset)
+        return result_query.sql(dialect=self.dialect, pretty=True)
 
     def _build_semi_additive_select(
         self,
@@ -4062,9 +4081,8 @@ class SQLGenerator:
         if order_by:
             order_exprs = []
             for field in order_by:
-                parts = field.rsplit(" ", 1)
-                field_ref = parts[0] if len(parts) == 2 and parts[1].upper() in {"ASC", "DESC"} else field
-                direction = f" {parts[1].upper()}" if field_ref != field else ""
+                field_ref, suffix = split_order_field(field, [*output_aliases, *output_aliases.values()])
+                direction = f" {suffix}" if suffix else ""
                 alias = output_aliases.get(field_ref, field_ref.split(".", 1)[-1])
                 order_exprs.append(f"{self._quote_alias(alias)}{direction}")
             sql += f"\nORDER BY {', '.join(order_exprs)}"
@@ -4391,7 +4409,9 @@ class SQLGenerator:
             select_exprs.append(f"GROUPING({self._cte_ref(first_model_name, first_col_name)}) AS _is_total")
 
         # Build query using builder API
-        query = select(*select_exprs).from_(self._quote_identifier(self._cte_name(base_model_name)))
+        query = select(*select_exprs, dialect=self.dialect).from_(
+            self._quote_identifier(self._cte_name(base_model_name))
+        )
 
         # Add joins (supports multi-hop)
         query = self._add_join_paths_to_query(query, base_model_name, other_models, models_with_filters)
@@ -4444,15 +4464,12 @@ class SQLGenerator:
         if order_by:
             order_by_aliases = []
             for field in order_by:
-                parts = field.rsplit(" ", 1)
-                direction = ""
-                field_ref = field
-                if len(parts) == 2 and parts[1].upper() in {"ASC", "DESC"}:
-                    field_ref = parts[0]
-                    direction = f" {parts[1].upper()}"
-
+                field_ref, suffix = split_order_field(field, [*output_aliases, *output_aliases.values()])
+                direction = f" {suffix}" if suffix else ""
                 if field_ref in output_aliases:
                     field_alias = self._quote_alias(output_aliases[field_ref])
+                elif field_ref in output_aliases.values():
+                    field_alias = self._quote_alias(field_ref)
                 elif "." in field_ref:
                     field_alias = field_ref.split(".", 1)[1]
                 else:
@@ -7012,8 +7029,10 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
             return f"{numerator} / NULLIF({denominator}, 0)"
         if metric.type == "derived" or (not metric.type and not metric.agg and metric.sql):
             return self._preaggregation_derived_metric_expression(model, preagg, metric)
-        if metric.agg in {"sum", "count"}:
+        if metric.agg == "sum":
             return f"SUM({raw_col})"
+        if metric.agg == "count":
+            return f"COALESCE(SUM({raw_col}), 0)"
         if metric.agg == "avg":
             matcher = PreAggregationMatcher(model)
             count_measure = matcher._find_count_measure_for_avg(metric, preagg.measures or []) or "count"
@@ -7186,6 +7205,8 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
                 return None, "multi_hop_remote_dimension_not_supported"
             if path[0].relationship != "many_to_one":
                 return None, "remote_dimension_not_many_to_one"
+            if self._explicit_join_type_for_path(path[0]) is not None:
+                return None, "explicit_join_type_not_supported"
             if remote_model_name and remote_model_name != dim_model_name:
                 return None, "multiple_remote_models_not_supported"
 

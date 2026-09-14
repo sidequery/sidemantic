@@ -1,14 +1,49 @@
+use std::collections::HashMap;
 use std::io::{self, Read};
 
 use polyglot_sql::DialectType;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sidemantic::{
-    build_symmetric_aggregate_sql, config::SidemanticConfig, load_from_string, Aggregation,
-    DimensionType, Metric, Model, OssieConsumerProfile, OssieForwardAdapter, OssieSerialization,
-    OssieTarget, QueryRewriter, RelationshipType, SemanticGraph, SemanticQuery, SqlDialect,
-    SqlGenerator, SymmetricAggType, TableCalculation,
+    build_symmetric_aggregate_sql, config::SidemanticConfig, Aggregation, DimensionType, Metric,
+    Model, OssieConsumerProfile, OssieForwardAdapter, OssieSerialization, OssieTarget,
+    QueryRewriter, RelationshipType, SemanticGraph, SemanticQuery, SqlDialect, SqlGenerator,
+    SymmetricAggType, TableCalculation,
 };
+
+// Keep the largest action payload indirect without boxing individual collections.
+#[derive(Debug, Deserialize)]
+struct CompileRequest {
+    models_yaml: String,
+    #[serde(default)]
+    metrics: Vec<String>,
+    #[serde(default)]
+    dimensions: Vec<String>,
+    #[serde(default)]
+    filters: Vec<String>,
+    #[serde(default)]
+    segments: Vec<String>,
+    #[serde(default)]
+    order_by: Vec<String>,
+    #[serde(default)]
+    aliases: HashMap<String, String>,
+    timezone: Option<String>,
+    #[serde(default)]
+    with_totals: bool,
+    limit: Option<usize>,
+    offset: Option<usize>,
+    #[serde(default)]
+    ungrouped: bool,
+    #[serde(default)]
+    skip_default_time_dimensions: bool,
+    dialect: Option<String>,
+    #[serde(default)]
+    use_preaggregations: bool,
+    preagg_database: Option<String>,
+    preagg_schema: Option<String>,
+    #[serde(default)]
+    parameter_values: std::collections::HashMap<String, serde_yaml::Value>,
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
@@ -16,26 +51,7 @@ enum Request {
     Validate {
         models_yaml: String,
     },
-    Compile {
-        models_yaml: String,
-        #[serde(default)]
-        metrics: Vec<String>,
-        #[serde(default)]
-        dimensions: Vec<String>,
-        #[serde(default)]
-        filters: Vec<String>,
-        #[serde(default)]
-        segments: Vec<String>,
-        #[serde(default)]
-        order_by: Vec<String>,
-        limit: Option<usize>,
-        offset: Option<usize>,
-        #[serde(default)]
-        ungrouped: bool,
-        #[serde(default)]
-        skip_default_time_dimensions: bool,
-        dialect: Option<String>,
-    },
+    Compile(Box<CompileRequest>),
     JoinPath {
         models_yaml: String,
         from_model: String,
@@ -148,20 +164,31 @@ fn handle(request: Request) -> sidemantic::Result<Response> {
                 value: None,
             })
         }
-        Request::Compile {
-            models_yaml,
-            metrics,
-            dimensions,
-            filters,
-            segments,
-            order_by,
-            limit,
-            offset,
-            ungrouped,
-            skip_default_time_dimensions,
-            dialect,
-        } => {
+        Request::Compile(request) => {
+            let CompileRequest {
+                models_yaml,
+                metrics,
+                dimensions,
+                filters,
+                segments,
+                order_by,
+                aliases,
+                timezone,
+                with_totals,
+                limit,
+                offset,
+                ungrouped,
+                skip_default_time_dimensions,
+                dialect,
+                use_preaggregations,
+                preagg_database,
+                preagg_schema,
+                parameter_values,
+            } = *request;
             let graph = load_from_string(&models_yaml)?;
+            let filters =
+                sidemantic::runtime::interpolate_query_filters(&graph, filters, &parameter_values)
+                    .map_err(sidemantic::SidemanticError::Validation)?;
             let mut query = SemanticQuery::new()
                 .with_metrics(metrics)
                 .with_dimensions(dimensions)
@@ -170,6 +197,12 @@ fn handle(request: Request) -> sidemantic::Result<Response> {
                 .with_order_by(order_by)
                 .with_ungrouped(ungrouped)
                 .with_skip_default_time_dimensions(skip_default_time_dimensions);
+            query.use_preaggregations = use_preaggregations;
+            query.preagg_database = preagg_database;
+            query.preagg_schema = preagg_schema;
+            query.aliases = aliases;
+            query.timezone = timezone;
+            query.with_totals = with_totals;
             if let Some(limit) = limit {
                 query = query.with_limit(limit);
             }
@@ -508,6 +541,41 @@ fn parse_single_metric(metric_yaml: &str) -> sidemantic::Result<Metric> {
     Ok(metric)
 }
 
+// Python graph metrics are registered directly. Native-format top-level metrics
+// instead require model ownership inference, which is a different contract.
+fn load_from_string(models_yaml: &str) -> sidemantic::Result<SemanticGraph> {
+    let mut document: serde_yaml::Value = serde_yaml::from_str(models_yaml)?;
+    let graph_metrics = document
+        .as_mapping_mut()
+        .and_then(|mapping| mapping.remove(serde_yaml::Value::String("graph_metrics".into())));
+    // Apply the native metric schema's type/aggregation inference, without the
+    // native loader's separate top-level metric ownership assignment.
+    let mut metric_document = serde_yaml::Mapping::new();
+    metric_document.insert(
+        serde_yaml::Value::String("metrics".into()),
+        graph_metrics.unwrap_or(serde_yaml::Value::Sequence(Vec::new())),
+    );
+    let config: SidemanticConfig =
+        serde_yaml::from_value(serde_yaml::Value::Mapping(metric_document))?;
+    let (_, metrics, _) = config.into_parts()?;
+    let mut graph = sidemantic::load_from_string(&serde_yaml::to_string(&document)?)?;
+    for metric in &metrics {
+        // Model conversion/time-comparison metrics are also indexed at graph
+        // scope by both implementations. Their serialized graph copy is not a
+        // second definition; conflicting definitions must still fail.
+        if let Some(existing) = graph.get_metric(&metric.name) {
+            if serde_yaml::to_value(existing)? == serde_yaml::to_value(metric)? {
+                continue;
+            }
+        }
+        graph.add_metric_unvalidated(metric.clone())?;
+    }
+    for metric in &metrics {
+        graph.validate_metric_dependencies(metric)?;
+    }
+    Ok(graph)
+}
+
 fn load_graph_with_table_calculations(
     models_yaml: &str,
     table_calculations_json: Vec<Value>,
@@ -763,6 +831,7 @@ fn relationship_type_name(relationship_type: &RelationshipType) -> &'static str 
         RelationshipType::OneToOne => "one_to_one",
         RelationshipType::OneToMany => "one_to_many",
         RelationshipType::ManyToMany => "many_to_many",
+        RelationshipType::Cross => "cross",
     }
 }
 
@@ -790,6 +859,192 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compile_request_keeps_flat_json_and_defaults() {
+        let minimal: Request = serde_json::from_value(json!({
+            "action": "compile", "models_yaml": "models: []"
+        }))
+        .unwrap();
+        let Request::Compile(minimal) = minimal else {
+            panic!("expected compile request")
+        };
+        assert!(minimal.metrics.is_empty());
+        assert!(minimal.aliases.is_empty());
+        assert!(minimal.parameter_values.is_empty());
+        assert!(!minimal.use_preaggregations);
+        assert!(minimal.preagg_schema.is_none());
+
+        let populated: Request = serde_json::from_value(json!({
+            "action": "compile", "models_yaml": "models: []",
+            "metrics": ["orders.revenue"],
+            "aliases": {"orders.revenue": "Revenue Total"},
+            "parameter_values": {"region": "west"},
+            "use_preaggregations": true, "preagg_schema": "rollups"
+        }))
+        .unwrap();
+        let Request::Compile(populated) = populated else {
+            panic!("expected compile request")
+        };
+        assert_eq!(populated.metrics, ["orders.revenue"]);
+        assert_eq!(populated.aliases["orders.revenue"], "Revenue Total");
+        assert_eq!(populated.parameter_values["region"].as_str(), Some("west"));
+        assert!(populated.use_preaggregations);
+        assert_eq!(populated.preagg_schema.as_deref(), Some("rollups"));
+    }
+
+    #[test]
+    fn compile_transport_routes_rollups_and_preserves_raw_average_fallback() {
+        let models_yaml = r#"
+models:
+  - name: orders
+    table: orders
+    primary_key: id
+    metrics:
+      - name: average
+        agg: avg
+        sql: amount
+      - name: completed
+        agg: count
+        filters: ["status = 'completed'"]
+    pre_aggregations:
+      - name: totals
+        measures: [average, completed]
+"#;
+        for (metric, enabled, routed) in [
+            ("completed", true, true),
+            ("completed", false, false),
+            ("average", true, false),
+        ] {
+            let request: Request = serde_json::from_value(serde_json::json!({
+                "action":"compile", "models_yaml":models_yaml,
+                "metrics":[format!("orders.{metric}")], "use_preaggregations":enabled,
+                "preagg_schema":"rollups"
+            }))
+            .unwrap();
+            let response = handle(request).unwrap();
+            let Response::Ok { sql: Some(sql), .. } = response else {
+                panic!("expected compiled SQL")
+            };
+            assert_eq!(sql.contains("orders_preagg_totals"), routed, "{sql}");
+            if routed {
+                assert!(sql.contains("rollups"), "{sql}");
+            }
+        }
+    }
+
+    #[test]
+    fn graph_metric_transport_validates_inferred_derived_dependencies() {
+        let error = load_from_string(
+            r#"
+models:
+  - name: orders
+    table: orders
+    primary_key: id
+graph_metrics:
+  - name: bad_metric
+    sql: orders.nonexistent
+"#,
+        )
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("measure 'nonexistent' not found"));
+    }
+
+    #[test]
+    fn graph_metric_transport_compiles_reference_with_cumulative_metric() {
+        let graph = load_from_string(
+            r#"
+models:
+  - name: orders
+    table: orders
+    primary_key: id
+    dimensions:
+      - name: order_date
+        type: time
+        granularity: day
+    metrics:
+      - name: daily_revenue
+        agg: sum
+        sql: amount
+graph_metrics:
+  - name: company.sales.revenue
+    sql: orders.daily_revenue
+  - name: running_total
+    type: cumulative
+    sql: orders.daily_revenue
+"#,
+        )
+        .unwrap();
+        let query = SemanticQuery::new()
+            .with_metrics(vec!["company.sales.revenue".into(), "running_total".into()])
+            .with_dimensions(vec!["orders.order_date".into()]);
+        let sql = SqlGenerator::new(&graph).generate(&query).unwrap();
+        assert!(sql.contains("amount AS daily_revenue_raw"), "{sql}");
+        assert!(sql.contains("\"company.sales.revenue\""), "{sql}");
+        assert!(
+            !sql.contains("SUM(orders_cte.orders.daily_revenue)"),
+            "{sql}"
+        );
+    }
+
+    #[test]
+    fn graph_metric_transport_accepts_indexed_copy_but_rejects_conflict() {
+        let document = r#"
+models:
+  - name: events
+    table: events
+    primary_key: id
+    metrics:
+      - name: conversion_rate
+        type: conversion
+        entity: user_id
+        base_event: signup
+        conversion_event: purchase
+graph_metrics:
+  - name: conversion_rate
+    type: conversion
+    entity: user_id
+    base_event: signup
+    conversion_event: purchase
+"#;
+        let graph = load_from_string(document).unwrap();
+        assert_eq!(graph.metrics().count(), 1);
+        let conflicting =
+            document.replacen("conversion_event: purchase", "conversion_event: paid", 1);
+        assert!(load_from_string(&conflicting)
+            .unwrap_err()
+            .to_string()
+            .contains("already exists"));
+    }
+
+    #[test]
+    fn graph_metric_transport_does_not_invent_model_ownership() {
+        let document = r#"
+models:
+  - name: orders
+    table: orders
+    primary_key: id
+  - name: customers
+    table: customers
+    primary_key: id
+graph_metrics:
+  - name: total_orders
+    type: derived
+    sql: COUNT(*)
+"#;
+        let graph = load_from_string(document).unwrap();
+        assert!(graph.get_metric("total_orders").is_some());
+        for model in graph.models() {
+            assert!(model.get_metric("total_orders").is_none());
+        }
+        let native_document = document.replace("graph_metrics:", "metrics:");
+        assert!(sidemantic::load_from_string(&native_document)
+            .unwrap_err()
+            .to_string()
+            .contains("Cannot determine single owning model"));
+    }
 
     #[test]
     fn catalog_preserves_approximate_count_metadata() {

@@ -18,23 +18,16 @@ pub(crate) fn validate_metric(metric: &Metric) -> Result<()> {
         return Err(unsupported("window_fields_without_cumulative"));
     }
     if metric.r#type == MetricType::Cumulative {
-        if !matches!(
-            metric.agg,
-            None | Some(Aggregation::Sum | Aggregation::Avg | Aggregation::Min | Aggregation::Max)
-        ) {
-            return Err(unsupported("cumulative_aggregation"));
-        }
         if let Some(expression) = &metric.window_expression {
-            if metric.window.is_some() || metric.grain_to_date.is_some() {
-                return Err(unsupported("window_expression_controls"));
-            }
-            window_output_reference(expression)?;
+            validate_window_function(&parse_semantic_expression(expression)?)?;
+            // Python gives an explicit function precedence over window/grain_to_date.
+            window_output_references(expression)?;
         }
         if let Some(frame) = &metric.window_frame {
             if metric.window.is_some() || metric.grain_to_date.is_some() {
                 return Err(unsupported("window_frame_controls"));
             }
-            validate_output_frame(frame)?;
+            parse_output_frame(frame)?;
         }
         if let Some(window) = &metric.window {
             period_interval(window)?;
@@ -49,31 +42,106 @@ pub(crate) fn validate_metric(metric: &Metric) -> Result<()> {
     Ok(())
 }
 
-/// The promoted contract consumes one grouped output, never a physical row column.
-pub(super) fn window_output_reference(expression: &str) -> Result<String> {
-    let pattern = regex::Regex::new(
-        r#"(?i)^\s*(?:SUM|AVG|MIN|MAX|COUNT)\s*\(\s*base\.(?:([A-Za-z_][A-Za-z0-9_]*)|"([A-Za-z_][A-Za-z0-9_]*)")\s*\)\s*$"#,
-    ).expect("valid period output expression pattern");
-    let captures = pattern
-        .captures(expression)
-        .ok_or_else(|| unsupported("window_expression"))?;
-    Ok(captures
-        .get(1)
-        .or_else(|| captures.get(2))
-        .unwrap()
-        .as_str()
-        .replace("\"\"", "\""))
+// OVER applies to a root aggregate/window function, not scalar arithmetic or
+// a column that merely contains an aggregate somewhere below it.
+fn validate_window_function(expression: &Expression) -> Result<()> {
+    match expression {
+        Expression::Count(_)
+        | Expression::Sum(_)
+        | Expression::Avg(_)
+        | Expression::Min(_)
+        | Expression::Max(_)
+        | Expression::GroupConcat(_)
+        | Expression::StringAgg(_)
+        | Expression::ListAgg(_)
+        | Expression::ArrayAgg(_)
+        | Expression::CountIf(_)
+        | Expression::SumIf(_)
+        | Expression::Stddev(_)
+        | Expression::StddevPop(_)
+        | Expression::StddevSamp(_)
+        | Expression::Variance(_)
+        | Expression::VarPop(_)
+        | Expression::VarSamp(_)
+        | Expression::Median(_)
+        | Expression::Mode(_)
+        | Expression::First(_)
+        | Expression::Last(_)
+        | Expression::AnyValue(_)
+        | Expression::ApproxDistinct(_)
+        | Expression::ApproxCountDistinct(_)
+        | Expression::ApproxPercentile(_)
+        | Expression::Percentile(_)
+        | Expression::LogicalAnd(_)
+        | Expression::LogicalOr(_)
+        | Expression::Skewness(_)
+        | Expression::ArrayConcatAgg(_)
+        | Expression::ArrayUniqueAgg(_)
+        | Expression::BoolXorAgg(_)
+        | Expression::RowNumber(_)
+        | Expression::Rank(_)
+        | Expression::DenseRank(_)
+        | Expression::NTile(_)
+        | Expression::Lead(_)
+        | Expression::Lag(_)
+        | Expression::FirstValue(_)
+        | Expression::LastValue(_)
+        | Expression::NthValue(_)
+        | Expression::PercentRank(_)
+        | Expression::CumeDist(_)
+        | Expression::PercentileCont(_)
+        | Expression::PercentileDisc(_)
+        | Expression::AggregateFunction(_) => Ok(()),
+        Expression::Filter(filter) => validate_window_function(&filter.this),
+        _ => Err(unsupported("window_expression")),
+    }
 }
 
-fn validate_output_frame(frame: &str) -> Result<()> {
-    let pattern = regex::Regex::new(
-        r"(?i)^\s*(?:ROWS\s+BETWEEN\s+(?:UNBOUNDED|[0-9]+)\s+PRECEDING|RANGE\s+BETWEEN\s+(?:UNBOUNDED|INTERVAL\s+(?:'[0-9]+\s+(?:DAY|WEEK|MONTH|YEAR)S?'|[0-9]+\s+(?:DAY|WEEK|MONTH|YEAR)S?))\s+PRECEDING)\s+AND\s+CURRENT\s+ROW\s*$",
-    ).expect("valid period output frame pattern");
-    if pattern.is_match(frame) {
-        Ok(())
-    } else {
-        Err(unsupported("window_frame"))
+/// Extract grouped-output dependencies from the parsed expression, including
+/// FILTER predicates and arithmetic arguments without mistaking literals for names.
+pub(super) fn window_output_references(expression: &str) -> Result<Vec<String>> {
+    let mut names = Vec::new();
+    for column in semantic_column_references(expression)? {
+        if column
+            .model
+            .as_deref()
+            .is_some_and(|model| model.eq_ignore_ascii_case("base"))
+            && !names.contains(&column.field)
+        {
+            names.push(column.field);
+        }
     }
+    Ok(names)
+}
+
+fn parse_output_frame(frame: &str) -> Result<polyglot_sql::expressions::WindowFrame> {
+    let sql = format!("SELECT SUM(x) OVER (ORDER BY y {frame})");
+    let statements = polyglot_sql::parse(&sql, DialectType::DuckDB)
+        .map_err(|error| SidemanticError::SqlParse(error.to_string()))?;
+    if statements.len() != 1 {
+        return Err(unsupported("window_frame"));
+    }
+    let mut statement = statements.into_iter().next().unwrap();
+    let Expression::Select(select) = &mut statement else {
+        return Err(unsupported("window_frame"));
+    };
+    if select.expressions.len() != 1 {
+        return Err(unsupported("window_frame"));
+    }
+    let Expression::WindowFunction(window) = &mut select.expressions[0] else {
+        return Err(unsupported("window_frame"));
+    };
+    let parsed_frame = window
+        .over
+        .frame
+        .take()
+        .ok_or_else(|| unsupported("window_frame"))?;
+    let baseline = polyglot_sql::parse_one("SELECT SUM(x) OVER (ORDER BY y)", DialectType::DuckDB)
+        .map_err(|error| SidemanticError::SqlParse(error.to_string()))?;
+    if statement != baseline {
+        return Err(unsupported("window_frame"));
+    }
+    Ok(parsed_frame)
 }
 
 fn period_interval(value: &str) -> Result<(u32, String)> {
@@ -96,19 +164,78 @@ fn period_interval(value: &str) -> Result<(u32, String)> {
 }
 
 impl SqlGenerator<'_> {
+    pub(super) fn offset_window_lag_rows(
+        offset: Option<&str>,
+        granularity: Option<&str>,
+    ) -> Result<u64> {
+        let Some(offset) = offset else {
+            return Ok(1);
+        };
+        let (amount, unit) = period_interval(offset)?;
+        let days = |unit: &str| match unit {
+            "day" => 1_u64,
+            "week" => 7,
+            "quarter" => 90,
+            "year" => 365,
+            _ => 30,
+        };
+        let total_days = u64::from(amount) * days(&unit);
+        let grain_days = days(granularity.unwrap_or("month"));
+        let rows = total_days / grain_days;
+        let remainder = total_days % grain_days;
+        // Python round() breaks halfway ties toward the nearest even integer.
+        let round_up = remainder * 2 > grain_days || (remainder * 2 == grain_days && rows % 2 == 1);
+        Ok((rows + u64::from(round_up)).max(1))
+    }
+
     pub(crate) fn window_output_dependency(metric: &Metric) -> Result<Option<String>> {
         metric
             .window_expression
             .as_deref()
             .map(|expression| {
-                let name = window_output_reference(expression)?;
-                polyglot_sql::generate(
-                    &Expression::Identifier(Identifier::quoted(name)),
-                    DialectType::DuckDB,
-                )
-                .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))
+                let names = window_output_references(expression)?;
+                names
+                    .into_iter()
+                    .map(|name| {
+                        polyglot_sql::generate(
+                            &Expression::Identifier(Identifier::quoted(name)),
+                            DialectType::DuckDB,
+                        )
+                        .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))
+                    })
+                    .collect::<Result<Vec<_>>>()
+                    .map(|names| names.join(" + "))
             })
             .transpose()
+            .map(|dependency| dependency.filter(|sql| !sql.is_empty()))
+    }
+
+    /// Parse authored function/frame in the input dialect and generated output
+    /// identifiers in the target dialect, then emit one composed window AST.
+    pub(super) fn output_window_expression(
+        &self,
+        function: &str,
+        partition: &str,
+        order: &str,
+        frame: &str,
+    ) -> Result<String> {
+        let frame = parse_output_frame(frame)?;
+        let statement = polyglot_sql::parse_one(
+            &format!("SELECT SUM(1) OVER ({partition}ORDER BY {order})"),
+            self.dialect,
+        )
+        .map_err(|error| SidemanticError::SqlParse(error.to_string()))?;
+        let Expression::Select(mut select) = statement else {
+            return Err(unsupported("window_expression"));
+        };
+        let mut expression = select.expressions.remove(0);
+        let Expression::WindowFunction(window) = &mut expression else {
+            return Err(unsupported("window_expression"));
+        };
+        window.this = parse_semantic_expression(function)?;
+        validate_window_function(&window.this)?;
+        window.over.frame = Some(frame);
+        self.emit_expression(&expression)
     }
 
     pub(crate) fn validate_temporal_metric(metric: &Metric) -> Result<()> {
@@ -145,7 +272,7 @@ impl SqlGenerator<'_> {
             if metric.window.is_some() || metric.grain_to_date.is_some() {
                 return Err(unsupported("window_frame_controls"));
             }
-            validate_output_frame(frame)?;
+            parse_output_frame(frame)?;
         }
         let mut partitions = self.temporal_partition_columns(dimensions, time_column);
         if let Some(grain) = &metric.grain_to_date {
@@ -156,7 +283,7 @@ impl SqlGenerator<'_> {
                 TimeGrain::Quarter => "quarter",
                 TimeGrain::Year => "year",
             };
-            partitions.push(format!("DATE_TRUNC('{grain}', {time_column})"));
+            partitions.push(self.date_trunc_sql(grain, time_column)?);
         }
         let partition = if partitions.is_empty() {
             String::new()
@@ -186,6 +313,11 @@ impl SqlGenerator<'_> {
         granularity: Option<&str>,
         value: &str,
     ) -> Result<Option<String>> {
+        if !matches!(self.dialect, DialectType::DuckDB | DialectType::PostgreSQL)
+            || (metric.r#type == MetricType::Ratio && granularity.is_none())
+        {
+            return Ok(None);
+        }
         let interval = if let Some(offset) = metric
             .offset_window
             .as_deref()
@@ -211,9 +343,6 @@ impl SqlGenerator<'_> {
         let Some((amount, unit)) = interval else {
             return Ok(None);
         };
-        if !matches!(self.dialect, DialectType::DuckDB | DialectType::PostgreSQL) {
-            return Err(unsupported("calendar_dialect"));
-        }
         let partition_columns = self.temporal_partition_columns(dimensions, time_column);
         let partition = if partition_columns.is_empty() {
             String::new()
@@ -231,40 +360,52 @@ mod tests {
     use super::*;
 
     #[test]
-    fn filled_temporal_metrics_reject_controls_their_generator_does_not_use() {
-        for (kind, field, value) in [
-            ("cumulative", "offset_window", "1 day"),
-            ("cumulative", "time_offset", "1 day"),
-            ("time_comparison", "window", "1 day"),
-            ("time_comparison", "grain_to_date", "month"),
+    fn explicit_window_requires_a_root_window_capable_function() {
+        for sql in [
+            "SUM(base.x + 1)",
+            "AVG(base.x)",
+            "LAG(base.x)",
+            "ROW_NUMBER()",
+            "SUM(base.x) FILTER (WHERE base.x > 0)",
         ] {
-            let mut metric = serde_json::json!({"name":"filled", "type":kind,
-                "sql":"sales.revenue", "base_metric":"sales.revenue", "fill_nulls_with":0});
-            metric[field] = serde_json::json!(value);
-            let input = serde_json::json!({"version":1,"input_dialect":"duckdb",
-                "models":[],"metrics":[metric.clone()],"metric_owners":{}});
+            validate_window_function(&parse_semantic_expression(sql).unwrap()).unwrap();
+        }
+        for sql in [
+            "base.x",
+            "1",
+            "base.x + 1",
+            "SUM(base.x) + 1",
+            "ABS(base.x)",
+            "SUM(base.x) OVER ()",
+        ] {
             assert!(
                 matches!(
-                    crate::semantic_input::SemanticInput::from_json(&input.to_string()),
+                    validate_window_function(&parse_semantic_expression(sql).unwrap()),
                     Err(SidemanticError::UnsupportedSemanticFeatures { .. })
                 ),
-                "{kind}.{field}"
-            );
-            let mut direct: Metric = serde_json::from_value(metric).unwrap();
-            assert!(
-                SqlGenerator::validate_metric_fill(&direct).is_err(),
-                "{kind}.{field}"
-            );
-            direct.fill_nulls_with = None;
-            assert!(
-                SqlGenerator::validate_metric_fill(&direct).is_ok(),
-                "{kind}.{field}"
+                "{sql}"
             );
         }
     }
 
     #[test]
-    fn temporal_fills_wrap_final_values_and_keep_other_shapes_unsupported() {
+    fn filled_temporal_metrics_accept_python_control_combinations() {
+        for kind in [
+            MetricType::Cumulative,
+            MetricType::TimeComparison,
+            MetricType::Conversion,
+            MetricType::Retention,
+        ] {
+            let mut metric = Metric::new("filled");
+            metric.r#type = kind;
+            metric.fill_nulls_with = Some(serde_json::json!(0));
+            metric.time_offset = Some("1 day".into());
+            assert!(SqlGenerator::validate_metric_fill(&metric).is_ok());
+        }
+    }
+
+    #[test]
+    fn temporal_fills_wrap_final_values() {
         let (graph, _) = grouped_graph();
         let generator = SqlGenerator::new(&graph);
         let mut cumulative = Metric::cumulative("running", "sales.revenue");
@@ -289,7 +430,7 @@ mod tests {
         );
         for kind in [MetricType::Conversion, MetricType::Retention] {
             comparison.r#type = kind;
-            assert!(SqlGenerator::validate_metric_fill(&comparison).is_err());
+            assert!(SqlGenerator::validate_metric_fill(&comparison).is_ok());
         }
         let mut simple = Metric::sum("snapshot", "amount");
         simple.fill_nulls_with = Some(serde_json::json!(0));
@@ -463,39 +604,41 @@ mod tests {
     }
 
     #[test]
-    fn cumulative_ambiguous_aggregations_are_explicitly_unsupported() {
-        for aggregation in [Aggregation::Count, Aggregation::CountDistinct] {
+    fn cumulative_expression_dependencies_and_frames_use_the_sql_ast() {
+        for aggregation in [
+            Aggregation::Count,
+            Aggregation::CountDistinct,
+            Aggregation::Median,
+        ] {
             let mut metric = Metric::cumulative("running", "sales.revenue");
             metric.agg = Some(aggregation);
-            assert!(matches!(
-                validate_metric(&metric),
-                Err(SidemanticError::UnsupportedSemanticFeatures { .. })
-            ));
+            assert!(validate_metric(&metric).is_ok());
         }
-        let mut metric = Metric::cumulative("running", "sales.revenue");
-        metric.window_expression = Some("SUM(base.revenue)".into());
-        assert!(validate_metric(&metric).is_ok());
         assert_eq!(
-            window_output_reference(r#"AVG(base."daily_revenue")"#).unwrap(),
-            "daily_revenue"
+            window_output_references("SUM(base.revenue + base.tax) FILTER (WHERE base.tax > 0)")
+                .unwrap()
+                .into_iter()
+                .collect::<HashSet<_>>(),
+            HashSet::from(["revenue".to_string(), "tax".to_string()])
         );
-        for expression in [
-            "SUM(amount)",
-            "SUM(base.amount) + 1",
-            "SUM(base.amount); SELECT 1",
-        ] {
-            metric.window_expression = Some(expression.into());
-            assert!(validate_metric(&metric).is_err());
-        }
-        metric.window_expression = Some("SUM(base.revenue)".into());
+        assert_eq!(
+            window_output_references(r#"AVG(base."daily_revenue")"#).unwrap(),
+            vec!["daily_revenue"]
+        );
         for frame in [
             "ROWS BETWEEN 1 PRECEDING AND CURRENT ROW",
             "RANGE BETWEEN INTERVAL 2 DAY PRECEDING AND CURRENT ROW",
+            "ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING",
+            "ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING EXCLUDE CURRENT ROW",
         ] {
-            metric.window_frame = Some(frame.into());
-            assert!(validate_metric(&metric).is_ok());
+            parse_output_frame(frame).unwrap();
         }
-        metric.window_frame = Some("ROWS BETWEEN -1 PRECEDING AND CURRENT ROW".into());
-        assert!(validate_metric(&metric).is_err());
+        for frame in [
+            "garbage",
+            "ROWS BETWEEN 1 PRECEDING AND CURRENT ROW); SELECT 1; --",
+            "ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) FROM sales --",
+        ] {
+            assert!(parse_output_frame(frame).is_err());
+        }
     }
 }

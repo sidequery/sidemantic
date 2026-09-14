@@ -12,22 +12,30 @@ fn quote(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
 }
 
-fn aggregate(kind: &Aggregation, expression: &str) -> Result<String> {
+fn aggregate(generator: &SqlGenerator<'_>, kind: &Aggregation, expression: &str) -> Result<String> {
     match kind {
         Aggregation::CountDistinct => Ok(format!("COUNT(DISTINCT {expression})")),
         Aggregation::Expression => Err(unsupported("complete_aggregate")),
-        kind => Ok(format!("{}({expression})", kind.as_sql())),
+        kind => generator.aggregate_sql(kind, expression),
     }
 }
 
 impl SqlGenerator<'_> {
+    fn cohort_target_identifier(&self, name: &str) -> String {
+        polyglot_sql::generate(
+            &Expression::Identifier(Identifier::quoted(name)),
+            self.dialect,
+        )
+        .expect("quoted identifier generation is infallible")
+    }
+
     fn cohort_source_expression(&self, model: &Model, expression: &str) -> Result<String> {
         if let Some(dimension) = model.get_dimension(expression.trim()) {
             if dimension.window.is_some() {
                 return Err(unsupported("non_row_expression"));
             }
             if dimension.sql_expr() == dimension.name {
-                return Ok(quote(&dimension.name));
+                return Ok(self.cohort_target_identifier(&dimension.name));
             }
             let source = self.raw_dimension_sql(model, dimension.sql_expr());
             let parsed = parse_semantic_expression(&source)?;
@@ -84,6 +92,9 @@ impl SqlGenerator<'_> {
                     return Err(unsupported("joined_expression"));
                 }
             }
+            // Replacement leaves are Raw AST nodes: emit canonical source SQL
+            // before inserting them so target parsers see identifiers, not strings.
+            let source = self.emit_expression(&parse_semantic_expression(&source)?)?;
             replacements.insert((column.model, column.field), format!("({source})"));
         }
         self.emit_expression(&replace_semantic_columns(
@@ -98,6 +109,7 @@ impl SqlGenerator<'_> {
         model: &str,
         fields: &HashSet<String>,
         outer: bool,
+        inner_expressions: &HashMap<String, String>,
     ) -> Result<String> {
         let expression = expression.replace("{model}", "cohort_sub");
         let parsed = parse_semantic_expression(&expression)?;
@@ -114,13 +126,16 @@ impl SqlGenerator<'_> {
             {
                 return Err(unsupported("result_reference"));
             }
-            let field = quote(&column.field);
+            let field = self.cohort_target_identifier(&column.field);
             replacements.insert(
-                (column.model, column.field),
+                (column.model, column.field.clone()),
                 if outer {
                     format!("cohort_sub.{field}")
                 } else {
-                    field
+                    inner_expressions
+                        .get(&column.field.to_ascii_lowercase())
+                        .cloned()
+                        .ok_or_else(|| unsupported("result_reference"))?
                 },
             );
         }
@@ -133,13 +148,12 @@ impl SqlGenerator<'_> {
         reference: &MetricRef,
         dimensions: &[DimensionRef],
     ) -> Result<String> {
-        if self.dialect != DialectType::DuckDB
-            || query.ungrouped
-            || query.use_preaggregations
-            || !query.table_calculations.is_empty()
-        {
+        if query.ungrouped || query.use_preaggregations || !query.table_calculations.is_empty() {
             return Err(unsupported("query_shape"));
         }
+        // Direct query identifiers use target syntax. The source-expression
+        // binders above retain canonical quotes until AST emission.
+        let quote = |name: &str| self.cohort_target_identifier(name);
         if reference.graph_metric
             && self.graph.metric_owner(&reference.name) != Some(reference.model.as_str())
         {
@@ -161,6 +175,10 @@ impl SqlGenerator<'_> {
         let mut fields = HashSet::from([entity.to_string()]);
         let mut folded_fields = HashSet::from([entity.to_ascii_lowercase()]);
         let mut inner_select = vec![format!("{entity_sql} AS {}", quote(entity))];
+        // HAVING cannot depend on SELECT aliases on PostgreSQL and several
+        // other targets. Bind every inner output to its source expression.
+        let mut inner_expressions =
+            HashMap::from([(entity.to_ascii_lowercase(), entity_sql.clone())]);
         let mut inner_group = vec![entity_sql];
         let mut output_dimensions = Vec::new();
         for name in metric.entity_dimensions.iter().flatten() {
@@ -195,11 +213,12 @@ impl SqlGenerator<'_> {
             }
             let mut sql = self.cohort_source_expression(model, &dimension.name)?;
             if let Some(grain) = &dimension.granularity {
-                sql = self.date_trunc_sql(grain, &sql);
+                sql = self.date_trunc_sql(grain, &sql)?;
             }
             if folded_fields.insert(dimension.alias.to_ascii_lowercase()) {
                 fields.insert(dimension.alias.clone());
                 inner_select.push(format!("{sql} AS {}", quote(&dimension.alias)));
+                inner_expressions.insert(dimension.alias.to_ascii_lowercase(), sql.clone());
                 inner_group.push(sql);
             } else if dimension.name != entity || dimension.granularity.is_some() {
                 return Err(unsupported("inner_alias_collision"));
@@ -226,17 +245,16 @@ impl SqlGenerator<'_> {
                     )))
                 }
             };
-            inner_select.push(format!(
-                "{} AS {}",
-                aggregate(kind, &expression)?,
-                quote(&inner.name)
-            ));
+            let aggregate = aggregate(self, kind, &expression)?;
+            inner_expressions.insert(inner.name.to_ascii_lowercase(), format!("({aggregate})"));
+            inner_select.push(format!("{aggregate} AS {}", quote(&inner.name)));
         }
         let having = metric
             .having
             .as_deref()
             .ok_or_else(|| SidemanticError::Validation("cohort requires having".into()))?;
-        let having = self.cohort_result_expression(having, &model.name, &fields, false)?;
+        let having =
+            self.cohort_result_expression(having, &model.name, &fields, false, &inner_expressions)?;
         let mut filters = query.filters.clone();
         filters.extend(self.resolve_segments(&query.segments)?);
         filters.extend(metric.filters.clone());
@@ -274,7 +292,9 @@ impl SqlGenerator<'_> {
         };
         let outer_kind = metric.agg.as_ref().unwrap_or(&Aggregation::Count);
         let outer_expression = match metric.sql.as_deref() {
-            Some(sql) => self.cohort_result_expression(sql, &model.name, &fields, true)?,
+            Some(sql) => {
+                self.cohort_result_expression(sql, &model.name, &fields, true, &HashMap::new())?
+            }
             None if *outer_kind == Aggregation::Count => "*".into(),
             None if *outer_kind == Aggregation::CountDistinct => {
                 format!("cohort_sub.{}", quote(entity))
@@ -291,7 +311,7 @@ impl SqlGenerator<'_> {
             .collect();
         outer_select.push(format!(
             "{} AS {}",
-            self.fill_metric_expression(metric, aggregate(outer_kind, &outer_expression)?)?,
+            self.fill_metric_expression(metric, aggregate(self, outer_kind, &outer_expression)?)?,
             quote(&metric.name)
         ));
         let mut sql = format!("SELECT {}\nFROM (SELECT {}\nFROM {}{where_clause}\nGROUP BY {}\nHAVING {having}) AS cohort_sub", outer_select.join(", "), inner_select.join(", "), self.model_from_clause(model, Some("t")), inner_group.join(", "));
@@ -333,5 +353,127 @@ impl SqlGenerator<'_> {
             sql.push_str(&format!("\nOFFSET {offset}"));
         }
         Ok(sql)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::semantic_input::compile_with_semantic_input;
+    use serde_json::json;
+
+    #[test]
+    fn bigquery_cohort_bindings_keep_identifiers_quoted_as_identifiers() {
+        let graph = SemanticGraph::new();
+        let generator = SqlGenerator::new(&graph).with_dialect(DialectType::BigQuery);
+        let model = Model::new("events", "id").with_table("events");
+        let source = generator
+            .cohort_source_expression(&model, "platform")
+            .unwrap();
+        assert!(source.contains("`platform`"), "{source}");
+        polyglot_sql::parse_one(&format!("SELECT {source}"), DialectType::BigQuery).unwrap();
+        let fields = HashSet::from(["platforms".into(), "group".into()]);
+        let outer = generator
+            .cohort_result_expression(
+                "COALESCE(platforms, 0)",
+                "events",
+                &fields,
+                true,
+                &HashMap::new(),
+            )
+            .unwrap();
+        assert!(outer.contains("cohort_sub.`platforms`"), "{outer}");
+        let aggregate = generator
+            .aggregate_sql(&Aggregation::ApproxCountDistinct, &outer)
+            .unwrap();
+        polyglot_sql::parse_one(&format!("SELECT {aggregate}"), DialectType::BigQuery).unwrap();
+        let reserved = generator
+            .cohort_result_expression("\"group\"", "events", &fields, true, &HashMap::new())
+            .unwrap();
+        assert_eq!(reserved, "cohort_sub.`group`");
+    }
+
+    #[test]
+    fn postgres_having_expands_inner_aggregate_aliases() {
+        let graph = SemanticGraph::new();
+        let generator = SqlGenerator::new(&graph).with_dialect(DialectType::PostgreSQL);
+        let fields = HashSet::from(["platforms".into(), "person".into()]);
+        let inputs = HashMap::from([
+            ("platforms".into(), "(COUNT(DISTINCT t.platform))".into()),
+            ("person".into(), "t.user_id".into()),
+        ]);
+        let sql = generator
+            .cohort_result_expression(
+                "platforms >= 2 AND person > 0",
+                "events",
+                &fields,
+                false,
+                &inputs,
+            )
+            .unwrap();
+        assert!(sql.contains("COUNT(DISTINCT t.platform)"), "{sql}");
+        assert!(sql.contains("t.user_id"), "{sql}");
+        assert!(!sql.contains("platforms"), "{sql}");
+        polyglot_sql::parse_one(
+            &format!("SELECT COUNT(*) FROM events t GROUP BY t.user_id HAVING {sql}"),
+            DialectType::PostgreSQL,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn cohort_target_identifiers_and_approximate_aggregates_compile() {
+        for (dialect, dialect_type) in [
+            ("duckdb", DialectType::DuckDB),
+            ("postgres", DialectType::PostgreSQL),
+            ("bigquery", DialectType::BigQuery),
+            ("snowflake", DialectType::Snowflake),
+            ("trino", DialectType::Trino),
+            ("clickhouse", DialectType::ClickHouse),
+        ] {
+            for outer_approximate in [false, true] {
+                let input = json!({
+                    "version": 1, "input_dialect": "duckdb",
+                    "models": [{
+                        "name": "events", "table": "events", "primary_key": "id",
+                        "dimensions": [
+                            {"name": "person", "sql": "user_id", "type": "categorical"},
+                            {"name": "group", "sql": "region", "type": "categorical"}
+                        ],
+                        "metrics": [{
+                            "name": "qualified", "type": "cohort", "entity": "person",
+                            "agg": if outer_approximate { "approx_count_distinct" } else { "count" },
+                            "sql": if outer_approximate { json!("platforms") } else { json!(null) },
+                            "inner_metrics": [{
+                                "name": "platforms", "agg": "approx_count_distinct", "sql": "platform"
+                            }],
+                            "having": "platforms >= 2"
+                        }]
+                    }]
+                });
+                let query = json!({
+                    "metrics": ["events.qualified"], "dimensions": ["events.group"],
+                    "order_by": ["events.group"], "dialect": dialect,
+                });
+                let result = compile_with_semantic_input(&input.to_string(), &query.to_string());
+                if dialect_type == DialectType::PostgreSQL {
+                    assert!(matches!(
+                        result,
+                        Err(SidemanticError::UnsupportedSemanticFeatures { .. })
+                    ));
+                    continue;
+                }
+                let sql = result.unwrap();
+                polyglot_sql::parse_one(&sql, dialect_type).unwrap();
+                let quoted = if dialect_type == DialectType::BigQuery {
+                    "`group`"
+                } else {
+                    "\"group\""
+                };
+                assert!(sql.contains(quoted), "{dialect}: {sql}");
+                assert!(sql.contains("user_id"), "{dialect}: {sql}");
+                assert!(sql.contains("HAVING"), "{dialect}: {sql}");
+            }
+        }
     }
 }

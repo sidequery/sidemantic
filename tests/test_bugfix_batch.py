@@ -4,6 +4,7 @@ Each test targets a specific fix to ensure it works correctly and doesn't regres
 """
 
 import duckdb
+import pytest
 
 from sidemantic import Dimension, Metric, Model, Segment
 from sidemantic.core.inheritance import merge_metric, merge_model
@@ -760,8 +761,7 @@ class TestConversionMetricDimensions:
 
 
 class TestPreaggCountRegex:
-    """The preagg matcher should not match 'discount_amount' when looking
-    for a count measure, but should match 'order_count'."""
+    """AVG denominators require compatible COUNT definitions, regardless of name."""
 
     def _make_model_with_preagg(self, measures):
         return Model(
@@ -770,12 +770,12 @@ class TestPreaggCountRegex:
             primary_key="id",
             metrics=[
                 Metric(name="avg_amount", agg="avg", sql="amount"),
-                *[Metric(name=m, agg="sum", sql="x") for m in measures],
+                *measures,
             ],
             pre_aggregations=[
                 PreAggregation(
                     name="daily",
-                    measures=["avg_amount", *measures],
+                    measures=["avg_amount", *[measure.name for measure in measures]],
                     dimensions=["status"],
                     time_dimension="created_at",
                     granularity="day",
@@ -785,7 +785,7 @@ class TestPreaggCountRegex:
 
     def test_discount_amount_not_matched_as_count(self):
         """'discount_amount' contains 'count' as a substring but is NOT a count measure."""
-        model = self._make_model_with_preagg(["discount_amount"])
+        model = self._make_model_with_preagg([Metric(name="discount_amount", agg="sum", sql="x")])
         matcher = PreAggregationMatcher(model)
 
         # avg_amount needs a count measure for re-aggregation
@@ -799,8 +799,8 @@ class TestPreaggCountRegex:
         assert preagg is None
 
     def test_order_count_matched(self):
-        """'order_count' contains 'count' as a word boundary and IS a count measure."""
-        model = self._make_model_with_preagg(["order_count"])
+        """A suffixed count name works when it counts the AVG input."""
+        model = self._make_model_with_preagg([Metric(name="order_count", agg="count", sql="amount")])
         matcher = PreAggregationMatcher(model)
 
         preagg = matcher.find_matching_preagg(
@@ -811,8 +811,8 @@ class TestPreaggCountRegex:
         assert preagg is not None
 
     def test_count_orders_matched(self):
-        """'count_orders' has 'count' as a prefix word and IS a count measure."""
-        model = self._make_model_with_preagg(["count_orders"])
+        """A prefixed count name works when it counts the AVG input."""
+        model = self._make_model_with_preagg([Metric(name="count_orders", agg="count", sql="amount")])
         matcher = PreAggregationMatcher(model)
 
         preagg = matcher.find_matching_preagg(
@@ -823,8 +823,8 @@ class TestPreaggCountRegex:
         assert preagg is not None
 
     def test_plain_count_matched(self):
-        """'count' exact match should always work."""
-        model = self._make_model_with_preagg(["count"])
+        """The default count name works when it counts the AVG input."""
+        model = self._make_model_with_preagg([Metric(name="count", agg="count", sql="amount")])
         matcher = PreAggregationMatcher(model)
 
         preagg = matcher.find_matching_preagg(
@@ -833,3 +833,11 @@ class TestPreaggCountRegex:
             time_granularity="day",
         )
         assert preagg is not None
+
+    @pytest.mark.parametrize("name", ["order_count", "count_orders", "count"])
+    def test_count_name_does_not_make_sum_a_valid_denominator(self, name):
+        model = self._make_model_with_preagg([Metric(name=name, agg="sum", sql="amount")])
+        matcher = PreAggregationMatcher(model)
+        assert (
+            matcher.find_matching_preagg(metrics=["avg_amount"], dimensions=["status"], time_granularity="day") is None
+        )

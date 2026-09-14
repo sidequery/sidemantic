@@ -117,48 +117,6 @@ EXPECTED_GAPS = {
     "tests.test_validation::test_query_validation_reports_ambiguous_join_routes": (
         "Rust query validation does not yet reject ambiguous join routes"
     ),
-    "tests.queries.test_ungrouped_queries::test_with_totals_single_dimension": (
-        "Rust adapter does not yet support the with_totals (GROUPING SETS grand-total) compile kwarg"
-    ),
-    "tests.queries.test_ungrouped_queries::test_with_totals_count_distinct_recomputed": (
-        "Rust adapter does not yet support the with_totals (GROUPING SETS grand-total) compile kwarg"
-    ),
-    "tests.queries.test_ungrouped_queries::test_with_totals_count_distinct_not_sum_of_groups": (
-        "Rust adapter does not yet support the with_totals (GROUPING SETS grand-total) compile kwarg"
-    ),
-    "tests.queries.test_ungrouped_queries::test_with_totals_two_dimensions": (
-        "Rust adapter does not yet support the with_totals (GROUPING SETS grand-total) compile kwarg"
-    ),
-    "tests.queries.test_ungrouped_queries::test_with_totals_default_off_unchanged": (
-        "Rust adapter does not yet support the with_totals (GROUPING SETS grand-total) compile kwarg"
-    ),
-    "tests.queries.test_ungrouped_queries::test_with_totals_and_ungrouped_raises": (
-        "Rust adapter does not yet support the with_totals (GROUPING SETS grand-total) compile kwarg"
-    ),
-    "tests.queries.test_ungrouped_queries::test_with_totals_unsupported_window_path_raises": (
-        "Rust adapter does not yet support the with_totals (GROUPING SETS grand-total) compile kwarg"
-    ),
-    "tests.queries.test_ungrouped_queries::test_with_totals_with_limit_raises": (
-        "Rust adapter does not yet support the with_totals (GROUPING SETS grand-total) compile kwarg"
-    ),
-    "tests.queries.test_ungrouped_queries::test_with_totals_ignores_configured_default_limit": (
-        "Rust adapter does not yet support the with_totals (GROUPING SETS grand-total) compile kwarg"
-    ),
-    "tests.queries.test_ungrouped_queries::test_with_totals_marks_total_row_when_dimension_has_nulls": (
-        "Rust adapter does not yet support the with_totals (GROUPING SETS grand-total) compile kwarg"
-    ),
-    "tests.dates.test_integration::test_not_equal_relative_date_single_day": (
-        "Rust SQL generator does not yet support the extended relative-date operators (!=/<>, </<=)"
-    ),
-    "tests.dates.test_integration::test_not_equal_relative_date_range": (
-        "Rust SQL generator does not yet support the extended relative-date operators (!=/<>, </<=)"
-    ),
-    "tests.queries.test_sql_rewriter::test_rewrite_not_equal_relative_date": (
-        "Rust SQL generator does not yet support the extended relative-date operators (!=/<>, </<=)"
-    ),
-    "tests.queries.test_sql_rewriter::test_rewrite_less_than_relative_date": (
-        "Rust SQL generator does not yet support the extended relative-date operators (!=/<>, </<=)"
-    ),
     "tests.core.test_auto_dimensions::test_auto_dimensions_from_table": (
         "Rust adapter does not yet support Python auto-dimension DB introspection"
     ),
@@ -254,78 +212,6 @@ EXPECTED_GAPS = {
     ),
     "tests.metrics.test_cumulative::test_cumulative_with_time_comparison": (
         "Rust strict model validation rejects this Python fixture's time dimension without granularity"
-    ),
-    "tests.templates.test_jinja_integration::test_simple_parameter_substitution": (
-        "Rust adapter does not yet support Python template parameter interpolation"
-    ),
-    "tests.templates.test_jinja_integration::test_jinja_conditional_with_parameters": (
-        "Rust adapter does not yet support Python template parameter interpolation"
-    ),
-    "tests.queries.test_sql_rewriter::test_ad_hoc_count_aggregation": (
-        "Rust SQL rewriter does not yet support Python ad-hoc aggregate rewrite contracts"
-    ),
-    "tests.queries.test_sql_rewriter::test_explicit_join_matching_relationship_supported": (
-        "Rust SQL rewriter does not yet support Python explicit JOIN rewrite contracts"
-    ),
-    "tests.queries.test_sql_rewriter::test_explicit_join_with_aliases_supported": (
-        "Rust SQL rewriter does not yet support Python explicit JOIN rewrite contracts"
-    ),
-    "tests.queries.test_sql_rewriter::test_explicit_join_accepts_parenthesized_on_clause": (
-        "Rust SQL rewriter does not yet support Python explicit JOIN rewrite contracts"
-    ),
-    "tests.queries.test_sql_rewriter::test_explicit_inner_join_preserves_existence_filter": (
-        "Rust SQL rewriter does not yet support Python explicit JOIN rewrite contracts"
-    ),
-    "tests.queries.test_sql_rewriter::test_explicit_left_join_preserves_base_rows": (
-        "Rust SQL rewriter does not yet support Python explicit JOIN rewrite contracts"
-    ),
-    "tests.queries.test_sql_rewriter::test_explicit_join_rejects_unsupported_join_type": (
-        "Rust SQL rewriter does not yet support Python explicit JOIN rewrite contracts"
-    ),
-    "tests.queries.test_sql_rewriter::test_semantic_scalar_expression_over_measures": (
-        "Rust SQL rewriter does not yet support Python semantic scalar expression contracts"
-    ),
-    "tests.queries.test_sql_rewriter::test_semantic_expression_order_by_projection_alias": (
-        "Rust SQL rewriter does not yet support Python semantic scalar expression contracts"
-    ),
-    "tests.queries.test_sql_rewriter::test_semantic_scalar_function_over_measure": (
-        "Rust SQL rewriter does not yet support Python semantic scalar expression contracts"
-    ),
-    "tests.queries.test_sql_rewriter::test_semantic_ad_hoc_aggregate_expression": (
-        "Rust SQL rewriter does not yet support Python ad-hoc aggregate rewrite contracts"
-    ),
-    "tests.queries.test_sql_rewriter::test_semantic_ad_hoc_aggregate_expression_with_dimension": (
-        "Rust SQL rewriter does not yet support Python ad-hoc aggregate rewrite contracts"
-    ),
-    "tests.queries.test_sql_rewriter::test_semantic_ad_hoc_aggregate_rejects_joined_model_column": (
-        "Rust SQL rewriter does not yet support Python ad-hoc aggregate rewrite contracts"
-    ),
-    "tests.queries.test_sql_rewriter::test_graph_level_metrics": (
-        "Rust SQL rewriter does not yet support Python graph-level metric rewrite contracts"
-    ),
-    "tests.queries.test_sql_rewriter::test_from_metrics_allows_graph_level_metrics": (
-        "Rust SQL rewriter does not yet support Python graph-level metric rewrite contracts"
-    ),
-    "tests.queries.test_sql_rewriter::test_compile_post_process": (
-        "Rust adapter does not yet support Python post_process SQL contracts"
-    ),
-    "tests.queries.test_sql_rewriter::test_query_post_process": (
-        "Rust adapter does not yet support Python post_process SQL contracts"
-    ),
-    "tests.queries.test_sql_rewriter::test_post_process_missing_placeholder": (
-        "Rust adapter does not yet support Python post_process SQL contracts"
-    ),
-    "tests.queries.test_sql_rewriter::test_semantic_root_with_join_subquery_rejected": (
-        "Rust SQL rewriter does not yet support Python semantic-root validation contracts"
-    ),
-    "tests.queries.test_sql_rewriter::test_post_process_with_own_ctes": (
-        "Rust adapter does not yet support Python post_process SQL contracts"
-    ),
-    "tests.queries.test_sql_rewriter::test_post_process_cte_name_collision": (
-        "Rust adapter does not yet support Python post_process SQL contracts"
-    ),
-    "tests.queries.test_sql_rewriter::test_root_semantic_cte_name_collision": (
-        "Rust SQL rewriter does not yet support Python semantic-root validation contracts"
     ),
     "tests.test_preaggregation_bugs::test_avg_metric_with_filtered_count_fails": (
         "Rust adapter does not yet support Python pre-aggregation routing bug contracts"

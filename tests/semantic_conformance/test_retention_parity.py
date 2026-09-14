@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from sidemantic import Metric, SemanticLayer
+from sidemantic import Explore, Metric, SemanticLayer
 from sidemantic.adapters.sidemantic import SidemanticAdapter
 from sidemantic.core.semantic_layer import SecurityError
 from sidemantic.semantic_handoff import UnsupportedSemanticFeaturesError
@@ -50,6 +50,11 @@ def test_first_cohort_sparse_periods_nulls_and_inactive_denominator(layer):
     # repeated signup cannot move its cohort, and duplicate activities count once.
     # NULL entities/dates, activity without signup, and deleted rows contribute none.
     assert result(layer) == (DAY_COLUMNS, DAY_ROWS)
+
+
+def test_source_anchored_explore_preserves_retention_population(layer):
+    layer.graph.add_explore(Explore(name="retention", model="events"))
+    assert result(layer, explore="retention") == (DAY_COLUMNS, DAY_ROWS)
 
 
 def test_policy_scopes_cohort_and_activity_for_each_tenant(layer):
@@ -200,3 +205,43 @@ def test_selected_calculations_preserve_retention_fixed_projection(layer):
             )
             == []
         )
+
+
+@pytest.mark.parametrize("fill", [0, -99, "missing"])
+def test_retention_accepts_fill_metadata_without_changing_its_fixed_output_schema(layer, fill):
+    # Python retention has a fixed table output and does not apply metric fills.
+    layer.graph.models["events"].metrics[0].fill_nulls_with = fill
+    assert result(layer) == (DAY_COLUMNS, DAY_ROWS)
+    assert result(layer, filters=["events.event_label != 'signup'"]) == (DAY_COLUMNS, [])
+
+
+@pytest.mark.parametrize("dialect", ["duckdb", "postgres", "bigquery", "snowflake"])
+@pytest.mark.parametrize(
+    "grain,label,rows",
+    [
+        ("day", "days_since", DAY_ROWS),
+        ("week", "weeks_since", [("2024-01-01", 0, 3, 4, 75.0), ("2024-01-01", 1, 1, 4, 25.0)]),
+        ("month", "months_since", [("2024-01-01", 0, 3, 4, 75.0), ("2024-01-01", 1, 1, 4, 25.0)]),
+    ],
+)
+def test_retention_output_dialects_preserve_calendar_periods(layer, dialect, grain, label, rows):
+    import sqlglot
+
+    layer.graph.get_model("events").get_metric("retained").retention_granularity = grain
+    sql = layer.compile(metrics=["events.retained"], user_attributes={"tenant": 1}, dialect=dialect)
+    # Validate target syntax and execute its translation against the same physical
+    # fixture; this is compiler parity, not a claim of live target-engine execution.
+    translated = sqlglot.parse_one(sql, read=dialect).sql(dialect="duckdb")
+    cursor = layer.adapter.execute(translated)
+    actual = [
+        tuple(value.isoformat()[:10] if isinstance(value, (date, datetime)) else value for value in row)
+        for row in cursor.fetchall()
+    ]
+    assert [field[0] for field in cursor.description] == [
+        "cohort_date",
+        label,
+        "active_users",
+        "cohort_size",
+        "retention_pct",
+    ]
+    assert actual == rows

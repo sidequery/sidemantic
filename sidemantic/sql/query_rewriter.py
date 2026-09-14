@@ -182,6 +182,18 @@ class QueryRewriter:
         uses_yardstick = self.would_use_yardstick_rewrite(sql) or bool(
             re.search(r"\byardstick\s*\(", sql, re.IGNORECASE)
         )
+        if uses_yardstick and (
+            self.enforce_visibility
+            or any(model.security is not None or model.invariant_filters for model in self.graph.models.values())
+        ):
+            tokens = sqlglot.tokenize(sql, read=self.dialect)
+            if any(
+                token.token_type != TokenType.STRING
+                and token.text.upper() == "YARDSTICK"
+                and tokens[index + 1].token_type == TokenType.L_PAREN
+                for index, token in enumerate(tokens[:-1])
+            ):
+                raise ValueError("yardstick() is not supported while semantic security controls are active")
         if not uses_yardstick:
             try:
                 statements = [
@@ -200,6 +212,15 @@ class QueryRewriter:
                 if strict:
                     raise ValueError("Only SELECT queries are supported")
                 return sql
+            if isinstance(parsed, exp.Select):
+                if not parsed.expressions:
+                    if strict:
+                        raise ValueError("Query must select at least one metric or dimension")
+                    return sql
+                if parsed.args.get("from_") is None and any(isinstance(expr, exp.Star) for expr in parsed.expressions):
+                    if strict:
+                        raise ValueError("SELECT * requires a FROM clause with a single table")
+                    return sql
             if not self._expression_tree_references_semantic_model(parsed):
                 self.last_engine_selection = {"engine": "passthrough", "reason": "No semantic model reference"}
                 return sql
@@ -217,8 +238,6 @@ class QueryRewriter:
             capabilities = []
             if self.use_preaggregations:
                 capabilities.append("query.preaggregations")
-            if uses_yardstick:
-                capabilities.append("query.yardstick_rewrite")
             if capabilities:
                 raise UnsupportedSemanticFeaturesError(capabilities)
             rewritten = rewrite_semantic_input(
@@ -227,7 +246,7 @@ class QueryRewriter:
                 input_dialect="duckdb" if self.dialect == "postgres" else self.dialect,
                 user_attributes=user_attributes,
                 enforce_visibility=self.enforce_visibility,
-                **({"sql_dialect": "postgres", "output_dialect": "postgres"} if self.dialect == "postgres" else {}),
+                **({"sql_dialect": self.dialect, "output_dialect": self.dialect} if self.dialect != "duckdb" else {}),
             )
             self.last_engine_selection = {"engine": "rust", "reason": None}
             return rewritten
@@ -237,6 +256,11 @@ class QueryRewriter:
             self.rust_fallback_reason = f"{type(exc).__name__}: {exc}"
             self.last_engine_selection = {"engine": "python", "reason": self.rust_fallback_reason}
             return None
+        except ValueError:
+            if uses_yardstick and not strict:
+                self.last_engine_selection = {"engine": "passthrough", "reason": "Invalid Yardstick query"}
+                return sql
+            raise
 
     def rewrite(self, sql: str, strict: bool = True, user_attributes: dict | None = None) -> str:
         """Rewrite with the requested engine, falling back only for typed capability failures."""
@@ -254,14 +278,16 @@ class QueryRewriter:
         if rewritten is not None:
             if self.last_engine_selection["engine"] == "passthrough":
                 return self._passthrough_explanation(sql, reason=self.last_engine_selection["reason"])
+            yardstick = self.would_use_yardstick_rewrite(sql) or bool(
+                re.search(r"\byardstick\s*\(", sql, re.IGNORECASE)
+            )
+            chosen_plan = "yardstick_semantic_sql" if yardstick else "rust_semantic_rewriter"
             return RewriteExplanation(
                 input_sql=sql,
                 rewritten_sql=rewritten,
-                chosen_plan="rust_semantic_rewriter",
-                source_kind="rust",
-                candidate_plans=[
-                    CandidatePlan(name="rust_semantic_rewriter", valid=True, reason="Rust engine selected")
-                ],
+                chosen_plan=chosen_plan,
+                source_kind="yardstick" if yardstick else "rust",
+                candidate_plans=[CandidatePlan(name=chosen_plan, valid=True, reason="Rust engine selected")],
             )
         selection = self.last_engine_selection
         result = self._explain_python(sql, strict=strict, user_attributes=user_attributes)

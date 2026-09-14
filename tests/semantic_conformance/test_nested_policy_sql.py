@@ -20,6 +20,13 @@ def layer():
     assert callable(rust.rewrite_with_semantic_input_context)
     layer = SemanticLayer(engine="rust", fallback=False, auto_register=False, enforce_visibility=True)
     layer.graph = SidemanticAdapter().parse(FIXTURES / "policy_aggregate.yml")
+    # A purchases-only query does not participate in the accounts model. Give
+    # this fixture its own tenant policy: an accounts policy alone would leave
+    # all 1,980 non-deleted purchases visible, making these isolation assertions
+    # test an undeclared policy rather than the compiler's behavior.
+    layer.graph.models["purchases"].security = SecurityPolicy(
+        row_filters=["account_id in (select id from aggregate_accounts where active and tenant = {{ user.tenant }})"]
+    )
     layer.adapter.execute((FIXTURES / "policy_aggregate.sql").read_text())
     try:
         yield layer
@@ -134,6 +141,13 @@ def test_user_cte_cannot_capture_private_policy_entitlement_source(layer, policy
     accounts.security = SecurityPolicy(row_filters=[predicate]) if policy_kind == "security" else None
     if policy_kind == "invariant":
         accounts.invariant_filters.append(predicate)
+    purchases = layer.graph.models["purchases"]
+    purchases.security = None
+    purchase_predicate = f"account_id in (select id from aggregate_accounts where active and {predicate})"
+    if policy_kind == "security":
+        purchases.security = SecurityPolicy(row_filters=[purchase_predicate])
+    else:
+        purchases.invariant_filters.append(purchase_predicate)
     sql = """
         with hostile as (
             select purchases.id as tenant from metrics
@@ -150,6 +164,8 @@ def test_user_cte_cannot_capture_private_policy_entitlement_source(layer, policy
     "leaf",
     [
         "select purchases.secret_cost from metrics",
+        "select round(purchases.secret_cost, 2) from metrics",
+        "select sum(purchases.cost) from purchases",
         "select purchases.revenue from metrics where purchases.cost > 0",
         "select purchases.revenue from metrics order by purchases.secret_cost",
         "select purchases.revenue as total from metrics order by purchases.cost",
@@ -176,7 +192,6 @@ def test_every_semantic_leaf_checks_model_access_including_unused_ctes(layer, un
     "sql",
     [
         "select * from aggregate_purchases",
-        "select purchases.revenue from purchases",
         "select purchases.revenue from main.metrics",
         "select * from (select * from aggregate_purchases) q",
         "with visible as (select * from aggregate_purchases) select * from visible",
@@ -199,12 +214,36 @@ def test_every_semantic_leaf_checks_model_access_including_unused_ctes(layer, un
         "create table leaked as select purchases.revenue from metrics",
         "select purchases.revenue into leaked from metrics",
         "select purchases.revenue from metrics; select purchases.revenue from metrics",
-        "with recursive q as (select purchases.revenue from metrics) select * from q",
-        "select purchases.revenue from metrics union all select purchases.revenue from metrics",
-        "select * from (select purchases.revenue from metrics) a join (select accounts.quota from metrics) b on true",
     ],
 )
 def test_native_context_boundary_rejects_unsecured_or_unqualified_shapes(layer, sql):
     # Call Rust directly so Python's transport preflight cannot mask a bypass.
     with pytest.raises(UnsupportedSemanticFeaturesError, match=r"rewrite\.(policy|scoped)_select_shape"):
         rewrite_semantic_input(layer.graph, sql, user_attributes={"tenant": 1}, enforce_visibility=True)
+
+
+@pytest.mark.parametrize(
+    "sql,expected",
+    [
+        ("select purchases.revenue from purchases", [(180,)]),
+        ("select round(purchases.revenue / 3, 2) from purchases", [(60,)]),
+        ("with recursive q as (select purchases.revenue from metrics) select * from q", [(180,)]),
+        ("select purchases.revenue from metrics union all select purchases.revenue from metrics", [(180,), (180,)]),
+        (
+            "select * from (select purchases.revenue from metrics) a join (select accounts.quota from metrics) b on true",
+            [(180, 6)],
+        ),
+        (
+            "select purchases.revenue + (select accounts.quota from metrics) as adjusted from metrics",
+            [(186,)],
+        ),
+        (
+            "select coalesce((select accounts.quota from metrics), 0) as quota "
+            "from (select purchases.revenue from metrics) q",
+            [(6,)],
+        ),
+    ],
+)
+def test_native_nested_shapes_compile_every_policy_leaf(layer, sql, expected):
+    generated = rewrite_semantic_input(layer.graph, sql, user_attributes={"tenant": 1}, enforce_visibility=True)
+    assert layer.adapter.execute(generated).fetchall() == expected

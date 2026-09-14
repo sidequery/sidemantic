@@ -13,28 +13,8 @@ fn unsupported(shape: &str) -> SidemanticError {
 }
 
 impl SqlGenerator<'_> {
-    fn conversion_source_expression(&self, model: &Model, expression: &str) -> Result<String> {
-        if let Some(dimension) = model.get_dimension(expression.trim()) {
-            if dimension.window.is_some() {
-                return Err(unsupported("non_row_expression"));
-            }
-            if dimension.sql_expr() == dimension.name {
-                return Ok(quote(&dimension.name));
-            }
-            let source = self.raw_dimension_sql(model, dimension.sql_expr());
-            let parsed = parse_semantic_expression(&source)?;
-            validate_row_expression(&parsed, "metric.conversion_non_row_expression")?;
-            for column in semantic_column_references(&source)? {
-                if column
-                    .model
-                    .as_ref()
-                    .is_some_and(|owner| owner != &model.name && owner != "t")
-                {
-                    return Err(unsupported("joined_expression"));
-                }
-            }
-            return self.emit_expression(&parsed);
-        }
+    // Parse before rewriting owner qualifiers so quoted values remain unchanged.
+    fn conversion_physical_expression(&self, model: &Model, expression: &str) -> Result<String> {
         let expression = expression.replace("{model}", &model.name);
         let parsed = parse_semantic_expression(&expression)?;
         validate_row_expression(&parsed, "metric.conversion_non_row_expression")?;
@@ -47,41 +27,35 @@ impl SqlGenerator<'_> {
             {
                 return Err(unsupported("joined_expression"));
             }
-            if model
-                .get_dimension(&column.field)
-                .is_some_and(|dimension| dimension.window.is_some())
+            replacements.insert((column.model, column.field.clone()), quote(&column.field));
+        }
+        self.emit_expression(&replace_semantic_columns(parsed, &replacements)?)
+    }
+
+    fn conversion_source_expression(&self, model: &Model, expression: &str) -> Result<String> {
+        let expression = expression.replace("{model}", &model.name);
+        let parsed = parse_semantic_expression(&expression)?;
+        validate_row_expression(&parsed, "metric.conversion_non_row_expression")?;
+        let mut replacements = HashMap::new();
+        for column in semantic_column_references(&expression)? {
+            if column
+                .model
+                .as_ref()
+                .is_some_and(|owner| owner != &model.name && owner != "t")
             {
-                return Err(unsupported("non_row_expression"));
+                return Err(unsupported("joined_expression"));
             }
-            let source = model.get_dimension(&column.field).map_or_else(
-                || quote(&column.field),
-                |dimension| {
-                    if dimension.sql_expr() == dimension.name {
-                        quote(&dimension.name)
-                    } else {
-                        self.raw_dimension_sql(model, dimension.sql_expr())
-                    }
-                },
-            );
-            validate_row_expression(
-                &parse_semantic_expression(&source)?,
-                "metric.conversion_non_row_expression",
-            )?;
-            for source_column in semantic_column_references(&source)? {
-                if source_column
-                    .model
-                    .as_ref()
-                    .is_some_and(|owner| owner != &model.name && owner != "t")
-                {
-                    return Err(unsupported("joined_expression"));
+            let source = if let Some(dimension) = model.get_dimension(&column.field) {
+                if dimension.window.is_some() {
+                    return Err(unsupported("non_row_expression"));
                 }
-            }
+                self.conversion_physical_expression(model, dimension.sql_expr())?
+            } else {
+                quote(&column.field)
+            };
             replacements.insert((column.model, column.field), format!("({source})"));
         }
-        self.emit_expression(&replace_semantic_columns(
-            parse_semantic_expression(&expression)?,
-            &replacements,
-        )?)
+        self.emit_expression(&replace_semantic_columns(parsed, &replacements)?)
     }
 
     fn generate_scoped_multistep_conversion(
@@ -97,9 +71,6 @@ impl SqlGenerator<'_> {
             return Err(SidemanticError::Validation(
                 "multi-step conversion requires at least two steps and no conversion_window".into(),
             ));
-        }
-        if metric.fill_nulls_with.is_some() {
-            return Err(unsupported("metric_shape"));
         }
         if query
             .prepared_policies
@@ -143,19 +114,12 @@ impl SqlGenerator<'_> {
             if dimension.model != model.name || model.get_dimension(&dimension.name).is_none() {
                 return Err(unsupported("joined_dimension"));
             }
-            if dimension.alias.eq_ignore_ascii_case("entity")
-                || (1..=steps.len()).any(|index| {
-                    dimension
-                        .alias
-                        .eq_ignore_ascii_case(&format!("step_{index}_ts"))
-                })
-                || !output_names.insert(dimension.alias.to_ascii_lowercase())
-            {
+            if !output_names.insert(dimension.alias.to_ascii_lowercase()) {
                 return Err(unsupported("output_alias"));
             }
             let mut expression = self.conversion_source_expression(model, &dimension.name)?;
             if let Some(grain) = &dimension.granularity {
-                expression = self.date_trunc_sql(grain, &expression);
+                expression = self.date_trunc_sql(grain, &expression)?;
             }
             let internal = format!("__funnel_group_{index}");
             projection.push(format!("{expression} AS {internal}"));
@@ -275,12 +239,7 @@ impl SqlGenerator<'_> {
         reference: &MetricRef,
         dimensions: &[DimensionRef],
     ) -> Result<String> {
-        if self.dialect != DialectType::DuckDB
-            || reference.graph_metric
-            || query.ungrouped
-            || !query.table_calculations.is_empty()
-            || query.use_preaggregations
-        {
+        if query.ungrouped || !query.table_calculations.is_empty() || query.use_preaggregations {
             return Err(unsupported("query_shape"));
         }
         let model = self
@@ -292,52 +251,51 @@ impl SqlGenerator<'_> {
             return self
                 .generate_scoped_multistep_conversion(query, reference, dimensions, model, metric);
         }
-        if metric.fill_nulls_with.is_some() {
-            return Err(unsupported("metric_shape"));
-        }
-        // The legacy algorithm addresses these source columns by their declared names.
-        // Do not silently reinterpret dimension SQL aliases as physical columns.
         let entity = metric
             .entity
             .as_deref()
-            .ok_or_else(|| SidemanticError::Validation("conversion requires entity".into()))?;
-        if !Self::is_simple_identifier(entity) {
-            return Err(unsupported("entity_expression"));
-        }
-        let mut names = vec![entity];
-        for dimension in &model.dimensions {
-            if dimension.r#type == crate::core::DimensionType::Time
-                || (dimension.name.to_lowercase().contains("event")
-                    && dimension.name.to_lowercase().contains("type"))
-            {
-                names.push(&dimension.name);
-            }
-        }
-        for name in names {
-            if !Self::is_simple_identifier(name) {
-                return Err(unsupported("source_identifier"));
-            }
-            if model
-                .get_dimension(name)
-                .is_some_and(|dimension| dimension.sql_expr() != name)
-            {
-                return Err(unsupported("source_alias"));
-            }
-        }
+            .ok_or_else(|| unsupported("entity"))?;
+        // Python's two-event algorithm selects the last declared time field;
+        // multi-step conversion separately uses the model's default time field.
+        let time = model
+            .dimensions
+            .iter()
+            .rev()
+            .find(|dimension| dimension.r#type == crate::core::DimensionType::Time)
+            .ok_or_else(|| unsupported("time_dimension"))?;
+        let event = model
+            .dimensions
+            .iter()
+            .rev()
+            .find(|dimension| {
+                let name = dimension.name.to_lowercase();
+                name.contains("event") && name.contains("type")
+            })
+            .ok_or_else(|| unsupported("event_type_dimension"))?;
+        let mut projection = vec![
+            format!(
+                "{} AS __funnel_entity",
+                self.conversion_source_expression(model, entity)?
+            ),
+            format!(
+                "{} AS __funnel_time",
+                self.conversion_source_expression(model, &time.name)?
+            ),
+            format!(
+                "{} AS __funnel_event_type",
+                self.conversion_source_expression(model, &event.name)?
+            ),
+        ];
         let mut aliases = HashSet::new();
         for dimension in dimensions {
             if dimension.model != model.name || model.get_dimension(&dimension.name).is_none() {
                 return Err(unsupported("joined_dimension"));
             }
-            if !Self::is_simple_identifier(&dimension.alias)
-                || !aliases.insert(dimension.alias.to_ascii_lowercase())
-            {
+            if !aliases.insert(dimension.alias.to_ascii_lowercase()) {
                 return Err(unsupported("output_alias"));
             }
         }
-        if !Self::is_simple_identifier(&metric.name)
-            || aliases.contains(&metric.name.to_ascii_lowercase())
-        {
+        if aliases.contains(&metric.name.to_ascii_lowercase()) {
             return Err(unsupported("output_alias"));
         }
         if query
@@ -390,7 +348,7 @@ impl SqlGenerator<'_> {
                         .map(|dimension| &dimension.alias)
                         .ok_or_else(|| unsupported("order_by"))?
                 };
-            ordering.push(format!("{alias} {direction}"));
+            ordering.push(format!("{} {direction}", quote(alias)));
         }
         let window = metric.conversion_window.as_deref().unwrap_or("7 days");
         let parts: Vec<_> = window.split_whitespace().collect();
@@ -417,42 +375,75 @@ impl SqlGenerator<'_> {
                 .map(|predicate| format!("({predicate})")),
         );
         let mut secured = model.clone();
-        for dimension in dimensions {
-            let expression = self.conversion_source_expression(model, &dimension.name)?;
+        secured.dimensions = vec![
+            crate::core::Dimension::time("__funnel_time"),
+            crate::core::Dimension::categorical("__funnel_event_type"),
+        ];
+        secured.default_time_dimension = Some("__funnel_time".into());
+        let mut inner_dimensions = Vec::new();
+        let mut output = Vec::new();
+        for (index, dimension) in dimensions.iter().enumerate() {
+            let mut expression = self.conversion_source_expression(model, &dimension.name)?;
+            if let Some(grain) = &dimension.granularity {
+                expression = self.date_trunc_sql(grain, &expression)?;
+            }
+            let name = format!("__funnel_group_{index}");
+            projection.push(format!("{expression} AS {name}"));
             secured
                 .dimensions
-                .iter_mut()
-                .find(|field| field.name == dimension.name)
-                .unwrap()
-                .sql = Some(expression);
+                .push(crate::core::Dimension::categorical(&name));
+            inner_dimensions.push(DimensionRef {
+                model: model.name.clone(),
+                name: name.clone(),
+                alias: name.clone(),
+                granularity: None,
+            });
+            output.push(format!("{name} AS {}", quote(&dimension.alias)));
         }
-        if !predicates.is_empty() {
-            secured.sql = Some(format!(
-                "SELECT * FROM {} WHERE {}",
-                self.model_from_clause(model, Some("t")),
-                predicates.join(" AND ")
-            ));
-            secured.table = None;
-        }
-        secured
-            .metrics
-            .iter_mut()
-            .find(|candidate| candidate.name == metric.name)
-            .unwrap()
-            .filters
-            .clear();
+        let restriction = if predicates.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {}", predicates.join(" AND "))
+        };
+        secured.sql = Some(format!(
+            "SELECT {} FROM {}{restriction}",
+            projection.join(", "),
+            self.model_from_clause(model, Some("t"))
+        ));
+        secured.table = None;
+        let mut inner_metric = metric.clone();
+        inner_metric.name = "__funnel_result".into();
+        inner_metric.entity = Some("__funnel_entity".into());
+        inner_metric.filters.clear();
+        inner_metric.fill_nulls_with = None;
+        secured.metrics = vec![inner_metric];
         let mut graph = self.graph.clone();
         graph.replace_model(secured)?;
-        SqlGenerator::new(&graph)
+        let inner_reference = MetricRef {
+            model: model.name.clone(),
+            name: "__funnel_result".into(),
+            alias: "__funnel_result".into(),
+            graph_metric: false,
+        };
+        let inner = SqlGenerator::new(&graph)
             .with_dialect(self.dialect)
-            .generate_conversion_query(
-                reference,
-                dimensions,
-                &[],
-                &ordering,
-                query.limit,
-                query.offset,
-            )
+            .with_timezone(self.timezone.clone())
+            .generate_conversion_query(&inner_reference, &inner_dimensions, &[], &[], None, None)?;
+        output.push(format!("__funnel_result AS {}", quote(&metric.name)));
+        let mut sql = format!(
+            "SELECT {} FROM ({inner}) AS funnel_result",
+            output.join(", ")
+        );
+        if !ordering.is_empty() {
+            sql.push_str(&format!(" ORDER BY {}", ordering.join(", ")));
+        }
+        if let Some(limit) = query.limit {
+            sql.push_str(&format!(" LIMIT {limit}"));
+        }
+        if let Some(offset) = query.offset {
+            sql.push_str(&format!(" OFFSET {offset}"));
+        }
+        Ok(sql)
     }
 }
 

@@ -12,6 +12,10 @@ resolution-markers = [
     "python_full_version < '3.12'",
 ]
 
+required-markers = [
+    "platform_machine == 'x86_64' and sys_platform == 'linux'",
+]
+
 [[package]]
 name = "adbc-driver-manager"
 version = "1.9.0"

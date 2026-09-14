@@ -146,9 +146,18 @@ def test_compound_computed_keys_join_componentwise(layer):
         ["tenant_key", "id", "amount"],
         [(11, 101, 7), (12, 101, 17)],
     )
-    with pytest.raises(UnsupportedSemanticFeaturesError) as caught:
-        layer.compile(metrics=["accounts.budget"], dimensions=["events.category"])
-    assert "aggregation.requires_single_primary_key" in caught.value.capabilities
+    result(
+        layer,
+        {
+            "metrics": ["accounts.budget"],
+            "dimensions": ["events.category"],
+            "order_by": ["events.category"],
+        },
+        ["category", "budget"],
+        [("x", 30), ("y", 20)],
+    )
+    accounts.metrics.append(Metric(name="distinct_accounts", agg="count_distinct"))
+    result(layer, {"metrics": ["accounts.distinct_accounts"]}, ["distinct_accounts"], [(2,)])
 
 
 @pytest.mark.parametrize(

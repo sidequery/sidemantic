@@ -6,6 +6,7 @@
 
 use minijinja::{value::ValueKind, Environment, Error, ErrorKind, UndefinedBehavior};
 use once_cell::sync::Lazy;
+use polyglot_sql::{DialectType, Expression};
 use regex::{Captures, Regex};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -88,6 +89,15 @@ impl SecurityPolicy {
         model_name: &str,
         user_attributes: Option<&Map<String, Value>>,
     ) -> Result<Vec<String>, PolicyError> {
+        self.render_for_model_with_dialect(model_name, user_attributes, DialectType::DuckDB)
+    }
+
+    pub(crate) fn render_for_model_with_dialect(
+        &self,
+        model_name: &str,
+        user_attributes: Option<&Map<String, Value>>,
+        dialect: DialectType,
+    ) -> Result<Vec<String>, PolicyError> {
         let attributes = user_attributes.ok_or_else(|| PolicyError::MissingUserAttributes {
             model: model_name.to_owned(),
         })?;
@@ -98,7 +108,7 @@ impl SecurityPolicy {
         }
         self.row_filters
             .iter()
-            .map(|template| render_row_filter(template, attributes))
+            .map(|template| render_row_filter_in_dialect(template, attributes, dialect))
             .collect()
     }
 }
@@ -147,9 +157,10 @@ static HUGGING_QUOTES: Lazy<Regex> = Lazy::new(|| {
         .expect("valid quoted policy placeholder pattern")
 });
 
-pub fn render_row_filter(
+fn render_row_filter_in_dialect(
     template: &str,
     user_attributes: &Map<String, Value>,
+    dialect: DialectType,
 ) -> Result<String, PolicyError> {
     let normalized = HUGGING_QUOTES.replace_all(template, |captures: &Captures<'_>| {
         captures
@@ -161,7 +172,7 @@ pub fn render_row_filter(
     });
     let mut environment = Environment::new();
     environment.set_undefined_behavior(UndefinedBehavior::Strict);
-    environment.set_formatter(|output, _state, value| {
+    environment.set_formatter(move |output, _state, value| {
         match value.kind() {
             ValueKind::Undefined => {
                 return Err(Error::new(
@@ -183,7 +194,17 @@ pub fn render_row_filter(
             }
             ValueKind::String => {
                 let text = value.as_str().expect("string kind has a string value");
-                write!(output, "'{}'", text.replace('\'', "''"))?;
+                // Values must be quoted for the parser that consumes the
+                // rendered template, including dialect-specific backslashes.
+                let literal = Expression::Literal(polyglot_sql::expressions::Literal::String(
+                    text.to_owned(),
+                ));
+                let sql =
+                    crate::semantic_input::dialects::emit(literal, DialectType::DuckDB, dialect)
+                        .map_err(|error| {
+                            Error::new(ErrorKind::InvalidOperation, error.to_string())
+                        })?;
+                output.write_str(&sql)?;
             }
             kind => {
                 return Err(Error::new(
@@ -209,6 +230,13 @@ pub fn render_row_filter(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn render_row_filter(
+        template: &str,
+        user_attributes: &Map<String, Value>,
+    ) -> Result<String, PolicyError> {
+        render_row_filter_in_dialect(template, user_attributes, DialectType::DuckDB)
+    }
 
     fn attributes(value: Value) -> Map<String, Value> {
         value

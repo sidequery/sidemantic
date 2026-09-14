@@ -277,6 +277,10 @@ pub struct PreAggregationConfig {
     #[serde(default)]
     pub sql: Option<String>,
     #[serde(default)]
+    pub rollups: Option<Vec<String>>,
+    #[serde(default)]
+    pub union_with_source_data: bool,
+    #[serde(default)]
     pub measures: Option<Vec<String>>,
     #[serde(default)]
     pub dimensions: Option<Vec<String>>,
@@ -465,6 +469,7 @@ impl SidemanticConfig {
                         "onetomany",
                         "many_to_many",
                         "manytomany",
+                        "cross",
                     ],
                 )?;
             }
@@ -781,6 +786,7 @@ impl RelationshipConfig {
             Some("one_to_one" | "onetoone") => RelationshipType::OneToOne,
             Some("one_to_many" | "onetomany") => RelationshipType::OneToMany,
             Some("many_to_many" | "manytomany") => RelationshipType::ManyToMany,
+            Some("cross") => RelationshipType::Cross,
             _ => RelationshipType::ManyToOne,
         };
 
@@ -850,6 +856,8 @@ impl PreAggregationConfig {
         PreAggregation {
             name: self.name,
             preagg_type,
+            rollups: self.rollups,
+            union_with_source_data: self.union_with_source_data,
             sql: self.sql,
             measures: self.measures,
             dimensions: self.dimensions,
@@ -1524,6 +1532,47 @@ models:
             .to_string()
             .contains("models.orders.metrics.revenue.agg"));
         assert!(err.to_string().contains("totalize"));
+    }
+
+    #[test]
+    fn test_native_cross_relationship_loads_and_generates_cartesian_join() {
+        use crate::core::SemanticGraph;
+        use crate::sql::{SemanticQuery, SqlGenerator};
+
+        for version in ["", "version: 1\n"] {
+            for relationship_type in ["cross", "CROSS"] {
+                let yaml = format!(
+                    r#"{version}
+models:
+  - name: orders
+    table: orders
+    dimensions:
+      - name: label
+        type: categorical
+    relationships:
+      - name: customers
+        type: {relationship_type}
+  - name: customers
+    table: customers
+    dimensions:
+      - name: region
+        type: categorical
+"#
+                );
+                let config: SidemanticConfig = serde_yaml::from_str(&yaml).unwrap();
+                let (models, _, _) = config.into_parts().unwrap();
+                assert_eq!(models[0].relationships[0].r#type, RelationshipType::Cross);
+                let mut graph = SemanticGraph::new();
+                for model in models {
+                    graph.add_model(model).unwrap();
+                }
+                let query = SemanticQuery::new()
+                    .with_dimensions(vec!["orders.label".into(), "customers.region".into()]);
+                let sql = SqlGenerator::new(&graph).generate(&query).unwrap();
+                assert!(sql.contains("CROSS JOIN customers_cte"), "{sql}");
+                assert!(!sql.contains(" ON "), "{sql}");
+            }
+        }
     }
 
     #[test]

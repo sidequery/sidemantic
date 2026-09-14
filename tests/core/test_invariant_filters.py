@@ -105,7 +105,7 @@ def test_joined_model_function_invariant_qualifies_list_arguments():
     assert layer.query(metrics=["orders.revenue"], dimensions=["customers.name"]).fetchall() == [("kept", 30)]
 
 
-def test_preaggregation_bakes_invariant_and_routes_without_filter_column():
+def test_preaggregation_bakes_invariant_but_query_keeps_live_scope():
     layer = _layer()
     model = layer.graph.models["orders"]
     preagg = PreAggregation(name="by_status", measures=["revenue"], dimensions=["status"])
@@ -120,8 +120,8 @@ def test_preaggregation_bakes_invariant_and_routes_without_filter_column():
         use_preaggregations=True,
     )
 
-    assert "orders_preagg_by_status" in sql
-    assert "tenant_id" not in sql
+    assert "orders_preagg_by_status" not in sql
+    assert "tenant_id" in sql
     assert sorted(layer.adapter.execute(sql).fetchall()) == [("new", 10), ("paid", 20)]
 
 

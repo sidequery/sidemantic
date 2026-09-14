@@ -151,7 +151,7 @@ def enforce_field_visibility(
                     raise SecurityError(f"Field '{model_name}.{field_name}' is not public")
 
 
-def _sql_literal(value) -> str:
+def _sql_literal(value, dialect: str | None = None) -> str:
     """Convert a value produced by a ``{{ }}`` output to a safe SQL literal string.
 
     Strings are single-quoted with embedded quotes doubled; bools become TRUE/FALSE;
@@ -169,6 +169,10 @@ def _sql_literal(value) -> str:
     if value is None:
         return "NULL"
     if isinstance(value, str):
+        if dialect is not None:
+            from sqlglot import exp
+
+            return exp.Literal.string(value).sql(dialect=dialect)
         return "'" + value.replace("'", "''") + "'"
     raise TypeError(f"unsupported user-attribute type for a row filter: {type(value).__name__}")
 
@@ -198,7 +202,7 @@ _row_filter_env = Environment(
 _HUGGING_QUOTES = re.compile(r"(['\"])\s*(\{\{.*?\}\})\s*\1")
 
 
-def render_row_filter(filter_template: str, user_attributes: dict) -> str:
+def render_row_filter(filter_template: str, user_attributes: dict, *, dialect: str | None = None) -> str:
     """Render a row-filter template against user attributes as a safe SQL fragment.
 
     The only namespace exposed is ``user``. Every ``{{ user.x }}`` renders as a
@@ -212,6 +216,7 @@ def render_row_filter(filter_template: str, user_attributes: dict) -> str:
     Args:
         filter_template: SQL filter template, e.g. ``"tenant_id = {{ user.tenant_id }}"``.
         user_attributes: Mapping bound to the ``user`` namespace.
+        dialect: SQL dialect that will parse the rendered predicate.
 
     Returns:
         The rendered SQL fragment.
@@ -225,7 +230,12 @@ def render_row_filter(filter_template: str, user_attributes: dict) -> str:
 
     try:
         normalized = _HUGGING_QUOTES.sub(r"\2", filter_template)
-        template = _row_filter_env.from_string(normalized)
+        environment = (
+            _row_filter_env.overlay(finalize=lambda value: _sql_literal(value, dialect))
+            if dialect is not None
+            else _row_filter_env
+        )
+        template = environment.from_string(normalized)
         # Pass RAW attributes: the environment's finalize quotes each {{ }} output into a SQL
         # literal, while {% if %}/comparisons see real values (so booleans and equality work).
         return template.render(user=user_attributes if user_attributes is not None else {})

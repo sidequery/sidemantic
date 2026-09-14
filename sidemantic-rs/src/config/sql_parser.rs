@@ -1178,6 +1178,7 @@ fn compact_relationship_type(kind: &str) -> Result<RelationshipType> {
         "many_to_one" => Ok(RelationshipType::ManyToOne),
         "one_to_many" => Ok(RelationshipType::OneToMany),
         "many_to_many" => Ok(RelationshipType::ManyToMany),
+        "cross" => Ok(RelationshipType::Cross),
         _ => Err(SidemanticError::Validation(format!(
             "unsupported compact join relationship type '{kind}'"
         ))),
@@ -2006,6 +2007,7 @@ fn build_relationship(props: &HashMap<String, String>) -> Option<Relationship> {
         "one_to_one" | "onetoone" => RelationshipType::OneToOne,
         "one_to_many" | "onetomany" => RelationshipType::OneToMany,
         "many_to_many" | "manytomany" => RelationshipType::ManyToMany,
+        "cross" => RelationshipType::Cross,
         _ => RelationshipType::ManyToOne,
     };
 
@@ -2122,6 +2124,16 @@ fn build_pre_aggregation(props: &HashMap<String, String>) -> Option<PreAggregati
     Some(PreAggregation {
         name: name.clone(),
         preagg_type,
+        rollups: props
+            .get("rollups")
+            .map(|value| json_value_to_string_list(parse_literal(value))),
+        union_with_source_data: props.get("union_with_source_data").is_some_and(|value| {
+            match parse_literal(value) {
+                serde_json::Value::Bool(value) => value,
+                serde_json::Value::String(value) => value.eq_ignore_ascii_case("true"),
+                _ => false,
+            }
+        }),
         sql: props.get("sql").cloned(),
         measures,
         dimensions,

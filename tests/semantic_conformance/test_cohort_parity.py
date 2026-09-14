@@ -4,7 +4,7 @@ from datetime import date, datetime
 
 import pytest
 
-from sidemantic import Dimension, Metric, Model, SecurityPolicy, SemanticLayer
+from sidemantic import Dimension, Explore, Metric, Model, SecurityPolicy, SemanticLayer
 from sidemantic.core.semantic_layer import SecurityError
 from sidemantic.semantic_handoff import graph_to_semantic_input
 
@@ -60,6 +60,11 @@ def layer(request):
         yield layer
     finally:
         layer.adapter.close()
+
+
+def test_source_anchored_explore_preserves_cohort_population(layer):
+    layer.graph.add_explore(Explore(name="cohort", model="events"))
+    assert result(layer, explore="cohort") == (["qualified"], [(3,)])
 
 
 def cohort_metric(layer):
@@ -399,3 +404,45 @@ def test_selected_calculations_preserve_implicit_entity_dimensions(layer):
             )
             == []
         )
+
+
+@pytest.mark.parametrize("dialect", ["duckdb", "postgres", "bigquery", "snowflake", "trino", "clickhouse"])
+@pytest.mark.parametrize("shape", ["plain", "reserved_dimension", "inner_approximate", "outer_approximate", "month"])
+def test_cohort_output_dialects_preserve_qualified_populations(layer, dialect, shape):
+    import sqlglot
+
+    query = {}
+    metric = cohort_metric(layer)
+    expected = [(3,)]
+    if shape == "reserved_dimension":
+        layer.graph.models["events"].dimensions.append(Dimension(name="group", sql="region", type="categorical"))
+        query = {"dimensions": ["events.group"], "order_by": ["events.group"]}
+        expected = [("EU", 2), ("US", 1)]
+    elif shape == "inner_approximate":
+        metric.inner_metrics[0]["agg"] = "approx_count_distinct"
+    elif shape == "outer_approximate":
+        metric.agg = "approx_count_distinct"
+        metric.sql = "amount"
+    elif shape == "month":
+        query = {"dimensions": ["events.day__month"], "order_by": ["events.day__month"]}
+        expected = [("2024-01-01", 1), ("2024-02-01", 2)]
+    if layer.engine == "rust" and dialect == "postgres" and shape in {"inner_approximate", "outer_approximate"}:
+        with pytest.raises(Exception, match="metric.approx_count_distinct_output_dialect"):
+            layer.compile(metrics=[cohort_reference(layer)], user_attributes={"tenant": 1}, dialect=dialect, **query)
+        return
+    sql = layer.compile(metrics=[cohort_reference(layer)], user_attributes={"tenant": 1}, dialect=dialect, **query)
+    parsed = sqlglot.parse_one(sql, read=dialect)
+    if layer.engine == "rust" and dialect == "postgres":
+        from sqlglot import exp
+
+        having = parsed.find(exp.Having)
+        assert having is not None
+        assert having.find(exp.AggFunc) is not None
+        assert all(column.name != "platforms" for column in having.find_all(exp.Column))
+    # Target AST binding plus translated execution; no live warehouse execution.
+    cursor = layer.adapter.execute(parsed.sql(dialect="duckdb"))
+    actual = [
+        tuple(value.isoformat()[:10] if isinstance(value, (date, datetime)) else value for value in row)
+        for row in cursor.fetchall()
+    ]
+    assert actual == expected

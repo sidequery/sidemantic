@@ -711,11 +711,7 @@ fn wasm_bindgen_runtime_rewrite_rejects_invalid_semantic_sql() {
     for (sql, expected) in [
         (
             "SELECT orders.revenue FROM orders JOIN customers ON orders.customer_id = customers.id",
-            "Explicit JOIN syntax is not supported",
-        ),
-        (
-            "SELECT SUM(orders.amount) AS revenue FROM orders",
-            "Aggregate functions must be defined as a metric",
+            "modeled semantic tables",
         ),
         ("SELECT orders.missing FROM orders", "not found"),
         ("SELECT * FROM metrics", "SELECT *"),
@@ -728,6 +724,22 @@ fn wasm_bindgen_runtime_rewrite_rejects_invalid_semantic_sql() {
         );
     }
     assert!(wasm_rewrite_with_yaml(SIMPLE_MODELS_YAML, "SELECT (").is_err());
+}
+
+#[wasm_bindgen_test]
+fn wasm_bindgen_runtime_rewrite_binds_adhoc_and_scalar_expressions() {
+    for sql in [
+        "SELECT SUM(orders.amount) AS revenue FROM orders",
+        "SELECT ROUND(orders.revenue / orders.count, 2) AS average FROM orders",
+        "SELECT orders.revenue FROM orders UNION ALL SELECT orders.revenue FROM orders",
+    ] {
+        let rewritten = wasm_rewrite_with_yaml(SIMPLE_MODELS_YAML, sql).unwrap();
+        assert!(rewritten.contains("SUM("), "{rewritten}");
+        assert!(
+            !rewritten.contains("orders.revenue / orders.count"),
+            "{rewritten}"
+        );
+    }
 }
 
 #[wasm_bindgen_test]

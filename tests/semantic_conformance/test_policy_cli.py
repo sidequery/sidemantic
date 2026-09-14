@@ -266,21 +266,14 @@ def test_cli_rejects_non_object_attribute_files(mode, contents, tmp_path):
 
 
 @pytest.mark.parametrize("engine,fallback", [("rust", False), ("auto", True)])
-def test_unsupported_policy_sql_shape_has_explicit_selection(engine, fallback):
-    from sidemantic.semantic_handoff import UnsupportedSemanticFeaturesError
-
+def test_model_from_policy_sql_selects_rust_without_fallback(engine, fallback):
     layer = make_layer("policy_literals", engine=engine, fallback=fallback)
     try:
         layer.adapter.execute((FIXTURES / "migration_seed.sql").read_text())
         sql = "select quoted.total from quoted"
-        if fallback:
-            generated = rewrite(layer, sql, {"subject": "O'Brien"})
-            assert layer.adapter.execute(generated).fetchall() == [(9,)]
-            assert layer.last_engine_selection["engine"] == "python"
-            assert "rewrite.policy_select_shape" in layer.last_engine_selection["reason"]
-        else:
-            with pytest.raises(UnsupportedSemanticFeaturesError, match="rewrite.policy_select_shape"):
-                rewrite(layer, sql, {"subject": "O'Brien"})
+        generated = rewrite(layer, sql, {"subject": "O'Brien"})
+        assert layer.adapter.execute(generated).fetchall() == [(9,)]
+        assert layer.last_engine_selection["engine"] == "rust"
     finally:
         layer.adapter.close()
 

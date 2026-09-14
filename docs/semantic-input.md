@@ -45,11 +45,22 @@ semantic fields cannot be silently discarded during projection.
 
 ## Executable boundary
 
-The first version accepts DuckDB input expressions and provides Rust compile,
-reference-validation, and semantic-SQL rewrite entrypoints. Structured query
-output dialect selection belongs to Rust SQL generation. Support for another
-output dialect is not evidence that its warehouse has passed live execution
-tests.
+The versioned boundary provides Rust compile, reference-validation, and
+semantic-SQL rewrite entrypoints. Declared input dialects are normalized through
+polyglot into DuckDB syntax before semantic binding; the source envelope remains
+unchanged. Structured query `query_dialect` and rewrite context `sql_dialect`
+can select request syntax independently of graph syntax and output dialect.
+Graph expression metadata prefers `ossie_target_dialect` when present, otherwise
+`ossie_expression_dialect`. Output dialect selection belongs to Rust SQL
+generation. Generated target SQL is not evidence that its warehouse has passed
+live execution tests.
+
+Selected segment templates render with request parameters and defaults before
+normalization in their authored dialect. Jinja conditions see raw values while
+emitted values retain declared parameter types and SQL string escaping, including
+outputs embedded in quoted literals. Segment definitions retain their trusted
+physical-subquery scope. Unselected templates remain inert, and rendering changes
+only the request execution graph, preserving the original source snapshot.
 
 The structured compiler supports basic aggregations, filtered measures, declared
 keyed joins, complete aggregate expressions, and graph metric binding. It also
@@ -86,42 +97,61 @@ supports:
   snapshot defaults apply after snapshot selection and the final aggregation;
   they do not replace null inputs before count or average. Source-local cohort
   defaults likewise wrap only the outer result, preserving inner values and HAVING.
-  Conversion and retention defaults remain explicitly unsupported.
+  Conversion and retention retain Python's existing behavior: their null-default
+  metadata is accepted but does not change the generated result.
   Filled cumulative metrics reject comparison
   offsets; filled time comparisons reject cumulative windows and grain-to-date
   controls rather than silently ignoring them.
-- Existing cumulative `window_expression` fields accept `SUM`, `AVG`, `MIN`,
-  `MAX`, or `COUNT` of one `base.output` metric reference, with an optionally
-  quoted simple output identifier. The input is a grouped period metric value;
+- Cumulative `window_expression` fields retain the authored function expression
+  and frame, including expressions over multiple period outputs. The input is a
+  grouped period metric value;
   it is not a physical source column. `window_order` names a selected period
   output column or an unambiguous selected dimension name, resolving its explicit
   or default grain, and defaults to the selected time dimension. Windows retain
-  selected non-time partitions. `window_frame` accepts preceding `ROWS` frames
-  or calendar `RANGE` frames (day, week, month, year), ending at `CURRENT ROW`;
-  the default is unbounded preceding rows. Frames also apply to cumulative metrics
-  with an aggregate and base-metric reference. Combining a frame with `window` or
-  `grain_to_date` is rejected. Other strict expressions or frames remain unsupported. Legacy Rust
-  utility expression discovery and Python's broader expression passthrough
-  remain available through their existing paths.
+  selected non-time partitions. `window_frame` is parsed as a SQL window frame;
+  the default is unbounded preceding rows through the current row. Frames also
+  apply to cumulative metrics with an aggregate and base-metric reference. Combining a frame with `window` or
+  `grain_to_date` is rejected. Authored expressions and frames are parsed into
+  the window AST; result coverage includes `test_window_output_parity.py`.
 
 
-Configured ordinary rollups reach the Rust graph through this boundary. Routing
-supports single-source sum/count/min/max queries over compatible stored dimensions
-and time grains. Simple predicates on stored non-time dimensions are checked through
-the parsed expression, including IN, BETWEEN and IS NULL. Uncovered dimensions,
-time predicates, functions, unsupported measure states and incomplete rollup
-populations use raw source SQL, with `used_preagg=false`. A bucketed timestamp cannot
-serve a finer grain or an untruncated timestamp, and week buckets cannot serve months.
+Configured rollups reach the Rust graph through this boundary. Routing supports
+source-local sum/count/min/max and filtered states, plus AVG reconstructed from
+stored sum and a compatible count. Count compatibility checks the actual nullable
+input and metric filters, not the count's name. COUNT(*) is a valid denominator
+only when the AVG input is provably non-null, such as COALESCE(amount, 0).
+An incompatible denominator falls back to the raw AVG in both engines.
+Native COUNT(DISTINCT input) rollups retain scalar state only at the exact stored
+dimensions and time grain. Omitted dimensions, coarser buckets, lambda freshness,
+join regrouping, and derived dependencies use raw planning for distinct counts.
+Derived and ratio metrics reconstruct their source-local aggregate dependencies;
+metric predicates become HAVING over those reconstructed states. Empty count
+populations return zero, while nullable sums and averages remain null.
+
+One-hop many-to-one dimension queries can route through a rollup carrying every
+join key, including composite keys. The remote dimension model remains the query
+domain, so members with no facts retain zero counts. Explicit anchors requiring a
+different domain, explicit join kinds, colliding output aliases, uncovered join keys, multi-hop or fanout joins and row filters on
+this join route use ordinary source planning. Compatible stored dimensions and
+time grains retain their existing routing checks: bucketed timestamps cannot serve
+finer grains or untruncated timestamps, and week buckets cannot serve months.
 Cross-source aggregate child queries retain raw-source planning.
+
+Lambda rollups preserve their `rollups` round-trip metadata and support
+`union_with_source_data`. When `build_range_end`, a time dimension and a grain are
+present, the batch leg includes buckets strictly before the boundary bucket and
+the live leg rebuilds that entire bucket and later rows using the same additive
+state materializer. This avoids double-counting a mid-bucket boundary and permits
+coarser query grains. Without a boundary, routing reads only the stored rollup.
 
 Active row policies and invariant filters always bypass rollups, including when
 routing was requested. Access and visibility checks still run before routing.
 Python materialization preserves invariants; the legacy Rust materialization helper
-continues to reject models with invariant filters instead of discarding them. Rust
-materialization supports filtered sum/count/min/max states, including distinct row
-and non-null value count populations, and rejects unsupported states such as AVG,
-custom SQL, partitioned builds and partial build ranges. Lambda freshness behavior
-remains explicitly unsupported by the versioned boundary.
+continues to reject models with invariant filters instead of discarding them.
+Rust materialization supports filtered sum/count/min/max and AVG sum states, with
+separate count inputs defining the denominator. Custom SQL, partitioned builds,
+non-lambda partial build ranges and non-additive distribution states remain
+unsupported by that materializer.
 
 Filtered complete measures are supported when their SQL AST is exactly
 `SUM(input)`, `AVG(input)`, `COUNT(input)`, `COUNT(DISTINCT input)`,
@@ -151,25 +181,54 @@ that planner selects one joined row per requested group and source primary key
 before aggregating the original filtered value. It preserves floating-point
 values and returns null for groups containing no qualifying non-null values.
 
-This checked lowering accepts ordinary local comparisons, boolean combinations,
-null checks, ranges, and literal lists. Other filtered complete constant inputs,
-division (whose integer semantics vary by dialect), string literals containing the legacy `{model}` placeholder, casts,
-arbitrary functions, aggregate combinations, distinct averages, windows,
-subqueries, foreign-model inputs or predicates, and unresolved templates remain
-explicitly unsupported. Unowned graph measures also remain unsupported on this path.
+Complete expressions outside that simple lowering retain their authored aggregate
+formula and local physical inputs. The entity aggregate planner handles aggregate
+combinations and statistical aggregates after source-key deduplication, applying
+each measure's filters to its inputs. Filtered opaque constants without an input,
+foreign-model inputs or predicates, unresolved templates, and invalid row-filter
+expressions remain rejected. Unowned graph measures remain unsupported on this path.
 Row-count execution coverage targets DuckDB and PostgreSQL. TSQL count widths
 require separate qualification, so Python TSQL retains its existing
 complete-expression path for `COUNT` and `COUNT_BIG`. TSQL filtered complete row
 counts are not qualified by this change.
 
-Remaining capability gates include policy-bearing SQL outside the scoped
-`FROM metrics` subset, policy output outside DuckDB/PostgreSQL, many-to-many paths without explicit keyed junctions or with custom join SQL,
-unsupported computed-key query shapes, genuinely duplicate child output aliases,
-unsupported complete-expression filter shapes, temporal/null-fill combinations, cumulative windows outside the bounded subset,
-and unqualified conversion, cohort, and non-additive metric shapes. Retention
-has a bounded dedicated path described below.
+Approximate distinct aggregates use target-dialect function generation in direct,
+complete, nested, cumulative, snapshot and cohort expressions. Target-SQL
+translation tests preserve filters and source populations; they do not establish
+function availability on every warehouse. Remaining capability gates include
+many-to-many paths without explicit keyed junctions, genuinely duplicate child
+output aliases, invalid complete-expression inputs, and special-route population
+combinations that cannot preserve their source grain. Dedicated routes are
+described below and covered by their conformance suites.
 
 Deserialization alone is not evidence of executable support.
+
+Structured queries accept `aliases` (semantic reference to output name),
+`timezone`, and `with_totals`. Aliases rename finalized result columns without
+changing internal aggregate/window dependencies; semantic references and custom
+output names both work for selected-column ordering. Selected result calculations
+consume the renamed columns and retain alias-aware ordering after pagination.
+
+A query timezone localizes UTC-stored timestamps before time-dimension truncation
+and bypasses UTC-bucketed materialized rollups. Localization follows the Python
+dialect contract for DuckDB, PostgreSQL, Snowflake, BigQuery, Spark, Databricks,
+and ClickHouse; unsupported output dialects reject localization. Filters and
+relative-date comparisons remain in their original time domain. The database
+validates timezone existence; the compiler validates safe timezone characters.
+
+`with_totals` adds only the grand-total row, with `_is_total` distinguishing
+it from real NULL dimension groups. Distinct counts and averages are recomputed
+from source rows. Snapshot state selection and one-to-one multi-model calculations
+retain their aggregate semantics. Totals without dimensions keep the ordinary
+aggregate row, without a marker. Explicit limit/offset and ungrouped totals are
+invalid; configured row caps are bypassed. Window-function metrics and
+materialized pre-aggregation plans retain the Python
+unsupported-combination boundary (`query.totals.window` or
+`query.totals.preaggregation`). Single-source fanout totals deduplicate source
+keys across all groups, rather than summing one copy per group. This also repairs
+the Python distinct-state path, where a key appearing in two groups previously
+inflated the total and changed its average.
+These options do not change the engine default or weaken mandatory policies.
 
 Structured query compilation, query-reference validation, and SQL rewriting
 preserve unused table-calculation, Explore, and saved-query declarations without
@@ -184,10 +243,10 @@ parameters, defaults, row limits, and saved-query immutability. The resolved
 model even when only related-model fields are selected. Base and intermediate
 model policies remain mandatory; related-only metrics and dimensions preserve
 the authorized base population. Same-owner derived and ratio metrics use this
-ordinary route. Independent cross-source aggregates, temporal metrics, and
-snapshot routes reject anchored requests with precise
-`query.consumption_base_model.*` capability errors until their population
-semantics are qualified.
+ordinary route. Independent aggregates, cumulative/time-comparison metrics and
+snapshot routes also retain the anchor when discovering and filtering their
+source populations. Foreign anchors on source-local event routes remain rejected
+where that route cannot retain the anchored population.
 
 Raw runtime requests that select `explore` or `saved_query` fail with typed
 capability errors. Resolve those named consumption contracts through the Python
@@ -200,7 +259,7 @@ context rejects active named contracts and calculation selections. Catalog
 presence alone never activates a contract. Model policies and invariant filters
 remain mandatory.
 
-Model-owned retention metrics support one source in DuckDB, with `entity`,
+Model-owned retention metrics support one source, with `entity`,
 `cohort_event`, optional `activity_event`, and day/week/month periods. The first
 qualifying event determines each entity's cohort. Activity is distinct per entity
 and period; entities without returning activity remain in the cohort denominator.
@@ -219,10 +278,12 @@ ordering and pagination, using the calculation contract described above.
 
 Selected dimensions, graph-level or wrapped retention metrics, combinations with
 other metrics, joined populations, aggregate predicates, window/subquery source
-expressions, ungrouped queries, and non-DuckDB outputs remain
+expressions and ungrouped queries remain
 explicitly unsupported. Result acceptance is in
 `tests/semantic_conformance/test_retention_parity.py`; enabling this path requires
 the freshly built Rust extension to pass those cases, not only SQL compilation.
+Output date differences follow the selected dialect, including BigQuery and
+Snowflake endpoint/unit ordering. Warehouse execution needs its own qualification.
 
 The existing YAML-based Rust utility entrypoints remain for compatibility.
 They are not an automatic fallback for the new compiler boundary and do not
@@ -238,15 +299,16 @@ populations therefore also apply to supported scoped rewrites. Policy-bearing
 SQL can nest those semantic leaves inside derived-table SELECTs and
 nonrecursive CTEs. Every leaf, including unused CTE bodies, runs policy
 preparation independently. Outer projections, DISTINCT, WHERE, GROUP BY,
-HAVING, ORDER BY and pagination operate on the secured results. Each wrapper
-has one derived-table or in-scope CTE source. CTE column aliases and nested
-shadowing are retained; user CTE bindings are renamed internally so they cannot
+HAVING, ORDER BY and pagination operate on the secured results. CTE column aliases
+and nested shadowing are retained; user CTE bindings are renamed internally so they cannot
 capture physical reads introduced by the compiler.
 
-Set operations, recursive CTEs, wrapper joins, scalar/predicate subqueries,
-physical source reads, DML and other source shapes remain unsupported; they
-cannot enter the legacy Rust rewrite path. Security failures never trigger
-fallback.
+The scoped binder also handles explicit semantic joins, scalar/ad-hoc aggregate
+expressions, nested scalar and predicate queries, and set operations. CTE bindings
+and physical subquery scope remain separate from semantic field resolution.
+Yardstick measure and context expressions use their own lowering and expose
+compiler warnings through the diagnostics entrypoint. Unsupported source shapes
+and invalid bindings fail explicitly; security failures never trigger fallback.
 
 CLI `query` and `rewrite` accept `--user-attrs-file attributes.json` containing a
 JSON object and `--enforce-visibility`. These apply equally to execution,
@@ -254,8 +316,9 @@ JSON object and `--enforce-visibility`. These apply equally to execution,
 context; missing required attributes fail closed. Secured CLI requests bypass
 pre-aggregations.
 
-Expressions or additional clauses outside this subset report an unsupported
-rewrite capability. This is a bounded rewrite path, not full semantic-SQL parity.
+Conformance tests cover binding, nested policies and Yardstick behavior. These
+implementation paths do not establish full semantic-SQL parity without native
+result acceptance.
 
 ## Engine selection
 
@@ -323,7 +386,8 @@ selection; with explicit groupings, those fields and any selected coarse bucket
 of the snapshot dimension partition it. Grouping by the raw snapshot dimension
 needs no masking. Row restrictions apply before snapshot selection.
 
-Fanout, calculated wrappers, multiple metric owners, aggregate predicates,
+Derived and ratio wrappers over source-local snapshot leaves are supported.
+Fanout, multiple metric owners, aggregate predicates,
 colliding output aliases, ungrouped output, and rollup routing
 remain gated for this snapshot path. Null defaults apply only to the final
 aggregate after snapshot selection; null source inputs and additive sibling
@@ -332,20 +396,22 @@ semantics: cumulative references still operate on period outputs.
 ### Two-event conversion
 
 Source-local two-event conversion metrics (`base_event`, `conversion_event`,
-`entity`, `conversion_window`) can use the strict Rust DuckDB path. Conversion
+`entity`, `conversion_window`) use the source-local Rust path. Conversion
 counts distinct base entities with a target event inside the inclusive interval,
 and divides by distinct base entities. Empty denominators return null. Grouping
 attributes are attributed to the base event. Query filters, metric filters,
 invariants, and caller policies constrain both event populations.
 
-Joined populations, graph-scoped two-event conversion metrics,
-calculated wrappers, mapped entity/event/time source names, quoted output names,
-and other output dialects remain gated in this first qualified subset.
+Entity, event and time dimensions may map to source expressions, and output
+identifiers retain quoting. The two-event path follows Python's last-declared
+time-dimension selection; the multi-step path uses its default/first time
+dimension. Joined populations, graph-scoped conversion metrics and calculated
+wrappers retain route-specific restrictions.
 
 ### Multi-step conversion
 
 Direct model conversion metrics with two or more `steps` predicates use the
-existing sequential funnel algorithm through the strict DuckDB boundary. Each
+existing sequential funnel algorithm through the versioned boundary. Each
 step finds the earliest qualifying event at or after the previous step's timestamp;
 equal timestamps qualify. There is no conversion-window option for this form.
 Selected grouping values belong to the first step and remain attached when later
@@ -367,17 +433,17 @@ All steps read the same policy-, invariant-, query-, and metric-filtered populat
 The strict wrapper validates expressions and projects internal source columns before
 calling the existing sequential generator. Graph-scoped metrics, mixed metrics,
 joined populations, aggregate/window/subquery source expressions, colliding output
-names (including dimensions named `entity` or `step_N_ts`), rollup routing,
-null-fill options, and other output dialects remain gated.
+names (including dimensions named `entity` or `step_N_ts`) and rollup routing
+remain gated. Null-default metadata retains Python's inert behavior.
 
 ## PostgreSQL policy output
 
 The versioned bridge can generate PostgreSQL output for policy-bearing structured
 queries (`query.dialect = "postgres"`) and scoped semantic SQL rewrites
 (`rewrite` context `output_dialect = "postgres"`; Python bridge keyword
-`output_dialect="postgres"`). Input expressions and input semantic SQL remain
-DuckDB dialect. This does not enable PostgreSQL input expressions or change CLI
-engine defaults. Access checks, typed caller attributes, row filters, invariants,
+`output_dialect="postgres"`). Input expressions and semantic SQL can declare
+their source dialect independently. This does not change CLI engine defaults.
+Access checks, typed caller attributes, row filters, invariants,
 and opt-in visibility use the same policy preparation as DuckDB output.
 
 The Rust CI job executes both output paths against a PostgreSQL 16 service using
@@ -387,7 +453,9 @@ boolean and null attributes, access denial, and visibility. Local runs without
 `SIDEMANTIC_TEST_POSTGRES_DSN` skip this host test; a configured job fails if the
 service, driver, extension or expected rows are unavailable. PostgreSQL parity
 is not qualified until that execution job passes. Other policy output dialects
-remain typed unsupported requirements.
+use polyglot target generation. The conformance corpus checks DuckDB, PostgreSQL,
+BigQuery, Snowflake, MySQL, Spark and TSQL output through a test-only translation
+back to DuckDB; this does not qualify live warehouse execution.
 
 PostgreSQL policy predicates emit target SQL before structured CTE assembly.
 The rewrite path preserves its DuckDB intermediate and emits PostgreSQL only
@@ -403,16 +471,17 @@ request SQL and structured filter/order expressions are normalized explicitly
 to the compiler's input syntax. This conversion preserves quoted identifiers,
 escaped strings and resolved null ordering; it does not bind semantic references
 or rewrite graph definitions. Multiple statements and trailing scalar clauses
-are rejected. Explicit non-DuckDB graph-expression dialect metadata remains
-unsupported. The PostgreSQL CI corpus exercises `SemanticLayer.compile`,
+are rejected. Other declared request dialects pass to Rust for normalization,
+and graph-expression dialect metadata is normalized in an executable copy.
+The PostgreSQL CI corpus exercises `SemanticLayer.compile`,
 `query`, `sql`, and `QueryRewriter` with a real PostgreSQL adapter and Rust runtime.
 Named many-to-many relationships use a separate junction SQL instance for each
 role, even when roles share the same physical junction table. They require an
 explicit `through` model, `through_foreign_key` and `related_foreign_key`, and
 known endpoint primary keys with matching arities. Composite key arrays are
 accepted for junction matching, including ungrouped queries. Fanout aggregation
-requiring symmetric deduplication still requires a single-column measure primary
-key; composite measure keys fail with `aggregation.requires_single_primary_key`.
+uses source-key deduplication, including composite measure keys on the entity
+aggregate path.
 Junction policies are applied to each role instance using the canonical
 junction declaration. Measures retain their source-key grain across duplicate
 junction rows. Inactive relationships remain excluded.

@@ -7,6 +7,7 @@ mod key_expression;
 mod model;
 mod parameter;
 mod policy;
+mod preaggregation;
 mod relative_date;
 mod segment;
 pub mod symmetric_agg;
@@ -14,8 +15,9 @@ mod table_calc;
 
 pub use dependency::{
     check_circular_dependencies, extract_column_references_from_expr, extract_dependencies,
-    extract_dependencies_with_context, parse_semantic_expression, replace_semantic_columns,
-    semantic_column_references, validate_row_expression, SemanticColumnReference,
+    extract_dependencies_with_context, outer_semantic_column_references, parse_semantic_expression,
+    replace_outer_semantic_columns, replace_semantic_columns, semantic_column_references,
+    validate_row_expression, SemanticColumnReference,
 };
 pub use graph::{JoinPath, JoinStep, SemanticGraph};
 pub use inheritance::{merge_model, resolve_model_inheritance};
@@ -27,6 +29,10 @@ pub use model::{
 };
 pub use parameter::{Parameter, ParameterType};
 pub use policy::{AccessRule, PolicyError, PreparedPolicies, SecurityPolicy};
+pub(crate) use preaggregation::{
+    materialization_sql as preaggregation_materialization_sql,
+    source_expression as preaggregation_source_expression,
+};
 pub use relative_date::RelativeDate;
 pub use segment::Segment;
 pub use symmetric_agg::{

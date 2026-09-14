@@ -11,6 +11,7 @@ import re
 import sqlglot
 
 from sidemantic.core.table_calculation import TableCalculation
+from sidemantic.sql.order_by import split_order_field
 
 
 def wrap_table_calculations(sql, catalog, names, order_by, dialect, *, aliases=None):
@@ -18,7 +19,10 @@ def wrap_table_calculations(sql, catalog, names, order_by, dialect, *, aliases=N
         return sql
     if dialect not in {"duckdb", "postgres", "postgresql"}:
         raise ValueError("Selected table calculations require DuckDB or PostgreSQL")
-    columns = sqlglot.parse_one(sql, read="postgres" if dialect == "postgresql" else dialect).named_selects
+    result_query = sqlglot.parse_one(sql, read="postgres" if dialect == "postgresql" else dialect)
+    columns = result_query.named_selects
+    result_order = result_query.args.get("order")
+    result_ordering = result_order.expressions if result_order else []
     if not columns or "*" in columns or len({column.lower() for column in columns}) != len(columns):
         raise ValueError("Table calculations require unique named result columns")
     reserved = "__sidemantic_calc_"
@@ -38,11 +42,10 @@ def wrap_table_calculations(sql, catalog, names, order_by, dialect, *, aliases=N
         return quote(name)
 
     ordering = []
-    for item in order_by or []:
-        parts = item.split()
-        if not parts:
+    for index, item in enumerate(order_by or []):
+        field, _suffix = split_order_field(item, [*columns, *(aliases or {}), *(aliases or {}).values()])
+        if not field:
             raise ValueError("Invalid table calculation result ordering")
-        field = parts[0]
         output_alias = (aliases or {}).get(field)
         if output_alias is None and aliases and "." not in field and field not in available:
             matches = {alias for key, alias in aliases.items() if key.rsplit(".", 1)[-1] == field}
@@ -52,10 +55,14 @@ def wrap_table_calculations(sql, catalog, names, order_by, dialect, *, aliases=N
             field = output_alias
         elif field not in available:
             field = field.replace(".", "_") if field.replace(".", "_") in available else field.rsplit(".", 1)[-1]
-        suffix = " ".join(parts[1:]).upper()
-        if not re.fullmatch(r"(?:(?:ASC|DESC)(?: NULLS (?:FIRST|LAST))?|NULLS (?:FIRST|LAST))?", suffix):
-            raise ValueError("Table calculations require selected-column ordering")
-        ordering.append(reference(field) + (" " + suffix if suffix else ""))
+        # Pagination already used the finalized SQL order. Reuse its resolved
+        # NULL placement instead of reparsing the caller text with DB defaults.
+        if index >= len(result_ordering):
+            raise ValueError("Table calculation ordering is missing from the semantic result")
+        ordered = result_ordering[index]
+        direction = "DESC" if ordered.args.get("desc") else "ASC"
+        nulls = "FIRST" if ordered.args.get("nulls_first") else "LAST"
+        ordering.append(f"{reference(field)} {direction} NULLS {nulls}")
     ordinal = quote(reserved + "ordinal")
     ctes = [f"{reserved}base AS (\n{sql.rstrip().rstrip(';')}\n)"]
     window_order = "ORDER BY " + ", ".join(ordering) if ordering else ""

@@ -5848,7 +5848,7 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
                 # for step 1 scope (SQL models alias as "t", table models have no alias)
                 norm_step = _normalize_expr_for_subquery(step_expr, "t" if model.sql else "")
 
-                # Step 1: find the earliest matching event per entity
+                # Step 1: find the earliest matching event per entity and selected group.
                 select_parts = [f"{entity_sql} AS entity", f"MIN({ts_sql}) AS step_1_ts"]
                 for alias, sql_col in dim_entries:
                     select_parts.append(f"{sql_col} AS {alias}")

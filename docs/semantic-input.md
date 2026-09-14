@@ -284,7 +284,11 @@ existing sequential funnel algorithm through the strict DuckDB boundary. Each
 step finds the earliest qualifying event at or after the previous step's timestamp;
 equal timestamps qualify. There is no conversion-window option for this form.
 Selected grouping values belong to the first step and remain attached when later
-events have different values. Repeated events do not multiply entity counts.
+events have different values. The first event is chosen per entity and selected
+group, so an entity entering multiple groups belongs to each group's population.
+Each group advances from its own first-step timestamp; the same later event can
+qualify for multiple groups. Group counts therefore need not sum to the ungrouped
+distinct count. Repeated events within a group do not multiply entity counts.
 
 Outputs are selected dimensions, `total_entities`, each `step_N_count`, and the
 metric name containing the final step count. The denominator includes only

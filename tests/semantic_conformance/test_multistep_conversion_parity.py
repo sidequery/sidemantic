@@ -77,6 +77,21 @@ def test_later_steps_keep_first_step_dimension_attribution(layer):
     )
 
 
+def test_repeated_entrant_has_independent_chronology_in_each_first_step_group(layer):
+    layer.adapter.execute("""
+        insert into funnel_events values
+          (28,'u1','signup','2024-01-01 12:00:00','b',1),
+          (29,'u1','signup','2024-01-04','c',1);
+    """)
+    # u1 enters a and b before the same view/purchase, and c after those events.
+    # Group populations overlap; the ungrouped distinct population is unchanged.
+    assert result(layer) == (COLUMNS, [(6, 6, 3, 2, 2)])
+    assert result(layer, dimensions=["events.region"], order_by=["events.region"]) == (
+        ["region", *COLUMNS],
+        [("a", 4, 4, 1, 1, 1), ("b", 2, 2, 2, 2, 2), ("c", 1, 1, 0, 0, 0), (None, 1, 1, 1, 0, 0)],
+    )
+
+
 def test_query_filter_scopes_every_step(layer):
     assert result(layer, filters=["kind != 'view'"]) == (COLUMNS, [(6, 6, 0, 0, 0)])
 

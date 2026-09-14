@@ -630,6 +630,7 @@ pub enum RelationshipType {
     OneToOne,
     OneToMany,
     ManyToMany,
+    Cross,
 }
 
 /// A relationship defines how models join together

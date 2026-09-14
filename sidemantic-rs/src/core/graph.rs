@@ -30,7 +30,7 @@ impl JoinStep {
     pub fn causes_fan_out(&self) -> bool {
         matches!(
             self.relationship_type,
-            RelationshipType::OneToMany | RelationshipType::ManyToMany
+            RelationshipType::OneToMany | RelationshipType::ManyToMany | RelationshipType::Cross
         )
     }
 }
@@ -642,11 +642,6 @@ impl SemanticGraph {
                     rel.related_model().to_string()
                 };
                 if is_role {
-                    if rel.r#type == RelationshipType::ManyToMany && rel.through.is_none() {
-                        return Err(SidemanticError::UnsupportedSemanticFeatures {
-                            capabilities: vec!["relationship.roles.many_to_many".into()],
-                        });
-                    }
                     if self.models.contains_key(&target) {
                         return Err(SidemanticError::Validation(format!(
                             "Relationship role instance '{target}' collides with canonical model '{target}'"
@@ -818,6 +813,14 @@ impl SemanticGraph {
                 };
 
                 let (from_keys, to_keys) = match rel.r#type {
+                    RelationshipType::Cross => (Vec::new(), Vec::new()),
+                    RelationshipType::ManyToMany => {
+                        if rel.primary_key.is_some() || rel.primary_key_columns.is_some() {
+                            (fk_keys.clone(), pk_keys.clone())
+                        } else {
+                            (model.primary_keys(), fk_keys.clone())
+                        }
+                    }
                     RelationshipType::OneToOne
                         if instance != canonical || rel.target_model.is_some() =>
                     {
@@ -826,17 +829,23 @@ impl SemanticGraph {
                     RelationshipType::ManyToOne | RelationshipType::OneToOne => {
                         (fk_keys.clone(), pk_keys.clone())
                     }
-                    RelationshipType::OneToMany | RelationshipType::ManyToMany => {
-                        (pk_keys.clone(), fk_keys.clone())
-                    }
+                    RelationshipType::OneToMany => (pk_keys.clone(), fk_keys.clone()),
                 };
 
                 self.adjacency.entry(instance.clone()).or_default().push((
                     related_instance.clone(),
                     from_keys.clone(),
                     to_keys.clone(),
-                    rel.r#type.clone(),
-                    rel.sql.clone(),
+                    if rel.r#type == RelationshipType::ManyToMany {
+                        RelationshipType::OneToMany
+                    } else {
+                        rel.r#type.clone()
+                    },
+                    if rel.r#type == RelationshipType::Cross {
+                        None
+                    } else {
+                        rel.sql.clone()
+                    },
                     rel.edge_id.clone(),
                 ));
             }
@@ -876,15 +885,20 @@ impl SemanticGraph {
                     RelationshipType::ManyToOne => RelationshipType::OneToMany,
                     RelationshipType::OneToMany => RelationshipType::ManyToOne,
                     RelationshipType::OneToOne => RelationshipType::OneToOne,
-                    RelationshipType::ManyToMany => RelationshipType::ManyToMany,
+                    RelationshipType::ManyToMany => RelationshipType::ManyToOne,
+                    RelationshipType::Cross => RelationshipType::Cross,
                 };
 
                 // For reverse edges, swap {from} and {to} in custom SQL
-                let reverse_sql = rel.sql.as_ref().map(|sql| {
-                    sql.replace("{from}", "__TEMP__")
-                        .replace("{to}", "{from}")
-                        .replace("__TEMP__", "{to}")
-                });
+                let reverse_sql = rel
+                    .sql
+                    .as_ref()
+                    .filter(|_| rel.r#type != RelationshipType::Cross)
+                    .map(|sql| {
+                        sql.replace("{from}", "__TEMP__")
+                            .replace("{to}", "{from}")
+                            .replace("__TEMP__", "{to}")
+                    });
 
                 let fk_keys = rel.foreign_key_columns();
                 let pk_keys = if rel.primary_key.is_some() || rel.primary_key_columns.is_some() {
@@ -904,6 +918,14 @@ impl SemanticGraph {
                 };
 
                 let (reverse_from_keys, reverse_to_keys) = match rel.r#type {
+                    RelationshipType::Cross => (Vec::new(), Vec::new()),
+                    RelationshipType::ManyToMany => {
+                        if rel.primary_key.is_some() || rel.primary_key_columns.is_some() {
+                            (pk_keys.clone(), fk_keys.clone())
+                        } else {
+                            (fk_keys.clone(), model.primary_keys())
+                        }
+                    }
                     RelationshipType::OneToOne
                         if instance != canonical || rel.target_model.is_some() =>
                     {
@@ -912,9 +934,7 @@ impl SemanticGraph {
                     RelationshipType::ManyToOne | RelationshipType::OneToOne => {
                         (pk_keys.clone(), fk_keys.clone())
                     }
-                    RelationshipType::OneToMany | RelationshipType::ManyToMany => {
-                        (fk_keys.clone(), pk_keys.clone())
-                    }
+                    RelationshipType::OneToMany => (fk_keys.clone(), pk_keys.clone()),
                 };
 
                 self.adjacency
@@ -1240,21 +1260,50 @@ mod tests {
     }
 
     #[test]
-    fn many_to_many_roles_fail_with_a_specific_capability() {
+    fn direct_many_to_many_roles_keep_recorded_key_direction() {
         let mut graph = SemanticGraph::new();
         graph
             .add_model(Model::new("airports", "id").with_table("airports"))
             .unwrap();
         let mut relationship = role("airport", "airports", "airport_id");
         relationship.r#type = RelationshipType::ManyToMany;
-        let result = graph.add_model(
-            Model::new("flights", "id")
-                .with_table("flights")
-                .with_relationship(relationship),
-        );
-        assert!(
-            matches!(result, Err(SidemanticError::UnsupportedSemanticFeatures { capabilities }) if capabilities == vec!["relationship.roles.many_to_many"])
-        );
+        graph
+            .add_model(
+                Model::new("flights", "id")
+                    .with_table("flights")
+                    .with_relationship(relationship),
+            )
+            .unwrap();
+        let path = graph.find_join_path("flights", "airport").unwrap();
+        assert_eq!(path.steps[0].relationship_type, RelationshipType::OneToMany);
+        assert_eq!(path.steps[0].from_keys, vec!["airport_id".to_string()]);
+        assert_eq!(path.steps[0].to_keys, vec!["id".to_string()]);
+    }
+
+    #[test]
+    fn cross_edges_have_no_keys_or_predicate_in_either_direction() {
+        let mut graph = SemanticGraph::new();
+        let mut relationship = Relationship::new("calendar");
+        relationship.r#type = RelationshipType::Cross;
+        relationship.sql = Some("{from}.unused = {to}.unused".into());
+        graph
+            .add_model(Model::new("calendar", "id").with_table("calendar"))
+            .unwrap();
+        graph
+            .add_model(
+                Model::new("orders", "id")
+                    .with_table("orders")
+                    .with_relationship(relationship),
+            )
+            .unwrap();
+        for (from, to) in [("orders", "calendar"), ("calendar", "orders")] {
+            let path = graph.find_join_path(from, to).unwrap();
+            assert_eq!(path.steps[0].relationship_type, RelationshipType::Cross);
+            assert!(path.steps[0].from_keys.is_empty());
+            assert!(path.steps[0].to_keys.is_empty());
+            assert!(path.steps[0].custom_condition.is_none());
+            assert!(path.has_fan_out());
+        }
     }
 
     #[test]

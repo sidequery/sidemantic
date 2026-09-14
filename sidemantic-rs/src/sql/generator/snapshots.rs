@@ -144,7 +144,6 @@ pub(super) fn try_generate(
         live.use_preaggregations = false;
         return try_generate(generator, &live);
     }
-    generator.reject_consumption_route(query, "snapshot")?;
     if metrics.is_empty()
         || query.ungrouped
         || !query.table_calculations.is_empty()
@@ -249,8 +248,14 @@ pub(super) fn try_generate(
         )?;
     }
     required.extend(query.prepared_policies.model_names().cloned());
-    let paths = generator.build_join_paths(owner, &required)?;
-    if generator.detect_fan_out_risk(owner, &paths).contains(owner) {
+    required.extend(query.consumption_base_model.iter().cloned());
+    required.extend(query.required_population_models.iter().cloned());
+    let anchor = query.consumption_base_model.as_deref().unwrap_or(owner);
+    let paths = generator.build_join_paths(anchor, &required)?;
+    if generator
+        .detect_fan_out_risk(anchor, &paths)
+        .contains(owner)
+    {
         return Err(unsupported("fanout"));
     }
 

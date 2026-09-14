@@ -14,7 +14,7 @@ from sidemantic import (
     SemanticLayer,
 )
 from sidemantic.core.semantic_layer import SecurityError
-from sidemantic.semantic_handoff import UnsupportedSemanticFeaturesError, graph_to_semantic_input
+from sidemantic.semantic_handoff import graph_to_semantic_input
 
 
 @pytest.fixture(params=["python", "rust"])
@@ -173,10 +173,11 @@ def test_unjoinable_explore_base_is_rejected(layer):
         rows(layer, explore="unjoinable")
 
 
-@pytest.mark.parametrize("layer", ["rust"], indirect=True)
 def test_independent_aggregate_route_never_discards_explore_population(layer):
-    with pytest.raises(UnsupportedSemanticFeaturesError, match="consumption_base_model.independent_aggregates"):
-        rows(layer, explore="account_sales", metrics=["quota", "orders.revenue"], filters=[])
+    assert rows(layer, explore="account_sales", metrics=["quota", "orders.revenue"], filters=[]) == [(60, 70)]
+    assert set(
+        rows(layer, explore="account_sales", metrics=["quota", "orders.revenue"], dimensions=["tier"], filters=[])
+    ) == {("business", 10, 30), ("retail", 20, 40), ("empty", 30, None)}
 
 
 def test_intermediate_policy_constrains_related_only_metric(layer):

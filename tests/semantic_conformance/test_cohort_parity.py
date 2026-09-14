@@ -4,7 +4,7 @@ from datetime import date, datetime
 
 import pytest
 
-from sidemantic import Dimension, Metric, Model, SecurityPolicy, SemanticLayer
+from sidemantic import Dimension, Explore, Metric, Model, SecurityPolicy, SemanticLayer
 from sidemantic.core.semantic_layer import SecurityError
 from sidemantic.semantic_handoff import graph_to_semantic_input
 
@@ -60,6 +60,11 @@ def layer(request):
         yield layer
     finally:
         layer.adapter.close()
+
+
+def test_source_anchored_explore_preserves_cohort_population(layer):
+    layer.graph.add_explore(Explore(name="cohort", model="events"))
+    assert result(layer, explore="cohort") == (["qualified"], [(3,)])
 
 
 def cohort_metric(layer):

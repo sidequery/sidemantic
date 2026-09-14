@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from sidemantic import Metric, SemanticLayer
+from sidemantic import Explore, Metric, SemanticLayer
 from sidemantic.adapters.sidemantic import SidemanticAdapter
 from sidemantic.core.semantic_layer import SecurityError
 from sidemantic.semantic_handoff import UnsupportedSemanticFeaturesError
@@ -50,6 +50,11 @@ def test_first_cohort_sparse_periods_nulls_and_inactive_denominator(layer):
     # repeated signup cannot move its cohort, and duplicate activities count once.
     # NULL entities/dates, activity without signup, and deleted rows contribute none.
     assert result(layer) == (DAY_COLUMNS, DAY_ROWS)
+
+
+def test_source_anchored_explore_preserves_retention_population(layer):
+    layer.graph.add_explore(Explore(name="retention", model="events"))
+    assert result(layer, explore="retention") == (DAY_COLUMNS, DAY_ROWS)
 
 
 def test_policy_scopes_cohort_and_activity_for_each_tenant(layer):

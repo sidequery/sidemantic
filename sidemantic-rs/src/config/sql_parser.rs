@@ -1178,6 +1178,7 @@ fn compact_relationship_type(kind: &str) -> Result<RelationshipType> {
         "many_to_one" => Ok(RelationshipType::ManyToOne),
         "one_to_many" => Ok(RelationshipType::OneToMany),
         "many_to_many" => Ok(RelationshipType::ManyToMany),
+        "cross" => Ok(RelationshipType::Cross),
         _ => Err(SidemanticError::Validation(format!(
             "unsupported compact join relationship type '{kind}'"
         ))),
@@ -2006,6 +2007,7 @@ fn build_relationship(props: &HashMap<String, String>) -> Option<Relationship> {
         "one_to_one" | "onetoone" => RelationshipType::OneToOne,
         "one_to_many" | "onetomany" => RelationshipType::OneToMany,
         "many_to_many" | "manytomany" => RelationshipType::ManyToMany,
+        "cross" => RelationshipType::Cross,
         _ => RelationshipType::ManyToOne,
     };
 

@@ -146,7 +146,6 @@ def test_duplicate_role_identity_is_rejected(rust):
         ("missing_key", "explicit through_foreign_key"),
         ("arity", "junction key arity"),
         ("no_through", "without_through"),
-        ("sql", "custom_sql"),
     ],
 )
 def test_incomplete_junction_contract_is_rejected(rust, mutation, expected):
@@ -160,10 +159,16 @@ def test_incomplete_junction_contract_is_rejected(rust, mutation, expected):
         relationship["through_foreign_key"] = ["tenant", "order_id"]
     elif mutation == "no_through":
         del relationship["through"]
-    else:
-        relationship["sql"] = "{from}.id = {to}.id"
     with pytest.raises(Exception, match=expected):
         execute(rust, model, ["primary_tags.name"])
+
+
+def test_bridge_join_retains_bridge_keys_when_custom_sql_is_present(rust):
+    model = source()
+    # Python uses the declared bridge path; direct-only custom SQL does not
+    # replace either bridge predicate.
+    model["models"][0]["relationships"][0]["sql"] = "{from}.id = {to}.id"
+    assert execute(rust, model, ["primary_tags.name"]) == Counter({("x", 10), ("y", 30), ("z", 30), (None, 50)})
 
 
 def test_target_measures_retain_target_key_grain(rust):
@@ -189,5 +194,4 @@ def test_composite_junction_keys_do_not_cross_tenants(rust):
             (3, None),
         ]
     )
-    with pytest.raises(Exception, match="aggregation.requires_single_primary_key"):
-        execute(rust, model, ["primary_tags.name"])
+    assert execute(rust, model, ["primary_tags.name"]) == Counter({("x", 10), ("y", 20), ("z", 20), (None, 50)})

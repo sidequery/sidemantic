@@ -574,6 +574,7 @@ fn parse_relationship_type_label(relationship_type: &str) -> RelationshipType {
         "one_to_one" => RelationshipType::OneToOne,
         "one_to_many" => RelationshipType::OneToMany,
         "many_to_many" => RelationshipType::ManyToMany,
+        "cross" => RelationshipType::Cross,
         _ => RelationshipType::ManyToOne,
     }
 }
@@ -5692,6 +5693,7 @@ fn relationship_type_label(relationship_type: &RelationshipType) -> &'static str
         RelationshipType::OneToOne => "one_to_one",
         RelationshipType::OneToMany => "one_to_many",
         RelationshipType::ManyToMany => "many_to_many",
+        RelationshipType::Cross => "cross",
     }
 }
 

@@ -34,6 +34,9 @@ const SOURCE_DIALECT: DialectType = DialectType::DuckDB;
 pub struct SemanticQuery {
     /// Resolved Explore population anchor, including when no selected field belongs to it.
     pub consumption_base_model: Option<String>,
+    /// Internal source-domain constraints retained by aggregate child queries.
+    #[doc(hidden)]
+    pub required_population_models: HashSet<String>,
     pub metrics: Vec<String>,
     pub dimensions: Vec<String>,
     pub filters: Vec<String>,
@@ -171,10 +174,17 @@ impl<'a> SqlGenerator<'a> {
         self
     }
 
-    fn reject_consumption_route(&self, query: &SemanticQuery, route: &str) -> Result<()> {
-        if query.consumption_base_model.is_some() {
+    fn require_source_local_anchor(&self, query: &SemanticQuery, source: &str) -> Result<()> {
+        // These source-local algorithms do not build a relationship graph. An
+        // anchor on the same source is already respected; a different anchor
+        // needs population projection before entering the algorithm.
+        if query
+            .consumption_base_model
+            .as_deref()
+            .is_some_and(|anchor| anchor != source)
+        {
             return Err(SidemanticError::UnsupportedSemanticFeatures {
-                capabilities: vec![format!("query.consumption_base_model.{route}")],
+                capabilities: vec!["query.consumption_base_model.temporal".into()],
             });
         }
         Ok(())
@@ -232,6 +242,7 @@ impl<'a> SqlGenerator<'a> {
         // Find all required models
         let mut required_models = self.find_required_models(&dimension_refs, &metric_refs)?;
         required_models.extend(query.consumption_base_model.iter().cloned());
+        required_models.extend(query.required_population_models.iter().cloned());
         required_models.extend(query.prepared_policies.model_names().cloned());
         let segment_filters = self.resolve_segments(&query.segments)?;
         let all_filters: Vec<String> = query
@@ -254,8 +265,6 @@ impl<'a> SqlGenerator<'a> {
 
         if self.has_cumulative_metrics(&metric_refs)? {
             self.reject_totals_route(query, "window")?;
-            self.reject_consumption_route(query, "temporal")?;
-            self.reject_computed_keys_for_special_route(&required_models)?;
             return self.generate_with_cumulative(
                 query,
                 &effective_dimensions,
@@ -266,8 +275,6 @@ impl<'a> SqlGenerator<'a> {
 
         if self.needs_preaggregation_for_fanout(&metric_refs)? {
             self.reject_totals_route(query, "preaggregation")?;
-            self.reject_consumption_route(query, "independent_aggregates")?;
-            self.reject_computed_keys_for_special_route(&required_models)?;
             return self.generate_with_preaggregation(
                 query,
                 &effective_dimensions,
@@ -749,20 +756,18 @@ impl<'a> SqlGenerator<'a> {
                 let from_alias = self.model_alias(&step.from_model);
                 let to_alias = self.model_alias(&step.to_model);
 
+                if step.relationship_type == RelationshipType::Cross {
+                    sql.push_str(&format!(
+                        "CROSS JOIN {}_cte AS {}\n",
+                        step.to_model, to_alias
+                    ));
+                    continue;
+                }
+
                 // Use custom condition if available, otherwise default FK/PK join
                 let join_condition = if let Some(custom) = &step.custom_condition {
-                    for model_name in [&step.from_model, &step.to_model] {
-                        if let Some(model) = self.graph.get_model(model_name) {
-                            if crate::core::has_computed_keys(self.graph, model)? {
-                                return Err(SidemanticError::UnsupportedSemanticFeatures {
-                                    capabilities: vec![
-                                        "relationship.computed_key_custom_join".into()
-                                    ],
-                                });
-                            }
-                        }
-                    }
-                    // Replace {from} and {to} placeholders with actual aliases
+                    // Custom predicates bind physical source columns, independently
+                    // of semantic key expressions used for entity deduplication.
                     custom
                         .replace("{from}", &from_alias)
                         .replace("{to}", &to_alias)
@@ -1033,6 +1038,7 @@ impl<'a> SqlGenerator<'a> {
     ) -> Result<()> {
         let mut required_models = self.find_required_models(dimension_refs, metric_refs)?;
         required_models.extend(query.consumption_base_model.iter().cloned());
+        required_models.extend(query.required_population_models.iter().cloned());
         required_models.extend(query.prepared_policies.model_names().cloned());
         let segment_filters = self.resolve_segments(&query.segments)?;
         let all_filters: Vec<String> = query
@@ -2166,33 +2172,6 @@ impl<'a> SqlGenerator<'a> {
         Ok(false)
     }
 
-    fn reject_computed_keys_for_special_route(
-        &self,
-        required_models: &HashSet<String>,
-    ) -> Result<()> {
-        let mut participating_models = required_models.clone();
-        for from_model in required_models {
-            for to_model in required_models {
-                if let Ok(path) = self.graph.find_join_path_with_context(
-                    from_model,
-                    to_model,
-                    Some(required_models),
-                ) {
-                    for step in path.steps {
-                        participating_models.insert(step.from_model);
-                        participating_models.insert(step.to_model);
-                    }
-                }
-            }
-        }
-        if self.has_computed_key_models(&participating_models)? {
-            return Err(SidemanticError::UnsupportedSemanticFeatures {
-                capabilities: vec!["aggregation.computed_key_query_shape".into()],
-            });
-        }
-        Ok(())
-    }
-
     fn model_primary_key_expr(
         &self,
         model: &crate::core::Model,
@@ -2205,27 +2184,16 @@ impl<'a> SqlGenerator<'a> {
                 .map(|column| self.key_sql(model, column, alias))
                 .unwrap_or_else(|| Ok(model.primary_key.clone()));
         }
-        if crate::core::has_computed_keys(self.graph, model)? {
-            return Err(SidemanticError::UnsupportedSemanticFeatures {
-                capabilities: vec!["aggregation.computed_composite_key".into()],
-            });
-        }
-
+        // Keep the existing composite distinct-count representation, but bind
+        // each component through the same source-local key expression as joins.
         let parts = primary_keys
             .iter()
-            .flat_map(|column| {
-                let qualified = match alias {
-                    Some(alias) => format!("{alias}.{column}"),
-                    None => column.clone(),
-                };
-                [
-                    format!("COALESCE(CAST({qualified} AS VARCHAR), '')"),
-                    "'|'".to_string(),
-                ]
+            .map(|column| {
+                let qualified = self.key_sql(model, column, alias)?;
+                Ok(format!("COALESCE(CAST({qualified} AS VARCHAR), '')"))
             })
-            .collect::<Vec<_>>();
-        let parts = &parts[..parts.len().saturating_sub(1)];
-        Ok(format!("CONCAT({})", parts.join(", ")))
+            .collect::<Result<Vec<_>>>()?;
+        Ok(format!("CONCAT({})", parts.join(", '|', ")))
     }
 
     /// Generate alias for a model (first letter lowercase)
@@ -2361,6 +2329,8 @@ impl<'a> SqlGenerator<'a> {
                 .with_ungrouped(false)
                 .with_skip_default_time_dimensions(true);
             subquery.prepared_policies = query.prepared_policies.clone();
+            subquery.consumption_base_model = query.consumption_base_model.clone();
+            subquery.required_population_models = query.required_population_models.clone();
             let subquery_sql = self.generate(&subquery)?;
             cte_defs.push(format!("{cte_name} AS (\n{subquery_sql}\n)"));
         }
@@ -2581,6 +2551,7 @@ impl<'a> SqlGenerator<'a> {
         }
 
         if let Some(retention_metric_ref) = retention_metrics.first() {
+            self.require_source_local_anchor(query, &retention_metric_ref.model)?;
             if retention_metrics.len() > 1 {
                 return Err(SidemanticError::Validation(
                     "Only one retention metric can be queried at a time".to_string(),
@@ -2602,6 +2573,7 @@ impl<'a> SqlGenerator<'a> {
         }
 
         if let Some(conversion_metric_ref) = conversion_metrics.first() {
+            self.require_source_local_anchor(query, &conversion_metric_ref.model)?;
             if conversion_metrics.len() > 1 {
                 return Err(SidemanticError::Validation(
                     "Only one conversion metric can be queried at a time".to_string(),
@@ -2636,6 +2608,7 @@ impl<'a> SqlGenerator<'a> {
         }
 
         if let Some(cohort_metric_ref) = cohort_metrics.first() {
+            self.require_source_local_anchor(query, &cohort_metric_ref.model)?;
             if cohort_metrics.len() > 1 {
                 return Err(SidemanticError::Validation(
                     "Only one cohort metric can be queried at a time".to_string(),
@@ -2671,6 +2644,8 @@ impl<'a> SqlGenerator<'a> {
             .with_segments(query.segments.clone())
             .with_ungrouped(false);
         inner_query.prepared_policies = query.prepared_policies.clone();
+        inner_query.consumption_base_model = query.consumption_base_model.clone();
+        inner_query.required_population_models = query.required_population_models.clone();
 
         let inner_sql = self.generate(&inner_query)?;
         let mut select_exprs: Vec<String> = Vec::new();
@@ -5409,6 +5384,22 @@ impl<'a> SqlGenerator<'a> {
         join_paths: &HashMap<String, JoinPath>,
     ) -> HashSet<String> {
         let mut at_risk = HashSet::new();
+
+        // Every participating source can repeat across a Cartesian edge,
+        // including the target side when there is more than one anchor row.
+        if join_paths.values().any(|path| {
+            path.steps
+                .iter()
+                .any(|step| step.relationship_type == RelationshipType::Cross)
+        }) {
+            at_risk.insert(base_model.to_string());
+            for path in join_paths.values() {
+                for step in &path.steps {
+                    at_risk.insert(step.from_model.clone());
+                    at_risk.insert(step.to_model.clone());
+                }
+            }
+        }
 
         // For each model we join to, check if the path has fan-out
         for (model, path) in join_paths {

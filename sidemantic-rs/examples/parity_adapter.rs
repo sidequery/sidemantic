@@ -775,6 +775,7 @@ fn relationship_type_name(relationship_type: &RelationshipType) -> &'static str 
         RelationshipType::OneToOne => "one_to_one",
         RelationshipType::OneToMany => "one_to_many",
         RelationshipType::ManyToMany => "many_to_many",
+        RelationshipType::Cross => "cross",
     }
 }
 

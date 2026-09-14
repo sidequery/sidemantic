@@ -781,6 +781,7 @@ impl RelationshipConfig {
             Some("one_to_one" | "onetoone") => RelationshipType::OneToOne,
             Some("one_to_many" | "onetomany") => RelationshipType::OneToMany,
             Some("many_to_many" | "manytomany") => RelationshipType::ManyToMany,
+            Some("cross") => RelationshipType::Cross,
             _ => RelationshipType::ManyToOne,
         };
 

@@ -350,14 +350,40 @@ pub(super) fn try_generate(
         query
     };
     let dimensions = generator.parse_dimension_refs(&query.dimensions)?;
+    // Cartesian products require every participating source even in a child
+    // selecting only one source's measure: an empty sibling annihilates rows.
+    // Keyed independent aggregates keep their existing separate populations.
+    let mut population_models = query.required_population_models.clone();
+    for (index, from) in plan.models.iter().enumerate() {
+        for to in plan.models.iter().skip(index + 1) {
+            let path = generator.graph.find_join_path(from, to)?;
+            if path
+                .steps
+                .iter()
+                .any(|step| step.relationship_type == RelationshipType::Cross)
+            {
+                for step in path.steps {
+                    population_models.insert(step.from_model);
+                    population_models.insert(step.to_model);
+                }
+            }
+        }
+    }
     let mut fanout_models = HashSet::new();
     for model in &plan.models {
         let mut required = HashSet::from([model.clone()]);
         required.extend(dimensions.iter().map(|dimension| dimension.model.clone()));
         required.extend(query.prepared_policies.model_names().cloned());
         required.extend(generator.find_filter_models(&all_filters));
-        let paths = generator.build_join_paths(model, &required)?;
-        if !query.ungrouped && generator.detect_fan_out_risk(model, &paths).contains(model) {
+        required.extend(query.consumption_base_model.iter().cloned());
+        required.extend(population_models.iter().cloned());
+        let anchor = query.consumption_base_model.as_deref().unwrap_or(model);
+        let paths = generator.build_join_paths(anchor, &required)?;
+        if !query.ungrouped
+            && generator
+                .detect_fan_out_risk(anchor, &paths)
+                .contains(model)
+        {
             fanout_models.insert(model.clone());
         }
     }
@@ -388,7 +414,6 @@ pub(super) fn try_generate(
             }
         }
     }
-    generator.reject_consumption_route(query, "independent_aggregates")?;
     if query.ungrouped || !query.table_calculations.is_empty() {
         return Err(unsupported("cross_grain_query_shape"));
     }
@@ -484,6 +509,7 @@ pub(super) fn try_generate(
             .filter(|leaf| &leaf.model == model)
             .collect();
         let mut child = query.clone();
+        child.required_population_models = population_models.clone();
         child.metrics = leaves.iter().map(|leaf| leaf.reference.clone()).collect();
         child.filters = row_filters.clone();
         child.segments.clear();

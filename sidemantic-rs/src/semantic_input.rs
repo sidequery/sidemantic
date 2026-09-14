@@ -568,15 +568,11 @@ fn decode_metric(
 
 fn decode_relationship(value: Value, path: &str) -> Result<Relationship> {
     let mut raw = object(value, path)?;
-    if raw.get("type") == Some(&json!("cross")) {
-        return Err(unsupported("relationship.cross"));
-    }
     if raw.get("type") == Some(&json!("many_to_many")) {
-        if raw.get("through").is_none_or(Value::is_null) {
+        if raw.get("through").is_none_or(Value::is_null)
+            && raw.get("foreign_key").is_none_or(Value::is_null)
+        {
             return Err(unsupported("relationship.many_to_many.without_through"));
-        }
-        if raw.get("sql").is_some_and(|value| !value.is_null()) {
-            return Err(unsupported("relationship.many_to_many.custom_sql"));
         }
     }
     for field in [
@@ -938,7 +934,9 @@ impl SemanticInput {
                         format!("unknown target {}", relationship.related_model()),
                     ));
                 }
-                if relationship.r#type == crate::core::RelationshipType::ManyToMany {
+                if relationship.r#type == crate::core::RelationshipType::ManyToMany
+                    && relationship.through.is_some()
+                {
                     let through = relationship
                         .through
                         .as_deref()
@@ -978,7 +976,33 @@ impl SemanticInput {
                     relationship.primary_key_columns = Some(target_keys);
                     continue;
                 }
-                if relationship.sql.is_some() {
+                if relationship.r#type == crate::core::RelationshipType::ManyToMany {
+                    let foreign = relationship.foreign_key_columns.clone().unwrap_or_default();
+                    let primary = relationship.primary_key_columns.clone().unwrap_or_default();
+                    let (local, remote) = if primary.is_empty() {
+                        // Legacy direct joins name the remote key as foreign_key.
+                        (keys[&model.name].clone(), foreign)
+                    } else {
+                        // An explicit primary_key records a local/remote key pair.
+                        (foreign, primary)
+                    };
+                    if relationship.sql.is_none()
+                        && (local.is_empty() || remote.is_empty() || local.len() != remote.len())
+                    {
+                        return Err(invalid(
+                            "relationships",
+                            "direct many-to-many join key arity mismatch",
+                        ));
+                    }
+                    relationship.foreign_key = local.first().cloned();
+                    relationship.foreign_key_columns = Some(local);
+                    relationship.primary_key = remote.first().cloned();
+                    relationship.primary_key_columns = Some(remote);
+                    continue;
+                }
+                if relationship.sql.is_some()
+                    || relationship.r#type == crate::core::RelationshipType::Cross
+                {
                     continue;
                 }
                 let foreign = relationship.foreign_key_columns.clone().unwrap_or_default();

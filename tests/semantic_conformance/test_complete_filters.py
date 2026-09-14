@@ -592,3 +592,19 @@ def test_graph_complete_row_count_remains_explicitly_unsupported(owner):
         assert "metric.complete_filters" in error.value.capabilities
     finally:
         layer.adapter.close()
+
+
+@pytest.mark.parametrize("layer", ["python"], indirect=True)
+@pytest.mark.parametrize("expression,function", [("COUNT(*)", "COUNT("), ("COUNT_BIG(*)", "COUNT_BIG(")])
+def test_tsql_complete_row_count_retains_function_identity(row_count_layer, expression, function):
+    from sidemantic.sql.generator import SQLGenerator
+
+    metric = row_count_layer.graph.models["orders"].get_metric("paid_rows")
+    metric.sql = expression
+    sql = SQLGenerator(row_count_layer.graph, dialect="tsql").generate(metrics=["orders.paid_rows"])
+    assert function in sql
+    if expression == "COUNT_BIG(*)":
+        assert "COUNT_BIG(*)" in sql
+    else:
+        assert "CASE WHEN" in sql
+    assert metric.sql == expression

@@ -154,6 +154,8 @@ class SQLGenerator:
                     if (
                         isinstance(parsed, exp.Count)
                         and isinstance(parsed.this, exp.Star)
+                        # TSQL distinguishes COUNT_BIG from COUNT through this flag.
+                        and not (self.dialect.lower() == "tsql" and parsed.args.get("big_int"))
                         and not any(value for key, value in parsed.args.items() if key not in ("this", "big_int"))
                         and not any(parsed.this.args.values())
                     ):

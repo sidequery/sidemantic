@@ -4701,7 +4701,16 @@ impl<'a> SqlGenerator<'a> {
                 } else {
                     self.quote_identifier(&column.field)
                 };
-                replacements.insert((column.model, column.field), format!("({source})"));
+                let replacement =
+                    match polyglot_sql::parse_one(&format!("SELECT {source}"), self.dialect) {
+                        Ok(Expression::Select(select))
+                            if matches!(select.expressions.as_slice(), [Expression::Column(_)]) =>
+                        {
+                            source
+                        }
+                        _ => format!("({source})"),
+                    };
+                replacements.insert((column.model, column.field), replacement);
             }
             let filter_sql = self.emit_expression(&crate::core::replace_outer_semantic_columns(
                 parse_semantic_expression(filter)?,

@@ -11,43 +11,47 @@ use sidemantic::{
     SymmetricAggType, TableCalculation,
 };
 
+// Keep the largest action payload indirect without boxing individual collections.
+#[derive(Debug, Deserialize)]
+struct CompileRequest {
+    models_yaml: String,
+    #[serde(default)]
+    metrics: Vec<String>,
+    #[serde(default)]
+    dimensions: Vec<String>,
+    #[serde(default)]
+    filters: Vec<String>,
+    #[serde(default)]
+    segments: Vec<String>,
+    #[serde(default)]
+    order_by: Vec<String>,
+    #[serde(default)]
+    aliases: HashMap<String, String>,
+    timezone: Option<String>,
+    #[serde(default)]
+    with_totals: bool,
+    limit: Option<usize>,
+    offset: Option<usize>,
+    #[serde(default)]
+    ungrouped: bool,
+    #[serde(default)]
+    skip_default_time_dimensions: bool,
+    dialect: Option<String>,
+    #[serde(default)]
+    use_preaggregations: bool,
+    preagg_database: Option<String>,
+    preagg_schema: Option<String>,
+    #[serde(default)]
+    parameter_values: std::collections::HashMap<String, serde_yaml::Value>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 enum Request {
     Validate {
         models_yaml: String,
     },
-    Compile {
-        models_yaml: String,
-        #[serde(default)]
-        metrics: Vec<String>,
-        #[serde(default)]
-        dimensions: Vec<String>,
-        #[serde(default)]
-        filters: Vec<String>,
-        #[serde(default)]
-        segments: Vec<String>,
-        #[serde(default)]
-        order_by: Vec<String>,
-        #[serde(default)]
-        aliases: Box<HashMap<String, String>>,
-        timezone: Option<String>,
-        #[serde(default)]
-        with_totals: bool,
-        limit: Option<usize>,
-        offset: Option<usize>,
-        #[serde(default)]
-        ungrouped: bool,
-        #[serde(default)]
-        skip_default_time_dimensions: bool,
-        dialect: Option<String>,
-        #[serde(default)]
-        use_preaggregations: bool,
-        preagg_database: Option<String>,
-        preagg_schema: Option<String>,
-        #[serde(default)]
-        parameter_values: Box<std::collections::HashMap<String, serde_yaml::Value>>,
-    },
+    Compile(Box<CompileRequest>),
     JoinPath {
         models_yaml: String,
         from_model: String,
@@ -160,26 +164,27 @@ fn handle(request: Request) -> sidemantic::Result<Response> {
                 value: None,
             })
         }
-        Request::Compile {
-            models_yaml,
-            metrics,
-            dimensions,
-            filters,
-            segments,
-            order_by,
-            aliases,
-            timezone,
-            with_totals,
-            limit,
-            offset,
-            ungrouped,
-            skip_default_time_dimensions,
-            dialect,
-            use_preaggregations,
-            preagg_database,
-            preagg_schema,
-            parameter_values,
-        } => {
+        Request::Compile(request) => {
+            let CompileRequest {
+                models_yaml,
+                metrics,
+                dimensions,
+                filters,
+                segments,
+                order_by,
+                aliases,
+                timezone,
+                with_totals,
+                limit,
+                offset,
+                ungrouped,
+                skip_default_time_dimensions,
+                dialect,
+                use_preaggregations,
+                preagg_database,
+                preagg_schema,
+                parameter_values,
+            } = *request;
             let graph = load_from_string(&models_yaml)?;
             let filters =
                 sidemantic::runtime::interpolate_query_filters(&graph, filters, &parameter_values)
@@ -195,7 +200,7 @@ fn handle(request: Request) -> sidemantic::Result<Response> {
             query.use_preaggregations = use_preaggregations;
             query.preagg_database = preagg_database;
             query.preagg_schema = preagg_schema;
-            query.aliases = *aliases;
+            query.aliases = aliases;
             query.timezone = timezone;
             query.with_totals = with_totals;
             if let Some(limit) = limit {
@@ -854,6 +859,39 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compile_request_keeps_flat_json_and_defaults() {
+        let minimal: Request = serde_json::from_value(json!({
+            "action": "compile", "models_yaml": "models: []"
+        }))
+        .unwrap();
+        let Request::Compile(minimal) = minimal else {
+            panic!("expected compile request")
+        };
+        assert!(minimal.metrics.is_empty());
+        assert!(minimal.aliases.is_empty());
+        assert!(minimal.parameter_values.is_empty());
+        assert!(!minimal.use_preaggregations);
+        assert!(minimal.preagg_schema.is_none());
+
+        let populated: Request = serde_json::from_value(json!({
+            "action": "compile", "models_yaml": "models: []",
+            "metrics": ["orders.revenue"],
+            "aliases": {"orders.revenue": "Revenue Total"},
+            "parameter_values": {"region": "west"},
+            "use_preaggregations": true, "preagg_schema": "rollups"
+        }))
+        .unwrap();
+        let Request::Compile(populated) = populated else {
+            panic!("expected compile request")
+        };
+        assert_eq!(populated.metrics, ["orders.revenue"]);
+        assert_eq!(populated.aliases["orders.revenue"], "Revenue Total");
+        assert_eq!(populated.parameter_values["region"].as_str(), Some("west"));
+        assert!(populated.use_preaggregations);
+        assert_eq!(populated.preagg_schema.as_deref(), Some("rollups"));
+    }
 
     #[test]
     fn compile_transport_routes_rollups_and_preserves_raw_average_fallback() {

@@ -9,9 +9,11 @@ use std::collections::{HashMap, HashSet};
 use super::{parse_sql_with_dialect, table_name_and_alias, QueryRewriter};
 use crate::core::MetricType;
 use crate::error::{Result, SidemanticError};
+use crate::semantic_input::dialects;
+use polyglot_sql::dialects::{DialectImpl, SnowflakeDialect};
 use polyglot_sql::expressions::{GroupBy, Identifier, Select, Where};
 use polyglot_sql::tokens::{Token, TokenType, Tokenizer};
-use polyglot_sql::{generate as polyglot_generate, DialectType, Expression};
+use polyglot_sql::{generate as polyglot_generate, Dialect, DialectType, Expression};
 use serde_json::Value;
 
 #[derive(Clone)]
@@ -23,7 +25,7 @@ struct Call {
 
 struct Lowerer<'a, 'g> {
     rewriter: &'a QueryRewriter<'g>,
-    dialect: DialectType,
+    source_dialect: DialectType,
     calls: HashMap<String, Call>,
     reserved: HashSet<String>,
     changed: bool,
@@ -41,10 +43,32 @@ fn decode<T: serde::de::DeserializeOwned>(value: Value) -> Result<T> {
     serde_json::from_value(value).map_err(|error| invalid(error.to_string()))
 }
 
-fn tokens(sql: &str) -> Result<Vec<Token>> {
-    Tokenizer::default_config()
-        .tokenize(sql)
-        .map_err(|error| SidemanticError::SqlParse(error.to_string()))
+fn tokens(sql: &str, dialect: DialectType) -> Result<Vec<Token>> {
+    let mut tokens = if dialect == DialectType::Snowflake {
+        // Lex the original escaped string spans. Literal decoding is performed
+        // once later by dialect normalization, not by this extension scanner.
+        let mut config = SnowflakeDialect.tokenizer_config();
+        config.string_escapes.push('\\');
+        Tokenizer::new(config).tokenize(sql)
+    } else {
+        Dialect::get(dialect).tokenize(sql)
+    }
+    .map_err(|error| SidemanticError::SqlParse(error.to_string()))?;
+    // Polyglot 0.1.x spans count Unicode scalars; Rust string slices use bytes.
+    let offsets = sql
+        .char_indices()
+        .map(|(offset, _)| offset)
+        .chain([sql.len()])
+        .collect::<Vec<_>>();
+    for token in &mut tokens {
+        token.span.start = *offsets
+            .get(token.span.start)
+            .ok_or_else(|| invalid("Invalid Yardstick token span"))?;
+        token.span.end = *offsets
+            .get(token.span.end)
+            .ok_or_else(|| invalid("Invalid Yardstick token span"))?;
+    }
+    Ok(tokens)
 }
 
 fn matching(tokens: &[Token], open: usize) -> Result<usize> {
@@ -106,7 +130,7 @@ fn map_columns(
 
 impl Lowerer<'_, '_> {
     fn expression(&self, sql: &str) -> Result<Expression> {
-        let statements = parse_sql_with_dialect(&format!("SELECT {sql}"), self.dialect)?;
+        let statements = parse_sql_with_dialect(&format!("SELECT {sql}"), DialectType::DuckDB)?;
         match statements.as_slice() {
             [Expression::Select(select)] if select.expressions.len() == 1 => {
                 let mut remainder = (**select).clone();
@@ -123,8 +147,16 @@ impl Lowerer<'_, '_> {
     }
 
     fn sql(&self, expression: &Expression) -> Result<String> {
-        polyglot_generate(expression, self.dialect)
+        polyglot_generate(expression, DialectType::DuckDB)
             .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))
+    }
+
+    fn authored_expression(&self, sql: &str) -> Result<Expression> {
+        self.expression(&dialects::fragment(
+            sql,
+            self.source_dialect,
+            dialects::Fragment::Scalar,
+        )?)
     }
 
     fn register(&mut self, call: Call) -> String {
@@ -140,7 +172,7 @@ impl Lowerer<'_, '_> {
     }
 
     fn normalize(&mut self, sql: &str) -> Result<(String, bool)> {
-        let stream = tokens(sql)?;
+        let stream = tokens(sql, self.source_dialect)?;
         self.reserved
             .extend(stream.iter().map(|token| token.text.to_lowercase()));
         let semantic = stream
@@ -162,7 +194,7 @@ impl Lowerer<'_, '_> {
                 end = matching(&stream, index + 1)?;
                 let candidate = &sql[stream[index + 1].span.end..stream[end].span.start];
                 argument = self
-                    .expression(candidate)
+                    .authored_expression(candidate)
                     .ok()
                     .filter(|expr| reference(expr).is_some());
                 visible = true;
@@ -173,7 +205,7 @@ impl Lowerer<'_, '_> {
                 end = matching(&stream, index)?;
                 let candidate = &sql[stream[index].span.end..stream[end].span.start];
                 argument = self
-                    .expression(candidate)
+                    .authored_expression(candidate)
                     .ok()
                     .filter(|expr| reference(expr).is_some());
                 visible = true;
@@ -193,7 +225,7 @@ impl Lowerer<'_, '_> {
                         .is_some_and(|token| token.token_type == TokenType::LParen)
                 {
                     argument = self
-                        .expression(&sql[stream[index].span.start..stream[end].span.end])
+                        .authored_expression(&sql[stream[index].span.start..stream[end].span.end])
                         .ok()
                         .filter(|expr| reference(expr).is_some());
                 }
@@ -214,6 +246,7 @@ impl Lowerer<'_, '_> {
                 end = matching(&stream, open)?;
                 modifiers.extend(split_modifiers(
                     &sql[stream[open].span.end..stream[end].span.start],
+                    self.source_dialect,
                 )?);
             }
             output.push_str(&sql[cursor..stream[start].span.start]);
@@ -669,7 +702,7 @@ impl Lowerer<'_, '_> {
         let alias_sql = self.sql(&Expression::Identifier(alias))?;
         let parsed = parse_sql_with_dialect(
             &format!("SELECT * FROM {source_sql} AS {alias_sql}"),
-            self.dialect,
+            DialectType::DuckDB,
         )?;
         let Expression::Select(select) = &parsed[0] else {
             unreachable!()
@@ -700,13 +733,14 @@ impl Lowerer<'_, '_> {
         };
         let mut validator = Lowerer {
             rewriter: self.rewriter,
-            dialect: self.dialect,
+            source_dialect: self.source_dialect,
             calls: HashMap::new(),
             reserved: HashSet::new(),
             changed: false,
         };
         let (normalized, _) = validator.normalize(sql)?;
-        let statements = parse_sql_with_dialect(&normalized, self.dialect)?;
+        let normalized = dialects::query(&normalized, self.source_dialect)?;
+        let statements = parse_sql_with_dialect(&normalized, DialectType::DuckDB)?;
         if statements.len() != 1
             || !matches!(
                 statements[0],
@@ -736,9 +770,11 @@ impl Lowerer<'_, '_> {
                 "yardstick() requires a single read-only SELECT query",
             ));
         }
-        let rewritten =
-            self.rewriter
-                .rewrite_with_output_dialect(sql, self.dialect, self.dialect)?;
+        let rewritten = self.rewriter.rewrite_with_output_dialect(
+            sql,
+            self.source_dialect,
+            DialectType::DuckDB,
+        )?;
         *source = self.expression(&format!("({rewritten})"))?;
         self.changed = true;
         Ok(())
@@ -893,7 +929,7 @@ impl Lowerer<'_, '_> {
         });
         let mut global_all = false;
         for modifier in call.modifiers.iter().rev() {
-            let stream = tokens(modifier)?;
+            let stream = tokens(modifier, self.source_dialect)?;
             let Some(head) = stream.first() else { continue };
             let body = modifier[head.span.end..].trim();
             match head.text.to_ascii_uppercase().as_str() {
@@ -919,8 +955,12 @@ impl Lowerer<'_, '_> {
                     }
                 }
                 "WHERE" => {
-                    let expression =
-                        self.remap(self.expression(body)?, &[model_name], "_inner", single)?;
+                    let expression = self.remap(
+                        self.authored_expression(body)?,
+                        &[model_name],
+                        "_inner",
+                        single,
+                    )?;
                     where_predicates = vec![self.sql(&expression)?];
                     visible = false;
                     if call.modifiers.len() == 1 {
@@ -930,7 +970,7 @@ impl Lowerer<'_, '_> {
                 "SET" => {
                     visible = false;
                     let rewritten = self.current(body, &current)?;
-                    let expression = self.expression(&rewritten)?;
+                    let expression = self.authored_expression(&rewritten)?;
                     match expression {
                         Expression::Eq(eq) => {
                             let key = self.signature(eq.left.clone())?;
@@ -1176,7 +1216,7 @@ impl Lowerer<'_, '_> {
     }
 
     fn current(&self, sql: &str, context: &HashSet<String>) -> Result<String> {
-        let stream = tokens(sql)?;
+        let stream = tokens(sql, self.source_dialect)?;
         let mut output = String::new();
         let mut cursor = 0;
         let mut index = 0;
@@ -1210,7 +1250,7 @@ impl Lowerer<'_, '_> {
                 &sql[stream[start].span.start..stream[end].span.end]
             };
             output.push_str(&sql[cursor..stream[index].span.start]);
-            let key = self.signature(self.expression(target)?)?;
+            let key = self.signature(self.authored_expression(target)?)?;
             output.push_str(if context.contains(&key) {
                 target
             } else {
@@ -1224,14 +1264,14 @@ impl Lowerer<'_, '_> {
     }
 
     fn all_targets(&self, sql: &str) -> Result<Vec<Expression>> {
-        let stream = tokens(sql)?;
+        let stream = tokens(sql, self.source_dialect)?;
         // Space-separated targets are an extension. Arithmetic remains a single
         // ordinary SQL expression and is parsed without splitting it.
         if stream.iter().any(|token| {
             ["+", "-", "*", "/", "=", "AND", "OR"]
                 .contains(&token.text.to_ascii_uppercase().as_str())
         }) {
-            return Ok(vec![self.expression(sql)?]);
+            return Ok(vec![self.authored_expression(sql)?]);
         }
         let mut targets = Vec::new();
         let mut index = 0;
@@ -1257,7 +1297,9 @@ impl Lowerer<'_, '_> {
                     index += 2;
                 }
             }
-            targets.push(self.expression(&sql[stream[start].span.start..stream[index].span.end])?);
+            targets.push(
+                self.authored_expression(&sql[stream[start].span.start..stream[index].span.end])?,
+            );
             index += 1;
         }
         Ok(targets)
@@ -1353,8 +1395,8 @@ fn expand_groups(expression: &Expression, output: &mut Vec<Expression>) -> Resul
     Ok(())
 }
 
-fn split_modifiers(sql: &str) -> Result<Vec<String>> {
-    let stream = tokens(sql)?;
+fn split_modifiers(sql: &str, dialect: DialectType) -> Result<Vec<String>> {
+    let stream = tokens(sql, dialect)?;
     let mut starts = vec![0];
     let mut depth = 0;
     for (index, token) in stream.iter().enumerate() {
@@ -1389,14 +1431,14 @@ impl QueryRewriter<'_> {
     ) -> Result<Option<String>> {
         let mut lowerer = Lowerer {
             rewriter: self,
-            dialect: input,
+            source_dialect: input,
             calls: HashMap::new(),
             reserved: HashSet::new(),
             changed: false,
         };
         let (normalized, semantic) = lowerer.normalize(sql)?;
         if lowerer.calls.is_empty()
-            && !tokens(sql)?
+            && !tokens(sql, input)?
                 .iter()
                 .any(|token| token.text.eq_ignore_ascii_case("yardstick"))
             && !self.graph.models().any(|model| {
@@ -1413,7 +1455,8 @@ impl QueryRewriter<'_> {
             }
             return Ok(None);
         }
-        let mut statements = parse_sql_with_dialect(&normalized, input)?;
+        let normalized = dialects::query(&normalized, input)?;
+        let mut statements = parse_sql_with_dialect(&normalized, DialectType::DuckDB)?;
         if statements.len() != 1 {
             return Err(invalid("Yardstick requires a single statement"));
         }
@@ -1423,13 +1466,11 @@ impl QueryRewriter<'_> {
         if !lowerer.changed {
             if semantic {
                 return self
-                    .rewrite_with_output_dialect(&normalized, input, output)
+                    .rewrite_with_output_dialect(&normalized, DialectType::DuckDB, output)
                     .map(Some);
             }
             return Ok(None);
         }
-        polyglot_generate(&decode(value)?, output)
-            .map(Some)
-            .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))
+        dialects::emit(decode(value)?, DialectType::DuckDB, output).map(Some)
     }
 }

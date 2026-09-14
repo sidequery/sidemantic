@@ -1362,7 +1362,6 @@ fn rewrite_semantic_input_diagnostics(
             .map(dialects::parse_dialect)
             .transpose()?
             .unwrap_or(input.input_dialect);
-        let sql = dialects::query(sql, sql_dialect)?;
         let security_controls = context.enforce_visibility
             || input
                 .policies
@@ -1389,8 +1388,7 @@ fn rewrite_semantic_input_diagnostics(
             rewriter =
                 rewriter.with_query_preparer(&prepare, &policy_definitions, security_controls);
         }
-        let sql =
-            rewriter.rewrite_with_output_dialect(&sql, DialectType::DuckDB, output_dialect)?;
+        let sql = rewriter.rewrite_with_output_dialect(sql, sql_dialect, output_dialect)?;
         Ok(RewriteDiagnostics {
             sql,
             warnings: rewriter.take_warnings(),

@@ -69,6 +69,24 @@ pub(crate) fn query(sql: &str, source: DialectType) -> Result<String> {
     transpile(sql, source, DialectType::DuckDB)
 }
 
+/// The native rewriter accepts ordinary statement batches without request
+/// policies. Fragment/model validation continues to require exactly one query.
+pub(crate) fn query_batch(sql: &str, source: DialectType) -> Result<String> {
+    if source == DialectType::DuckDB {
+        return Ok(sql.to_owned());
+    }
+    let sql = super::literals::source_sql(sql, source)?;
+    #[cfg(target_arch = "wasm32")]
+    crate::wasm_sql_guard::check(&sql, source)?;
+    Dialect::get(source)
+        .transpile_to(&sql, DialectType::DuckDB)
+        .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))?
+        .iter()
+        .map(|statement| super::dates::normalize_transpiled(statement, source, DialectType::DuckDB))
+        .collect::<Result<Vec<_>>>()
+        .map(|statements| statements.join(";\n"))
+}
+
 #[derive(Clone, Copy)]
 pub(crate) enum Fragment {
     Scalar,

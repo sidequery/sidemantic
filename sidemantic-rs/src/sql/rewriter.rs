@@ -76,7 +76,10 @@ impl<'a> QueryRewriter<'a> {
         if let Some(rewritten) = self.rewrite_yardstick(sql, input_dialect, output_dialect)? {
             return Ok(rewritten);
         }
-        let statements = parse_sql_with_dialect(sql, input_dialect)?;
+        // Yardstick must remove its extension syntax before the ordinary SQL
+        // normalizer runs. Semantic binding and graph SQL share DuckDB syntax.
+        let sql = crate::semantic_input::dialects::query_batch(sql, input_dialect)?;
+        let statements = parse_sql_with_dialect(&sql, DialectType::DuckDB)?;
 
         if statements.is_empty() {
             return Err(SidemanticError::SqlParse("Empty SQL".into()));
@@ -90,7 +93,7 @@ impl<'a> QueryRewriter<'a> {
             let rewritten = self.rewrite_statement(statement)?;
             rewritten_statements.push(crate::semantic_input::dialects::emit(
                 rewritten,
-                input_dialect,
+                DialectType::DuckDB,
                 output_dialect,
             )?);
         }

@@ -56,6 +56,7 @@ pub struct SemanticInput {
     validation_context: QueryValidationContext,
     policies: HashMap<String, policies::ModelPolicies>,
     input_dialect: DialectType,
+    deferred_segment_dialects: dialects::SegmentDialects,
 }
 
 fn invalid(path: &str, message: impl std::fmt::Display) -> SidemanticError {
@@ -858,7 +859,7 @@ impl SemanticInput {
         }
         let input_dialect = dialects::parse_dialect(&envelope.input_dialect)?;
         let policies = policies::decode_with_dialect(&envelope.models, input_dialect)?;
-        dialects::normalize(&mut envelope, input_dialect)?;
+        let deferred_segment_dialects = dialects::normalize(&mut envelope, input_dialect)?;
         let unsupported_capabilities: Vec<String> = envelope
             .required_capabilities
             .into_iter()
@@ -1079,6 +1080,7 @@ impl SemanticInput {
             validation_context: QueryValidationContext::from_top_level_metrics(&metrics),
             policies,
             input_dialect,
+            deferred_segment_dialects,
         })
     }
 }
@@ -1127,7 +1129,7 @@ fn query_input(query: &str) -> Result<QueryInput> {
     runtime_request(query, "query")
 }
 
-fn prepare_query_input(mut query: QueryInput, input: &SemanticInput) -> Result<QueryInput> {
+fn prepare_query_input(mut query: QueryInput, input: &mut SemanticInput) -> Result<QueryInput> {
     let dialect = query
         .query_dialect
         .as_deref()
@@ -1149,6 +1151,43 @@ fn prepare_query_input(mut query: QueryInput, input: &SemanticInput) -> Result<Q
         .iter()
         .map(|sql| dialects::fragment(sql, dialect, dialects::Fragment::Order))
         .collect::<Result<Vec<_>>>()?;
+    let mut prepared_segments = std::collections::HashSet::new();
+    for reference in &query.segments {
+        let (instance, segment_name, _) = input.graph.parse_reference(reference)?;
+        let Some(mut model) = input.graph.get_model(&instance).cloned() else {
+            continue; // The generator reports unknown model/segment references.
+        };
+        let key = (model.name.clone(), segment_name.clone());
+        let Some(&source_dialect) = input.deferred_segment_dialects.get(&key) else {
+            continue;
+        };
+        if !prepared_segments.insert(key) {
+            continue; // Role instances share the canonical segment definition.
+        }
+        let Some(segment) = model
+            .segments
+            .iter_mut()
+            .find(|segment| segment.name == segment_name)
+        else {
+            continue;
+        };
+        let rendered = interpolate_query_filters_with_dialect(
+            &input.graph,
+            vec![segment.sql.clone()],
+            &query.parameter_values,
+            source_dialect,
+        )
+        .map_err(|error| invalid("query.parameter_values", error))?;
+        segment.sql = dialects::template_sql(
+            &rendered[0],
+            source_dialect,
+            Some(dialects::Fragment::Scalar),
+        )?;
+        // Keep selected segments on their trusted-definition path. Moving them
+        // into caller filters would reject their physical subqueries or change
+        // binding scope during policy preparation and recursive planning.
+        input.graph.replace_model(model)?;
+    }
     Ok(query)
 }
 
@@ -1178,8 +1217,8 @@ pub fn compile_with_semantic_input(input_json: &str, query_json: &str) -> Result
 }
 
 fn compile_semantic_input(input_json: &str, query_json: &str) -> Result<String> {
-    let input = SemanticInput::decode_scoped(input_json, true)?;
-    let payload = prepare_query_input(query_input(query_json)?, &input)?;
+    let mut input = SemanticInput::decode_scoped(input_json, true)?;
+    let payload = prepare_query_input(query_input(query_json)?, &mut input)?;
     let dialect = payload
         .dialect
         .as_deref()
@@ -1242,7 +1281,7 @@ pub fn validate_with_semantic_input(input_json: &str, query_json: &str) -> Resul
 }
 
 fn validate_semantic_input(input_json: &str, query_json: &str) -> Result<Vec<String>> {
-    let input = SemanticInput::decode_scoped(input_json, true)?;
+    let mut input = SemanticInput::decode_scoped(input_json, true)?;
     let query = query_input(query_json)?;
     let errors = validate_query_references(
         &input.graph,
@@ -1257,7 +1296,7 @@ fn validate_semantic_input(input_json: &str, query_json: &str) -> Result<Vec<Str
             || query.timezone.is_some()
             || query.with_totals)
     {
-        let query = prepare_query_input(query, &input)?;
+        let query = prepare_query_input(query, &mut input)?;
         let dialect = query
             .dialect
             .as_deref()
@@ -1518,6 +1557,31 @@ mod tests {
             compile_with_semantic_input(&source.to_string(), r#"{"metrics":["orders.revenue"]}"#),
             Err(SidemanticError::UnsupportedSemanticFeatures { .. })
         ));
+    }
+
+    #[test]
+    fn selected_segment_templates_prepare_only_the_execution_graph() {
+        let mut source = input();
+        source["input_dialect"] = json!("snowflake");
+        source["parameters"] = json!([
+            {"name":"minimum", "type":"number", "default_value":5},
+            {"name":"enabled", "type":"yesno", "default_value":true}
+        ]);
+        let template = "{% if enabled %}{model}.amount >= {{ minimum }}{% else %}FALSE{% endif %}";
+        source["models"][0]["segments"] = json!([
+            {"name":"selected", "sql":template},
+            {"name":"unused", "sql":"{% if missing"}
+        ]);
+        let mut input = SemanticInput::decode_scoped(&source.to_string(), true).unwrap();
+        let query = query_input(r#"{"metrics":["orders.revenue"],"segments":["orders.selected"],"parameter_values":{"minimum":20}}"#).unwrap();
+        let prepared = prepare_query_input(query, &mut input).unwrap();
+        assert!(prepared.filters.is_empty());
+        assert_eq!(prepared.segments, vec!["orders.selected"]);
+        assert_eq!(input.source, source);
+        let model = input.graph.get_model("orders").unwrap();
+        assert!(model.get_segment("selected").unwrap().sql.contains(">= 20"));
+        assert!(!model.get_segment("selected").unwrap().sql.contains("{%"));
+        assert_eq!(model.get_segment("unused").unwrap().sql, "{% if missing");
     }
 
     #[test]

@@ -4,6 +4,8 @@
 //! remain unchanged in `SemanticInput::source`. This is syntax translation, not
 //! a second resolver for metric names, policies, or query populations.
 
+use std::collections::HashMap;
+
 use polyglot_sql::expressions::Select;
 use polyglot_sql::{Dialect, DialectType, Expression};
 use serde_json::Value;
@@ -264,9 +266,20 @@ fn metric(definition: &mut Value, source: DialectType) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn normalize(envelope: &mut super::Envelope, source: DialectType) -> Result<()> {
+pub(super) type SegmentDialects = HashMap<(String, String), DialectType>;
+
+pub(super) fn normalize(
+    envelope: &mut super::Envelope,
+    source: DialectType,
+) -> Result<SegmentDialects> {
+    let mut deferred_segments = HashMap::new();
     for model in &mut envelope.models {
         let source = definition_dialect(model, source)?;
+        let model_name = model
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
         if let Some(Value::String(sql)) = model.get_mut("sql") {
             *sql = template_sql(sql, source, None)?;
         }
@@ -275,6 +288,22 @@ pub(super) fn normalize(envelope: &mut super::Envelope, source: DialectType) -> 
             if let Some(Value::Array(values)) = model.get_mut(collection) {
                 for value in values {
                     let dialect = definition_dialect(value, source)?;
+                    if collection == "segments"
+                        && value
+                            .get("sql")
+                            .and_then(Value::as_str)
+                            .is_some_and(crate::runtime::is_sql_template)
+                    {
+                        // Selected segments are rendered with request parameters
+                        // before syntax normalization. Unselected templates stay
+                        // inert, including Jinja control blocks and unused names.
+                        let name = value
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default();
+                        deferred_segments.insert((model_name.clone(), name.to_owned()), dialect);
+                        continue;
+                    }
                     field(value, "sql", dialect, Fragment::Scalar)?;
                 }
             }
@@ -295,7 +324,7 @@ pub(super) fn normalize(envelope: &mut super::Envelope, source: DialectType) -> 
     for value in &mut envelope.metrics {
         metric(value, source)?;
     }
-    Ok(())
+    Ok(deferred_segments)
 }
 
 #[cfg(test)]

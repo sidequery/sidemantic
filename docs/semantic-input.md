@@ -55,6 +55,13 @@ Graph expression metadata prefers `ossie_target_dialect` when present, otherwise
 generation. Generated target SQL is not evidence that its warehouse has passed
 live execution tests.
 
+Selected segment templates render with request parameters and defaults before
+normalization in their authored dialect. Jinja conditions see raw values while
+emitted values retain declared parameter types and SQL string escaping, including
+outputs embedded in quoted literals. Segment definitions retain their trusted
+physical-subquery scope. Unselected templates remain inert, and rendering changes
+only the request execution graph, preserving the original source snapshot.
+
 The structured compiler supports basic aggregations, filtered measures, declared
 keyed joins, complete aggregate expressions, and graph metric binding. It also
 supports:

@@ -35,6 +35,7 @@ use crate::core::{
 use crate::core::{TableCalcType, TableCalculation};
 use crate::error::{Result, SidemanticError};
 use crate::sql::{QueryRewriter, SemanticQuery, SqlGenerator};
+mod parameters;
 
 /// Query-validation context for unqualified metric semantics.
 #[derive(Debug, Clone, Default)]
@@ -808,6 +809,25 @@ fn format_parameter_value(
     }
 }
 
+fn format_parameter_value_in_dialect(
+    parameter: &Parameter,
+    value: &serde_yaml::Value,
+    dialect: DialectType,
+) -> std::result::Result<String, String> {
+    if matches!(
+        parameter.parameter_type,
+        ParameterType::String | ParameterType::Date
+    ) {
+        let literal = polyglot_sql::Expression::Literal(
+            polyglot_sql::expressions::Literal::String(yaml_value_to_python_str(value)),
+        );
+        crate::semantic_input::dialects::emit(literal, DialectType::DuckDB, dialect)
+            .map_err(|error| error.to_string())
+    } else {
+        format_parameter_value(parameter, value)
+    }
+}
+
 pub fn is_sql_template(sql: &str) -> bool {
     sql.contains("{{") || sql.contains("{%") || sql.contains("{#")
 }
@@ -956,19 +976,7 @@ fn interpolate_simple_filter(
             };
 
             let value = parameter_runtime_value(parameter, parameter_values);
-            let formatted = if dialect != DialectType::DuckDB
-                && matches!(
-                    parameter.parameter_type,
-                    ParameterType::String | ParameterType::Date
-                ) {
-                let literal = polyglot_sql::Expression::Literal(
-                    polyglot_sql::expressions::Literal::String(yaml_value_to_python_str(&value)),
-                );
-                crate::semantic_input::dialects::emit(literal, DialectType::DuckDB, dialect)
-                    .map_err(|error| error.to_string())
-            } else {
-                format_parameter_value(parameter, &value)
-            };
+            let formatted = format_parameter_value_in_dialect(parameter, &value, dialect);
             match formatted {
                 Ok(formatted) => Cow::Owned(formatted),
                 Err(err) => {
@@ -999,8 +1007,7 @@ fn interpolate_sql_with_parameters_impl(
     dialect: DialectType,
 ) -> std::result::Result<String, String> {
     if is_sql_template(sql) && has_jinja_control_markers(sql) {
-        let context = build_runtime_context(parameters_by_name, parameter_values);
-        return render_template_with_context(sql, &context);
+        return parameters::render(sql, parameters_by_name, parameter_values, dialect);
     }
     interpolate_simple_filter(sql, parameters_by_name, parameter_values, dialect)
 }

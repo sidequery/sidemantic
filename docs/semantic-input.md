@@ -138,10 +138,10 @@ subqueries, foreign-model inputs or predicates, and unresolved templates remain
 explicitly unsupported. Unowned graph measures also remain unsupported on this path.
 Filtered complete `COUNT(*)` graph declarations remain unsupported even with an
 explicit owner; this row-count qualification applies only to model declarations.
-Row-count execution coverage targets DuckDB and PostgreSQL. Python TSQL keeps
-its existing complete-count path: its ordinary planner emits `COUNT_BIG`, so
-lowering there would change `COUNT` overflow semantics. TSQL filtered complete
-row counts are not qualified by this change.
+Row-count execution coverage targets DuckDB and PostgreSQL. TSQL count widths
+require separate qualification, so Python TSQL retains its existing
+complete-expression path for `COUNT` and `COUNT_BIG`. TSQL filtered complete row
+counts are not qualified by this change.
 
 Remaining capability gates include policy-bearing SQL outside the scoped
 `FROM metrics` subset, policy output outside DuckDB/PostgreSQL, many-to-many paths without explicit keyed junctions or with custom join SQL,

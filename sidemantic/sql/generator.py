@@ -134,8 +134,8 @@ class SQLGenerator:
 
     def _lower_filtered_complete_row_counts(self) -> "SQLGenerator | None":
         """Reuse ordinary count planning without changing the caller's live graph."""
-        # The ordinary TSQL path emits COUNT_BIG, which has different overflow
-        # semantics from COUNT. Preserve both complete functions on that path.
+        # TSQL count widths require separate qualification; retain its existing
+        # complete-expression path for COUNT and COUNT_BIG.
         if self.dialect.lower() == "tsql":
             return None
         replacements = {}

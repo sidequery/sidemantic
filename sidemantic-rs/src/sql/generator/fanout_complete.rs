@@ -103,12 +103,12 @@ pub(super) fn generate_entity_aggregates(
                     return Err(unsupported("cross_source_raw_input"));
                 }
                 let key = (column.model, column.field.clone());
-                if !replacements.contains_key(&key) {
+                if let std::collections::hash_map::Entry::Vacant(entry) = replacements.entry(key) {
                     // Complete SQL names physical source columns. Do not expand
                     // a coincidentally named semantic metric as a dependency.
                     let input =
                         inputs.add(generator.quote_identifier(&column.field), &metric.filters);
-                    replacements.insert(key, input);
+                    entry.insert(input);
                 }
             }
             let parsed = replace_semantic_columns(parse_semantic_expression(&sql)?, &replacements)?;

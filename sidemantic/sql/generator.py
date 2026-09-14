@@ -132,12 +132,42 @@ class SQLGenerator:
         self._generate_cache: dict[tuple[object, ...], str] = {}
         self._generate_cache_limit = 256
 
-    def _lower_filtered_complete_row_counts(self) -> "SQLGenerator | None":
-        """Reuse ordinary count planning without changing the caller's live graph."""
+    def _lower_filtered_complete_aggregates(self) -> "SQLGenerator | None":
+        """Reuse filtered aggregate planning without changing the caller's live graph."""
         # TSQL count widths require separate qualification; retain its existing
         # complete-expression path for COUNT and COUNT_BIG.
         if self.dialect.lower() == "tsql":
             return None
+
+        aggregate_types = {exp.Sum: "sum", exp.Avg: "avg", exp.Count: "count", exp.Min: "min", exp.Max: "max"}
+        row_types = (
+            exp.Column,
+            exp.Identifier,
+            exp.Literal,
+            exp.Null,
+            exp.Boolean,
+            exp.Paren,
+            exp.Add,
+            exp.Sub,
+            exp.Mul,
+            exp.Mod,
+            exp.Neg,
+            exp.EQ,
+            exp.NEQ,
+            exp.LT,
+            exp.LTE,
+            exp.GT,
+            exp.GTE,
+            exp.And,
+            exp.Or,
+            exp.Not,
+            exp.Is,
+            exp.In,
+            exp.Between,
+            exp.Case,
+            exp.If,
+            exp.Coalesce,
+        )
 
         def lower(metric, owner: str, ordinary: bool = False):
             if not metric.filters or metric.type not in (None, "simple", "derived"):
@@ -145,26 +175,56 @@ class SQLGenerator:
             try:
                 if metric.sql_is_complete and metric.sql:
                     parsed = _parse_fragment(metric.sql, self.dialect)
-                    if not isinstance(parsed, exp.Count) or any(
+                    aggregation = aggregate_types.get(type(parsed))
+                    if aggregation is None or any(
                         value for key, value in parsed.args.items() if key not in ("this", "big_int")
                     ):
                         return None
                     value = parsed.this
-                elif ordinary and metric.agg == "count" and metric.type in (None, "simple"):
+                    if isinstance(value, exp.Distinct):
+                        if aggregation != "count" or len(value.expressions) != 1:
+                            return None
+                        aggregation = "count_distinct"
+                        value = value.expressions[0]
+                elif (
+                    ordinary
+                    and metric.agg in (*aggregate_types.values(), "count_distinct")
+                    and metric.type in (None, "simple")
+                ):
+                    aggregation = metric.agg
                     value = _parse_fragment(metric.sql or "*", self.dialect)
                 else:
                     return None
             except SqlglotError:
                 # Unused declarations must not fail another metric's query.
                 return None
-            if isinstance(value, exp.Star) and not any(value.args.values()):
+            if aggregation == "count" and isinstance(value, exp.Star) and not any(value.args.values()):
                 sql = "*"
-            elif isinstance(value, exp.Literal) and not value.is_string and value.this == "1":
+            elif (
+                aggregation == "count" and isinstance(value, exp.Literal) and not value.is_string and value.this == "1"
+            ):
                 sql = "1"
-            elif isinstance(value, exp.Null):
+            elif aggregation == "count" and isinstance(value, exp.Null):
                 sql = "NULL"
             else:
-                return None
+                if value is None or any(not isinstance(node, row_types) for node in value.walk()):
+                    return None
+                for node in value.walk():
+                    if isinstance(node, exp.Literal) and node.is_string and "{model}" in node.this:
+                        # The raw planner still expands this legacy placeholder.
+                        return None
+                    if isinstance(node, exp.If) and not isinstance(node.parent, exp.Case):
+                        return None
+                    if isinstance(node, exp.Is) and not isinstance(node.expression, exp.Null):
+                        return None
+                    if isinstance(node, exp.Between) and node.args.get("symmetric"):
+                        return None
+                columns = list(value.find_all(exp.Column))
+                if not columns or any(len(column.parts) > 2 or column.table not in ("", owner) for column in columns):
+                    return None
+                for column in columns:
+                    column.set("table", None)
+                sql = value.sql(dialect=self.dialect)
             filters = []
             for predicate in metric.filters:
                 try:
@@ -180,7 +240,7 @@ class SQLGenerator:
                             column.set("table", None)
                 filters.append(f"({expression.sql(dialect=self.dialect)})")
             return metric.model_copy(
-                update={"type": "simple", "agg": "count", "sql": sql, "sql_is_complete": False, "filters": filters}
+                update={"type": "simple", "agg": aggregation, "sql": sql, "sql_is_complete": False, "filters": filters}
             )
 
         replacements = {}
@@ -204,14 +264,14 @@ class SQLGenerator:
             occupied.update(name.lower() for name in self.graph.metrics)
             index = 0
             while True:
-                leaf_name = f"__sidemantic_count_{index}"
+                leaf_name = f"__sidemantic_filtered_{index}"
                 if leaf_name.lower() not in occupied and f"{leaf_name}_raw".lower() not in occupied:
                     break
                 index += 1
             leaf = lowered.model_copy(update={"name": leaf_name})
             replacements[owner] = model.model_copy(update={"metrics": [*model.metrics, leaf]})
             # Graph declarations keep their public names, but their population
-            # must be planned at the explicit owner's row grain like a model count.
+            # must be planned at the explicit owner's row grain like a model aggregate.
             graph_metrics[name] = metric.model_copy(
                 update={
                     "type": "derived",
@@ -1187,7 +1247,7 @@ class SQLGenerator:
         Returns:
             SQL query string
         """
-        lowered = self._lower_filtered_complete_row_counts()
+        lowered = self._lower_filtered_complete_aggregates()
         if lowered is not None:
             return lowered.generate(
                 metrics=metrics,

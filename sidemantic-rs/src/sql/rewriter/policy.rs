@@ -8,6 +8,58 @@ pub(super) fn unsupported() -> SidemanticError {
     }
 }
 
+fn validate_generated_cte_names(select: &Select, user_names: &HashSet<String>) -> Result<()> {
+    if user_names.is_empty() {
+        return Ok(());
+    }
+
+    fn check_select(value: &serde_json::Value, user_names: &HashSet<String>) -> Result<()> {
+        if let Some(ctes) = value
+            .get("with")
+            .and_then(|with| with.get("ctes"))
+            .and_then(serde_json::Value::as_array)
+        {
+            for cte in ctes {
+                if let Some(name) = cte
+                    .get("alias")
+                    .and_then(|alias| alias.get("name"))
+                    .and_then(serde_json::Value::as_str)
+                {
+                    if user_names.contains(&name.to_ascii_lowercase()) {
+                        return Err(SidemanticError::Validation(format!(
+                            "CTE name '{name}' conflicts with an internally generated name"
+                        )));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    // This check does not rewrite anything. In particular, do not deserialize
+    // every generated subtree through Expression's large recursive serde
+    // visitor, or reconstruct an AST that the caller immediately discards.
+    let value = serde_json::to_value(select)
+        .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))?;
+    check_select(&value, user_names)?;
+    let mut pending = vec![&value];
+    while let Some(value) = pending.pop() {
+        match value {
+            serde_json::Value::Object(fields) => {
+                if fields.len() == 1 {
+                    if let Some(select) = fields.get("select") {
+                        check_select(select, user_names)?;
+                    }
+                }
+                pending.extend(fields.values());
+            }
+            serde_json::Value::Array(values) => pending.extend(values),
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 /// User CTE names must not capture physical reads introduced by the compiler.
 /// Allocate names outside both the input namespace and model source namespace.
 struct CteNames {
@@ -178,24 +230,7 @@ impl QueryRewriter<'_> {
             // Keep the existing semantic-root error contract even though the
             // renamed input CTE would no longer capture the generated source.
             // Only names actually emitted for this query are conflicts.
-            binding::transform_nodes(
-                Expression::Select(Box::new(compiled.clone())),
-                &mut |node| {
-                    if let Expression::Select(select) = node {
-                        if let Some(with) = &select.with {
-                            for cte in &with.ctes {
-                                if user_cte_names.contains(&cte.alias.name.to_ascii_lowercase()) {
-                                    return Err(SidemanticError::Validation(format!(
-                                        "CTE name '{}' conflicts with an internally generated name",
-                                        cte.alias.name
-                                    )));
-                                }
-                            }
-                        }
-                    }
-                    Ok(None)
-                },
-            )?;
+            validate_generated_cte_names(&compiled, &user_cte_names)?;
             compiled.with = with;
             return Ok(Expression::Select(Box::new(compiled)));
         }
@@ -401,4 +436,42 @@ fn validate_table(table: &TableRef) -> Result<()> {
         return Err(unsupported());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::{Dimension, Metric, Model};
+
+    #[test]
+    fn generated_cte_conflicts_preserve_semantic_root_contract() {
+        let mut graph = SemanticGraph::new();
+        graph
+            .add_model(
+                Model::new("orders", "id")
+                    .with_table("physical_orders")
+                    .with_dimension(Dimension::categorical("status"))
+                    .with_metric(Metric::sum("revenue", "amount")),
+            )
+            .unwrap();
+        let rewriter = QueryRewriter::new(&graph);
+        for name in ["orders_cte", "ORDERS_CTE"] {
+            let sql = format!(
+                "WITH {name} AS (SELECT 'paid' AS status) \
+                 SELECT orders.revenue FROM orders \
+                 WHERE orders.status IN (SELECT status FROM {name})"
+            );
+            assert!(rewriter
+                .rewrite(&sql)
+                .unwrap_err()
+                .to_string()
+                .contains("conflicts with an internally generated name"));
+        }
+        let sql = "WITH customers_cte AS (SELECT 'paid' AS status) \
+                   SELECT orders.revenue FROM orders \
+                   WHERE orders.status IN (SELECT status FROM customers_cte)";
+        let rewritten = rewriter.rewrite(sql).unwrap();
+        assert!(rewritten.contains("SUM("), "{rewritten}");
+        assert!(rewritten.contains("physical_orders"), "{rewritten}");
+    }
 }

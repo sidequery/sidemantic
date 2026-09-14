@@ -231,51 +231,6 @@ EXPECTED_GAPS = {
     "tests.templates.test_jinja_integration::test_jinja_conditional_with_parameters": (
         "Rust adapter does not yet support Python template parameter interpolation"
     ),
-    "tests.queries.test_sql_rewriter::test_ad_hoc_count_aggregation": (
-        "Rust SQL rewriter does not yet support Python ad-hoc aggregate rewrite contracts"
-    ),
-    "tests.queries.test_sql_rewriter::test_explicit_join_matching_relationship_supported": (
-        "Rust SQL rewriter does not yet support Python explicit JOIN rewrite contracts"
-    ),
-    "tests.queries.test_sql_rewriter::test_explicit_join_with_aliases_supported": (
-        "Rust SQL rewriter does not yet support Python explicit JOIN rewrite contracts"
-    ),
-    "tests.queries.test_sql_rewriter::test_explicit_join_accepts_parenthesized_on_clause": (
-        "Rust SQL rewriter does not yet support Python explicit JOIN rewrite contracts"
-    ),
-    "tests.queries.test_sql_rewriter::test_explicit_inner_join_preserves_existence_filter": (
-        "Rust SQL rewriter does not yet support Python explicit JOIN rewrite contracts"
-    ),
-    "tests.queries.test_sql_rewriter::test_explicit_left_join_preserves_base_rows": (
-        "Rust SQL rewriter does not yet support Python explicit JOIN rewrite contracts"
-    ),
-    "tests.queries.test_sql_rewriter::test_explicit_join_rejects_unsupported_join_type": (
-        "Rust SQL rewriter does not yet support Python explicit JOIN rewrite contracts"
-    ),
-    "tests.queries.test_sql_rewriter::test_semantic_scalar_expression_over_measures": (
-        "Rust SQL rewriter does not yet support Python semantic scalar expression contracts"
-    ),
-    "tests.queries.test_sql_rewriter::test_semantic_expression_order_by_projection_alias": (
-        "Rust SQL rewriter does not yet support Python semantic scalar expression contracts"
-    ),
-    "tests.queries.test_sql_rewriter::test_semantic_scalar_function_over_measure": (
-        "Rust SQL rewriter does not yet support Python semantic scalar expression contracts"
-    ),
-    "tests.queries.test_sql_rewriter::test_semantic_ad_hoc_aggregate_expression": (
-        "Rust SQL rewriter does not yet support Python ad-hoc aggregate rewrite contracts"
-    ),
-    "tests.queries.test_sql_rewriter::test_semantic_ad_hoc_aggregate_expression_with_dimension": (
-        "Rust SQL rewriter does not yet support Python ad-hoc aggregate rewrite contracts"
-    ),
-    "tests.queries.test_sql_rewriter::test_semantic_ad_hoc_aggregate_rejects_joined_model_column": (
-        "Rust SQL rewriter does not yet support Python ad-hoc aggregate rewrite contracts"
-    ),
-    "tests.queries.test_sql_rewriter::test_graph_level_metrics": (
-        "Rust SQL rewriter does not yet support Python graph-level metric rewrite contracts"
-    ),
-    "tests.queries.test_sql_rewriter::test_from_metrics_allows_graph_level_metrics": (
-        "Rust SQL rewriter does not yet support Python graph-level metric rewrite contracts"
-    ),
     "tests.queries.test_sql_rewriter::test_compile_post_process": (
         "Rust adapter does not yet support Python post_process SQL contracts"
     ),
@@ -284,9 +239,6 @@ EXPECTED_GAPS = {
     ),
     "tests.queries.test_sql_rewriter::test_post_process_missing_placeholder": (
         "Rust adapter does not yet support Python post_process SQL contracts"
-    ),
-    "tests.queries.test_sql_rewriter::test_semantic_root_with_join_subquery_rejected": (
-        "Rust SQL rewriter does not yet support Python semantic-root validation contracts"
     ),
     "tests.queries.test_sql_rewriter::test_post_process_with_own_ctes": (
         "Rust adapter does not yet support Python post_process SQL contracts"

@@ -47,6 +47,21 @@ pub fn parse_semantic_expression(sql: &str) -> crate::error::Result<Expression> 
 }
 
 pub fn semantic_column_references(sql: &str) -> crate::error::Result<Vec<SemanticColumnReference>> {
+    column_references(sql, false)
+}
+
+/// Query-filter dependencies belong to the containing SQL scope. Nested query
+/// scopes have already been bound by the rewriter and must remain opaque here.
+pub fn outer_semantic_column_references(
+    sql: &str,
+) -> crate::error::Result<Vec<SemanticColumnReference>> {
+    column_references(sql, true)
+}
+
+fn column_references(
+    sql: &str,
+    allow_subqueries: bool,
+) -> crate::error::Result<Vec<SemanticColumnReference>> {
     let expression = parse_semantic_expression(sql)?;
     // polyglot 0.1.15's public traversal omits typed aggregate/scalar children
     // (including Sum.this). Its serialized AST covers those children faithfully.
@@ -59,6 +74,14 @@ pub fn semantic_column_references(sql: &str) -> crate::error::Result<Vec<Semanti
         match node {
             serde_json::Value::Object(fields) => {
                 let kind = (fields.len() == 1).then(|| fields.keys().next().unwrap().as_str());
+                if allow_subqueries
+                    && matches!(
+                        kind,
+                        Some("select" | "subquery" | "union" | "intersect" | "except")
+                    )
+                {
+                    continue;
+                }
                 if matches!(kind, Some("select" | "subquery" | "raw")) {
                     return Err(crate::error::SidemanticError::UnsupportedSemanticFeatures {
                         capabilities: vec!["expression.subquery_or_raw_scope".into()],
@@ -132,13 +155,41 @@ pub fn replace_semantic_columns(
     expression: Expression,
     replacements: &std::collections::HashMap<(Option<String>, String), String>,
 ) -> crate::error::Result<Expression> {
+    replace_columns(expression, replacements, false)
+}
+
+/// Replace only the containing scope's columns, preserving nested bindings.
+pub fn replace_outer_semantic_columns(
+    expression: Expression,
+    replacements: &std::collections::HashMap<(Option<String>, String), String>,
+) -> crate::error::Result<Expression> {
+    replace_columns(expression, replacements, true)
+}
+
+fn replace_columns(
+    expression: Expression,
+    replacements: &std::collections::HashMap<(Option<String>, String), String>,
+    skip_subqueries: bool,
+) -> crate::error::Result<Expression> {
     use crate::error::SidemanticError;
     fn replace(
         value: &mut serde_json::Value,
         replacements: &std::collections::HashMap<(Option<String>, String), String>,
+        skip_subqueries: bool,
     ) -> crate::error::Result<()> {
         match value {
             serde_json::Value::Object(fields) => {
+                if skip_subqueries
+                    && fields.len() == 1
+                    && fields.keys().any(|name| {
+                        matches!(
+                            name.as_str(),
+                            "select" | "subquery" | "union" | "intersect" | "except"
+                        )
+                    })
+                {
+                    return Ok(());
+                }
                 if fields.len() == 1 && fields.contains_key("column") {
                     let column: polyglot_sql::expressions::Column =
                         serde_json::from_value(fields["column"].clone())
@@ -153,13 +204,13 @@ pub fn replace_semantic_columns(
                     }
                 } else {
                     for child in fields.values_mut() {
-                        replace(child, replacements)?;
+                        replace(child, replacements, skip_subqueries)?;
                     }
                 }
             }
             serde_json::Value::Array(children) => {
                 for child in children {
-                    replace(child, replacements)?;
+                    replace(child, replacements, skip_subqueries)?;
                 }
             }
             _ => {}
@@ -168,7 +219,7 @@ pub fn replace_semantic_columns(
     }
     let mut value = serde_json::to_value(expression)
         .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))?;
-    replace(&mut value, replacements)?;
+    replace(&mut value, replacements, skip_subqueries)?;
     serde_json::from_value(value).map_err(|error| SidemanticError::SqlGeneration(error.to_string()))
 }
 
@@ -591,6 +642,32 @@ mod tests {
     use super::*;
     #[allow(unused_imports)]
     use crate::core::model::{Aggregation, Dimension, Model};
+
+    #[test]
+    fn outer_filter_dependencies_do_not_capture_nested_columns_or_literals() {
+        let sql = "orders.status IN (SELECT status FROM allowed WHERE note = 'orders.revenue AND customers.id')";
+        let columns = outer_semantic_column_references(sql).unwrap();
+        assert_eq!(columns.len(), 1);
+        assert_eq!(columns[0].name(), "orders.status");
+        // Ordinary metric declarations retain their stricter no-subquery contract.
+        assert!(semantic_column_references(sql).is_err());
+    }
+
+    #[test]
+    fn outer_replacement_preserves_inner_binding_with_the_same_qualifier() {
+        let expression = parse_semantic_expression(
+            "orders.status IN (SELECT orders.status FROM allowed orders)",
+        )
+        .unwrap();
+        let replacements = std::collections::HashMap::from([(
+            (Some("orders".into()), "status".into()),
+            "source_status".into(),
+        )]);
+        let expression = replace_outer_semantic_columns(expression, &replacements).unwrap();
+        let sql = polyglot_sql::generate(&expression, DialectType::DuckDB).unwrap();
+        assert!(sql.starts_with("source_status IN"), "{sql}");
+        assert!(sql.contains("SELECT orders.status FROM allowed"), "{sql}");
+    }
 
     #[test]
     fn test_ratio_dependencies() {

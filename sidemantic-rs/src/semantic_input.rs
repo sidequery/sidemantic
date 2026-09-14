@@ -1314,15 +1314,15 @@ pub fn rewrite_with_semantic_input_context(
                 "rewrite.output_dialect.{output_dialect}"
             )));
         }
-        let requires_policies = context.user_attributes.is_some()
-            || context.enforce_visibility
+        let security_controls = context.enforce_visibility
             || input
                 .policies
                 .values()
                 .any(|policy| policy.security.is_some() || !policy.invariant_filters.is_empty());
-        let prepare = |query: &mut SemanticQuery| {
+        let requires_policies = context.user_attributes.is_some() || security_controls;
+        let prepare = |graph: &SemanticGraph, query: &mut SemanticQuery| {
             query.prepared_policies = policies::prepare_for_rewrite(
-                &input.graph,
+                graph,
                 &input.policies,
                 query,
                 context.user_attributes.as_ref(),
@@ -1337,7 +1337,8 @@ pub fn rewrite_with_semantic_input_context(
         let policy_definitions = serde_json::to_string(&input.policies)
             .map_err(|error| invalid("rewrite.policy_definitions", error))?;
         if requires_policies {
-            rewriter = rewriter.with_query_preparer(&prepare, &policy_definitions);
+            rewriter =
+                rewriter.with_query_preparer(&prepare, &policy_definitions, security_controls);
         }
         rewriter.rewrite_with_output_dialect(sql, DialectType::DuckDB, output_dialect)
     })
@@ -1598,13 +1599,7 @@ mod tests {
     fn rewrite_context_rejects_unsupported_shapes_and_forged_controls() {
         let input = input().to_string();
         for sql in [
-            "select orders.revenue from orders",
-            "select orders.revenue from metrics union all select orders.revenue from metrics",
-            "with recursive x as (select orders.revenue from metrics) select * from x",
-            "with x as (select orders.revenue from metrics) select * from orders",
-            "select orders.revenue from metrics where orders.status in (select status from orders)",
             "select orders.revenue from metrics qualify 1 = 1",
-            "select orders.revenue + 1 from metrics",
             "delete from orders",
         ] {
             assert!(
@@ -1626,6 +1621,28 @@ mod tests {
                 context
             )
             .is_err());
+        }
+    }
+
+    #[test]
+    fn rewrite_context_compiles_nested_and_expression_shapes() {
+        let input = input().to_string();
+        for sql in [
+            "select orders.revenue from orders",
+            "select orders.revenue from metrics union all select orders.revenue from metrics",
+            "with recursive x as (select orders.revenue from metrics) select * from x",
+            "with x as (select orders.revenue from metrics) select * from orders",
+            "select orders.revenue from metrics where orders.status in (select status from orders)",
+            "select orders.revenue + 1 from metrics",
+        ] {
+            let rewritten =
+                rewrite_with_semantic_input_context(&input, sql, r#"{"user_attributes":{}}"#)
+                    .unwrap();
+            assert!(
+                !rewritten.to_ascii_lowercase().contains("from metrics"),
+                "{rewritten}"
+            );
+            assert!(rewritten.contains("SUM("), "{rewritten}");
         }
     }
 

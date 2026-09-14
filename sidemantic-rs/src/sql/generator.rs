@@ -1551,17 +1551,13 @@ impl<'a> SqlGenerator<'a> {
 
     fn find_filter_models(&self, filters: &[String]) -> HashSet<String> {
         let mut models = HashSet::new();
-        let ref_re = regex::Regex::new(r"\b([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\b")
-            .expect("valid model.field regex");
         for filter in filters {
-            for cap in ref_re.captures_iter(filter) {
-                let Some(model_match) = cap.get(1) else {
+            for column in crate::core::outer_semantic_column_references(filter).unwrap_or_default()
+            {
+                let Some(owner) = column.model else {
                     continue;
                 };
-                let model_name = model_match
-                    .as_str()
-                    .strip_suffix("_cte")
-                    .unwrap_or(model_match.as_str());
+                let model_name = owner.strip_suffix("_cte").unwrap_or(&owner);
                 if self.graph.get_model(model_name).is_some() {
                     models.insert(model_name.to_string());
                 }
@@ -4549,22 +4545,26 @@ impl<'a> SqlGenerator<'a> {
     }
 
     fn split_conjunctive_filter(&self, filter: &str) -> Vec<String> {
-        let upper = filter.to_ascii_uppercase();
-        if upper.contains(" OR ") || upper.contains(" BETWEEN ") {
+        fn conjuncts(expression: Expression, output: &mut Vec<Expression>) {
+            match expression {
+                Expression::And(binary) => {
+                    conjuncts(binary.left, output);
+                    conjuncts(binary.right, output);
+                }
+                Expression::Paren(paren) => conjuncts(paren.this, output),
+                expression => output.push(expression),
+            }
+        }
+        let Ok(expression) = parse_semantic_expression(filter) else {
             return vec![filter.to_string()];
-        }
-        let and_re = regex::Regex::new(r"(?i)\s+AND\s+").expect("valid AND splitter regex");
-        let parts: Vec<String> = and_re
-            .split(filter)
-            .map(str::trim)
-            .filter(|part| !part.is_empty())
-            .map(str::to_string)
-            .collect();
-        if parts.is_empty() {
-            vec![filter.to_string()]
-        } else {
-            parts
-        }
+        };
+        let mut parts = Vec::new();
+        conjuncts(expression, &mut parts);
+        parts
+            .iter()
+            .map(|part| self.emit_expression(part))
+            .collect::<Result<Vec<_>>>()
+            .unwrap_or_else(|_| vec![filter.to_string()])
     }
 
     fn filter_referenced_models(
@@ -4573,15 +4573,9 @@ impl<'a> SqlGenerator<'a> {
         cte_models: &HashSet<&str>,
     ) -> HashSet<String> {
         let mut referenced_models = HashSet::new();
-        let ref_re = regex::Regex::new(r"\b([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\b")
-            .expect("valid model.field regex");
-
-        for cap in ref_re.captures_iter(filter) {
-            let Some(table_match) = cap.get(1) else {
-                continue;
-            };
-            let table_name = table_match.as_str();
-            let model_name = table_name.strip_suffix("_cte").unwrap_or(table_name);
+        for column in crate::core::outer_semantic_column_references(filter).unwrap_or_default() {
+            let Some(owner) = column.model else { continue };
+            let model_name = owner.strip_suffix("_cte").unwrap_or(&owner);
             if cte_models.contains(model_name) {
                 referenced_models.insert(model_name.to_string());
             }
@@ -4591,40 +4585,22 @@ impl<'a> SqlGenerator<'a> {
     }
 
     fn filter_references_metric(&self, filter: &str, cte_models: &HashSet<&str>) -> bool {
-        let ref_re = regex::Regex::new(r"\b([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\b")
-            .expect("valid model.field regex");
-
-        for cap in ref_re.captures_iter(filter) {
-            let Some(table_match) = cap.get(1) else {
-                continue;
-            };
-            let Some(field_match) = cap.get(2) else {
-                continue;
-            };
-            let table_name = table_match.as_str();
-            let model_name = table_name.strip_suffix("_cte").unwrap_or(table_name);
-            if !cte_models.contains(model_name) {
-                continue;
-            }
-            if self
-                .graph
-                .get_model(model_name)
-                .and_then(|model| model.get_metric(field_match.as_str()))
-                .is_some()
-            {
+        for column in crate::core::outer_semantic_column_references(filter).unwrap_or_default() {
+            if column.model.is_none() && self.graph.get_metric(&column.field).is_some() {
                 return true;
             }
-        }
-
-        for token in Self::identifier_tokens(filter) {
-            if Self::is_sql_keyword_or_function(&token) {
-                continue;
-            }
             for model_name in cte_models {
+                if column
+                    .model
+                    .as_deref()
+                    .is_some_and(|owner| owner.strip_suffix("_cte").unwrap_or(owner) != *model_name)
+                {
+                    continue;
+                }
                 if self
                     .graph
                     .get_model(model_name)
-                    .and_then(|model| model.get_metric(&token))
+                    .and_then(|model| model.get_metric(&column.field))
                     .is_some()
                 {
                     return true;
@@ -4647,41 +4623,19 @@ impl<'a> SqlGenerator<'a> {
         cte_models: &HashSet<&str>,
     ) -> HashSet<String> {
         let mut models = HashSet::new();
-        let ref_re = regex::Regex::new(r"\b([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\b")
-            .expect("valid model.field regex");
-
-        for cap in ref_re.captures_iter(filter) {
-            let Some(table_match) = cap.get(1) else {
-                continue;
-            };
-            let Some(field_match) = cap.get(2) else {
-                continue;
-            };
-            let table_name = table_match.as_str();
-            let model_name = table_name.strip_suffix("_cte").unwrap_or(table_name);
-            if !cte_models.contains(model_name) {
-                continue;
-            }
-            if self
-                .graph
-                .get_model(model_name)
-                .and_then(|model| model.get_dimension(field_match.as_str()))
-                .and_then(|dimension| dimension.window.as_ref())
-                .is_some()
-            {
-                models.insert(model_name.to_string());
-            }
-        }
-
-        for token in Self::identifier_tokens(filter) {
-            if Self::is_sql_keyword_or_function(&token) {
-                continue;
-            }
+        for column in crate::core::outer_semantic_column_references(filter).unwrap_or_default() {
             for model_name in cte_models {
+                if column
+                    .model
+                    .as_deref()
+                    .is_some_and(|owner| owner.strip_suffix("_cte").unwrap_or(owner) != *model_name)
+                {
+                    continue;
+                }
                 if self
                     .graph
                     .get_model(model_name)
-                    .and_then(|model| model.get_dimension(&token))
+                    .and_then(|model| model.get_dimension(&column.field))
                     .and_then(|dimension| dimension.window.as_ref())
                     .is_some()
                 {
@@ -4709,73 +4663,50 @@ impl<'a> SqlGenerator<'a> {
         let mut expanded = Vec::with_capacity(filters.len());
 
         for filter in filters {
-            let mut filter_sql = filter.clone();
-            if !computed_keys.is_empty() {
-                let mut replacements = HashMap::new();
-                for column in semantic_column_references(filter)? {
-                    if column.model.as_deref().is_some_and(|owner| {
-                        owner != model_name && owner != cte_name && owner != alias
-                    }) {
-                        return Err(SidemanticError::UnsupportedSemanticFeatures {
-                            capabilities: vec!["filter.computed_key_source".into()],
-                        });
-                    }
-                    let source = if computed_keys.contains(&column.field) {
-                        self.key_sql(model, &column.field, None)?
-                    } else if let Some(dimension) = model.get_dimension(&column.field) {
-                        let source = dimension.sql_expr().replace("{model}", model_name);
-                        let mut inputs = HashMap::new();
-                        for input in semantic_column_references(&source)? {
-                            if input
-                                .model
-                                .as_deref()
-                                .is_some_and(|owner| owner != model_name)
-                            {
-                                return Err(SidemanticError::UnsupportedSemanticFeatures {
-                                    capabilities: vec!["filter.computed_key_source".into()],
-                                });
-                            }
-                            inputs.insert(
-                                (input.model, input.field.clone()),
-                                self.quote_identifier(&input.field),
-                            );
+            let mut replacements = HashMap::new();
+            for column in crate::core::outer_semantic_column_references(filter)? {
+                if column
+                    .model
+                    .as_deref()
+                    .is_some_and(|owner| owner != model_name && owner != cte_name && owner != alias)
+                {
+                    return Err(SidemanticError::UnsupportedSemanticFeatures {
+                        capabilities: vec!["filter.computed_key_source".into()],
+                    });
+                }
+                let source = if computed_keys.contains(&column.field) {
+                    self.key_sql(model, &column.field, None)?
+                } else if let Some(dimension) = model.get_dimension(&column.field) {
+                    let source = dimension.sql_expr().replace("{model}", model_name);
+                    let mut inputs = HashMap::new();
+                    for input in semantic_column_references(&source)? {
+                        if input
+                            .model
+                            .as_deref()
+                            .is_some_and(|owner| owner != model_name)
+                        {
+                            return Err(SidemanticError::UnsupportedSemanticFeatures {
+                                capabilities: vec!["filter.computed_key_source".into()],
+                            });
                         }
-                        self.emit_expression(&crate::core::replace_semantic_columns(
-                            parse_semantic_expression(&source)?,
-                            &inputs,
-                        )?)?
-                    } else {
-                        self.quote_identifier(&column.field)
-                    };
-                    replacements.insert((column.model, column.field), format!("({source})"));
-                }
-                filter_sql = self.emit_expression(&crate::core::replace_semantic_columns(
-                    parse_semantic_expression(filter)?,
-                    &replacements,
-                )?)?;
-                expanded.push(self.expand_relative_dates(&filter_sql));
-                continue;
+                        inputs.insert(
+                            (input.model, input.field.clone()),
+                            self.quote_identifier(&input.field),
+                        );
+                    }
+                    self.emit_expression(&crate::core::replace_semantic_columns(
+                        parse_semantic_expression(&source)?,
+                        &inputs,
+                    )?)?
+                } else {
+                    self.quote_identifier(&column.field)
+                };
+                replacements.insert((column.model, column.field), format!("({source})"));
             }
-            for dim in &model.dimensions {
-                let source_expr = self.normalize_cte_source_expression(dim.sql_expr());
-                for qualified in [
-                    format!("{model_name}.{}", dim.name),
-                    format!("{cte_name}.{}", dim.name),
-                    format!("{alias}.{}", dim.name),
-                ] {
-                    filter_sql = filter_sql.replace(&qualified, &source_expr);
-                }
-            }
-
-            for prefix in [
-                format!("{model_name}."),
-                format!("{cte_name}."),
-                format!("{alias}."),
-            ] {
-                filter_sql = filter_sql.replace(&prefix, "");
-            }
-            filter_sql = filter_sql.replace("{model}.", "");
-            filter_sql = filter_sql.replace("{model}", "");
+            let filter_sql = self.emit_expression(&crate::core::replace_outer_semantic_columns(
+                parse_semantic_expression(filter)?,
+                &replacements,
+            )?)?;
             expanded.push(self.expand_relative_dates(&filter_sql));
         }
 

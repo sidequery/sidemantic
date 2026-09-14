@@ -333,7 +333,7 @@ pub(super) fn try_generate(
     let mut filters = Vec::new();
     for filter in &all_filters {
         conjuncts(parse_semantic_expression(filter)?, &mut filters);
-        for column in semantic_column_references(filter)? {
+        for column in crate::core::outer_semantic_column_references(filter)? {
             if plan.resolve(&column.name(), None)?.is_some() {
                 plan.expand(&column.name(), None)?;
             }
@@ -470,7 +470,7 @@ pub(super) fn try_generate(
     let mut aggregate_filters = Vec::new();
     for filter in filters {
         let sql = generator.emit_expression(&filter)?;
-        let columns = semantic_column_references(&sql)?;
+        let columns = crate::core::outer_semantic_column_references(&sql)?;
         let mut replacements = HashMap::new();
         let mut has_metric = false;
         let mut has_raw = false;
@@ -494,9 +494,9 @@ pub(super) fn try_generate(
             return Err(unsupported("mixed_row_aggregate_filter"));
         }
         if has_metric {
-            aggregate_filters.push(
-                generator.emit_expression(&replace_semantic_columns(filter, &replacements)?)?,
-            );
+            aggregate_filters.push(generator.emit_expression(
+                &crate::core::replace_outer_semantic_columns(filter, &replacements)?,
+            )?);
         } else {
             row_filters.push(format!("({sql})"));
         }

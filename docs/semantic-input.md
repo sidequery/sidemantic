@@ -171,6 +171,33 @@ has a bounded dedicated path described below.
 
 Deserialization alone is not evidence of executable support.
 
+Structured queries accept `aliases` (semantic reference to output name),
+`timezone`, and `with_totals`. Aliases rename finalized result columns without
+changing internal aggregate/window dependencies; semantic references and custom
+output names both work for selected-column ordering. Selected result calculations
+consume the renamed columns and retain alias-aware ordering after pagination.
+
+A query timezone localizes UTC-stored timestamps before time-dimension truncation
+and bypasses UTC-bucketed materialized rollups. Localization follows the Python
+dialect contract for DuckDB, PostgreSQL, Snowflake, BigQuery, Spark, Databricks,
+and ClickHouse; unsupported output dialects reject localization. Filters and
+relative-date comparisons remain in their original time domain. The database
+validates timezone existence; the compiler validates safe timezone characters.
+
+`with_totals` adds only the grand-total row, with `_is_total` distinguishing
+it from real NULL dimension groups. Distinct counts and averages are recomputed
+from source rows. Snapshot state selection and one-to-one multi-model calculations
+retain their aggregate semantics. Totals without dimensions keep the ordinary
+aggregate row, without a marker. Explicit limit/offset and ungrouped totals are
+invalid; configured row caps are bypassed. Window-function metrics and
+materialized pre-aggregation and multi-source fanout plans retain the Python
+unsupported-combination boundary (`query.totals.window` or
+`query.totals.preaggregation`). Single-source fanout totals deduplicate source
+keys across all groups, rather than summing one copy per group. This also repairs
+the Python distinct-state path, where a key appearing in two groups previously
+inflated the total and changed its average.
+These options do not change the engine default or weaken mandatory policies.
+
 Structured query compilation, query-reference validation, and SQL rewriting
 preserve unused table-calculation, Explore, and saved-query declarations without
 executing them. Catalog entries must be objects with unique non-empty names;

@@ -164,7 +164,7 @@ impl SqlGenerator<'_> {
             "week" => (
                 format!(
                     "CAST({} AS DATE)",
-                    self.date_trunc_sql("week", &timestamp_sql)
+                    self.date_trunc_sql("week", &timestamp_sql)?
                 ),
                 "(a.active_date - c.cohort_date) / 7".to_string(),
                 "weeks_since",
@@ -172,7 +172,7 @@ impl SqlGenerator<'_> {
             "month" => (
                 format!(
                     "CAST({} AS DATE)",
-                    self.date_trunc_sql("month", &timestamp_sql)
+                    self.date_trunc_sql("month", &timestamp_sql)?
                 ),
                 concat!(
                     "(EXTRACT(YEAR FROM a.active_date) - EXTRACT(YEAR FROM c.cohort_date)) * 12",

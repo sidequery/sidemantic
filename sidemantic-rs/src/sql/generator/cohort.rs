@@ -195,7 +195,7 @@ impl SqlGenerator<'_> {
             }
             let mut sql = self.cohort_source_expression(model, &dimension.name)?;
             if let Some(grain) = &dimension.granularity {
-                sql = self.date_trunc_sql(grain, &sql);
+                sql = self.date_trunc_sql(grain, &sql)?;
             }
             if folded_fields.insert(dimension.alias.to_ascii_lowercase()) {
                 fields.insert(dimension.alias.clone());

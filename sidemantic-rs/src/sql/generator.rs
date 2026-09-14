@@ -6,9 +6,11 @@ mod cohort;
 mod conversion;
 mod fanout_aggregate;
 mod join_kind;
+mod options;
 mod retention;
 mod snapshots;
 mod temporal;
+mod timezone;
 
 use std::collections::{HashMap, HashSet};
 
@@ -46,6 +48,9 @@ pub struct SemanticQuery {
     pub preagg_database: Option<String>,
     pub preagg_schema: Option<String>,
     pub skip_default_time_dimensions: bool,
+    pub aliases: HashMap<String, String>,
+    pub timezone: Option<String>,
+    pub with_totals: bool,
     #[doc(hidden)]
     pub prepared_policies: crate::core::PreparedPolicies,
 }
@@ -143,6 +148,7 @@ struct MetricRef {
 pub struct SqlGenerator<'a> {
     graph: &'a SemanticGraph,
     dialect: DialectType,
+    timezone: Option<String>,
 }
 
 impl<'a> SqlGenerator<'a> {
@@ -150,11 +156,17 @@ impl<'a> SqlGenerator<'a> {
         Self {
             graph,
             dialect: SOURCE_DIALECT,
+            timezone: None,
         }
     }
 
     pub fn with_dialect(mut self, dialect: DialectType) -> Self {
         self.dialect = dialect;
+        self
+    }
+
+    pub fn with_timezone(mut self, timezone: Option<String>) -> Self {
+        self.timezone = timezone;
         self
     }
 
@@ -176,7 +188,7 @@ impl<'a> SqlGenerator<'a> {
         // Native callers can use this API without the SemanticInput host. Keep
         // parsing, AST transformation, serialization and destruction on the same
         // protected stack instead of returning a deep AST to the caller stack.
-        crate::semantic_input::with_semantic_stack(|| self.generate_from_model(query, None))
+        crate::semantic_input::with_semantic_stack(|| self.generate_with_options(query))
     }
 
     /// Aggregate children retain their own source population independently of
@@ -200,6 +212,9 @@ impl<'a> SqlGenerator<'a> {
         }
         if let Some(sql) = snapshots::try_generate(self, query)? {
             return Ok(sql);
+        }
+        if query.use_preaggregations {
+            self.reject_totals_route(query, "preaggregation")?;
         }
         let effective_dimensions = if query.skip_default_time_dimensions {
             query.dimensions.clone()
@@ -237,6 +252,7 @@ impl<'a> SqlGenerator<'a> {
         self.ensure_queryable_sources(&required_models)?;
 
         if self.has_cumulative_metrics(&metric_refs)? {
+            self.reject_totals_route(query, "window")?;
             self.reject_consumption_route(query, "temporal")?;
             self.reject_computed_keys_for_special_route(&required_models)?;
             return self.generate_with_cumulative(
@@ -248,6 +264,7 @@ impl<'a> SqlGenerator<'a> {
         }
 
         if self.needs_preaggregation_for_fanout(&metric_refs)? {
+            self.reject_totals_route(query, "preaggregation")?;
             self.reject_consumption_route(query, "independent_aggregates")?;
             self.reject_computed_keys_for_special_route(&required_models)?;
             return self.generate_with_preaggregation(
@@ -531,7 +548,7 @@ impl<'a> SqlGenerator<'a> {
                     .or(dimension.granularity.as_deref())
                 {
                     self.normalize_select_expression(
-                        &self.date_trunc_sql(granularity, dimension.sql_expr()),
+                        &self.date_trunc_sql(granularity, dimension.sql_expr())?,
                         &alias,
                     )
                 } else if dimension.window.is_some() {
@@ -613,7 +630,24 @@ impl<'a> SqlGenerator<'a> {
                                 ),
                             ));
                             let aggregation = metric.agg.as_ref().unwrap().as_sql();
-                            format!("{aggregation}(CASE WHEN {rank} = 1 THEN {raw_col} END)")
+                            let detail =
+                                format!("{aggregation}(CASE WHEN {rank} = 1 THEN {raw_col} END)");
+                            if query.with_totals && !group_expressions.is_empty() {
+                                let total_rank = loop {
+                                    let candidate = format!("__fanout_total_rank_{index}");
+                                    if aggregate_names.insert(candidate.clone()) {
+                                        break candidate;
+                                    }
+                                    index += 1;
+                                };
+                                // One source key can occur in several detail
+                                // groups. The total deduplicates across all of
+                                // them, not once within each detail group.
+                                aggregate_ranks.push((total_rank.clone(), format!("ROW_NUMBER() OVER (PARTITION BY {primary_key_expr} ORDER BY {primary_key_expr}) AS {total_rank}")));
+                                format!("CASE WHEN GROUPING({}) = 1 THEN {aggregation}(CASE WHEN {total_rank} = 1 THEN {raw_col} END) ELSE {detail} END", group_expressions[0])
+                            } else {
+                                detail
+                            }
                         }
                         Some(Aggregation::Count) => build_symmetric_aggregate_sql_with_key_expr(
                             &raw_alias,
@@ -682,6 +716,10 @@ impl<'a> SqlGenerator<'a> {
         for calc in &query.table_calculations {
             let calc_sql = calc.to_sql().map_err(SidemanticError::Validation)?;
             select_parts.push(format!("  {} AS {}", calc_sql, calc.name));
+        }
+
+        if query.with_totals && !dimension_refs.is_empty() {
+            select_parts.push(format!("  GROUPING({}) AS _is_total", group_expressions[0]));
         }
 
         sql.push_str(&select_parts.join(",\n"));
@@ -779,10 +817,20 @@ impl<'a> SqlGenerator<'a> {
         }
 
         // GROUP BY clause (if we have aggregations)
-        if !query.ungrouped && !dimension_refs.is_empty() && !metric_refs.is_empty() {
+        if !query.ungrouped
+            && !dimension_refs.is_empty()
+            && (!metric_refs.is_empty() || query.with_totals)
+        {
             let group_by_indices: Vec<String> =
                 (1..=dimension_refs.len()).map(|i| i.to_string()).collect();
-            sql.push_str(&format!("GROUP BY {}\n", group_by_indices.join(", ")));
+            if query.with_totals {
+                sql.push_str(&format!(
+                    "GROUP BY GROUPING SETS (({}), ())\n",
+                    group_by_indices.join(", ")
+                ));
+            } else {
+                sql.push_str(&format!("GROUP BY {}\n", group_by_indices.join(", ")));
+            }
         }
 
         if !having_filters.is_empty() {
@@ -923,7 +971,11 @@ impl<'a> SqlGenerator<'a> {
     /// matching `generate()`'s aliasing: bare leaf, or `{model}_{leaf}` on a leaf collision.
     pub fn result_schema(&self, query: &SemanticQuery) -> Result<Vec<(String, String)>> {
         // A consumption anchor changes route eligibility as well as joinability.
-        if query.consumption_base_model.is_some() {
+        if query.consumption_base_model.is_some()
+            || !query.aliases.is_empty()
+            || query.with_totals
+            || query.timezone.is_some()
+        {
             self.generate(query)?;
         }
         let effective_dimensions = if query.skip_default_time_dimensions {
@@ -955,6 +1007,15 @@ impl<'a> SqlGenerator<'a> {
         for metric_ref in &metric_refs {
             let alias = self.output_alias(&metric_ref.model, &metric_ref.alias, &alias_collisions);
             columns.push((alias, self.metric_ref_data_type(metric_ref).to_string()));
+        }
+        let aliases = self.selected_aliases(query)?;
+        for (name, _) in &mut columns {
+            if let Some(alias) = aliases.get(name) {
+                *name = alias.clone();
+            }
+        }
+        if query.with_totals && !dimension_refs.is_empty() {
+            columns.push(("_is_total".into(), "bigint".into()));
         }
         Ok(columns)
     }
@@ -3139,7 +3200,7 @@ impl<'a> SqlGenerator<'a> {
             let mut sql_col = dim_obj.sql_expr().to_string();
             let alias = if let Some(gran) = dim_ref.granularity.as_ref() {
                 if dim_obj.r#type == crate::core::DimensionType::Time {
-                    sql_col = format!("DATE_TRUNC('{gran}', {sql_col})");
+                    sql_col = self.date_trunc_sql(gran, &sql_col)?;
                     format!("{}__{gran}", dim_ref.name)
                 } else {
                     dim_ref.name.clone()
@@ -3585,7 +3646,7 @@ impl<'a> SqlGenerator<'a> {
             let mut sql_col = self.raw_dimension_sql(model, dim_obj.sql_expr());
             let alias = if let Some(gran) = dim_ref.granularity.as_ref() {
                 if dim_obj.r#type == crate::core::DimensionType::Time {
-                    sql_col = self.date_trunc_sql(gran, &sql_col);
+                    sql_col = self.date_trunc_sql(gran, &sql_col)?;
                     format!("{}__{gran}", dim_ref.name)
                 } else {
                     dim_ref.name.clone()
@@ -3620,7 +3681,7 @@ impl<'a> SqlGenerator<'a> {
             let mut sql_col = self.raw_dimension_sql(model, dim_obj.sql_expr());
             let alias = if let Some(granularity) = dim_ref.granularity.as_ref() {
                 if dim_obj.r#type == crate::core::DimensionType::Time {
-                    sql_col = self.date_trunc_sql(granularity, &sql_col);
+                    sql_col = self.date_trunc_sql(granularity, &sql_col)?;
                     format!("{}__{granularity}", dim_ref.name)
                 } else {
                     dim_ref.name.clone()
@@ -3745,15 +3806,23 @@ impl<'a> SqlGenerator<'a> {
             .replace("{model}", "cohort_sub")
     }
 
-    fn date_trunc_sql(&self, granularity: &str, column_expr: &str) -> String {
+    fn date_trunc_sql(&self, granularity: &str, column_expr: &str) -> Result<String> {
+        let column_expr = self.localize_to_timezone(column_expr)?;
         if self.dialect == DialectType::BigQuery {
-            format!(
+            Ok(format!(
                 "DATE_TRUNC({}, {})",
                 column_expr,
                 granularity.to_ascii_uppercase()
-            )
+            ))
+        } else if matches!(self.dialect, DialectType::Spark | DialectType::Databricks) {
+            let grain = granularity.to_ascii_uppercase();
+            Ok(match grain.as_str() {
+                "WEEK" | "MONTH" | "QUARTER" | "YEAR" => format!("TRUNC({column_expr}, '{grain}')"),
+                "DAY" => format!("CAST(DATE_TRUNC('DAY', {column_expr}) AS DATE)"),
+                _ => format!("DATE_TRUNC('{grain}', {column_expr})"),
+            })
         } else {
-            format!("DATE_TRUNC('{granularity}', {column_expr})")
+            Ok(format!("DATE_TRUNC('{granularity}', {column_expr})"))
         }
     }
 
@@ -4302,7 +4371,7 @@ impl<'a> SqlGenerator<'a> {
                 .is_some_and(|dimensions| dimensions.contains(&dimension.name));
             let column = if let Some(grain) = effective_grain {
                 if raw_dimension {
-                    self.date_trunc_sql(grain, &self.quote_identifier(&dimension.name))
+                    self.date_trunc_sql(grain, &self.quote_identifier(&dimension.name))?
                 } else {
                     let stored_grain = preagg.granularity.as_deref().expect("matched time grain");
                     let column =

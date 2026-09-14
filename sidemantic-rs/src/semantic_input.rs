@@ -1037,6 +1037,11 @@ struct QueryInput {
     segments: Vec<String>,
     #[serde(default)]
     order_by: Vec<String>,
+    #[serde(default)]
+    aliases: HashMap<String, String>,
+    timezone: Option<String>,
+    #[serde(default)]
+    with_totals: bool,
     limit: Option<usize>,
     offset: Option<usize>,
     #[serde(default)]
@@ -1103,6 +1108,9 @@ fn compile_semantic_input(input_json: &str, query_json: &str) -> Result<String> 
         filters,
         segments: payload.segments,
         order_by: payload.order_by,
+        aliases: payload.aliases,
+        timezone: payload.timezone,
+        with_totals: payload.with_totals,
         limit: payload.limit,
         offset: payload.offset,
         ungrouped: payload.ungrouped,
@@ -1140,6 +1148,7 @@ fn compile_semantic_input(input_json: &str, query_json: &str) -> Result<String> 
         &payload.table_calculations,
         &query.order_by,
         dialect,
+        &query.aliases,
     )
 }
 
@@ -1157,7 +1166,11 @@ fn validate_semantic_input(input_json: &str, query_json: &str) -> Result<Vec<Str
         &input.validation_context,
     );
     if errors.is_empty()
-        && (query.consumption_base_model.is_some() || !query.table_calculations.is_empty())
+        && (query.consumption_base_model.is_some()
+            || !query.table_calculations.is_empty()
+            || !query.aliases.is_empty()
+            || query.timezone.is_some()
+            || query.with_totals)
     {
         let dialect = query
             .dialect
@@ -1177,6 +1190,9 @@ fn validate_semantic_input(input_json: &str, query_json: &str) -> Result<Vec<Str
             filters,
             segments: query.segments,
             order_by: query.order_by,
+            aliases: query.aliases,
+            timezone: query.timezone,
+            with_totals: query.with_totals,
             limit: query.limit,
             offset: query.offset,
             ungrouped: query.ungrouped,
@@ -1188,7 +1204,7 @@ fn validate_semantic_input(input_json: &str, query_json: &str) -> Result<Vec<Str
         };
         let generator = SqlGenerator::new(&input.graph).with_dialect(dialect);
         if query.table_calculations.is_empty() {
-            generator.result_schema(&semantic_query)?;
+            generator.generate(&semantic_query)?;
         } else {
             let sql = generator.generate(&semantic_query)?;
             calculations::wrap(
@@ -1197,6 +1213,7 @@ fn validate_semantic_input(input_json: &str, query_json: &str) -> Result<Vec<Str
                 &query.table_calculations,
                 &semantic_query.order_by,
                 dialect,
+                &semantic_query.aliases,
             )?;
         }
     }

@@ -66,6 +66,13 @@ pub(super) fn try_generate(
     if !has_snapshot {
         return Ok(None);
     }
+    if query.with_totals && query.use_preaggregations {
+        // Snapshot state must be selected from live rows, including when the
+        // requested output reaches the snapshot through another calculation.
+        let mut live = query.clone();
+        live.use_preaggregations = false;
+        return try_generate(generator, &live);
+    }
     generator.reject_consumption_route(query, "snapshot")?;
     if metrics.is_empty()
         || query.ungrouped
@@ -178,6 +185,7 @@ pub(super) fn try_generate(
     let mut child = query.clone();
     child.dimensions = raw_dimensions.clone();
     child.ungrouped = true;
+    child.with_totals = false;
     child.skip_default_time_dimensions = true;
     child.order_by.clear();
     child.limit = None;
@@ -273,18 +281,29 @@ pub(super) fn try_generate(
         let aggregate = generator.fill_metric_expression(metric, aggregate)?;
         selections.push(format!("{aggregate} AS {value}"));
     }
+    if query.with_totals && !output_dimensions.is_empty() {
+        selections.push(format!(
+            "GROUPING({}) AS _is_total",
+            quote(&output_dimensions[0].alias)
+        ));
+    }
     let mut sql = format!(
         "SELECT {}\nFROM (SELECT {}\nFROM ({raw}) AS __snapshot_rows) AS __snapshot_values",
         selections.join(", "),
         marked.join(", ")
     );
     if !output_dimensions.is_empty() {
+        let positions = (1..=output_dimensions.len())
+            .map(|index| index.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
         sql.push_str(&format!(
             "\nGROUP BY {}",
-            (1..=output_dimensions.len())
-                .map(|index| index.to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
+            if query.with_totals {
+                format!("GROUPING SETS (({positions}), ())")
+            } else {
+                positions
+            }
         ));
     }
     let mut ordering = Vec::new();

@@ -314,6 +314,26 @@ pub(super) fn try_generate(
     if plan.models.len() < 2 && !plan.cross_source_calculation {
         return Ok(None);
     }
+    if query.use_preaggregations {
+        generator.reject_totals_route(query, "preaggregation")?;
+    }
+    if query.with_totals {
+        for (index, source) in plan.models.iter().enumerate() {
+            for target in plan.models.iter().skip(index + 1) {
+                for (from, to) in [(source, target), (target, source)] {
+                    if generator
+                        .graph
+                        .find_join_path(from, to)?
+                        .steps
+                        .iter()
+                        .any(|step| step.relationship_type == RelationshipType::ManyToOne)
+                    {
+                        generator.reject_totals_route(query, "preaggregation")?;
+                    }
+                }
+            }
+        }
+    }
     generator.reject_consumption_route(query, "independent_aggregates")?;
     if query.ungrouped || !query.table_calculations.is_empty() {
         return Err(unsupported("cross_grain_query_shape"));
@@ -406,7 +426,10 @@ pub(super) fn try_generate(
             .iter()
             .filter(|leaf| &leaf.model == model)
             .collect();
-        let projection = child_projection(generator, &dimensions, &leaves)?;
+        let mut projection = child_projection(generator, &dimensions, &leaves)?;
+        if query.with_totals && !dimensions.is_empty() {
+            projection.push("__sidemantic_source._is_total AS _is_total".into());
+        }
         // Reuse the ordinary source-local compiler only where its fanout contract
         // is proven: single declared keys and aggregates with symmetric support.
         let mut required = HashSet::from([model.clone()]);
@@ -506,6 +529,24 @@ pub(super) fn try_generate(
             generator.quote_identifier(&alias)
         ));
     }
+    if query.with_totals && !dimensions.is_empty() {
+        let markers: Vec<_> = plan
+            .models
+            .iter()
+            .map(|model| {
+                format!(
+                    "{}._is_total",
+                    generator.quote_identifier(&format!("{model}_preagg"))
+                )
+            })
+            .collect();
+        let marker = if markers.len() == 1 {
+            markers[0].clone()
+        } else {
+            format!("COALESCE({})", markers.join(", "))
+        };
+        selections.push(format!("{marker} AS _is_total"));
+    }
     let mut sql = format!(
         "WITH {}\nSELECT {}\nFROM {}",
         ctes.join(",\n"),
@@ -517,7 +558,7 @@ pub(super) fn try_generate(
         if dimensions.is_empty() {
             sql.push_str(&format!("\nCROSS JOIN {table}"));
         } else {
-            let conditions = dimensions
+            let mut conditions = dimensions
                 .iter()
                 .enumerate()
                 .map(|(dimension_index, _)| {
@@ -539,6 +580,25 @@ pub(super) fn try_generate(
                     format!("{previous} IS NOT DISTINCT FROM {table}.{name}")
                 })
                 .collect::<Vec<_>>();
+            if query.with_totals {
+                let previous: Vec<_> = plan.models[..index]
+                    .iter()
+                    .map(|model| {
+                        format!(
+                            "{}._is_total",
+                            generator.quote_identifier(&format!("{model}_preagg"))
+                        )
+                    })
+                    .collect();
+                let previous = if previous.len() == 1 {
+                    previous[0].clone()
+                } else {
+                    format!("COALESCE({})", previous.join(", "))
+                };
+                // A real all-NULL group and the grand-total group are different
+                // rows even though their dimension values are identical.
+                conditions.push(format!("{previous} = {table}._is_total"));
+            }
             sql.push_str(&format!(
                 "\nFULL OUTER JOIN {table} ON {}",
                 conditions.join(" AND ")

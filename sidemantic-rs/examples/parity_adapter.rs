@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::io::{self, Read};
 
 use polyglot_sql::DialectType;
@@ -28,6 +29,11 @@ enum Request {
         segments: Vec<String>,
         #[serde(default)]
         order_by: Vec<String>,
+        #[serde(default)]
+        aliases: HashMap<String, String>,
+        timezone: Option<String>,
+        #[serde(default)]
+        with_totals: bool,
         limit: Option<usize>,
         offset: Option<usize>,
         #[serde(default)]
@@ -155,6 +161,9 @@ fn handle(request: Request) -> sidemantic::Result<Response> {
             filters,
             segments,
             order_by,
+            aliases,
+            timezone,
+            with_totals,
             limit,
             offset,
             ungrouped,
@@ -170,6 +179,9 @@ fn handle(request: Request) -> sidemantic::Result<Response> {
                 .with_order_by(order_by)
                 .with_ungrouped(ungrouped)
                 .with_skip_default_time_dimensions(skip_default_time_dimensions);
+            query.aliases = aliases;
+            query.timezone = timezone;
+            query.with_totals = with_totals;
             if let Some(limit) = limit {
                 query = query.with_limit(limit);
             }

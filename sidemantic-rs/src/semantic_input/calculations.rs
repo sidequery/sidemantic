@@ -1,5 +1,5 @@
 //! Result calculations wrap finalized (including paginated) semantic SQL.
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use polyglot_sql::{DialectType, Expression};
 use serde::Deserialize;
@@ -187,6 +187,7 @@ pub(super) fn wrap(
     names: &[String],
     order_by: &[String],
     dialect: DialectType,
+    aliases: &HashMap<String, String>,
 ) -> Result<String> {
     if names.is_empty() {
         return Ok(sql);
@@ -233,9 +234,25 @@ pub(super) fn wrap(
         ) {
             return Err(unsupported("table_calculation.order_expression"));
         }
+        let output_alias = aliases.get(*field).or_else(|| {
+            if field.contains('.') || columns.iter().any(|column| column == *field) {
+                return None;
+            }
+            let matches: HashSet<_> = aliases
+                .iter()
+                .filter(|(name, _)| name.rsplit('.').next() == Some(*field))
+                .map(|(_, alias)| alias)
+                .collect();
+            if matches.len() == 1 {
+                matches.into_iter().next()
+            } else {
+                None
+            }
+        });
+        let field = output_alias.map_or(*field, String::as_str);
         let collided = field.replace('.', "_");
-        let field = if columns.iter().any(|c| c.as_str() == *field) {
-            *field
+        let field = if columns.iter().any(|c| c.as_str() == field) {
+            field
         } else if columns.contains(&collided) {
             &collided
         } else {

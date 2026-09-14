@@ -156,7 +156,7 @@ impl SqlGenerator<'_> {
                 TimeGrain::Quarter => "quarter",
                 TimeGrain::Year => "year",
             };
-            partitions.push(format!("DATE_TRUNC('{grain}', {time_column})"));
+            partitions.push(self.date_trunc_sql(grain, time_column)?);
         }
         let partition = if partitions.is_empty() {
             String::new()

@@ -73,55 +73,29 @@ def _engine_layer(monkeypatch, engine, fallback=None):
     return layer
 
 
+@pytest.mark.parametrize("engine,fallback", [("rust", None), ("auto", None), ("rust", True), ("auto", False)])
 @pytest.mark.parametrize(
-    "engine,fallback,reject",
+    "options",
     [
-        ("python", None, False),
-        ("rust", None, True),
-        ("auto", None, False),
-        ("rust", True, False),
-        ("auto", False, True),
+        {"timezone": "America/Los_Angeles", "dimensions": ["orders.created_at__day"]},
+        {"with_totals": True, "dimensions": ["orders.status"]},
+        {"aliases": {"orders.revenue": "total_revenue"}},
     ],
 )
-@pytest.mark.parametrize(
-    "capability",
-    [
-        "query.timezone",
-        "query.totals",
-        "query.aliases",
-    ],
-)
-def test_engine_selection_rejects_or_reports_each_unsupported_requirement(
-    monkeypatch, engine, fallback, reject, capability
-):
-    from sidemantic.semantic_handoff import UnsupportedSemanticFeaturesError
-
+def test_engine_selection_sends_supported_query_options_to_rust(monkeypatch, engine, fallback, options):
     layer = _engine_layer(monkeypatch, engine, fallback)
-    kwargs = {"metrics": ["orders.revenue"]}
-    if capability == "query.timezone":
-        kwargs.update(timezone="America/Los_Angeles", dimensions=["orders.created_at__day"])
-    elif capability == "query.totals":
-        kwargs.update(with_totals=True, dimensions=["orders.status"])
-    elif capability == "query.aliases":
-        kwargs["aliases"] = {"orders.revenue": "total_revenue"}
+    queries = []
 
-    def reject_rust(*args, **kwargs):
-        raise AssertionError("Unsupported input must not reach Rust validation or compilation")
+    def compile_input(graph, query, **kwargs):
+        queries.append(query)
+        return "SELECT 1 AS from_rust"
 
-    monkeypatch.setattr(rust_bridge, "validate_semantic_input", reject_rust)
-    monkeypatch.setattr(layer, "_compile_with_rust", reject_rust)
-    if reject:
-        with pytest.raises(UnsupportedSemanticFeaturesError) as exc:
-            layer.compile(**kwargs)
-        assert capability in exc.value.capabilities
-    else:
-        sql = layer.compile(**kwargs)
-        assert "SELECT" in sql
-        assert layer.last_engine_selection["engine"] == "python"
-        if engine != "python":
-            assert capability in layer.last_engine_selection["reason"]
-        else:
-            assert layer.last_engine_selection["reason"] is None
+    monkeypatch.setattr(rust_bridge, "compile_semantic_input", compile_input)
+    assert layer.compile(metrics=["orders.revenue"], **options).startswith("SELECT 1 AS from_rust")
+    assert len(queries) == 1
+    for name, value in options.items():
+        assert queries[0][name] == value
+    assert layer.last_engine_selection == {"engine": "rust", "reason": None}
 
 
 @pytest.mark.parametrize("engine,fallback", [("rust", None), ("auto", None), ("rust", True), ("auto", False)])

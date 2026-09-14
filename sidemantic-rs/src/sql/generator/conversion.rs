@@ -155,7 +155,7 @@ impl SqlGenerator<'_> {
             }
             let mut expression = self.conversion_source_expression(model, &dimension.name)?;
             if let Some(grain) = &dimension.granularity {
-                expression = self.date_trunc_sql(grain, &expression);
+                expression = self.date_trunc_sql(grain, &expression)?;
             }
             let internal = format!("__funnel_group_{index}");
             projection.push(format!("{expression} AS {internal}"));
@@ -445,6 +445,7 @@ impl SqlGenerator<'_> {
         graph.replace_model(secured)?;
         SqlGenerator::new(&graph)
             .with_dialect(self.dialect)
+            .with_timezone(self.timezone.clone())
             .generate_conversion_query(
                 reference,
                 dimensions,

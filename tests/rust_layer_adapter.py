@@ -41,6 +41,8 @@ class RustSemanticLayerAdapter:
         preagg_database: str | None = None,
         preagg_schema: str | None = None,
         init_sql: list[str] | None = None,
+        default_limit: int | None = None,
+        max_limit: int | None = None,
     ):
         self._graph = SemanticGraph()
         self.graph = RustSemanticGraphFacade(self)
@@ -50,6 +52,8 @@ class RustSemanticLayerAdapter:
         self.preagg_database = preagg_database
         self.preagg_schema = preagg_schema
         self.init_sql = init_sql
+        self.default_limit = default_limit
+        self.max_limit = max_limit
         self._owns_conn = False
         self._conn = self._initial_connection(connection)
         self.auto_register = auto_register
@@ -107,6 +111,9 @@ class RustSemanticLayerAdapter:
         parameters: dict[str, Any] | None = None,
         use_preaggregations: bool | None = None,
         skip_default_time_dimensions: bool = False,
+        aliases: dict[str, str] | None = None,
+        timezone: str | None = None,
+        with_totals: bool = False,
         **_kwargs: Any,
     ) -> str:
         if _kwargs:
@@ -122,6 +129,11 @@ class RustSemanticLayerAdapter:
         if effective_preaggregations:
             raise NotImplementedError("pure Rust test adapter does not support pre-aggregation routing yet")
 
+        if not with_totals:
+            limit = limit if limit is not None else self.default_limit
+            if self.max_limit is not None:
+                limit = min(limit, self.max_limit) if limit is not None else self.max_limit
+
         response = self._rust_request(
             {
                 "action": "compile",
@@ -131,6 +143,9 @@ class RustSemanticLayerAdapter:
                 "filters": filters or [],
                 "segments": segments or [],
                 "order_by": order_by or [],
+                "aliases": aliases or {},
+                "timezone": timezone,
+                "with_totals": with_totals,
                 "limit": limit,
                 "offset": offset,
                 "ungrouped": ungrouped,
@@ -139,6 +154,8 @@ class RustSemanticLayerAdapter:
             }
         )
         if response["status"] == "error":
+            if "query.totals." in response["error"]:
+                raise NotImplementedError("with_totals is not yet supported: " + response["error"])
             if "unsupported_source_uri_query" in response["error"]:
                 raise ValueError(response["error"].replace("Rust SQL generation", "Python SQL generation"))
             raise QueryValidationError(response["error"])

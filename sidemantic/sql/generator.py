@@ -3803,20 +3803,34 @@ class SQLGenerator:
             having_metric_expressions.setdefault(metric.name, aggregate)
 
         if with_totals and parsed_dims:
-            first_dim = f"{dedup_table}.{self._quote_identifier(dim_internal_names[0])}"
-            outer_select_exprs.append(f"GROUPING({first_dim}) AS _is_total")
+            outer_select_exprs.append("0 AS _is_total")
 
         outer_query = select(*outer_select_exprs).from_(inner_query.subquery(dedup_alias))
         if parsed_dims:
-            if with_totals:
-                positions = ", ".join(str(i) for i in range(1, len(parsed_dims) + 1))
-                outer_query = outer_query.group_by(f"GROUPING SETS (({positions}), ())")
-            else:
-                outer_query = outer_query.group_by(*range(1, len(parsed_dims) + 1))
+            outer_query = outer_query.group_by(*range(1, len(parsed_dims) + 1))
         for filter_expr in having_filters:
             outer_query = outer_query.having(
                 _parse_fragment(self._rewrite_having_filter(filter_expr, having_metric_expressions), self.dialect)
             )
+
+        result_query: exp.Query = outer_query
+        if with_totals and parsed_dims:
+            # A source key may belong to more than one dimension group. Removing
+            # dimensions from the DISTINCT state recomputes one global entity
+            # population instead of summing copies retained for separate groups.
+            total_rows = inner_query.copy().select(*inner_select_exprs[len(parsed_dims) :], append=False)
+            total_dimensions = []
+            for dim_ref, gran in parsed_dims:
+                reference = f"{dim_ref}__{gran}" if gran else dim_ref
+                total_dimensions.append(f"NULL AS {self._quote_alias(output_aliases[reference])}")
+            total_query = select(*total_dimensions, *outer_select_exprs[len(parsed_dims) : -1], "1 AS _is_total").from_(
+                total_rows.subquery(dedup_alias)
+            )
+            for filter_expr in having_filters:
+                total_query = total_query.having(
+                    _parse_fragment(self._rewrite_having_filter(filter_expr, having_metric_expressions), self.dialect)
+                )
+            result_query = exp.Union(this=outer_query, expression=total_query, distinct=False)
 
         if order_by:
             order_exprs = []
@@ -3828,12 +3842,12 @@ class SQLGenerator:
                 if output_alias is None and "." in field_ref:
                     output_alias = output_aliases.get(field_ref.split(".", 1)[1])
                 order_exprs.append(f"{self._quote_alias(output_alias or field_ref)}{direction}")
-            outer_query = outer_query.order_by(*order_exprs)
+            result_query = result_query.order_by(*order_exprs)
         if limit is not None:
-            outer_query = outer_query.limit(limit)
+            result_query = result_query.limit(limit)
         if offset is not None:
-            outer_query = outer_query.offset(offset)
-        return outer_query.sql(dialect=self.dialect, pretty=True)
+            result_query = result_query.offset(offset)
+        return result_query.sql(dialect=self.dialect, pretty=True)
 
     def _build_semi_additive_select(
         self,

@@ -741,7 +741,10 @@ impl Lowerer<'_, '_> {
         }
         let raw = metric.sql_expr().replace("{model}", alias);
         let mut expression = self.expression(&raw)?;
-        if metric.r#type == MetricType::Derived {
+        // SemanticInput normalizes a metric without an explicit aggregation to
+        // Derived. Preserve the distinction between a formula of measures and
+        // complete aggregate/window SQL supplied by the Yardstick adapter.
+        if metric.r#type == MetricType::Derived && !has_aggregate_semantics(&encode(&expression)?) {
             let mut value = encode(expression)?;
             map_columns(&mut value, &mut |node| {
                 if let Some((table, dependency)) = reference(&node) {
@@ -1114,6 +1117,50 @@ fn contains_kind(value: &Value, kind: &str) -> bool {
             fields.contains_key(kind) || fields.values().any(|child| contains_kind(child, kind))
         }
         Value::Array(children) => children.iter().any(|child| contains_kind(child, kind)),
+        _ => false,
+    }
+}
+
+fn has_aggregate_semantics(value: &Value) -> bool {
+    // These are Polyglot AST variants, not text matches: an aggregate name in a
+    // string, comment, or column cannot change the measure's evaluation grain.
+    const AGGREGATES: &[&str] = &[
+        "aggregate_function",
+        "count",
+        "sum",
+        "avg",
+        "min",
+        "max",
+        "median",
+        "mode",
+        "stddev",
+        "stddev_pop",
+        "stddev_samp",
+        "variance",
+        "var_pop",
+        "var_samp",
+        "approx_distinct",
+        "array_agg",
+        "group_concat",
+        "string_agg",
+        "list_agg",
+        "percentile",
+        "percentile_cont",
+        "percentile_disc",
+        "approx_percentile",
+        "quantile",
+        "approx_quantile",
+        "approx_quantiles",
+        "within_group",
+        "window",
+        "window_function",
+    ];
+    match value {
+        Value::Object(fields) => {
+            (fields.len() == 1 && fields.keys().any(|key| AGGREGATES.contains(&key.as_str())))
+                || fields.values().any(has_aggregate_semantics)
+        }
+        Value::Array(children) => children.iter().any(has_aggregate_semantics),
         _ => false,
     }
 }

@@ -1596,8 +1596,23 @@ mod tests {
         .is_err());
         assert!(matches!(
             rewrite_with_semantic_input(&input, "select revenue from orders"),
-            Err(SidemanticError::UnsupportedSemanticFeatures { .. })
+            Err(SidemanticError::Security(_))
         ));
+        let sql = rewrite_with_semantic_input_context(
+            &input,
+            "select revenue from orders",
+            r#"{"user_attributes":{"tenant":1}}"#,
+        )
+        .unwrap();
+        assert!(sql.contains("tenant = 1"), "{sql}");
+        assert!(sql.contains("NOT deleted"), "{sql}");
+        assert!(!sql.contains("all_orders"), "{sql}");
+        assert!(rewrite_with_semantic_input_context(
+            &input,
+            "select revenue from orders",
+            r#"{"user_attributes":{"tenant":1},"prepared_policies":{}}"#,
+        )
+        .is_err());
     }
 
     #[test]

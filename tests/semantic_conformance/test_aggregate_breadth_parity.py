@@ -80,6 +80,60 @@ def test_complete_sql_and_wrappers_run_after_entity_dedup(layer):
     assert layer.adapter.execute(sql).fetchall() == [("all", 30.0, 3, 40.0, 60.0, 30.0)]
 
 
+def test_complete_and_advanced_totals_deduplicate_overlapping_entity_groups(layer):
+    layer.adapter.execute("insert into raw_items values (5, 1, 'overlap'), (6, 2, null), (7, 2, null)")
+    cursor = layer.query(
+        metrics=[
+            "orders.average",
+            "orders.opaque_count",
+            "orders.median",
+            "orders.filtered_average",
+            "orders.double_average",
+            "orders.implicit_users",
+        ],
+        dimensions=["items.category"],
+        with_totals=True,
+    )
+    assert [field[0] for field in cursor.description] == [
+        "category",
+        "average",
+        "opaque_count",
+        "median",
+        "filtered_average",
+        "double_average",
+        "implicit_users",
+        "_is_total",
+    ]
+    rows = cursor.fetchall()
+    assert len(rows) == 4
+    assert set(rows) == {
+        ("all", 30.0, 3, 20.0, 40.0, 60.0, 3, 0),
+        ("overlap", 10.0, 1, 10.0, None, 20.0, 1, 0),
+        (None, 20.0, 1, 20.0, 20.0, 40.0, 1, 0),
+        (None, 30.0, 3, 20.0, 40.0, 60.0, 3, 1),
+    }
+
+
+@pytest.mark.parametrize("empty", [False, True])
+@pytest.mark.parametrize("count_only", [False, True])
+def test_complete_totals_without_fanout_keep_null_and_empty_populations(layer, empty, count_only):
+    layer.graph.models["orders"].dimensions.append(
+        Dimension(name="band", type="categorical", sql="case when amount < 20 then 'small' else null end")
+    )
+    metrics = ["orders.opaque_count"] if count_only else ["orders.opaque_count", "orders.average"]
+    cursor = layer.query(
+        metrics=metrics,
+        dimensions=["orders.band"],
+        filters=["orders.amount < 0"] if empty else [],
+        with_totals=True,
+    )
+    rows = [(None, 0, None, 1)] if empty else [("small", 1, 10.0, 0), (None, 2, 40.0, 0), (None, 3, 30.0, 1)]
+    expected = {(band, count, marker) for band, count, average, marker in rows} if count_only else set(rows)
+    actual = cursor.fetchall()
+    assert len(actual) == len(expected)
+    assert set(actual) == expected
+
+
 def test_approximate_distinct_supports_fanout_and_aggregate_filters(layer):
     sql = layer.compile(metrics=["orders.users"], dimensions=["items.category"], filters=["orders.users > 2"])
     assert "APPROX_COUNT_DISTINCT" in sql.upper()

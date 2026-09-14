@@ -157,9 +157,15 @@ pub(super) fn generate_entity_aggregates(
     let row_generator = SqlGenerator::new(&graph)
         .with_dialect(generator.dialect)
         .with_timezone(generator.timezone.clone());
+    let input_columns = inputs
+        .references
+        .iter()
+        .map(|reference| generator.quote_identifier(reference.rsplit('.').next().unwrap()))
+        .collect::<Vec<_>>();
     let mut rows = query.clone();
     rows.metrics = inputs.references;
     rows.ungrouped = true;
+    rows.with_totals = false;
     rows.use_preaggregations = false;
     let row_sql = row_generator.generate_from_model(&rows, Some(owner))?;
     let mut collisions = HashMap::new();
@@ -174,11 +180,15 @@ pub(super) fn generate_entity_aggregates(
             generator.quote_identifier(&source)
         ));
     }
-    outer.extend(selections);
+    outer.extend(selections.iter().cloned());
+    let grouped_totals = query.with_totals && !dimensions.is_empty();
+    if grouped_totals {
+        outer.push("0 AS _is_total".into());
+    }
     let source = if deduplicate {
         format!("SELECT DISTINCT * FROM (\n{row_sql}\n) AS __sidemantic_joined")
     } else {
-        row_sql
+        row_sql.clone()
     };
     let mut sql = format!(
         "SELECT {}\nFROM (\n{source}\n) AS __sidemantic_entities",
@@ -189,6 +199,27 @@ pub(super) fn generate_entity_aggregates(
             .map(|i| i.to_string())
             .collect::<Vec<_>>();
         sql.push_str(&format!("\nGROUP BY {}", groups.join(", ")));
+    }
+    if grouped_totals {
+        // An entity may belong to several dimension groups. Deduplicate the
+        // total's keys and inputs independently, without those dimensions.
+        let total_source = if deduplicate {
+            format!(
+                "SELECT DISTINCT {} FROM (\n{row_sql}\n) AS __sidemantic_joined",
+                input_columns.join(", ")
+            )
+        } else {
+            row_sql
+        };
+        let mut total = (0..dimensions.len())
+            .map(|index| format!("NULL AS __sidemantic_dimension_{index}"))
+            .collect::<Vec<_>>();
+        total.extend(selections);
+        total.push("1 AS _is_total".into());
+        sql.push_str(&format!(
+            "\nUNION ALL\nSELECT {}\nFROM (\n{total_source}\n) AS __sidemantic_entities",
+            total.join(", ")
+        ));
     }
     Ok(sql)
 }

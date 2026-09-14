@@ -207,10 +207,17 @@ def test_snapshot_totals_retain_latest_per_entity_selection(layer, use_preaggreg
     assert set(rows) == {("east", 30, 40, 0), ("west", 60, 80, 0), (None, 90, 120, 1)}
 
 
-def test_totals_deduplicate_fanned_out_keys_across_detail_groups(layer):
+@pytest.mark.parametrize("nullable", [False, True])
+@pytest.mark.parametrize("population", ["all", "filtered", "empty"])
+def test_totals_deduplicate_fanned_out_keys_across_detail_groups(layer, nullable, population):
     layer.adapter.execute("""create table lineitems as select * from (values
         (1, 1, 'x'), (2, 1, 'y'), (3, 2, 'x'), (4, 3, 'y'), (5, 4, 'x')
         ) as t(id, order_id, kind)""")
+    # Repeated join rows and membership in several groups must each preserve
+    # one contribution per order at the detail and grand-total grains.
+    layer.adapter.execute("insert into lineitems values (6, 1, 'x')")
+    if nullable:
+        layer.adapter.execute("insert into lineitems values (7, 2, null), (8, 4, null)")
     layer.add_model(
         Model(
             name="lineitems",
@@ -220,16 +227,34 @@ def test_totals_deduplicate_fanned_out_keys_across_detail_groups(layer):
             relationships=[Relationship(name="orders", type="many_to_one", foreign_key="order_id")],
         )
     )
+    filters = {
+        "all": [],
+        "filtered": ["orders.amount >= 20"],
+        "empty": ["lineitems.kind = 'absent'"],
+    }[population]
     columns, rows = execute(
-        layer, metrics=["orders.revenue", "orders.average"], dimensions=["lineitems.kind"], with_totals=True
+        layer,
+        metrics=["orders.revenue", "orders.average"],
+        dimensions=["lineitems.kind"],
+        aliases={"lineitems.kind": "Item kind", "orders.revenue": "Sales total"},
+        filters=filters,
+        with_totals=True,
     )
-    assert columns == ["kind", "revenue", "average", "_is_total"]
+    assert columns == ["Item kind", "Sales total", "average", "_is_total"]
     totals = [row for row in rows if row[-1] == 1]
-    assert totals == [(None, 100, 25, 1)]
-    assert {kind: amount for kind, amount, average, marker in rows if marker == 0} == {"x": 70, "y": 40}
-    assert {kind: average for kind, amount, average, marker in rows if marker == 0} == pytest.approx(
-        {"x": 70 / 3, "y": 20}
-    )
+    if population == "empty":
+        assert rows == [(None, None, None, 1)]
+        return
+    expected_total = (None, 100, 25, 1) if population == "all" else (None, 90, 30, 1)
+    assert totals == [expected_total]
+    amounts = {"x": 70, "y": 40} if population == "all" else {"x": 60, "y": 30}
+    averages = {"x": 70 / 3, "y": 20} if population == "all" else {"x": 30, "y": 30}
+    if nullable:
+        amounts[None] = 60
+        averages[None] = 30
+    assert len(rows) == len(amounts) + 1
+    assert {kind: amount for kind, amount, average, marker in rows if marker == 0} == amounts
+    assert {kind: average for kind, amount, average, marker in rows if marker == 0} == pytest.approx(averages)
 
 
 def test_totals_empty_population_keeps_the_grand_total(layer):

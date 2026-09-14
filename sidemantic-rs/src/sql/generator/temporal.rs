@@ -29,11 +29,12 @@ pub(crate) fn validate_metric(metric: &Metric) -> Result<()> {
                 return Err(unsupported("window_expression_controls"));
             }
             window_output_reference(expression)?;
-            if let Some(frame) = &metric.window_frame {
-                validate_output_frame(frame)?;
+        }
+        if let Some(frame) = &metric.window_frame {
+            if metric.window.is_some() || metric.grain_to_date.is_some() {
+                return Err(unsupported("window_frame_controls"));
             }
-        } else if metric.window_frame.is_some() {
-            return Err(unsupported("window_frame_without_expression"));
+            validate_output_frame(frame)?;
         }
         if let Some(window) = &metric.window {
             period_interval(window)?;
@@ -140,6 +141,12 @@ impl SqlGenerator<'_> {
         dimensions: &[DimensionRef],
         time_column: &str,
     ) -> Result<String> {
+        if let Some(frame) = &metric.window_frame {
+            if metric.window.is_some() || metric.grain_to_date.is_some() {
+                return Err(unsupported("window_frame_controls"));
+            }
+            validate_output_frame(frame)?;
+        }
         let mut partitions = self.temporal_partition_columns(dimensions, time_column);
         if let Some(grain) = &metric.grain_to_date {
             let grain = match grain {
@@ -156,7 +163,9 @@ impl SqlGenerator<'_> {
         } else {
             format!("PARTITION BY {} ", partitions.join(", "))
         };
-        let frame = if metric.grain_to_date.is_none() {
+        let frame = if let Some(frame) = &metric.window_frame {
+            frame.clone()
+        } else if metric.grain_to_date.is_none() {
             if let Some(window) = &metric.window {
                 let (amount, unit) = period_interval(window)?;
                 format!("RANGE BETWEEN INTERVAL '{amount} {unit}' PRECEDING AND CURRENT ROW")

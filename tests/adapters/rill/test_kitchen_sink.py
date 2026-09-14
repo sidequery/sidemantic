@@ -5,6 +5,7 @@ The goal is to find bugs, not conform tests to bugs.
 """
 
 import tempfile
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -222,6 +223,26 @@ class TestWindowFunctions:
 
         assert metric is not None
         assert metric.type == "cumulative"
+
+    def test_window_uses_default_grain_and_declared_frame(self, kitchen_sink_layer):
+        kitchen_sink_layer.adapter.execute("""
+            create table kitchen_sink_model(event_time timestamp, revenue integer);
+            insert into kitchen_sink_model values
+              ('2024-01-01 01:05:00', 2), ('2024-01-01 01:25:00', 8),
+              ('2024-01-07 01:00:00', 20), ('2024-01-08 02:00:00', 40);
+        """)
+        sql = kitchen_sink_layer.compile(metrics=["kitchen_sink.rolling_7day_revenue"])
+        result = kitchen_sink_layer.adapter.execute(sql)
+        assert [column[0] for column in result.description] == [
+            "event_time__hour",
+            "total_revenue",
+            "rolling_7day_revenue",
+        ]
+        assert sorted(result.fetchall()) == [
+            (datetime(2024, 1, 1, 1), 10, 10),
+            (datetime(2024, 1, 7, 1), 20, 15),
+            (datetime(2024, 1, 8, 2), 40, 30),
+        ]
 
 
 class TestSQLGeneration:

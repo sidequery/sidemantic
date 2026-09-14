@@ -77,10 +77,21 @@ pub(crate) fn with_semantic_stack<T: Send>(
 ) -> Result<T> {
     #[cfg(not(target_arch = "wasm32"))]
     {
+        std::thread_local! {
+            // Compiler children reuse the protected worker rather than spawning
+            // another OS thread for every aggregate or temporal subquery.
+            static SEMANTIC_WORKER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        }
+        if SEMANTIC_WORKER.get() {
+            return operation();
+        }
         std::thread::scope(|scope| {
             std::thread::Builder::new()
                 .stack_size(16 * 1024 * 1024)
-                .spawn_scoped(scope, operation)
+                .spawn_scoped(scope, || {
+                    SEMANTIC_WORKER.set(true);
+                    operation()
+                })
                 .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))?
                 .join()
                 .map_err(|_| {
@@ -1190,7 +1201,8 @@ mod tests {
         for sql in [
             "select orders.revenue from orders",
             "select orders.revenue from metrics union all select orders.revenue from metrics",
-            "with x as (select orders.revenue from metrics) select * from x",
+            "with recursive x as (select orders.revenue from metrics) select * from x",
+            "with x as (select orders.revenue from metrics) select * from orders",
             "select orders.revenue from metrics where orders.status in (select status from orders)",
             "select orders.revenue from metrics qualify 1 = 1",
             "select orders.revenue + 1 from metrics",
@@ -1216,6 +1228,28 @@ mod tests {
             )
             .is_err());
         }
+    }
+
+    #[test]
+    fn rewrite_context_secures_supported_cte_leaves() {
+        let mut source = input();
+        source["models"][0]["security"] = json!({"row_filters":["tenant = {{ user.tenant }}"]});
+        source["models"][0]["invariant_filters"] = json!(["not deleted"]);
+        let input = source.to_string();
+        let query = "with x as (select orders.revenue from metrics) select * from x";
+        let sql = rewrite_with_semantic_input_context(
+            &input,
+            query,
+            r#"{"user_attributes":{"tenant":7}}"#,
+        )
+        .unwrap();
+        assert!(sql.contains("tenant = 7"), "{sql}");
+        assert!(sql.contains("NOT deleted"), "{sql}");
+        assert!(!sql.to_ascii_lowercase().contains("from metrics"), "{sql}");
+        assert!(matches!(
+            rewrite_with_semantic_input_context(&input, query, "{}"),
+            Err(SidemanticError::Security(_))
+        ));
     }
 
     #[test]

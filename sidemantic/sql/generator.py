@@ -6391,9 +6391,19 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
                 output_aliases = {
                     f"{ref.split('.')[-1]}__{gran}" if gran else ref.split(".")[-1] for ref, gran in parsed_dims
                 } | {metric_ref_alias(ref) for ref in base_metrics}
-                if metric.window_order not in output_aliases:
-                    raise ValueError("window_order must name a selected period output column")
-                time_dim = f"base.{self._quote_alias(metric.window_order)}"
+                order_alias = metric.window_order
+                if order_alias not in output_aliases:
+                    # A selected dimension may be materialized at an explicit or
+                    # default grain, so bind its semantic name to that output.
+                    matches = [
+                        f"{ref.split('.')[-1]}__{gran}" if gran else ref.split(".")[-1]
+                        for ref, gran in parsed_dims
+                        if order_alias in (ref, ref.split(".")[-1])
+                    ]
+                    if len(matches) != 1:
+                        raise ValueError("window_order must name an unambiguous selected period output column")
+                    order_alias = matches[0]
+                time_dim = f"base.{self._quote_alias(order_alias)}"
 
             if not time_dim:
                 raise ValueError(f"Cumulative metric {m} requires a time dimension for ordering")
@@ -6412,10 +6422,10 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
                     partition_cols.append(column)
             partition_clause = f"PARTITION BY {', '.join(partition_cols)} " if partition_cols else ""
 
-            # Option C: Raw window_expression passthrough
-            if metric.window_expression:
-                order_col = time_dim
-                frame = metric.window_frame or "ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW"
+            frame = metric.window_frame
+            if frame is not None:
+                if metric.window or metric.grain_to_date:
+                    raise ValueError("window_frame cannot be combined with window or grain_to_date")
                 # Parse the complete window and reject clause/statement escapes before
                 # interpolating a user-authored frame into the generated query.
                 parsed_window = sqlglot.parse(f"SELECT SUM(x) OVER (ORDER BY y {frame})", read=self.dialect)
@@ -6428,6 +6438,11 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
                     or any(value for key, value in parsed_window[0].args.items() if key != "expressions")
                 ):
                     raise ValueError("Invalid window_frame")
+
+            # Option C: Raw window_expression passthrough
+            if metric.window_expression:
+                order_col = time_dim
+                frame = frame or "ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW"
                 window_value = f"{metric.window_expression} OVER ({partition_clause}ORDER BY {order_col} {frame})"
                 window_expr = f"{self._wrap_with_fill_nulls(window_value, metric)} AS {metric_alias}"
                 select_exprs.append(window_expr)
@@ -6473,7 +6488,9 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
                 base_col = f"base.{base_alias}"
 
             # Build window function
-            if metric.grain_to_date:
+            if frame is not None:
+                window_value = f"{agg_func}({base_col}) OVER ({partition_clause}ORDER BY {time_dim} {frame})"
+            elif metric.grain_to_date:
                 # Grain-to-date: MTD, QTD, YTD
                 # Partition by the grain period and order within it
                 grain = metric.grain_to_date

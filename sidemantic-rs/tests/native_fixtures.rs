@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     fs,
+    io::Write,
     path::{Path, PathBuf},
 };
 
@@ -135,6 +136,7 @@ fn native_fixtures_load_and_compile() {
     let manifest = load_manifest();
 
     for fixture in manifest.fixtures {
+        writeln!(std::io::stderr(), "native fixture {}: load", fixture.name).unwrap();
         let root = fixture_root(&fixture.name);
         let should_be_valid = fixture.valid.unwrap_or(true);
         assert_expected_validation_contract(&root, &fixture, should_be_valid);
@@ -168,6 +170,13 @@ fn native_fixtures_load_and_compile() {
         );
 
         for query_case in fixture.queries {
+            writeln!(
+                std::io::stderr(),
+                "native fixture {}::{}: compile",
+                fixture.name,
+                query_case.name
+            )
+            .unwrap();
             let query_text = fs::read_to_string(root.join(&query_case.file)).unwrap();
             let fixture_query: FixtureQuery = serde_yaml::from_str(&query_text).unwrap();
             if (!fixture_query.table_calculations.is_empty()
@@ -245,6 +254,13 @@ fn native_fixtures_load_and_compile() {
 
         let rewriter = QueryRewriter::new(&graph);
         for rewrite_case in fixture.rewrite_queries {
+            writeln!(
+                std::io::stderr(),
+                "native fixture {}::{}: rewrite",
+                fixture.name,
+                rewrite_case.name
+            )
+            .unwrap();
             let sql = rewriter.rewrite(&rewrite_case.sql).unwrap_or_else(|err| {
                 panic!(
                     "fixture '{}::{}' rewrite query should compile: {err}",

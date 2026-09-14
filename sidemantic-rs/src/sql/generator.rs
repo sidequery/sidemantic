@@ -161,7 +161,10 @@ impl<'a> SqlGenerator<'a> {
 
     /// Generate SQL from a semantic query
     pub fn generate(&self, query: &SemanticQuery) -> Result<String> {
-        self.generate_from_model(query, None)
+        // Native callers can use this API without the SemanticInput host. Keep
+        // parsing, AST transformation, serialization and destruction on the same
+        // protected stack instead of returning a deep AST to the caller stack.
+        crate::semantic_input::with_semantic_stack(|| self.generate_from_model(query, None))
     }
 
     /// Aggregate children retain their own source population independently of
@@ -2549,21 +2552,35 @@ impl<'a> SqlGenerator<'a> {
             let metric = self.metric_for_ref(metric_ref)?;
 
             let (order_col, _) = if let Some(window_order) = metric.window_order.as_ref() {
-                if !dimension_refs
+                let exact_output = dimension_refs
                     .iter()
                     .any(|dimension| &dimension.alias == window_order)
-                    && !base_metrics
+                    || base_metrics
                         .iter()
-                        .any(|reference| self.metric_alias_from_ref(reference) == *window_order)
-                {
-                    return Err(SidemanticError::Validation(
-                        "window_order must name a selected period output column".into(),
-                    ));
-                }
-                (
-                    format!("base.{}", self.quote_identifier(window_order)),
-                    None,
-                )
+                        .any(|reference| self.metric_alias_from_ref(reference) == *window_order);
+                let order_alias = if exact_output {
+                    window_order.as_str()
+                } else {
+                    // Resolve only selected dimensions, preserving the requested
+                    // grain rather than falling back to a physical source column.
+                    let matches: Vec<_> = dimension_refs
+                        .iter()
+                        .filter(|dimension| {
+                            dimension.name == *window_order
+                                || format!("{}.{}", dimension.model, dimension.name)
+                                    == *window_order
+                        })
+                        .map(|dimension| dimension.alias.as_str())
+                        .collect();
+                    if matches.len() != 1 {
+                        return Err(SidemanticError::Validation(
+                            "window_order must name an unambiguous selected period output column"
+                                .into(),
+                        ));
+                    }
+                    matches[0]
+                };
+                (format!("base.{}", self.quote_identifier(order_alias)), None)
             } else {
                 self.find_time_order_column(dimension_refs, Some(&metric_ref.model))?
             };

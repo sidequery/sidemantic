@@ -82,11 +82,13 @@ supports:
   `MAX`, or `COUNT` of one `base.output` metric reference, with an optionally
   quoted simple output identifier. The input is a grouped period metric value;
   it is not a physical source column. `window_order` names a selected period
-  output column and defaults to the selected time dimension. Windows retain
+  output column or an unambiguous selected dimension name, resolving its explicit
+  or default grain, and defaults to the selected time dimension. Windows retain
   selected non-time partitions. `window_frame` accepts preceding `ROWS` frames
   or calendar `RANGE` frames (day, week, month, year), ending at `CURRENT ROW`;
-  the default is unbounded preceding rows. Other strict expressions or frames,
-  and a frame without a window expression, remain unsupported. Legacy Rust
+  the default is unbounded preceding rows. Frames also apply to cumulative metrics
+  with an aggregate and base-metric reference. Combining a frame with `window` or
+  `grain_to_date` is rejected. Other strict expressions or frames remain unsupported. Legacy Rust
   utility expression discovery and Python's broader expression passthrough
   remain available through their existing paths.
 

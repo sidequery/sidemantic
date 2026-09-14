@@ -241,3 +241,37 @@ def test_totals_empty_population_keeps_the_grand_total(layer):
     )
     assert columns == ["category", "revenue", "customers", "_is_total"]
     assert rows == [(None, None, 0, 1)]
+
+
+@pytest.mark.parametrize("alias", ["Category label", "Category DESC", "Category NULLS FIRST"])
+@pytest.mark.parametrize(
+    "suffix,expected",
+    [
+        ("", [("a", 30), ("b", 30)]),
+        (" desc", [("b", 30), ("a", 30)]),
+        (" asc nulls first", [(None, 40), ("a", 30)]),
+        ("\tDESC\tNULLS\tLAST", [("b", 30), ("a", 30)]),
+    ],
+)
+@pytest.mark.parametrize("calculations", [False, True])
+def test_spaced_output_alias_ordering_keeps_full_names(layer, alias, suffix, expected, calculations):
+    if calculations:
+        layer.graph.add_table_calculation(TableCalculation(name="running", type="running_total", field="revenue"))
+    columns, rows = execute(
+        layer,
+        metrics=["orders.revenue"],
+        dimensions=["orders.category"],
+        aliases={"orders.category": alias},
+        order_by=[alias + suffix],
+        filters=["orders.category IS NOT NULL"] if not suffix else None,
+        table_calculations=["running"] if calculations else None,
+        limit=2,
+    )
+    if layer.engine == "rust":
+        assert layer.last_engine_selection["engine"] == "rust"
+    assert columns == [alias, "revenue", *(["running"] if calculations else [])]
+    if calculations:
+        first, second = expected
+        assert rows == [(*first, first[1]), (*second, first[1] + second[1])]
+    else:
+        assert rows == expected

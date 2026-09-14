@@ -215,32 +215,24 @@ pub(super) fn wrap(
         }
     }
     let mut ordering = Vec::new();
+    let names: Vec<_> = columns
+        .iter()
+        .chain(aliases.keys())
+        .chain(aliases.values())
+        .map(String::as_str)
+        .collect();
     for item in order_by {
-        let parts: Vec<_> = item.split_whitespace().collect();
-        let field = parts
-            .first()
-            .ok_or_else(|| invalid("query.order_by", "empty ordering"))?;
-        let suffix = parts[1..].join(" ").to_ascii_uppercase();
-        if !matches!(
-            suffix.as_str(),
-            "" | "ASC"
-                | "DESC"
-                | "NULLS FIRST"
-                | "NULLS LAST"
-                | "ASC NULLS FIRST"
-                | "ASC NULLS LAST"
-                | "DESC NULLS FIRST"
-                | "DESC NULLS LAST"
-        ) {
-            return Err(unsupported("table_calculation.order_expression"));
+        let (field, suffix) = crate::sql::split_order_field(item, &names);
+        if field.is_empty() {
+            return Err(invalid("query.order_by", "empty ordering"));
         }
-        let output_alias = aliases.get(*field).or_else(|| {
-            if field.contains('.') || columns.iter().any(|column| column == *field) {
+        let output_alias = aliases.get(field).or_else(|| {
+            if field.contains('.') || columns.iter().any(|column| column == field) {
                 return None;
             }
             let matches: HashSet<_> = aliases
                 .iter()
-                .filter(|(name, _)| name.rsplit('.').next() == Some(*field))
+                .filter(|(name, _)| name.rsplit('.').next() == Some(field))
                 .map(|(_, alias)| alias)
                 .collect();
             if matches.len() == 1 {
@@ -249,7 +241,7 @@ pub(super) fn wrap(
                 None
             }
         });
-        let field = output_alias.map_or(*field, String::as_str);
+        let field = output_alias.map_or(field, String::as_str);
         let collided = field.replace('.', "_");
         let field = if columns.iter().any(|c| c.as_str() == field) {
             field

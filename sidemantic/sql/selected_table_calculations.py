@@ -11,6 +11,7 @@ import re
 import sqlglot
 
 from sidemantic.core.table_calculation import TableCalculation
+from sidemantic.sql.order_by import split_order_field
 
 
 def wrap_table_calculations(sql, catalog, names, order_by, dialect, *, aliases=None):
@@ -39,10 +40,9 @@ def wrap_table_calculations(sql, catalog, names, order_by, dialect, *, aliases=N
 
     ordering = []
     for item in order_by or []:
-        parts = item.split()
-        if not parts:
+        field, suffix = split_order_field(item, [*columns, *(aliases or {}), *(aliases or {}).values()])
+        if not field:
             raise ValueError("Invalid table calculation result ordering")
-        field = parts[0]
         output_alias = (aliases or {}).get(field)
         if output_alias is None and aliases and "." not in field and field not in available:
             matches = {alias for key, alias in aliases.items() if key.rsplit(".", 1)[-1] == field}
@@ -52,9 +52,6 @@ def wrap_table_calculations(sql, catalog, names, order_by, dialect, *, aliases=N
             field = output_alias
         elif field not in available:
             field = field.replace(".", "_") if field.replace(".", "_") in available else field.rsplit(".", 1)[-1]
-        suffix = " ".join(parts[1:]).upper()
-        if not re.fullmatch(r"(?:(?:ASC|DESC)(?: NULLS (?:FIRST|LAST))?|NULLS (?:FIRST|LAST))?", suffix):
-            raise ValueError("Table calculations require selected-column ordering")
         ordering.append(reference(field) + (" " + suffix if suffix else ""))
     ordinal = quote(reserved + "ordinal")
     ctes = [f"{reserved}base AS (\n{sql.rstrip().rstrip(';')}\n)"]

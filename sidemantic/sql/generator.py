@@ -22,6 +22,7 @@ from sidemantic.sql.fragment import (
     replace_outside_sql_protected,
     rewrite_sql_column_spans,
 )
+from sidemantic.sql.order_by import split_order_field
 from sidemantic.sql.parsing import parse_fragment as _parse_fragment
 from sidemantic.validation import QueryValidationError
 
@@ -1276,8 +1277,7 @@ class SQLGenerator:
         aliases = aliases or {}
 
         for field in order_by or []:
-            parts = field.rsplit(" ", 1)
-            field_ref = parts[0] if len(parts) == 2 and parts[1].upper() in {"ASC", "DESC"} else field
+            field_ref, _ = split_order_field(field, [*metrics, *dimensions, *aliases.values()])
             # Public semantic field references may contain spaces without SQL quoting.
             if field_ref not in [*metrics, *dimensions, *aliases.values()]:
                 parse_query_fragment(field, self.dialect, order_by=True)
@@ -3835,9 +3835,8 @@ class SQLGenerator:
         if order_by:
             order_exprs = []
             for field in order_by:
-                parts = field.rsplit(" ", 1)
-                field_ref = parts[0] if len(parts) == 2 and parts[1].upper() in {"ASC", "DESC"} else field
-                direction = f" {parts[1].upper()}" if field_ref != field else ""
+                field_ref, suffix = split_order_field(field, [*output_aliases, *output_aliases.values()])
+                direction = f" {suffix}" if suffix else ""
                 output_alias = output_aliases.get(field_ref)
                 if output_alias is None and "." in field_ref:
                     output_alias = output_aliases.get(field_ref.split(".", 1)[1])
@@ -4076,9 +4075,8 @@ class SQLGenerator:
         if order_by:
             order_exprs = []
             for field in order_by:
-                parts = field.rsplit(" ", 1)
-                field_ref = parts[0] if len(parts) == 2 and parts[1].upper() in {"ASC", "DESC"} else field
-                direction = f" {parts[1].upper()}" if field_ref != field else ""
+                field_ref, suffix = split_order_field(field, [*output_aliases, *output_aliases.values()])
+                direction = f" {suffix}" if suffix else ""
                 alias = output_aliases.get(field_ref, field_ref.split(".", 1)[-1])
                 order_exprs.append(f"{self._quote_alias(alias)}{direction}")
             sql += f"\nORDER BY {', '.join(order_exprs)}"
@@ -4458,15 +4456,12 @@ class SQLGenerator:
         if order_by:
             order_by_aliases = []
             for field in order_by:
-                parts = field.rsplit(" ", 1)
-                direction = ""
-                field_ref = field
-                if len(parts) == 2 and parts[1].upper() in {"ASC", "DESC"}:
-                    field_ref = parts[0]
-                    direction = f" {parts[1].upper()}"
-
+                field_ref, suffix = split_order_field(field, [*output_aliases, *output_aliases.values()])
+                direction = f" {suffix}" if suffix else ""
                 if field_ref in output_aliases:
                     field_alias = self._quote_alias(output_aliases[field_ref])
+                elif field_ref in output_aliases.values():
+                    field_alias = self._quote_alias(field_ref)
                 elif "." in field_ref:
                     field_alias = field_ref.split(".", 1)[1]
                 else:

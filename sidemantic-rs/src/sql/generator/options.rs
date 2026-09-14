@@ -120,15 +120,15 @@ impl SqlGenerator<'_> {
         let aliases = generator.selected_aliases(query)?;
         // A caller may order by a custom output name. Resolve it back before
         // compiling so specialized planners see the same semantic field refs.
+        let names: Vec<_> = query.aliases.values().map(String::as_str).collect();
         for item in &mut inner.order_by {
-            let head_len = item.find(char::is_whitespace).unwrap_or(item.len());
-            let (field, suffix) = item.split_at(head_len);
+            let (field, suffix) = crate::sql::split_order_field(item, &names);
             if let Some((reference, _)) = query
                 .aliases
                 .iter()
                 .find(|(_, alias)| alias.as_str() == field)
             {
-                *item = format!("{reference}{suffix}");
+                *item = format!("{reference} {suffix}").trim_end().to_owned();
             }
         }
         inner.aliases.clear();

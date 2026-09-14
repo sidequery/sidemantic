@@ -385,7 +385,7 @@ impl SqlGenerator<'_> {
         for (index, dimension) in dimensions.iter().enumerate() {
             let mut expression = self.conversion_source_expression(model, &dimension.name)?;
             if let Some(grain) = &dimension.granularity {
-                expression = self.date_trunc_sql(grain, &expression);
+                expression = self.date_trunc_sql(grain, &expression)?;
             }
             let name = format!("__funnel_group_{index}");
             projection.push(format!("{expression} AS {name}"));

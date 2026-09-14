@@ -156,6 +156,7 @@ mod tests {
             for kind in [RelationshipType::ManyToOne, RelationshipType::OneToMany] {
                 let mut graph = SemanticGraph::new();
                 let target = Model::new("accounts", "account_key")
+                    .with_table("accounts")
                     .with_primary_key_columns(vec!["tenant".into(), "account_key".into()]);
                 graph.add_model(target).unwrap();
                 let mut relationship = Relationship::new(if role { "buyer" } else { "accounts" });
@@ -164,6 +165,7 @@ mod tests {
                 relationship.foreign_key_columns =
                     Some(vec!["tenant_ref".into(), "account_ref".into()]);
                 let source = Model::new("events", "event_key")
+                    .with_table("events")
                     .with_primary_key_columns(vec!["tenant".into(), "event_key".into()])
                     .with_relationship(relationship);
                 graph.add_model(source).unwrap();

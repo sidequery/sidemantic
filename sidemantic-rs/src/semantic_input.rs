@@ -1190,7 +1190,8 @@ mod tests {
         for sql in [
             "select orders.revenue from orders",
             "select orders.revenue from metrics union all select orders.revenue from metrics",
-            "with x as (select orders.revenue from metrics) select * from x",
+            "with recursive x as (select orders.revenue from metrics) select * from x",
+            "with x as (select orders.revenue from metrics) select * from orders",
             "select orders.revenue from metrics where orders.status in (select status from orders)",
             "select orders.revenue from metrics qualify 1 = 1",
             "select orders.revenue + 1 from metrics",
@@ -1216,6 +1217,28 @@ mod tests {
             )
             .is_err());
         }
+    }
+
+    #[test]
+    fn rewrite_context_secures_supported_cte_leaves() {
+        let mut source = input();
+        source["models"][0]["security"] = json!({"row_filters":["tenant = {{ user.tenant }}"]});
+        source["models"][0]["invariant_filters"] = json!(["not deleted"]);
+        let input = source.to_string();
+        let query = "with x as (select orders.revenue from metrics) select * from x";
+        let sql = rewrite_with_semantic_input_context(
+            &input,
+            query,
+            r#"{"user_attributes":{"tenant":7}}"#,
+        )
+        .unwrap();
+        assert!(sql.contains("tenant = 7"), "{sql}");
+        assert!(sql.contains("NOT deleted"), "{sql}");
+        assert!(!sql.to_ascii_lowercase().contains("from metrics"), "{sql}");
+        assert!(matches!(
+            rewrite_with_semantic_input_context(&input, query, "{}"),
+            Err(SidemanticError::Security(_))
+        ));
     }
 
     #[test]

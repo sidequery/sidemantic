@@ -114,14 +114,15 @@ pub(crate) fn materialization_sql(
                 .filters
                 .iter()
                 .map(|filter| {
-                    let predicate = source_expression(filter).or_else(|error| {
-                        // Public builds historically accept physical subquery filters.
-                        // Routing still requires strict row-scope proof before reuse.
-                        let physical =
-                            replace_model_placeholder(filter, None).map_err(|_| error)?;
-                        super::parse_semantic_expression(&physical)?;
-                        Ok(physical)
-                    })?;
+                    let predicate =
+                        source_expression(filter).or_else(|error| -> Result<String> {
+                            // Public builds historically accept physical subquery filters.
+                            // Routing still requires strict row-scope proof before reuse.
+                            let physical =
+                                replace_model_placeholder(filter, None).map_err(|_| error)?;
+                            super::parse_semantic_expression(&physical)?;
+                            Ok(physical)
+                        })?;
                     Ok(format!("({predicate})"))
                 })
                 .collect::<Result<Vec<_>>>()?;

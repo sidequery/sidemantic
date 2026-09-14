@@ -4163,7 +4163,7 @@ impl<'a> SqlGenerator<'a> {
                 expression
             };
             if let Some(grain) = effective_grain {
-                expression = self.date_trunc_sql(grain, &expression);
+                expression = self.date_trunc_sql(grain, &expression)?;
             }
             select_parts.push(format!(
                 "{expression} AS {}",

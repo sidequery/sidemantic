@@ -125,3 +125,45 @@ def test_postgres_filtered_float_fanout_average_preserves_values(having):
             "insert into float_items values (1,1,'a'),(2,1,'a'),(3,1,'a'),(4,2,'a'),(5,3,'a'),(6,7,'a'),(7,7,'a'),(8,2,'b'),(9,2,'b'),(10,3,'b'),(11,999,'orphan')"
         )
         assert connection.execute(sql).fetchall() == expected
+
+
+@pytest.mark.parametrize("population", ["grouped", "no_matches", "empty"])
+def test_postgres_filtered_complete_row_count(population):
+    dsn = os.environ.get("SIDEMANTIC_TEST_POSTGRES_DSN")
+    if not dsn:
+        pytest.skip("PostgreSQL execution requires SIDEMANTIC_TEST_POSTGRES_DSN")
+    import psycopg
+    import sidemantic_rs
+
+    from sidemantic import Dimension, SecurityPolicy
+
+    assert callable(sidemantic_rs.compile_with_semantic_input)
+    graph = SemanticGraph()
+    predicate = 'orders."Amount" IS NULL' if population != "no_matches" else 'orders."Amount" > 1000'
+    graph.add_model(
+        Model(
+            name="orders",
+            table="star_population",
+            primary_key="id",
+            dimensions=[Dimension(name="region", type="categorical")],
+            metrics=[
+                Metric(name="rows", sql="COUNT(*)", sql_is_complete=True, filters=[predicate]),
+                Metric(name="ordinary", agg="count", filters=[predicate]),
+            ],
+            security=SecurityPolicy(row_filters=["id <= {{ user.max_id }}"]),
+            invariant_filters=["id != 4"],
+        )
+    )
+    query = {"metrics": ["orders.rows", "orders.ordinary"], "dialect": "postgres", "user_attributes": {"max_id": 4}}
+    expected = [(0, 0)]
+    if population == "grouped":
+        query.update(dimensions=["orders.region"], order_by=["orders.region"])
+        expected = [("a", 1, 1), ("b", 0, 0)]
+    sql = compile_semantic_input(graph, query)
+    with psycopg.connect(dsn, autocommit=True) as connection:
+        connection.execute('create temporary table star_population(id integer, "Amount" integer, region text)')
+        if population != "empty":
+            connection.execute(
+                "insert into star_population values (1,null,'a'),(2,2,'a'),(3,3,'b'),(4,null,'a'),(5,null,'a')"
+            )
+        assert connection.execute(sql).fetchall() == expected

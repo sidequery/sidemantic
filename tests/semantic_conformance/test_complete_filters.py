@@ -125,7 +125,7 @@ def test_filter_conjunction_preserves_disjunction_grouping(layer):
 @pytest.mark.parametrize(
     "expression",
     [
-        "COUNT(*)",
+        "COUNT(DISTINCT *)",
         "COUNT(1)",
         "SUM(1)",
         "SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END)",
@@ -137,6 +137,9 @@ def test_filter_conjunction_preserves_disjunction_grouping(layer):
         "AVG(DISTINCT amount)",
         "AVG(amount) OVER ()",
         "AVG(other.amount)",
+        "COUNT(*) FILTER (WHERE amount > 0)",
+        "COUNT(*) OVER ()",
+        "COUNT(other.*)",
     ],
 )
 def test_unproven_complete_filter_shapes_fail_explicitly(expression):
@@ -362,3 +365,245 @@ def test_filtered_float_averages_deduplicate_keys_within_each_group(
         query["filters"].append("orders.paid_sum > 0.5")
         expected = [("a", pytest.approx(5 / 24), 0.125, 0.625, 0.25, 4)]
     assert_result(layer, query, columns, expected)
+
+
+@pytest.fixture
+def row_count_layer(layer):
+    layer.graph.models["orders"].metrics.extend(
+        [
+            Metric(name="paid_rows", sql="COUNT(*)", sql_is_complete=True, filters=["status = 'paid'"]),
+            Metric(name="ordinary_rows", agg="count", filters=["status = 'paid'"]),
+        ]
+    )
+    return layer
+
+
+def test_complete_row_count_counts_null_values_and_keeps_groups(row_count_layer):
+    assert_result(
+        row_count_layer,
+        {
+            "metrics": ["orders.paid_rows", "orders.ordinary_rows", "orders.paid_count"],
+            "dimensions": ["orders.region"],
+            "order_by": ["orders.region"],
+        },
+        ["region", "paid_rows", "ordinary_rows", "paid_count"],
+        [("north", 3, 3, 2), ("south", 0, 0, 0)],
+    )
+
+
+@pytest.mark.parametrize("empty_source", [False, True])
+def test_complete_row_count_empty_population_is_zero(row_count_layer, empty_source):
+    if empty_source:
+        row_count_layer.adapter.execute("delete from complete_orders")
+    else:
+        row_count_layer.graph.models["orders"].get_metric("paid_rows").filters = ["status = 'absent'"]
+        row_count_layer.graph.models["orders"].get_metric("ordinary_rows").filters = ["status = 'absent'"]
+    assert_result(
+        row_count_layer,
+        {"metrics": ["orders.paid_rows", "orders.ordinary_rows"]},
+        ["paid_rows", "ordinary_rows"],
+        [(0, 0)],
+    )
+
+
+def test_complete_row_count_physical_filters_preserve_quotes_literals_and_boolean_groups(row_count_layer):
+    row_count_layer.graph.models["orders"].metrics.append(
+        Metric(
+            name="selected_rows",
+            sql="COUNT(*)",
+            sql_is_complete=True,
+            filters=["orders.status = 'paid' OR orders.status = 'orders.vip'", 'orders."amount" > 1'],
+        )
+    )
+    assert_result(
+        row_count_layer,
+        {"metrics": ["orders.paid_rows", "orders.selected_rows", "orders.total"]},
+        ["paid_rows", "selected_rows", "total"],
+        [(3, 2, 13)],
+    )
+
+
+def test_complete_row_count_mandatory_policies_and_query_filters(row_count_layer):
+    model = row_count_layer.graph.models["orders"]
+    row_count_layer.adapter.execute(
+        "insert into complete_orders values (7,null,'paid','north'),(8,null,'paid','north')"
+    )
+    model.security = SecurityPolicy(row_filters=["id <= {{ user.max_id }}"])
+    model.invariant_filters = ["id != 7"]
+    assert_result(
+        row_count_layer,
+        {
+            "metrics": ["orders.paid_rows", "orders.ordinary_rows"],
+            "filters": ["orders.amount IS NULL"],
+            "user_attributes": {"max_id": 7},
+        },
+        ["paid_rows", "ordinary_rows"],
+        [(1, 1)],
+    )
+    from sidemantic.core.semantic_layer import SecurityError
+
+    with pytest.raises(SecurityError):
+        row_count_layer.compile(metrics=["orders.paid_rows"])
+
+
+def test_complete_row_count_keyed_fanout_and_missing_source_rows(row_count_layer):
+    layer = row_count_layer
+    layer.graph.models["orders"].relationships.append(
+        Relationship(name="items", type="one_to_many", foreign_key="order_id")
+    )
+    layer.add_model(
+        Model(
+            name="items",
+            table="count_items",
+            primary_key="id",
+            dimensions=[Dimension(name="category", type="categorical")],
+        )
+    )
+    layer.adapter.execute("""
+        create table count_items(id integer, order_id integer, category varchar);
+        insert into count_items values (1,1,'a'),(2,1,'a'),(3,2,'a'),(4,3,'a'),(5,4,'b'),(6,99,'orphan');
+    """)
+    assert_result(
+        layer,
+        {
+            "metrics": ["orders.paid_rows", "orders.ordinary_rows"],
+            "dimensions": ["items.category"],
+            "filters": ["items.category IS NOT NULL"],
+            "order_by": ["items.category"],
+        },
+        ["category", "paid_rows", "ordinary_rows"],
+        [("a", 3, 3), ("b", 0, 0), ("orphan", 0, 0)],
+    )
+
+
+def test_complete_row_count_cross_source_absent_group_restores_zero(row_count_layer):
+    layer = row_count_layer
+    layer.graph.models["orders"].relationships.append(
+        Relationship(name="regions", type="many_to_one", foreign_key="region", primary_key="region")
+    )
+    layer.add_model(
+        Model(
+            name="regions",
+            table="count_regions",
+            primary_key="region",
+            dimensions=[Dimension(name="region", type="categorical")],
+            metrics=[Metric(name="quota", agg="sum", sql="quota")],
+        )
+    )
+    layer.add_metric(Metric(name="combined", type="derived", sql="orders.paid_rows + regions.quota"))
+    layer.adapter.execute(
+        "create table count_regions(region varchar, quota integer); insert into count_regions values ('north',10),('south',20),('west',30)"
+    )
+    assert_result(
+        layer,
+        {"metrics": ["combined"], "dimensions": ["regions.region"], "order_by": ["regions.region"]},
+        ["region", "combined"],
+        [("north", 13), ("south", 20), ("west", 30)],
+    )
+
+
+@pytest.mark.parametrize("layer", ["python"], indirect=True)
+def test_complete_row_count_generator_reuse_observes_graph_changes(row_count_layer):
+    from sidemantic.sql.generator import SQLGenerator
+
+    layer = row_count_layer
+    generator = SQLGenerator(layer.graph)
+    assert layer.adapter.execute(generator.generate(metrics=["orders.paid_rows"])).fetchall() == [(3,)]
+    layer.graph.models["orders"].get_metric("paid_rows").filters = ["status = 'canceled'"]
+    assert layer.adapter.execute(generator.generate(metrics=["orders.paid_rows"])).fetchall() == [(1,)]
+    layer.add_model(
+        Model(
+            name="new_model",
+            sql="select 1 as id union all select 2",
+            primary_key="id",
+            metrics=[Metric(name="rows", agg="count")],
+        )
+    )
+    assert layer.adapter.execute(generator.generate(metrics=["new_model.rows"])).fetchall() == [(2,)]
+    assert generator.graph is layer.graph
+
+
+@pytest.mark.parametrize("layer", ["python"], indirect=True)
+@pytest.mark.parametrize("sql,predicate", [("COUNT(*)", "status = ("), ("SUM(", "true")])
+def test_unused_invalid_complete_metric_does_not_break_other_query(row_count_layer, sql, predicate):
+    row_count_layer.graph.models["orders"].metrics.append(
+        Metric(name="unused", sql=sql, sql_is_complete=True, filters=[predicate])
+    )
+    assert_result(row_count_layer, {"metrics": ["orders.paid_rows"]}, ["paid_rows"], [(3,)])
+
+
+@pytest.mark.parametrize("layer", ["python"], indirect=True)
+def test_selected_complete_row_count_invalid_filter_is_rejected(row_count_layer):
+    import duckdb
+
+    row_count_layer.graph.models["orders"].get_metric("paid_rows").filters = ["status = ("]
+    with pytest.raises(duckdb.ParserException):
+        row_count_layer.adapter.execute(row_count_layer.compile(metrics=["orders.paid_rows"]))
+
+
+@pytest.mark.parametrize("layer", ["python"], indirect=True)
+def test_complete_row_count_role_queries_preserve_caller_caches(row_count_layer):
+    from sidemantic.sql.generator import SQLGenerator
+
+    layer = row_count_layer
+    layer.graph.models["orders"].relationships.append(
+        Relationship(
+            name="location", target_model="regions", type="many_to_one", foreign_key="region", primary_key="region"
+        )
+    )
+    layer.add_model(
+        Model(
+            name="regions",
+            table="count_regions",
+            primary_key="region",
+            dimensions=[Dimension(name="region", type="categorical")],
+        )
+    )
+    layer.adapter.execute(
+        "create table count_regions(region varchar); insert into count_regions values ('north'),('south')"
+    )
+    layer.graph.find_relationship_path("orders", "location")
+    cache_names = ["_adjacency", "_role_models", "_role_owners", "_relationship_instances", "_relationship_path_cache"]
+    original_objects = {name: getattr(layer.graph, name) for name in cache_names}
+    original_values = deepcopy(original_objects)
+    source = deepcopy(graph_to_semantic_input(layer.graph))
+    generator = SQLGenerator(layer.graph)
+    sql = generator.generate(metrics=["orders.paid_rows"], dimensions=["location.region"], order_by=["location.region"])
+    assert layer.adapter.execute(sql).fetchall() == [("north", 3), ("south", 0)]
+    assert graph_to_semantic_input(layer.graph) == source
+    for name in cache_names:
+        assert getattr(layer.graph, name) is original_objects[name]
+        assert getattr(layer.graph, name) == original_values[name]
+
+
+@pytest.mark.parametrize("owner", [None, "orders"])
+def test_graph_complete_row_count_remains_explicitly_unsupported(owner):
+    pytest.importorskip("sidemantic_rs")
+    from sidemantic.rust_bridge import UnsupportedSemanticFeaturesError, compile_semantic_input
+
+    layer = SemanticLayer(auto_register=False)
+    try:
+        layer.add_model(Model(name="orders", table="orders", primary_key="id"))
+        layer.graph.add_metric(
+            Metric(name="paid", sql="COUNT(*)", sql_is_complete=True, filters=["status = 'paid'"]), model_name=owner
+        )
+        with pytest.raises(UnsupportedSemanticFeaturesError) as error:
+            compile_semantic_input(layer.graph, {"metrics": ["paid"]})
+        assert "metric.complete_filters" in error.value.capabilities
+    finally:
+        layer.adapter.close()
+
+
+@pytest.mark.parametrize("layer", ["python"], indirect=True)
+@pytest.mark.parametrize("expression", ["COUNT(*)", "COUNT_BIG(*)"])
+def test_tsql_complete_row_count_retains_existing_path(row_count_layer, expression):
+    from sidemantic.sql.generator import SQLGenerator
+
+    metric = row_count_layer.graph.models["orders"].get_metric("paid_rows")
+    metric.sql = expression
+    sql = SQLGenerator(row_count_layer.graph, dialect="tsql").generate(metrics=["orders.paid_rows"])
+    # Existing complete-expression generation emits COUNT_BIG for both inputs.
+    # This DuckDB/PostgreSQL qualification must leave that TSQL path untouched.
+    assert "COUNT_BIG(*)" in sql
+    assert "CASE WHEN" not in sql
+    assert metric.sql == expression

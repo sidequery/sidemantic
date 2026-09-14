@@ -217,6 +217,7 @@ fn lower_complete_filter(
     raw: &mut Map<String, Value>,
     owner: Option<&str>,
     path: &str,
+    model_local: bool,
 ) -> Result<()> {
     use polyglot_sql::Expression;
     let owner = owner.ok_or_else(|| unsupported("metric.complete_filters"))?;
@@ -251,7 +252,17 @@ fn lower_complete_filter(
                 Expression::Min(_) => "min",
                 _ => "max",
             };
-            (aggregation, &aggregate.this)
+            (aggregation, Some(&aggregate.this))
+        }
+        Expression::Count(count)
+            if model_local
+                && count.star
+                && !count.distinct
+                && count.this.is_none()
+                && count.filter.is_none()
+                && count.ignore_nulls.is_none() =>
+        {
+            ("count", None)
         }
         Expression::Count(count)
             if !count.star && count.filter.is_none() && count.ignore_nulls.is_none() =>
@@ -262,29 +273,36 @@ fn lower_complete_filter(
                 } else {
                     "count"
                 },
-                count
-                    .this
-                    .as_ref()
-                    .ok_or_else(|| unsupported("metric.complete_filters"))?,
+                Some(
+                    count
+                        .this
+                        .as_ref()
+                        .ok_or_else(|| unsupported("metric.complete_filters"))?,
+                ),
             )
         }
         _ => return Err(unsupported("metric.complete_filters")),
     };
-    let Expression::Column(column) = input else {
-        return Err(unsupported("metric.complete_filters"));
+    let input = if let Some(input) = input {
+        let Expression::Column(column) = input else {
+            return Err(unsupported("metric.complete_filters"));
+        };
+        if column.join_mark
+            || column
+                .table
+                .as_ref()
+                .is_some_and(|table| table.name != owner)
+        {
+            return Err(unsupported("metric.complete_filters"));
+        }
+        let mut column = column.clone();
+        column.table = None;
+        polyglot_sql::generate(&Expression::Column(column), DialectType::DuckDB)
+            .map_err(|error| invalid(path, error))?
+    } else {
+        // Ordinary row counts project 1 before applying each metric's filter.
+        "*".to_string()
     };
-    if column.join_mark
-        || column
-            .table
-            .as_ref()
-            .is_some_and(|table| table.name != owner)
-    {
-        return Err(unsupported("metric.complete_filters"));
-    }
-    let mut column = column.clone();
-    column.table = None;
-    let input = polyglot_sql::generate(&Expression::Column(column), DialectType::DuckDB)
-        .map_err(|error| invalid(path, error))?;
     let filters: Vec<String> = deserialize(raw.get("filters").cloned().unwrap_or_default(), path)?;
     let filters = filters
         .iter()
@@ -345,7 +363,12 @@ fn lower_complete_filter(
     Ok(())
 }
 
-fn decode_metric(value: Value, path: &str, owner: Option<&str>) -> Result<Metric> {
+fn decode_metric(
+    value: Value,
+    path: &str,
+    owner: Option<&str>,
+    model_local: bool,
+) -> Result<Metric> {
     let mut raw = object(value, path)?;
     expression_language(&mut raw, path)?;
     reject_active(&mut raw, "extends", "metric.inheritance")?;
@@ -359,7 +382,7 @@ fn decode_metric(value: Value, path: &str, owner: Option<&str>) -> Result<Metric
                 "sql_is_complete cannot also declare an aggregation",
             ));
         }
-        lower_complete_filter(&mut raw, owner, path)?;
+        lower_complete_filter(&mut raw, owner, path, model_local)?;
         complete = false;
     }
     if raw.get("type").is_none_or(Value::is_null) {
@@ -519,7 +542,7 @@ fn decode_model(value: Value, path: &str) -> Result<Model> {
         let metrics = metrics
             .into_iter()
             .enumerate()
-            .map(|(i, value)| decode_metric(value, &format!("{path}.metrics[{i}]"), owner))
+            .map(|(i, value)| decode_metric(value, &format!("{path}.metrics[{i}]"), owner, true))
             .collect::<Result<Vec<_>>>()?;
         raw.insert("metrics".into(), json!(metrics));
     }
@@ -855,7 +878,12 @@ impl SemanticInput {
                 .and_then(Value::as_str)
                 .and_then(|name| envelope.metric_owners.get(name))
                 .cloned();
-            let metric = decode_metric(metric, &format!("metrics[{index}]"), owner.as_deref())?;
+            let metric = decode_metric(
+                metric,
+                &format!("metrics[{index}]"),
+                owner.as_deref(),
+                false,
+            )?;
             if metric.agg == Some(crate::core::Aggregation::CountDistinct)
                 && metric
                     .sql
@@ -1719,6 +1747,30 @@ mod tests {
     }
 
     #[test]
+    fn complete_filtered_row_count_lowers_without_changing_source() {
+        let mut source = input();
+        source["models"][0]["metrics"] = json!([{
+            "name":"paid", "sql":"COUNT(*)", "sql_is_complete":true,
+            "filters":["orders.amount > 0"]
+        }]);
+        let decoded = SemanticInput::from_json(&source.to_string()).unwrap();
+        assert_eq!(decoded.source, source);
+        let metric = decoded
+            .graph
+            .get_model("orders")
+            .unwrap()
+            .get_metric("paid")
+            .unwrap();
+        assert_eq!(metric.agg, Some(crate::core::Aggregation::Count));
+        assert_eq!(metric.sql.as_deref(), Some("*"));
+        assert!(!metric.sql_is_complete);
+        let sql =
+            compile_with_semantic_input(&source.to_string(), r#"{"metrics":["orders.paid"]}"#)
+                .unwrap();
+        assert!(sql.contains("CASE WHEN"), "{sql}");
+    }
+
+    #[test]
     fn complete_filter_keeps_each_identifier_quoted_state() {
         let mut source = input();
         source["models"][0]["metrics"] = json!([{
@@ -1770,7 +1822,11 @@ mod tests {
     #[test]
     fn complete_filtered_aggregate_rejects_unproven_populations() {
         for sql in [
-            "COUNT(*)",
+            "COUNT(DISTINCT *)",
+            "COUNT(*) FILTER (WHERE amount > 0)",
+            "COUNT(*) OVER ()",
+            "COUNT(other.*)",
+            "COUNT(ALL *)",
             "COUNT(1)",
             "SUM(1)",
             "SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END)",
@@ -1804,7 +1860,7 @@ mod tests {
             Err(SidemanticError::ValidationIssue { .. })
         ));
         source = input();
-        source["models"][0]["metrics"] = json!([{"name":"paid", "sql":"COUNT(*)", "sql_is_complete":true, "filters":["status = 'paid'"]}]);
+        source["models"][0]["metrics"] = json!([{"name":"paid", "sql":"COUNT(1)", "sql_is_complete":true, "filters":["status = 'paid'"]}]);
         assert!(
             matches!(SemanticInput::from_json(&source.to_string()), Err(SidemanticError::UnsupportedSemanticFeatures { capabilities }) if capabilities == vec!["metric.complete_filters"])
         );

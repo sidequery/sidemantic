@@ -134,12 +134,16 @@ impl SqlGenerator<'_> {
         dimensions: &[DimensionRef],
     ) -> Result<String> {
         if self.dialect != DialectType::DuckDB
-            || reference.graph_metric
             || query.ungrouped
             || query.use_preaggregations
             || !query.table_calculations.is_empty()
         {
             return Err(unsupported("query_shape"));
+        }
+        if reference.graph_metric
+            && self.graph.metric_owner(&reference.name) != Some(reference.model.as_str())
+        {
+            return Err(unsupported("owner"));
         }
         let model = self
             .graph

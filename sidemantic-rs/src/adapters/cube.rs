@@ -202,6 +202,9 @@ impl CubeMeasure {
                 (MetricType::Simple, Some(Aggregation::CountDistinct))
             }
             Some("sum") => (MetricType::Simple, Some(Aggregation::Sum)),
+            Some("countDistinctApprox" | "count_distinct_approx") => {
+                (MetricType::Simple, Some(Aggregation::ApproxCountDistinct))
+            }
             Some("avg") => (MetricType::Simple, Some(Aggregation::Avg)),
             Some("min") => (MetricType::Simple, Some(Aggregation::Min)),
             Some("max") => (MetricType::Simple, Some(Aggregation::Max)),

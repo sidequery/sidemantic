@@ -6,13 +6,15 @@ import pytest
 
 from sidemantic import Dimension, Metric, Model, SecurityPolicy, SemanticLayer
 from sidemantic.core.semantic_layer import SecurityError
+from sidemantic.semantic_handoff import graph_to_semantic_input
 
 
-@pytest.fixture(params=["python", "rust"])
+@pytest.fixture(params=["python", "rust", "python_owned", "rust_owned"])
 def layer(request):
-    if request.param == "rust":
+    engine = request.param.split("_")[0]
+    if engine == "rust":
         pytest.importorskip("sidemantic_rs", reason="Cohort acceptance requires the real extension")
-    layer = SemanticLayer(engine=request.param, fallback=False, auto_register=False)
+    layer = SemanticLayer(engine=engine, fallback=False, auto_register=False)
     layer.add_model(
         Model(
             name="events",
@@ -41,6 +43,9 @@ def layer(request):
             security=SecurityPolicy(row_filters=["tenant = {{ user.tenant }}"]),
         )
     )
+    if request.param.endswith("_owned"):
+        cohort = layer.graph.models["events"].metrics.pop(0)
+        layer.graph.add_metric(cohort, model_name="events")
     layer.adapter.execute("""
         create table events(id integer, user_id varchar, platform varchar, region varchar, day date, raw_amount integer, tenant integer);
         insert into events values
@@ -57,8 +62,16 @@ def layer(request):
         layer.adapter.close()
 
 
+def cohort_metric(layer):
+    return layer.graph.metrics.get("qualified") or layer.graph.models["events"].metrics[0]
+
+
+def cohort_reference(layer):
+    return "qualified" if "qualified" in layer.graph.metrics else "events.qualified"
+
+
 def result(layer, **query):
-    query.setdefault("metrics", ["events.qualified"])
+    query.setdefault("metrics", [cohort_reference(layer)])
     query.setdefault("user_attributes", {"tenant": 1})
     sql = layer.compile(**query)
     if layer.engine == "rust":
@@ -75,19 +88,19 @@ def test_count_counts_qualified_inner_groups_including_null_entity(layer):
 
 
 def test_distinct_entity_count_excludes_null_entity(layer):
-    layer.graph.models["events"].metrics[0].agg = "count_distinct"
+    cohort_metric(layer).agg = "count_distinct"
     assert result(layer) == (["qualified"], [(2,)])
 
 
 def test_outer_sum_binds_inner_measure_alias(layer):
-    metric = layer.graph.models["events"].metrics[0]
+    metric = cohort_metric(layer)
     metric.agg = "sum"
     metric.sql = "amount"
     assert result(layer) == (["qualified"], [(103,)])
 
 
 def test_having_uses_inner_alias_even_when_source_dimension_has_same_name(layer):
-    layer.graph.models["events"].metrics[0].having = "platforms >= 2 and amount > 20"
+    cohort_metric(layer).having = "platforms >= 2 and amount > 20"
     assert result(layer) == (["qualified"], [(2,)])
 
 
@@ -110,7 +123,7 @@ def test_filter_applies_before_inner_distinct_aggregation(layer):
 
 
 def test_metric_filter_applies_before_inner_distinct_aggregation(layer):
-    layer.graph.models["events"].metrics[0].filters = ["raw_amount >= 10"]
+    cohort_metric(layer).filters = ["raw_amount >= 10"]
     assert result(layer) == (["qualified"], [(2,)])
 
 
@@ -120,16 +133,16 @@ def test_policy_prevents_cross_tenant_entity_qualification(layer):
 
 def test_cohort_policy_requires_caller_context(layer):
     with pytest.raises(SecurityError):
-        layer.compile(metrics=["events.qualified"])
+        layer.compile(metrics=[cohort_reference(layer)])
 
 
 def test_entity_dimensions_are_output_and_grouping_dimensions(layer):
-    layer.graph.models["events"].metrics[0].entity_dimensions = ["region"]
+    cohort_metric(layer).entity_dimensions = ["region"]
     assert result(layer, order_by=["events.region"]) == (["region", "qualified"], [("EU", 2), ("US", 1)])
 
 
 def test_outer_expression_reads_cohort_columns_not_source_rows(layer):
-    metric = layer.graph.models["events"].metrics[0]
+    metric = cohort_metric(layer)
     metric.agg = "sum"
     metric.sql = "{model}.amount * 2"
     assert result(layer) == (["qualified"], [(206,)])
@@ -153,49 +166,51 @@ def test_reserved_output_dimension_is_quoted(layer):
 
 
 def test_empty_cohort_outer_sum_is_null(layer):
-    metric = layer.graph.models["events"].metrics[0]
+    metric = cohort_metric(layer)
     metric.agg = "sum"
     metric.sql = "amount"
     assert result(layer, filters=["events.platform = 'web'"]) == (["qualified"], [(None,)])
 
 
 def test_or_predicate_cannot_bypass_metric_filter(layer):
-    layer.graph.models["events"].metrics[0].filters = ["platform = 'web'"]
+    cohort_metric(layer).filters = ["platform = 'web'"]
     assert result(layer, filters=["raw_amount > 0 or events.region = 'absent'"]) == (["qualified"], [(0,)])
 
 
-@pytest.mark.parametrize("layer", ["rust"], indirect=True)
+@pytest.mark.parametrize("layer", ["rust", "rust_owned"], indirect=True)
 @pytest.mark.parametrize(
     "source", ["(select count(*) from events)", "sum(raw_amount) over ()", "count(*)", "other.raw_amount"]
 )
 def test_rust_inner_expression_cannot_change_source_scope(layer, source):
-    layer.graph.models["events"].metrics[0].inner_metrics[1]["sql"] = source
+    cohort_metric(layer).inner_metrics[1]["sql"] = source
     with pytest.raises(ValueError):
-        layer.compile(metrics=["events.qualified"], user_attributes={"tenant": 1})
+        layer.compile(metrics=[cohort_reference(layer)], user_attributes={"tenant": 1})
 
 
-@pytest.mark.parametrize("layer", ["rust"], indirect=True)
+@pytest.mark.parametrize("layer", ["rust", "rust_owned"], indirect=True)
 @pytest.mark.parametrize("expression", ["hidden", "hidden + 1"])
 def test_rust_declared_dimension_cannot_hide_a_subquery(layer, expression):
     model = layer.graph.models["events"]
     model.dimensions.append(Dimension(name="hidden", type="numeric", sql="(select count(*) from events)"))
-    model.metrics[0].inner_metrics[1]["sql"] = expression
+    cohort_metric(layer).inner_metrics[1]["sql"] = expression
     with pytest.raises(ValueError):
-        layer.compile(metrics=["events.qualified"], user_attributes={"tenant": 1})
+        layer.compile(metrics=[cohort_reference(layer)], user_attributes={"tenant": 1})
 
 
-@pytest.mark.parametrize("layer", ["rust"], indirect=True)
+@pytest.mark.parametrize("layer", ["rust", "rust_owned"], indirect=True)
 def test_rust_row_filter_cannot_hide_a_subquery(layer):
     with pytest.raises(ValueError):
         layer.compile(
-            metrics=["events.qualified"], filters=["(select count(*) from events) > 0"], user_attributes={"tenant": 1}
+            metrics=[cohort_reference(layer)],
+            filters=["(select count(*) from events) > 0"],
+            user_attributes={"tenant": 1},
         )
 
 
 def test_inner_source_dimension_arithmetic_preserves_precedence(layer):
     model = layer.graph.models["events"]
     model.dimensions.append(Dimension(name="augmented", sql="raw_amount + 1", type="numeric"))
-    metric = model.metrics[0]
+    metric = cohort_metric(layer)
     metric.inner_metrics[1]["sql"] = "augmented * 2"
     metric.agg = "sum"
     metric.sql = "amount"
@@ -204,38 +219,110 @@ def test_inner_source_dimension_arithmetic_preserves_precedence(layer):
 
 @pytest.mark.parametrize("expression", ["amount", '"amount"', "events.amount"])
 def test_inner_source_dimension_root_resolves_physical_expression(layer, expression):
-    metric = layer.graph.models["events"].metrics[0]
+    metric = cohort_metric(layer)
     metric.inner_metrics[1]["sql"] = expression
     metric.agg = "sum"
     metric.sql = "amount"
     assert result(layer) == (["qualified"], [(103,)])
 
 
-@pytest.mark.parametrize("layer", ["rust"], indirect=True)
+@pytest.mark.parametrize("layer", ["rust", "rust_owned"], indirect=True)
 @pytest.mark.parametrize("alias", ["AMOUNT", "USER_ID", "REGION"])
 def test_rust_inner_alias_collisions_ignore_case(layer, alias):
-    model = layer.graph.models["events"]
-    model.metrics[0].inner_metrics.append({"name": alias, "agg": "count"})
+    cohort_metric(layer).inner_metrics.append({"name": alias, "agg": "count"})
     with pytest.raises(ValueError, match="inner_alias_collision"):
-        layer.compile(metrics=["events.qualified"], dimensions=["events.region"], user_attributes={"tenant": 1})
+        layer.compile(metrics=[cohort_reference(layer)], dimensions=["events.region"], user_attributes={"tenant": 1})
 
 
-@pytest.mark.parametrize("layer", ["rust"], indirect=True)
+@pytest.mark.parametrize("layer", ["rust", "rust_owned"], indirect=True)
 def test_rust_output_alias_collision_ignores_case(layer):
     layer.graph.models["events"].dimensions.append(Dimension(name="QUALIFIED", sql="region", type="categorical"))
     with pytest.raises(ValueError, match="output_alias_collision"):
-        layer.compile(metrics=["events.qualified"], dimensions=["events.QUALIFIED"], user_attributes={"tenant": 1})
+        layer.compile(metrics=[cohort_reference(layer)], dimensions=["events.QUALIFIED"], user_attributes={"tenant": 1})
 
 
-@pytest.mark.parametrize("layer", ["rust"], indirect=True)
+@pytest.mark.parametrize("layer", ["rust", "rust_owned"], indirect=True)
 @pytest.mark.parametrize("context", ["having", "sql"])
 @pytest.mark.parametrize("expression", ["SUM(amount)", "SUM(amount) OVER ()", "(SELECT amount)"])
 def test_rust_cohort_result_context_requires_scalar_expression(layer, context, expression):
-    metric = layer.graph.models["events"].metrics[0]
+    metric = cohort_metric(layer)
     if context == "having":
         metric.having = f"{expression} > 20"
     else:
         metric.agg = "sum"
         metric.sql = expression
     with pytest.raises(ValueError, match="metric.cohort_result_non_row_expression"):
-        layer.compile(metrics=["events.qualified"], user_attributes={"tenant": 1})
+        layer.compile(metrics=[cohort_reference(layer)], user_attributes={"tenant": 1})
+
+
+def test_invariants_restrict_inner_population_before_having(layer):
+    layer.graph.models["events"].invariant_filters = ["id != 2"]
+    assert result(layer) == (["qualified"], [(2,)])
+
+
+@pytest.mark.parametrize("aggregation,expected", [("min", 3), ("max", 70), ("avg", 103 / 3)])
+def test_outer_aggregations_read_qualified_inner_values(layer, aggregation, expected):
+    metric = cohort_metric(layer)
+    metric.agg = aggregation
+    metric.sql = "amount"
+    columns, rows = result(layer)
+    assert columns == ["qualified"]
+    assert len(rows) == 1
+    assert rows[0][0] == pytest.approx(expected)
+
+
+def test_compilation_preserves_cohort_source_and_owner(layer):
+    before = graph_to_semantic_input(layer.graph)
+    assert result(layer) == (["qualified"], [(3,)])
+    assert graph_to_semantic_input(layer.graph) == before
+
+
+@pytest.mark.parametrize("layer", ["python_owned", "rust_owned"], indirect=True)
+def test_explicit_owner_wins_over_other_entity_and_metric_names(layer):
+    layer.add_model(
+        Model(
+            name="unrelated",
+            table="must_not_read",
+            primary_key="id",
+            dimensions=[Dimension(name="user_id", type="categorical")],
+            metrics=[cohort_metric(layer).model_copy(deep=True)],
+        )
+    )
+    assert result(layer) == (["qualified"], [(3,)])
+
+
+@pytest.mark.parametrize("layer", ["python_owned", "rust_owned"], indirect=True)
+def test_nonexistent_explicit_owner_does_not_fall_back_to_entity_match(layer):
+    layer.graph.metric_owners["qualified"] = "missing"
+    with pytest.raises((ValueError, KeyError)):
+        result(layer)
+
+
+@pytest.mark.parametrize("layer", ["rust_owned"], indirect=True)
+@pytest.mark.parametrize("mutation", ["unowned", "unknown_metric", "null_fill", "wrapper", "joined_dimension"])
+def test_owned_graph_cohort_unsupported_shapes_remain_gated(layer, mutation):
+    query = {}
+    if mutation == "unowned":
+        layer.graph.metric_owners.clear()
+    elif mutation == "unknown_metric":
+        layer.graph.metric_owners["ghost"] = "events"
+    elif mutation == "null_fill":
+        cohort_metric(layer).fill_nulls_with = 0
+    elif mutation == "wrapper":
+        layer.graph.add_metric(Metric(name="wrapped", type="derived", sql="qualified * 2"))
+        query["metrics"] = ["wrapped"]
+    else:
+        layer.add_model(
+            Model(name="other", table="must_not_read", primary_key="id", dimensions=[Dimension(name="region")])
+        )
+        query["dimensions"] = ["other.region"]
+    with pytest.raises(ValueError):
+        result(layer, **query)
+
+
+@pytest.mark.parametrize("layer", ["python_owned", "rust_owned"], indirect=True)
+def test_owned_graph_cohort_visibility_is_enforced(layer):
+    cohort_metric(layer).public = False
+    layer.enforce_visibility = True
+    with pytest.raises(SecurityError):
+        result(layer)

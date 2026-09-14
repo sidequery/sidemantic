@@ -167,3 +167,77 @@ def test_postgres_filtered_complete_row_count(population):
                 "insert into star_population values (1,null,'a'),(2,2,'a'),(3,3,'b'),(4,null,'a'),(5,null,'a')"
             )
         assert connection.execute(sql).fetchall() == expected
+
+
+@pytest.mark.parametrize("declaration", ["model", "graph"])
+@pytest.mark.parametrize("population", ["grouped", "empty", "no_matches", "fanout"])
+def test_postgres_filtered_owned_count_family(declaration, population):
+    dsn = os.environ.get("SIDEMANTIC_TEST_POSTGRES_DSN")
+    if not dsn:
+        pytest.skip("PostgreSQL execution requires SIDEMANTIC_TEST_POSTGRES_DSN")
+    from copy import deepcopy
+
+    import psycopg
+    import sidemantic_rs
+
+    from sidemantic import Dimension, Relationship, SecurityPolicy
+    from sidemantic.semantic_handoff import graph_to_semantic_input
+
+    assert callable(sidemantic_rs.compile_with_semantic_input)
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="orders",
+            table="owned_count_population",
+            primary_key="id",
+            dimensions=[Dimension(name="region", type="categorical")],
+            security=SecurityPolicy(row_filters=["tenant = {{ user.tenant }}"]),
+            invariant_filters=["active"],
+        )
+    )
+    references = []
+    for name, expression in [("rows", "COUNT(*)"), ("ones", "COUNT(1)"), ("nulls", "COUNT(NULL)")]:
+        predicate = "orders.status = 'paid'" if population != "no_matches" else "orders.status = 'missing'"
+        metric = Metric(name=name, sql=expression, sql_is_complete=True, filters=[predicate], fill_nulls_with=99)
+        if declaration == "graph":
+            graph.add_metric(metric, model_name="orders")
+            references.append(name)
+        else:
+            graph.models["orders"].metrics.append(metric)
+            references.append(f"orders.{name}")
+    query = {"metrics": references, "dialect": "postgres", "user_attributes": {"tenant": 1}}
+    expected = [(0, 0, 0)]
+    if population == "grouped":
+        query.update(dimensions=["orders.region"], order_by=["orders.region"])
+        expected = [("a", 2, 2, 0), ("b", 0, 0, 0)]
+    elif population == "fanout":
+        graph.models["orders"].relationships.append(
+            Relationship(name="items", type="one_to_many", foreign_key="order_id")
+        )
+        graph.add_model(
+            Model(
+                name="items",
+                table="owned_count_items",
+                primary_key="id",
+                dimensions=[Dimension(name="category", type="categorical")],
+            )
+        )
+        query.update(dimensions=["items.category"], order_by=["items.category"])
+        expected = [("a", 2, 2, 0), ("b", 0, 0, 0)]
+    source = deepcopy(graph_to_semantic_input(graph))
+    sql = compile_semantic_input(graph, query)
+    assert graph_to_semantic_input(graph) == source
+    with psycopg.connect(dsn, autocommit=True) as connection:
+        connection.execute(
+            "create temporary table owned_count_population(id integer,value integer,status text,region text,tenant integer,active boolean)"
+        )
+        if population != "empty":
+            connection.execute(
+                "insert into owned_count_population values (1,null,'paid','a',1,true),(2,2,'paid','a',1,true),(3,null,'unpaid','b',1,true),(4,null,'paid','a',1,false),(5,null,'paid','a',2,true)"
+            )
+        if population == "fanout":
+            connection.execute("create temporary table owned_count_items(id integer,order_id integer,category text)")
+            connection.execute(
+                "insert into owned_count_items values (1,1,'a'),(2,1,'a'),(3,2,'a'),(4,3,'b'),(5,4,'a'),(6,5,'a')"
+            )
+        assert connection.execute(sql).fetchall() == expected

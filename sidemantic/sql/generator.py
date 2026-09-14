@@ -138,61 +138,95 @@ class SQLGenerator:
         # complete-expression path for COUNT and COUNT_BIG.
         if self.dialect.lower() == "tsql":
             return None
+
+        def lower(metric, owner: str, ordinary: bool = False):
+            if not metric.filters or metric.type not in (None, "simple", "derived"):
+                return None
+            try:
+                if metric.sql_is_complete and metric.sql:
+                    parsed = _parse_fragment(metric.sql, self.dialect)
+                    if not isinstance(parsed, exp.Count) or any(
+                        value for key, value in parsed.args.items() if key not in ("this", "big_int")
+                    ):
+                        return None
+                    value = parsed.this
+                elif ordinary and metric.agg == "count" and metric.type in (None, "simple"):
+                    value = _parse_fragment(metric.sql or "*", self.dialect)
+                else:
+                    return None
+            except SqlglotError:
+                # Unused declarations must not fail another metric's query.
+                return None
+            if isinstance(value, exp.Star) and not any(value.args.values()):
+                sql = "*"
+            elif isinstance(value, exp.Literal) and not value.is_string and value.this == "1":
+                sql = "1"
+            elif isinstance(value, exp.Null):
+                sql = "NULL"
+            else:
+                return None
+            filters = []
+            for predicate in metric.filters:
+                try:
+                    expression = _parse_fragment(predicate, self.dialect)
+                except SqlglotError:
+                    # Active queries retain ordinary filter validation; unrelated
+                    # queries need not validate this declaration's predicates.
+                    filters.append(f"({predicate})")
+                    continue
+                if not expression.find(exp.Select, exp.Subquery, exp.Window):
+                    for column in expression.find_all(exp.Column):
+                        if column.table == owner:
+                            column.set("table", None)
+                filters.append(f"({expression.sql(dialect=self.dialect)})")
+            return metric.model_copy(
+                update={"type": "simple", "agg": "count", "sql": sql, "sql_is_complete": False, "filters": filters}
+            )
+
         replacements = {}
         for name, model in self.graph.models.items():
-            metrics = []
-            changed = False
-            for metric in model.metrics:
-                if (
-                    metric.sql_is_complete
-                    and metric.filters
-                    and metric.sql
-                    and metric.type in (None, "simple", "derived")
-                ):
-                    try:
-                        parsed = _parse_fragment(metric.sql, self.dialect)
-                    except SqlglotError:
-                        # Unused declarations must not fail another metric's query.
-                        metrics.append(metric)
-                        continue
-                    if (
-                        isinstance(parsed, exp.Count)
-                        and isinstance(parsed.this, exp.Star)
-                        and not any(value for key, value in parsed.args.items() if key not in ("this", "big_int"))
-                        and not any(parsed.this.args.values())
-                    ):
-                        filters = []
-                        for predicate in metric.filters:
-                            try:
-                                expression = _parse_fragment(predicate, self.dialect)
-                            except SqlglotError:
-                                # Preserve it for the active query's ordinary filter
-                                # validation, without failing unrelated queries here.
-                                filters.append(f"({predicate})")
-                                continue
-                            if not expression.find(exp.Select, exp.Subquery, exp.Window):
-                                for column in expression.find_all(exp.Column):
-                                    if column.table == name:
-                                        column.set("table", None)
-                            filters.append(f"({expression.sql(dialect=self.dialect)})")
-                        metric = metric.model_copy(
-                            update={
-                                "type": "simple",
-                                "agg": "count",
-                                "sql": "*",
-                                "sql_is_complete": False,
-                                "filters": filters,
-                            }
-                        )
-                        changed = True
-                metrics.append(metric)
-            if changed:
+            metrics = [lower(metric, name) or metric for metric in model.metrics]
+            if any(original is not lowered for original, lowered in zip(model.metrics, metrics, strict=True)):
                 replacements[name] = model.model_copy(update={"metrics": metrics})
+
+        graph_metrics = self.graph.metrics.copy()
+        for name, metric in self.graph.metrics.items():
+            owner = self.graph.metric_owners.get(name)
+            if owner not in self.graph.models:
+                continue
+            lowered = lower(metric, owner, ordinary=True)
+            if lowered is None:
+                continue
+            model = replacements.get(owner, self.graph.models[owner])
+            occupied = {field.name.lower() for field in [*model.dimensions, *model.metrics]}
+            occupied.update(f"{field.name}_raw".lower() for field in model.metrics)
+            occupied.update(key.lower() for key in model.primary_key_columns)
+            occupied.update(name.lower() for name in self.graph.metrics)
+            index = 0
+            while True:
+                leaf_name = f"__sidemantic_count_{index}"
+                if leaf_name.lower() not in occupied and f"{leaf_name}_raw".lower() not in occupied:
+                    break
+                index += 1
+            leaf = lowered.model_copy(update={"name": leaf_name})
+            replacements[owner] = model.model_copy(update={"metrics": [*model.metrics, leaf]})
+            # Graph declarations keep their public names, but their population
+            # must be planned at the explicit owner's row grain like a model count.
+            graph_metrics[name] = metric.model_copy(
+                update={
+                    "type": "derived",
+                    "agg": None,
+                    "sql_is_complete": False,
+                    "filters": [],
+                    "sql": exp.column(leaf_name, table=owner).sql(dialect=self.dialect),
+                }
+            )
         if not replacements:
             return None
 
         graph = copy(self.graph)
         graph.models = {**self.graph.models, **replacements}
+        graph.metrics = graph_metrics
         # Adjacency building clears these containers in place. The executable
         # graph owns its caches so compilation cannot invalidate the caller's.
         graph._adjacency_dirty = True
@@ -3332,6 +3366,9 @@ class SQLGenerator:
                 if _column_is_bound_in_select(column, self.dialect):
                     continue
                 parts = list(column.parts)
+                if len(parts) == 1 and column.name in self.graph.metrics:
+                    if self._find_aggregate_metric_models([column.name]):
+                        references_metric = True
                 if len(parts) != 2:
                     continue
                 model_name, field_name = (part.name for part in parts)
@@ -5088,6 +5125,11 @@ class SQLGenerator:
                 metric = self.graph.get_metric(local_name)
             except KeyError:
                 pass
+            if metric and local_name in self.graph.metric_owners:
+                # An explicit source owner wins over entity/name inference.
+                # Invalid owners must fail instead of selecting another model.
+                model_name = self.graph.metric_owners[local_name]
+                model = self.graph.get_model(model_name)
 
         # Find the model that owns this metric if not already found
         if not model:

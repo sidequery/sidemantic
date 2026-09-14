@@ -1,6 +1,7 @@
 //! SQL generator: compiles semantic queries to SQL
 
 mod aggregate_plan;
+mod approximate;
 mod cohort;
 mod conversion;
 mod fanout_aggregate;
@@ -174,6 +175,7 @@ impl<'a> SqlGenerator<'a> {
         query: &SemanticQuery,
         source_model: Option<&str>,
     ) -> Result<String> {
+        self.validate_approximate_query(query)?;
         if let Some(sql) = aggregate_plan::try_generate(self, query)? {
             return Ok(sql);
         }
@@ -997,7 +999,9 @@ impl<'a> SqlGenerator<'a> {
             .and_then(|model| model.get_metric(&metric_ref.name))
             .and_then(|metric| metric.agg.as_ref());
         match aggregation {
-            Some(Aggregation::Count) | Some(Aggregation::CountDistinct) => "BIGINT",
+            Some(
+                Aggregation::Count | Aggregation::CountDistinct | Aggregation::ApproxCountDistinct,
+            ) => "BIGINT",
             _ => "NUMERIC",
         }
     }
@@ -1195,6 +1199,17 @@ impl<'a> SqlGenerator<'a> {
         metric: &Metric,
         visiting: &mut HashSet<String>,
     ) -> Result<Vec<String>> {
+        // Cohort output expressions bind inner-result columns, not other metrics.
+        // Its source population must be declared, never inferred from those names.
+        if metric.r#type == MetricType::Cohort {
+            return self
+                .graph
+                .metric_owner(reference)
+                .map(|owner| vec![owner.to_string()])
+                .ok_or_else(|| SidemanticError::UnsupportedSemanticFeatures {
+                    capabilities: vec!["metric.cohort_owner".into()],
+                });
+        }
         let mut owners = HashSet::new();
         let window_dependency = Self::window_output_dependency(metric)?;
         if let Some(owner) = self.graph.metric_owner(reference) {
@@ -1478,7 +1493,10 @@ impl<'a> SqlGenerator<'a> {
             .transpose()?
             .unwrap_or_default();
         let mut exprs: Vec<&str> = [
-            metric.sql.as_deref(),
+            metric
+                .sql
+                .as_deref()
+                .filter(|_| metric.r#type != MetricType::Cohort),
             metric.numerator.as_deref(),
             metric.denominator.as_deref(),
             metric.base_metric.as_deref(),
@@ -2604,10 +2622,11 @@ impl<'a> SqlGenerator<'a> {
                     .window_frame
                     .as_deref()
                     .unwrap_or("ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW");
-                let expression = format!(
-                    "{window_expr} OVER ({partition}ORDER BY {order_col} {frame}) AS {}",
-                    metric_ref.alias
-                );
+                let value = self.fill_metric_expression(
+                    metric,
+                    format!("{window_expr} OVER ({partition}ORDER BY {order_col} {frame})"),
+                )?;
+                let expression = format!("{value} AS {}", metric_ref.alias);
                 select_exprs.push(expression.clone());
                 cumulative_selects.push((expression, metric_ref.alias.clone()));
                 continue;
@@ -2636,10 +2655,11 @@ impl<'a> SqlGenerator<'a> {
 
             let window_clause = self.cumulative_window_sql(metric, dimension_refs, &order_col)?;
 
-            let expression = format!(
-                "{agg_sql}({base_col}) OVER ({window_clause}) AS {}",
-                metric_ref.alias
-            );
+            let value = self.fill_metric_expression(
+                metric,
+                format!("{agg_sql}({base_col}) OVER ({window_clause})"),
+            )?;
+            let expression = format!("{value} AS {}", metric_ref.alias);
             select_exprs.push(expression.clone());
             cumulative_selects.push((expression, metric_ref.alias.clone()));
         }
@@ -2735,20 +2755,17 @@ impl<'a> SqlGenerator<'a> {
                     .unwrap_or(&crate::core::ComparisonCalculation::PercentChange);
                 let expr = match calculation {
                     crate::core::ComparisonCalculation::Difference => {
-                        format!("({base_alias} - {prev_value_col}) AS {}", metric_ref.alias)
+                        format!("({base_alias} - {prev_value_col})")
                     }
                     crate::core::ComparisonCalculation::PercentChange => format!(
-                        "(({base_alias} - {prev_value_col}) / NULLIF({prev_value_col}, 0) * 100) AS {}",
-                        metric_ref.alias
+                        "(({base_alias} - {prev_value_col}) / NULLIF({prev_value_col}, 0) * 100)"
                     ),
                     crate::core::ComparisonCalculation::Ratio => {
-                        format!(
-                            "({base_alias} / NULLIF({prev_value_col}, 0)) AS {}",
-                            metric_ref.alias
-                        )
+                        format!("({base_alias} / NULLIF({prev_value_col}, 0))")
                     }
                 };
-                final_selects.push(expr);
+                let value = self.fill_metric_expression(metric, expr)?;
+                final_selects.push(format!("{value} AS {}", metric_ref.alias));
             }
 
             for metric_ref in &offset_ratio_metrics {
@@ -4889,13 +4906,19 @@ impl<'a> SqlGenerator<'a> {
         }
         if !matches!(
             metric.r#type,
-            MetricType::Simple | MetricType::Derived | MetricType::Ratio
-        ) || metric.offset_window.is_some()
-            || metric.window.is_some()
-            || metric.window_expression.is_some()
-            || metric.window_frame.is_some()
-            || metric.window_order.is_some()
-            || metric.grain_to_date.is_some()
+            MetricType::Simple
+                | MetricType::Derived
+                | MetricType::Ratio
+                | MetricType::Cumulative
+                | MetricType::TimeComparison
+        ) || (metric.r#type != MetricType::TimeComparison && metric.offset_window.is_some())
+            || (metric.r#type == MetricType::Cumulative && metric.time_offset.is_some())
+            || (metric.r#type != MetricType::Cumulative
+                && (metric.window.is_some()
+                    || metric.window_expression.is_some()
+                    || metric.window_frame.is_some()
+                    || metric.window_order.is_some()
+                    || metric.grain_to_date.is_some()))
             || metric.non_additive_dimension.is_some()
         {
             return Err(SidemanticError::UnsupportedSemanticFeatures {

@@ -231,6 +231,81 @@ mod tests {
     use super::*;
 
     #[test]
+    fn filled_temporal_metrics_reject_controls_their_generator_does_not_use() {
+        for (kind, field, value) in [
+            ("cumulative", "offset_window", "1 day"),
+            ("cumulative", "time_offset", "1 day"),
+            ("time_comparison", "window", "1 day"),
+            ("time_comparison", "grain_to_date", "month"),
+        ] {
+            let mut metric = serde_json::json!({"name":"filled", "type":kind,
+                "sql":"sales.revenue", "base_metric":"sales.revenue", "fill_nulls_with":0});
+            metric[field] = serde_json::json!(value);
+            let input = serde_json::json!({"version":1,"input_dialect":"duckdb",
+                "models":[],"metrics":[metric.clone()],"metric_owners":{}});
+            assert!(
+                matches!(
+                    crate::semantic_input::SemanticInput::from_json(&input.to_string()),
+                    Err(SidemanticError::UnsupportedSemanticFeatures { .. })
+                ),
+                "{kind}.{field}"
+            );
+            let mut direct: Metric = serde_json::from_value(metric).unwrap();
+            assert!(
+                SqlGenerator::validate_metric_fill(&direct).is_err(),
+                "{kind}.{field}"
+            );
+            direct.fill_nulls_with = None;
+            assert!(
+                SqlGenerator::validate_metric_fill(&direct).is_ok(),
+                "{kind}.{field}"
+            );
+        }
+    }
+
+    #[test]
+    fn temporal_fills_wrap_final_values_and_keep_other_shapes_unsupported() {
+        let (graph, _) = grouped_graph();
+        let generator = SqlGenerator::new(&graph);
+        let mut cumulative = Metric::cumulative("running", "sales.revenue");
+        cumulative.window = Some("2 months".into());
+        cumulative.fill_nulls_with = Some(serde_json::json!(-9));
+        assert_eq!(
+            generator
+                .fill_metric_expression(&cumulative, "SUM(base.revenue) OVER ()".into())
+                .unwrap(),
+            "COALESCE(SUM(base.revenue) OVER (), -9)"
+        );
+        cumulative.window = Some("0 days".into());
+        assert!(validate_metric(&cumulative).is_err());
+        let mut comparison =
+            Metric::time_comparison("change", "sales.revenue", ComparisonType::Mom);
+        comparison.fill_nulls_with = Some(serde_json::json!("missing's value"));
+        assert_eq!(
+            generator
+                .fill_metric_expression(&comparison, "value / NULLIF(prior, 0)".into())
+                .unwrap(),
+            "COALESCE(value / NULLIF(prior, 0), 'missing''s value')"
+        );
+        for kind in [
+            MetricType::Conversion,
+            MetricType::Retention,
+            MetricType::Cohort,
+        ] {
+            comparison.r#type = kind;
+            assert!(SqlGenerator::validate_metric_fill(&comparison).is_err());
+        }
+        let mut simple = Metric::sum("snapshot", "amount");
+        simple.fill_nulls_with = Some(serde_json::json!(0));
+        simple.non_additive_dimension = Some("day".into());
+        assert!(SqlGenerator::validate_metric_fill(&simple).is_err());
+        simple.non_additive_dimension = None;
+        simple.r#type = MetricType::Ratio;
+        simple.offset_window = Some("1 day".into());
+        assert!(SqlGenerator::validate_metric_fill(&simple).is_err());
+    }
+
+    #[test]
     fn graph_temporal_metrics_compile_through_handoff_and_preserve_mixed_outputs() {
         let input = serde_json::json!({
             "version": 1,
@@ -240,8 +315,8 @@ mod tests {
                     {"name": "category", "type": "categorical"}],
                 "metrics": [{"name": "revenue", "agg": "sum", "sql": "amount"}]}],
             "metrics": [
-                {"name": "month_change", "type": "time_comparison", "base_metric": "sales.revenue", "comparison_type": "mom", "calculation": "difference"},
-                {"name": "rolling_revenue", "type": "cumulative", "sql": "sales.revenue", "window": "2 months"}],
+                {"name": "month_change", "type": "time_comparison", "base_metric": "sales.revenue", "comparison_type": "mom", "calculation": "difference", "fill_nulls_with": -9},
+                {"name": "rolling_revenue", "type": "cumulative", "sql": "sales.revenue", "window": "2 months", "fill_nulls_with": 0}],
             "metric_owners": {}
         });
         let sql = crate::semantic_input::compile_with_semantic_input(
@@ -263,6 +338,11 @@ mod tests {
         let final_select = sql.rsplit("FROM lag_cte").nth(1).unwrap();
         assert!(final_select.contains("rolling_revenue"), "{sql}");
         assert!(final_select.contains("month_change"), "{sql}");
+        assert!(sql.contains("COALESCE(SUM(base.revenue) OVER"), "{sql}");
+        assert!(
+            sql.contains("COALESCE((revenue - month_change_prev_value), -9)"),
+            "{sql}"
+        );
     }
 
     fn grouped_graph() -> (SemanticGraph, Vec<DimensionRef>) {

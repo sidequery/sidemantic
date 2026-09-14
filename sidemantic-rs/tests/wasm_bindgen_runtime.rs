@@ -139,7 +139,7 @@ dimensions: [orders.status]
 
     let rewritten_with_aggregate = wasm_rewrite_with_yaml(
         SIMPLE_MODELS_YAML,
-        "SELECT SUM(orders.amount) AS total_revenue, orders.status FROM orders ORDER BY total_revenue DESC LIMIT 2",
+        "SELECT orders.revenue AS total_revenue, orders.status FROM orders ORDER BY total_revenue DESC LIMIT 2",
     )
     .unwrap();
     assert!(rewritten_with_aggregate.contains("SUM("));
@@ -148,13 +148,15 @@ dimensions: [orders.status]
 
     let rewritten_with_expression = wasm_rewrite_with_yaml(
         SIMPLE_MODELS_YAML,
-        "SELECT SUM(amount) / COUNT(*) AS aov, status FROM orders ORDER BY aov DESC LIMIT 1",
+        "SELECT orders.revenue / orders.count AS aov, orders.status FROM orders ORDER BY aov DESC LIMIT 1",
     )
     .unwrap();
     assert!(rewritten_with_expression
         .to_ascii_uppercase()
         .contains("COUNT("));
-    assert!(rewritten_with_expression.contains("revenue / count AS aov"));
+    assert!(rewritten_with_expression.contains("SUM("));
+    assert!(rewritten_with_expression.contains(" / "));
+    assert!(rewritten_with_expression.contains(" AS aov"));
     assert!(rewritten_with_expression.contains("ORDER BY"));
     assert!(rewritten_with_expression.contains("LIMIT 1"));
 }
@@ -687,37 +689,43 @@ fn wasm_bindgen_runtime_error_paths_cross_wasm_boundary() {
     assert!(js_err_text(&incremental_without_watermark).contains("watermark"));
 }
 
+// These entrypoints use the canonical rewriter on both native and WASM hosts.
+// The historical regex fallback rejected these supported SQL shapes.
 #[wasm_bindgen_test]
-fn wasm_bindgen_runtime_rewrite_fallback_rejects_unsupported_sql_shapes() {
-    let select_star =
-        wasm_rewrite_with_yaml(SIMPLE_MODELS_YAML, "SELECT * FROM orders").unwrap_err();
-    assert!(js_err_text(&select_star).contains("SELECT *"));
-
-    let explicit_join = wasm_rewrite_with_yaml(
-        SIMPLE_MODELS_YAML,
-        "SELECT orders.revenue FROM orders JOIN customers ON orders.customer_id = customers.id",
-    )
-    .unwrap_err();
-    assert!(js_err_text(&explicit_join).contains("unsupported clause"));
-
-    let cte_query = wasm_rewrite_with_yaml(
-        SIMPLE_MODELS_YAML,
+fn wasm_bindgen_runtime_rewrite_canonical_sql_shapes() {
+    for sql in [
+        "SELECT * FROM orders",
         "WITH base AS (SELECT * FROM orders) SELECT * FROM base",
-    )
-    .unwrap_err();
-    assert!(js_err_text(&cte_query).contains("only supports SELECT"));
-
-    let grouped_query = wasm_rewrite_with_yaml(
-        SIMPLE_MODELS_YAML,
-        "SELECT orders.revenue FROM orders GROUP BY orders.status",
-    )
-    .unwrap_err();
-    assert!(js_err_text(&grouped_query).contains("unsupported clause"));
-
-    let subquery_from = wasm_rewrite_with_yaml(
-        SIMPLE_MODELS_YAML,
+        "SELECT orders.status, orders.revenue FROM orders GROUP BY orders.status",
         "SELECT orders.revenue FROM (SELECT * FROM orders) orders",
-    )
-    .unwrap_err();
-    assert!(js_err_text(&subquery_from).contains("single table"));
+    ] {
+        let rewritten = wasm_rewrite_with_yaml(SIMPLE_MODELS_YAML, sql)
+            .unwrap_or_else(|error| panic!("{sql}: {}", js_err_text(&error)));
+        assert!(rewritten.contains("SUM("), "{rewritten}");
+        assert!(rewritten.contains("revenue"), "{rewritten}");
+    }
+}
+
+#[wasm_bindgen_test]
+fn wasm_bindgen_runtime_rewrite_rejects_invalid_semantic_sql() {
+    for (sql, expected) in [
+        (
+            "SELECT orders.revenue FROM orders JOIN customers ON orders.customer_id = customers.id",
+            "Explicit JOIN syntax is not supported",
+        ),
+        (
+            "SELECT SUM(orders.amount) AS revenue FROM orders",
+            "Aggregate functions must be defined as a metric",
+        ),
+        ("SELECT orders.missing FROM orders", "not found"),
+        ("SELECT * FROM metrics", "SELECT *"),
+    ] {
+        let error = wasm_rewrite_with_yaml(SIMPLE_MODELS_YAML, sql).unwrap_err();
+        assert!(
+            js_err_text(&error).contains(expected),
+            "{sql}: {}",
+            js_err_text(&error)
+        );
+    }
+    assert!(wasm_rewrite_with_yaml(SIMPLE_MODELS_YAML, "SELECT (").is_err());
 }

@@ -77,7 +77,14 @@ supports:
 - Numeric and string null defaults on simple, derived and ratio results. Defaults
   apply to metric dependencies after aggregation, including absent source leaves
   after cross-source recombination; they do not create policy-excluded groups.
-  Filled temporal and non-additive shapes remain explicitly unsupported.
+  Cumulative and time-comparison defaults apply after the window or comparison
+  calculation, including missing prior periods and zero prior denominators for
+  ratios/percent changes. They do not fill the underlying period values or create
+  missing periods. Existing window frames, partitions, ordering and policies
+  remain in effect. Filled offset ratios, non-additive and event-metric shapes
+  remain explicitly unsupported. Filled cumulative metrics reject comparison
+  offsets; filled time comparisons reject cumulative windows and grain-to-date
+  controls rather than silently ignoring them.
 - Existing cumulative `window_expression` fields accept `SUM`, `AVG`, `MIN`,
   `MAX`, or `COUNT` of one `base.output` metric reference, with an optionally
   quoted simple output identifier. The input is a grouped period metric value;
@@ -114,7 +121,8 @@ remains explicitly unsupported by the versioned boundary.
 Filtered complete measures are supported when their SQL AST is exactly
 `SUM(column)`, `AVG(column)`, `COUNT(column)`, `COUNT(DISTINCT column)`,
 `MIN(column)`, or `MAX(column)` over one local
-physical column, or exactly `COUNT(*)` declared inside a model. The source
+physical column, or exactly `COUNT(*)`, `COUNT(1)`, or `COUNT(NULL)`. Counts can
+be declared inside a model or as graph metrics with an explicit model owner. The source
 declaration remains unchanged; its executable copy
 uses the ordinary per-measure filtered aggregate path. Local qualified columns
 are normalized without changing string literals, and each filter is parenthesized
@@ -122,22 +130,23 @@ before conjunction. Filters use physical values even when a semantic dimension
 shares the column name. Independent measures retain independent populations.
 Average counts each qualifying non-null source row in its denominator, while
 distinct count collapses repeated qualifying values and excludes nulls. These
-states use the keyed fanout-safe aggregate planner. Filtered `COUNT(*)` counts
+states use the keyed fanout-safe aggregate planner. Filtered `COUNT(*)` and `COUNT(1)` count
 qualifying source rows even when their values are null; it returns zero for an
 empty population, a group without matches, or an absent cross-source count leaf.
-Keyed joins count each qualifying source key once per selected group.
+Keyed joins count each qualifying source key once per selected group. `COUNT(NULL)`
+returns zero while still enforcing the owner's mandatory restrictions; it does
+not create groups excluded by those restrictions. Explicitly owned graph counts
+use the same source population and retain their public output names.
 For fanout SUM and AVG,
 that planner selects one joined row per requested group and source primary key
 before aggregating the original filtered value. It preserves floating-point
 values and returns null for groups containing no qualifying non-null values.
 
 This checked lowering accepts ordinary local comparisons, boolean combinations,
-null checks, ranges, and literal lists. Filtered complete constant or
+null checks, ranges, and literal lists. Other filtered complete constant or
 conditional aggregate inputs, aggregate combinations, distinct averages, windows,
 subqueries, foreign-model inputs or predicates, and unresolved templates remain
 explicitly unsupported. Unowned graph measures also remain unsupported on this path.
-Filtered complete `COUNT(*)` graph declarations remain unsupported even with an
-explicit owner; this row-count qualification applies only to model declarations.
 Row-count execution coverage targets DuckDB and PostgreSQL. TSQL count widths
 require separate qualification, so Python TSQL retains its existing
 complete-expression path for `COUNT` and `COUNT_BIG`. TSQL filtered complete row
@@ -366,7 +375,8 @@ junction declaration. Measures retain their source-key grain across duplicate
 junction rows. Inactive relationships remain excluded.
 ### Source-local cohorts
 
-Direct model cohort metrics can aggregate source rows per entity, apply `having`
+Direct model cohort metrics and graph metrics with an explicit `metric_owners`
+entry can aggregate source rows per entity, apply `having`
 to declared inner result columns, and aggregate the surviving groups. Query and
 entity dimensions are carried through both levels, including explicit time
 buckets. Outer `count` counts inner groups (including a qualifying null-entity
@@ -376,7 +386,10 @@ apply before the inner aggregation, with each predicate parenthesized.
 
 This subset requires row-local scalar source expressions. Subqueries, windows,
 and aggregates hidden in source dimensions, inner SQL or row filters are
-rejected. Joined populations, graph-scoped cohorts, calculated wrappers and
+rejected. Graph cohorts require their declared source owner; entity or output
+column names do not infer ownership. The declared owner also determines the
+mandatory restrictions applied to the source population. Joined populations,
+unowned graph cohorts, calculated wrappers and
 null-fill options remain gated. HAVING and outer expressions must reference
 available inner columns; other aggregate contexts are not silently inferred.
 

@@ -780,6 +780,10 @@ class SQLGenerator:
                 replacement_table = replacement_column.table
                 if replacement_table and replacement_table.replace("_cte", "") == model_name:
                     replacement_column.set("table", exp.to_identifier(source_alias) if source_alias else None)
+            # Substitution must preserve the dimension's expression boundary:
+            # adjusted * 2 with adjusted = price + 1 means (price + 1) * 2.
+            if isinstance(replacement, (exp.Binary, exp.Unary, exp.Between, exp.In)):
+                replacement = exp.Paren(this=replacement)
             column.replace(replacement)
 
         return parsed.sql(dialect=self.dialect)

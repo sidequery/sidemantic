@@ -522,7 +522,7 @@ def test_structured_filters_resolve_grained_and_computed_dimensions_before_where
     assert "created_at__month" not in where_sql
     assert "events.gross" not in where_sql
     assert "DATE_TRUNC('MONTH', occurred_at)" in where_sql
-    assert "unit_price * quantity >= 20" in where_sql
+    assert "(unit_price * quantity) >= 20" in where_sql
 
     assert df_rows(
         layer.query(

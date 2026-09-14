@@ -4900,10 +4900,6 @@ impl<'a> SqlGenerator<'a> {
                 "fill_nulls_with must be a number or string".into(),
             ));
         }
-        let temporal = matches!(
-            metric.r#type,
-            MetricType::Cumulative | MetricType::TimeComparison
-        );
         if !matches!(
             metric.r#type,
             MetricType::Simple
@@ -4911,13 +4907,14 @@ impl<'a> SqlGenerator<'a> {
                 | MetricType::Ratio
                 | MetricType::Cumulative
                 | MetricType::TimeComparison
-        ) || (!temporal
-            && (metric.offset_window.is_some()
-                || metric.window.is_some()
-                || metric.window_expression.is_some()
-                || metric.window_frame.is_some()
-                || metric.window_order.is_some()
-                || metric.grain_to_date.is_some()))
+        ) || (metric.r#type != MetricType::TimeComparison && metric.offset_window.is_some())
+            || (metric.r#type == MetricType::Cumulative && metric.time_offset.is_some())
+            || (metric.r#type != MetricType::Cumulative
+                && (metric.window.is_some()
+                    || metric.window_expression.is_some()
+                    || metric.window_frame.is_some()
+                    || metric.window_order.is_some()
+                    || metric.grain_to_date.is_some()))
             || metric.non_additive_dimension.is_some()
         {
             return Err(SidemanticError::UnsupportedSemanticFeatures {

@@ -82,7 +82,9 @@ supports:
   ratios/percent changes. They do not fill the underlying period values or create
   missing periods. Existing window frames, partitions, ordering and policies
   remain in effect. Filled offset ratios, non-additive and event-metric shapes
-  remain explicitly unsupported.
+  remain explicitly unsupported. Filled cumulative metrics reject comparison
+  offsets; filled time comparisons reject cumulative windows and grain-to-date
+  controls rather than silently ignoring them.
 - Existing cumulative `window_expression` fields accept `SUM`, `AVG`, `MIN`,
   `MAX`, or `COUNT` of one `base.output` metric reference, with an optionally
   quoted simple output identifier. The input is a grouped period metric value;

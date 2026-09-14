@@ -231,6 +231,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn filled_temporal_metrics_reject_controls_their_generator_does_not_use() {
+        for (kind, field, value) in [
+            ("cumulative", "offset_window", "1 day"),
+            ("cumulative", "time_offset", "1 day"),
+            ("time_comparison", "window", "1 day"),
+            ("time_comparison", "grain_to_date", "month"),
+        ] {
+            let mut metric = serde_json::json!({"name":"filled", "type":kind,
+                "sql":"sales.revenue", "base_metric":"sales.revenue", "fill_nulls_with":0});
+            metric[field] = serde_json::json!(value);
+            let input = serde_json::json!({"version":1,"input_dialect":"duckdb",
+                "models":[],"metrics":[metric.clone()],"metric_owners":{}});
+            assert!(
+                matches!(
+                    crate::semantic_input::SemanticInput::from_json(&input.to_string()),
+                    Err(SidemanticError::UnsupportedSemanticFeatures { .. })
+                ),
+                "{kind}.{field}"
+            );
+            let mut direct: Metric = serde_json::from_value(metric).unwrap();
+            assert!(
+                SqlGenerator::validate_metric_fill(&direct).is_err(),
+                "{kind}.{field}"
+            );
+            direct.fill_nulls_with = None;
+            assert!(
+                SqlGenerator::validate_metric_fill(&direct).is_ok(),
+                "{kind}.{field}"
+            );
+        }
+    }
+
+    #[test]
     fn temporal_fills_wrap_final_values_and_keep_other_shapes_unsupported() {
         let (graph, _) = grouped_graph();
         let generator = SqlGenerator::new(&graph);

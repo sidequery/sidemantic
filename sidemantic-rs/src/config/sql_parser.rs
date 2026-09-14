@@ -319,6 +319,7 @@ fn parse_metric_aggregation(value: Option<&String>) -> Option<Aggregation> {
         "sum" => Some(Aggregation::Sum),
         "count" => Some(Aggregation::Count),
         "count_distinct" | "countdistinct" => Some(Aggregation::CountDistinct),
+        "approx_count_distinct" => Some(Aggregation::ApproxCountDistinct),
         "avg" | "average" => Some(Aggregation::Avg),
         "min" => Some(Aggregation::Min),
         "max" => Some(Aggregation::Max),

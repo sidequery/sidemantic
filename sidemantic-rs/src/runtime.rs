@@ -643,6 +643,7 @@ fn parse_metric_agg_for_dependencies(agg: Option<&str>) -> Option<Aggregation> {
         Some("sum") => Some(Aggregation::Sum),
         Some("count") => Some(Aggregation::Count),
         Some("count_distinct") => Some(Aggregation::CountDistinct),
+        Some("approx_count_distinct") => Some(Aggregation::ApproxCountDistinct),
         Some("avg") => Some(Aggregation::Avg),
         Some("min") => Some(Aggregation::Min),
         Some("max") => Some(Aggregation::Max),
@@ -4896,6 +4897,7 @@ fn catalog_aggregation_name(aggregation: Option<&Aggregation>) -> Option<&'stati
     match aggregation {
         Some(Aggregation::Count) => Some("count"),
         Some(Aggregation::CountDistinct) => Some("count_distinct"),
+        Some(Aggregation::ApproxCountDistinct) => Some("approx_count_distinct"),
         Some(Aggregation::Sum) => Some("sum"),
         Some(Aggregation::Avg) => Some("avg"),
         Some(Aggregation::Min) => Some("min"),
@@ -4912,7 +4914,7 @@ fn catalog_aggregation_name(aggregation: Option<&Aggregation>) -> Option<&'stati
 
 fn catalog_metric_data_type(aggregation: Option<&str>) -> &'static str {
     match aggregation {
-        Some("count" | "count_distinct") => "BIGINT",
+        Some("count" | "count_distinct" | "approx_count_distinct") => "BIGINT",
         Some(
             "sum" | "avg" | "min" | "max" | "median" | "stddev" | "stddev_pop" | "variance"
             | "variance_pop" | "percentile",

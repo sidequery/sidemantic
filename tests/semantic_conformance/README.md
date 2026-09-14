@@ -23,3 +23,15 @@ acceptance evidence. The final acceptance run must execute those parameters
 with the versioned handoff implementation installed. `rust_unsupported` entries
 require typed capability rejection instead of Python fallback. Independent
 result assertions must never be replaced with one compiler's observed output.
+
+`test_approximate_distinct.py` qualifies direct model `approx_count_distinct`
+metrics on DuckDB with explicit source-row SQL expressions. Its synthetic
+30,000-row population repeats 10,000 identifiers and compares results with an
+independent DuckDB approximate query whose estimate differs from exact distinct.
+It also covers metric filters, query filters, grouped NULL populations, and
+empty grouped and scalar aggregate populations. Rust cases require the real extension.
+Joined populations, derived and temporal calculations, cohort aggregates,
+snapshots, stored rollup routing, metric-result filters, ungrouped queries, and
+other output dialects remain capability-gated. Existing rollup definitions can
+be bypassed with `use_preaggregations=False`; stored scalar estimates are never
+summed or treated as mergeable sketches.

@@ -1072,6 +1072,7 @@ fn parse_aggregation(s: &str) -> Aggregation {
     match s.to_lowercase().as_str() {
         "count" => Aggregation::Count,
         "count_distinct" | "countdistinct" => Aggregation::CountDistinct,
+        "approx_count_distinct" => Aggregation::ApproxCountDistinct,
         "sum" => Aggregation::Sum,
         "avg" | "average" => Aggregation::Avg,
         "min" => Aggregation::Min,

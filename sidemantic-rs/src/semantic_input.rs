@@ -419,9 +419,6 @@ fn decode_metric(value: Value, path: &str, owner: Option<&str>) -> Result<Metric
             return Err(unsupported(format!("metric.{kind}")));
         }
     }
-    if raw.get("agg") == Some(&json!("approx_count_distinct")) {
-        return Err(unsupported("metric.approx_count_distinct"));
-    }
     if let Some(fill) = raw.get("fill_nulls_with").filter(|value| !value.is_null()) {
         if !fill.is_number() && !fill.is_string() {
             return Err(invalid(path, "fill_nulls_with must be a number or string"));
@@ -449,6 +446,9 @@ fn decode_metric(value: Value, path: &str, owner: Option<&str>) -> Result<Metric
     exemplar.logical_data_type = Some(String::new());
     exemplar.sql_is_complete = true;
     let metric = project(raw, exemplar, path)?;
+    if metric.agg == Some(crate::core::Aggregation::ApproxCountDistinct) && !model_local {
+        return Err(unsupported("metric.approx_count_distinct_model_scope"));
+    }
     if metric.non_additive_dimension.is_some() {
         if metric.r#type != crate::core::MetricType::Simple {
             return Err(unsupported("metric.non_additive_metric_shape"));

@@ -1,6 +1,7 @@
 //! SQL generator: compiles semantic queries to SQL
 
 mod aggregate_plan;
+mod approximate;
 mod cohort;
 mod conversion;
 mod fanout_aggregate;
@@ -174,6 +175,7 @@ impl<'a> SqlGenerator<'a> {
         query: &SemanticQuery,
         source_model: Option<&str>,
     ) -> Result<String> {
+        self.validate_approximate_query(query)?;
         if let Some(sql) = aggregate_plan::try_generate(self, query)? {
             return Ok(sql);
         }
@@ -997,7 +999,9 @@ impl<'a> SqlGenerator<'a> {
             .and_then(|model| model.get_metric(&metric_ref.name))
             .and_then(|metric| metric.agg.as_ref());
         match aggregation {
-            Some(Aggregation::Count) | Some(Aggregation::CountDistinct) => "BIGINT",
+            Some(
+                Aggregation::Count | Aggregation::CountDistinct | Aggregation::ApproxCountDistinct,
+            ) => "BIGINT",
             _ => "NUMERIC",
         }
     }

@@ -75,6 +75,32 @@ sidemantic explain "SELECT orders.revenue FROM orders"
 JSON is the only content written to stdout in these modes. Diagnostics remain
 on stderr.
 
+## Structured queries
+
+Named consumption queries and result calculations use structured selectors:
+
+```bash
+sidemantic query --explore revenue_overview --models ./models --db data.duckdb
+sidemantic query --saved-query paid_revenue --models ./models --db data.duckdb
+sidemantic query --metric orders.revenue --dimension orders.region \
+  --filter "orders.status = 'paid'" --order-by "orders.revenue DESC" \
+  --limit 10 --table-calculation revenue_share --models ./models --db data.duckdb
+```
+
+An Explore supplies its default selection, filters, ordering and limit when those
+options are omitted. Its allowlists, mandatory filters and maximum limit still
+apply. Saved-query selections remain immutable. Use `--user-attrs-file` and
+`--enforce-visibility` for the same caller and visibility checks as SQL queries.
+
+Repeat `--table-calculation` to apply named calculations in order to the selected
+result rows, after query ordering and pagination. Calculations reference selected
+output columns or earlier calculations; they do not add hidden input fields.
+Sequential calculations require `--order-by` or an Explore's default ordering.
+`--dry-run` emits the SQL used by execution, including selected calculations.
+
+Structured selectors cannot be mixed with a positional SQL query. Ordinary SQL
+queries retain their existing syntax and execution path.
+
 ## Standard output formats
 
 Structured inspection, reporting, and query commands share one format option:

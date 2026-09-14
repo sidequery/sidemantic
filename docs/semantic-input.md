@@ -189,12 +189,16 @@ snapshot routes reject anchored requests with precise
 `query.consumption_base_model.*` capability errors until their population
 semantics are qualified.
 
-Raw runtime requests that select `explore`, `saved_query`, or nonempty
-`table_calculations` fail with typed capability errors, including requests through
-rewrite context. Resolve supported consumption contracts through the Python
-layer; raw `consumption_base_model` supplies the population anchor, not named
-contract authorization. Catalog presence alone never activates a contract.
-Model policies and invariant filters remain mandatory.
+Raw runtime requests that select `explore` or `saved_query` fail with typed
+capability errors. Resolve those named consumption contracts through the Python
+CLI or API; raw `consumption_base_model` supplies the population anchor, not named
+contract authorization. Structured compile and validation requests accept an
+ordered `table_calculations` name list, applying supported calculations to the
+final selected result. See [Selecting result calculations](table-calculation-selection.md)
+for the expression, ordering, dependency and dialect contract. SQL rewrite
+context rejects active named contracts and calculation selections. Catalog
+presence alone never activates a contract. Model policies and invariant filters
+remain mandatory.
 
 Model-owned retention metrics support one source in DuckDB, with `entity`,
 `cohort_event`, optional `activity_event`, and day/week/month periods. The first
@@ -210,10 +214,12 @@ default time dimension is preferred, otherwise its first time dimension is used.
 Entity and time dimensions may map to physical source expressions. The fixed
 outputs are `cohort_date`, `days_since`/`weeks_since`/`months_since`, `active_users`,
 `cohort_size`, and `retention_pct`. Ordering and pagination apply to these outputs.
+Selected result calculations can reference these finalized output columns, after
+ordering and pagination, using the calculation contract described above.
 
 Selected dimensions, graph-level or wrapped retention metrics, combinations with
 other metrics, joined populations, aggregate predicates, window/subquery source
-expressions, ungrouped queries, table calculations, and non-DuckDB outputs remain
+expressions, ungrouped queries, and non-DuckDB outputs remain
 explicitly unsupported. Result acceptance is in
 `tests/semantic_conformance/test_retention_parity.py`; enabling this path requires
 the freshly built Rust extension to pass those cases, not only SQL compilation.

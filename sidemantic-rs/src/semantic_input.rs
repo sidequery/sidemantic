@@ -1187,14 +1187,18 @@ fn validate_semantic_input(input_json: &str, query_json: &str) -> Result<Vec<Str
             ..SemanticQuery::default()
         };
         let generator = SqlGenerator::new(&input.graph).with_dialect(dialect);
-        let sql = generator.generate(&semantic_query)?;
-        calculations::wrap(
-            sql,
-            &input.source["table_calculations"],
-            &query.table_calculations,
-            &semantic_query.order_by,
-            dialect,
-        )?;
+        if query.table_calculations.is_empty() {
+            generator.result_schema(&semantic_query)?;
+        } else {
+            let sql = generator.generate(&semantic_query)?;
+            calculations::wrap(
+                sql,
+                &input.source["table_calculations"],
+                &query.table_calculations,
+                &semantic_query.order_by,
+                dialect,
+            )?;
+        }
     }
     Ok(errors)
 }

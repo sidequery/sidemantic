@@ -18,10 +18,19 @@ def isolate_cli_color_environment(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(typer_rich_utils, "FORCE_TERMINAL", None)
 
 
+def pytest_addoption(parser):
+    parser.addoption(
+        "--test-engine",
+        choices=("python", "rust"),
+        default="python",
+        help="Default engine for the shared suite; explicit engine contract tests retain their overrides",
+    )
+
+
 @pytest.fixture(autouse=True)
-def python_reference_engine(monkeypatch):
-    """Keep the Python reference suite explicit; default-engine tests unset this."""
-    monkeypatch.setenv("SIDEMANTIC_ENGINE", "python")
+def selected_test_engine(monkeypatch, request):
+    """Run shared contracts with the selected engine without enabling fallback."""
+    monkeypatch.setenv("SIDEMANTIC_ENGINE", request.config.getoption("--test-engine"))
 
 
 @pytest.fixture(autouse=True)

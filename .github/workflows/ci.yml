@@ -12,14 +12,19 @@ concurrency:
 
 jobs:
   python:
-    name: Python ${{ matrix.python-version }}
+    name: Python ${{ matrix.python-version }} (${{ matrix.engine }} engine)
     runs-on: ubuntu-latest
     env:
       UV_PYTHON: ${{ matrix.python-version }}
+      SIDEMANTIC_ENGINE: ${{ matrix.engine }}
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.11", "3.12", "3.13", "3.14"]
+        engine: [python]
+        include:
+          - python-version: "3.12"
+            engine: rust
 
     steps:
       - uses: actions/checkout@v4
@@ -83,8 +88,20 @@ jobs:
           uv build --wheel
           unzip -l dist/*.whl | grep -q 'sidemantic/py.typed'
 
-      - name: Run tests
-        run: uv run pytest -v --cov-fail-under=76
+      - name: Run Python reference suite
+        if: matrix.engine == 'python'
+        run: uv run pytest -v --test-engine python --cov-fail-under=76 --junitxml=test-results.xml
+
+      - name: Run full shared suite against Rust
+        if: matrix.engine == 'rust'
+        run: uv run pytest -v --test-engine rust --no-cov --junitxml=test-results.xml
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tests-${{ matrix.python-version }}-${{ matrix.engine }}
+          path: test-results.xml
 
       - name: Run installed-wheel DAX smoke
         run: |

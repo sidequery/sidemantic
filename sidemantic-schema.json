@@ -2061,8 +2061,340 @@
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#",
+  "anyOf": [
+    {
+      "required": [
+        "models"
+      ]
+    },
+    {
+      "required": [
+        "explores"
+      ]
+    },
+    {
+      "required": [
+        "saved_queries"
+      ]
+    },
+    {
+      "required": [
+        "table_calculations"
+      ]
+    }
+  ],
   "description": "Schema for Sidemantic semantic layer YAML configuration",
   "properties": {
+    "explores": {
+      "items": {
+        "additionalProperties": false,
+        "description": "Curated entrypoint over one or more models in the semantic graph.\n\n``model`` names the base model. Allowed fields constrain callers, defaults\npopulate omitted selections, and ``filters`` are mandatory for every query.",
+        "properties": {
+          "allowed_dimensions": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Dimension allowlist; null means every graph dimension is allowed",
+            "title": "Allowed Dimensions"
+          },
+          "allowed_filter_fields": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Field allowlist for caller-supplied filters; null means unrestricted",
+            "title": "Allowed Filter Fields"
+          },
+          "allowed_metrics": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Metric allowlist; null means every graph metric is allowed",
+            "title": "Allowed Metrics"
+          },
+          "allowed_order_by": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Field allowlist for caller-supplied ordering; null means unrestricted",
+            "title": "Allowed Order By"
+          },
+          "category": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Catalog category",
+            "title": "Category"
+          },
+          "certification": {
+            "anyOf": [
+              {
+                "enum": [
+                  "certified",
+                  "verified",
+                  "uncertified"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Trust or review state",
+            "title": "Certification"
+          },
+          "default_dimensions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Default Dimensions",
+            "type": "array"
+          },
+          "default_filters": {
+            "description": "Filters used when callers omit filters",
+            "items": {
+              "type": "string"
+            },
+            "title": "Default Filters",
+            "type": "array"
+          },
+          "default_limit": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Default Limit"
+          },
+          "default_metrics": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Default Metrics",
+            "type": "array"
+          },
+          "default_order_by": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Default Order By",
+            "type": "array"
+          },
+          "deprecation": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Deprecation"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Deprecation lifecycle and migration guidance"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Human-readable description",
+            "title": "Description"
+          },
+          "domain": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Business domain",
+            "title": "Domain"
+          },
+          "filters": {
+            "description": "Mandatory filters applied to every query",
+            "items": {
+              "type": "string"
+            },
+            "title": "Filters",
+            "type": "array"
+          },
+          "freshness": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Freshness"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Expected data freshness policy"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Display label",
+            "title": "Label"
+          },
+          "max_limit": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Max Limit"
+          },
+          "metadata": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Source-adapter metadata for lossless round-tripping",
+            "title": "Metadata"
+          },
+          "model": {
+            "description": "Base model in the physical semantic graph",
+            "title": "Model",
+            "type": "string"
+          },
+          "name": {
+            "description": "Unique explore name",
+            "title": "Name",
+            "type": "string"
+          },
+          "owner": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Accountable person or team",
+            "title": "Owner"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "draft",
+                  "active",
+                  "deprecated"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Semantic object lifecycle status",
+            "title": "Status"
+          },
+          "tags": {
+            "description": "Searchable catalog tags",
+            "items": {
+              "type": "string"
+            },
+            "title": "Tags",
+            "type": "array"
+          },
+          "visibility": {
+            "default": "public",
+            "description": "Catalog visibility; not an authorization policy",
+            "enum": [
+              "public",
+              "internal",
+              "private"
+            ],
+            "title": "Visibility",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "model"
+        ],
+        "title": "Explore",
+        "type": "object"
+      },
+      "type": "array"
+    },
     "metrics": {
       "description": "Top-level metric definitions (optional - can also define in models)",
       "items": {
@@ -5339,11 +5671,392 @@
         "type": "object"
       },
       "type": "array"
+    },
+    "saved_queries": {
+      "items": {
+        "additionalProperties": false,
+        "description": "Named, immutable structured semantic query.",
+        "properties": {
+          "category": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Catalog category",
+            "title": "Category"
+          },
+          "certification": {
+            "anyOf": [
+              {
+                "enum": [
+                  "certified",
+                  "verified",
+                  "uncertified"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Trust or review state",
+            "title": "Certification"
+          },
+          "deprecation": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Deprecation"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Deprecation lifecycle and migration guidance"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Human-readable description",
+            "title": "Description"
+          },
+          "dimensions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Dimensions",
+            "type": "array"
+          },
+          "domain": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Business domain",
+            "title": "Domain"
+          },
+          "explore": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional Explore contract governing this query",
+            "title": "Explore"
+          },
+          "filters": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Filters",
+            "type": "array"
+          },
+          "freshness": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Freshness"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Expected data freshness policy"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Display label",
+            "title": "Label"
+          },
+          "limit": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Limit"
+          },
+          "metadata": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Source-adapter metadata for lossless round-tripping",
+            "title": "Metadata"
+          },
+          "metrics": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Metrics",
+            "type": "array"
+          },
+          "name": {
+            "description": "Unique saved-query name",
+            "title": "Name",
+            "type": "string"
+          },
+          "order_by": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Order By",
+            "type": "array"
+          },
+          "owner": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Accountable person or team",
+            "title": "Owner"
+          },
+          "parameters": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Parameters"
+          },
+          "segments": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Segments",
+            "type": "array"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "draft",
+                  "active",
+                  "deprecated"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Semantic object lifecycle status",
+            "title": "Status"
+          },
+          "tags": {
+            "description": "Searchable catalog tags",
+            "items": {
+              "type": "string"
+            },
+            "title": "Tags",
+            "type": "array"
+          },
+          "visibility": {
+            "default": "public",
+            "description": "Catalog visibility; not an authorization policy",
+            "enum": [
+              "public",
+              "internal",
+              "private"
+            ],
+            "title": "Visibility",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "SavedQuery",
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "table_calculations": {
+      "items": {
+        "additionalProperties": false,
+        "description": "Table calculation definition.\n\nTable calculations operate on query results, not raw data.\nThey can reference other fields in the result set and perform\ncalculations like running totals, percentages, rankings, etc.",
+        "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Human-readable description",
+            "title": "Description"
+          },
+          "expression": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Formula expression referencing result columns (e.g., '${revenue} / ${cost}')",
+            "title": "Expression"
+          },
+          "field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Field to calculate on (for percent_of_total, running_total, etc.)",
+            "title": "Field"
+          },
+          "name": {
+            "description": "Unique calculation name",
+            "title": "Name",
+            "type": "string"
+          },
+          "order_by": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Fields to order by for ranked/sequential calculations",
+            "title": "Order By"
+          },
+          "partition_by": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Fields to partition by for window calculations",
+            "title": "Partition By"
+          },
+          "percentile": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Percentile value between 0 and 1 (e.g., 0.5 for median, 0.95 for p95)",
+            "title": "Percentile"
+          },
+          "type": {
+            "description": "Type of table calculation",
+            "enum": [
+              "formula",
+              "percent_of_total",
+              "percent_of_previous",
+              "percent_of_column_total",
+              "running_total",
+              "rank",
+              "row_number",
+              "percentile",
+              "moving_average"
+            ],
+            "title": "Type",
+            "type": "string"
+          },
+          "window_size": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Window size for moving average (e.g., 7 for 7-day moving average)",
+            "title": "Window Size"
+          }
+        },
+        "required": [
+          "name",
+          "type"
+        ],
+        "title": "TableCalculation",
+        "type": "object"
+      },
+      "type": "array"
     }
   },
-  "required": [
-    "models"
-  ],
   "title": "Sidemantic Semantic Layer",
   "type": "object"
 }

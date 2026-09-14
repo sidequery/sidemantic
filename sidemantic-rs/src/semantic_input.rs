@@ -17,6 +17,7 @@ use crate::runtime::{
     interpolate_query_filters, validate_query_references, QueryValidationContext,
 };
 use crate::sql::{QueryRewriter, SemanticQuery, SqlGenerator};
+mod calculations;
 mod policies;
 
 #[derive(Debug, Deserialize)]
@@ -1023,6 +1024,9 @@ impl SemanticInput {
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 struct QueryInput {
+    consumption_base_model: Option<String>,
+    #[serde(default)]
+    table_calculations: Vec<String>,
     #[serde(default)]
     metrics: Vec<String>,
     #[serde(default)]
@@ -1059,6 +1063,12 @@ fn runtime_request<T: DeserializeOwned>(input: &str, path: &str) -> Result<T> {
     let value = serde_json::from_str(input).map_err(|error| invalid(path, error))?;
     let mut value = object(value, path)?;
     for name in ["explore", "saved_query", "table_calculations"] {
+        if name == "table_calculations" && path == "query" {
+            if value.get(name).is_some_and(Value::is_null) {
+                value.remove(name);
+            }
+            continue;
+        }
         if let Some(request) = value.remove(name) {
             let inactive = request.is_null()
                 || (name == "table_calculations" && request.as_array().is_some_and(Vec::is_empty));
@@ -1087,6 +1097,7 @@ fn compile_semantic_input(input_json: &str, query_json: &str) -> Result<String> 
         interpolate_query_filters(&input.graph, payload.filters, &payload.parameter_values)
             .map_err(|error| invalid("query.parameter_values", error))?;
     let mut query = SemanticQuery {
+        consumption_base_model: payload.consumption_base_model,
         metrics: payload.metrics,
         dimensions: payload.dimensions,
         filters,
@@ -1118,9 +1129,18 @@ fn compile_semantic_input(input_json: &str, query_json: &str) -> Result<String> 
     {
         query.use_preaggregations = false;
     }
-    SqlGenerator::new(&input.graph)
-        .with_dialect(dialect)
-        .generate(&query)
+    let generator = SqlGenerator::new(&input.graph).with_dialect(dialect);
+    let sql = generator.generate(&query)?;
+    if payload.table_calculations.is_empty() {
+        return Ok(sql);
+    }
+    calculations::wrap(
+        sql,
+        &input.source["table_calculations"],
+        &payload.table_calculations,
+        &query.order_by,
+        dialect,
+    )
 }
 
 pub fn validate_with_semantic_input(input_json: &str, query_json: &str) -> Result<Vec<String>> {
@@ -1130,12 +1150,57 @@ pub fn validate_with_semantic_input(input_json: &str, query_json: &str) -> Resul
 fn validate_semantic_input(input_json: &str, query_json: &str) -> Result<Vec<String>> {
     let input = SemanticInput::decode_scoped(input_json, true)?;
     let query = query_input(query_json)?;
-    Ok(validate_query_references(
+    let errors = validate_query_references(
         &input.graph,
         &query.metrics,
         &query.dimensions,
         &input.validation_context,
-    ))
+    );
+    if errors.is_empty()
+        && (query.consumption_base_model.is_some() || !query.table_calculations.is_empty())
+    {
+        let dialect = query
+            .dialect
+            .as_deref()
+            .unwrap_or("duckdb")
+            .parse::<DialectType>()
+            .map_err(|error| invalid("query.dialect", error))?;
+        let filters =
+            interpolate_query_filters(&input.graph, query.filters, &query.parameter_values)
+                .map_err(|error| invalid("query.parameter_values", error))?;
+        // Reference validation checks the selected result contract without
+        // authorizing a caller or preparing row policies.
+        let semantic_query = SemanticQuery {
+            consumption_base_model: query.consumption_base_model,
+            metrics: query.metrics,
+            dimensions: query.dimensions,
+            filters,
+            segments: query.segments,
+            order_by: query.order_by,
+            limit: query.limit,
+            offset: query.offset,
+            ungrouped: query.ungrouped,
+            use_preaggregations: query.use_preaggregations,
+            skip_default_time_dimensions: query.skip_default_time_dimensions,
+            preagg_database: query.preagg_database,
+            preagg_schema: query.preagg_schema,
+            ..SemanticQuery::default()
+        };
+        let generator = SqlGenerator::new(&input.graph).with_dialect(dialect);
+        if query.table_calculations.is_empty() {
+            generator.result_schema(&semantic_query)?;
+        } else {
+            let sql = generator.generate(&semantic_query)?;
+            calculations::wrap(
+                sql,
+                &input.source["table_calculations"],
+                &query.table_calculations,
+                &semantic_query.order_by,
+                dialect,
+            )?;
+        }
+    }
+    Ok(errors)
 }
 
 pub fn rewrite_with_semantic_input(input_json: &str, sql: &str) -> Result<String> {
@@ -1214,6 +1279,72 @@ mod tests {
                 "metrics": [{"name": "revenue", "agg": "sum", "sql": "amount"}]
             }], "metrics": [], "metric_owners": {}, "metadata": {"source": "orders.yml"}
         })
+    }
+
+    #[test]
+    fn resolved_explore_anchor_is_shared_by_compilation_and_validation() {
+        let mut source = input();
+        source["models"][0]["primary_key"] = json!("id");
+        source["models"][0]["relationships"] = json!([
+            {"name":"items", "type":"one_to_many", "foreign_key":"order_id"}
+        ]);
+        source["models"].as_array_mut().unwrap().push(json!({
+            "name":"items", "table":"items", "primary_key":"id",
+            "dimensions":[{"name":"kind", "type":"categorical"}],
+            "metrics":[{"name":"value", "agg":"sum", "sql":"value"}]
+        }));
+        let source = source.to_string();
+        for selection in [
+            json!({"metrics":["items.value"]}),
+            json!({"dimensions":["items.kind"]}),
+        ] {
+            let mut query = selection;
+            query["consumption_base_model"] = json!("orders");
+            let sql = compile_with_semantic_input(&source, &query.to_string()).unwrap();
+            assert!(sql.contains("orders_cte"), "{sql}");
+            assert!(sql.contains("LEFT JOIN"), "{sql}");
+            assert!(validate_with_semantic_input(&source, &query.to_string())
+                .unwrap()
+                .is_empty());
+            query["consumption_base_model"] = json!("missing");
+            assert!(compile_with_semantic_input(&source, &query.to_string()).is_err());
+            assert!(validate_with_semantic_input(&source, &query.to_string()).is_err());
+        }
+        let query =
+            json!({"consumption_base_model":"orders", "metrics":["orders.revenue", "items.value"]});
+        for result in [
+            compile_with_semantic_input(&source, &query.to_string()).map(|_| ()),
+            validate_with_semantic_input(&source, &query.to_string()).map(|_| ()),
+        ] {
+            assert!(
+                matches!(result, Err(SidemanticError::UnsupportedSemanticFeatures { capabilities })
+                if capabilities.contains(&"query.consumption_base_model.independent_aggregates".to_string()))
+            );
+        }
+    }
+
+    #[test]
+    fn anchored_calculations_share_compile_and_validation_contract() {
+        let mut source = input();
+        source["table_calculations"] =
+            json!([{"name":"double", "type":"formula", "expression":"${revenue} * 2"}]);
+        let source = source.to_string();
+        let mut query = json!({
+            "consumption_base_model":"orders", "metrics":["orders.revenue"],
+            "table_calculations":["double"], "order_by":["orders.revenue DESC"],
+            "limit":1, "offset":1
+        });
+        assert!(compile_with_semantic_input(&source, &query.to_string()).is_ok());
+        assert!(validate_with_semantic_input(&source, &query.to_string())
+            .unwrap()
+            .is_empty());
+        query["table_calculations"] = json!(["missing"]);
+        assert!(compile_with_semantic_input(&source, &query.to_string()).is_err());
+        assert!(validate_with_semantic_input(&source, &query.to_string()).is_err());
+        query["table_calculations"] = json!(["double"]);
+        query["consumption_base_model"] = json!("missing");
+        assert!(compile_with_semantic_input(&source, &query.to_string()).is_err());
+        assert!(validate_with_semantic_input(&source, &query.to_string()).is_err());
     }
 
     #[test]

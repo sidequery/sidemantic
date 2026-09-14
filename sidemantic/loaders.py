@@ -218,6 +218,7 @@ def load_from_directory(
     all_models = {}
     all_metrics = {}
     all_parameters = {}
+    consumption_catalogs = {name: {} for name in ("explores", "saved_queries", "table_calculations")}
     # Snowflake table-scoped metrics whose table lives in another file, held as
     # (table_name, Metric) pairs so same-named scoped metrics never collide.
     all_pending_table_metrics: list = []
@@ -251,6 +252,7 @@ def load_from_directory(
     if tmdl_root:
         try:
             graph = TMDLAdapter().parse(tmdl_root)
+            _collect_consumption_catalogs(consumption_catalogs, graph, layer.graph)
             _merge_graph_passthrough_metadata(layer.graph, graph)
             _extend_import_warnings(import_warnings, graph)
             for model in graph.models.values():
@@ -284,6 +286,7 @@ def load_from_directory(
     if lookml_root:
         try:
             graph = _run_without_auto_registration(LookMLAdapter().parse, str(lookml_root))
+            _collect_consumption_catalogs(consumption_catalogs, graph, layer.graph)
             _merge_graph_passthrough_metadata(layer.graph, graph)
             _extend_import_warnings(import_warnings, graph)
             for model in graph.models.values():
@@ -347,6 +350,7 @@ def load_from_directory(
         adapter = MalloyAdapter(strict=strict, import_root=directory)
         try:
             graph = _parse_adapter_without_auto_registration(adapter, malloy_source)
+            _collect_consumption_catalogs(consumption_catalogs, graph, layer.graph)
             _merge_graph_passthrough_metadata(layer.graph, graph)
             _extend_import_warnings(import_warnings, graph)
             for model in graph.models.values():
@@ -456,6 +460,18 @@ def load_from_directory(
                         consumer_profile="dbt-1.12",
                         scope_id=ossie_scope_id,
                     )
+            else:
+                import json
+                import re
+
+                try:
+                    native_data = json.loads(content)
+                except ValueError as exc:
+                    if re.search(r'"(?:explores|saved_queries|table_calculations)"\s*:', content):
+                        _handle_parse_error(file_path, exc, strict=strict)
+                else:
+                    if _looks_like_native_sidemantic_yaml(native_data):
+                        adapter = SidemanticAdapter()
         elif suffix == ".aml":
             from sidemantic.adapters.holistics import HolisticsAdapter
 
@@ -565,6 +581,7 @@ def load_from_directory(
             adapter_name = adapter.__class__.__name__.replace("Adapter", "")
             try:
                 graph = _parse_adapter_without_auto_registration(adapter, file_path)
+                _collect_consumption_catalogs(consumption_catalogs, graph, layer.graph)
                 _merge_graph_passthrough_metadata(layer.graph, graph)
                 _extend_import_warnings(import_warnings, graph)
                 # Track source format for each model
@@ -640,6 +657,14 @@ def load_from_directory(
     for parameter in all_parameters.values():
         if parameter.name not in layer.graph.parameters:
             layer.graph.add_parameter(parameter)
+
+    for catalog, register in (
+        ("explores", layer.graph.add_explore),
+        ("saved_queries", layer.graph.add_saved_query),
+        ("table_calculations", layer.graph.add_table_calculation),
+    ):
+        for definition in consumption_catalogs[catalog].values():
+            register(definition)
 
     _merge_import_warnings(layer.graph, import_warnings)
 
@@ -930,9 +955,23 @@ def _looks_like_semantic_yaml_text(content: str) -> bool:
         "tables",
         "views",
         "worksheet",
+        "explores",
+        "saved_queries",
+        "table_calculations",
     )
     prefixes = tuple(f"{key}:" for key in semantic_keys)
     return any(line.lstrip().startswith(prefixes) for line in content.splitlines())
+
+
+def _collect_consumption_catalogs(catalogs: dict, source_graph: object, target_graph: object) -> None:
+    """Stage catalogs, rejecting collisions before changing any collected catalog."""
+    for catalog, definitions in catalogs.items():
+        incoming = getattr(source_graph, catalog, {})
+        duplicates = incoming.keys() & (definitions.keys() | getattr(target_graph, catalog, {}).keys())
+        if duplicates:
+            raise ValueError(f"Duplicate {catalog}: {', '.join(sorted(duplicates))}")
+    for catalog, definitions in catalogs.items():
+        definitions.update(getattr(source_graph, catalog, {}))
 
 
 def _looks_like_native_sidemantic_yaml(data: dict) -> bool:
@@ -951,7 +990,18 @@ def _looks_like_native_sidemantic_yaml(data: dict) -> bool:
         and set(data) <= ROOT_FIELDS
     ):
         return True
-    if not any(_yaml_has_top_level_key(data, key) for key in ("metrics", "parameters", "sql_metrics", "sql_segments")):
+    if not any(
+        _yaml_has_top_level_key(data, key)
+        for key in (
+            "metrics",
+            "parameters",
+            "sql_metrics",
+            "sql_segments",
+            "explores",
+            "saved_queries",
+            "table_calculations",
+        )
+    ):
         return False
     if data.get("version") == NATIVE_FORMAT_VERSION:
         return True

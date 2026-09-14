@@ -7,6 +7,7 @@ from pathlib import Path
 import yaml
 
 from sidemantic.adapters.base import BaseAdapter
+from sidemantic.core.consumption import Explore, SavedQuery
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.freshness import Freshness
 from sidemantic.core.metric import Metric
@@ -22,6 +23,7 @@ from sidemantic.core.sql_definitions import (
     parse_sql_graph_definitions,
     parse_sql_models,
 )
+from sidemantic.core.table_calculation import TableCalculation
 from sidemantic.yaml_compat import safe_load as _yaml_safe_load
 
 NATIVE_FORMAT_VERSION = 1
@@ -31,6 +33,9 @@ ROOT_FIELDS = {
     "models",
     "metrics",
     "parameters",
+    "explores",
+    "saved_queries",
+    "table_calculations",
     "metadata",
     "sql_metrics",
     "sql_segments",
@@ -312,6 +317,8 @@ def normalize_sql_frontmatter(frontmatter: dict) -> dict:
     normalized.pop("connection", None)
     normalized.pop("models", None)
     normalized.pop("parameters", None)
+    for catalog in ("explores", "saved_queries", "table_calculations"):
+        normalized.pop(catalog, None)
     # ``metadata`` is a root-only native field (graph-level), so it must not by
     # itself make the frontmatter look like a model definition. Graph metadata is
     # extracted separately by the caller before this decision.
@@ -384,6 +391,8 @@ class SidemanticAdapter(BaseAdapter):
                     )
                 except Exception as exc:
                     raise ValueError(f"{source_path}: invalid SQL definitions: {exc}") from exc
+
+                self._parse_consumption_catalogs(frontmatter or {}, graph, source_path)
 
                 # Parse frontmatter as a model only when it still contains model fields
                 # after native contract metadata such as `version`/`metadata` is removed.
@@ -469,8 +478,30 @@ class SidemanticAdapter(BaseAdapter):
             # For now, skip graph-level segments
 
         self._resolve_inheritance(graph)
+        self._parse_consumption_catalogs(data, graph, source_path)
 
         return graph
+
+    def _parse_consumption_catalogs(self, data: dict, graph: SemanticGraph, source_path: Path) -> None:
+        """Read canonical consumption objects without resolving cross-file references."""
+        for catalog, definition_type, register in (
+            ("explores", Explore, graph.add_explore),
+            ("saved_queries", SavedQuery, graph.add_saved_query),
+            ("table_calculations", TableCalculation, graph.add_table_calculation),
+        ):
+            definitions = data.get(catalog)
+            if definitions is None:
+                continue
+            if not isinstance(definitions, list):
+                raise ValueError(f"{source_path}: {catalog} must be a list of named objects")
+            for definition in definitions:
+                if not isinstance(definition, dict):
+                    raise ValueError(f"{source_path}: {catalog} entries must be named objects")
+                reject_unknown_fields(definition, set(definition_type.model_fields), catalog, source_path=source_path)
+                try:
+                    register(definition_type.model_validate(definition))
+                except ValueError as exc:
+                    raise ValueError(f"{source_path}: invalid {catalog}: {exc}") from exc
 
     def _parse_embedded_sql_definitions(
         self,
@@ -532,6 +563,13 @@ class SidemanticAdapter(BaseAdapter):
 
         if graph.parameters:
             data["parameters"] = [self._export_parameter(parameter) for parameter in graph.parameters.values()]
+
+        for catalog in ("explores", "saved_queries", "table_calculations"):
+            definitions = getattr(graph, catalog)
+            if definitions:
+                data[catalog] = [
+                    definition.model_dump(mode="json", exclude_none=True) for definition in definitions.values()
+                ]
 
         if graph.metadata:
             data["metadata"] = graph.metadata

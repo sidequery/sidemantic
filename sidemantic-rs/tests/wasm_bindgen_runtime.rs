@@ -729,3 +729,43 @@ fn wasm_bindgen_runtime_rewrite_rejects_invalid_semantic_sql() {
     }
     assert!(wasm_rewrite_with_yaml(SIMPLE_MODELS_YAML, "SELECT (").is_err());
 }
+
+#[wasm_bindgen_test]
+fn wasm_semantic_policy_rewrite_uses_the_provisioned_stack() {
+    let source = include_str!("fixtures/semantic_host.json");
+    for tenant in ["a", "b", "a' OR 1=1 --"] {
+        let context = serde_json::json!({
+            "user_attributes": {"tenant": tenant},
+            "enforce_visibility": true,
+        });
+        let sql = sidemantic::wasm_rewrite_with_semantic_input_context(
+            source,
+            "select orders.revenue as total from metrics",
+            &context.to_string(),
+        )
+        .expect("a bounded policy rewrite must not exhaust the WASM stack");
+        assert!(sql.contains("total"));
+        assert!(sql.contains("deleted"));
+    }
+}
+
+#[wasm_bindgen_test]
+fn wasm_semantic_nested_compile_retains_input_work_limits() {
+    let mut source: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/semantic_host.json")).unwrap();
+    source["models"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("security");
+    let query = r#"{"metrics":["orders.revenue"]}"#;
+    source["models"][0]["metrics"][0]["sql"] =
+        format!("{}amount{}", "(".repeat(14), ")".repeat(14)).into();
+    sidemantic::wasm_compile_with_semantic_input(&source.to_string(), query)
+        .expect("accepted parser nesting must fit the provisioned WASM stack");
+
+    source["models"][0]["metrics"][0]["sql"] =
+        format!("{}amount{}", "(".repeat(1000), ")".repeat(1000)).into();
+    let error = sidemantic::wasm_compile_with_semantic_input(&source.to_string(), query)
+        .expect_err("a larger stack must not disable input nesting bounds");
+    assert!(error.as_string().unwrap().contains("nesting limit"));
+}

@@ -216,12 +216,12 @@ Allow writing to an existing destination
 .SH "SIDEMANTIC QUERY"
 .SS SYNOPSIS
 .B
-sidemantic query [OPTIONS] SQL
+sidemantic query [OPTIONS] [[SQL]]
 .SS DESCRIPTION
 .PP
-Execute a SQL query and output results as CSV.
+Execute a SQL or structured semantic query and output results as CSV.
 .PP
-Examples: sidemantic query "SELECT revenue FROM orders" sidemantic query "SELECT * FROM orders" \-\-output results.csv sidemantic query "SELECT * FROM orders" \-\-models ./models sidemantic query "SELECT revenue FROM orders" \-\-connection "postgres://localhost:5432/db" sidemantic query "SELECT revenue FROM orders" \-\-db data.duckdb sidemantic query "SELECT revenue FROM orders" \-\-dry\-run sidemantic query "SELECT revenue FROM orders" \-\-use\-preaggregations \-\-dry\-run
+Examples: sidemantic query "SELECT revenue FROM orders" sidemantic query "SELECT * FROM orders" \-\-output results.csv sidemantic query "SELECT * FROM orders" \-\-models ./models sidemantic query "SELECT revenue FROM orders" \-\-connection "postgres://localhost:5432/db" sidemantic query "SELECT revenue FROM orders" \-\-db data.duckdb sidemantic query "SELECT revenue FROM orders" \-\-dry\-run sidemantic query "SELECT revenue FROM orders" \-\-use\-preaggregations \-\-dry\-run sidemantic query \-\-explore revenue_overview \-\-table\-calculation revenue_share sidemantic query \-\-metric orders.revenue \-\-dimension orders.region \-\-order\-by orders.region
 .SS OPTIONS
 .TP
 \fB\-\-models, \-m PATH\fR
@@ -256,6 +256,33 @@ Enable automatic pre\-aggregation routing
 .TP
 \fB\-\-ossie\-scope TEXT\fR
 Explicit Apache Ossie semantic\-model scope
+.TP
+\fB\-\-explore TEXT\fR
+Query a named Explore using its defaults and rules
+.TP
+\fB\-\-saved\-query TEXT\fR
+Execute a named saved query
+.TP
+\fB\-\-metric TEXT\fR
+Metric to select (repeatable)
+.TP
+\fB\-\-dimension TEXT\fR
+Dimension to select (repeatable)
+.TP
+\fB\-\-filter TEXT\fR
+Structured query filter (repeatable)
+.TP
+\fB\-\-order\-by TEXT\fR
+Selected field ordering (repeatable)
+.TP
+\fB\-\-limit INTEGER RANGE\fR
+Maximum structured query rows
+.TP
+\fB\-\-offset INTEGER RANGE\fR
+Structured query rows to skip
+.TP
+\fB\-\-table\-calculation TEXT\fR
+Named calculation to apply to result rows (repeatable, in order)
 .SH "SIDEMANTIC EXPLAIN"
 .SS SYNOPSIS
 .B

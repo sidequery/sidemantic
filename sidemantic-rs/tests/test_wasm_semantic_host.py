@@ -147,7 +147,9 @@ def test_near_nesting_limit_and_literal_delimiters_are_accepted():
     model = copy.deepcopy(SOURCE)
     del model["models"][0]["security"]
     model["models"][0]["metrics"][0]["sql"] = "(" * 14 + "amount" + ")" * 14
-    assert rows(call("compile", source=model, query={"metrics": ["orders.revenue"]})["result"]) == [(110,)]
+    compiled = call("compile", source=model, query={"metrics": ["orders.revenue"]})
+    assert "result" in compiled, compiled
+    assert rows(compiled["result"]) == [(110,)]
     combined = "(" * 14 + "NOT " * 30 + "true" + ")" * 14
     result = call("rewrite", source=model, sql=f"select {combined}")
     assert "result" in result, result
@@ -161,6 +163,101 @@ def test_near_nesting_limit_and_literal_delimiters_are_accepted():
     for expression in [f"'{literal}'", f"$tag${literal}$tag$"]:
         result = call("rewrite", source=model, sql=f"select {expression} /* {literal} */ -- {literal}\n")
         assert "result" in result, result
+
+
+def test_explore_anchor_scopes_related_fields_and_policies():
+    source = copy.deepcopy(SOURCE)
+    source["models"][0]["relationships"] = [{"name": "items", "type": "one_to_many", "foreign_key": "order_id"}]
+    source["models"].append(
+        {
+            "name": "items",
+            "table": "items",
+            "primary_key": "id",
+            "dimensions": [{"name": "kind", "type": "categorical"}],
+            "metrics": [{"name": "value", "agg": "sum", "sql": "value"}],
+        }
+    )
+    source["explores"] = [{"name": "sales", "model": "orders"}]
+    query = {
+        "consumption_base_model": "orders",
+        "metrics": ["items.value"],
+        "user_attributes": {"tenant": "a"},
+        "enforce_visibility": True,
+    }
+    with duckdb.connect() as connection:
+        connection.execute("create table orders(id integer, tenant varchar, amount integer, deleted boolean)")
+        connection.execute(
+            "insert into orders values (1,'a',10,false),(2,'a',20,false),(3,'b',30,false),(4,'a',40,true)"
+        )
+        connection.execute("create table items(id integer, order_id integer, kind varchar, value integer)")
+        connection.execute(
+            "insert into items values (1,1,'paid',5),(2,1,'paid',7),(3,3,'hidden',100),(4,4,'deleted',200),(5,99,'orphan',1000)"
+        )
+        response = call("compile", source, query)
+        assert "error" not in response, response
+        assert connection.execute(response["result"]).fetchall() == [(12,)]
+        source["table_calculations"] = [{"name": "double", "type": "formula", "expression": "${value} * 2"}]
+        selected = {**query, "table_calculations": ["double"]}
+        calculated = call("compile", source, selected)
+        assert "error" not in calculated, calculated
+        assert connection.execute(calculated["result"]).fetchall() == [(12, 24)]
+        assert json.loads(call("validate", source, selected)["result"]) == []
+        # Validation retains reference-only semantics even for an anchored calculation.
+        assert json.loads(call("validate", source, {**selected, "user_attributes": None})["result"]) == []
+        assert "error" in call("validate", source, {**selected, "table_calculations": ["missing"]})
+        assert "error" in call("validate", source, {**selected, "consumption_base_model": "missing"})
+        dimensions = {**query, "metrics": [], "dimensions": ["items.kind"]}
+        response = call("compile", source, dimensions)
+        assert "error" not in response, response
+        assert set(connection.execute(response["result"]).fetchall()) == {("paid",), (None,)}
+    assert json.loads(call("validate", source, query)["result"]) == []
+    assert "no user_attributes" in call("compile", source, {**query, "user_attributes": None}).get("error", "")
+    assert "consumption_base_model.independent_aggregates" in call(
+        "compile", source, {**query, "metrics": ["items.value", "orders.revenue"]}
+    ).get("error", "")
+    invalid = call("validate", source, {**query, "consumption_base_model": "missing"})
+    assert "missing" in invalid.get("error", "")
+
+
+def test_selected_table_calculations_execute_all_kinds():
+    fixture = json.loads((ROOT / "fixtures/selected_calculations.json").read_text())
+    response = call("compile", source=fixture["source"], query=fixture["query"])
+    assert "error" not in response, response
+    with duckdb.connect() as connection:
+        connection.execute(fixture["seed"])
+        actual = connection.execute(response["result"]).fetchall()
+        assert len(actual) == len(fixture["expected"])
+        for row, expected in zip(actual, fixture["expected"]):
+            for value, oracle in zip(row, expected):
+                if isinstance(oracle, (int, float)):
+                    assert value == pytest.approx(oracle)
+                else:
+                    assert value == oracle
+
+
+@pytest.mark.parametrize("selection", [["absent"], ["dependent", "running"], ["running", "running"]])
+def test_selected_table_calculation_gates(selection):
+    fixture = json.loads((ROOT / "fixtures/selected_calculations.json").read_text())
+    fixture["query"]["table_calculations"] = selection
+    assert "error" in call("compile", source=fixture["source"], query=fixture["query"])
+
+
+@pytest.mark.parametrize("mutation", [None, "unknown", "dependency", "formula", "unknown_option"])
+def test_selected_calculation_validation(mutation):
+    fixture = json.loads((ROOT / "fixtures/selected_calculations.json").read_text())
+    if mutation == "unknown":
+        fixture["query"]["table_calculations"] = ["missing"]
+    elif mutation == "dependency":
+        fixture["query"]["table_calculations"] = ["dependent"]
+    elif mutation == "formula":
+        fixture["source"]["table_calculations"][0]["expression"] = "${value} ** 2"
+    elif mutation == "unknown_option":
+        fixture["source"]["table_calculations"][0]["unknown_window"] = "future"
+    result = call("validate", source=fixture["source"], query=fixture["query"])
+    if mutation is None:
+        assert json.loads(result["result"]) == []
+    else:
+        assert "error" in result, result
 
 
 if __name__ == "__main__":

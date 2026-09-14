@@ -4,6 +4,7 @@ import json
 from copy import deepcopy
 from pathlib import Path
 
+from sidemantic.core.consumption import Explore, SavedQuery
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.freshness import Freshness
 from sidemantic.core.metric import Metric
@@ -11,6 +12,7 @@ from sidemantic.core.model import Model
 from sidemantic.core.parameter import Parameter
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.segment import Segment
+from sidemantic.core.table_calculation import TableCalculation
 
 
 def add_native_relationship_aliases(schema: dict) -> dict:
@@ -87,7 +89,7 @@ def generate_yaml_schema() -> dict:
                 "items": parameter_schema,
             },
         },
-        "required": ["models"],
+        "anyOf": [{"required": [name]} for name in ("models", "explores", "saved_queries", "table_calculations")],
         "$defs": {
             **model_schema.get("$defs", {}),
             **metric_schema.get("$defs", {}),
@@ -100,6 +102,17 @@ def generate_yaml_schema() -> dict:
             "Parameter": parameter_schema,
         },
     }
+
+    for catalog, definition_type in (
+        ("explores", Explore),
+        ("saved_queries", SavedQuery),
+        ("table_calculations", TableCalculation),
+    ):
+        item_schema = definition_type.model_json_schema()
+        # Native authoring rejects unknown fields even for permissive API models.
+        item_schema["additionalProperties"] = False
+        schema["$defs"].update(item_schema.pop("$defs", {}))
+        schema["properties"][catalog] = {"type": "array", "items": item_schema}
 
     patch_relationship_schemas(schema)
 

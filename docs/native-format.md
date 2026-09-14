@@ -74,6 +74,14 @@ Top-level sections:
 | `models` | No | List of model definitions. Most useful projects define at least one model. |
 | `metrics` | No | Graph-level metrics. Rust assigns these to exactly one owning model when possible. |
 | `parameters` | No | Graph-level parameters for templates and query-time substitution. |
+| `explores` | No | Named Explore contracts with a base `model`, defaults, allowed fields, and mandatory filters. |
+| `saved_queries` | No | Named structured queries, optionally governed by an `explore`. |
+| `table_calculations` | No | Named calculations over query results, such as formulas and running totals. |
+
+Consumption catalogs use lists of named objects and may live in separate catalog-only
+files alongside model files. The Python CLI resolves these definitions before sending
+queries to the versioned Rust runtime. This does not add support for these root catalogs
+to the legacy Rust native-file loader.
 
 Top-level metrics are graph-scoped in the Python runtime. The Rust runtime does not
 store a separate graph-metric namespace at execution time; it assigns each top-level

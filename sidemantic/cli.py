@@ -1797,7 +1797,7 @@ def export_native(
 
 @app.command(epilog=GROUP_EPILOG)
 def query(
-    sql: str = typer.Argument(..., help="SQL query to execute, or - to read from stdin"),
+    sql: str | None = typer.Argument(None, help="SQL query to execute, or - to read from stdin"),
     models: Path = typer.Option(None, "--models", "-m", help="Directory containing semantic layer files"),
     output: Path = typer.Option(None, "--output", "-o", help="Output file (default: stdout)"),
     connection: str = typer.Option(
@@ -1817,9 +1817,20 @@ def query(
         False, "--use-preaggregations", help="Enable automatic pre-aggregation routing"
     ),
     ossie_scope: str = typer.Option(None, "--ossie-scope", help="Explicit Apache Ossie semantic-model scope"),
+    explore: str | None = typer.Option(None, "--explore", help="Query a named Explore using its defaults and rules"),
+    saved_query: str | None = typer.Option(None, "--saved-query", help="Execute a named saved query"),
+    metrics: list[str] | None = typer.Option(None, "--metric", help="Metric to select (repeatable)"),
+    dimensions: list[str] | None = typer.Option(None, "--dimension", help="Dimension to select (repeatable)"),
+    filters: list[str] | None = typer.Option(None, "--filter", help="Structured query filter (repeatable)"),
+    order_by: list[str] | None = typer.Option(None, "--order-by", help="Selected field ordering (repeatable)"),
+    limit: int | None = typer.Option(None, "--limit", min=0, help="Maximum structured query rows"),
+    offset: int | None = typer.Option(None, "--offset", min=0, help="Structured query rows to skip"),
+    table_calculations: list[str] | None = typer.Option(
+        None, "--table-calculation", help="Named calculation to apply to result rows (repeatable, in order)"
+    ),
 ):
     """
-    Execute a SQL query and output results as CSV.
+    Execute a SQL or structured semantic query and output results as CSV.
 
     Examples:
       sidemantic query "SELECT revenue FROM orders"
@@ -1829,10 +1840,22 @@ def query(
       sidemantic query "SELECT revenue FROM orders" --db data.duckdb
       sidemantic query "SELECT revenue FROM orders" --dry-run
       sidemantic query "SELECT revenue FROM orders" --use-preaggregations --dry-run
+      sidemantic query --explore revenue_overview --table-calculation revenue_share
+      sidemantic query --metric orders.revenue --dimension orders.region --order-by orders.region
     """
+    structured_options = (
+        any((explore, saved_query, metrics, dimensions, filters, order_by, table_calculations))
+        or limit is not None
+        or offset is not None
+    )
+    if sql is not None and structured_options:
+        raise typer.BadParameter("SQL cannot be combined with structured query options")
+    if sql is None and not any((explore, saved_query, metrics, dimensions)):
+        raise typer.BadParameter("Provide SQL or select --explore, --saved-query, --metric, or --dimension")
     try:
         output_format = resolve_output_format(default="csv")
-        sql = read_sql_input(sql)
+        if sql is not None:
+            sql = read_sql_input(sql)
         user_attributes = _read_query_user_attributes(user_attrs_file)
         layer = _load_query_layer(
             models,
@@ -1844,12 +1867,30 @@ def query(
             enforce_visibility=enforce_visibility,
             ossie_scope=ossie_scope,
         )
+        structured_query = {
+            "explore": explore,
+            "saved_query": saved_query,
+            "metrics": metrics or None,
+            "dimensions": dimensions or None,
+            "filters": filters or None,
+            "order_by": order_by or None,
+            "limit": limit,
+            "offset": offset,
+            "user_attributes": user_attributes,
+        }
+        if table_calculations:
+            structured_query["table_calculations"] = table_calculations
 
         # Dry run: show generated SQL without executing
         if dry_run:
-            from sidemantic.core.transport_security import rewrite_transport_sql
+            if sql is None:
+                rewritten_sql = layer.compile(**structured_query)
+            else:
+                from sidemantic.core.transport_security import rewrite_transport_sql
 
-            rewritten_sql = rewrite_transport_sql(layer, sql, user_attributes=user_attributes, transport="CLI dry run")
+                rewritten_sql = rewrite_transport_sql(
+                    layer, sql, user_attributes=user_attributes, transport="CLI dry run"
+                )
             _emit_engine_selection(layer)
             if cli_state().format_explicit and output_format in {"csv", "json", "jsonl"}:
                 emit_records(
@@ -1863,7 +1904,7 @@ def query(
             return
 
         # Execute query
-        result = layer.sql(sql, user_attributes=user_attributes)
+        result = layer.query(**structured_query) if sql is None else layer.sql(sql, user_attributes=user_attributes)
         _emit_engine_selection(layer)
 
         # Get results

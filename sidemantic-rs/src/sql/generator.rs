@@ -2842,6 +2842,10 @@ impl<'a> SqlGenerator<'a> {
                 let denom_alias = self.metric_alias_from_ref(denominator);
                 let prev_alias = format!("{}_prev_denom", metric_ref.alias);
                 let window_clause = self.lag_window_clause(dimension_refs, &time_col, None);
+                let lag_rows = Self::offset_window_lag_rows(
+                    metric.offset_window.as_deref(),
+                    granularity.as_deref(),
+                )?;
                 let prior = self
                     .calendar_prior_value(
                         metric,
@@ -2850,7 +2854,9 @@ impl<'a> SqlGenerator<'a> {
                         granularity.as_deref(),
                         &format!("base.{denom_alias}"),
                     )?
-                    .unwrap_or_else(|| format!("LAG(base.{denom_alias}) OVER ({window_clause})"));
+                    .unwrap_or_else(|| {
+                        format!("LAG(base.{denom_alias}, {lag_rows}) OVER ({window_clause})")
+                    });
                 lag_selects.push(format!("{prior} AS {prev_alias}"));
             }
 

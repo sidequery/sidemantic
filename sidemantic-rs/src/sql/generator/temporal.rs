@@ -107,6 +107,30 @@ fn period_interval(value: &str) -> Result<(u32, String)> {
 }
 
 impl SqlGenerator<'_> {
+    pub(super) fn offset_window_lag_rows(
+        offset: Option<&str>,
+        granularity: Option<&str>,
+    ) -> Result<u64> {
+        let Some(offset) = offset else {
+            return Ok(1);
+        };
+        let (amount, unit) = period_interval(offset)?;
+        let days = |unit: &str| match unit {
+            "day" => 1_u64,
+            "week" => 7,
+            "quarter" => 90,
+            "year" => 365,
+            _ => 30,
+        };
+        let total_days = u64::from(amount) * days(&unit);
+        let grain_days = days(granularity.unwrap_or("month"));
+        let rows = total_days / grain_days;
+        let remainder = total_days % grain_days;
+        // Python round() breaks halfway ties toward the nearest even integer.
+        let round_up = remainder * 2 > grain_days || (remainder * 2 == grain_days && rows % 2 == 1);
+        Ok((rows + u64::from(round_up)).max(1))
+    }
+
     pub(crate) fn window_output_dependency(metric: &Metric) -> Result<Option<String>> {
         metric
             .window_expression
@@ -231,6 +255,11 @@ impl SqlGenerator<'_> {
         granularity: Option<&str>,
         value: &str,
     ) -> Result<Option<String>> {
+        if !matches!(self.dialect, DialectType::DuckDB | DialectType::PostgreSQL)
+            || (metric.r#type == MetricType::Ratio && granularity.is_none())
+        {
+            return Ok(None);
+        }
         let interval = if let Some(offset) = metric
             .offset_window
             .as_deref()
@@ -256,9 +285,6 @@ impl SqlGenerator<'_> {
         let Some((amount, unit)) = interval else {
             return Ok(None);
         };
-        if !matches!(self.dialect, DialectType::DuckDB | DialectType::PostgreSQL) {
-            return Err(unsupported("calendar_dialect"));
-        }
         let partition_columns = self.temporal_partition_columns(dimensions, time_column);
         let partition = if partition_columns.is_empty() {
             String::new()

@@ -3,6 +3,7 @@
 import logging
 import threading
 from collections.abc import Callable
+from copy import copy
 from functools import lru_cache
 
 import sqlglot
@@ -130,6 +131,76 @@ class SQLGenerator:
         self._dialect_instance = _cached_dialect(dialect)
         self._generate_cache: dict[tuple[object, ...], str] = {}
         self._generate_cache_limit = 256
+
+    def _lower_filtered_complete_row_counts(self) -> "SQLGenerator | None":
+        """Reuse ordinary count planning without changing the caller's live graph."""
+        replacements = {}
+        for name, model in self.graph.models.items():
+            metrics = []
+            changed = False
+            for metric in model.metrics:
+                if (
+                    metric.sql_is_complete
+                    and metric.filters
+                    and metric.sql
+                    and metric.type in (None, "simple", "derived")
+                ):
+                    try:
+                        parsed = _parse_fragment(metric.sql, self.dialect)
+                    except SqlglotError:
+                        # Unused declarations must not fail another metric's query.
+                        metrics.append(metric)
+                        continue
+                    if (
+                        isinstance(parsed, exp.Count)
+                        and isinstance(parsed.this, exp.Star)
+                        and not any(value for key, value in parsed.args.items() if key not in ("this", "big_int"))
+                        and not any(parsed.this.args.values())
+                    ):
+                        filters = []
+                        for predicate in metric.filters:
+                            try:
+                                expression = _parse_fragment(predicate, self.dialect)
+                            except SqlglotError:
+                                # Preserve it for the active query's ordinary filter
+                                # validation, without failing unrelated queries here.
+                                filters.append(f"({predicate})")
+                                continue
+                            if not expression.find(exp.Select, exp.Subquery, exp.Window):
+                                for column in expression.find_all(exp.Column):
+                                    if column.table == name:
+                                        column.set("table", None)
+                            filters.append(f"({expression.sql(dialect=self.dialect)})")
+                        metric = metric.model_copy(
+                            update={
+                                "type": "simple",
+                                "agg": "count",
+                                "sql": "*",
+                                "sql_is_complete": False,
+                                "filters": filters,
+                            }
+                        )
+                        changed = True
+                metrics.append(metric)
+            if changed:
+                replacements[name] = model.model_copy(update={"metrics": metrics})
+        if not replacements:
+            return None
+
+        graph = copy(self.graph)
+        graph.models = {**self.graph.models, **replacements}
+        # Adjacency building clears these containers in place. The executable
+        # graph owns its caches so compilation cannot invalidate the caller's.
+        graph._adjacency_dirty = True
+        graph._adjacency = {}
+        graph._role_models = {}
+        graph._role_owners = {}
+        graph._relationship_instances = {}
+        graph._relationship_path_cache = {}
+        generator = copy(self)
+        generator.graph = graph
+        generator._generate_cache = {}
+        return generator
 
     def _resolve_metric_obj(self, reference: str):
         """Resolve a metric reference to its Metric object, or None if not found."""
@@ -1078,6 +1149,27 @@ class SQLGenerator:
         Returns:
             SQL query string
         """
+        lowered = self._lower_filtered_complete_row_counts()
+        if lowered is not None:
+            return lowered.generate(
+                metrics=metrics,
+                dimensions=dimensions,
+                filters=filters,
+                segments=segments,
+                order_by=order_by,
+                limit=limit,
+                offset=offset,
+                parameters=parameters,
+                ungrouped=ungrouped,
+                use_preaggregations=use_preaggregations,
+                aliases=aliases,
+                skip_default_time_dimensions=skip_default_time_dimensions,
+                with_totals=with_totals,
+                user_attributes=user_attributes,
+                _query_ctes=_query_ctes,
+                _resolved_filters=_resolved_filters,
+            )
+
         metrics = metrics or []
         dimensions = list(dimensions) if dimensions else []
         filters = filters or []

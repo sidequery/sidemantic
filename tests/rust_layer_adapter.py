@@ -126,8 +126,6 @@ class RustSemanticLayerAdapter:
         if active_dialect not in {"duckdb", "bigquery"}:
             raise NotImplementedError(f"pure Rust test adapter does not support dialect '{active_dialect}' yet")
         effective_preaggregations = self.use_preaggregations if use_preaggregations is None else use_preaggregations
-        if effective_preaggregations:
-            raise NotImplementedError("pure Rust test adapter does not support pre-aggregation routing yet")
 
         if not with_totals:
             limit = limit if limit is not None else self.default_limit
@@ -152,6 +150,9 @@ class RustSemanticLayerAdapter:
                 "skip_default_time_dimensions": skip_default_time_dimensions,
                 "dialect": active_dialect,
                 "parameter_values": parameters or {},
+                "use_preaggregations": effective_preaggregations,
+                "preagg_database": self.preagg_database,
+                "preagg_schema": self.preagg_schema,
             }
         )
         if response["status"] == "error":
@@ -525,8 +526,6 @@ class RustSQLGeneratorAdapter:
         aliases: dict[str, str] | None = None,
         skip_default_time_dimensions: bool = False,
     ) -> str:
-        if use_preaggregations:
-            raise NotImplementedError("pure Rust test adapter does not support pre-aggregation routing yet")
         if aliases:
             raise NotImplementedError("pure Rust test adapter does not support custom aliases yet")
 
@@ -545,6 +544,9 @@ class RustSQLGeneratorAdapter:
                 "skip_default_time_dimensions": skip_default_time_dimensions,
                 "dialect": self.dialect,
                 "parameter_values": parameters or {},
+                "use_preaggregations": use_preaggregations,
+                "preagg_database": self.preagg_database,
+                "preagg_schema": self.preagg_schema,
             }
         )
         if response["status"] == "error":

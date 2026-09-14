@@ -62,3 +62,34 @@ def test_unowned_graph_metric_keeps_its_registration_scope(layer):
     assert "metrics" not in document
     assert all(not model["metrics"] for model in document["models"])
     assert layer.graph.metrics["total_orders"].sql == "COUNT(*)"
+
+
+@pytest.mark.parametrize(
+    "default,override,expected", [(False, None, False), (True, None, True), (True, False, False), (False, True, True)]
+)
+def test_preaggregation_options_reach_native_compiler(layer, default, override, expected):
+    layer, requests = layer
+    layer.use_preaggregations = default
+    layer.preagg_database = "warehouse"
+    layer.preagg_schema = "rollups"
+    layer.compile(metrics=["orders.total"], use_preaggregations=override)
+    assert requests[-1]["use_preaggregations"] is expected
+    assert requests[-1]["preagg_database"] == "warehouse"
+    assert requests[-1]["preagg_schema"] == "rollups"
+
+
+def test_generator_preaggregation_options_reach_same_native_transport(monkeypatch):
+    from sidemantic.core.semantic_graph import SemanticGraph
+    from tests import rust_layer_adapter
+
+    requests = []
+
+    def native_compile(payload):
+        requests.append(payload)
+        return {"status": "ok", "sql": "select 1"}
+
+    monkeypatch.setattr(rust_layer_adapter, "_rust_request", native_compile)
+    generator = rust_layer_adapter.RustSQLGeneratorAdapter(SemanticGraph(), preagg_schema="rollups")
+    assert generator.generate(metrics=["orders.total"], use_preaggregations=True) == "select 1"
+    assert requests[-1]["use_preaggregations"] is True
+    assert requests[-1]["preagg_schema"] == "rollups"

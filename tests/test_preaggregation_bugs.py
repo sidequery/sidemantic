@@ -31,7 +31,7 @@ def test_avg_metric_rejects_count_from_a_different_population(layer):
     )
     sql = layer.compile(metrics=["orders.avg_amount"], use_preaggregations=True)
     assert "orders_preagg_rollup" not in sql
-    assert layer.adapter.execute(sql).fetchall() == [(pytest.approx(350 / 3),)]
+    assert layer.conn.execute(sql).fetchall() == [(pytest.approx(350 / 3),)]
     # Selecting the filtered count itself still uses exactly its declared population.
     assert layer.query(metrics=["orders.count_completed"], use_preaggregations=True).fetchall() == [(2,)]
 

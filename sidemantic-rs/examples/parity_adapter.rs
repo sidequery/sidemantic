@@ -42,6 +42,10 @@ enum Request {
         skip_default_time_dimensions: bool,
         dialect: Option<String>,
         #[serde(default)]
+        use_preaggregations: bool,
+        preagg_database: Option<String>,
+        preagg_schema: Option<String>,
+        #[serde(default)]
         parameter_values: std::collections::HashMap<String, serde_yaml::Value>,
     },
     JoinPath {
@@ -171,6 +175,9 @@ fn handle(request: Request) -> sidemantic::Result<Response> {
             ungrouped,
             skip_default_time_dimensions,
             dialect,
+            use_preaggregations,
+            preagg_database,
+            preagg_schema,
             parameter_values,
         } => {
             let graph = load_from_string(&models_yaml)?;
@@ -185,6 +192,9 @@ fn handle(request: Request) -> sidemantic::Result<Response> {
                 .with_order_by(order_by)
                 .with_ungrouped(ungrouped)
                 .with_skip_default_time_dimensions(skip_default_time_dimensions);
+            query.use_preaggregations = use_preaggregations;
+            query.preagg_database = preagg_database;
+            query.preagg_schema = preagg_schema;
             query.aliases = aliases;
             query.timezone = timezone;
             query.with_totals = with_totals;
@@ -844,6 +854,46 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compile_transport_routes_rollups_and_preserves_raw_average_fallback() {
+        let models_yaml = r#"
+models:
+  - name: orders
+    table: orders
+    primary_key: id
+    metrics:
+      - name: average
+        agg: avg
+        sql: amount
+      - name: completed
+        agg: count
+        filters: ["status = 'completed'"]
+    pre_aggregations:
+      - name: totals
+        measures: [average, completed]
+"#;
+        for (metric, enabled, routed) in [
+            ("completed", true, true),
+            ("completed", false, false),
+            ("average", true, false),
+        ] {
+            let request: Request = serde_json::from_value(serde_json::json!({
+                "action":"compile", "models_yaml":models_yaml,
+                "metrics":[format!("orders.{metric}")], "use_preaggregations":enabled,
+                "preagg_schema":"rollups"
+            }))
+            .unwrap();
+            let response = handle(request).unwrap();
+            let Response::Ok { sql: Some(sql), .. } = response else {
+                panic!("expected compiled SQL")
+            };
+            assert_eq!(sql.contains("orders_preagg_totals"), routed, "{sql}");
+            if routed {
+                assert!(sql.contains("rollups"), "{sql}");
+            }
+        }
+    }
 
     #[test]
     fn graph_metric_transport_validates_inferred_derived_dependencies() {

@@ -107,6 +107,26 @@ mod tests {
             .to_string()
             .contains("approx_count_distinct_calculation_shape"));
     }
+
+    #[test]
+    fn physical_columns_and_cohort_outputs_are_not_metric_dependencies() {
+        for metric in [
+            json!({"name":"unrelated", "agg":"sum", "sql":"users"}),
+            json!({"name":"unrelated", "type":"derived", "sql_is_complete":true, "sql":"SUM(users)"}),
+            json!({"name":"unrelated", "type":"cohort", "agg":"sum", "sql":"users", "entity":"user_id", "inner_metrics":[{"name":"users", "agg":"sum", "sql":"amount"}]}),
+        ] {
+            let graph = graph_with(metric);
+            let query = SemanticQuery {
+                metrics: vec!["events.unrelated".into()],
+                ..Default::default()
+            };
+            // These expressions belong to raw rows or cohort result rows even
+            // though a model metric happens to share their identifier.
+            SqlGenerator::new(&graph)
+                .validate_approximate_query(&query)
+                .unwrap();
+        }
+    }
 }
 
 impl SqlGenerator<'_> {
@@ -165,6 +185,9 @@ impl SqlGenerator<'_> {
                 .any(|inner| inner.agg == Some(Aggregation::ApproxCountDistinct))
         {
             return Ok(true);
+        }
+        if metric.sql_is_complete {
+            return Ok(false);
         }
         for fragment in self.graph_metric_dependency_fragments(metric) {
             for column in semantic_column_references(fragment)? {

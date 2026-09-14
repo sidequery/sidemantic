@@ -544,12 +544,16 @@ impl<'a> SqlGenerator<'a> {
                 if crate::core::semantic_key_names(self.graph, model).contains(&dim_ref.name)
                     && crate::core::is_computed_key(model, &dim_ref.name)?
                 {
-                    if dim_ref.granularity.is_some() {
-                        return Err(SidemanticError::UnsupportedSemanticFeatures {
-                            capabilities: vec!["dimension.key_granularity".into()],
-                        });
+                    let identity = self.key_sql(model, &dim_ref.name, Some(&alias))?;
+                    if let Some(granularity) = dim_ref
+                        .granularity
+                        .as_deref()
+                        .or(dimension.granularity.as_deref())
+                    {
+                        self.date_trunc_sql(granularity, &identity)?
+                    } else {
+                        identity
                     }
-                    self.key_sql(model, &dim_ref.name, Some(&alias))?
                 } else if let Some(granularity) = dim_ref
                     .granularity
                     .as_deref()
@@ -5488,6 +5492,33 @@ mod tests {
         Aggregation, CohortInnerMetric, ComparisonType, Dimension, Metric, MetricType, Model,
         Relationship,
     };
+
+    #[test]
+    fn computed_time_key_projection_applies_grain_and_timezone() {
+        let mut dimension = Dimension::time("event_time").with_sql("CAST(raw_time AS TIMESTAMP)");
+        dimension.granularity = Some("day".into());
+        let mut graph = SemanticGraph::new();
+        graph
+            .add_model(
+                Model::new("events", "event_time")
+                    .with_table("events")
+                    .with_dimension(dimension)
+                    .with_metric(Metric::sum("amount", "amount")),
+            )
+            .unwrap();
+        for field in ["events.event_time", "events.event_time__day"] {
+            let query = SemanticQuery::new()
+                .with_metrics(vec!["events.amount".into()])
+                .with_dimensions(vec![field.into()]);
+            let sql = SqlGenerator::new(&graph)
+                .with_timezone(Some("America/Los_Angeles".into()))
+                .generate(&query)
+                .unwrap();
+            assert!(sql.contains("DATE_TRUNC('day'"), "{sql}");
+            assert!(sql.contains("AT TIME ZONE 'America/Los_Angeles'"), "{sql}");
+            assert!(sql.contains("raw_time AS TIMESTAMP"), "{sql}");
+        }
+    }
 
     #[test]
     fn native_independent_children_share_row_filters_and_anchor() {

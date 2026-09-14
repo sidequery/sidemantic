@@ -88,7 +88,12 @@ pub fn key_expression(
     let expression = parse_semantic_expression(&sql)?;
     let identity = matches!(&expression, Expression::Column(column)
         if column.name.name == key && column.table.as_ref().is_none_or(|owner| owner.name == model.name));
-    if !identity && dimension.granularity.is_some() {
+    // A time dimension's grain controls display, not its row identity. Joins and
+    // deduplication must keep the unbucketed expression even when it has a grain.
+    if !identity
+        && dimension.granularity.is_some()
+        && dimension.r#type != super::DimensionType::Time
+    {
         return Err(unsupported());
     }
     if !deterministic_scalar(&expression) {
@@ -210,6 +215,18 @@ mod tests {
                 Model::new("accounts", "id").with_dimension(Dimension::new("id").with_sql(sql));
             assert_eq!(is_computed_key(&model, "id").unwrap(), computed);
         }
+    }
+
+    #[test]
+    fn time_grain_does_not_change_bound_identity() {
+        let mut dimension = Dimension::time("event_time").with_sql("CAST(raw_time AS TIMESTAMP)");
+        dimension.granularity = Some("day".into());
+        let model = Model::new("events", "event_time").with_dimension(dimension);
+        let identity =
+            key_expression(&model, "event_time", Some("e"), DialectType::DuckDB).unwrap();
+        let sql = polyglot_sql::generate(&identity, DialectType::DuckDB).unwrap();
+        assert_eq!(sql, "CAST(e.raw_time AS TIMESTAMP)");
+        assert!(is_computed_key(&model, "event_time").unwrap());
     }
 
     #[test]

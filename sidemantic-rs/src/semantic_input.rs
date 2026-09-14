@@ -369,7 +369,12 @@ fn lower_complete_filter(
     Ok(())
 }
 
-fn decode_metric(value: Value, path: &str, owner: Option<&str>) -> Result<Metric> {
+fn decode_metric(
+    value: Value,
+    path: &str,
+    owner: Option<&str>,
+    model_local: bool,
+) -> Result<Metric> {
     let mut raw = object(value, path)?;
     expression_language(&mut raw, path)?;
     reject_active(&mut raw, "extends", "metric.inheritance")?;
@@ -548,7 +553,7 @@ fn decode_model(value: Value, path: &str) -> Result<Model> {
         let metrics = metrics
             .into_iter()
             .enumerate()
-            .map(|(i, value)| decode_metric(value, &format!("{path}.metrics[{i}]"), owner))
+            .map(|(i, value)| decode_metric(value, &format!("{path}.metrics[{i}]"), owner, true))
             .collect::<Result<Vec<_>>>()?;
         raw.insert("metrics".into(), json!(metrics));
     }
@@ -889,7 +894,12 @@ impl SemanticInput {
                 .and_then(Value::as_str)
                 .and_then(|name| envelope.metric_owners.get(name))
                 .cloned();
-            let metric = decode_metric(metric, &format!("metrics[{index}]"), owner.as_deref())?;
+            let metric = decode_metric(
+                metric,
+                &format!("metrics[{index}]"),
+                owner.as_deref(),
+                false,
+            )?;
             if metric.agg == Some(crate::core::Aggregation::CountDistinct)
                 && metric.r#type != crate::core::MetricType::Cohort
                 && metric

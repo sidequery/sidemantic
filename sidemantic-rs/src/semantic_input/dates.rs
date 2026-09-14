@@ -111,12 +111,49 @@ fn generated_unit(expression: &Expression) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use polyglot_sql::expressions::DataType;
 
     fn transpile(sql: &str) -> String {
         let generated = polyglot_sql::Dialect::get(DialectType::Snowflake)
             .transpile_to(sql, DialectType::DuckDB)
             .unwrap();
         normalize_transpiled(&generated[0], DialectType::Snowflake, DialectType::DuckDB).unwrap()
+    }
+
+    fn projection(sql: &str) -> Expression {
+        let Expression::Select(mut select) =
+            polyglot_sql::parse_one(sql, DialectType::DuckDB).unwrap()
+        else {
+            panic!("expected SELECT");
+        };
+        select.expressions.remove(0)
+    }
+
+    fn date_function<'a>(expression: &'a Expression, name: &str, unit: &str) -> &'a [Expression] {
+        let Expression::Function(function) = expression else {
+            panic!("expected {name}, got {expression:?}");
+        };
+        assert!(function.name.eq_ignore_ascii_case(name));
+        let Expression::Literal(Literal::String(actual_unit)) = &function.args[0] else {
+            panic!("expected quoted date unit");
+        };
+        assert!(actual_unit.eq_ignore_ascii_case(unit));
+        &function.args[1..]
+    }
+
+    fn date_column(expression: &Expression, name: &str) {
+        // The library may insert DATE casts around these date-valued inputs.
+        let expression = if let Expression::Cast(cast) = expression {
+            assert_eq!(cast.to, DataType::Date);
+            &cast.this
+        } else {
+            expression
+        };
+        let Expression::Column(column) = expression else {
+            panic!("expected date column");
+        };
+        assert_eq!(column.name.name, name);
+        assert!(column.table.is_none());
     }
 
     #[test]
@@ -128,21 +165,31 @@ mod tests {
             } else {
                 "month"
             };
-            assert_eq!(
-                sql,
-                format!("SELECT DATE_DIFF('{expected_unit}', start_date, end_date)")
-            );
+            let expression = projection(&sql);
+            let arguments = date_function(&expression, "DATE_DIFF", expected_unit);
+            assert_eq!(arguments.len(), 2);
+            date_column(&arguments[0], "start_date");
+            date_column(&arguments[1], "end_date");
         }
     }
 
     #[test]
     fn week_uses_calendar_boundaries_and_nested_functions_are_visited() {
         let sql = transpile("SELECT COALESCE(DATEDIFF(wk, start_date, end_date), 0)");
-        assert!(
-            sql.contains(
-                "DATE_DIFF('week', DATE_TRUNC('week', start_date), DATE_TRUNC('week', end_date))"
-            ),
-            "{sql}"
+        let Expression::Coalesce(coalesce) = projection(&sql) else {
+            panic!("expected COALESCE");
+        };
+        assert_eq!(coalesce.expressions.len(), 2);
+        let arguments = date_function(&coalesce.expressions[0], "DATE_DIFF", "week");
+        assert_eq!(arguments.len(), 2);
+        for (argument, column) in arguments.iter().zip(["start_date", "end_date"]) {
+            let truncated = date_function(argument, "DATE_TRUNC", "week");
+            assert_eq!(truncated.len(), 1);
+            date_column(&truncated[0], column);
+        }
+        assert_eq!(
+            coalesce.expressions[1],
+            Expression::Literal(Literal::Number("0".into()))
         );
     }
 

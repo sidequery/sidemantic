@@ -352,13 +352,17 @@ mod tests {
         else {
             panic!("expected SELECT");
         };
-        let Expression::RegexpReplace(function) = &select.expressions[0] else {
-            panic!("expected typed regexp_replace");
+        // The typed construction above covers target traversal, but the pinned
+        // parser represents REGEXP_REPLACE as an ordinary function on reparse.
+        let Expression::Function(function) = &select.expressions[0] else {
+            panic!("expected regexp_replace function");
         };
-        assert_eq!(function.pattern, literal(r"\w"));
-        assert_eq!(function.replacement, literal(r"\1"));
+        assert!(function.name.eq_ignore_ascii_case("REGEXP_REPLACE"));
+        assert_eq!(function.args.len(), 3);
+        assert_eq!(function.args[1], literal(r"\w"));
+        assert_eq!(function.args[2], literal(r"\1"));
         assert_eq!(
-            function.this,
+            function.args[0],
             Expression::Concat(Box::new(BinaryOp::new(
                 literal(r"root\"),
                 literal(r"leaf\")

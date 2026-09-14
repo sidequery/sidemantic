@@ -77,7 +77,12 @@ supports:
 - Numeric and string null defaults on simple, derived and ratio results. Defaults
   apply to metric dependencies after aggregation, including absent source leaves
   after cross-source recombination; they do not create policy-excluded groups.
-  Filled temporal and non-additive shapes remain explicitly unsupported.
+  Cumulative and time-comparison defaults apply after the window or comparison
+  calculation, including missing prior periods and zero prior denominators for
+  ratios/percent changes. They do not fill the underlying period values or create
+  missing periods. Existing window frames, partitions, ordering and policies
+  remain in effect. Filled offset ratios, non-additive and event-metric shapes
+  remain explicitly unsupported.
 - Existing cumulative `window_expression` fields accept `SUM`, `AVG`, `MIN`,
   `MAX`, or `COUNT` of one `base.output` metric reference, with an optionally
   quoted simple output identifier. The input is a grouped period metric value;

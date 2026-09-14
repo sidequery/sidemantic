@@ -426,14 +426,18 @@ fn decode_metric(
             return Err(invalid(path, "fill_nulls_with must be a number or string"));
         }
         let kind = raw.get("type").and_then(Value::as_str).unwrap_or("simple");
-        if !matches!(kind, "simple" | "derived" | "ratio")
-            || raw
+        let temporal = matches!(kind, "cumulative" | "time_comparison");
+        if !matches!(
+            kind,
+            "simple" | "derived" | "ratio" | "cumulative" | "time_comparison"
+        ) || (!temporal
+            && (raw
                 .get("offset_window")
                 .is_some_and(|value| !neutral(value))
-            || raw.get("window").is_some_and(|value| !neutral(value))
-            || raw
-                .get("grain_to_date")
-                .is_some_and(|value| !neutral(value))
+                || raw.get("window").is_some_and(|value| !neutral(value))
+                || raw
+                    .get("grain_to_date")
+                    .is_some_and(|value| !neutral(value))))
         {
             return Err(unsupported("metric.fill_nulls_shape"));
         }

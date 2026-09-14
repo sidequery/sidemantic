@@ -302,8 +302,10 @@ of the snapshot dimension partition it. Grouping by the raw snapshot dimension
 needs no masking. Row restrictions apply before snapshot selection.
 
 Fanout, calculated wrappers, multiple metric owners, aggregate predicates,
-colliding output aliases, ungrouped output, rollup routing, and null-fill options
-remain gated for this snapshot path. This does not add raw-row cumulative
+colliding output aliases, ungrouped output, and rollup routing
+remain gated for this snapshot path. Null defaults apply only to the final
+aggregate after snapshot selection; null source inputs and additive sibling
+populations are preserved. This does not add raw-row cumulative
 semantics: cumulative references still operate on period outputs.
 ### Two-event conversion
 

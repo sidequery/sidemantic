@@ -12,11 +12,11 @@ fn quote(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
 }
 
-fn aggregate(kind: &Aggregation, expression: &str) -> Result<String> {
+fn aggregate(generator: &SqlGenerator<'_>, kind: &Aggregation, expression: &str) -> Result<String> {
     match kind {
         Aggregation::CountDistinct => Ok(format!("COUNT(DISTINCT {expression})")),
         Aggregation::Expression => Err(unsupported("complete_aggregate")),
-        kind => Ok(format!("{}({expression})", kind.as_sql())),
+        kind => generator.aggregate_sql(kind, expression),
     }
 }
 
@@ -228,7 +228,7 @@ impl SqlGenerator<'_> {
             };
             inner_select.push(format!(
                 "{} AS {}",
-                aggregate(kind, &expression)?,
+                aggregate(self, kind, &expression)?,
                 quote(&inner.name)
             ));
         }
@@ -291,7 +291,7 @@ impl SqlGenerator<'_> {
             .collect();
         outer_select.push(format!(
             "{} AS {}",
-            self.fill_metric_expression(metric, aggregate(outer_kind, &outer_expression)?)?,
+            self.fill_metric_expression(metric, aggregate(self, outer_kind, &outer_expression)?)?,
             quote(&metric.name)
         ));
         let mut sql = format!("SELECT {}\nFROM (SELECT {}\nFROM {}{where_clause}\nGROUP BY {}\nHAVING {having}) AS cohort_sub", outer_select.join(", "), inner_select.join(", "), self.model_from_clause(model, Some("t")), inner_group.join(", "));

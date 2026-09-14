@@ -141,7 +141,7 @@ pub(super) fn generate_entity_aggregates(
                 {
                     Aggregation::CountDistinct => format!("COUNT(DISTINCT {raw})"),
                     Aggregation::Expression => return Err(unsupported("inline_aggregate")),
-                    kind => format!("{}({raw})", kind.as_sql()),
+                    kind => generator.aggregate_sql(kind, &raw)?,
                 }
             }
         };

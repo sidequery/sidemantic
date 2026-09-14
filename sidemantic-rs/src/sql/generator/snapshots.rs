@@ -367,7 +367,7 @@ pub(super) fn try_generate(
         let value = quote(&reference.alias);
         let aggregate = match metric.agg.as_ref() {
             Some(Aggregation::CountDistinct) => format!("COUNT(DISTINCT {value})"),
-            Some(aggregation) => format!("{}({value})", aggregation.as_sql()),
+            Some(aggregation) => generator.aggregate_sql(aggregation, &value)?,
             None => return Err(unsupported("aggregation")),
         };
         let aggregate = generator.fill_metric_expression(metric, aggregate)?;

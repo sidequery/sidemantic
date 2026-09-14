@@ -680,7 +680,7 @@ impl<'a> SqlGenerator<'a> {
                         // Min/Max/None don't need symmetric aggregates
                         _ => {
                             if let Some(agg) = &metric.agg {
-                                format!("{}({raw_col})", agg.as_sql())
+                                self.aggregate_sql(agg, &raw_col)?
                             } else {
                                 metric.to_sql(Some(&alias))
                             }
@@ -691,7 +691,7 @@ impl<'a> SqlGenerator<'a> {
                     Some(Aggregation::CountDistinct) => format!("COUNT(DISTINCT {raw_col})"),
                     Some(Aggregation::Count) => format!("COUNT({raw_col})"),
                     Some(agg) if agg != &Aggregation::Expression => {
-                        format!("{}({raw_col})", agg.as_sql())
+                        self.aggregate_sql(agg, &raw_col)?
                     }
                     _ => metric.to_sql(Some(&alias)),
                 },
@@ -2756,16 +2756,18 @@ impl<'a> SqlGenerator<'a> {
                 Some(Aggregation::StddevPop) => "STDDEV_POP",
                 Some(Aggregation::Variance) => "VAR_SAMP",
                 Some(Aggregation::VariancePop) => "VAR_POP",
-                Some(Aggregation::ApproxCountDistinct) => "APPROX_COUNT_DISTINCT",
                 _ => "SUM",
             };
 
             let window_clause = self.cumulative_window_sql(metric, dimension_refs, &order_col)?;
 
-            let value = self.fill_metric_expression(
-                metric,
-                format!("{agg_sql}({base_col}) OVER ({window_clause})"),
-            )?;
+            let aggregate = if metric.agg == Some(Aggregation::ApproxCountDistinct) {
+                self.aggregate_sql(&Aggregation::ApproxCountDistinct, &base_col)?
+            } else {
+                format!("{agg_sql}({base_col})")
+            };
+            let value =
+                self.fill_metric_expression(metric, format!("{aggregate} OVER ({window_clause})"))?;
             let expression = format!("{value} AS {}", metric_ref.alias);
             select_exprs.push(expression.clone());
             cumulative_selects.push((expression, metric_ref.alias.clone()));
@@ -3789,7 +3791,11 @@ impl<'a> SqlGenerator<'a> {
                 resolve_sql(sql)?
             }
         };
-        Ok(format!("{}({expr}) AS {}", agg.as_sql(), inner.name))
+        Ok(format!(
+            "{} AS {}",
+            self.aggregate_sql(agg, &expr)?,
+            inner.name
+        ))
     }
 
     fn cohort_outer_metric_sql(&self, metric: &Metric) -> Result<String> {
@@ -3810,7 +3816,7 @@ impl<'a> SqlGenerator<'a> {
                         "cohort metric with non-count agg requires a 'sql' field".to_string(),
                     ));
                 };
-                Ok(format!("{}({})", agg.as_sql(), self.cohort_outer_expr(sql)))
+                self.aggregate_sql(agg, &self.cohort_outer_expr(sql))
             }
         }
     }
@@ -4889,17 +4895,15 @@ impl<'a> SqlGenerator<'a> {
         metric: &crate::core::Metric,
         metric_name: &str,
         alias: &str,
-    ) -> String {
+    ) -> Result<String> {
         let raw_alias = format!("{metric_name}_raw");
         let raw_col = format!("{alias}.{}", self.quote_identifier(&raw_alias));
-        match metric.agg.as_ref() {
+        Ok(match metric.agg.as_ref() {
             Some(Aggregation::CountDistinct) => format!("COUNT(DISTINCT {raw_col})"),
             Some(Aggregation::Count) => format!("COUNT({raw_col})"),
-            Some(agg) if agg != &Aggregation::Expression => {
-                format!("{}({raw_col})", agg.as_sql())
-            }
+            Some(agg) if agg != &Aggregation::Expression => self.aggregate_sql(agg, &raw_col)?,
             _ => format!("SUM({raw_col})"),
-        }
+        })
     }
 
     fn metric_expression_for_reference(
@@ -4934,7 +4938,7 @@ impl<'a> SqlGenerator<'a> {
                     capabilities: vec!["metric.cohort_wrapper".into()],
                 });
             }
-            MetricType::Simple => self.simple_metric_reference_sql(metric, &metric_name, &alias),
+            MetricType::Simple => self.simple_metric_reference_sql(metric, &metric_name, &alias)?,
             MetricType::Derived => {
                 self.expand_derived_metric_inner(metric.sql_expr(), &model_name, visited)?
             }
@@ -5101,7 +5105,7 @@ impl<'a> SqlGenerator<'a> {
 
     fn is_inline_aggregate_expression(expr: &str) -> bool {
         let aggregate_re = regex::Regex::new(
-            r"(?i)\b(SUM|AVG|COUNT|APPROX_COUNT_DISTINCT|MIN|MAX|MEDIAN|MODE|PERCENTILE_CONT|PERCENTILE_DISC|QUANTILE_CONT|QUANTILE_DISC|STDDEV|STDDEV_SAMP|STDDEV_POP|VAR_SAMP|VARIANCE|VARIANCE_POP|VAR_POP)\s*\(",
+            r"(?i)\b(SUM|AVG|COUNT|APPROX_COUNT_DISTINCT|APPROX_DISTINCT|UNIQ|MIN|MAX|MEDIAN|MODE|PERCENTILE_CONT|PERCENTILE_DISC|QUANTILE_CONT|QUANTILE_DISC|STDDEV|STDDEV_SAMP|STDDEV_POP|VAR_SAMP|VARIANCE|VARIANCE_POP|VAR_POP)\s*\(",
         )
         .expect("valid aggregate regex");
         aggregate_re.is_match(expr)
@@ -5158,7 +5162,8 @@ impl<'a> SqlGenerator<'a> {
     }
 
     fn emit_expression(&self, expression: &Expression) -> Result<String> {
-        crate::semantic_input::dialects::emit(expression.clone(), SOURCE_DIALECT, self.dialect)
+        let expression = self.lower_approximate_aggregates(expression.clone())?;
+        crate::semantic_input::dialects::emit(expression, SOURCE_DIALECT, self.dialect)
             .map(|sql| sql.trim_end().to_string())
             .map_err(|e| {
                 SidemanticError::SqlGeneration(format!(

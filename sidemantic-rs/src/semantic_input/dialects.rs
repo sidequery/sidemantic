@@ -27,6 +27,33 @@ pub(crate) fn emit(
         return polyglot_sql::generate(&expression, target)
             .map_err(|error| SidemanticError::SqlGeneration(error.to_string()));
     }
+
+    // The pinned dialect transformer has large recursive frames even for the
+    // few nested SELECTs in an ordinary generated query. Run final emission on
+    // the same stack budget used by the SQL parser, not the caller's test or
+    // application thread. This boundary also covers Yardstick and policy SQL.
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(move || emit_transformed(expression, source, target))
+            .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))?
+            .join()
+            .map_err(|_| {
+                SidemanticError::SqlGeneration("Polyglot emission thread panicked".into())
+            })?
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        emit_transformed(expression, source, target)
+    }
+}
+
+fn emit_transformed(
+    expression: Expression,
+    source: DialectType,
+    target: DialectType,
+) -> Result<String> {
     let expression = super::literals::target_expression(expression, target)?;
     // Generated ASTs can contain target SQL leaves. Keep them as ASTs instead
     // of reparsing target-quoted identifiers as source SQL. Authored input uses
@@ -330,6 +357,31 @@ pub(super) fn normalize(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nested_query_emission_uses_production_stack_on_standard_test_thread() {
+        // Construct the AST directly to isolate final emission from parsing.
+        let mut expression = Expression::Select(Box::new(
+            Select::new().column(Expression::number(7).alias("value")),
+        ));
+        for index in 0..5 {
+            let source = Expression::Paren(Box::new(polyglot_sql::expressions::Paren {
+                this: expression,
+                trailing_comments: Vec::new(),
+            }))
+            .alias(format!("q{index}"));
+            expression = Expression::Select(Box::new(
+                Select::new()
+                    .column(Expression::column("value"))
+                    .from(source),
+            ));
+        }
+        for target in [DialectType::Generic, DialectType::PostgreSQL] {
+            let sql = emit(expression.clone(), DialectType::DuckDB, target).unwrap();
+            assert_eq!(sql.matches("SELECT").count(), 6, "{sql}");
+            assert!(sql.contains("7 AS value"), "{sql}");
+        }
+    }
 
     #[test]
     fn library_normalizes_source_functions_and_identifiers() {

@@ -150,7 +150,7 @@ fn extract_fragment(wrapper: &str, source: DialectType, kind: Fragment) -> Resul
     };
     select.leading_comments.clear();
     select.post_select_comments.clear();
-    if select != Select::new() {
+    if *select != Select::new() {
         return Err(SidemanticError::SqlParse(
             "SQL fragment contains extra clauses".into(),
         ));

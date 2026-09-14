@@ -58,6 +58,27 @@ impl SqlGenerator<'_> {
         fn lower(value: &mut serde_json::Value, generator: &SqlGenerator<'_>) -> Result<()> {
             match value {
                 serde_json::Value::Object(fields) => {
+                    if generator.dialect == DialectType::Redshift && fields.len() == 1 {
+                        if let Some(window) = fields.get("window_function") {
+                            let window: polyglot_sql::expressions::WindowFunction =
+                                serde_json::from_value(window.clone()).map_err(|error| {
+                                    SidemanticError::SqlGeneration(error.to_string())
+                                })?;
+                            fn approximate_root(expression: &Expression) -> bool {
+                                match expression {
+                                    Expression::ApproxCountDistinct(_)
+                                    | Expression::ApproxDistinct(_) => true,
+                                    Expression::Filter(filter) => approximate_root(&filter.this),
+                                    _ => false,
+                                }
+                            }
+                            // Redshift COUNT windows do not accept DISTINCT;
+                            // APPROXIMATE is only supported for COUNT DISTINCT.
+                            if approximate_root(&window.this) {
+                                return Err(unsupported("window_redshift"));
+                            }
+                        }
+                    }
                     for child in fields.values_mut() {
                         lower(child, generator)?;
                     }
@@ -249,6 +270,15 @@ impl SqlGenerator<'_> {
             return Ok(());
         }
         self.validate_approximate_dialect()?;
+        // The ordinary cumulative route assembles OVER from target SQL pieces,
+        // so validate its aggregate placement before that string composition.
+        if self.dialect == DialectType::Redshift
+            && metric.r#type == MetricType::Cumulative
+            && metric.window_expression.is_none()
+            && metric.agg == Some(Aggregation::ApproxCountDistinct)
+        {
+            return Err(unsupported("window_redshift"));
+        }
         if metric.agg == Some(Aggregation::ApproxCountDistinct) {
             if metric.sql.as_deref().is_some_and(|sql| sql.trim() == "*") {
                 return Err(unsupported("explicit_expression"));
@@ -338,6 +368,58 @@ mod tests {
     }
 
     #[test]
+    fn redshift_rejects_only_window_placement_of_approximate_distinct() {
+        let graph = graph_with(json!({"name":"total", "agg":"sum", "sql":"amount"}));
+        let generator = SqlGenerator::new(&graph).with_dialect(DialectType::Redshift);
+        for sql in [
+            "APPROX_COUNT_DISTINCT(user_id) OVER (PARTITION BY region)",
+            "ROUND(APPROX_COUNT_DISTINCT(user_id) OVER (PARTITION BY region), 0)",
+            "APPROX_COUNT_DISTINCT(user_id) FILTER (WHERE paid) OVER ()",
+        ] {
+            assert!(
+                matches!(generator.emit_expression(&parse_semantic_expression(sql).unwrap()), Err(SidemanticError::UnsupportedSemanticFeatures { capabilities }) if capabilities == vec!["metric.approx_count_distinct_window_redshift"]),
+                "{sql}"
+            );
+        }
+        // A regular window over grouped approximate counts has different
+        // placement and remains supported.
+        for sql in [
+            "ROUND(APPROX_COUNT_DISTINCT(user_id), 0)",
+            "SUM(APPROX_COUNT_DISTINCT(user_id)) OVER (PARTITION BY region)",
+        ] {
+            assert!(
+                generator
+                    .emit_expression(&parse_semantic_expression(sql).unwrap())
+                    .is_ok(),
+                "{sql}"
+            );
+        }
+    }
+
+    #[test]
+    fn redshift_cumulative_validation_respects_explicit_function_precedence() {
+        for explicit_sum in [false, true] {
+            let mut metric = json!({"name":"running", "type":"cumulative", "agg":"approx_count_distinct", "sql":"users"});
+            if explicit_sum {
+                metric["window_expression"] = json!("SUM(base.users)");
+            }
+            let graph = graph_with(metric);
+            let generator = SqlGenerator::new(&graph).with_dialect(DialectType::Redshift);
+            let result = generator.validate_approximate_query(&SemanticQuery {
+                metrics: vec!["events.running".into()],
+                ..Default::default()
+            });
+            if explicit_sum {
+                result.unwrap();
+            } else {
+                assert!(
+                    matches!(result, Err(SidemanticError::UnsupportedSemanticFeatures { capabilities }) if capabilities == vec!["metric.approx_count_distinct_window_redshift"])
+                );
+            }
+        }
+    }
+
+    #[test]
     fn unsupported_native_approximate_targets_are_typed_errors() {
         let graph = graph_with(json!({"name":"total", "agg":"sum", "sql":"amount"}));
         for dialect in [
@@ -375,11 +457,11 @@ mod tests {
     fn approximate_target_names_cover_direct_inline_and_cohort_rendering() {
         let graph = graph_with(json!({"name":"total", "agg":"sum", "sql":"amount"}));
         let inner: CohortInnerMetric = serde_json::from_value(json!({
-            "name":"inner", "agg":"approx_count_distinct", "sql":"user_id"
+            "name":"inner_users", "agg":"approx_count_distinct", "sql":"user_id"
         }))
         .unwrap();
         let outer: Metric = serde_json::from_value(json!({
-            "name":"outer", "type":"cohort", "agg":"approx_count_distinct", "sql":"inner"
+            "name":"outer", "type":"cohort", "agg":"approx_count_distinct", "sql":"inner_users"
         }))
         .unwrap();
         for (dialect, name) in output_dialects() {
@@ -451,9 +533,14 @@ mod tests {
                 "NULLIF(APPROX_COUNT_DISTINCT(user_id), 0)",
                 "ROUND(APPROX_COUNT_DISTINCT(user_id) OVER (PARTITION BY region), 0)",
             ] {
-                let sql = generator
-                    .emit_expression(&parse_semantic_expression(source).unwrap())
-                    .unwrap();
+                let result = generator.emit_expression(&parse_semantic_expression(source).unwrap());
+                if dialect == DialectType::Redshift && source.contains(" OVER ") {
+                    assert!(
+                        matches!(result, Err(SidemanticError::UnsupportedSemanticFeatures { capabilities }) if capabilities == vec!["metric.approx_count_distinct_window_redshift"])
+                    );
+                    continue;
+                }
+                let sql = result.unwrap();
                 assert!(sql.to_uppercase().contains(name), "{dialect}: {sql}");
                 if name != "APPROX_COUNT_DISTINCT" {
                     assert!(
@@ -461,7 +548,21 @@ mod tests {
                         "{dialect}: {sql}"
                     );
                 }
-                polyglot_sql::parse_one(&format!("SELECT {sql}"), dialect).unwrap();
+                if dialect == DialectType::Redshift {
+                    // polyglot 0.1.15 emits this native syntax but cannot parse
+                    // APPROXIMATE COUNT in nested function arguments. Compare
+                    // the entire expression; conformance tests independently
+                    // parse Redshift with SQLGlot and execute its DuckDB translation.
+                    assert_eq!(
+                        sql,
+                        source.replace(
+                            "APPROX_COUNT_DISTINCT(user_id)",
+                            "APPROXIMATE COUNT(DISTINCT user_id)"
+                        )
+                    );
+                } else {
+                    polyglot_sql::parse_one(&format!("SELECT {sql}"), dialect).unwrap();
+                }
             }
         }
     }

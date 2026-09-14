@@ -249,6 +249,10 @@ def test_approximate_dialect_rendering_and_population_results(layer, dialect, fu
         with pytest.raises(Exception, match="metric.approx_count_distinct_output_dialect"):
             layer.compile(metrics=[metric], dimensions=dimensions, order_by=dimensions, dialect=dialect)
         return
+    if layer.engine == "rust" and dialect == "redshift" and shape in {"cumulative", "window"}:
+        with pytest.raises(Exception, match="metric.approx_count_distinct_window_redshift"):
+            layer.compile(metrics=[metric], dimensions=dimensions, order_by=dimensions, dialect=dialect)
+        return
     sql = layer.compile(metrics=[metric], dimensions=dimensions, order_by=dimensions, dialect=dialect)
     parsed = sqlglot.parse_one(sql, read=dialect)
     # Python's snapshot route leaves the aggregate name canonical until SQL
@@ -260,4 +264,39 @@ def test_approximate_dialect_rendering_and_population_results(layer, dialect, fu
     # expression. This does not qualify native warehouse function availability.
     actual = [row[-1] for row in layer.adapter.execute(parsed.sql(dialect="duckdb")).fetchall()]
     expected = [row[-1] for row in layer.adapter.execute(expected_sql).fetchall()]
+    assert actual == expected
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "ROUND(COALESCE(APPROX_COUNT_DISTINCT(user_id), 0), 0)",
+        "GREATEST(APPROX_COUNT_DISTINCT(user_id), 0)",
+        "NULLIF(APPROX_COUNT_DISTINCT(user_id), 0)",
+    ],
+)
+def test_redshift_nested_approximate_expressions_use_independent_parser(layer, expression):
+    import sqlglot
+    from sqlglot import exp
+
+    if layer.engine != "rust":
+        pytest.skip("Rust target emission; Python reparses Redshift using its generic parser")
+    layer.graph.get_model("events").metrics.append(
+        Metric(name="nested_users", type="derived", sql=expression, sql_is_complete=True)
+    )
+    sql = layer.compile(
+        metrics=["events.nested_users"],
+        dimensions=["events.category"],
+        order_by=["events.category"],
+        dialect="redshift",
+    )
+    parsed = sqlglot.parse_one(sql, read="redshift")
+    assert parsed.find(exp.ApproxDistinct) is not None
+    actual = [row[-1] for row in layer.adapter.execute(parsed.sql(dialect="duckdb")).fetchall()]
+    expected = [
+        row[0]
+        for row in layer.adapter.execute(
+            f"select {expression} from approx_events group by category order by category"
+        ).fetchall()
+    ]
     assert actual == expected

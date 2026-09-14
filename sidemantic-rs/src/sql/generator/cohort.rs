@@ -92,6 +92,9 @@ impl SqlGenerator<'_> {
                     return Err(unsupported("joined_expression"));
                 }
             }
+            // Replacement leaves are Raw AST nodes: emit canonical source SQL
+            // before inserting them so target parsers see identifiers, not strings.
+            let source = self.emit_expression(&parse_semantic_expression(&source)?)?;
             replacements.insert((column.model, column.field), format!("({source})"));
         }
         self.emit_expression(&replace_semantic_columns(
@@ -123,7 +126,7 @@ impl SqlGenerator<'_> {
             {
                 return Err(unsupported("result_reference"));
             }
-            let field = quote(&column.field);
+            let field = self.cohort_target_identifier(&column.field);
             replacements.insert(
                 (column.model, column.field.clone()),
                 if outer {
@@ -358,6 +361,37 @@ mod tests {
     use super::*;
     use crate::semantic_input::compile_with_semantic_input;
     use serde_json::json;
+
+    #[test]
+    fn bigquery_cohort_bindings_keep_identifiers_quoted_as_identifiers() {
+        let graph = SemanticGraph::new();
+        let generator = SqlGenerator::new(&graph).with_dialect(DialectType::BigQuery);
+        let model = Model::new("events", "id").with_table("events");
+        let source = generator
+            .cohort_source_expression(&model, "platform")
+            .unwrap();
+        assert!(source.contains("`platform`"), "{source}");
+        polyglot_sql::parse_one(&format!("SELECT {source}"), DialectType::BigQuery).unwrap();
+        let fields = HashSet::from(["platforms".into(), "group".into()]);
+        let outer = generator
+            .cohort_result_expression(
+                "COALESCE(platforms, 0)",
+                "events",
+                &fields,
+                true,
+                &HashMap::new(),
+            )
+            .unwrap();
+        assert!(outer.contains("cohort_sub.`platforms`"), "{outer}");
+        let aggregate = generator
+            .aggregate_sql(&Aggregation::ApproxCountDistinct, &outer)
+            .unwrap();
+        polyglot_sql::parse_one(&format!("SELECT {aggregate}"), DialectType::BigQuery).unwrap();
+        let reserved = generator
+            .cohort_result_expression("\"group\"", "events", &fields, true, &HashMap::new())
+            .unwrap();
+        assert_eq!(reserved, "cohort_sub.`group`");
+    }
 
     #[test]
     fn postgres_having_expands_inner_aggregate_aliases() {

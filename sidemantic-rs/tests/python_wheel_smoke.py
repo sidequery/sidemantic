@@ -5,6 +5,8 @@
 import importlib.metadata
 import importlib.util
 import json
+import tomllib
+from pathlib import Path
 
 import sidemantic_rs
 
@@ -26,7 +28,10 @@ root_python_package = importlib.util.find_spec("sidemantic")
 if root_python_package is not None:
     raise AssertionError("isolated sidemantic_rs wheel smoke unexpectedly found root sidemantic package")
 
-if importlib.metadata.version("sidemantic-rs") != "0.1.0":
+expected_version = tomllib.loads((Path(__file__).resolve().parents[1] / "pyproject.toml").read_text())["project"][
+    "version"
+]
+if importlib.metadata.version("sidemantic-rs") != expected_version:
     raise AssertionError("unexpected sidemantic-rs wheel version")
 
 models_yaml = """

@@ -7,12 +7,14 @@ fn toml_string_value(contents: &str, key: &str) -> Option<String> {
 }
 
 #[test]
-fn rust_crate_and_python_extension_versions_match() {
+fn python_distributions_versions_match() {
     let pyproject = include_str!("../pyproject.toml");
     let pyproject_version =
         toml_string_value(pyproject, "version").expect("pyproject.toml project.version");
 
-    assert_eq!(env!("CARGO_PKG_VERSION"), pyproject_version);
+    let parent_version = toml_string_value(include_str!("../../pyproject.toml"), "version")
+        .expect("parent pyproject.toml project.version");
+    assert_eq!(parent_version, pyproject_version);
 }
 
 #[test]
@@ -21,7 +23,7 @@ fn python_extension_metadata_targets_the_expected_module_and_feature() {
 
     assert!(pyproject.contains("name = \"sidemantic-rs\""));
     assert!(pyproject.contains("module-name = \"sidemantic_rs\""));
-    assert!(pyproject.contains("features = [\"python-adbc\"]"));
+    assert!(pyproject.contains("features = [\"python\"]"));
     assert!(pyproject.contains("license = \"AGPL-3.0-only\""));
 }
 

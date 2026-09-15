@@ -6,10 +6,11 @@ from sidemantic import Dimension, Metric, Model, Relationship, SemanticLayer
 from sidemantic.semantic_handoff import UnsupportedSemanticFeaturesError
 
 
-@pytest.fixture
-def layer():
-    pytest.importorskip("sidemantic_rs", reason="Alias acceptance requires the real Rust extension")
-    layer = SemanticLayer(engine="rust", auto_register=False)
+@pytest.fixture(params=["python", "rust"])
+def layer(request):
+    if request.param == "rust":
+        pytest.importorskip("sidemantic_rs", reason="Alias acceptance requires the real Rust extension")
+    layer = SemanticLayer(engine=request.param, auto_register=False)
     layer.add_model(
         Model(
             name="customers",
@@ -51,7 +52,7 @@ def layer():
 
 def assert_result(layer, query, columns, expected):
     sql = layer.compile(**query)
-    assert layer.last_engine_selection["engine"] == "rust"
+    assert layer.last_engine_selection["engine"] == layer.engine
     result = layer.adapter.execute(sql)
     assert [column[0] for column in result.description] == columns
     assert result.fetchall() == expected

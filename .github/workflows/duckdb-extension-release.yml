@@ -19,6 +19,7 @@ on:
 
   pull_request:
     paths:
+      - ".github/actions/**"
       - ".github/workflows/duckdb-extension-release.yml"
 
 permissions:
@@ -34,6 +35,16 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust compilation
+        if: github.event_name == 'pull_request'
+        id: rust-cache
+        uses: ./.github/actions/setup-rust-cache
+        with:
+          suffix: ${{ github.workflow }}-${{ github.job }}-${{ strategy.job-index || 0 }}
 
       - name: Resolve DuckDB version
         id: duckdb
@@ -61,9 +72,6 @@ jobs:
           DUCKDB_VERSION: ${{ steps.duckdb.outputs.version }}
         run: make deps DUCKDB_VERSION="$DUCKDB_VERSION"
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
       - name: Install build dependencies
         run: sudo apt-get update && sudo apt-get install -y ninja-build
 
@@ -90,6 +98,12 @@ jobs:
           name: sidemantic-duckdb-extension-linux-amd64
           path: sidemantic-duckdb/dist/*.duckdb_extension
           if-no-files-found: error
+
+      - name: Save completed build caches
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+        uses: ./.github/actions/save-build-caches
+        with:
+          rust-key: ${{ steps.rust-cache.outputs.key }}
 
   github-release:
     name: Attach extension artifact to GitHub release

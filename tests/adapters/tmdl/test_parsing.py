@@ -21,6 +21,7 @@ from sidemantic.core.model import Model
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.loaders import load_from_directory
+from sidemantic.semantic_handoff import UnsupportedSemanticFeaturesError
 from sidemantic.sql.generator import SQLGenerator
 from sidemantic.validation import QueryValidationError
 
@@ -119,8 +120,12 @@ def test_tmdl_untranslated_dax_metric_is_not_compiled_as_sql():
     layer = SemanticLayer()
     load_from_directory(layer, "tests/fixtures/tmdl")
 
-    with pytest.raises(QueryValidationError, match="DAX expression but has no SQL translation"):
+    with pytest.raises((QueryValidationError, UnsupportedSemanticFeaturesError)) as exc_info:
         layer.compile(metrics=["Sales.Sales LY"])
+    if isinstance(exc_info.value, UnsupportedSemanticFeaturesError):
+        assert "metric.dax" in exc_info.value.capabilities
+    else:
+        assert "DAX expression but has no SQL translation" in str(exc_info.value)
 
 
 def test_tmdl_untranslated_dax_dimension_is_not_compiled_as_sql():
@@ -131,8 +136,12 @@ def test_tmdl_untranslated_dax_dimension_is_not_compiled_as_sql():
     assert amount_x2.sql is None
     assert amount_x2.has_untranslated_dax
 
-    with pytest.raises(QueryValidationError, match="DAX expression but has no SQL translation"):
+    with pytest.raises((QueryValidationError, UnsupportedSemanticFeaturesError)) as exc_info:
         layer.compile(metrics=["Sales.Total Sales"], dimensions=["Sales.Amount x2"])
+    if isinstance(exc_info.value, UnsupportedSemanticFeaturesError):
+        assert "dimension.dax" in exc_info.value.capabilities
+    else:
+        assert "DAX expression but has no SQL translation" in str(exc_info.value)
 
     with pytest.raises(ValueError, match="DAX expression but has no SQL translation"):
         SQLGenerator(layer.graph).generate(metrics=["Sales.Total Sales"], dimensions=["Sales.Amount x2"])
@@ -161,8 +170,12 @@ def test_tmdl_dax_only_calculated_table_is_not_compiled_as_sql():
 
         layer = SemanticLayer()
         layer.graph = graph
-        with pytest.raises(QueryValidationError, match="DAX table expression but has no SQL/table translation"):
+        with pytest.raises((QueryValidationError, UnsupportedSemanticFeaturesError)) as exc_info:
             layer.compile(metrics=["SalesByCategory.Revenue"], dimensions=["SalesByCategory.Category"])
+        if isinstance(exc_info.value, UnsupportedSemanticFeaturesError):
+            assert "model.dax" in exc_info.value.capabilities
+        else:
+            assert "DAX table expression but has no SQL/table translation" in str(exc_info.value)
 
         with pytest.raises(ValueError, match="DAX table expression but has no SQL/table translation"):
             SQLGenerator(graph).generate(metrics=["SalesByCategory.Revenue"], dimensions=["SalesByCategory.Category"])
@@ -3026,8 +3039,16 @@ def test_tmdl_keyless_many_to_many_joins_without_keying_off_endpoints():
     sql = layer.compile(dimensions=["Authors.region", "Books.genre"])
     assert "Authors_cte.author_id" in sql
     assert "Books_cte.book_author_id" in sql
-    assert "author_id AS author_id" in sql
-    assert "book_author_id AS book_author_id" in sql
+    layer.conn.execute("CREATE TABLE Authors (author_id VARCHAR, region VARCHAR)")
+    layer.conn.execute("CREATE TABLE Books (book_author_id VARCHAR, genre VARCHAR)")
+    layer.conn.execute("INSERT INTO Authors VALUES ('a', 'US'), ('a', 'EU')")
+    layer.conn.execute("INSERT INTO Books VALUES ('a', 'fiction'), ('a', 'history')")
+    assert set(layer.conn.execute(sql).fetchall()) == {
+        ("US", "fiction"),
+        ("US", "history"),
+        ("EU", "fiction"),
+        ("EU", "history"),
+    }
 
 
 def test_tmdl_keyless_many_to_many_metric_raises_clear_error():
@@ -3134,8 +3155,11 @@ def test_tmdl_many_to_many_on_non_primary_key_column():
     assert re.search(r"ON\s+B_cte\.b_alt\s*=\s*A_cte\.a_alt", sql) or re.search(
         r"ON\s+A_cte\.a_alt\s*=\s*B_cte\.b_alt", sql
     ), sql
-    assert "a_alt AS a_alt" in sql
-    assert "b_alt AS b_alt" in sql
+    layer.adapter.execute("create table A(id varchar, a_alt varchar)")
+    layer.adapter.execute("create table B(id varchar, b_alt varchar, b_label varchar)")
+    layer.adapter.execute("insert into A values ('a1', 'shared'), ('a2', 'shared')")
+    layer.adapter.execute("insert into B values ('b1', 'shared', 'matched')")
+    assert layer.adapter.execute(sql).fetchall() == [("matched", 2)]
 
 
 def test_tmdl_one_to_one_recovers_keyless_source_key():
@@ -3186,8 +3210,12 @@ def test_tmdl_one_to_one_recovers_keyless_source_key():
     layer = SemanticLayer()
     layer.graph = graph
     sql = layer.compile(metrics=["A.a_count"], dimensions=["B.b_label"])
-    assert "a_key AS a_key" in sql
     assert "A_cte.a_key" in sql
+    layer.adapter.execute("create table A(a_key varchar)")
+    layer.adapter.execute("create table B(b_key varchar, b_label varchar)")
+    layer.adapter.execute("insert into A values ('joined')")
+    layer.adapter.execute("insert into B values ('joined', 'matched')")
+    assert layer.adapter.execute(sql).fetchall() == [("matched", 1)]
 
 
 def test_tmdl_one_to_one_alternate_key_does_not_shadow_real_key():
@@ -3252,7 +3280,11 @@ def test_tmdl_one_to_one_alternate_key_does_not_shadow_real_key():
     layer.graph = graph
     sql = layer.compile(metrics=["Orders.cnt"], dimensions=["OrderMeta.channel"])
     assert "Orders_cte.alt_key" in sql
-    assert "alt_key AS alt_key" in sql
+    layer.adapter.execute("create table Orders(order_id integer, alt_key varchar)")
+    layer.adapter.execute("create table OrderMeta(meta_key varchar, channel varchar)")
+    layer.adapter.execute("insert into Orders values (1, 'alternate')")
+    layer.adapter.execute("insert into OrderMeta values ('alternate', 'web')")
+    assert layer.adapter.execute(sql).fetchall() == [("web", 1)]
 
 
 def test_tmdl_ambiguous_one_side_target_not_recovered_from_endpoint():

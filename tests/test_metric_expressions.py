@@ -196,7 +196,10 @@ def test_ratio_prefers_exact_graph_metric_with_dotted_name():
 
     sql = layer.compile(metrics=["exact_ratio"], dimensions=["orders.status"])
     assert "orders_cte.revenue_raw" not in sql
-    assert "SUM(orders_cte.amount) * 2" in sql
+    graph_rows = layer.query(
+        metrics=["orders.revenue"], dimensions=["orders.status"], order_by=["orders.status"]
+    ).fetchall()
+    assert graph_rows == [("open", 50), ("paid", 300)]
 
     rows = layer.query(metrics=["exact_ratio"], dimensions=["orders.status"], order_by=["orders.status"]).fetchall()
     assert rows == [("open", 1.0), ("paid", 1.0)]

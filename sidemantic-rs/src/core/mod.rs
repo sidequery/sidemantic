@@ -13,6 +13,7 @@ mod segment;
 pub mod symmetric_agg;
 mod table_calc;
 
+pub(crate) use dependency::is_aggregate_ast_node;
 pub use dependency::{
     check_circular_dependencies, extract_column_references_from_expr, extract_dependencies,
     extract_dependencies_with_context, outer_semantic_column_references, parse_semantic_expression,
@@ -30,7 +31,7 @@ pub use model::{
 pub use parameter::{Parameter, ParameterType};
 pub use policy::{AccessRule, PolicyError, PreparedPolicies, SecurityPolicy};
 pub(crate) use preaggregation::{
-    materialization_sql as preaggregation_materialization_sql,
+    materialization_sql as preaggregation_materialization_sql, replace_model_placeholder,
     source_expression as preaggregation_source_expression,
 };
 pub use relative_date::RelativeDate;

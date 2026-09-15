@@ -852,8 +852,16 @@ models:
         layer.add_model(model)
 
     sql = layer.compile(metrics=["order_items.count"], dimensions=["shipments.carrier"])
-    assert "shipments_cte.order_id = order_items_cte.order_id" in sql
-    assert "shipments_cte.item_id = order_items_cte.item_id" in sql
+    import sqlglot
+    from sqlglot import exp
+
+    comparisons = {
+        frozenset((comparison.left.sql(), comparison.right.sql()))
+        for join in sqlglot.parse_one(sql).find_all(exp.Join)
+        for comparison in join.find_all(exp.EQ)
+    }
+    assert frozenset(("shipments_cte.order_id", "order_items_cte.order_id")) in comparisons
+    assert frozenset(("shipments_cte.item_id", "order_items_cte.item_id")) in comparisons
 
 
 def test_parse_native_yaml_resolves_model_and_metric_inheritance(tmp_path):

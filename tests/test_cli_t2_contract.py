@@ -21,7 +21,7 @@ runner = CliRunner()
 
 
 @pytest.fixture(autouse=True)
-def _reset_cli_state(monkeypatch: pytest.MonkeyPatch):
+def _reset_cli_state(monkeypatch: pytest.MonkeyPatch, request):
     cli_module._loaded_config = None
     cli_module._project_context = None
     for name in (
@@ -48,6 +48,8 @@ def _reset_cli_state(monkeypatch: pytest.MonkeyPatch):
         "CI",
     ):
         monkeypatch.delenv(name, raising=False)
+    # Preserve the selected engine after clearing host CLI settings.
+    monkeypatch.setenv("SIDEMANTIC_ENGINE", request.config.getoption("--test-engine"))
     yield
     cli_module._loaded_config = None
     cli_module._project_context = None

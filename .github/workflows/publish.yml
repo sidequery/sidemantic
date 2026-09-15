@@ -39,6 +39,8 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: false
 
       - name: Set up Python
         run: uv python install 3.12
@@ -125,6 +127,7 @@ jobs:
           version_files = (
               Path("pyproject.toml"),
               Path("crates/dax-pyo3/pyproject.toml"),
+              Path("sidemantic-rs/pyproject.toml"),
               Path("crates/dax-pyo3/Cargo.toml"),
           )
           for path in version_files:
@@ -152,6 +155,7 @@ jobs:
           pyproject_path.write_text(
               "\n".join(
                   f'    "sidemantic-dax>={version}",' if line.strip().startswith('"sidemantic-dax>=')
+                  else f'    "sidemantic-rs=={version}; sys_platform != \'emscripten\'",' if line.strip().startswith('"sidemantic-rs==')
                   else line
                   for line in pyproject_lines
               )
@@ -180,6 +184,7 @@ jobs:
 
       - name: Build packages
         run: |
+          uv build sidemantic-rs --sdist --out-dir dist
           uv build crates/dax-pyo3 --sdist --out-dir dist
           uv build --out-dir dist
           unzip -l "$(find dist -name 'sidemantic-[0-9]*.whl' -print -quit)" | grep -q 'sidemantic/py.typed'
@@ -200,7 +205,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add pyproject.toml sidemantic/__init__.py sidemantic/man/sidemantic.1 crates/dax-pyo3/pyproject.toml crates/dax-pyo3/Cargo.toml Cargo.lock uv.lock
+          git add pyproject.toml sidemantic/__init__.py sidemantic/man/sidemantic.1 sidemantic-rs/pyproject.toml crates/dax-pyo3/pyproject.toml crates/dax-pyo3/Cargo.toml Cargo.lock uv.lock
           git commit -m "Bump version to ${{ steps.version.outputs.new_version }}"
           git tag -a "v${{ steps.version.outputs.new_version }}" -m "Release v${{ steps.version.outputs.new_version }}"
           git push origin main
@@ -257,11 +262,65 @@ jobs:
           path: crates/dax-pyo3/dist/*.whl
           if-no-files-found: error
 
+  build-runtime-wheels:
+    name: Build sidemantic-rs wheel (${{ matrix.target }})
+    needs: publish
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64
+          - os: ubuntu-24.04-arm
+            target: aarch64
+          - os: macos-15-intel
+            target: x86_64
+          - os: macos-14
+            target: aarch64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.publish.outputs.tag }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build abi3 wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          command: build
+          args: --release --manifest-path sidemantic-rs/Cargo.toml --out sidemantic-rs/dist
+          manylinux: auto
+          target: ${{ matrix.target }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: false
+
+      - name: Smoke runtime wheel
+        shell: bash
+        run: uv run --no-project --with sidemantic-rs/dist/*.whl sidemantic-rs/tests/python_wheel_python_smoke.py
+
+      - name: Upload abi3 wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-runtime-${{ matrix.os }}-${{ matrix.target }}
+          path: sidemantic-rs/dist/*.whl
+          if-no-files-found: error
+
   release:
     name: Publish to PyPI and create release
     needs:
       - publish
       - build-dax-wheels
+      - build-runtime-wheels
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -270,6 +329,8 @@ jobs:
     steps:
       - name: Install uv
         uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: false
 
       - name: Download distributions
         uses: actions/download-artifact@v4
@@ -281,7 +342,10 @@ jobs:
       - name: Publish to PyPI
         env:
           UV_PUBLISH_TOKEN: ${{ secrets.PYPI_TOKEN }}
-        run: uv publish dist/* --token $UV_PUBLISH_TOKEN
+        run: |
+          uv publish dist/sidemantic_rs-* --token "$UV_PUBLISH_TOKEN"
+          uv publish dist/sidemantic_dax-* --token "$UV_PUBLISH_TOKEN"
+          uv publish dist/sidemantic-[0-9]* --token "$UV_PUBLISH_TOKEN"
 
       - name: Create GitHub Release
         env:

@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from sidemantic import Dimension, Metric, Model, PreAggregation, Relationship, SecurityPolicy
+from sidemantic.core.inheritance import merge_model
 from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.core.semantic_layer import SecurityError
 from sidemantic.rust_bridge import (
@@ -20,6 +21,80 @@ from sidemantic.semantic_handoff import (
     graph_to_semantic_json,
 )
 from sidemantic.validation import QueryValidationError
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {},
+        {"primary_key": None, "default_grain": None, "auto_dimensions": False, "metadata": {}, "meta": None},
+        {"primary_key": "alternate_id", "unique_keys": []},
+    ],
+)
+def test_unresolved_child_snapshot_preserves_inheritance_override_semantics(overrides):
+    parent = Model(
+        name="base",
+        table="orders",
+        primary_key="id",
+        default_grain="month",
+        auto_dimensions=True,
+        metadata={"source": "parent"},
+        meta={"label": "parent"},
+        unique_keys=[["alternate_id"]],
+    )
+    child = Model(name="child", extends="base", **overrides)
+    graph = SemanticGraph()
+    graph.add_model(parent)
+    graph.add_model(child)
+    snapshot = graph_to_semantic_input(graph)["models"][1]
+    assert ("primary_key" in snapshot) == ("primary_key" in overrides)
+    transported = Model.model_validate(snapshot)
+    expected = merge_model(child, parent)
+    actual = merge_model(transported, parent)
+    assert actual.primary_key_columns == expected.primary_key_columns
+    assert actual.model_dump(exclude={"primary_key"}) == expected.model_dump(exclude={"primary_key"})
+    assert child.model_fields_set == {"name", "extends", *overrides}
+
+
+@pytest.mark.parametrize("kind", ["one_to_one", "one_to_many", "many_to_one"])
+@pytest.mark.parametrize("explicit", [None, "explicit_key"])
+def test_snapshot_preserves_tmdl_local_endpoint_without_changing_model_key(kind, explicit):
+    graph = SemanticGraph()
+    relationship = Relationship(name="metadata", type=kind, foreign_key="meta_key", primary_key=explicit)
+    relationship._tmdl_from_column = "alt_key"
+    graph.add_model(Model(name="orders", table="orders", primary_key="id", relationships=[relationship]))
+    payload = graph_to_semantic_input(graph)
+    expected = explicit or ("alt_key" if kind in ("one_to_one", "one_to_many") else None)
+    assert payload["models"][0]["relationships"][0].get("primary_key") == expected
+    assert payload["models"][0]["primary_key"] == ["id"]
+    assert relationship.primary_key == explicit
+
+
+@pytest.mark.parametrize(
+    "definition",
+    [
+        {"type": "conversion", "entity": "id", "base_event": "signup", "conversion_event": "purchase"},
+        {"type": "time_comparison", "base_metric": "events.count"},
+    ],
+)
+def test_snapshot_does_not_duplicate_automatically_indexed_model_metrics(definition):
+    graph = SemanticGraph()
+    metric = Metric(name="special", **definition)
+    graph.add_model(Model(name="events", table="events", metrics=[metric]))
+    payload = graph_to_semantic_input(graph)
+    assert payload["metrics"] == []
+    assert [item["name"] for item in payload["models"][0]["metrics"]] == ["special"]
+    assert graph.metrics["special"] is metric
+
+
+def test_snapshot_keeps_explicit_graph_metric_even_when_model_uses_same_object():
+    graph = SemanticGraph()
+    metric = Metric(name="revenue", agg="sum", sql="amount")
+    graph.add_model(Model(name="orders", table="orders", metrics=[metric]))
+    graph.add_metric(metric, model_name="orders")
+    payload = graph_to_semantic_input(graph)
+    assert [item["name"] for item in payload["metrics"]] == ["revenue"]
+    assert payload["metric_owners"] == {"revenue": "orders"}
 
 
 @pytest.fixture

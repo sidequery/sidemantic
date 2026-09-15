@@ -6,6 +6,7 @@ from urllib.parse import urlencode
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from sidemantic.runtime import default_engine
 from sidemantic.yaml_compat import safe_load as _yaml_safe_load
 
 
@@ -155,7 +156,7 @@ class APIServerConfig(BaseModel):
 class RuntimeConfig(BaseModel):
     """Runtime engine selection."""
 
-    engine: Literal["python", "rust", "auto"] = Field(default="python", description="Runtime engine")
+    engine: Literal["python", "rust", "auto"] = Field(default_factory=default_engine, description="Runtime engine")
     fallback: bool = Field(default=False, description="Allow Rust runtime fallback to Python")
 
 

@@ -12,14 +12,19 @@ concurrency:
 
 jobs:
   python:
-    name: Python ${{ matrix.python-version }}
+    name: Python ${{ matrix.python-version }} (${{ matrix.engine }} engine)
     runs-on: ubuntu-latest
     env:
       UV_PYTHON: ${{ matrix.python-version }}
+      SIDEMANTIC_ENGINE: ${{ matrix.engine }}
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.11", "3.12", "3.13", "3.14"]
+        engine: [python]
+        include:
+          - python-version: "3.12"
+            engine: rust
 
     steps:
       - uses: actions/checkout@v4
@@ -27,10 +32,18 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Cache Rust compilation
+        id: rust-cache
+        uses: ./.github/actions/setup-rust-cache
+        with:
+          suffix: ${{ github.workflow }}-${{ github.job }}-${{ strategy.job-index || 0 }}
+
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        id: uv
+        uses: ./.github/actions/setup-uv
         with:
           enable-cache: true
+          suffix: ${{ github.workflow }}-${{ github.job }}-${{ strategy.job-index || 0 }}
 
       - name: Set up Python ${{ matrix.python-version }}
         run: uv python install ${{ matrix.python-version }}
@@ -83,11 +96,24 @@ jobs:
           uv build --wheel
           unzip -l dist/*.whl | grep -q 'sidemantic/py.typed'
 
-      - name: Run tests
-        run: uv run pytest -v --cov-fail-under=76
+      - name: Run Python reference suite
+        if: matrix.engine == 'python'
+        run: uv run pytest -v --test-engine python --cov-fail-under=76 --junitxml=test-results.xml
+
+      - name: Run full shared suite against Rust
+        if: matrix.engine == 'rust'
+        run: uv run pytest -v --test-engine rust --no-cov --junitxml=test-results.xml
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tests-${{ matrix.python-version }}-${{ matrix.engine }}
+          path: test-results.xml
 
       - name: Run installed-wheel DAX smoke
         run: |
+          uv build sidemantic-rs --out-dir /tmp/sidemantic-dax-dist
           uv build crates/dax-pyo3 --out-dir /tmp/sidemantic-dax-dist
           uv build --out-dir /tmp/sidemantic-dist
           SIDEMANTIC_WHEEL=$(realpath "$(find /tmp/sidemantic-dist -name 'sidemantic-[0-9]*.whl' -print -quit)")
@@ -97,6 +123,13 @@ jobs:
 
           sidemantic_dax.parse_expression("1")
           PY
+
+      - name: Save completed build caches
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/save-build-caches
+        with:
+          rust-key: ${{ steps.rust-cache.outputs.key }}
+          uv-key: ${{ steps.uv.outputs.cache-key }}
 
   dependency-compatibility:
     name: Dependencies (${{ matrix.name }})
@@ -119,10 +152,18 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Cache Rust compilation
+        id: rust-cache
+        uses: ./.github/actions/setup-rust-cache
+        with:
+          suffix: ${{ github.workflow }}-${{ github.job }}-${{ strategy.job-index || 0 }}
+
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        id: uv
+        uses: ./.github/actions/setup-uv
         with:
           enable-cache: true
+          suffix: ${{ github.workflow }}-${{ github.job }}-${{ strategy.job-index || 0 }}
 
       - name: Set up Python ${{ matrix.python-version }}
         run: uv python install ${{ matrix.python-version }}
@@ -151,19 +192,40 @@ jobs:
           -q
           -o addopts="-m 'not integration'"
 
+      - name: Save completed build caches
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/save-build-caches
+        with:
+          rust-key: ${{ steps.rust-cache.outputs.key }}
+          uv-key: ${{ steps.uv.outputs.cache-key }}
+
   base-install-cli:
     name: Base Install CLI
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust compilation
+        id: rust-cache
+        uses: ./.github/actions/setup-rust-cache
+        with:
+          suffix: ${{ github.workflow }}-${{ github.job }}-${{ strategy.job-index || 0 }}
+
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        id: uv
+        uses: ./.github/actions/setup-uv
         with:
           enable-cache: true
+          suffix: ${{ github.workflow }}-${{ github.job }}-${{ strategy.job-index || 0 }}
 
       - name: Set up Python
         run: uv python install 3.12
+
+      - name: Build runtime distribution
+        run: uv build sidemantic-rs --out-dir /tmp/sidemantic-runtime-dist
 
       - name: Smoke base CLI install
         run: |
@@ -183,12 +245,20 @@ jobs:
                   agg: count
           YAML
 
-          uv run --no-project --with . sidemantic --version
-          uv run --no-project --with . sidemantic validate "$tmpdir/models"
-          uv run --no-project --with . sidemantic query "SELECT order_count, status FROM orders" --models "$tmpdir/models" --dry-run
+          uv run --no-project --find-links /tmp/sidemantic-runtime-dist --with . sidemantic --version
+          uv run --no-project --find-links /tmp/sidemantic-runtime-dist --with . sidemantic validate "$tmpdir/models"
+          uv run --no-project --find-links /tmp/sidemantic-runtime-dist --with . sidemantic query "SELECT order_count, status FROM orders" --models "$tmpdir/models" --dry-run
+
+          uv run --no-project --find-links /tmp/sidemantic-runtime-dist --with . python - <<'PYTHON'
+          from sidemantic import SemanticLayer, Model, Metric
+          layer = SemanticLayer()
+          layer.add_model(Model(name="orders", table="orders", metrics=[Metric(name="count", agg="count")]))
+          layer.compile(metrics=["orders.count"])
+          assert layer.last_engine_selection == {"engine": "rust", "reason": None}
+          PYTHON
 
           set +e
-          timeout 10s uv run --no-project --with . sidemantic serve "$tmpdir/models" >"$tmpdir/serve.out" 2>"$tmpdir/serve.err"
+          timeout 10s uv run --no-project --find-links /tmp/sidemantic-runtime-dist --with . sidemantic serve "$tmpdir/models" >"$tmpdir/serve.out" 2>"$tmpdir/serve.err"
           serve_status=$?
           set -e
           if [ "$serve_status" -eq 0 ]; then
@@ -203,6 +273,13 @@ jobs:
           fi
           grep -q "sidemantic\\[api\\]" "$tmpdir/serve.err"
 
+      - name: Save completed build caches
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/save-build-caches
+        with:
+          rust-key: ${{ steps.rust-cache.outputs.key }}
+          uv-key: ${{ steps.uv.outputs.cache-key }}
+
   update-schema:
     name: Update JSON Schema
     needs: python
@@ -215,16 +292,24 @@ jobs:
         with:
           ref: ${{ github.head_ref }}
 
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust compilation
+        id: rust-cache
+        uses: ./.github/actions/setup-rust-cache
+        with:
+          suffix: ${{ github.workflow }}-${{ github.job }}-${{ strategy.job-index || 0 }}
+
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        id: uv
+        uses: ./.github/actions/setup-uv
         with:
           enable-cache: true
+          suffix: ${{ github.workflow }}-${{ github.job }}-${{ strategy.job-index || 0 }}
 
       - name: Set up Python
         run: uv python install 3.12
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
 
       - name: Install dependencies
         run: uv sync --extra dev --extra dax
@@ -240,30 +325,40 @@ jobs:
             git push
           fi
 
+      - name: Save completed build caches
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/save-build-caches
+        with:
+          rust-key: ${{ steps.rust-cache.outputs.key }}
+          uv-key: ${{ steps.uv.outputs.cache-key }}
+
   native-compat:
     name: Native Compatibility
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust compilation
+        id: rust-cache
+        uses: ./.github/actions/setup-rust-cache
+        with:
+          suffix: ${{ github.workflow }}-${{ github.job }}-${{ strategy.job-index || 0 }}
+
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        id: uv
+        uses: ./.github/actions/setup-uv
         with:
           enable-cache: true
+          suffix: ${{ github.workflow }}-${{ github.job }}-${{ strategy.job-index || 0 }}
 
       - name: Set up Python
         run: uv python install 3.12
 
       - name: Install dependencies
         run: uv sync --extra dev
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: sidemantic-rs
 
       - name: Run Python native fixtures
         run: uv run pytest tests/native_compat -v
@@ -326,6 +421,13 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+      - name: Save completed build caches
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/save-build-caches
+        with:
+          rust-key: ${{ steps.rust-cache.outputs.key }}
+          uv-key: ${{ steps.uv.outputs.cache-key }}
+
   check-rust-changes:
     name: Check Rust/DuckDB changes
     runs-on: ubuntu-latest
@@ -348,6 +450,7 @@ jobs:
               - '.cargo/**'
               - 'rust-toolchain*'
               - '.github/workflows/ci.yml'
+              - '.github/actions/**'
               # The installed-extension conformance job exercises Python callers,
               # not just the crate. Keep its contract and fixture inputs gated.
               - 'pyproject.toml'
@@ -395,9 +498,12 @@ jobs:
               - '.cargo/**'
               - 'rust-toolchain*'
               - '.github/workflows/ci.yml'
+              - '.github/actions/**'
               - 'pyproject.toml'
               - 'uv.lock'
             dax:
+              - '.github/actions/**'
+              - '.github/workflows/ci.yml'
               - 'crates/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
@@ -428,10 +534,11 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+      - name: Cache Rust compilation
+        id: rust-cache
+        uses: ./.github/actions/setup-rust-cache
         with:
-          workspaces: .
+          suffix: ${{ github.workflow }}-${{ github.job }}-${{ strategy.job-index || 0 }}
 
       - name: Run cargo fmt check
         run: cargo fmt --check
@@ -441,6 +548,12 @@ jobs:
 
       - name: Run cargo test
         run: cargo test -p dax-parser -p dax-pyo3
+
+      - name: Save completed build caches
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/save-build-caches
+        with:
+          rust-key: ${{ steps.rust-cache.outputs.key }}
 
   rust:
     name: Rust (sidemantic-rs)
@@ -473,15 +586,18 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
 
+      - name: Cache Rust compilation
+        id: rust-cache
+        uses: ./.github/actions/setup-rust-cache
+        with:
+          suffix: ${{ github.workflow }}-${{ github.job }}-${{ strategy.job-index || 0 }}
+
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        id: uv
+        uses: ./.github/actions/setup-uv
         with:
           enable-cache: true
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: sidemantic-rs
+          suffix: ${{ github.workflow }}-${{ github.job }}-${{ strategy.job-index || 0 }}
 
       - name: Run cargo fmt check
         run: cargo fmt --check
@@ -572,6 +688,8 @@ jobs:
         run: uv run --no-project --with dist/*.whl tests/python_wheel_smoke.py
 
       - name: Check lightweight Python extension build
+        env:
+          MBX_VERIFY: "1"
         run: uvx maturin build --no-default-features --features python --out dist-python
 
       - name: Smoke lightweight Python extension wheel
@@ -598,6 +716,13 @@ jobs:
       - name: Smoke Python extension ADBC wheel
         run: uv run --no-project --with dist-adbc/*.whl tests/python_wheel_adbc_smoke.py
 
+      - name: Save completed build caches
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/save-build-caches
+        with:
+          rust-key: ${{ steps.rust-cache.outputs.key }}
+          uv-key: ${{ steps.uv.outputs.cache-key }}
+
   duckdb-extension:
     name: DuckDB Extension
     needs: check-rust-changes
@@ -609,17 +734,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Fetch DuckDB dependencies
-        working-directory: sidemantic-duckdb
-        run: make deps DUCKDB_VERSION=v1.5.5
-
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+      - name: Cache Rust compilation
+        id: rust-cache
+        uses: ./.github/actions/setup-rust-cache
         with:
-          workspaces: sidemantic-rs
+          suffix: ${{ github.workflow }}-${{ github.job }}-${{ strategy.job-index || 0 }}
+
+      - name: Fetch DuckDB dependencies
+        working-directory: sidemantic-duckdb
+        run: make deps DUCKDB_VERSION=v1.5.5
 
       - name: Install build dependencies
         run: sudo apt-get update && sudo apt-get install -y ninja-build
@@ -633,13 +759,24 @@ jobs:
         run: make test
 
       - name: Install uv for SQL host acceptance
-        uses: astral-sh/setup-uv@v5
+        id: uv
+        uses: ./.github/actions/setup-uv
+        with:
+          enable-cache: true
+          suffix: ${{ github.workflow }}-${{ github.job }}-${{ strategy.job-index || 0 }}
 
       - name: Execute SemanticInput in the loaded DuckDB extension
         env:
           SIDEMANTIC_DUCKDB_BINARY: sidemantic-duckdb/build/release/duckdb
           SIDEMANTIC_DUCKDB_EXTENSION: sidemantic-duckdb/build/release/extension/sidemantic/sidemantic.duckdb_extension
         run: uv run sidemantic-duckdb/test/test_semantic_input_host.py
+
+      - name: Save completed build caches
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/save-build-caches
+        with:
+          rust-key: ${{ steps.rust-cache.outputs.key }}
+          uv-key: ${{ steps.uv.outputs.cache-key }}
 
   webapp:
     name: Webapp (types + unit)

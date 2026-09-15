@@ -186,7 +186,7 @@ def test_count_family_cross_source_counts_restore_absent_zero(counts, restricted
     )
     assert result(counts, metrics=["combined"], dimensions=["regions.region"], order_by=["regions.region"]) == (
         ["region", "combined"],
-        [("a", 12), ("b", 20)] if restricted else [("a", 13), ("b", 21), ("c", 30)],
+        [("a", 12), ("b", 20), (None, None)] if restricted else [("a", 13), ("b", 21), ("c", 30), (None, None)],
     )
 
 

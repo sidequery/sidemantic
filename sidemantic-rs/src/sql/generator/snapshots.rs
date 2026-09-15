@@ -82,6 +82,9 @@ pub(super) fn try_generate(
     generator: &SqlGenerator<'_>,
     query: &SemanticQuery,
 ) -> Result<Option<String>> {
+    if query.allow_non_additive_unsafe {
+        return Ok(None);
+    }
     if !generator
         .graph
         .metrics()
@@ -418,11 +421,17 @@ pub(super) fn try_generate(
         ));
     }
     let mut ordering = Vec::new();
+    let names: Vec<_> = metrics
+        .iter()
+        .map(|metric| metric.alias.as_str())
+        .chain(
+            output_dimensions
+                .iter()
+                .map(|dimension| dimension.alias.as_str()),
+        )
+        .collect();
     for item in &query.order_by {
-        let (field, direction) = item
-            .rsplit_once(' ')
-            .filter(|(_, dir)| dir.eq_ignore_ascii_case("asc") || dir.eq_ignore_ascii_case("desc"))
-            .unwrap_or((item, ""));
+        let (field, direction) = crate::sql::split_order_field(item, &names);
         let alias = query
             .metrics
             .iter()
@@ -470,6 +479,27 @@ mod tests {
             )
             .unwrap();
         graph
+    }
+
+    #[test]
+    fn explicit_unsafe_option_bypasses_snapshot_selection_without_mutating_graph() {
+        crate::semantic_input::with_semantic_stack(|| {
+            let graph = graph();
+            let mut query = SemanticQuery::new().with_metrics(vec![
+                "snapshots.balance".into(),
+                "snapshots.activity".into(),
+            ]);
+            query.allow_non_additive_unsafe = true;
+            let generator = SqlGenerator::new(&graph);
+            assert!(try_generate(&generator, &query)?.is_none());
+            let sql = generator.generate(&query)?;
+            assert!(sql.contains("SUM("), "{sql}");
+            assert!(!sql.contains("MAX(day)"), "{sql}");
+            query.allow_non_additive_unsafe = false;
+            assert!(try_generate(&generator, &query)?.is_some());
+            Ok(())
+        })
+        .unwrap();
     }
 
     #[test]

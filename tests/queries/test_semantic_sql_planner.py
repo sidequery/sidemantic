@@ -1,4 +1,9 @@
-"""Tests for semantic SQL rewrite planning and explanations."""
+"""Python QueryRewriter optimization rules, candidates, and plan explanations.
+
+These implementation tests compare optimized plans with the Python rewriter's
+unoptimized baseline. Shared SQL execution contracts live in test_sql_rewriter
+and semantic_conformance and run against both engines.
+"""
 
 import pytest
 
@@ -14,7 +19,7 @@ from tests.utils import fetch_columns, fetch_dicts, fetch_rows
 
 @pytest.fixture
 def semantic_layer():
-    layer = SemanticLayer(auto_register=False)
+    layer = SemanticLayer(auto_register=False, engine="python")
 
     orders = Model(
         name="orders",
@@ -2278,8 +2283,11 @@ def test_wrapped_fanout_preserves_aliases_and_executes(semantic_layer):
         "orders.revenue": "total_revenue",
         "customers.count": "customer_count",
     }
-    assert "orders_preagg.total_revenue AS total_revenue" in explanation.rewritten_sql
-    assert "customers_preagg.customer_count AS customer_count" in explanation.rewritten_sql
+    assert fetch_columns(semantic_layer.adapter.execute(explanation.rewritten_sql)) == [
+        "total_revenue",
+        "customer_count",
+    ]
+    assert fetch_rows(semantic_layer.adapter.execute(explanation.rewritten_sql)) == [(450, 2)]
 
 
 def test_wrapped_fanout_uses_child_preaggregations(semantic_layer):

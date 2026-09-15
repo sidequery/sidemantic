@@ -29,7 +29,11 @@ pub(crate) fn validate_metric(metric: &Metric) -> Result<()> {
             }
             parse_output_frame(frame)?;
         }
-        if let Some(window) = &metric.window {
+        if let Some(window) = metric
+            .window
+            .as_deref()
+            .filter(|window| *window != "unbounded")
+        {
             period_interval(window)?;
         }
     }
@@ -164,6 +168,10 @@ fn period_interval(value: &str) -> Result<(u32, String)> {
 }
 
 impl SqlGenerator<'_> {
+    pub(super) fn window_dimension_alias(dimension: &crate::core::Dimension) -> String {
+        format!("__sidemantic_window_{}", dimension.name)
+    }
+
     pub(super) fn offset_window_lag_rows(
         offset: Option<&str>,
         granularity: Option<&str>,
@@ -293,7 +301,11 @@ impl SqlGenerator<'_> {
         let frame = if let Some(frame) = &metric.window_frame {
             frame.clone()
         } else if metric.grain_to_date.is_none() {
-            if let Some(window) = &metric.window {
+            if let Some(window) = metric
+                .window
+                .as_deref()
+                .filter(|window| *window != "unbounded")
+            {
                 let (amount, unit) = period_interval(window)?;
                 format!("RANGE BETWEEN INTERVAL '{amount} {unit}' PRECEDING AND CURRENT ROW")
             } else {
@@ -358,6 +370,57 @@ impl SqlGenerator<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn window_dimension_uses_separate_source_alias_in_grouping_and_filter() {
+        let input = serde_json::json!({
+            "version": 1, "input_dialect": "duckdb",
+            "models": [{"name": "events", "table": "events", "primary_key": "id",
+                "dimensions": [{"name": "day", "type": "time", "granularity": "day", "window": "MIN(day) OVER ()"}],
+                "metrics": [{"name": "revenue", "agg": "sum", "sql": "amount"}]}]
+        });
+        let sql = crate::semantic_input::compile_with_semantic_input(
+            &input.to_string(),
+            &serde_json::json!({
+                "metrics": ["events.revenue"], "dimensions": ["events.day"],
+                "filters": ["COALESCE(events.day, '2024-01-01') > '2024-01-02'"]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert!(sql.contains("AS __sidemantic_window_day"), "{sql}");
+        assert!(
+            sql.contains("DATE_TRUNC('day', events_cte.__sidemantic_window_day)"),
+            "{sql}"
+        );
+        assert!(
+            sql.contains("COALESCE(events_cte.__sidemantic_window_day"),
+            "{sql}"
+        );
+        polyglot_sql::parse_one(&sql, DialectType::DuckDB).unwrap();
+    }
+
+    #[test]
+    fn graph_calculation_keeps_graph_reference_in_cumulative_base_query() {
+        let input = serde_json::json!({
+            "version": 1, "input_dialect": "duckdb",
+            "models": [{"name": "events", "table": "events", "primary_key": "id",
+                "dimensions": [{"name": "day", "type": "time", "granularity": "day"}],
+                "metrics": [{"name": "revenue", "agg": "sum", "sql": "amount"}]}],
+            "metrics": [
+                {"name": "total", "type": "derived", "sql": "events.revenue"},
+                {"name": "running", "type": "cumulative", "sql": "events.revenue"}
+            ]
+        });
+        let sql = crate::semantic_input::compile_with_semantic_input(
+            &input.to_string(),
+            r#"{"metrics":["total","running"],"dimensions":["events.day"]}"#,
+        )
+        .unwrap();
+        assert!(sql.contains("base.total"), "{sql}");
+        assert!(sql.contains("SUM(base.revenue) OVER"), "{sql}");
+        polyglot_sql::parse_one(&sql, DialectType::DuckDB).unwrap();
+    }
 
     #[test]
     fn explicit_window_requires_a_root_window_capable_function() {
@@ -508,6 +571,27 @@ mod tests {
             },
         ];
         (graph, dimensions)
+    }
+
+    #[test]
+    fn explicit_unbounded_window_preserves_running_total_frame() {
+        let (graph, dimensions) = grouped_graph();
+        let generator = SqlGenerator::new(&graph);
+        let mut metric = Metric::sum("running", "revenue");
+        metric.r#type = MetricType::Cumulative;
+        metric.window = Some("unbounded".into());
+        validate_metric(&metric).unwrap();
+        let explicit = generator
+            .cumulative_window_sql(&metric, &dimensions, "day__month")
+            .unwrap();
+        metric.window = None;
+        let implicit = generator
+            .cumulative_window_sql(&metric, &dimensions, "day__month")
+            .unwrap();
+        assert_eq!(explicit, implicit);
+        assert!(explicit.contains("ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW"));
+        metric.window = Some("invalid".into());
+        assert!(validate_metric(&metric).is_err());
     }
 
     #[test]

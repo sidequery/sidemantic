@@ -260,6 +260,26 @@ mod tests {
     }
 
     #[test]
+    fn semantic_boundary_binds_spaced_order_aliases_before_policy_parsing() {
+        let source = json!({"version": 1, "input_dialect": "duckdb", "models": [{"name": "orders", "table": "orders", "primary_key": "id", "dimensions": [{"name": "category", "type": "categorical"}], "metrics": [{"name": "revenue", "agg": "sum", "sql": "amount"}]}]}).to_string();
+        for alias in ["Category label", "Category DESC", "Category NULLS FIRST"] {
+            for suffix in ["", " DESC", " ASC NULLS FIRST", "\tDESC\tNULLS\tLAST"] {
+                for dialect in ["duckdb", "postgres"] {
+                    let query = json!({
+                        "metrics": ["orders.revenue"], "dimensions": ["orders.category"],
+                        "aliases": {"orders.category": alias},
+                        "order_by": [format!("{alias}{suffix}")], "limit": 2,
+                        "query_dialect": dialect, "dialect": dialect
+                    });
+                    let sql = compile_with_semantic_input(&source, &query.to_string()).unwrap();
+                    assert!(sql.contains(&format!("ORDER BY \"{alias}\"")), "{sql}");
+                    assert!(sql.contains("LIMIT 2"), "{sql}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn malformed_options_and_totals_controls_are_invalid_on_both_boundaries() {
         let source = json!({"version": 1, "input_dialect": "duckdb", "models": [{"name": "orders", "table": "orders", "primary_key": "id", "dimensions": [{"name": "category", "type": "categorical"}], "metrics": [{"name": "revenue", "agg": "sum", "sql": "amount"}]}]}).to_string();
         for extra in [

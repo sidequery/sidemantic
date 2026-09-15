@@ -750,7 +750,18 @@ fn validate_semantic_dependencies(graph: &SemanticGraph, graph_metrics: &[Metric
         {
             let expression = crate::core::replace_model_placeholder(expression, context)?;
             for column in crate::core::semantic_column_references(&expression)? {
-                let model_name = column.model.as_deref().or(context);
+                let physical_input =
+                    metric.r#type == crate::core::MetricType::Simple || column.aggregate_input;
+                // Complete aggregates may use the generated source CTE qualifier.
+                // Resolve that alias only for physical inputs, and prefer a real
+                // model of that name when one exists.
+                let model_name = column.model.as_deref().or(context).map(|name| {
+                    if physical_input && graph.get_model(name).is_none() {
+                        name.strip_suffix("_cte").unwrap_or(name)
+                    } else {
+                        name
+                    }
+                });
                 if let Some(model_name) = model_name {
                     let model = graph
                         .get_model(model_name)
@@ -763,7 +774,7 @@ fn validate_semantic_dependencies(graph: &SemanticGraph, graph_metrics: &[Metric
                         return Err(unsupported("metric.raw_computed_column"));
                     }
                 }
-                if metric.r#type == crate::core::MetricType::Simple || column.aggregate_input {
+                if physical_input {
                     continue;
                 }
                 let dependency = if let Some(model_name) = &column.model {
@@ -1143,10 +1154,20 @@ fn prepare_query_input(mut query: QueryInput, input: &mut SemanticInput) -> Resu
     .iter()
     .map(|sql| dialects::fragment(sql, dialect, dialects::Fragment::Scalar))
     .collect::<Result<Vec<_>>>()?;
+    let alias_names: Vec<_> = query.aliases.values().map(String::as_str).collect();
     query.order_by = query
         .order_by
         .iter()
-        .map(|sql| dialects::fragment(sql, dialect, dialects::Fragment::Order))
+        .map(|sql| {
+            // Output aliases are names, not authored SQL. Bind them before
+            // dialect parsing and policy dependency collection so spaces and
+            // ordering keywords inside an alias retain their literal meaning.
+            let (field, suffix) = crate::sql::split_order_field(sql, &alias_names);
+            if let Some((reference, _)) = query.aliases.iter().find(|(_, alias)| *alias == field) {
+                return Ok(format!("{reference} {suffix}").trim_end().to_owned());
+            }
+            dialects::fragment(sql, dialect, dialects::Fragment::Order)
+        })
         .collect::<Result<Vec<_>>>()?;
     let mut prepared_segments = std::collections::HashSet::new();
     for reference in &query.segments {
@@ -2503,6 +2524,30 @@ mod tests {
             matches!(&error, Some(SidemanticError::UnsupportedSemanticFeatures { capabilities }) if capabilities == &vec!["metric.raw_computed_column"]),
             "{error:?}"
         );
+    }
+
+    #[test]
+    fn complete_aggregates_accept_source_cte_aliases_without_weakening_metric_binding() {
+        let mut source = input();
+        source["models"][0]["metrics"] = json!([
+            {"name":"average", "sql":"AVG(orders_cte.amount)", "sql_is_complete":true}
+        ]);
+        let sql =
+            compile_with_semantic_input(&source.to_string(), r#"{"metrics":["orders.average"]}"#)
+                .unwrap();
+        assert!(sql.contains("AVG(orders_cte.amount)"), "{sql}");
+
+        source["models"][0]["metrics"][0]["sql"] = json!("AVG(missing_cte.amount)");
+        assert!(matches!(
+            SemanticInput::from_json(&source.to_string()),
+            Err(SidemanticError::ValidationIssue { .. })
+        ));
+        source["models"][0]["metrics"][0] =
+            json!({"name":"average", "type":"derived", "sql":"orders_cte.revenue"});
+        assert!(matches!(
+            SemanticInput::from_json(&source.to_string()),
+            Err(SidemanticError::ValidationIssue { .. })
+        ));
     }
 
     #[test]

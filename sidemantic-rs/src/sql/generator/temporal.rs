@@ -29,7 +29,11 @@ pub(crate) fn validate_metric(metric: &Metric) -> Result<()> {
             }
             parse_output_frame(frame)?;
         }
-        if let Some(window) = &metric.window {
+        if let Some(window) = metric
+            .window
+            .as_deref()
+            .filter(|window| *window != "unbounded")
+        {
             period_interval(window)?;
         }
     }
@@ -293,7 +297,11 @@ impl SqlGenerator<'_> {
         let frame = if let Some(frame) = &metric.window_frame {
             frame.clone()
         } else if metric.grain_to_date.is_none() {
-            if let Some(window) = &metric.window {
+            if let Some(window) = metric
+                .window
+                .as_deref()
+                .filter(|window| *window != "unbounded")
+            {
                 let (amount, unit) = period_interval(window)?;
                 format!("RANGE BETWEEN INTERVAL '{amount} {unit}' PRECEDING AND CURRENT ROW")
             } else {
@@ -508,6 +516,27 @@ mod tests {
             },
         ];
         (graph, dimensions)
+    }
+
+    #[test]
+    fn explicit_unbounded_window_preserves_running_total_frame() {
+        let (graph, dimensions) = grouped_graph();
+        let generator = SqlGenerator::new(&graph);
+        let mut metric = Metric::sum("running", "revenue");
+        metric.r#type = MetricType::Cumulative;
+        metric.window = Some("unbounded".into());
+        validate_metric(&metric).unwrap();
+        let explicit = generator
+            .cumulative_window_sql(&metric, &dimensions, "day__month")
+            .unwrap();
+        metric.window = None;
+        let implicit = generator
+            .cumulative_window_sql(&metric, &dimensions, "day__month")
+            .unwrap();
+        assert_eq!(explicit, implicit);
+        assert!(explicit.contains("ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW"));
+        metric.window = Some("invalid".into());
+        assert!(validate_metric(&metric).is_err());
     }
 
     #[test]

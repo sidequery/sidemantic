@@ -117,15 +117,17 @@ impl SqlGenerator<'_> {
             if !output_names.insert(dimension.alias.to_ascii_lowercase()) {
                 return Err(unsupported("output_alias"));
             }
-            let mut expression = self.conversion_source_expression(model, &dimension.name)?;
-            if let Some(grain) = &dimension.granularity {
-                expression = self.date_trunc_sql(grain, &expression)?;
-            }
+            let expression = self.conversion_source_expression(model, &dimension.name)?;
             let internal = format!("__funnel_group_{index}");
             projection.push(format!("{expression} AS {internal}"));
-            secured
-                .dimensions
-                .push(crate::core::Dimension::categorical(&internal));
+            let mut group_dimension = crate::core::Dimension::categorical(&internal);
+            if let Some(grain) = &dimension.granularity {
+                // Bucket in the first-step grouping, matching the sequential
+                // planner's source grain. Pre-bucketing the repeated source can
+                // give DuckDB incorrect NULL ordering statistics through joins.
+                group_dimension.sql = Some(self.date_trunc_sql(grain, &internal)?);
+            }
+            secured.dimensions.push(group_dimension);
             inner_dimensions.push(DimensionRef {
                 model: model.name.clone(),
                 name: internal.clone(),
@@ -206,13 +208,9 @@ impl SqlGenerator<'_> {
             output.join(", ")
         );
         let mut order = Vec::new();
+        let names: Vec<_> = output_names.iter().map(String::as_str).collect();
         for item in &query.order_by {
-            let (field, direction) = item
-                .rsplit_once(' ')
-                .filter(|(_, direction)| {
-                    direction.eq_ignore_ascii_case("asc") || direction.eq_ignore_ascii_case("desc")
-                })
-                .unwrap_or((item, ""));
+            let (field, direction) = crate::sql::split_order_field(item, &names);
             let name = field
                 .strip_prefix(&format!("{}.", model.name))
                 .unwrap_or(field);
@@ -328,13 +326,13 @@ impl SqlGenerator<'_> {
             }
         }
         let mut ordering = Vec::new();
+        let names: Vec<_> = dimensions
+            .iter()
+            .map(|dimension| dimension.alias.as_str())
+            .chain(std::iter::once(metric.name.as_str()))
+            .collect();
         for item in &query.order_by {
-            let (field, direction) = item
-                .rsplit_once(' ')
-                .filter(|(_, direction)| {
-                    direction.eq_ignore_ascii_case("asc") || direction.eq_ignore_ascii_case("desc")
-                })
-                .unwrap_or((item, ""));
+            let (field, direction) = crate::sql::split_order_field(item, &names);
             let alias =
                 if field == metric.name || field == format!("{}.{}", model.name, metric.name) {
                     &metric.name
@@ -450,6 +448,70 @@ impl SqlGenerator<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn both_conversion_algorithms_accept_null_ordering_but_reject_nonoutputs() {
+        crate::semantic_input::with_semantic_stack(|| {
+            for multistep in [false, true] {
+                let mut metric = Metric::new("funnel");
+                metric.r#type = MetricType::Conversion;
+                metric.entity = Some("user_id".into());
+                if multistep {
+                    metric.steps = Some(vec![
+                        "event_type = 'signup'".into(),
+                        "event_type = 'buy'".into(),
+                    ]);
+                } else {
+                    metric.base_event = Some("signup".into());
+                    metric.conversion_event = Some("buy".into());
+                }
+                let mut graph = SemanticGraph::new();
+                graph
+                    .add_model(
+                        Model::new("events", "id")
+                            .with_table("events")
+                            .with_dimension(crate::core::Dimension::time("timestamp"))
+                            .with_dimension(crate::core::Dimension::categorical("event_type"))
+                            .with_metric(metric),
+                    )
+                    .unwrap();
+                let generator = SqlGenerator::new(&graph);
+                let reference = MetricRef {
+                    model: "events".into(),
+                    name: "funnel".into(),
+                    alias: "funnel".into(),
+                    graph_metric: false,
+                };
+                for suffix in ["ASC NULLS FIRST", "DESC NULLS LAST", "NULLS LAST"] {
+                    let query =
+                        SemanticQuery::new().with_order_by(vec![format!("events.funnel {suffix}")]);
+                    let sql = generator
+                        .generate_scoped_conversion(&query, &reference, &[])
+                        .unwrap();
+                    assert!(
+                        sql.contains(&format!("ORDER BY \"funnel\" {suffix}")),
+                        "{sql}"
+                    );
+                    polyglot_sql::parse_one(&sql, DialectType::DuckDB).unwrap();
+                }
+                for field in [
+                    "funnel; SELECT 2",
+                    "funnel DESC LIMIT 1",
+                    "random()",
+                    "missing",
+                ] {
+                    let query = SemanticQuery::new().with_order_by(vec![field.into()]);
+                    assert!(matches!(
+                        generator.generate_scoped_conversion(&query, &reference, &[]),
+                        Err(SidemanticError::UnsupportedSemanticFeatures { capabilities })
+                            if capabilities == vec!["metric.conversion_order_by"]
+                    ));
+                }
+            }
+            Ok(())
+        })
+        .unwrap();
+    }
 
     #[test]
     fn multistep_requires_a_time_dimension() {

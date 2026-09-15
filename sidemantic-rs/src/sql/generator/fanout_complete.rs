@@ -14,6 +14,7 @@ fn unsupported(shape: &str) -> SidemanticError {
 
 struct Inputs<'a> {
     generator: &'a SqlGenerator<'a>,
+    owner: &'a str,
     model: Model,
     names: HashSet<String>,
     references: Vec<String>,
@@ -32,8 +33,7 @@ impl Inputs<'_> {
         let mut metric = Metric::sum(&name, sql);
         metric.filters = filters.to_vec();
         self.model.metrics.push(metric);
-        self.references
-            .push(format!("{}.{}", self.model.name, name));
+        self.references.push(format!("{}.{}", self.owner, name));
         self.generator.quote_identifier(&name)
     }
 }
@@ -71,6 +71,7 @@ pub(super) fn generate_entity_aggregates(
         .collect();
     let mut inputs = Inputs {
         generator,
+        owner,
         model: model.clone(),
         names,
         references: Vec::new(),
@@ -147,9 +148,9 @@ pub(super) fn generate_entity_aggregates(
         };
         selections.push(format!("{sql} AS {}", generator.quote_identifier(alias)));
     }
-    // COUNT(*) can be the only output, but the row compiler still needs one
-    // projected input when no keys or dimensions were required.
-    if inputs.references.is_empty() && dimensions.is_empty() {
+    // COUNT(*) can be the only output. Retain its source in the row query even
+    // when every grouping dimension belongs to a different model.
+    if inputs.references.is_empty() {
         inputs.add("1".into(), &[]);
     }
     let mut graph = generator.graph.clone();
@@ -167,7 +168,13 @@ pub(super) fn generate_entity_aggregates(
     rows.ungrouped = true;
     rows.with_totals = false;
     rows.use_preaggregations = false;
-    let row_sql = row_generator.generate_from_model(&rows, Some(owner))?;
+    // Preserve the requested dimension domain. Ordinary COUNT projects its
+    // input in the owner CTE, so a missing source contributes NULL and counts
+    // zero. Complete COUNT(*) intentionally counts the null-extended SQL row,
+    // matching the complete-expression contract of the reference compiler.
+    let source = row_generator
+        .query_base_model(dimensions, &row_generator.parse_metric_refs(&rows.metrics)?);
+    let row_sql = row_generator.generate_from_model(&rows, source.as_deref())?;
     let mut collisions = HashMap::new();
     for dimension in dimensions {
         *collisions.entry(dimension.alias.clone()).or_insert(0usize) += 1;

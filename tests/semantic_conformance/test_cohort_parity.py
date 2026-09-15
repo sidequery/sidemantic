@@ -4,7 +4,7 @@ from datetime import date, datetime
 
 import pytest
 
-from sidemantic import Dimension, Explore, Metric, Model, SecurityPolicy, SemanticLayer
+from sidemantic import Dimension, Explore, Metric, Model, Relationship, SecurityPolicy, SemanticLayer
 from sidemantic.core.semantic_layer import SecurityError
 from sidemantic.semantic_handoff import graph_to_semantic_input
 
@@ -113,6 +113,14 @@ def test_query_grouping_changes_inner_and_outer_grain(layer):
     assert result(layer, dimensions=["events.region"], order_by=["events.region"]) == (
         ["region", "qualified"],
         [("EU", 2), ("US", 1)],
+    )
+
+
+def test_cohort_order_preserves_explicit_null_placement(layer):
+    layer.adapter.execute("update events set region = null where user_id = 'u3'")
+    assert result(layer, dimensions=["events.region"], order_by=["events.region DESC NULLS FIRST"]) == (
+        ["region", "qualified"],
+        [(None, 1), ("US", 1), ("EU", 1)],
     )
 
 
@@ -304,18 +312,13 @@ def test_nonexistent_explicit_owner_does_not_fall_back_to_entity_match(layer):
 
 
 @pytest.mark.parametrize("layer", ["rust_owned"], indirect=True)
-@pytest.mark.parametrize(
-    "mutation", ["unowned", "unknown_metric", "filled_ignored_offset", "wrapper", "joined_dimension"]
-)
+@pytest.mark.parametrize("mutation", ["unowned", "unknown_metric", "wrapper", "joined_dimension"])
 def test_owned_graph_cohort_unsupported_shapes_remain_gated(layer, mutation):
     query = {}
     if mutation == "unowned":
         layer.graph.metric_owners.clear()
     elif mutation == "unknown_metric":
         layer.graph.metric_owners["ghost"] = "events"
-    elif mutation == "filled_ignored_offset":
-        cohort_metric(layer).fill_nulls_with = 0
-        cohort_metric(layer).time_offset = "1 day"
     elif mutation == "wrapper":
         layer.graph.add_metric(Metric(name="wrapped", type="derived", sql="qualified * 2"))
         query["metrics"] = ["wrapped"]
@@ -328,9 +331,27 @@ def test_owned_graph_cohort_unsupported_shapes_remain_gated(layer, mutation):
                 dimensions=[Dimension(name="region", type="categorical")],
             )
         )
+        layer.graph.models["events"].relationships.append(
+            Relationship(name="other", type="many_to_one", foreign_key="user_id")
+        )
         query["dimensions"] = ["other.region"]
     with pytest.raises(ValueError):
         result(layer, **query)
+
+
+@pytest.mark.parametrize("layer", ["python_owned", "rust_owned"], indirect=True)
+def test_owned_graph_cohort_default_and_ignored_offset_preserve_population(layer):
+    metric = cohort_metric(layer)
+    metric.agg = "sum"
+    metric.sql = "amount"
+    metric.fill_nulls_with = -9
+    metric.time_offset = "1 day"
+    assert result(layer) == (["qualified"], [(103,)])
+    assert result(layer, user_attributes={"tenant": 99}) == (["qualified"], [(-9,)])
+    assert result(layer, dimensions=["events.region"], order_by=["events.region"]) == (
+        ["region", "qualified"],
+        [("EU", 73), ("US", 30)],
+    )
 
 
 @pytest.mark.parametrize("layer", ["python_owned", "rust_owned"], indirect=True)

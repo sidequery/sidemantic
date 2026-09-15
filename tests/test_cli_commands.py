@@ -203,6 +203,8 @@ def test_explain_sql_outputs_planner_json(tmp_path):
         app,
         [
             "explain-sql",
+            "--engine",
+            "python",
             "SELECT * FROM (SELECT order_count, status FROM orders) sq WHERE status = 'completed'",
             "--models",
             str(tmp_path),

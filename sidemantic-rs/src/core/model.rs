@@ -190,6 +190,7 @@ pub enum ComparisonType {
     Wow, // Week over week
     Dod, // Day over day
     Qoq, // Quarter over quarter
+    #[serde(alias = "prior_period")]
     PriorPeriod,
 }
 
@@ -1136,6 +1137,15 @@ impl Model {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prior_period_accepts_python_and_legacy_spellings() {
+        for name in ["prior_period", "priorperiod"] {
+            let comparison: ComparisonType =
+                serde_json::from_value(serde_json::json!(name)).unwrap();
+            assert_eq!(comparison, ComparisonType::PriorPeriod);
+        }
+    }
 
     #[test]
     fn test_dimension_sql_expr() {

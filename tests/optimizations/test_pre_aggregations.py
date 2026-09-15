@@ -4,6 +4,8 @@ from datetime import datetime
 
 import duckdb
 import pytest
+import sqlglot
+from sqlglot import exp
 
 from sidemantic import Dimension, Metric, Model
 from sidemantic.core.pre_aggregation import Index, PreAggregation, RefreshKey, RefreshResult
@@ -1208,7 +1210,10 @@ def test_avg_preaggregation_rolls_up_with_sum_count_state(layer):
     preagg_rows = layer.adapter.execute(preagg_sql).fetchall()
 
     assert "products_preagg_by_category" in preagg_sql
-    assert "SUM(avg_price_raw) / NULLIF(SUM(count_raw), 0)" in preagg_sql
+    expression = sqlglot.parse_one(preagg_sql)
+    assert expression.find(exp.Div) is not None
+    assert expression.find(exp.Nullif) is not None
+    assert {aggregate.this.name for aggregate in expression.find_all(exp.Sum)} == {"avg_price_raw", "count_raw"}
     assert preagg_rows == baseline_rows
 
 
@@ -1296,7 +1301,11 @@ def test_ratio_metric_preaggregation_rebuilds_from_additive_leaves(layer):
     preagg_rows = layer.adapter.execute(preagg_sql).fetchall()
 
     assert "orders_preagg_by_status" in preagg_sql
-    assert "SUM(revenue_raw) / NULLIF(COALESCE(SUM(count_raw), 0), 0)" in preagg_sql
+    expression = sqlglot.parse_one(preagg_sql)
+    assert expression.find(exp.Div) is not None
+    assert expression.find(exp.Nullif) is not None
+    assert expression.find(exp.Coalesce) is not None
+    assert {aggregate.this.name for aggregate in expression.find_all(exp.Sum)} == {"revenue_raw", "count_raw"}
     assert preagg_rows == baseline_rows
 
 
@@ -1511,7 +1520,9 @@ def test_derived_metric_preaggregation_rebuilds_from_additive_leaves(layer):
     preagg_rows = layer.adapter.execute(preagg_sql).fetchall()
 
     assert "orders_preagg_by_status" in preagg_sql
-    assert "SUM(revenue_raw) - SUM(discounts_raw)" in preagg_sql
+    expression = sqlglot.parse_one(preagg_sql)
+    assert expression.find(exp.Sub) is not None
+    assert {aggregate.this.name for aggregate in expression.find_all(exp.Sum)} == {"revenue_raw", "discounts_raw"}
     assert preagg_rows == baseline_rows
 
 

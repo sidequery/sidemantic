@@ -326,13 +326,13 @@ impl SqlGenerator<'_> {
             ));
         }
         let mut order = Vec::new();
+        let names: Vec<_> = output_dimensions
+            .iter()
+            .map(|dimension| dimension.alias.as_str())
+            .chain(std::iter::once(metric.name.as_str()))
+            .collect();
         for item in &query.order_by {
-            let (field, direction) = item
-                .rsplit_once(' ')
-                .filter(|(_, direction)| {
-                    direction.eq_ignore_ascii_case("asc") || direction.eq_ignore_ascii_case("desc")
-                })
-                .unwrap_or((item, ""));
+            let (field, direction) = crate::sql::split_order_field(item, &names);
             let name = field
                 .strip_prefix(&format!("{}.", model.name))
                 .unwrap_or(field);
@@ -475,5 +475,36 @@ mod tests {
                 assert!(sql.contains("HAVING"), "{dialect}: {sql}");
             }
         }
+    }
+
+    #[test]
+    fn owned_graph_cohort_approximate_aggregate_uses_qualified_inner_results() {
+        let input = json!({
+            "version": 1, "input_dialect": "duckdb",
+            "models": [{
+                "name": "events", "table": "events", "primary_key": "id",
+                "dimensions": [{"name": "person", "type": "categorical"}]
+            }],
+            "metrics": [{
+                "name": "qualified", "type": "cohort", "entity": "person",
+                "agg": "approx_count_distinct", "sql": "amount",
+                "inner_metrics": [{"name": "amount", "agg": "sum", "sql": "raw_amount"}],
+                "having": "amount > 10"
+            }],
+            "metric_owners": {"qualified": "events"}
+        });
+        let sql = compile_with_semantic_input(
+            &input.to_string(),
+            &json!({"metrics": ["qualified"]}).to_string(),
+        )
+        .unwrap();
+        // The graph metric's SQL names an inner result, not a source column.
+        assert!(
+            sql.contains("APPROX_COUNT_DISTINCT(cohort_sub.\"amount\")"),
+            "{sql}"
+        );
+        assert!(sql.contains("SUM((\"raw_amount\"))"), "{sql}");
+        assert!(sql.contains("HAVING"), "{sql}");
+        polyglot_sql::parse_one(&sql, DialectType::DuckDB).unwrap();
     }
 }

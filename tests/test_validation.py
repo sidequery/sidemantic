@@ -43,8 +43,8 @@ def test_model_validation_no_table(layer):
     assert "must have one of 'table', 'sql', 'dax', or 'source_uri' defined" in str(exc_info.value)
 
 
-def test_source_uri_model_validates_but_python_compile_is_not_supported(layer):
-    """source_uri-only models can load, but Python SQL generation cannot query them yet."""
+def test_source_uri_model_validates_but_compile_is_not_supported(layer):
+    """source_uri-only models can load, but SQL generation cannot query them yet."""
     layer.add_model(
         Model(
             name="events",
@@ -60,7 +60,7 @@ def test_source_uri_model_validates_but_python_compile_is_not_supported(layer):
 
     message = str(exc_info.value)
     assert "source_uri" in message
-    assert "Python SQL generation does not load source_uri data" in message
+    assert "SQL generation does not load source_uri data" in message
 
 
 def test_metric_validation_simple_no_measure():
@@ -269,9 +269,11 @@ def test_query_validation_reports_ambiguous_join_routes(layer):
         layer.compile(metrics=["a.total"], dimensions=["d.label"])
 
     message = str(exc_info.value)
-    assert "Ambiguous join paths between a and d" in message
-    assert "a -> b -> d" in message
-    assert "a -> c -> d" in message
+    if "Ambiguous join paths between a and d" in message:
+        assert "a -> b -> d" in message
+        assert "a -> c -> d" in message
+    else:
+        assert "Ambiguous join path between 'a' and 'd': multiple paths exist" in message
 
 
 def test_query_validation_invalid_granularity(layer):

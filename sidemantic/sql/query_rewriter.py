@@ -143,6 +143,7 @@ class QueryRewriter:
         enforce_visibility: bool = False,
         use_rust_rewriter: bool | None = None,
         rust_no_fallback: bool | None = None,
+        allow_non_additive_unsafe: bool = False,
     ):
         """Initialize query rewriter.
 
@@ -153,11 +154,18 @@ class QueryRewriter:
             enforce_visibility: Reject semantic references to fields declared ``public: false``
             use_rust_rewriter: Override the environment-controlled Rust rewrite path
             rust_no_fallback: Reject unsupported Rust requirements instead of falling back
+            allow_non_additive_unsafe: Aggregate all snapshots without semi-additive protection
         """
         self.graph = graph
         self.dialect = dialect
         self.use_preaggregations = use_preaggregations
-        self.generator = SQLGenerator(graph, dialect=dialect, enforce_visibility=enforce_visibility)
+        self.allow_non_additive_unsafe = allow_non_additive_unsafe
+        self.generator = SQLGenerator(
+            graph,
+            dialect=dialect,
+            enforce_visibility=enforce_visibility,
+            allow_non_additive_unsafe=allow_non_additive_unsafe,
+        )
         self.enforce_visibility = enforce_visibility
         self._dialect_instance = self.generator._dialect_instance
         self._rewrite_cache: dict[tuple[object, ...], str] = {}
@@ -226,6 +234,8 @@ class QueryRewriter:
                 return sql
             contextual_rust = (
                 user_attributes is not None
+                or self.use_preaggregations
+                or self.allow_non_additive_unsafe
                 or self.enforce_visibility
                 or any(model.security is not None or model.invariant_filters for model in self.graph.models.values())
             )
@@ -235,17 +245,14 @@ class QueryRewriter:
                 self._raise_on_user_cte_name_collision(parsed)
         self.last_engine_selection = {"engine": "rust", "reason": "Rust engine selected"}
         try:
-            capabilities = []
-            if self.use_preaggregations:
-                capabilities.append("query.preaggregations")
-            if capabilities:
-                raise UnsupportedSemanticFeaturesError(capabilities)
             rewritten = rewrite_semantic_input(
                 self.graph,
                 sql,
                 input_dialect="duckdb" if self.dialect == "postgres" else self.dialect,
                 user_attributes=user_attributes,
                 enforce_visibility=self.enforce_visibility,
+                **({"use_preaggregations": True} if self.use_preaggregations else {}),
+                **({"allow_non_additive_unsafe": True} if self.allow_non_additive_unsafe else {}),
                 **({"sql_dialect": self.dialect, "output_dialect": self.dialect} if self.dialect != "duckdb" else {}),
             )
             self.last_engine_selection = {"engine": "rust", "reason": None}

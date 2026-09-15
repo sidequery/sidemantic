@@ -740,6 +740,18 @@ def test_mixed_metric_and_window_dim_filter_pushed_into_model_subquery_in_preagg
     layer.add_model(order_items)
 
     # Filter references BOTH a window dim (next_status) and a metric (revenue)
+    layer.adapter.execute("""
+        create table orders_table (
+            order_id integer, customer_id integer, status varchar,
+            created_at timestamp, order_date date, amount double
+        );
+        insert into orders_table values
+            (1, 1, 'pending', '2025-01-01 09:00:00', '2025-01-01', 50),
+            (2, 1, 'complete', '2025-01-01 10:00:00', '2025-01-01', 200),
+            (3, 2, 'pending', '2025-01-01 11:00:00', '2025-01-01', 5);
+        create table order_items_table (item_id integer, order_id integer, qty integer);
+        insert into order_items_table values (1, 1, 1), (2, 2, 2), (3, 3, 3);
+    """)
     sql = layer.compile(
         metrics=["orders.revenue", "order_items.quantity"],
         dimensions=["orders.order_date"],
@@ -759,3 +771,12 @@ def test_mixed_metric_and_window_dim_filter_pushed_into_model_subquery_in_preagg
     # The outer query should NOT have the window dim filter
     outer_query = sql[sql.rindex("SELECT") :]
     assert "next_status" not in outer_query, "Window dim filter should NOT be in outer WHERE"
+
+    # Order 1 qualifies through its next status; order 2 qualifies through its
+    # own amount. Order 3 is excluded from revenue, while all item rows still
+    # contribute to the independent quantity population.
+    cursor = layer.adapter.execute(sql)
+    assert [column[0] for column in cursor.description] == ["order_date", "revenue", "quantity"]
+    rows = cursor.fetchall()
+    assert len(rows) == 1
+    assert rows[0][1:] == (250.0, 6)

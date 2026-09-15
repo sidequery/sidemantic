@@ -1,4 +1,9 @@
-"""Tests for semantic SQL rewrite planning and explanations."""
+"""Python QueryRewriter optimization rules, candidates, and plan explanations.
+
+These implementation tests compare optimized plans with the Python rewriter's
+unoptimized baseline. Shared SQL execution contracts live in test_sql_rewriter
+and semantic_conformance and run against both engines.
+"""
 
 import pytest
 
@@ -14,7 +19,7 @@ from tests.utils import fetch_columns, fetch_dicts, fetch_rows
 
 @pytest.fixture
 def semantic_layer():
-    layer = SemanticLayer(auto_register=False)
+    layer = SemanticLayer(auto_register=False, engine="python")
 
     orders = Model(
         name="orders",

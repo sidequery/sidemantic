@@ -58,6 +58,25 @@ def test_simple_model_snapshot_is_not_silently_summed(layer):
     assert result(layer, metrics=["snapshots.closing"]) == [(1480,)]
 
 
+def test_explicit_unsafe_snapshot_option_preserves_all_authorized_rows(layer):
+    from sidemantic import Metric
+
+    layer.allow_non_additive_unsafe = True
+    layer.add_metric(Metric(name="wrapped", type="derived", sql="snapshots.closing + 1"))
+    assert result(layer, metrics=["snapshots.closing", "snapshots.activity", "wrapped"]) == [(1480, 36, 1481)]
+    assert result(
+        layer, metrics=["snapshots.closing"], dimensions=["snapshots.account"], order_by=["snapshots.account"]
+    ) == [("A", 420), ("B", 130), ("C", 30), ("D", 900)]
+    assert result(layer, metrics=["snapshots.closing"], user_attributes={"tenant": 2}) == [(999,)]
+    sql = "select closing from snapshots"
+    assert layer.sql(sql, user_attributes={"tenant": 1}).fetchall() == [(1480,)]
+    # The option changes this layer's planning, not the graph annotation.
+    assert layer.graph.models["snapshots"].get_metric("closing").non_additive_dimension == "day"
+    layer.allow_non_additive_unsafe = False
+    assert result(layer, metrics=["snapshots.closing", "wrapped"]) == [(250, 251)]
+    assert layer.sql(sql, user_attributes={"tenant": 1}).fetchall() == [(250,)]
+
+
 def test_declared_snapshot_groups_do_not_become_global_latest_date(layer):
     # The global latest authorized date belongs to C and has a NULL balance.
     assert result(layer, metrics=["snapshots.closing", "snapshots.global_closing"]) == [(250, None)]
@@ -70,6 +89,15 @@ def test_snapshot_groups_preserve_all_null_time_and_latest_null_value(layer):
         dimensions=["snapshots.account"],
         order_by=["snapshots.account"],
     ) == [("A", 170, 100, 6), ("B", 80, 50, 9), ("C", None, 30, 13), ("D", None, None, 8)]
+
+
+def test_snapshot_order_preserves_explicit_null_placement(layer):
+    assert result(
+        layer,
+        metrics=["snapshots.closing"],
+        dimensions=["snapshots.account"],
+        order_by=["snapshots.closing DESC NULLS FIRST", "snapshots.account"],
+    ) == [("C", None), ("D", None), ("A", 170), ("B", 80)]
 
 
 def test_declared_groups_roll_up_into_selected_region(layer):
@@ -205,17 +233,19 @@ def test_snapshot_default_handles_empty_totals_without_creating_groups(layer):
     )
 
 
-def test_filled_snapshot_calculated_wrapper_stays_explicitly_unsupported_in_rust(layer):
+def test_filled_snapshot_calculated_wrapper_uses_final_aggregate_default(layer):
     from sidemantic import Metric
-    from sidemantic.semantic_handoff import UnsupportedSemanticFeaturesError
 
     layer.graph.models["snapshots"].get_metric("closing").fill_nulls_with = -9
     layer.add_metric(Metric(name="wrapped", type="derived", sql="snapshots.closing + 1"))
-    if layer.engine == "rust":
-        with pytest.raises(UnsupportedSemanticFeaturesError):
-            result(layer, metrics=["wrapped"])
-    else:
-        assert result(layer, metrics=["wrapped"]) == [(251,)]
+    assert result(layer, metrics=["wrapped"]) == [(251,)]
+    assert result(layer, metrics=["wrapped"], user_attributes={"tenant": 99}) == [(-8,)]
+    assert result(layer, metrics=["wrapped"], dimensions=["snapshots.account"], order_by=["snapshots.account"]) == [
+        ("A", 171),
+        ("B", 81),
+        ("C", -8),
+        ("D", -8),
+    ]
 
 
 def test_snapshot_and_additive_sibling_keep_distinct_final_defaults(layer):

@@ -269,12 +269,7 @@ JOIN cohort_sizes c USING (cohort_date)"#
         ];
         let mut ordering = Vec::new();
         for item in &query.order_by {
-            let (field, direction) = item
-                .rsplit_once(' ')
-                .filter(|(_, suffix)| {
-                    suffix.eq_ignore_ascii_case("asc") || suffix.eq_ignore_ascii_case("desc")
-                })
-                .unwrap_or((item, ""));
+            let (field, direction) = crate::sql::split_order_field(item, &outputs);
             if !outputs.contains(&field) {
                 return Err(unsupported("order_by"));
             }

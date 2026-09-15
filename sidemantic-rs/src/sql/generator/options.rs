@@ -199,8 +199,11 @@ impl SqlGenerator<'_> {
         if !renamed {
             return Ok(sql);
         }
+        let (inner_sql, used_preaggregation) = sql
+            .strip_suffix("\n-- used_preagg=true")
+            .map_or((sql.as_str(), false), |sql| (sql, true));
         let wrapper = format!(
-            "SELECT {} FROM ({sql}) AS __sidemantic_result",
+            "SELECT {} FROM ({inner_sql}\n) AS __sidemantic_result",
             projections.join(", ")
         );
         #[cfg(target_arch = "wasm32")]
@@ -211,12 +214,18 @@ impl SqlGenerator<'_> {
                 item.this = replace_semantic_columns(item.this.clone(), &replacements)?;
             }
         }
-        if let Some(order) = order_by {
+        let mut result = if let Some(order) = order_by {
             let order = self.emit_expression(&Expression::OrderBy(Box::new(order)))?;
-            Ok(format!("{wrapper} {order}"))
+            format!("{wrapper} {order}")
         } else {
-            Ok(wrapper)
+            wrapper
+        };
+        // Routing metadata belongs to the final statement, not a nested SQL
+        // comment that the next parser can discard or attach to another node.
+        if used_preaggregation {
+            result.push_str("\n-- used_preagg=true");
         }
+        Ok(result)
     }
 }
 
@@ -238,6 +247,21 @@ mod tests {
             )
             .unwrap();
         graph
+    }
+
+    #[test]
+    fn alias_wrapper_preserves_trailing_rollup_marker() {
+        let graph = graph();
+        let generator = SqlGenerator::new(&graph);
+        let sql = generator
+            .alias_result(
+                "SELECT 42 AS revenue\n-- used_preagg=true".into(),
+                &HashMap::from([("revenue".into(), "total".into())]),
+            )
+            .unwrap();
+        assert!(sql.ends_with("\n-- used_preagg=true"), "{sql}");
+        crate::semantic_input::dialects::parse(&sql, DialectType::DuckDB).unwrap();
+        assert!(sql.contains("AS \"total\""), "{sql}");
     }
 
     #[test]

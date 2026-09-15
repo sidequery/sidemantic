@@ -363,6 +363,33 @@ impl SemanticGraph {
         Some(owner)
     }
 
+    /// Whether this SQL instance is a declared many-to-many junction population.
+    pub(crate) fn is_bridge_instance(&self, instance: &str) -> bool {
+        self.relationship_instances
+            .iter()
+            .any(|((source, name), target)| {
+                let Some(model) = self.get_model(source) else {
+                    return false;
+                };
+                model.relationships.iter().any(|relationship| {
+                    if !relationship.active
+                        || relationship.name != *name
+                        || relationship.r#type != RelationshipType::ManyToMany
+                    {
+                        return false;
+                    }
+                    let Some(through) = &relationship.through else {
+                        return false;
+                    };
+                    if source != &model.name || relationship.target_model.is_some() {
+                        instance == format!("{target}$through")
+                    } else {
+                        instance == through
+                    }
+                })
+            })
+    }
+
     pub fn relationship_target_instance(
         &self,
         source: &str,
@@ -798,12 +825,10 @@ impl SemanticGraph {
                 let fk_keys = rel.foreign_key_columns();
                 let pk_keys = if rel.primary_key.is_some() || rel.primary_key_columns.is_some() {
                     rel.primary_key_columns()
-                } else if (instance != canonical || rel.target_model.is_some())
-                    && matches!(
-                        rel.r#type,
-                        RelationshipType::OneToMany | RelationshipType::OneToOne
-                    )
-                {
+                } else if matches!(
+                    rel.r#type,
+                    RelationshipType::OneToMany | RelationshipType::OneToOne
+                ) {
                     model.primary_keys()
                 } else {
                     self.models
@@ -821,15 +846,10 @@ impl SemanticGraph {
                             (model.primary_keys(), fk_keys.clone())
                         }
                     }
-                    RelationshipType::OneToOne
-                        if instance != canonical || rel.target_model.is_some() =>
-                    {
+                    RelationshipType::ManyToOne => (fk_keys.clone(), pk_keys.clone()),
+                    RelationshipType::OneToMany | RelationshipType::OneToOne => {
                         (pk_keys.clone(), fk_keys.clone())
                     }
-                    RelationshipType::ManyToOne | RelationshipType::OneToOne => {
-                        (fk_keys.clone(), pk_keys.clone())
-                    }
-                    RelationshipType::OneToMany => (pk_keys.clone(), fk_keys.clone()),
                 };
 
                 self.adjacency.entry(instance.clone()).or_default().push((
@@ -903,12 +923,10 @@ impl SemanticGraph {
                 let fk_keys = rel.foreign_key_columns();
                 let pk_keys = if rel.primary_key.is_some() || rel.primary_key_columns.is_some() {
                     rel.primary_key_columns()
-                } else if (instance != canonical || rel.target_model.is_some())
-                    && matches!(
-                        rel.r#type,
-                        RelationshipType::OneToMany | RelationshipType::OneToOne
-                    )
-                {
+                } else if matches!(
+                    rel.r#type,
+                    RelationshipType::OneToMany | RelationshipType::OneToOne
+                ) {
                     model.primary_keys()
                 } else {
                     self.models
@@ -926,15 +944,10 @@ impl SemanticGraph {
                             (fk_keys.clone(), model.primary_keys())
                         }
                     }
-                    RelationshipType::OneToOne
-                        if instance != canonical || rel.target_model.is_some() =>
-                    {
+                    RelationshipType::ManyToOne => (pk_keys.clone(), fk_keys.clone()),
+                    RelationshipType::OneToMany | RelationshipType::OneToOne => {
                         (fk_keys.clone(), pk_keys.clone())
                     }
-                    RelationshipType::ManyToOne | RelationshipType::OneToOne => {
-                        (pk_keys.clone(), fk_keys.clone())
-                    }
-                    RelationshipType::OneToMany => (fk_keys.clone(), pk_keys.clone()),
                 };
 
                 self.adjacency
@@ -1067,24 +1080,27 @@ impl SemanticGraph {
         let model_name = parts[0];
         let field_with_granularity = parts[1];
 
-        // Check for granularity suffix (e.g., order_date__month)
-        let (field_name, granularity) =
-            if let Some((field, gran)) = field_with_granularity.rsplit_once("__") {
-                if field.is_empty() || gran.is_empty() {
-                    return Err(SidemanticError::InvalidReference {
-                        reference: reference.to_string(),
-                    });
-                }
-                (field.to_string(), Some(gran.to_string()))
-            } else {
-                (field_with_granularity.to_string(), None)
-            };
-
-        // Verify model exists
-        if self.get_model(model_name).is_none() {
+        let model = self.get_model(model_name).ok_or_else(|| {
             let available: Vec<&str> = self.models.keys().map(|s| s.as_str()).collect();
-            return Err(SidemanticError::model_not_found(model_name, &available));
-        }
+            SidemanticError::model_not_found(model_name, &available)
+        })?;
+
+        // Exact public fields win over the granularity syntax, including names
+        // resembling internal helpers such as __fanout_rank_0.
+        let (field_name, granularity) = if model.get_metric(field_with_granularity).is_some()
+            || model.get_dimension(field_with_granularity).is_some()
+        {
+            (field_with_granularity.to_string(), None)
+        } else if let Some((field, gran)) = field_with_granularity.rsplit_once("__") {
+            if field.is_empty() || gran.is_empty() {
+                return Err(SidemanticError::InvalidReference {
+                    reference: reference.to_string(),
+                });
+            }
+            (field.to_string(), Some(gran.to_string()))
+        } else {
+            (field_with_granularity.to_string(), None)
+        };
 
         Ok((model_name.to_string(), field_name, granularity))
     }
@@ -1097,6 +1113,36 @@ mod tests {
         ComparisonType, Dimension, Metric, PreAggregation, PreAggregationType, Relationship,
     };
     use crate::core::parameter::{Parameter, ParameterType};
+
+    #[test]
+    fn exact_field_names_take_precedence_over_granularity_suffixes() {
+        let mut graph = SemanticGraph::new();
+        graph
+            .add_model(
+                Model::new("orders", "id")
+                    .with_metric(Metric::count("__fanout_rank_0"))
+                    .with_metric(Metric::count("__sidemantic_filtered_2"))
+                    .with_dimension(Dimension::categorical("__sidemantic_filtered_1_raw"))
+                    .with_dimension(Dimension::categorical("literal__month"))
+                    .with_dimension(Dimension::time("day")),
+            )
+            .unwrap();
+        for name in [
+            "__fanout_rank_0",
+            "__sidemantic_filtered_2",
+            "__sidemantic_filtered_1_raw",
+            "literal__month",
+        ] {
+            assert_eq!(
+                graph.parse_reference(&format!("orders.{name}")).unwrap(),
+                ("orders".into(), name.into(), None)
+            );
+        }
+        assert_eq!(
+            graph.parse_reference("orders.day__month").unwrap(),
+            ("orders".into(), "day".into(), Some("month".into()))
+        );
+    }
 
     fn role(name: &str, target: &str, key: &str) -> Relationship {
         let mut relationship = Relationship::many_to_one(name).with_keys(key, "id");
@@ -1256,7 +1302,11 @@ mod tests {
             assert_eq!(path.steps[1].from_keys, vec![key.to_string()]);
             assert_eq!(graph.get_model(&bridge).unwrap().name, "links");
             assert_eq!(graph.role_root_owner(&bridge), Some("orders"));
+            assert!(graph.is_bridge_instance(&bridge));
+            assert!(!graph.is_bridge_instance(name));
         }
+        assert!(!graph.is_bridge_instance("links"));
+        assert!(!graph.is_bridge_instance("orders"));
     }
 
     #[test]
@@ -1693,6 +1743,35 @@ mod tests {
     }
 
     #[test]
+    fn one_to_one_uses_local_key_and_remote_foreign_key_in_both_directions() {
+        for explicit_key in [false, true] {
+            let mut graph = SemanticGraph::new();
+            let mut relationship = Relationship::new("regions");
+            relationship.r#type = RelationshipType::OneToOne;
+            relationship.foreign_key = Some("region_record_id".into());
+            if explicit_key {
+                relationship.primary_key = Some("region_id".into());
+            }
+            graph
+                .add_model(
+                    Model::new("sales", "region_id")
+                        .with_table("sales")
+                        .with_relationship(relationship),
+                )
+                .unwrap();
+            graph
+                .add_model(Model::new("regions", "region_record_id").with_table("regions"))
+                .unwrap();
+            let forward = graph.find_join_path("sales", "regions").unwrap();
+            assert_eq!(forward.steps[0].from_keys, vec!["region_id"]);
+            assert_eq!(forward.steps[0].to_keys, vec!["region_record_id"]);
+            let reverse = graph.find_join_path("regions", "sales").unwrap();
+            assert_eq!(reverse.steps[0].from_keys, vec!["region_record_id"]);
+            assert_eq!(reverse.steps[0].to_keys, vec!["region_id"]);
+        }
+    }
+
+    #[test]
     fn test_one_to_one_omitted_key_defaults_to_id() {
         let mut graph = SemanticGraph::new();
 
@@ -1844,6 +1923,8 @@ mod tests {
 
         let path = graph.find_join_path("orders", "products").unwrap();
         assert_eq!(path.steps.len(), 2);
+        assert!(graph.is_bridge_instance("order_items"));
+        assert!(!graph.is_bridge_instance("products"));
 
         // orders -> order_items
         assert_eq!(path.steps[0].from_model, "orders");

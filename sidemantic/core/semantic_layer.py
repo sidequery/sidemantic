@@ -1367,6 +1367,7 @@ class SemanticLayer:
                     dimensions,
                     input_dialect="duckdb" if self.dialect == "postgres" else self.dialect,
                     rust_module=self._rust_module,
+                    **({"allow_non_additive_unsafe": True} if self.allow_non_additive_unsafe else {}),
                 )
             except (RustBackendUnavailableError, UnsupportedSemanticFeaturesError) as exc:
                 if self._strict_rust_query_validation or self._rust_no_fallback:
@@ -1574,6 +1575,7 @@ class SemanticLayer:
             "preagg_schema": self.preagg_schema,
             "user_attributes": user_attributes,
             "enforce_visibility": self.enforce_visibility,
+            **({"allow_non_additive_unsafe": True} if self.allow_non_additive_unsafe else {}),
         }
 
         try:
@@ -1635,7 +1637,10 @@ class SemanticLayer:
             # subquery position. CTEs inside subqueries are valid SQL in
             # all target databases and naturally scoped, avoiding name
             # collisions with CTEs in the post_process SQL.
-            return post_process.replace("{inner}", stripped)
+            # Native compilation can leave a routing marker (or source SQL can
+            # end in a line comment). Terminate it before the wrapper's closing
+            # parenthesis, preserving the SQL and its comments verbatim.
+            return post_process.replace("{inner}", stripped + "\n")
 
         return inner_sql
 
@@ -2229,6 +2234,7 @@ class SemanticLayer:
             self.dialect,
             self.use_preaggregations,
             self.enforce_visibility,
+            self.allow_non_additive_unsafe,
             self._explicit_engine,
             self._use_rust_sql_generator,
             self._rust_no_fallback,
@@ -2290,6 +2296,7 @@ class SemanticLayer:
             enforce_visibility=self.enforce_visibility,
             use_rust_rewriter=self._use_rust_sql_generator if self._explicit_engine else None,
             rust_no_fallback=self._rust_no_fallback,
+            allow_non_additive_unsafe=self.allow_non_additive_unsafe,
         )
         explanation = rewriter.explain(query, strict=strict)
         self.last_engine_selection = rewriter.last_engine_selection

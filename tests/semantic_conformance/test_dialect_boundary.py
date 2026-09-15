@@ -66,6 +66,11 @@ def test_native_declared_graph_and_query_syntax(layer, dialect, expression, filt
     }
     sql = compile_semantic_input(layer.graph, query, input_dialect=dialect)
     assert layer.adapter.execute(sql).fetchall() == [("a", 10), (None, 5)]
+    # Quoted metric references must also resolve to the aggregate output,
+    # retaining explicit ordering rather than leaking the physical qualifier.
+    query["order_by"] = [order_sql.replace("label", "value").replace("DESC", "ASC")]
+    sql = compile_semantic_input(layer.graph, query, input_dialect=dialect)
+    assert layer.adapter.execute(sql).fetchall() == [(None, 5), ("a", 10)]
     assert graph_to_semantic_input(layer.graph, input_dialect=dialect) == before
 
 

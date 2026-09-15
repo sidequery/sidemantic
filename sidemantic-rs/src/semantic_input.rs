@@ -20,6 +20,7 @@ use crate::sql::{QueryRewriter, SemanticQuery, SqlGenerator};
 mod calculations;
 mod dates;
 pub(crate) mod dialects;
+mod fragments;
 mod literals;
 mod policies;
 
@@ -177,13 +178,20 @@ fn expression_language(raw: &mut Map<String, Value>, path: &str) -> Result<()> {
             }
         }
     }
+    // DAX source is provenance once the host has supplied an executable SQL,
+    // table, or simple aggregate translation. Never run untranslated DAX here.
+    let translated = ["sql", "table", "agg"].iter().any(|field| {
+        raw.get(*field)
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.is_empty())
+    });
     if let Some(value) = raw.remove("dax") {
-        if !value.is_null() {
+        if !value.is_null() && !translated {
             return Err(unsupported(format!("{path}.dax")));
         }
     }
     if let Some(value) = raw.remove("expression_language") {
-        if !value.is_null() && value != "sql" {
+        if !value.is_null() && value != "sql" && !(value == "dax" && translated) {
             return Err(unsupported(format!("{path}.expression_language")));
         }
     }
@@ -552,7 +560,10 @@ fn decode_metric(
     exemplar.logical_data_type = Some(String::new());
     exemplar.sql_is_complete = true;
     let metric = project(raw, exemplar, path)?;
-    if metric.agg == Some(crate::core::Aggregation::ApproxCountDistinct) && !model_local {
+    if metric.agg == Some(crate::core::Aggregation::ApproxCountDistinct)
+        && !model_local
+        && !(metric.r#type == crate::core::MetricType::Cohort && owner.is_some())
+    {
         return Err(unsupported("metric.approx_count_distinct_model_scope"));
     }
     if metric.non_additive_dimension.is_some() {
@@ -613,14 +624,12 @@ fn decode_relationship(value: Value, path: &str) -> Result<Relationship> {
 fn decode_model(value: Value, path: &str) -> Result<Model> {
     let mut raw = object(value, path)?;
     expression_language(&mut raw, path)?;
-    for (field, capability) in [
-        ("schema_exposure", "model.schema_exposure"),
-        ("auto_dimensions", "model.auto_dimensions"),
-        ("extends", "model.inheritance"),
-    ] {
-        reject_active(&mut raw, field, capability)?;
-    }
+    reject_active(&mut raw, "extends", "model.inheritance")?;
     // These declarations are retained and checked separately from core models.
+    // Schema exposure is applied by host introspection before dimensions enter
+    // the handoff. Native compilation uses only those explicit dimensions.
+    raw.remove("schema_exposure");
+    raw.remove("auto_dimensions");
     raw.remove("security");
     raw.remove("invariant_filters");
     if let Some(value) = raw.remove("pre_aggregations") {
@@ -709,7 +718,7 @@ fn decode_model(value: Value, path: &str) -> Result<Model> {
                 .as_deref()
                 .is_none_or(|sql| sql.is_empty() || sql == "*")
         {
-            if primary_keys.len() != 1 {
+            if primary_keys.is_empty() {
                 return Err(unsupported("metric.count_distinct_primary_key"));
             }
             // Keep the default distinct input distinct from explicit raw SQL.
@@ -741,16 +750,65 @@ fn validate_semantic_dependencies(graph: &SemanticGraph, graph_metrics: &[Metric
     let mut dependencies: HashMap<String, Vec<String>> = HashMap::new();
     for (name, metric, context) in definitions {
         let mut metric_dependencies = Vec::new();
+        let source_qualifier = context
+            .and_then(|owner| graph.get_model(owner))
+            .filter(|model| model.sql.is_none())
+            .and_then(|model| model.table.as_deref())
+            .map(|table| dialects::parse(&format!("SELECT * FROM {table}"), DialectType::DuckDB))
+            .transpose()?
+            .and_then(|expression| match expression {
+                polyglot_sql::Expression::Select(select) => select.from,
+                _ => None,
+            })
+            .and_then(|from| from.expressions.into_iter().next())
+            .and_then(|expression| match expression {
+                polyglot_sql::Expression::Table(table) => Some(table.name.name),
+                _ => None,
+            });
+        let deferred_input_aliases: Vec<&str> = metric
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("input_metrics"))
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|input| {
+                ["offset_window", "offset_to_grain", "filter"]
+                    .iter()
+                    .any(|field| input.get(*field).is_some_and(|value| !value.is_null()))
+            })
+            .filter_map(|input| input.get("alias").and_then(Value::as_str))
+            .collect();
+        if metric.r#type == crate::core::MetricType::Cumulative {
+            // Cumulative SQL is a base metric reference, not a scalar SQL
+            // expression. Imports can retain unresolved bases; the temporal
+            // generator resolves them when selected. Keep known edges here so
+            // cycles remain invalid even before a query is compiled.
+            if let Some(reference) = metric.sql.as_ref().or(metric.base_metric.as_ref()) {
+                let mut dependency = reference.clone();
+                if let Some(model_name) = context {
+                    if graph
+                        .get_model(model_name)
+                        .is_some_and(|model| model.get_metric(reference).is_some())
+                    {
+                        dependency = format!("{model_name}.{reference}");
+                    }
+                }
+                metric_dependencies.push(dependency);
+            }
+        }
         // `base` is the generated period-output relation, not a model. Resolve
         // its metric name with the same ownership and cycle rules as other refs.
         let window_dependency = SqlGenerator::window_output_dependency(metric)?;
         for expression in [
             // Cohort SQL consumes inner-result aliases; the cohort generator
             // validates that separate namespace instead of metric dependencies.
-            metric
-                .sql
-                .as_deref()
-                .filter(|_| metric.r#type != crate::core::MetricType::Cohort),
+            metric.sql.as_deref().filter(|_| {
+                !matches!(
+                    metric.r#type,
+                    crate::core::MetricType::Cohort | crate::core::MetricType::Cumulative
+                )
+            }),
             metric.numerator.as_deref(),
             metric.denominator.as_deref(),
             window_dependency.as_deref(),
@@ -760,29 +818,37 @@ fn validate_semantic_dependencies(graph: &SemanticGraph, graph_metrics: &[Metric
         {
             let expression = crate::core::replace_model_placeholder(expression, context)?;
             for column in crate::core::semantic_column_references(&expression)? {
-                let physical_input =
-                    metric.r#type == crate::core::MetricType::Simple || column.aggregate_input;
+                // MetricFlow retains modified input aliases for round-trip;
+                // they are not ordinary metric definitions. Unrelated queries
+                // remain valid, while selected derived SQL still resolves every
+                // input through the generator and rejects unsupported aliases.
+                if column.model.is_none() && deferred_input_aliases.contains(&column.field.as_str())
+                {
+                    continue;
+                }
+                let physical_input = metric.r#type == crate::core::MetricType::Simple
+                    || metric.sql_is_complete
+                    || column.aggregate_input;
                 // Complete aggregates may use the generated source CTE qualifier.
                 // Resolve that alias only for physical inputs, and prefer a real
                 // model of that name when one exists.
                 let model_name = column.model.as_deref().or(context).map(|name| {
                     if physical_input && graph.get_model(name).is_none() {
-                        name.strip_suffix("_cte").unwrap_or(name)
+                        if source_qualifier.as_deref() == Some(name) {
+                            context.unwrap_or(name)
+                        } else {
+                            name.strip_suffix("_cte").unwrap_or(name)
+                        }
                     } else {
                         name
                     }
                 });
                 if let Some(model_name) = model_name {
-                    let model = graph
+                    graph
                         .get_model(model_name)
                         .ok_or_else(|| invalid(&name, format!("unknown model '{model_name}'")))?;
-                    if column.aggregate_input
-                        && model
-                            .get_dimension(&column.field)
-                            .is_some_and(|dimension| dimension.sql_expr() != column.field)
-                    {
-                        return Err(unsupported("metric.raw_computed_column"));
-                    }
+                    // Complete aggregate SQL names physical columns. A semantic
+                    // dimension with the same name does not redefine that input.
                 }
                 if physical_input {
                     continue;
@@ -899,6 +965,8 @@ impl SemanticInput {
                         | "relationship.inactive"
                         | "model.security"
                         | "model.invariant_filters"
+                        | "model.schema_exposure"
+                        | "preaggregation.lambda"
                         | "visibility"
                 )
             })
@@ -950,10 +1018,10 @@ impl SemanticInput {
                     continue;
                 }
                 if !keys.contains_key(relationship.related_model()) {
-                    return Err(invalid(
-                        "relationships",
-                        format!("unknown target {}", relationship.related_model()),
-                    ));
+                    // Models can be loaded independently of their join targets.
+                    // The graph retains this declaration but only builds edges
+                    // between loaded models; queries still resolve every reference.
+                    continue;
                 }
                 if relationship.r#type == crate::core::RelationshipType::ManyToMany
                     && relationship.through.is_some()
@@ -1007,9 +1075,13 @@ impl SemanticInput {
                         // An explicit primary_key records a local/remote key pair.
                         (foreign, primary)
                     };
-                    if relationship.sql.is_none()
-                        && (local.is_empty() || remote.is_empty() || local.len() != remote.len())
-                    {
+                    if relationship.sql.is_none() && (local.is_empty() || remote.is_empty()) {
+                        // An incomplete direct edge is not traversable, but it
+                        // must not block queries against the local model.
+                        relationship.active = false;
+                        continue;
+                    }
+                    if relationship.sql.is_none() && local.len() != remote.len() {
                         return Err(invalid(
                             "relationships",
                             "direct many-to-many join key arity mismatch",
@@ -1037,8 +1109,7 @@ impl SemanticInput {
                 if primary.is_empty() {
                     let primary_model = if relationship.r#type
                         == crate::core::RelationshipType::OneToMany
-                        || (relationship.target_model.is_some()
-                            && relationship.r#type == crate::core::RelationshipType::OneToOne)
+                        || relationship.r#type == crate::core::RelationshipType::OneToOne
                     {
                         &model.name
                     } else {
@@ -1131,6 +1202,8 @@ struct QueryInput {
     #[serde(default)]
     use_preaggregations: bool,
     #[serde(default)]
+    allow_non_additive_unsafe: bool,
+    #[serde(default)]
     skip_default_time_dimensions: bool,
     preagg_database: Option<String>,
     preagg_schema: Option<String>,
@@ -1162,7 +1235,10 @@ fn prepare_query_input(mut query: QueryInput, input: &mut SemanticInput) -> Resu
     )
     .map_err(|error| invalid("query.parameter_values", error))?
     .iter()
-    .map(|sql| dialects::fragment(sql, dialect, dialects::Fragment::Scalar))
+    .map(|sql| {
+        fragments::validate_request_expression(sql, dialect, false)?;
+        dialects::fragment(sql, dialect, dialects::Fragment::Scalar)
+    })
     .collect::<Result<Vec<_>>>()?;
     let alias_names: Vec<_> = query.aliases.values().map(String::as_str).collect();
     query.order_by = query
@@ -1176,6 +1252,7 @@ fn prepare_query_input(mut query: QueryInput, input: &mut SemanticInput) -> Resu
             if let Some((reference, _)) = query.aliases.iter().find(|(_, alias)| *alias == field) {
                 return Ok(format!("{reference} {suffix}").trim_end().to_owned());
             }
+            fragments::validate_request_expression(sql, dialect, true)?;
             dialects::fragment(sql, dialect, dialects::Fragment::Order)
         })
         .collect::<Result<Vec<_>>>()?;
@@ -1267,6 +1344,7 @@ fn compile_semantic_input(input_json: &str, query_json: &str) -> Result<String> 
         offset: payload.offset,
         ungrouped: payload.ungrouped,
         use_preaggregations: payload.use_preaggregations,
+        allow_non_additive_unsafe: payload.allow_non_additive_unsafe,
         skip_default_time_dimensions: payload.skip_default_time_dimensions,
         preagg_database: payload.preagg_database,
         preagg_schema: payload.preagg_schema,
@@ -1347,6 +1425,7 @@ fn validate_semantic_input(input_json: &str, query_json: &str) -> Result<Vec<Str
             offset: query.offset,
             ungrouped: query.ungrouped,
             use_preaggregations: query.use_preaggregations,
+            allow_non_additive_unsafe: query.allow_non_additive_unsafe,
             skip_default_time_dimensions: query.skip_default_time_dimensions,
             preagg_database: query.preagg_database,
             preagg_schema: query.preagg_schema,
@@ -1382,6 +1461,10 @@ struct RewriteContext {
     user_attributes: Option<Map<String, Value>>,
     #[serde(default)]
     enforce_visibility: bool,
+    #[serde(default)]
+    use_preaggregations: bool,
+    #[serde(default)]
+    allow_non_additive_unsafe: bool,
 }
 
 pub fn rewrite_with_semantic_input_context(
@@ -1436,6 +1519,8 @@ fn rewrite_semantic_input_diagnostics(
                 .any(|policy| policy.security.is_some() || !policy.invariant_filters.is_empty());
         let requires_policies = context.user_attributes.is_some() || security_controls;
         let prepare = |graph: &SemanticGraph, query: &mut SemanticQuery| {
+            query.use_preaggregations = context.use_preaggregations;
+            query.allow_non_additive_unsafe = context.allow_non_additive_unsafe;
             query.prepared_policies = policies::prepare_for_rewrite(
                 graph,
                 &input.policies,
@@ -1451,7 +1536,7 @@ fn rewrite_semantic_input_diagnostics(
         // their source names too, before the rewriter allocates any user CTE.
         let policy_definitions = serde_json::to_string(&input.policies)
             .map_err(|error| invalid("rewrite.policy_definitions", error))?;
-        if requires_policies {
+        if requires_policies || context.use_preaggregations || context.allow_non_additive_unsafe {
             rewriter =
                 rewriter.with_query_preparer(&prepare, &policy_definitions, security_controls);
         }
@@ -1478,6 +1563,78 @@ mod tests {
     }
 
     #[test]
+    fn unloaded_relationship_targets_do_not_block_local_queries() {
+        let mut source = input();
+        source["models"][0]["relationships"] = json!([
+            {"name":"customers", "type":"many_to_one", "foreign_key":"customer_id"}
+        ]);
+        let sql =
+            compile_with_semantic_input(&source.to_string(), r#"{"metrics":["orders.revenue"]}"#)
+                .unwrap();
+        assert!(!sql.contains("JOIN"), "{sql}");
+        assert!(compile_with_semantic_input(
+            &source.to_string(),
+            r#"{"metrics":["orders.revenue"],"dimensions":["customers.region"]}"#,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn translated_dax_remains_provenance_without_blocking_sql() {
+        let mut source = input();
+        source["models"][0]["dax"] = json!("FILTER(Orders, TRUE())");
+        source["models"][0]["expression_language"] = json!("dax");
+        source["models"][0]["dimensions"][0]["dax"] = json!("UPPER(Orders[status])");
+        source["models"][0]["dimensions"][0]["expression_language"] = json!("dax");
+        source["models"][0]["dimensions"][0]["sql"] = json!("UPPER(status)");
+        source["models"][0]["metrics"][0]["dax"] = json!("SUM(Orders[amount])");
+        source["models"][0]["metrics"][0]["expression_language"] = json!("dax");
+        let sql =
+            compile_with_semantic_input(&source.to_string(), r#"{"metrics":["orders.revenue"]}"#)
+                .unwrap();
+        assert!(sql.contains("SUM("), "{sql}");
+        assert_eq!(
+            SemanticInput::from_json(&source.to_string())
+                .unwrap()
+                .source,
+            source
+        );
+        let metric = source["models"][0]["metrics"][0].as_object_mut().unwrap();
+        metric.remove("sql");
+        metric.remove("agg");
+        assert!(matches!(
+            SemanticInput::from_json(&source.to_string()),
+            Err(SidemanticError::UnsupportedSemanticFeatures { .. })
+        ));
+    }
+
+    #[test]
+    fn incomplete_direct_many_to_many_does_not_block_local_queries() {
+        let mut source = input();
+        source["models"][0]["relationships"] =
+            json!([{"name":"regions", "type":"many_to_many", "foreign_key":"order_id"}]);
+        source["models"].as_array_mut().unwrap().push(json!({
+            "name":"regions", "table":"regions", "primary_key":"order_id",
+            "dimensions":[{"name":"label", "type":"categorical"}]
+        }));
+        let sql =
+            compile_with_semantic_input(&source.to_string(), r#"{"metrics":["orders.revenue"]}"#)
+                .unwrap();
+        assert!(!sql.contains("JOIN"), "{sql}");
+        assert!(compile_with_semantic_input(
+            &source.to_string(),
+            r#"{"metrics":["orders.revenue"],"dimensions":["regions.label"]}"#
+        )
+        .is_err());
+        assert_eq!(
+            SemanticInput::from_json(&source.to_string())
+                .unwrap()
+                .source,
+            source
+        );
+    }
+
+    #[test]
     fn dependency_validation_binds_model_tokens_without_rewriting_literals() {
         let mut source = input();
         source["models"][0]["metrics"] = json!([
@@ -1488,6 +1645,159 @@ mod tests {
         assert!(validate_with_semantic_input(&source.to_string(), query)
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn unresolved_cumulative_base_only_blocks_queries_that_select_it() {
+        let mut source = input();
+        source["models"][0]["metrics"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({
+                "name":"running", "type":"cumulative", "agg":"sum", "sql":"hours"
+            }));
+        source["models"][0]["dimensions"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({
+                "name":"day", "type":"time", "granularity":"day"
+            }));
+        let sql =
+            compile_with_semantic_input(&source.to_string(), r#"{"metrics":["orders.revenue"]}"#)
+                .unwrap();
+        assert!(sql.contains("SUM("), "{sql}");
+        assert!(compile_with_semantic_input(
+            &source.to_string(),
+            r#"{"metrics":["orders.running"],"dimensions":["orders.day"]}"#,
+        )
+        .is_err());
+        source["models"][0]["metrics"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({
+                "name":"hours", "type":"cumulative", "sql":"running"
+            }));
+        assert!(matches!(
+            SemanticInput::from_json(&source.to_string()),
+            Err(SidemanticError::CircularDependency(_))
+        ));
+    }
+
+    #[test]
+    fn deferred_imported_input_alias_does_not_block_unrelated_metrics() {
+        let mut source = input();
+        source["models"][0]["metrics"].as_array_mut().unwrap().push(json!({
+            "name":"growth", "type":"derived", "sql":"revenue - prior_revenue",
+            "metadata":{"input_metrics":[{"name":"revenue", "alias":"prior_revenue", "offset_window":"7 days"}]}
+        }));
+        let sql =
+            compile_with_semantic_input(&source.to_string(), r#"{"metrics":["orders.revenue"]}"#)
+                .unwrap();
+        assert!(sql.contains("SUM("), "{sql}");
+        assert!(compile_with_semantic_input(
+            &source.to_string(),
+            r#"{"metrics":["orders.growth"]}"#
+        )
+        .is_err());
+        assert_eq!(
+            SemanticInput::from_json(&source.to_string())
+                .unwrap()
+                .source,
+            source
+        );
+    }
+
+    #[test]
+    fn caller_filters_cannot_borrow_trusted_segment_or_policy_scope() {
+        let predicate = "status IN (SELECT status FROM allowed_statuses)";
+        for temporal in [false, true] {
+            let mut source = input();
+            source["models"][0]["segments"] = json!([{"name":"allowed", "sql":predicate}]);
+            source["models"][0]["dimensions"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({
+                    "name":"day", "type":"time", "granularity":"day"
+                }));
+            source["models"][0]["metrics"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({
+                    "name":"running", "type":"cumulative", "sql":"orders.revenue"
+                }));
+            let mut query = if temporal {
+                json!({"metrics":["orders.running"], "dimensions":["orders.day"]})
+            } else {
+                json!({"metrics":["orders.revenue"]})
+            };
+            query["segments"] = json!(["orders.allowed"]);
+            let sql = compile_with_semantic_input(&source.to_string(), &query.to_string()).unwrap();
+            assert!(sql.contains("allowed_statuses"), "{sql}");
+            query.as_object_mut().unwrap().remove("segments");
+            source["models"][0]["invariant_filters"] = json!([predicate]);
+            let sql = compile_with_semantic_input(&source.to_string(), &query.to_string()).unwrap();
+            assert!(sql.contains("allowed_statuses"), "{sql}");
+            query["filters"] = json!([predicate]);
+            for result in [
+                compile_with_semantic_input(&source.to_string(), &query.to_string()).map(|_| ()),
+                validate_with_semantic_input(&source.to_string(), &query.to_string()).map(|_| ()),
+            ] {
+                let error = result.unwrap_err();
+                assert!(
+                    error.to_string().contains("physical data sources"),
+                    "{error}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn complete_ordered_set_aggregate_uses_physical_sort_input() {
+        let mut source = input();
+        source["models"][0]["metrics"] = json!([{
+            "name":"p95", "sql_is_complete":true,
+            "sql":"PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY orders.amount)"
+        }]);
+        let sql = compile_with_semantic_input(&source.to_string(), r#"{"metrics":["orders.p95"]}"#)
+            .unwrap();
+        assert!(
+            sql.contains("WITHIN GROUP") || sql.contains("QUANTILE_CONT"),
+            "{sql}"
+        );
+        assert!(sql.contains("amount"), "{sql}");
+    }
+
+    #[test]
+    fn physical_metric_input_can_use_its_declared_source_table_name() {
+        let mut source = input();
+        source["models"][0]["table"] = json!("sales");
+        source["models"][0]["metrics"][0]["sql"] = json!("sales.amount");
+        let sql =
+            compile_with_semantic_input(&source.to_string(), r#"{"metrics":["orders.revenue"]}"#)
+                .unwrap();
+        assert!(sql.contains("sales.amount"), "{sql}");
+        assert!(sql.contains("FROM sales"), "{sql}");
+        source["models"][0]["metrics"][0]["sql"] = json!("other.amount");
+        assert!(SemanticInput::from_json(&source.to_string()).is_err());
+    }
+
+    #[test]
+    fn schema_exposure_uses_only_host_discovered_dimensions() {
+        let mut source = input();
+        source["required_capabilities"] = json!(["model.schema_exposure"]);
+        source["models"][0]["schema_exposure"] = json!({"private":["secret"]});
+        source["models"][0]["auto_dimensions"] = json!(true);
+        let sql =
+            compile_with_semantic_input(&source.to_string(), r#"{"dimensions":["orders.status"]}"#)
+                .unwrap();
+        assert!(!sql.contains("secret"), "{sql}");
+        assert!(compile_with_semantic_input(
+            &source.to_string(),
+            r#"{"dimensions":["orders.secret"]}"#,
+        )
+        .is_err());
+        let decoded = SemanticInput::from_json(&source.to_string()).unwrap();
+        assert_eq!(decoded.source, source);
     }
 
     #[test]
@@ -1657,7 +1967,7 @@ mod tests {
             ));
         }
         let mut source = input();
-        source["models"][0]["schema_exposure"] = json!({});
+        source["models"][0]["extends"] = json!("base_orders");
         assert!(matches!(
             SemanticInput::from_json(&source.to_string()),
             Err(SidemanticError::UnsupportedSemanticFeatures { .. })
@@ -1698,6 +2008,7 @@ mod tests {
             .remove("unexpected");
         source["models"][0]["pre_aggregations"][0]["union_with_source_data"] = json!(true);
         source["models"][0]["pre_aggregations"][0]["rollups"] = json!(["orders.historical"]);
+        source["required_capabilities"] = json!(["preaggregation.lambda"]);
         let decoded = SemanticInput::from_json(&source.to_string()).unwrap();
         assert!(
             decoded.graph.get_model("orders").unwrap().pre_aggregations[0].union_with_source_data
@@ -1707,6 +2018,45 @@ mod tests {
             decoded.graph.get_model("orders").unwrap().pre_aggregations[0].rollups,
             Some(vec!["orders.historical".into()])
         );
+    }
+
+    #[test]
+    fn sql_rewrite_preaggregations_are_opt_in_and_respect_policies() {
+        let mut source = input();
+        source["models"][0]["pre_aggregations"] = json!([
+            {"name":"total", "measures":["revenue"]}
+        ]);
+        for query in [
+            "SELECT revenue FROM orders",
+            "SELECT revenue AS total FROM orders",
+            "SELECT * FROM (SELECT revenue FROM orders) AS totals",
+        ] {
+            let sql =
+                rewrite_with_semantic_input_context(&source.to_string(), query, "{}").unwrap();
+            assert!(!sql.contains("orders_preagg_total"), "{sql}");
+            assert!(!sql.contains("used_preagg=true"), "{sql}");
+            dialects::parse(&sql, DialectType::DuckDB).unwrap();
+            let sql = rewrite_with_semantic_input_context(
+                &source.to_string(),
+                query,
+                r#"{"use_preaggregations":true}"#,
+            )
+            .unwrap();
+            assert!(sql.contains("orders_preagg_total"), "{sql}");
+            assert!(sql.contains("used_preagg=true"), "{sql}");
+            dialects::parse(&sql, DialectType::DuckDB).unwrap();
+        }
+        source["models"][0]["invariant_filters"] = json!(["not deleted"]);
+        let sql = rewrite_with_semantic_input_context(
+            &source.to_string(),
+            "SELECT revenue FROM orders",
+            r#"{"use_preaggregations":true}"#,
+        )
+        .unwrap();
+        assert!(!sql.contains("orders_preagg_total"), "{sql}");
+        assert!(!sql.contains("used_preagg=true"), "{sql}");
+        dialects::parse(&sql, DialectType::DuckDB).unwrap();
+        assert!(sql.contains("NOT deleted"), "{sql}");
     }
 
     #[test]
@@ -2131,10 +2481,10 @@ mod tests {
     }
 
     #[test]
-    fn count_distinct_uses_only_a_known_single_key() {
+    fn count_distinct_uses_known_single_and_composite_keys() {
         let mut source = input();
         source["models"][0]["metrics"] = json!([{"name":"unique_orders", "agg":"count_distinct"}]);
-        for key in [Value::Null, json!(["tenant_id", "order_id"])] {
+        for key in [Value::Null, json!([])] {
             source["models"][0]["primary_key"] = key;
             assert!(matches!(
                 SemanticInput::from_json(&source.to_string()),
@@ -2150,6 +2500,20 @@ mod tests {
         assert!(sql.contains("COUNT(DISTINCT"));
         assert!(sql.contains("order_id"));
         assert!(!sql.contains("CONCAT"));
+        source["models"][0]["primary_key"] = json!(["tenant_key", "order_key"]);
+        source["models"][0]["dimensions"] = json!([
+            {"name":"tenant_key", "type":"numeric", "sql":"tenant_id + 10"},
+            {"name":"order_key", "type":"numeric", "sql":"order_id + 100"}
+        ]);
+        let sql = compile_with_semantic_input(
+            &source.to_string(),
+            r#"{"metrics":["orders.unique_orders"]}"#,
+        )
+        .unwrap();
+        assert!(sql.contains("COUNT(DISTINCT"), "{sql}");
+        assert!(sql.contains("CONCAT"), "{sql}");
+        assert!(sql.contains("tenant_id + 10"), "{sql}");
+        assert!(sql.contains("order_id + 100"), "{sql}");
     }
 
     #[test]
@@ -2558,11 +2922,11 @@ mod tests {
         source["models"][0]["metrics"][0]["sql"] = json!("SUM(amount)");
         source["models"][0]["dimensions"] =
             json!([{"name":"amount", "type":"numeric", "sql":"amount * 10"}]);
-        let error = SemanticInput::from_json(&source.to_string()).err();
-        assert!(
-            matches!(&error, Some(SidemanticError::UnsupportedSemanticFeatures { capabilities }) if capabilities == &vec!["metric.raw_computed_column"]),
-            "{error:?}"
-        );
+        let sql =
+            compile_with_semantic_input(&source.to_string(), r#"{"metrics":["orders.paid"]}"#)
+                .unwrap();
+        assert!(sql.contains("SUM("), "{sql}");
+        assert!(!sql.contains("* 10"), "{sql}");
     }
 
     #[test]

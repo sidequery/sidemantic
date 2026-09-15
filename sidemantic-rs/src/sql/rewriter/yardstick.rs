@@ -208,7 +208,8 @@ impl Lowerer<'_, '_> {
                     .authored_expression(candidate)
                     .ok()
                     .filter(|expr| reference(expr).is_some());
-                visible = true;
+                // Curly references have the plain measure evaluation context;
+                // only AGGREGATE(...) inherits the visible row predicate.
             } else {
                 while stream
                     .get(end + 1)
@@ -290,6 +291,9 @@ impl Lowerer<'_, '_> {
         map_columns(&mut value, &mut |node| {
             if let Expression::Column(mut column) = node {
                 column.table = None;
+                // Quoting is syntax, not a different context dimension. The
+                // declared dimension expansion may have removed source quotes.
+                column.name.quoted = false;
                 return Ok(Expression::Column(column));
             }
             Ok(node)
@@ -1376,6 +1380,19 @@ fn has_aggregate_semantics(value: &Value) -> bool {
 }
 
 fn expand_groups(expression: &Expression, output: &mut Vec<Expression>) -> Result<()> {
+    // The pinned parser represents inline ROLLUP/CUBE as ordinary functions,
+    // but WITH ROLLUP/CUBE as the typed variants handled below.
+    if let Expression::Function(function) = expression {
+        if ["ROLLUP", "CUBE", "GROUPING SETS"]
+            .iter()
+            .any(|name| function.name.eq_ignore_ascii_case(name))
+        {
+            for child in &function.args {
+                expand_groups(child, output)?;
+            }
+            return Ok(());
+        }
+    }
     let value = encode(expression)?;
     let Some(fields) = value.as_object() else {
         return Ok(());

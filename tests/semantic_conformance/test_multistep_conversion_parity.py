@@ -154,6 +154,16 @@ def test_time_bucket_belongs_to_first_step(layer):
     )
 
 
+@pytest.mark.parametrize("placement", ["FIRST", "LAST"])
+def test_funnel_order_preserves_explicit_null_placement(layer, placement):
+    rows = [("a", 4, 4, 1, 1, 1), ("b", 1, 1, 1, 1, 1)]
+    null_row = [(None, 1, 1, 1, 0, 0)]
+    assert result(layer, dimensions=["events.region"], order_by=[f"events.region ASC NULLS {placement}"]) == (
+        ["region", *COLUMNS],
+        null_row + rows if placement == "FIRST" else rows + null_row,
+    )
+
+
 @pytest.mark.parametrize("layer", ["rust"], indirect=True)
 @pytest.mark.parametrize(
     "expression",
@@ -166,11 +176,21 @@ def test_step_cannot_change_source_scope(layer, expression):
 
 
 @pytest.mark.parametrize("layer", ["rust"], indirect=True)
-@pytest.mark.parametrize("alias", ["TOTAL_ENTITIES", "STEP_2_COUNT", "FUNNEL", "ENTITY", "STEP_1_TS"])
+@pytest.mark.parametrize("alias", ["TOTAL_ENTITIES", "STEP_2_COUNT", "FUNNEL"])
 def test_fixed_output_alias_collisions_are_explicit(layer, alias):
     layer.graph.models["events"].dimensions.append(Dimension(name=alias, sql="region", type="categorical"))
     with pytest.raises(ValueError, match="conversion_output_alias"):
         layer.compile(metrics=["events.funnel"], dimensions=[f"events.{alias}"], user_attributes={"tenant": 1})
+
+
+@pytest.mark.parametrize("layer", ["rust"], indirect=True)
+@pytest.mark.parametrize("alias", ["ENTITY", "STEP_1_TS", "step_2_ts", "STEP_3_TS"])
+def test_output_aliases_can_share_names_with_scoped_internal_columns(layer, alias):
+    layer.graph.models["events"].dimensions.append(Dimension(name=alias, sql="region", type="categorical"))
+    assert result(layer, dimensions=[f"events.{alias}"], order_by=[f"events.{alias}"]) == (
+        [alias, *COLUMNS],
+        [("a", 4, 4, 1, 1, 1), ("b", 1, 1, 1, 1, 1), (None, 1, 1, 1, 0, 0)],
+    )
 
 
 @pytest.mark.parametrize("layer", ["rust"], indirect=True)

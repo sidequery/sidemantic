@@ -5804,6 +5804,12 @@ pub fn validate_query_references(
     let mut errors = Vec::new();
 
     for metric_ref in metrics {
+        // Graph metric names are opaque, and may themselves contain dots.
+        if graph.get_metric(metric_ref).is_some()
+            || context.top_level_metric_names.contains(metric_ref)
+        {
+            continue;
+        }
         if let Some((model_name, metric_name)) = metric_ref.split_once('.') {
             if graph.get_model(model_name).is_none() {
                 errors.push(format!(
@@ -5852,11 +5858,10 @@ pub fn validate_query_references(
                 ));
                 continue;
             }
-            if graph
-                .get_model(model_name)
-                .and_then(|model| model.get_dimension(dim_name))
-                .is_none()
-            {
+            if graph.get_model(model_name).is_some_and(|model| {
+                model.get_dimension(dim_name).is_none()
+                    && !crate::core::semantic_key_names(graph, model).contains(dim_name)
+            }) {
                 errors.push(format!(
                     "Dimension '{dim_name}' not found in model '{model_name}' (referenced in '{dim_ref_for_lookup}')"
                 ));
@@ -5870,6 +5875,16 @@ pub fn validate_query_references(
 
     let mut model_names: BTreeSet<String> = BTreeSet::new();
     for metric_ref in metrics {
+        if graph.get_metric(metric_ref).is_some()
+            || context.top_level_metric_names.contains(metric_ref)
+        {
+            if let Some(sql_ref) = context.top_level_metric_sql_refs.get(metric_ref) {
+                if let Some((model_name, _)) = sql_ref.split_once('.') {
+                    model_names.insert(model_name.to_string());
+                }
+            }
+            continue;
+        }
         if let Some((model_name, _)) = metric_ref.split_once('.') {
             model_names.insert(model_name.to_string());
             continue;
@@ -5918,6 +5933,51 @@ pub fn validate_query_references(
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn validation_resolves_exact_graph_names_and_declared_relationship_keys() {
+        let yaml = r#"
+models:
+  - name: orders
+    table: orders
+    primary_key: id
+    metrics:
+      - name: revenue
+        agg: sum
+        sql: amount
+      - name: order_count
+        agg: count
+    relationships:
+      - name: customers
+        type: many_to_one
+        foreign_key: customer_id
+  - name: customers
+    table: customers
+    primary_key: id
+metrics:
+  - name: finance.revenue_per_order
+    type: ratio
+    numerator: orders.revenue
+    denominator: orders.order_count
+  - name: company.sales.revenue
+    sql: orders.revenue
+"#;
+        let runtime = SidemanticRuntime::from_yaml(yaml).unwrap();
+        for metric in ["finance.revenue_per_order", "company.sales.revenue"] {
+            let errors =
+                runtime.validate_query_references(&[metric.into()], &["orders.customer_id".into()]);
+            assert!(errors.is_empty(), "{errors:?}");
+        }
+        let errors = runtime.validate_query_references(
+            &["company.sales.missing".into()],
+            &["orders.unknown_key".into()],
+        );
+        assert_eq!(errors.len(), 2, "{errors:?}");
+        assert!(errors.iter().any(|error| error.contains("unknown_key")));
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("company.sales.missing")));
+    }
 
     #[test]
     fn test_export_osi_yaml_accepts_out_of_order_graph_metrics() {

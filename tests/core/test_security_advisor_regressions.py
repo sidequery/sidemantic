@@ -7,6 +7,8 @@ Covers:
 """
 
 import pytest
+import sqlglot
+from sqlglot import exp
 
 from sidemantic import Dimension, Metric, Model, SemanticLayer
 from sidemantic.core.security import SecurityPolicy, render_row_filter
@@ -106,7 +108,10 @@ def test_semi_additive_month_grain_uses_last_snapshot():
     assert "CASE WHEN" in normalized_sql
     assert " = MAX(" in normalized_sql
     assert " OVER (PARTITION BY " in normalized_sql
-    assert " ELSE NULL END" in normalized_sql
+    snapshot_case = sqlglot.parse_one(sql, dialect="duckdb").find(exp.Case)
+    assert snapshot_case is not None
+    # An omitted ELSE has the same SQL NULL semantics as an explicit ELSE NULL.
+    assert snapshot_case.args.get("default") is None or isinstance(snapshot_case.args["default"], exp.Null)
     # Correct: last day-of-month per account, summed = 110 + 210 = 320 (NOT naive 620).
     rows = layer.query(metrics=["bal.total_balance"], dimensions=["bal.day__month"]).fetchall()
     assert len(rows) == 1

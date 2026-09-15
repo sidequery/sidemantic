@@ -5381,6 +5381,7 @@ class SQLGenerator:
 
         outer_select_cols = []
         outer_group_cols = []
+        output_names = [*entity_dim_aliases, metric.name]
 
         # Add entity_dimensions to outer SELECT/GROUP BY
         for alias in entity_dim_aliases:
@@ -5419,6 +5420,7 @@ class SQLGenerator:
             inner_group_cols.append(dim_sql)
             outer_select_cols.append(quoted_alias)
             outer_group_cols.append(quoted_alias)
+            output_names.append(alias)
 
         # Join inner select/group after dimensions are added
         inner_select = ",\n    ".join(inner_select_cols + inner_metric_selects)
@@ -5437,18 +5439,7 @@ class SQLGenerator:
             group_by = f"\nGROUP BY {', '.join(outer_group_cols)}"
 
         # Order/limit/offset
-        order_clause = ""
-        if order_by:
-            order_fields = []
-            for field in order_by:
-                field_name = field.split(".", 1)[1] if "." in field else field
-                # Handle "desc"/"asc" suffix
-                parts = field_name.rsplit(" ", 1)
-                if len(parts) == 2 and parts[1].upper() in ("ASC", "DESC"):
-                    order_fields.append(f"{quote_alias(parts[0])} {parts[1].upper()}")
-                else:
-                    order_fields.append(quote_alias(field_name))
-            order_clause = f"\nORDER BY {', '.join(order_fields)}"
+        order_clause = self._specialized_order_clause(order_by, output_names)
 
         limit_clause = f"\nLIMIT {limit}" if limit is not None else ""
         offset_clause = f"\nOFFSET {offset}" if offset is not None else ""

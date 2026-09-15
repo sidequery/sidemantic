@@ -18,8 +18,7 @@ pub(super) fn normalize_transpiled(
     if source != DialectType::Snowflake || target != DialectType::DuckDB {
         return Ok(sql.to_owned());
     }
-    let expression = polyglot_sql::parse_one(sql, target)
-        .map_err(|error| SidemanticError::SqlParse(error.to_string()))?;
+    let expression = super::dialects::parse(sql, target)?;
     let convert_error =
         |error: serde_json::Error| SidemanticError::SqlGeneration(error.to_string());
     let mut value = serde_json::to_value(expression).map_err(convert_error)?;

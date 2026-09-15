@@ -5813,8 +5813,12 @@ def test_lookml_implicit_dimension_group_compiles_against_group_column():
     layer = SemanticLayer()
     layer.graph = graph
     sql = layer.compile(dimensions=["orders.created_date"], metrics=["orders.cnt"])
-    assert "DATE_TRUNC('day', created)" in sql, sql
-    assert "'day', created_date)" not in sql, sql  # never the generated field name
+    layer.conn.execute("CREATE TABLE orders (id INTEGER, created TIMESTAMP)")
+    layer.conn.execute("INSERT INTO orders VALUES (1, '2024-01-02 10:00:00'), (2, '2024-01-02 15:00:00')")
+    rows = layer.conn.execute(sql).fetchall()
+    assert len(rows) == 1
+    day, count = rows[0]
+    assert (day.year, day.month, day.day, count) == (2024, 1, 2, 2)
 
     # Export still round-trips the group with no invented sql.
     out = tempfile.mktemp(suffix=".lkml")

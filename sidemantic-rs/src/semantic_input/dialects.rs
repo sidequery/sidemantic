@@ -86,8 +86,142 @@ pub(crate) fn parse(sql: &str, source: DialectType) -> Result<Expression> {
     let sql = super::literals::source_sql(sql, source)?;
     #[cfg(target_arch = "wasm32")]
     crate::wasm_sql_guard::check(&sql, source)?;
-    polyglot_sql::parse_one(&sql, source)
-        .map_err(|error| SidemanticError::SqlParse(error.to_string()))
+    let mut statements = parse_many(&sql, source)?;
+    if statements.len() != 1 {
+        return Err(SidemanticError::SqlParse(
+            "Expected one SQL statement".into(),
+        ));
+    }
+    Ok(statements.remove(0))
+}
+
+/// QUANTILE_CONT/DISC are absent from the pinned parser's aggregate registry.
+/// Parse their argument lists with its generic aggregate grammar, then restore
+/// the actual name in the AST. ORDER BY, DISTINCT, FILTER and window clauses
+/// must survive; deleting the aggregate ordering changes percentile semantics.
+pub(crate) fn parse_many(sql: &str, dialect: DialectType) -> Result<Vec<Expression>> {
+    use polyglot_sql::expressions::AggregateFunction;
+    use polyglot_sql::tokens::TokenType;
+
+    let mut replacements: HashMap<String, AggregateFunction> = HashMap::new();
+    let mut prepared = sql.to_owned();
+    if sql.to_ascii_uppercase().contains("QUANTILE_") {
+        let stream = Dialect::get(dialect)
+            .tokenize(sql)
+            .map_err(|error| SidemanticError::SqlParse(error.to_string()))?;
+        let offsets = sql
+            .char_indices()
+            .map(|(index, _)| index)
+            .chain([sql.len()])
+            .collect::<Vec<_>>();
+        let mut prefix = "__sidemantic_quantile_".to_owned();
+        while sql.to_ascii_lowercase().contains(&prefix) {
+            prefix.push('_');
+        }
+        prepared.clear();
+        let mut cursor = 0;
+        let mut index = 0;
+        while index + 1 < stream.len() {
+            let token = &stream[index];
+            if token.token_type == TokenType::Identifier
+                || !["QUANTILE_CONT", "QUANTILE_DISC"]
+                    .contains(&token.text.to_ascii_uppercase().as_str())
+                || stream[index + 1].token_type != TokenType::LParen
+                || index > 0 && stream[index - 1].token_type == TokenType::Dot
+            {
+                index += 1;
+                continue;
+            }
+            let open = index + 1;
+            let mut end = open + 1;
+            let mut depth = 1;
+            while end < stream.len() {
+                match stream[end].token_type {
+                    TokenType::LParen => depth += 1,
+                    TokenType::RParen => depth -= 1,
+                    _ => {}
+                }
+                if depth == 0 {
+                    break;
+                }
+                end += 1;
+            }
+            if end == stream.len() {
+                return Err(SidemanticError::SqlParse(
+                    "Unclosed quantile aggregate".into(),
+                ));
+            }
+            let body = &sql[offsets[stream[open].span.end]..offsets[stream[end].span.start]];
+            // RESERVOIR_SAMPLE uses the generic aggregate grammar without a
+            // specialized argument parser in the pinned registry. Only
+            // this root node is renamed; nested calls keep their own identity.
+            let mut parsed = parse_many(&format!("SELECT RESERVOIR_SAMPLE({body})"), dialect)?;
+            let Expression::Select(select) = parsed.remove(0) else {
+                unreachable!()
+            };
+            let Expression::AggregateFunction(mut aggregate) = select.expressions[0].clone() else {
+                return Err(SidemanticError::SqlParse(
+                    "Expected quantile aggregate arguments".into(),
+                ));
+            };
+            aggregate.name = token.text.to_ascii_uppercase();
+            let placeholder = format!("{prefix}{}", replacements.len());
+            replacements.insert(placeholder.clone(), *aggregate);
+            prepared.push_str(&sql[cursor..offsets[token.span.start]]);
+            prepared.push_str(&format!("{placeholder}()"));
+            cursor = offsets[stream[end].span.end];
+            index = end + 1;
+        }
+        prepared.push_str(&sql[cursor..]);
+    }
+    let statements = polyglot_sql::parse(&prepared, dialect)
+        .map_err(|error| SidemanticError::SqlParse(error.to_string()))?;
+    if replacements.is_empty() {
+        return Ok(statements);
+    }
+    fn restore(value: &mut Value, replacements: &HashMap<String, AggregateFunction>) -> Result<()> {
+        match value {
+            Value::Object(fields) => {
+                for child in fields.values_mut() {
+                    restore(child, replacements)?;
+                }
+                for kind in ["function", "aggregate_function"] {
+                    let Some(function) = fields.get(kind) else {
+                        continue;
+                    };
+                    let Some(name) = function.get("name").and_then(Value::as_str) else {
+                        continue;
+                    };
+                    let Some(saved) = replacements.get(&name.to_ascii_lowercase()) else {
+                        continue;
+                    };
+                    let mut aggregate = saved.clone();
+                    if kind == "aggregate_function" {
+                        let wrapper: AggregateFunction =
+                            serde_json::from_value(function.clone())
+                                .map_err(|error| SidemanticError::SqlParse(error.to_string()))?;
+                        aggregate.filter = wrapper.filter;
+                        aggregate.ignore_nulls = wrapper.ignore_nulls.or(aggregate.ignore_nulls);
+                    }
+                    *value =
+                        serde_json::to_value(Expression::AggregateFunction(Box::new(aggregate)))
+                            .map_err(|error| SidemanticError::SqlParse(error.to_string()))?;
+                    break;
+                }
+            }
+            Value::Array(children) => {
+                for child in children {
+                    restore(child, replacements)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+    let mut value = serde_json::to_value(statements)
+        .map_err(|error| SidemanticError::SqlParse(error.to_string()))?;
+    restore(&mut value, &replacements)?;
+    serde_json::from_value(value).map_err(|error| SidemanticError::SqlParse(error.to_string()))
 }
 
 pub(crate) fn query(sql: &str, source: DialectType) -> Result<String> {
@@ -357,6 +491,50 @@ pub(super) fn normalize(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ordered_quantiles_preserve_arguments_order_filter_and_window() {
+        for name in ["quantile_cont", "quantile_disc"] {
+            let sql = format!("SELECT {name}(DISTINCT value, 0.25 ORDER BY sort_key DESC NULLS FIRST) FILTER (WHERE included) OVER (PARTITION BY category), 'é QUANTILE_CONT(x ORDER BY y)' AS label");
+            let parsed = parse(&sql, DialectType::DuckDB).unwrap();
+            let generated = polyglot_sql::generate(&parsed, DialectType::DuckDB).unwrap();
+            assert!(
+                generated.contains(&format!(
+                    "{}(DISTINCT value, 0.25 ORDER BY sort_key DESC NULLS FIRST)",
+                    name.to_ascii_uppercase()
+                )),
+                "{generated}"
+            );
+            assert!(
+                generated.contains("FILTER(WHERE included)")
+                    || generated.contains("FILTER (WHERE included)"),
+                "{generated}"
+            );
+            assert!(generated.contains("PARTITION BY category"), "{generated}");
+            assert!(
+                generated.contains("'é QUANTILE_CONT(x ORDER BY y)'"),
+                "{generated}"
+            );
+            let reparsed = parse(&generated, DialectType::DuckDB).unwrap();
+            assert_eq!(
+                polyglot_sql::generate(&reparsed, DialectType::DuckDB).unwrap(),
+                generated
+            );
+        }
+    }
+
+    #[test]
+    fn nested_quantiles_keep_each_function_identity() {
+        let parsed = parse("SELECT quantile_cont((SELECT quantile_disc(value, 0.5 ORDER BY value) FROM raw), 0.25 ORDER BY rank)", DialectType::DuckDB).unwrap();
+        let generated = polyglot_sql::generate(&parsed, DialectType::DuckDB).unwrap();
+        assert!(generated.contains("QUANTILE_CONT("), "{generated}");
+        assert!(
+            generated.contains("QUANTILE_DISC(value, 0.5 ORDER BY value)"),
+            "{generated}"
+        );
+        assert!(!generated.contains("RESERVOIR_SAMPLE"), "{generated}");
+        assert!(!generated.contains("__sidemantic_quantile_"), "{generated}");
+    }
 
     #[test]
     fn nested_query_emission_uses_production_stack_on_standard_test_thread() {

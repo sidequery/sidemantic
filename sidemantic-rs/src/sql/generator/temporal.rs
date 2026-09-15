@@ -168,6 +168,10 @@ fn period_interval(value: &str) -> Result<(u32, String)> {
 }
 
 impl SqlGenerator<'_> {
+    pub(super) fn window_dimension_alias(dimension: &crate::core::Dimension) -> String {
+        format!("__sidemantic_window_{}", dimension.name)
+    }
+
     pub(super) fn offset_window_lag_rows(
         offset: Option<&str>,
         granularity: Option<&str>,
@@ -366,6 +370,57 @@ impl SqlGenerator<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn window_dimension_uses_separate_source_alias_in_grouping_and_filter() {
+        let input = serde_json::json!({
+            "version": 1, "input_dialect": "duckdb",
+            "models": [{"name": "events", "table": "events", "primary_key": "id",
+                "dimensions": [{"name": "day", "type": "time", "granularity": "day", "window": "MIN(day) OVER ()"}],
+                "metrics": [{"name": "revenue", "agg": "sum", "sql": "amount"}]}]
+        });
+        let sql = crate::semantic_input::compile_with_semantic_input(
+            &input.to_string(),
+            &serde_json::json!({
+                "metrics": ["events.revenue"], "dimensions": ["events.day"],
+                "filters": ["COALESCE(events.day, '2024-01-01') > '2024-01-02'"]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert!(sql.contains("AS __sidemantic_window_day"), "{sql}");
+        assert!(
+            sql.contains("DATE_TRUNC('day', events_cte.__sidemantic_window_day)"),
+            "{sql}"
+        );
+        assert!(
+            sql.contains("COALESCE(events_cte.__sidemantic_window_day"),
+            "{sql}"
+        );
+        polyglot_sql::parse_one(&sql, DialectType::DuckDB).unwrap();
+    }
+
+    #[test]
+    fn graph_calculation_keeps_graph_reference_in_cumulative_base_query() {
+        let input = serde_json::json!({
+            "version": 1, "input_dialect": "duckdb",
+            "models": [{"name": "events", "table": "events", "primary_key": "id",
+                "dimensions": [{"name": "day", "type": "time", "granularity": "day"}],
+                "metrics": [{"name": "revenue", "agg": "sum", "sql": "amount"}]}],
+            "metrics": [
+                {"name": "total", "type": "derived", "sql": "events.revenue"},
+                {"name": "running", "type": "cumulative", "sql": "events.revenue"}
+            ]
+        });
+        let sql = crate::semantic_input::compile_with_semantic_input(
+            &input.to_string(),
+            r#"{"metrics":["total","running"],"dimensions":["events.day"]}"#,
+        )
+        .unwrap();
+        assert!(sql.contains("base.total"), "{sql}");
+        assert!(sql.contains("SUM(base.revenue) OVER"), "{sql}");
+        polyglot_sql::parse_one(&sql, DialectType::DuckDB).unwrap();
+    }
 
     #[test]
     fn explicit_window_requires_a_root_window_capable_function() {

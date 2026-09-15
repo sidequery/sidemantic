@@ -92,7 +92,7 @@ def test_semi_additive_value_is_last_snapshot():
     # Semi-additive: sum of the last snapshot per account (global last-date window
     # collapses to the single latest snapshot when no other grouping is requested).
     sql = layer.compile(metrics=["accounts.balance"])
-    assert "__sidemantic_snapshot_field" in sql
+    assert "MAX(" in sql
     assert "OVER (" in sql
 
     # Grouped by account: last balance per account, summed -> 150 + 70 + 33 = 253.
@@ -362,7 +362,7 @@ def test_graph_metric_wrapping_semi_additive_measure_is_planned():
     )
     layer.add_metric(Metric(name="wrapped_balance", sql="bal.total_balance"))
     sql = layer.compile(metrics=["wrapped_balance"], dimensions=["bal.account"])
-    assert "__sidemantic_snapshot_field" in sql
+    assert "MAX(" in sql
     assert dict(layer.query(metrics=["wrapped_balance"], dimensions=["bal.account"]).fetchall()) == {"A": 110, "B": 210}
 
 

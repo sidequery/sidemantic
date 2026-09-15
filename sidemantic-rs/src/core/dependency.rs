@@ -31,8 +31,8 @@ impl SemanticColumnReference {
 pub fn parse_semantic_expression(sql: &str) -> crate::error::Result<Expression> {
     #[cfg(target_arch = "wasm32")]
     crate::wasm_sql_guard::check(sql, DialectType::DuckDB)?;
-    let statement = polyglot_sql::parse_one(&format!("SELECT {sql}"), DialectType::DuckDB)
-        .map_err(|error| crate::error::SidemanticError::SqlParse(error.to_string()))?;
+    let statement =
+        crate::semantic_input::dialects::parse(&format!("SELECT {sql}"), DialectType::DuckDB)?;
     let Expression::Select(mut select) = statement else {
         return Err(crate::error::SidemanticError::SqlParse(
             "expected scalar expression".into(),

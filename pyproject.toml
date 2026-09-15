@@ -245,7 +245,11 @@ warn_unused_ignores = true
 
 [tool.uv]
 prerelease = "if-necessary"
-required-environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
+# Require binary wheels for the CPython versions exercised by CI, without
+# imposing a Python upper bound on users or requiring future/PyPy wheels.
+required-environments = [
+    "sys_platform == 'linux' and platform_machine == 'x86_64' and implementation_name == 'cpython' and python_version < '3.15'",
+]
 
 [tool.uv.sources]
 sidemantic-rs = { path = "sidemantic-rs" }

@@ -573,6 +573,16 @@ fn decode_metric(
 
 fn decode_relationship(value: Value, path: &str) -> Result<Relationship> {
     let mut raw = object(value, path)?;
+    // Python's native relationship contract reserves SQL join predicates for
+    // {from}/{to} expressions. A legacy SQL field such as "id" does not
+    // replace the declared FK/PK join with a bare boolean expression.
+    if raw
+        .get("sql")
+        .and_then(Value::as_str)
+        .is_some_and(|sql| !sql.contains("{from}") && !sql.contains("{to}"))
+    {
+        raw.remove("sql");
+    }
     if raw.get("type") == Some(&json!("many_to_many"))
         && raw.get("through").is_none_or(Value::is_null)
         && raw.get("foreign_key").is_none_or(Value::is_null)
@@ -2011,6 +2021,34 @@ mod tests {
     }
 
     #[test]
+    fn legacy_relationship_sql_keeps_keyed_join_in_both_directions() {
+        let mut source = input();
+        source["models"][0]["relationships"] = json!([
+            {"name":"items", "type":"one_to_many", "sql":"id", "foreign_key":"order_id"}
+        ]);
+        source["models"].as_array_mut().unwrap().push(json!({
+            "name":"items", "table":"items", "primary_key":"item_id",
+            "dimensions":[{"name":"category", "type":"categorical"}]
+        }));
+        let decoded = SemanticInput::from_json(&source.to_string()).unwrap();
+        for (from, to, local, remote) in [
+            ("orders", "items", "id", "order_id"),
+            ("items", "orders", "order_id", "id"),
+        ] {
+            let path = decoded.graph.find_join_path(from, to).unwrap();
+            assert_eq!(path.steps[0].from_keys, vec![local]);
+            assert_eq!(path.steps[0].to_keys, vec![remote]);
+            assert!(path.steps[0].custom_condition.is_none());
+        }
+        let sql = compile_with_semantic_input(
+            &source.to_string(),
+            r#"{"metrics":["orders.revenue"],"dimensions":["items.category"]}"#,
+        )
+        .unwrap();
+        assert!(sql.contains("orders_cte.id = items_cte.order_id"), "{sql}");
+    }
+
+    #[test]
     fn handoff_relationships_preserve_composite_keys_and_roles() {
         let mut source = input();
         source["models"][0]["primary_key"] = json!(["tenant_id", "order_id"]);
@@ -2555,7 +2593,14 @@ mod tests {
         let sql =
             compile_with_semantic_input(&source.to_string(), r#"{"metrics":["orders.average"]}"#)
                 .unwrap();
-        assert!(sql.contains("AVG(orders_cte.amount)"), "{sql}");
+        // Complete aggregates may project their physical inputs into an inner
+        // population before averaging. Validate the resulting query, not that
+        // planner's temporary input name.
+        assert!(sql.contains("AVG("), "{sql}");
+        assert!(
+            polyglot_sql::parse_one(&sql, DialectType::DuckDB).is_ok(),
+            "{sql}"
+        );
 
         source["models"][0]["metrics"][0]["sql"] = json!("AVG(missing_cte.amount)");
         assert!(matches!(

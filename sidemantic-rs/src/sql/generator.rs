@@ -1351,7 +1351,11 @@ impl<'a> SqlGenerator<'a> {
         .flatten()
         .chain(metric.filters.iter().map(String::as_str))
         {
-            for column in semantic_column_references(fragment)? {
+            let fragment = crate::core::replace_model_placeholder(
+                fragment,
+                self.graph.metric_owner(reference),
+            )?;
+            for column in semantic_column_references(&fragment)? {
                 if let Some(model) = &column.model {
                     if self.graph.get_model(model).is_none() {
                         return Err(SidemanticError::InvalidConfig(format!(
@@ -1404,7 +1408,8 @@ impl<'a> SqlGenerator<'a> {
 
     fn metric_reference_tokens(&self, expression: &str) -> Result<Vec<String>> {
         if self.graph.has_strict_metric_scope() {
-            return Ok(semantic_column_references(expression)?
+            let expression = crate::core::replace_model_placeholder(expression, None)?;
+            return Ok(semantic_column_references(&expression)?
                 .into_iter()
                 .filter(|column| !column.aggregate_input)
                 .map(|column| column.name())
@@ -1670,7 +1675,8 @@ impl<'a> SqlGenerator<'a> {
         models: &mut HashSet<String>,
     ) -> Result<()> {
         if self.graph.has_strict_metric_scope() {
-            for column in semantic_column_references(expr)? {
+            let expr = crate::core::replace_model_placeholder(expr, None)?;
+            for column in semantic_column_references(&expr)? {
                 if let Some(model) = column.model {
                     if self.graph.get_model(&model).is_some() {
                         models.insert(model);
@@ -1876,7 +1882,9 @@ impl<'a> SqlGenerator<'a> {
         let metric = self.metric_for_ref(metric_ref)?;
 
         if self.graph.has_strict_metric_scope() && metric.r#type == MetricType::Derived {
-            for column in semantic_column_references(metric.sql_expr())? {
+            let expression =
+                crate::core::replace_model_placeholder(metric.sql_expr(), Some(&metric_ref.model))?;
+            for column in semantic_column_references(&expression)? {
                 if column.aggregate_input {
                     deps.insert((
                         column.model.unwrap_or_else(|| metric_ref.model.clone()),
@@ -1964,7 +1972,8 @@ impl<'a> SqlGenerator<'a> {
         deps: &mut HashSet<(String, String)>,
     ) -> Result<()> {
         if self.graph.has_strict_metric_scope() {
-            for column in semantic_column_references(expr)? {
+            let expr = crate::core::replace_model_placeholder(expr, Some(default_model))?;
+            for column in semantic_column_references(&expr)? {
                 let model = column.model.unwrap_or_else(|| default_model.to_string());
                 if self.graph.get_model(&model).is_some() {
                     deps.insert((model, column.field));
@@ -5673,8 +5682,9 @@ impl<'a> SqlGenerator<'a> {
         default_model: &str,
         visited: &mut HashSet<(String, String, bool)>,
     ) -> Result<String> {
-        let parsed = parse_semantic_expression(expression)?;
-        let columns = semantic_column_references(expression)?;
+        let expression = crate::core::replace_model_placeholder(expression, Some(default_model))?;
+        let parsed = parse_semantic_expression(&expression)?;
+        let columns = semantic_column_references(&expression)?;
         let has_aggregate = columns.iter().any(|column| column.aggregate_input);
         let mut replacements = HashMap::new();
         for column in columns {

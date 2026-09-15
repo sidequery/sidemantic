@@ -2527,6 +2527,26 @@ mod tests {
     }
 
     #[test]
+    fn compilation_binds_model_placeholders_in_metric_dependency_walks() {
+        for metric in [
+            json!({"name":"value", "agg":"sum", "sql":"({model}.amount)"}),
+            json!({"name":"value", "sql":"SUM({model}.amount)", "sql_is_complete":true}),
+            json!({"name":"value", "type":"derived", "sql":"{model}.revenue * 2"}),
+        ] {
+            let mut source = input();
+            source["models"][0]["metrics"]
+                .as_array_mut()
+                .unwrap()
+                .push(metric);
+            let sql =
+                compile_with_semantic_input(&source.to_string(), r#"{"metrics":["orders.value"]}"#)
+                    .unwrap();
+            assert!(!sql.contains("{model}"), "{sql}");
+            assert!(sql.contains("orders_cte"), "{sql}");
+        }
+    }
+
+    #[test]
     fn complete_aggregates_accept_source_cte_aliases_without_weakening_metric_binding() {
         let mut source = input();
         source["models"][0]["metrics"] = json!([

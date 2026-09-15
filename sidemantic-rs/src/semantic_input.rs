@@ -2023,6 +2023,7 @@ mod tests {
     #[test]
     fn legacy_relationship_sql_keeps_keyed_join_in_both_directions() {
         let mut source = input();
+        source["models"][0]["primary_key"] = json!("id");
         source["models"][0]["relationships"] = json!([
             {"name":"items", "type":"one_to_many", "sql":"id", "foreign_key":"order_id"}
         ]);

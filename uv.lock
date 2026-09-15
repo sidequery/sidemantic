@@ -9,7 +9,7 @@ resolution-markers = [
     "python_full_version < '3.12'",
 ]
 required-markers = [
-    "python_full_version < '3.15' and implementation_name == 'cpython' and platform_machine == 'x86_64' and sys_platform == 'linux'",
+    "python_full_version < '3.15' and implementation_name == 'cpython' and platform_machine == 'x86_64' and platform_python_implementation == 'CPython' and sys_platform == 'linux'",
 ]
 
 [[package]]

@@ -248,7 +248,7 @@ prerelease = "if-necessary"
 # Require binary wheels for the CPython versions exercised by CI, without
 # imposing a Python upper bound on users or requiring future/PyPy wheels.
 required-environments = [
-    "sys_platform == 'linux' and platform_machine == 'x86_64' and implementation_name == 'cpython' and python_version < '3.15'",
+    "sys_platform == 'linux' and platform_machine == 'x86_64' and implementation_name == 'cpython' and platform_python_implementation == 'CPython' and python_version < '3.15'",
 ]
 
 [tool.uv.sources]

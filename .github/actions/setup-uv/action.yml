@@ -17,6 +17,7 @@ runs:
     - uses: astral-sh/setup-uv@v7
       id: uv
       with:
+        version: '0.12.14'
         enable-cache: ${{ inputs.enable-cache }}
         cache-local-path: ${{ runner.temp }}/uv-cache
         cache-suffix: ${{ inputs.suffix }}

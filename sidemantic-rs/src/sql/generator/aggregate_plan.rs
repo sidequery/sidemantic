@@ -56,10 +56,23 @@ impl<'a, 'g> Plan<'a, 'g> {
         &mut self,
         node: &mut serde_json::Value,
         context: Option<&str>,
+        bindings: &HashSet<String>,
     ) -> Result<()> {
         let aggregate_node = crate::core::is_aggregate_ast_node(node);
         if let serde_json::Value::Object(fields) = node {
             let kind = (fields.len() == 1).then(|| fields.keys().next().unwrap().as_str());
+            if kind == Some("lambda") {
+                let lambda = fields.get_mut("lambda").unwrap();
+                let mut bindings = bindings.clone();
+                if let Some(parameters) = lambda["parameters"].as_array() {
+                    bindings.extend(
+                        parameters
+                            .iter()
+                            .filter_map(|parameter| parameter["name"].as_str().map(str::to_owned)),
+                    );
+                }
+                return self.expand_calculation(&mut lambda["body"], context, &bindings);
+            }
             if matches!(
                 kind,
                 Some("window" | "window_function" | "select" | "subquery" | "raw")
@@ -76,6 +89,11 @@ impl<'a, 'g> Plan<'a, 'g> {
                     let columns = semantic_column_references(&sql)?;
                     let mut owners = HashSet::new();
                     for column in columns {
+                        // Hoisting an aggregate out of a lambda would change
+                        // the binding of its local inputs.
+                        if bindings.contains(column.model.as_deref().unwrap_or(&column.field)) {
+                            return Err(unsupported("calculation_shape"));
+                        }
                         let owner = column
                             .model
                             .as_deref()
@@ -117,6 +135,9 @@ impl<'a, 'g> Plan<'a, 'g> {
                     }
                 } else {
                     let column = semantic_column_references(&sql)?.remove(0);
+                    if bindings.contains(column.model.as_deref().unwrap_or(&column.field)) {
+                        return Ok(());
+                    }
                     self.expand(&column.name(), context)?
                 };
                 *node =
@@ -128,12 +149,12 @@ impl<'a, 'g> Plan<'a, 'g> {
         match node {
             serde_json::Value::Object(fields) => {
                 for child in fields.values_mut() {
-                    self.expand_calculation(child, context)?;
+                    self.expand_calculation(child, context, bindings)?;
                 }
             }
             serde_json::Value::Array(children) => {
                 for child in children {
-                    self.expand_calculation(child, context)?;
+                    self.expand_calculation(child, context, bindings)?;
                 }
             }
             _ => {}
@@ -329,7 +350,7 @@ impl<'a, 'g> Plan<'a, 'g> {
                 let sql = crate::core::replace_model_placeholder(sql, resolved.context.as_deref())?;
                 let mut ast = serde_json::to_value(parse_semantic_expression(&sql)?)
                     .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))?;
-                self.expand_calculation(&mut ast, resolved.context.as_deref())?;
+                self.expand_calculation(&mut ast, resolved.context.as_deref(), &HashSet::new())?;
                 let expression = serde_json::from_value(ast)
                     .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))?;
                 self.generator.emit_expression(&expression)?
@@ -497,8 +518,11 @@ pub(super) fn try_generate(
         }
     }
     let mut effective_query;
-    let query = if plan.models.len() == 1 && !query.skip_default_time_dimensions {
+    let query = if !query.skip_default_time_dimensions {
         effective_query = query.clone();
+        // Defaults belong to selected model metric references, not every source
+        // discovered while expanding graph calculations. Resolve them once for
+        // the whole query before creating independent aggregate children.
         effective_query.dimensions =
             generator.apply_default_time_dimensions(&query.metrics, &query.dimensions)?;
         effective_query.skip_default_time_dimensions = true;
@@ -582,16 +606,6 @@ pub(super) fn try_generate(
     }
     if query.ungrouped || !query.table_calculations.is_empty() {
         return Err(unsupported("cross_grain_query_shape"));
-    }
-    if !query.skip_default_time_dimensions
-        && plan.models.iter().any(|model| {
-            generator
-                .graph
-                .get_model(model)
-                .is_some_and(|model| model.default_time_dimension.is_some())
-        })
-    {
-        return Err(unsupported("cross_grain_default_time_dimension"));
     }
     // Independent populations still require a declared, supported model graph.
     for model in plan.models.iter().skip(1) {
@@ -1120,6 +1134,25 @@ mod tests {
     }
 
     #[test]
+    fn aggregate_splitting_preserves_lambda_bindings_and_expands_free_metrics() {
+        let mut graph = graph();
+        graph
+            .add_metric_unvalidated(Metric::derived(
+                "median_plus_count",
+                concat!(
+                    "LIST_AGGREGATE(LIST_TRANSFORM(LIST_DISTINCT(",
+                    "LIST(STRUCT_PACK(k := orders.id, v := orders.amount))), ",
+                    "x -> x.v), 'quantile_cont', 0.5) + customers.customer_count",
+                ),
+            ))
+            .unwrap();
+        let sql = compile(&graph, &["median_plus_count"], &[]).unwrap();
+        assert!(sql.contains("x.v"), "{sql}");
+        assert!(sql.contains("customers_preagg"), "{sql}");
+        assert_valid_sql(&sql);
+    }
+
+    #[test]
     fn inline_filtered_distinct_count_restores_absent_sources_to_zero() {
         let mut graph = graph();
         let mut metric = Metric::derived(
@@ -1500,5 +1533,53 @@ mod tests {
         assert!(sql.contains("customers_preagg"));
         assert!(!sql.contains("orders_preagg AS"));
         assert_valid_sql(&sql);
+    }
+
+    #[test]
+    fn default_time_dimensions_follow_selected_metrics_across_sources() {
+        let mut graph = graph();
+        for (owner, field, grain) in [
+            ("orders", "ordered_at", "month"),
+            ("customers", "signed_up_at", "week"),
+        ] {
+            let mut model = graph.get_model(owner).unwrap().clone();
+            model.dimensions.push(Dimension::time(field));
+            model.default_time_dimension = Some(field.into());
+            model.default_grain = Some(grain.into());
+            graph.replace_model(model).unwrap();
+        }
+        for (metrics, dimensions, skip, expected_month, expected_week) in [
+            (vec!["ratio"], vec![], false, false, false),
+            (
+                vec!["orders.revenue", "customers.customer_count"],
+                vec![],
+                false,
+                true,
+                true,
+            ),
+            (
+                vec!["orders.revenue", "customers.customer_count"],
+                vec!["orders.ordered_at__day"],
+                false,
+                false,
+                true,
+            ),
+            (
+                vec!["orders.revenue", "customers.customer_count"],
+                vec![],
+                true,
+                false,
+                false,
+            ),
+        ] {
+            let query = SemanticQuery::new()
+                .with_metrics(metrics.into_iter().map(str::to_string).collect())
+                .with_dimensions(dimensions.into_iter().map(str::to_string).collect())
+                .with_skip_default_time_dimensions(skip);
+            let sql = SqlGenerator::new(&graph).generate(&query).unwrap();
+            assert_eq!(sql.contains("ordered_at__month"), expected_month, "{sql}");
+            assert_eq!(sql.contains("signed_up_at__week"), expected_week, "{sql}");
+            assert_valid_sql(&sql);
+        }
     }
 }

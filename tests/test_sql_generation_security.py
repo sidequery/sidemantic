@@ -227,9 +227,9 @@ def test_model_ref_rewrite_matches_cte_identifier_quoting(layer):
     references.extend(column.args["table"] for column in parsed.find_all(exp.Column) if column.table == cte.alias)
     assert references
     assert all(ref.args.get("quoted", False) == definition.args.get("quoted", False) for ref in references)
-    layer.adapter.execute("CREATE TABLE orders_table (order_id INTEGER, amount INTEGER)")
-    layer.adapter.execute("INSERT INTO orders_table VALUES (1, 10), (2, 25)")
-    assert layer.adapter.execute(sql).fetchall() == [(35,)]
+    layer.conn.execute("CREATE TABLE orders_table (order_id INTEGER, amount INTEGER)")
+    layer.conn.execute("INSERT INTO orders_table VALUES (1, 10), (2, 25)")
+    assert layer.conn.execute(sql).fetchall() == [(35,)]
 
 
 def test_inline_aggregate_dependency_alias_uses_identifier_quoting(layer):
@@ -256,9 +256,9 @@ def test_inline_aggregate_dependency_alias_uses_identifier_quoting(layer):
     columns = [column for column in parse_one(sql).find_all(exp.Column) if column.name == "order total"]
     assert columns
     assert all(column.this.args.get("quoted") for column in columns)
-    layer.adapter.execute('CREATE TABLE orders_table (id INTEGER, amount INTEGER, "order total" INTEGER)')
-    layer.adapter.execute("INSERT INTO orders_table VALUES (1, 100, 10), (2, 200, 25)")
-    assert layer.adapter.execute(sql).fetchall() == [(35,)]
+    layer.conn.execute('CREATE TABLE orders_table (id INTEGER, amount INTEGER, "order total" INTEGER)')
+    layer.conn.execute("INSERT INTO orders_table VALUES (1, 100, 10), (2, 200, 25)")
+    assert layer.conn.execute(sql).fetchall() == [(35,)]
 
 
 def test_count_metrics_with_filters(layer):

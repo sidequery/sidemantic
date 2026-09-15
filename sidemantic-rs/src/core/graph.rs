@@ -864,7 +864,13 @@ impl SemanticGraph {
                     if rel.r#type == RelationshipType::Cross {
                         None
                     } else {
-                        rel.sql.clone()
+                        // Legacy column-name SQL leaves the keyed join intact.
+                        // Custom predicates use the same placeholder contract
+                        // as semantic-input decoding and the Python graph.
+                        rel.sql
+                            .as_ref()
+                            .filter(|sql| sql.contains("{from}") || sql.contains("{to}"))
+                            .cloned()
                     },
                     rel.edge_id.clone(),
                 ));
@@ -914,6 +920,7 @@ impl SemanticGraph {
                     .sql
                     .as_ref()
                     .filter(|_| rel.r#type != RelationshipType::Cross)
+                    .filter(|sql| sql.contains("{from}") || sql.contains("{to}"))
                     .map(|sql| {
                         sql.replace("{from}", "__TEMP__")
                             .replace("{to}", "{from}")
@@ -1823,6 +1830,33 @@ mod tests {
         assert!(path.has_fan_out());
         assert_eq!(path.fan_out_models(), vec!["orders"]);
         assert_eq!(path.fan_out_boundary(), Some("orders"));
+    }
+
+    #[test]
+    fn legacy_relationship_sql_preserves_forward_and_reverse_keys() {
+        let mut graph = SemanticGraph::new();
+        let mut relationship = Relationship::many_to_one("customers").with_condition("customer_id");
+        relationship.foreign_key = Some("customer_id".into());
+        graph
+            .add_model(
+                Model::new("orders", "order_id")
+                    .with_table("orders")
+                    .with_relationship(relationship),
+            )
+            .unwrap();
+        graph
+            .add_model(Model::new("customers", "customer_key").with_table("customers"))
+            .unwrap();
+        for (from, to, from_key, to_key) in [
+            ("orders", "customers", "customer_id", "customer_key"),
+            ("customers", "orders", "customer_key", "customer_id"),
+        ] {
+            let path = graph.find_join_path(from, to).unwrap();
+            assert_eq!(path.steps.len(), 1);
+            assert!(path.steps[0].custom_condition.is_none());
+            assert_eq!(path.steps[0].from_keys, vec![from_key]);
+            assert_eq!(path.steps[0].to_keys, vec![to_key]);
+        }
     }
 
     #[test]

@@ -7,6 +7,8 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from sidemantic.core.model import Model
+from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
 
 SEMANTIC_INPUT_VERSION = 1
@@ -31,7 +33,18 @@ def _definition(value: BaseModel) -> dict[str, Any]:
     field is absent. Source identity/type fields excluded by authoring exports
     remain part of this compiler input.
     """
-    data = value.model_dump(mode="json", exclude_none=True, exclude_defaults=True)
+    if isinstance(value, Model) and value.extends:
+        # Unresolved children distinguish omitted fields from explicit clears
+        # and default-valued overrides. The receiver applies inheritance.
+        data = value.model_dump(mode="json", exclude_unset=True)
+    else:
+        data = value.model_dump(mode="json", exclude_none=True, exclude_defaults=True)
+    if isinstance(value, Relationship) and value.type in ("one_to_one", "one_to_many") and value.primary_key is None:
+        # TMDL retains the declared source endpoint separately from the model's
+        # primary key. Snapshot that existing endpoint without resolving SQL.
+        source_column = getattr(value, "_tmdl_from_column", None)
+        if isinstance(source_column, str) and source_column.strip():
+            data["primary_key"] = source_column
     for name in ("logical_data_type", "declared_is_time", "edge_id"):
         field_value = getattr(value, name, None)
         if field_value is not None:
@@ -46,7 +59,7 @@ def _definition(value: BaseModel) -> dict[str, Any]:
 
 
 def graph_to_semantic_input(graph: SemanticGraph, *, input_dialect: str = "duckdb") -> dict[str, Any]:
-    """Create an inert versioned snapshot of a resolved semantic graph.
+    """Create an inert versioned snapshot of a semantic graph.
 
     Graph metrics stay at graph scope. Only owners explicitly recorded by the
     graph are transmitted. SQL is copied verbatim; reference binding, dialect
@@ -57,7 +70,8 @@ def graph_to_semantic_input(graph: SemanticGraph, *, input_dialect: str = "duckd
     models = []
     for model in graph.models.values():
         definition = _definition(model)
-        definition["primary_key"] = list(model.primary_key_columns) or None
+        if not model.extends or "primary_key" in model.model_fields_set:
+            definition["primary_key"] = list(model.primary_key_columns) or None
         models.append(definition)
     return {
         "version": SEMANTIC_INPUT_VERSION,

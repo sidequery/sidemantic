@@ -45,6 +45,7 @@ pub(super) fn generate_entity_aggregates(
     dimensions: &[DimensionRef],
     metrics: &[(&Metric, &str)],
     deduplicate: bool,
+    independent_source: bool,
 ) -> Result<String> {
     let model = generator.graph.get_model(owner).unwrap();
     if deduplicate && model.primary_keys().is_empty() {
@@ -168,12 +169,14 @@ pub(super) fn generate_entity_aggregates(
     rows.ungrouped = true;
     rows.with_totals = false;
     rows.use_preaggregations = false;
-    // Preserve the requested dimension domain. Ordinary COUNT projects its
-    // input in the owner CTE, so a missing source contributes NULL and counts
-    // zero. Complete COUNT(*) intentionally counts the null-extended SQL row,
-    // matching the complete-expression contract of the reference compiler.
-    let source = row_generator
-        .query_base_model(dimensions, &row_generator.parse_metric_refs(&rows.metrics)?);
+    // Independent children retain their own population before their grouped
+    // outputs are joined. A single complete expression retains the ordinary
+    // dimension-domain contract, including COUNT(*) on null-extended rows.
+    let source = if independent_source {
+        Some(owner.to_string())
+    } else {
+        row_generator.query_base_model(dimensions, &row_generator.parse_metric_refs(&rows.metrics)?)
+    };
     let row_sql = row_generator.generate_from_model(&rows, source.as_deref())?;
     let mut collisions = HashMap::new();
     for dimension in dimensions {

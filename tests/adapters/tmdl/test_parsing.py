@@ -3155,8 +3155,11 @@ def test_tmdl_many_to_many_on_non_primary_key_column():
     assert re.search(r"ON\s+B_cte\.b_alt\s*=\s*A_cte\.a_alt", sql) or re.search(
         r"ON\s+A_cte\.a_alt\s*=\s*B_cte\.b_alt", sql
     ), sql
-    assert "a_alt AS a_alt" in sql
-    assert "b_alt AS b_alt" in sql
+    layer.adapter.execute("create table A(id varchar, a_alt varchar)")
+    layer.adapter.execute("create table B(id varchar, b_alt varchar, b_label varchar)")
+    layer.adapter.execute("insert into A values ('a1', 'shared'), ('a2', 'shared')")
+    layer.adapter.execute("insert into B values ('b1', 'shared', 'matched')")
+    assert layer.adapter.execute(sql).fetchall() == [("matched", 2)]
 
 
 def test_tmdl_one_to_one_recovers_keyless_source_key():
@@ -3207,8 +3210,12 @@ def test_tmdl_one_to_one_recovers_keyless_source_key():
     layer = SemanticLayer()
     layer.graph = graph
     sql = layer.compile(metrics=["A.a_count"], dimensions=["B.b_label"])
-    assert "a_key AS a_key" in sql
     assert "A_cte.a_key" in sql
+    layer.adapter.execute("create table A(a_key varchar)")
+    layer.adapter.execute("create table B(b_key varchar, b_label varchar)")
+    layer.adapter.execute("insert into A values ('joined')")
+    layer.adapter.execute("insert into B values ('joined', 'matched')")
+    assert layer.adapter.execute(sql).fetchall() == [("matched", 1)]
 
 
 def test_tmdl_one_to_one_alternate_key_does_not_shadow_real_key():
@@ -3273,7 +3280,11 @@ def test_tmdl_one_to_one_alternate_key_does_not_shadow_real_key():
     layer.graph = graph
     sql = layer.compile(metrics=["Orders.cnt"], dimensions=["OrderMeta.channel"])
     assert "Orders_cte.alt_key" in sql
-    assert "alt_key AS alt_key" in sql
+    layer.adapter.execute("create table Orders(order_id integer, alt_key varchar)")
+    layer.adapter.execute("create table OrderMeta(meta_key varchar, channel varchar)")
+    layer.adapter.execute("insert into Orders values (1, 'alternate')")
+    layer.adapter.execute("insert into OrderMeta values ('alternate', 'web')")
+    assert layer.adapter.execute(sql).fetchall() == [("web", 1)]
 
 
 def test_tmdl_ambiguous_one_side_target_not_recovered_from_endpoint():

@@ -3137,9 +3137,9 @@ class QueryRewriter:
         )
         references = [*plan.metrics, *plan.dimensions]
         repeated_projection = len(references) != len(set(references))
-        restore_projection = query is not None and (temporal_projection or repeated_projection)
+        restore_projection = query is not None
         order_by = plan.order_by
-        if restore_projection and order_by:
+        if restore_projection and (temporal_projection or repeated_projection) and order_by:
             alias_references = {}
             for expression in query.expressions:
                 if isinstance(expression, exp.Alias) and isinstance(expression.this, exp.Column):
@@ -3163,19 +3163,40 @@ class QueryRewriter:
             user_attributes=getattr(self, "_rewrite_user_attributes", None),
             _query_ctes=self._query_ctes_in_scope(query),
         )
-        # Time-comparison generators also expose their base measures for structured
-        # queries. A SQL SELECT keeps only the columns its projection requests.
-        # Repeated references likewise need separate projection aliases because
-        # the structured query carries only one alias per semantic reference.
+        # Structured queries emit dimensions first and some temporal generators
+        # expose extra base measures. SQL SELECT owns its output order and fields,
+        # including separate aliases for repeated semantic references.
         if restore_projection:
-            requested = [expression.alias_or_name for expression in query.expressions]
-            if all(requested) and not any(isinstance(expression, exp.Star) for expression in query.expressions):
+            projection_query = query
+            # Flattened SELECT * wrappers inherit their source's column order.
+            # SQLGlot scopes resolve both named CTEs and derived tables without
+            # confusing physical source columns with semantic projections.
+            from sqlglot.optimizer.scope import Scope, build_scope
+
+            scope = build_scope(query)
+            while (
+                scope is not None
+                and len(projection_query.expressions) == 1
+                and isinstance(projection_query.expressions[0], exp.Star)
+                and len(scope.selected_sources) == 1
+            ):
+                _, source_scope = next(iter(scope.selected_sources.values()))
+                if not isinstance(source_scope, Scope) or not isinstance(source_scope.expression, exp.Select):
+                    break
+                scope = source_scope
+                projection_query = scope.expression
+            requested = [expression.alias_or_name for expression in projection_query.expressions]
+            if all(requested) and not any(
+                isinstance(expression, exp.Star) for expression in projection_query.expressions
+            ):
                 generated = parse_fragment(generated_sql, self.dialect)
                 if isinstance(generated, exp.Select):
+                    if requested == [expression.alias_or_name for expression in generated.expressions]:
+                        return generated_sql
                     outputs = {expression.alias_or_name: expression for expression in generated.expressions}
                     projections = []
                     restored_names = {}
-                    for expression, name in zip(query.expressions, requested):
+                    for expression, name in zip(projection_query.expressions, requested):
                         source = expression.this if isinstance(expression, exp.Alias) else expression
                         if not isinstance(source, exp.Column):
                             break
@@ -3191,12 +3212,31 @@ class QueryRewriter:
                         output = output.this if isinstance(output, exp.Alias) else output
                         projections.append(output.copy().as_(name))
                     if len(projections) == len(requested):
+                        # GROUP BY positions refer to the generated projection,
+                        # not the user's reordered SELECT. Bind them before
+                        # replacing the output list.
+                        if group := generated.args.get("group"):
+                            for position in list(group.expressions):
+                                if isinstance(position, exp.Literal) and position.is_int:
+                                    index = int(position.this) - 1
+                                    if 0 <= index < len(generated.expressions):
+                                        field = generated.expressions[index]
+                                        field = field.this if isinstance(field, exp.Alias) else field
+                                        position.replace(field.copy())
                         generated.set("expressions", projections)
                         if order := generated.args.get("order"):
                             for column in order.find_all(exp.Column):
                                 if not column.table and column.name in restored_names:
                                     column.set("this", exp.to_identifier(restored_names[column.name]))
-                        return generated.sql(dialect=self.dialect, pretty=True)
+                        rewritten = generated.sql(dialect=self.dialect)
+                        # Replacing the final projection can discard the SQL
+                        # parser's attached routing/instrumentation comments.
+                        # Missing-rollup fallback depends on this metadata.
+                        for line in generated_sql.splitlines():
+                            if line.startswith("-- sidemantic:") or line == "-- used_preagg=true":
+                                if line not in rewritten:
+                                    rewritten += "\n" + line
+                        return rewritten
         return generated_sql
 
     def _dedupe(self, values: list[str]) -> list[str]:

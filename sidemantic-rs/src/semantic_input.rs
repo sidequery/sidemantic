@@ -21,6 +21,7 @@ mod calculations;
 mod dates;
 pub(crate) mod dialects;
 mod fragments;
+mod inheritance;
 mod literals;
 mod policies;
 
@@ -525,6 +526,16 @@ fn decode_metric(
         };
         raw.insert("type".into(), json!(kind));
     }
+    // Imported definitions may retain `derived` alongside a concrete agg.
+    // The aggregation still consumes physical row inputs, as in Python.
+    if raw.get("type").and_then(Value::as_str) == Some("derived")
+        && raw
+            .get("agg")
+            .and_then(Value::as_str)
+            .is_some_and(|agg| agg != "expression")
+    {
+        raw.insert("type".into(), json!("simple"));
+    }
     if complete && raw.get("agg").is_some_and(|value| !value.is_null()) {
         return Err(invalid(
             path,
@@ -827,6 +838,7 @@ fn validate_semantic_dependencies(graph: &SemanticGraph, graph_metrics: &[Metric
                     continue;
                 }
                 let physical_input = metric.r#type == crate::core::MetricType::Simple
+                    || metric.agg.is_some()
                     || metric.sql_is_complete
                     || column.aggregate_input;
                 // Complete aggregates may use the generated source CTE qualifier.
@@ -942,6 +954,7 @@ impl SemanticInput {
             return Err(invalid("version", "supported semantic input version is 1"));
         }
         let input_dialect = dialects::parse_dialect(&envelope.input_dialect)?;
+        envelope.models = inheritance::resolve(&envelope.models)?;
         let policies = policies::decode_with_dialect(&envelope.models, input_dialect)?;
         let deferred_segment_dialects = dialects::normalize(&mut envelope, input_dialect)?;
         let unsupported_capabilities: Vec<String> = envelope
@@ -1240,17 +1253,39 @@ fn prepare_query_input(mut query: QueryInput, input: &mut SemanticInput) -> Resu
         dialects::fragment(sql, dialect, dialects::Fragment::Scalar)
     })
     .collect::<Result<Vec<_>>>()?;
-    let alias_names: Vec<_> = query.aliases.values().map(String::as_str).collect();
+    let known_names: Vec<_> = query
+        .aliases
+        .values()
+        .chain(query.metrics.iter())
+        .chain(query.dimensions.iter())
+        .map(String::as_str)
+        .collect();
     query.order_by = query
         .order_by
         .iter()
         .map(|sql| {
-            // Output aliases are names, not authored SQL. Bind them before
-            // dialect parsing and policy dependency collection so spaces and
+            // Selected references and output aliases are names, not authored SQL.
+            // Bind before dialect parsing and policy collection so spaces and
             // ordering keywords inside an alias retain their literal meaning.
-            let (field, suffix) = crate::sql::split_order_field(sql, &alias_names);
+            let (field, suffix) = crate::sql::split_order_field(sql, &known_names);
+            let render_reference = |reference: &str| {
+                let quote = |name: &str| format!("\"{}\"", name.replace('"', "\"\""));
+                let reference = reference.split_once('.').map_or_else(
+                    || quote(reference),
+                    |(model, field)| format!("{}.{}", quote(model), quote(field)),
+                );
+                format!("{reference} {suffix}").trim_end().to_owned()
+            };
             if let Some((reference, _)) = query.aliases.iter().find(|(_, alias)| *alias == field) {
-                return Ok(format!("{reference} {suffix}").trim_end().to_owned());
+                return Ok(render_reference(reference));
+            }
+            if query
+                .metrics
+                .iter()
+                .chain(&query.dimensions)
+                .any(|name| name == field)
+            {
+                return Ok(render_reference(field));
             }
             fragments::validate_request_expression(sql, dialect, true)?;
             dialects::fragment(sql, dialect, dialects::Fragment::Order)
@@ -1395,14 +1430,18 @@ fn validate_semantic_input(input_json: &str, query_json: &str) -> Result<Vec<Str
         &query.dimensions,
         &input.validation_context,
     );
-    if errors.is_empty()
-        && (query.consumption_base_model.is_some()
-            || !query.table_calculations.is_empty()
-            || !query.aliases.is_empty()
-            || query.timezone.is_some()
-            || query.with_totals)
+    if !errors.is_empty() {
+        return Ok(errors);
+    }
+    // Clause safety is part of validation even when no output options require
+    // a compilation. Trusted policies and segments never exempt caller SQL.
+    let query = prepare_query_input(query, &mut input)?;
+    if query.consumption_base_model.is_some()
+        || !query.table_calculations.is_empty()
+        || !query.aliases.is_empty()
+        || query.timezone.is_some()
+        || query.with_totals
     {
-        let query = prepare_query_input(query, &mut input)?;
         let dialect = query
             .dialect
             .as_deref()
@@ -1936,6 +1975,86 @@ mod tests {
     }
 
     #[test]
+    fn selected_order_names_are_quoted_before_sql_framing() {
+        let mut source = input();
+        source["models"][0]["dimensions"] = json!([
+            {"name":"Order Status", "type":"categorical", "sql":"status"},
+            {"name":"Rank DESC", "type":"categorical", "sql":"status"}
+        ]);
+        let mut input = SemanticInput::decode_scoped(&source.to_string(), true).unwrap();
+        for (order, expected) in [
+            (
+                "orders.Order Status DESC",
+                "\"orders\".\"Order Status\" DESC",
+            ),
+            ("orders.Rank DESC", "\"orders\".\"Rank DESC\""),
+            ("Public Status ASC", "\"orders\".\"Order Status\" ASC"),
+        ] {
+            let query = query_input(
+                &json!({
+                    "metrics":["orders.revenue"],
+                    "dimensions":["orders.Order Status", "orders.Rank DESC"],
+                    "aliases":{"orders.Order Status":"Public Status"},
+                    "order_by":[order]
+                })
+                .to_string(),
+            )
+            .unwrap();
+            let query = prepare_query_input(query, &mut input).unwrap();
+            assert_eq!(query.order_by, vec![expected]);
+        }
+    }
+
+    #[test]
+    fn explicit_aggregation_and_authored_windows_accept_physical_columns() {
+        let mut source = input();
+        source["models"][0]["metrics"] = json!([
+            {"name":"value", "type":"derived", "agg":"sum", "sql":"amount * quantity"},
+            {"name":"running", "type":"derived", "sql":"sum(amount) over (order by year)"}
+        ]);
+        let decoded = SemanticInput::from_json(&source.to_string()).unwrap();
+        assert_eq!(
+            decoded
+                .graph
+                .get_model("orders")
+                .unwrap()
+                .get_metric("value")
+                .unwrap()
+                .r#type,
+            crate::core::MetricType::Simple,
+        );
+        let sql =
+            compile_with_semantic_input(&source.to_string(), r#"{"metrics":["orders.value"]}"#)
+                .unwrap();
+        assert!(sql.contains("SUM("), "{sql}");
+        assert!(sql.contains("quantity"), "{sql}");
+    }
+
+    #[test]
+    fn dotted_graph_aggregate_name_declares_an_existing_source_model() {
+        let mut source = input();
+        source["metrics"] = json!([
+            {"name":"orders.p95.amount", "agg":"max", "sql":"amount"}
+        ]);
+        let sql = compile_with_semantic_input(
+            &source.to_string(),
+            &json!({
+                "metrics":["orders.p95.amount"],
+                "order_by":["orders.p95.amount DESC"]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert!(sql.contains("\"orders.p95.amount\" DESC"), "{sql}");
+        source["metrics"][0]["name"] = json!("missing.p95.amount");
+        assert!(compile_with_semantic_input(
+            &source.to_string(),
+            r#"{"metrics":["missing.p95.amount"]}"#,
+        )
+        .is_err());
+    }
+
+    #[test]
     fn handoff_preserves_unknown_keys_and_original_declarations() {
         let source = input();
         let decoded = SemanticInput::from_json(&source.to_string()).unwrap();
@@ -1970,7 +2089,7 @@ mod tests {
         source["models"][0]["extends"] = json!("base_orders");
         assert!(matches!(
             SemanticInput::from_json(&source.to_string()),
-            Err(SidemanticError::UnsupportedSemanticFeatures { .. })
+            Err(SidemanticError::ValidationIssue { .. })
         ));
         let mut source = input();
         source["models"][0]["invariant_filters"] = json!(["tenant_id = 1"]);
@@ -2057,6 +2176,43 @@ mod tests {
         assert!(!sql.contains("used_preagg=true"), "{sql}");
         dialects::parse(&sql, DialectType::DuckDB).unwrap();
         assert!(sql.contains("NOT deleted"), "{sql}");
+    }
+
+    #[test]
+    fn raw_inheritance_preserves_source_and_enforces_inherited_policies() {
+        let mut source = input();
+        source["models"][0]["security"] = json!({"row_filters":["tenant = {{ user.tenant }}"]});
+        source["models"][0]["invariant_filters"] = json!(["not deleted"]);
+        source["models"].as_array_mut().unwrap().push(json!({
+            "name":"vip_orders", "extends":"orders", "security":null,
+            "invariant_filters":["amount > 100"]
+        }));
+        let decoded = SemanticInput::from_json(&source.to_string()).unwrap();
+        assert_eq!(decoded.source, source);
+        let parent = decoded.graph.get_model("orders").unwrap();
+        let child = decoded.graph.get_model("vip_orders").unwrap();
+        assert_eq!(child.table, parent.table);
+        assert_eq!(child.metrics.len(), parent.metrics.len());
+        assert!(matches!(
+            compile_with_semantic_input(
+                &source.to_string(),
+                r#"{"metrics":["vip_orders.revenue"]}"#
+            ),
+            Err(SidemanticError::Security(_))
+        ));
+        let sql = compile_with_semantic_input(
+            &source.to_string(),
+            r#"{"metrics":["vip_orders.revenue"],"user_attributes":{"tenant":1}}"#,
+        )
+        .unwrap();
+        assert!(sql.contains("tenant = 1"), "{sql}");
+        assert!(sql.contains("NOT deleted"), "{sql}");
+        assert!(sql.contains("amount > 100"), "{sql}");
+        source["models"][1]["unexpected"] = json!(true);
+        assert!(matches!(
+            SemanticInput::from_json(&source.to_string()),
+            Err(SidemanticError::ValidationIssue { .. })
+        ));
     }
 
     #[test]
@@ -2396,7 +2552,12 @@ mod tests {
             r#"{"metrics":["orders.revenue"],"dimensions":["items.category"]}"#,
         )
         .unwrap();
-        assert!(sql.contains("orders_cte.id = items_cte.order_id"), "{sql}");
+        // Either operand may anchor the query's dimension population.
+        assert!(
+            sql.contains("orders_cte.id = items_cte.order_id")
+                || sql.contains("items_cte.order_id = orders_cte.id"),
+            "{sql}"
+        );
     }
 
     #[test]

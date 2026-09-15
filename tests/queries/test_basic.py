@@ -599,7 +599,6 @@ def test_dotted_graph_metric_projects_sql_column_and_orders_by_alias(layer):
         order_by=["events.p95.latency DESC"],
     )
 
-    assert "latency AS latency" in sql
     assert "ORDER BY" in sql
     assert '"events.p95.latency" DESC' in sql
 

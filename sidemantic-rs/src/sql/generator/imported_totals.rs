@@ -147,15 +147,20 @@ mod tests {
         graph
             .add_model(
                 Model::new("orders", "id")
+                    .with_table("orders")
                     .with_dimension(Dimension::categorical("customer_id"))
                     .with_metric(Metric::count_distinct("users", "user_id"))
                     .with_metric(Metric::derived("share", "users / __bsl_all(users)"))
-                    .with_relationship(Relationship::many_to_one("customers")),
+                    .with_relationship(
+                        Relationship::many_to_one("customers").with_keys("customer_id", "id"),
+                    ),
             )
             .unwrap();
         graph
             .add_model(
-                Model::new("customers", "id").with_dimension(Dimension::categorical("region")),
+                Model::new("customers", "id")
+                    .with_table("customers")
+                    .with_dimension(Dimension::categorical("region")),
             )
             .unwrap();
         graph.set_metric_scopes(HashMap::new()).unwrap();
@@ -187,6 +192,7 @@ mod tests {
         graph
             .add_model(
                 Model::new("visits", "id")
+                    .with_table("visits")
                     .with_dimension(Dimension::categorical("country"))
                     .with_metric(Metric::count_distinct("users", "user_id"))
                     .with_metric(percentage),
@@ -218,7 +224,11 @@ mod tests {
             "active = 1".into(),
         ];
         graph
-            .add_model(Model::new("visits", "id").with_metric(users))
+            .add_model(
+                Model::new("visits", "id")
+                    .with_table("visits")
+                    .with_metric(users),
+            )
             .unwrap();
         let mut percentage = Metric::derived("percentage", "COUNT(DISTINCT {model}.users)");
         percentage.meta = Some(serde_json::json!({"table_calculation":"percent_of_total"}));

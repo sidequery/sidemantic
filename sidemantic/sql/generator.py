@@ -3021,6 +3021,12 @@ class SQLGenerator:
 
         calculations: dict[str, str] = {}
         leaf_refs: list[str] = []
+        # Children need stable, distinct output names even when public fields
+        # share a basename or a calculation hides a colliding aggregate leaf.
+        child_aliases = {
+            f"{reference}__{grain}" if grain else reference: f"__sidemantic_dimension_{index}"
+            for index, (reference, grain) in enumerate(parsed_dims)
+        }
 
         def expand_metric(reference: str, context: str | None = None, stack: tuple[str, ...] = ()) -> str:
             if "." not in reference and context and self.graph.get_model(context).get_metric(reference):
@@ -3032,8 +3038,14 @@ class SQLGenerator:
             if model_name is not None and aggregate_models == {model_name}:
                 if reference not in leaf_refs:
                     leaf_refs.append(reference)
-                source_name = aliases.get(reference) or metric.name
-                calculations[reference] = f"{model_name}_preagg.{self._quote_identifier(source_name)}"
+                    child_aliases[reference] = f"__sidemantic_metric_{len(leaf_refs) - 1}"
+                source_name = child_aliases[reference]
+                expression = f"{model_name}_preagg.{self._quote_identifier(source_name)}"
+                if metric.agg in ("count", "count_distinct", "approx_count_distinct"):
+                    # A missing group has an empty count population. Restore
+                    # zero before evaluating formulas or their outer defaults.
+                    expression = f"COALESCE({expression}, 0)"
+                calculations[reference] = expression
                 return calculations[reference]
             stack = (*stack, reference)
             if metric.type == "ratio":
@@ -3166,8 +3178,13 @@ class SQLGenerator:
 
             # Generate sub-query for this model's metrics at the dimension grain
             # We call generate() recursively but it won't trigger pre-aggregation
-            # again because each sub-query has metrics from only one model
-            sub_query = self.generate(
+            # again because each sub-query has metrics from only one model.
+            # Preserve that source's unmatched rows regardless of dimension
+            # order. An explicit Explore scope still controls the population.
+            child_generator = copy(self)
+            child_generator.base_model = self.base_model or model_name
+            child_generator._generate_cache = {}
+            sub_query = child_generator.generate(
                 metrics=model_metrics,
                 dimensions=dimensions,
                 _resolved_filters=tuple(model_filters),
@@ -3175,7 +3192,7 @@ class SQLGenerator:
                 order_by=None,
                 limit=None,
                 offset=None,
-                aliases=aliases,
+                aliases=child_aliases,
                 use_preaggregations=use_preaggregations,
                 user_attributes=user_attributes,
             )
@@ -3191,6 +3208,13 @@ class SQLGenerator:
         # Build the final SELECT that joins all pre-aggregated CTEs
         select_exprs = []
         output_names: dict[str, str] = {}
+        public_name_counts: dict[str, int] = {}
+        for dim_ref, gran in parsed_dims:
+            name = dim_ref.split(".", 1)[-1] + (f"__{gran}" if gran else "")
+            public_name_counts[name] = public_name_counts.get(name, 0) + 1
+        for reference in metrics:
+            _, metric = self.graph.resolve_metric_reference(reference)
+            public_name_counts[metric.name] = public_name_counts.get(metric.name, 0) + 1
 
         def register_output_name(output_name: str, *refs: str) -> None:
             for ref in refs:
@@ -3205,11 +3229,9 @@ class SQLGenerator:
                 full_ref = dim_ref
                 default = dim_name
 
-            canonical_ref = full_ref
-            return aliases.get(full_ref) or aliases.get(canonical_ref) or default
-
-        def metric_source_name(metric_ref: str, metric_name: str) -> str:
-            return aliases.get(metric_ref) or aliases.get(f"{metric_ref.split('.')[0]}.{metric_name}") or metric_name
+            if public_name_counts[default] > 1:
+                default = f"{dim_ref.split('.', 1)[0]}_{default}"
+            return aliases.get(full_ref) or default
 
         # Add dimensions - use COALESCE across all CTEs
         for dim_ref, gran in parsed_dims:
@@ -3221,44 +3243,34 @@ class SQLGenerator:
             register_output_name(output_name, full_ref, canonical_ref, dim_name, col_name, output_name)
 
             # Build COALESCE expression
-            quoted_source = self._quote_identifier(output_name)
+            quoted_source = self._quote_identifier(child_aliases[full_ref])
             coalesce_parts = [f"{cte}.{quoted_source}" for cte in cte_names]
             select_exprs.append(f"COALESCE({', '.join(coalesce_parts)}) AS {self._quote_alias(output_name)}")
-
-        # Check for metric name collisions across models
-        metric_name_counts: dict[str, int] = {}
-        for metric_ref in metrics:
-            _, metric = self.graph.resolve_metric_reference(metric_ref)
-            metric_name_counts[metric.name] = metric_name_counts.get(metric.name, 0) + 1
 
         # Add metrics in requested order, including calculations over child CTEs.
         metric_selects: dict[str, str] = {}
         for model_name, model_metrics in metrics_by_model.items():
-            cte_name = f"{model_name}_preagg"
             for metric_ref in model_metrics:
                 if metric_ref not in metrics:
                     continue
                 metric_name = metric_ref.split(".", 1)[1] if "." in metric_ref else metric_ref
-                source_name = metric_source_name(metric_ref, metric_name)
                 # Check for custom alias first
                 if metric_ref in aliases:
                     alias = aliases[metric_ref]
-                elif metric_name_counts.get(metric_name, 1) > 1:
+                elif public_name_counts.get(metric_name, 1) > 1:
                     # Collision - prefix with model name
                     alias = f"{model_name}_{metric_name}"
                 else:
                     alias = metric_name
                 register_output_name(alias, metric_ref, f"{model_name}.{metric_name}", metric_name, alias)
-                metric_selects[metric_ref] = (
-                    f"{cte_name}.{self._quote_identifier(source_name)} AS {self._quote_alias(alias)}"
-                )
+                metric_selects[metric_ref] = f"{calculations[metric_ref]} AS {self._quote_alias(alias)}"
 
         for metric_ref in metrics:
             if metric_ref in leaf_refs:
                 continue
             model_name, metric = self.graph.resolve_metric_reference(metric_ref)
             default_alias = (
-                f"{model_name}_{metric.name}" if model_name and metric_name_counts[metric.name] > 1 else metric.name
+                f"{model_name}_{metric.name}" if model_name and public_name_counts[metric.name] > 1 else metric.name
             )
             alias = aliases.get(metric_ref) or default_alias
             register_output_name(alias, metric_ref, metric.name, alias)
@@ -3271,7 +3283,7 @@ class SQLGenerator:
 
         # Join remaining CTEs
         join_clauses = []
-        for cte_name in cte_names[1:]:
+        for index, cte_name in enumerate(cte_names[1:], start=1):
             if not parsed_dims:
                 # No dimensions - use CROSS JOIN (each CTE returns single row)
                 join_clauses.append(f"CROSS JOIN {cte_name}")
@@ -3279,10 +3291,14 @@ class SQLGenerator:
                 # Build join condition on all dimension columns
                 join_conditions = []
                 for dim_ref, gran in parsed_dims:
-                    dim_name = dim_ref.split(".")[1] if "." in dim_ref else dim_ref
-                    col_name = dimension_output_name(dim_ref, dim_name, gran)
+                    full_ref = f"{dim_ref}__{gran}" if gran else dim_ref
+                    col_name = child_aliases[full_ref]
                     # NULL-safe equality that works for all column types
-                    lhs = exp.Column(this=col_name, table=cte_names[0])
+                    # and groups introduced by any preceding source.
+                    previous = [exp.column(col_name, table=previous_cte) for previous_cte in cte_names[:index]]
+                    lhs = (
+                        previous[0] if len(previous) == 1 else exp.Coalesce(this=previous[0], expressions=previous[1:])
+                    )
                     rhs = exp.Column(this=col_name, table=cte_name)
                     join_conditions.append(exp.NullSafeEQ(this=lhs, expression=rhs).sql(dialect=self._dialect_instance))
 
@@ -3302,9 +3318,8 @@ class SQLGenerator:
         if shared_filters:
             filter_expressions = dict(calculations)
             for dim_ref, gran in parsed_dims:
-                dim_name = dim_ref.split(".", 1)[-1]
-                source_name = self._quote_identifier(dimension_output_name(dim_ref, dim_name, gran))
                 full_ref = f"{dim_ref}__{gran}" if gran else dim_ref
+                source_name = self._quote_identifier(child_aliases[full_ref])
                 filter_expressions[full_ref] = f"COALESCE({', '.join(f'{cte}.{source_name}' for cte in cte_names)})"
             preagg_table_map = {}
             for model_name in metrics_by_model:

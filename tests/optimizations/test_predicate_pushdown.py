@@ -740,7 +740,7 @@ def test_mixed_metric_and_window_dim_filter_pushed_into_model_subquery_in_preagg
     layer.add_model(order_items)
 
     # Filter references BOTH a window dim (next_status) and a metric (revenue)
-    layer.adapter.execute("""
+    layer.conn.execute("""
         create table orders_table (
             order_id integer, customer_id integer, status varchar,
             created_at timestamp, order_date date, amount double
@@ -775,7 +775,7 @@ def test_mixed_metric_and_window_dim_filter_pushed_into_model_subquery_in_preagg
     # Order 1 qualifies through its next status; order 2 qualifies through its
     # own amount. Order 3 is excluded from revenue, while all item rows still
     # contribute to the independent quantity population.
-    cursor = layer.adapter.execute(sql)
+    cursor = layer.conn.execute(sql)
     assert [column[0] for column in cursor.description] == ["order_date", "revenue", "quantity"]
     rows = cursor.fetchall()
     assert len(rows) == 1

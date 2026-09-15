@@ -220,6 +220,15 @@ impl QueryRewriter<'_> {
         if semantic_leaf {
             if let Some(from) = &select.from {
                 if let Some(Expression::Table(table)) = from.expressions.first() {
+                    // `metrics` is a virtual relation, not a physical table in
+                    // an arbitrary catalog/schema. Qualified model names still
+                    // resolve through the policy preparer below.
+                    if self.query_preparer.is_some()
+                        && table.name.name.eq_ignore_ascii_case("metrics")
+                        && (table.schema.is_some() || table.catalog.is_some())
+                    {
+                        return Err(unsupported());
+                    }
                     validate_table(table)?;
                     if !table.column_aliases.is_empty() {
                         return Err(unsupported());
@@ -506,6 +515,25 @@ mod tests {
             assert!(rewritten.contains("private_orders"), "{rewritten}");
             assert!(rewritten.contains("tenant = 1"), "{rewritten}");
             assert!(!rewritten.contains(source), "{rewritten}");
+        }
+        assert_eq!(prepared.get(), 3);
+        for source in [
+            "main.metrics",
+            "\"main\".\"metrics\"",
+            "catalog.main.metrics",
+        ] {
+            for sql in [
+                format!("SELECT orders.revenue FROM {source}"),
+                format!("SELECT * FROM (SELECT orders.revenue FROM {source}) AS q"),
+            ] {
+                assert!(
+                    matches!(
+                        rewriter.rewrite(&sql),
+                        Err(SidemanticError::UnsupportedSemanticFeatures { .. })
+                    ),
+                    "{sql}"
+                );
+            }
         }
         assert_eq!(prepared.get(), 3);
 

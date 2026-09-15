@@ -416,7 +416,7 @@ impl<'a> SqlGenerator<'a> {
                 {
                     continue;
                 }
-                let window_sql = self.normalize_cte_source_expression(window_expr);
+                let window_sql = self.normalize_cte_source_expression(window_expr, model)?;
                 raw_model_columns
                     .entry(model_name.clone())
                     .or_default()
@@ -438,8 +438,10 @@ impl<'a> SqlGenerator<'a> {
             let metric =
                 self.metric_for_model_with_source(&model_name, &metric_name, graph_metric)?;
             let raw_alias = self.metric_raw_alias(model, &metric_name, metric);
-            let mut raw_expr =
-                self.normalize_cte_source_expression(&self.metric_raw_expression(metric, model)?);
+            let mut raw_expr = self.normalize_cte_source_expression(
+                &self.metric_raw_expression(metric, model)?,
+                model,
+            )?;
             if !metric.filters.is_empty() {
                 let metric_filter = self.normalize_metric_filters(
                     &metric.filters,
@@ -474,7 +476,8 @@ impl<'a> SqlGenerator<'a> {
             let raw_expr = model
                 .get_dimension(&column_name)
                 .and_then(|dimension| dimension.sql.as_deref())
-                .map(|sql| self.normalize_cte_source_expression(sql))
+                .map(|sql| self.normalize_cte_source_expression(sql, model))
+                .transpose()?
                 .unwrap_or_else(|| self.quote_identifier(&column_name));
             raw_model_columns
                 .entry(model_name.clone())
@@ -1447,6 +1450,15 @@ impl<'a> SqlGenerator<'a> {
                         }
                         owners.extend(candidates.iter().map(|model| model.name.clone()));
                     }
+                }
+            }
+        }
+        // A graph-level aggregate can name its source through its public name,
+        // e.g. events.p95.latency with physical SQL input `latency`.
+        if owners.is_empty() && metric.agg.is_some() {
+            if let Some((model, _)) = reference.split_once('.') {
+                if self.graph.get_model(model).is_some() {
+                    owners.insert(model.to_owned());
                 }
             }
         }
@@ -5431,7 +5443,11 @@ impl<'a> SqlGenerator<'a> {
                 let mut source = if computed_keys.contains(field) {
                     self.key_sql(model, field, None)?
                 } else if let Some(dimension) = model.get_dimension(field) {
-                    let source = dimension.sql_expr().replace("{model}", model_name);
+                    let source = dimension
+                        .sql
+                        .clone()
+                        .unwrap_or_else(|| self.quote_identifier(&dimension.name))
+                        .replace("{model}", model_name);
                     let mut inputs = HashMap::new();
                     for input in semantic_column_references(&source)? {
                         if input
@@ -5530,8 +5546,25 @@ impl<'a> SqlGenerator<'a> {
         Ok(rendered.join(" AND "))
     }
 
-    fn normalize_cte_source_expression(&self, expr: &str) -> String {
-        expr.replace("{model}.", "").replace("{model}", "")
+    fn normalize_cte_source_expression(&self, expr: &str, model: &Model) -> Result<String> {
+        let expr = expr.replace("{model}.", "").replace("{model}", "");
+        let mut replacements = HashMap::new();
+        for column in semantic_column_references(&expr)? {
+            if column.model.as_deref().is_some_and(|owner| {
+                owner == model.name
+                    || owner == self.model_alias(&model.name)
+                    || owner == model.table_name()
+            }) {
+                replacements.insert(
+                    (column.model, column.field.clone()),
+                    self.quote_identifier(&column.field),
+                );
+            }
+        }
+        self.emit_expression(&crate::core::replace_semantic_columns(
+            parse_semantic_expression(&expr)?,
+            &replacements,
+        )?)
     }
 
     fn normalize_select_expression(&self, expr: &str, alias: &str) -> String {
@@ -5557,7 +5590,14 @@ impl<'a> SqlGenerator<'a> {
         // CASE, arithmetic or a function call produces invalid SQL.
         let mut replacements = HashMap::new();
         for column in semantic_column_references(&expr)? {
-            if column.model.is_none() || column.model.as_deref() == alias.strip_suffix("_cte") {
+            if column.model.is_none()
+                || column.model.as_deref() == alias.strip_suffix("_cte")
+                || column.model.as_deref().is_some_and(|owner| {
+                    self.graph
+                        .get_model(alias.strip_suffix("_cte").unwrap_or(alias))
+                        .is_some_and(|model| model.sql.is_none() && owner == model.table_name())
+                })
+            {
                 replacements.insert(
                     (column.model, column.field.clone()),
                     format!("{alias}.{}", self.quote_identifier(&column.field)),
@@ -6285,6 +6325,45 @@ mod tests {
             assert!(sql.contains(&format!("\"{dimension}\"")), "{sql}");
             if filter.is_some() {
                 assert!(sql.contains("\"Order Status\" = 'shipped'"), "{sql}");
+            }
+        }
+    }
+
+    #[test]
+    fn source_qualifiers_bind_at_cte_and_dimension_projection_boundaries() {
+        for source_sql in [None, Some("SELECT * FROM sales")] {
+            let mut model = Model::new("sales_model", "id")
+                .with_table("sales")
+                .with_dimension(Dimension::categorical("id").with_sql("sales.id"))
+                .with_metric(Metric::sum("amount", "sales_model.amount * 2"));
+            model.sql = source_sql.map(str::to_string);
+            let mut graph = SemanticGraph::new();
+            graph.add_model(model).unwrap();
+            let generator = SqlGenerator::new(&graph);
+            let model = graph.get_model("sales_model").unwrap();
+            let expression = generator
+                .normalize_cte_source_expression(
+                    "sales_model.amount + CASE WHEN sales.amount > 0 THEN 1 ELSE 0 END",
+                    model,
+                )
+                .unwrap();
+            assert!(semantic_column_references(&expression)
+                .unwrap()
+                .iter()
+                .all(|column| column.model.is_none()));
+            let sql = generator
+                .generate(&SemanticQuery::new().with_metrics(vec!["sales_model.amount".into()]))
+                .unwrap();
+            assert!(!sql.contains("sales_model.amount * 2"), "{sql}");
+            if source_sql.is_none() {
+                let sql = generator
+                    .generate(
+                        &SemanticQuery::new()
+                            .with_metrics(vec!["sales_model.amount".into()])
+                            .with_dimensions(vec!["sales_model.id".into()]),
+                    )
+                    .unwrap();
+                assert!(sql.contains("sales_model_cte.id AS id"), "{sql}");
             }
         }
     }

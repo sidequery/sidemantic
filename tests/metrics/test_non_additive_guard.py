@@ -18,6 +18,7 @@ import pytest
 from sidemantic import Dimension, Metric, Model, Relationship, SemanticLayer
 from sidemantic.adapters.sidemantic import SidemanticAdapter
 from sidemantic.core.semantic_layer import UnsupportedMetricError
+from sidemantic.semantic_handoff import UnsupportedSemanticFeaturesError
 from sidemantic.sql.generator import SQLGenerator
 
 
@@ -242,11 +243,15 @@ def test_semi_additive_plus_fanout_symmetric_aggregate_raises():
             relationships=[Relationship(name="accounts", type="many_to_one", foreign_key="account_id")],
         )
     )
-    with pytest.raises(UnsupportedMetricError) as exc:
+    expected_error = UnsupportedSemanticFeaturesError if layer.engine == "rust" else UnsupportedMetricError
+    with pytest.raises(expected_error) as exc:
         layer.compile(metrics=["accounts.balance", "transactions.amount"], dimensions=["accounts.region"])
-    msg = str(exc.value).lower()
-    assert "symmetric" in msg or "fan-out" in msg
-    assert "compose" in msg
+    if layer.engine == "rust":
+        assert exc.value.capabilities == ["metric.non_additive_metric_shape"]
+    else:
+        msg = str(exc.value).lower()
+        assert "symmetric" in msg or "fan-out" in msg
+        assert "compose" in msg
 
 
 def test_adapter_round_trips_non_additive_dimension():

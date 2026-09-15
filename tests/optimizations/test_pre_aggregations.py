@@ -1435,7 +1435,8 @@ def test_lambda_preaggregation_unions_with_granularity_rollup(layer):
     preagg_rows = layer.adapter.execute(preagg_sql).fetchall()
 
     assert "UNION ALL" in preagg_sql
-    assert "DATE_TRUNC('MONTH', created_at_day)" in preagg_sql
+    month_bucket = sqlglot.parse_one("DATE_TRUNC('month', created_at_day)", read="duckdb")
+    assert any(expression == month_bucket for expression in sqlglot.parse_one(preagg_sql, read="duckdb").walk())
     assert preagg_rows == baseline_rows
 
 
@@ -2159,16 +2160,23 @@ def test_preagg_strict_raises_when_table_missing():
         )
 
 
-def test_sql_path_falls_back_to_raw_when_rollup_missing():
+@pytest.mark.parametrize(
+    "projection,columns,rows",
+    [
+        ("orders.revenue, orders.status", ["revenue", "status"], {(120, 0), (90, 1)}),
+        ("orders.status, orders.revenue", ["status", "revenue"], {(0, 120), (1, 90)}),
+    ],
+)
+def test_sql_path_falls_back_to_raw_when_rollup_missing(projection, columns, rows):
     """layer.sql() (the SQL/CLI path) also falls back to raw when the rollup table is missing."""
     layer = _layer_with_unbuilt_rollup()
     layer.use_preaggregations = True
 
-    result = layer.sql("SELECT orders.revenue, orders.status FROM orders")
+    result = layer.sql(f"SELECT {projection} FROM orders")
 
     # The rollup table is absent, so rows come back only if it fell back to raw.
-    # The rewriter orders columns dimensions-first, so each row is (status, revenue).
-    assert set(result.fetchall()) == {(0, 120), (1, 90)}
+    assert [column[0] for column in result.description] == columns
+    assert set(result.fetchall()) == rows
 
 
 def test_sql_path_strict_raises_when_rollup_missing():

@@ -196,8 +196,9 @@ impl<'a, 'g> Plan<'a, 'g> {
                         metric.name
                     ))
                 })?;
+                let sql = crate::core::replace_model_placeholder(sql, resolved.context.as_deref())?;
                 let mut replacements = HashMap::new();
-                for column in semantic_column_references(sql)? {
+                for column in semantic_column_references(&sql)? {
                     if column.aggregate_input {
                         return Err(unsupported("inline_aggregate"));
                     }
@@ -205,7 +206,7 @@ impl<'a, 'g> Plan<'a, 'g> {
                     replacements.insert((column.model, column.field), format!("({expanded})"));
                 }
                 let expression =
-                    replace_semantic_columns(parse_semantic_expression(sql)?, &replacements)?;
+                    replace_semantic_columns(parse_semantic_expression(&sql)?, &replacements)?;
                 self.generator.emit_expression(&expression)?
             }
             _ => return Err(unsupported("calculation_shape")),

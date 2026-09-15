@@ -152,8 +152,18 @@ impl SqlGenerator<'_> {
         let mut projections = Vec::new();
         let mut replacements = HashMap::new();
         let mut renamed = false;
-        let quote =
-            |name: &str| self.emit_expression(&Expression::Identifier(Identifier::quoted(name)));
+        // polyglot 0.1.15 incorrectly splits ASC/DESC suffixes even inside
+        // quoted identifiers. Keep output names literal at this boundary.
+        let quote = |name: &str| {
+            let dialect = polyglot_sql::Dialect::get(self.dialect);
+            let style = &dialect.generator_config().identifier_quote_style;
+            format!(
+                "{}{}{}",
+                style.start,
+                name.replace(style.end, &format!("{}{}", style.end, style.end)),
+                style.end
+            )
+        };
         for expression in &select.expressions {
             let name = match expression {
                 Expression::Alias(alias) => &alias.alias.name,
@@ -168,10 +178,10 @@ impl SqlGenerator<'_> {
             renamed |= alias != name;
             projections.push(format!(
                 "__sidemantic_result.{} AS {}",
-                quote(name)?,
-                quote(alias)?
+                quote(name),
+                quote(alias)
             ));
-            replacements.insert((None, name.clone()), quote(alias)?);
+            replacements.insert((None, name.clone()), quote(alias));
             let source = match expression {
                 Expression::Alias(alias) => &alias.this,
                 other => other,
@@ -182,7 +192,7 @@ impl SqlGenerator<'_> {
                         column.table.as_ref().map(|table| table.name.clone()),
                         column.name.name.clone(),
                     ),
-                    quote(alias)?,
+                    quote(alias),
                 );
             }
         }
@@ -195,19 +205,18 @@ impl SqlGenerator<'_> {
         );
         #[cfg(target_arch = "wasm32")]
         crate::wasm_sql_guard::check(&wrapper, self.dialect)?;
-        let Expression::Select(mut outer) =
-            crate::semantic_input::dialects::parse(&wrapper, self.dialect)
-                .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))?
-        else {
-            unreachable!()
-        };
-        outer.order_by = select.order_by;
-        if let Some(order) = &mut outer.order_by {
+        let mut order_by = select.order_by;
+        if let Some(order) = &mut order_by {
             for item in &mut order.expressions {
                 item.this = replace_semantic_columns(item.this.clone(), &replacements)?;
             }
         }
-        self.emit_expression(&Expression::Select(outer))
+        if let Some(order) = order_by {
+            let order = self.emit_expression(&Expression::OrderBy(Box::new(order)))?;
+            Ok(format!("{wrapper} {order}"))
+        } else {
+            Ok(wrapper)
+        }
     }
 }
 

@@ -1,0 +1,40 @@
+name: Set up uv with native source caching
+description: Cache downloaded dependencies and built wheels, including their Rust build inputs.
+inputs:
+  enable-cache:
+    description: Disable in production release jobs.
+    default: 'true'
+  suffix:
+    description: Job and matrix partition for the dependency cache.
+    required: true
+outputs:
+  cache-key:
+    description: Key used by setup-uv.
+    value: ${{ steps.uv.outputs.cache-key }}
+runs:
+  using: composite
+  steps:
+    - uses: astral-sh/setup-uv@v7
+      id: uv
+      with:
+        enable-cache: ${{ inputs.enable-cache }}
+        cache-local-path: ${{ runner.temp }}/uv-cache
+        cache-suffix: ${{ inputs.suffix }}
+        cache-dependency-glob: |
+          uv.lock
+          pyproject.toml
+          sidemantic-rs/pyproject.toml
+          crates/dax-pyo3/pyproject.toml
+          crates/dax-pyo3/README.md
+          .cargo/config.toml
+          rust-toolchain*
+          Cargo.lock
+          Cargo.toml
+          sidemantic-rs/Cargo.toml
+          sidemantic-rs/build.rs
+          sidemantic-rs/src/**
+          crates/*/Cargo.toml
+          crates/*/src/**
+          crates/dax-pyo3/python/**/*.py
+          crates/dax-pyo3/python/**/*.pyi
+          crates/dax-pyo3/python/**/py.typed

@@ -19,6 +19,7 @@ on:
 
   pull_request:
     paths:
+      - ".github/actions/**"
       - ".github/workflows/sidemantic-rs-wheels.yml"
       - "sidemantic-rs/pyproject.toml"
       - "sidemantic-rs/tests/python_wheel_smoke.py"
@@ -51,6 +52,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust compilation
+        if: github.event_name == 'pull_request'
+        id: rust-cache
+        uses: ./.github/actions/setup-rust-cache
+        with:
+          suffix: ${{ github.workflow }}-${{ github.job }}-${{ strategy.job-index || 0 }}
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -62,10 +73,27 @@ jobs:
           command: build
           args: --release --manifest-path sidemantic-rs/Cargo.toml --out sidemantic-rs/dist
           manylinux: auto
+          docker-options: ${{ github.event_name == 'pull_request' && '--env MBX_CACHE_DIR --env MBX_CACHE_EXPORT_GROUP --env MBX_TARGET_VIEWS=0 --env MBX_CACHE_LINKS --env MBX_GC_AUTO' || '' }}
+          before-script-linux: |
+            if [ -x "$GITHUB_WORKSPACE/.ci-cache-bin/cargo" ]; then
+              export PATH="$GITHUB_WORKSPACE/.ci-cache-bin:$PATH"
+            fi
           target: ${{ matrix.target }}
 
+      - name: Restore ownership of the container compiler cache
+        if: ${{ !cancelled() && runner.os == 'Linux' && github.event_name == 'pull_request' }}
+        shell: bash
+        run: |
+          if [ -d "$MBX_CACHE_DIR" ]; then
+            sudo chown -R "$(id -u):$(id -g)" "$MBX_CACHE_DIR"
+          fi
+
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        id: uv
+        uses: ./.github/actions/setup-uv
+        with:
+          enable-cache: ${{ github.event_name == 'pull_request' }}
+          suffix: ${{ github.workflow }}-${{ github.job }}-${{ strategy.job-index || 0 }}
 
       - name: Smoke built wheel on its target host
         shell: bash
@@ -80,6 +108,13 @@ jobs:
           path: sidemantic-rs/dist/*.whl
           if-no-files-found: error
 
+      - name: Save completed build caches
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+        uses: ./.github/actions/save-build-caches
+        with:
+          rust-key: ${{ steps.rust-cache.outputs.key }}
+          uv-key: ${{ steps.uv.outputs.cache-key }}
+
   build-sdist:
     name: Build sdist
     runs-on: ubuntu-latest
@@ -91,9 +126,11 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        id: uv
+        uses: ./.github/actions/setup-uv
         with:
-          enable-cache: true
+          enable-cache: ${{ github.event_name == 'pull_request' }}
+          suffix: ${{ github.workflow }}-${{ github.job }}-${{ strategy.job-index || 0 }}
 
       - name: Set up Python
         run: uv python install 3.12
@@ -107,6 +144,12 @@ jobs:
           name: sidemantic-rs-sdist
           path: sidemantic-rs/dist/*.tar.gz
           if-no-files-found: error
+
+      - name: Save completed build caches
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+        uses: ./.github/actions/save-build-caches
+        with:
+          uv-key: ${{ steps.uv.outputs.cache-key }}
 
   release:
     name: Publish or attach wheel artifacts
@@ -125,7 +168,7 @@ jobs:
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_pypi == true }}
         uses: astral-sh/setup-uv@v5
         with:
-          enable-cache: true
+          enable-cache: false
 
       - name: Download distributions
         uses: actions/download-artifact@v4

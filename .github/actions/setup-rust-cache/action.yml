@@ -1,0 +1,39 @@
+name: Cache Rust compilation
+description: Share completed compiler objects across Cargo, uv, maturin, and Make builds.
+inputs:
+  suffix:
+    description: Job and matrix partition for the compiler cache.
+    required: true
+outputs:
+  key:
+    description: Key used by the Boxington action.
+    value: ${{ steps.cache.outputs.cache-primary-key }}
+runs:
+  using: composite
+  steps:
+    - uses: jdx/mr-boxington-action@a20e1ffcd962370fb2b6045c13b7b349f7b03386
+      id: cache
+      env:
+        MBX_CACHE_DIR: ${{ github.workspace }}/.ci-mbx
+        MBX_TARGET_VIEWS: '0'
+      with:
+        version: '1.11.0'
+        github-cache-mode: objects
+        cache-generation: sidemantic-v1-${{ inputs.suffix }}
+
+    - name: Enable Cargo subprocess caching
+      shell: bash
+      run: |
+        # mbx dispatches as a Cargo shim when invoked under Cargo's filename.
+        # Keep the shim in the workspace so maturin's workspace mount can use it too.
+        shim_dir="$GITHUB_WORKSPACE/.ci-cache-bin"
+        mkdir -p "$shim_dir"
+        if [ "$RUNNER_OS" = Windows ]; then
+          cp "$(command -v mbx)" "$shim_dir/cargo.exe"
+        else
+          cp "$(command -v mbx)" "$shim_dir/cargo"
+          chmod +x "$shim_dir/cargo"
+        fi
+        echo "$shim_dir" >> "$GITHUB_PATH"
+        echo "MBX_CACHE_DIR=$GITHUB_WORKSPACE/.ci-mbx" >> "$GITHUB_ENV"
+        echo "MBX_TARGET_VIEWS=0" >> "$GITHUB_ENV"

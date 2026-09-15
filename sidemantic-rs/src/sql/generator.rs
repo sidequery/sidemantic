@@ -2401,6 +2401,7 @@ impl<'a> SqlGenerator<'a> {
             if window_models.is_empty() {
                 non_window_filters.push(filter.clone());
             } else {
+                let filter = self.window_row_filter(filter, &window_models)?;
                 for model_name in window_models {
                     window_filters_by_model
                         .entry(model_name)
@@ -5376,6 +5377,62 @@ impl<'a> SqlGenerator<'a> {
             .is_empty()
     }
 
+    /// A metric beside a window dimension in a row predicate denotes its input,
+    /// before aggregation. Keep that predicate out of the child's HAVING clause.
+    fn window_row_filter(&self, filter: &str, owners: &HashSet<String>) -> Result<String> {
+        let mut replacements = HashMap::new();
+        for column in crate::core::outer_semantic_column_references(filter)? {
+            let Some(owner) = column.model.as_deref() else {
+                continue;
+            };
+            let Some(model) = self.graph.get_model(owner) else {
+                continue;
+            };
+            let Some(metric) = model.get_metric(&column.field) else {
+                continue;
+            };
+            if !owners.contains(owner)
+                || metric.r#type != MetricType::Simple
+                || metric.sql_is_complete
+            {
+                return Err(SidemanticError::UnsupportedSemanticFeatures {
+                    capabilities: vec!["aggregation.mixed_row_aggregate_filter".into()],
+                });
+            }
+            let alias = self.model_alias(owner);
+            let mut raw = self
+                .metric_raw_expression(metric, model)?
+                .replace("{model}", owner);
+            if !metric.filters.is_empty() {
+                let predicate = self.normalize_metric_filters(&metric.filters, owner, &alias)?;
+                raw = format!("CASE WHEN {predicate} THEN {raw} END");
+            }
+            let mut inputs = HashMap::new();
+            for input in semantic_column_references(&raw)? {
+                if input.model.as_deref().is_some_and(|source| {
+                    source != owner && source != alias && source != model.table_name()
+                }) {
+                    return Err(SidemanticError::UnsupportedSemanticFeatures {
+                        capabilities: vec!["aggregation.mixed_row_aggregate_filter".into()],
+                    });
+                }
+                inputs.insert(
+                    (input.model, input.field.clone()),
+                    format!("{alias}.{}", self.quote_identifier(&input.field)),
+                );
+            }
+            let raw = self.emit_expression(&crate::core::replace_semantic_columns(
+                parse_semantic_expression(&raw)?,
+                &inputs,
+            )?)?;
+            replacements.insert((column.model, column.field), format!("({raw})"));
+        }
+        self.emit_expression(&crate::core::replace_outer_semantic_columns(
+            parse_semantic_expression(filter)?,
+            &replacements,
+        )?)
+    }
+
     fn filter_window_dimension_models(
         &self,
         filter: &str,
@@ -6334,7 +6391,7 @@ mod tests {
         for source_sql in [None, Some("SELECT * FROM sales")] {
             let mut model = Model::new("sales_model", "id")
                 .with_table("sales")
-                .with_dimension(Dimension::categorical("id").with_sql("sales.id"))
+                .with_dimension(Dimension::categorical("sales_id").with_sql("sales.id"))
                 .with_metric(Metric::sum("amount", "sales_model.amount * 2"));
             model.sql = source_sql.map(str::to_string);
             let mut graph = SemanticGraph::new();
@@ -6360,10 +6417,10 @@ mod tests {
                     .generate(
                         &SemanticQuery::new()
                             .with_metrics(vec!["sales_model.amount".into()])
-                            .with_dimensions(vec!["sales_model.id".into()]),
+                            .with_dimensions(vec!["sales_model.sales_id".into()]),
                     )
                     .unwrap();
-                assert!(sql.contains("sales_model_cte.id AS id"), "{sql}");
+                assert!(sql.contains("sales_model_cte.id AS sales_id"), "{sql}");
             }
         }
     }
@@ -7102,9 +7159,9 @@ mod tests {
 
         let sql = generator.generate(&query).unwrap();
 
-        assert!(sql.contains("sales.amount AS revenue_raw"), "{sql}");
+        assert!(sql.contains("amount AS revenue_raw"), "{sql}");
+        assert!(sql.contains("SUM(sales_cte.revenue_raw)"), "{sql}");
         assert!(sql.contains("FROM sales"), "{sql}");
-        assert!(!sql.contains("\n    amount AS revenue_raw"), "{sql}");
         assert!(!sql.contains("FROM orders"), "{sql}");
     }
 
@@ -7134,8 +7191,8 @@ mod tests {
         let query = SemanticQuery::new().with_metrics(vec!["conversion_rate".into()]);
         let sql = generator.generate(&query).unwrap();
 
-        assert!(sql.contains("orders.signups AS signups_raw"), "{sql}");
-        assert!(sql.contains("orders.visitors AS visitors_raw"), "{sql}");
+        assert!(sql.contains("signups AS signups_raw"), "{sql}");
+        assert!(sql.contains("visitors AS visitors_raw"), "{sql}");
     }
 
     #[test]

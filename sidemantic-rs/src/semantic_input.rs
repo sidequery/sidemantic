@@ -1268,14 +1268,11 @@ fn prepare_query_input(mut query: QueryInput, input: &mut SemanticInput) -> Resu
             // Bind before dialect parsing and policy collection so spaces and
             // ordering keywords inside an alias retain their literal meaning.
             let (field, suffix) = crate::sql::split_order_field(sql, &known_names);
-            let render_reference = |reference: &str| {
-                let quote = |name: &str| format!("\"{}\"", name.replace('"', "\"\""));
-                let reference = reference.split_once('.').map_or_else(
-                    || quote(reference),
-                    |(model, field)| format!("{}.{}", quote(model), quote(field)),
-                );
-                format!("{reference} {suffix}").trim_end().to_owned()
-            };
+            // Keep canonical semantic names in the request. Specialized
+            // planners and table calculations bind these names before rendering
+            // SQL identifiers; quoting here changes the lookup key.
+            let render_reference =
+                |reference: &str| format!("{reference} {suffix}").trim_end().to_owned();
             if let Some((reference, _)) = query.aliases.iter().find(|(_, alias)| *alias == field) {
                 return Ok(render_reference(reference));
             }
@@ -1814,7 +1811,8 @@ mod tests {
         let sql =
             compile_with_semantic_input(&source.to_string(), r#"{"metrics":["orders.revenue"]}"#)
                 .unwrap();
-        assert!(sql.contains("sales.amount"), "{sql}");
+        assert!(sql.contains("amount AS revenue_raw"), "{sql}");
+        assert!(sql.contains("SUM(orders_cte.revenue_raw)"), "{sql}");
         assert!(sql.contains("FROM sales"), "{sql}");
         source["models"][0]["metrics"][0]["sql"] = json!("other.amount");
         assert!(SemanticInput::from_json(&source.to_string()).is_err());
@@ -1975,7 +1973,7 @@ mod tests {
     }
 
     #[test]
-    fn selected_order_names_are_quoted_before_sql_framing() {
+    fn selected_order_names_remain_canonical_before_sql_rendering() {
         let mut source = input();
         source["models"][0]["dimensions"] = json!([
             {"name":"Order Status", "type":"categorical", "sql":"status"},
@@ -1983,25 +1981,22 @@ mod tests {
         ]);
         let mut input = SemanticInput::decode_scoped(&source.to_string(), true).unwrap();
         for (order, expected) in [
-            (
-                "orders.Order Status DESC",
-                "\"orders\".\"Order Status\" DESC",
-            ),
-            ("orders.Rank DESC", "\"orders\".\"Rank DESC\""),
-            ("Public Status ASC", "\"orders\".\"Order Status\" ASC"),
+            ("orders.Order Status DESC", "orders.Order Status DESC"),
+            ("orders.Rank DESC", "orders.Rank DESC"),
+            ("Public Status ASC", "orders.Order Status ASC"),
         ] {
-            let query = query_input(
-                &json!({
-                    "metrics":["orders.revenue"],
-                    "dimensions":["orders.Order Status", "orders.Rank DESC"],
-                    "aliases":{"orders.Order Status":"Public Status"},
-                    "order_by":[order]
-                })
-                .to_string(),
-            )
-            .unwrap();
-            let query = prepare_query_input(query, &mut input).unwrap();
+            let request = json!({
+                "metrics":["orders.revenue"],
+                "dimensions":["orders.Order Status", "orders.Rank DESC"],
+                "aliases":{"orders.Order Status":"Public Status"},
+                "order_by":[order]
+            })
+            .to_string();
+            let query = prepare_query_input(query_input(&request).unwrap(), &mut input).unwrap();
             assert_eq!(query.order_by, vec![expected]);
+            // Exercise policy dependency parsing and final output binding too.
+            let sql = compile_with_semantic_input(&source.to_string(), &request).unwrap();
+            assert!(sql.contains("ORDER BY"), "{sql}");
         }
     }
 

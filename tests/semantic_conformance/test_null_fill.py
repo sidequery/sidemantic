@@ -54,7 +54,15 @@ def test_metric_result_and_dependency_defaults(layer, metrics, filters, expected
     assert layer.adapter.execute(sql).fetchall() == expected
 
 
-def test_filled_leaf_participates_in_cross_source_calculation(layer):
+@pytest.mark.parametrize(
+    "metric,expected",
+    [
+        ("filled", [("a", 2), ("b", 4), ("c", 6)]),
+        ("fractional", [("a", 2), ("b", 2.5), ("c", 4.5)]),
+        ("raw", [("a", 2), ("b", None), ("c", None)]),
+    ],
+)
+def test_filled_leaf_participates_in_cross_source_calculation(layer, metric, expected):
     layer.add_model(
         Model(
             name="groups",
@@ -67,12 +75,12 @@ def test_filled_leaf_participates_in_cross_source_calculation(layer):
     layer.graph.models["events"].relationships = [
         Relationship(name="groups", type="many_to_one", foreign_key="category", primary_key="category")
     ]
-    layer.add_metric(Metric(name="total", type="derived", sql="events.filled + groups.quota"))
+    layer.add_metric(Metric(name="total", type="derived", sql=f"events.{metric} + groups.quota"))
     layer.adapter.execute(
         "create table fill_groups(category varchar, quota integer); insert into fill_groups values ('a', 2), ('b', 4), ('c', 6)"
     )
     sql = layer.compile(metrics=["total"], dimensions=["groups.category"], order_by=["groups.category"])
-    assert layer.adapter.execute(sql).fetchall() == [("a", 2), ("b", 4), ("c", 6)]
+    assert layer.adapter.execute(sql).fetchall() == expected
 
 
 def test_policy_excluded_groups_are_not_created_by_fill(layer):

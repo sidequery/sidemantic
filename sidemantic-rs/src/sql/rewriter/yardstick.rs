@@ -898,14 +898,23 @@ impl Lowerer<'_, '_> {
                 let inner = self.remap(group.clone(), &aliases, "_inner", single)?;
                 let mut outer = self.remap(group, &[model_name], alias, single)?;
                 if let Some(output_alias) = context_aliases.get(&signature) {
-                    let unsafe_alias = model.dimensions.iter().any(|dimension| {
-                        dimension.name.eq_ignore_ascii_case(output_alias)
-                            && self
-                                .expression(dimension.sql_expr())
-                                .ok()
-                                .and_then(|expression| reference(&expression))
-                                .is_some_and(|(_, name)| name.eq_ignore_ascii_case(output_alias))
-                    });
+                    // SELECT * imports can expose physical grouping columns
+                    // without declaring dimensions. An unqualified output
+                    // alias with that same name would bind to the inner source
+                    // and turn correlation into a tautology.
+                    let unsafe_alias = columns
+                        .iter()
+                        .any(|(_, name)| name.eq_ignore_ascii_case(output_alias))
+                        || model.dimensions.iter().any(|dimension| {
+                            dimension.name.eq_ignore_ascii_case(output_alias)
+                                && self
+                                    .expression(dimension.sql_expr())
+                                    .ok()
+                                    .and_then(|expression| reference(&expression))
+                                    .is_some_and(|(_, name)| {
+                                        name.eq_ignore_ascii_case(output_alias)
+                                    })
+                        });
                     if !unsafe_alias {
                         outer = Expression::Identifier(Identifier::new(output_alias));
                     }
@@ -1489,5 +1498,34 @@ impl QueryRewriter<'_> {
             return Ok(None);
         }
         dialects::emit(decode(value)?, DialectType::DuckDB, output).map(Some)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::{Metric, Model, SemanticGraph};
+
+    #[test]
+    fn wildcard_import_grouping_retains_outer_column_qualification() {
+        let mut model = Model::new("orders_v", "id")
+            .with_table("raw_orders")
+            .with_metric(Metric::sum("revenue", "amount"));
+        model.metadata = Some(serde_json::json!({"yardstick": {}}));
+        let mut graph = SemanticGraph::new();
+        graph.add_model(model).unwrap();
+        for grouping in [
+            "o.product",
+            "ROLLUP(o.product)",
+            "CUBE(o.product)",
+            "GROUPING SETS ((o.product), ())",
+        ] {
+            let sql = QueryRewriter::new(&graph).rewrite(&format!("SELECT o.product, AGGREGATE(o.revenue) AS total FROM orders_v AS o GROUP BY {grouping}")).unwrap();
+            assert!(
+                sql.contains("(_inner.product) IS NOT DISTINCT FROM (o.product)"),
+                "{sql}"
+            );
+            assert!(!sql.contains("IS NOT DISTINCT FROM (product)"), "{sql}");
+        }
     }
 }

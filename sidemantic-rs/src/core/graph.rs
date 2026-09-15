@@ -1120,6 +1120,7 @@ mod tests {
         graph
             .add_model(
                 Model::new("orders", "id")
+                    .with_table("orders")
                     .with_metric(Metric::count("__fanout_rank_0"))
                     .with_metric(Metric::count("__sidemantic_filtered_2"))
                     .with_dimension(Dimension::categorical("__sidemantic_filtered_1_raw"))

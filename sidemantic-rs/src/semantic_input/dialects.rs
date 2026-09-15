@@ -176,14 +176,36 @@ pub(crate) fn parse_many(sql: &str, dialect: DialectType) -> Result<Vec<Expressi
     }
     let statements = polyglot_sql::parse(&prepared, dialect)
         .map_err(|error| SidemanticError::SqlParse(error.to_string()))?;
-    if replacements.is_empty() {
+    let complete_conditionals =
+        dialect == DialectType::DuckDB && prepared.to_ascii_uppercase().contains("IF");
+    if replacements.is_empty() && !complete_conditionals {
         return Ok(statements);
     }
-    fn restore(value: &mut Value, replacements: &HashMap<String, AggregateFunction>) -> Result<()> {
+    fn restore(
+        value: &mut Value,
+        replacements: &HashMap<String, AggregateFunction>,
+        complete_conditionals: bool,
+    ) -> Result<()> {
         match value {
             Value::Object(fields) => {
                 for child in fields.values_mut() {
-                    restore(child, replacements)?;
+                    restore(child, replacements, complete_conditionals)?;
+                }
+                if complete_conditionals {
+                    if let Some(function) = fields.get_mut("if_func").and_then(Value::as_object_mut)
+                    {
+                        if function.get("false_value").is_none_or(Value::is_null) {
+                            // The parser accepts IF(condition, value), but the
+                            // DuckDB emitter preserves that invalid two-argument
+                            // call. Its omitted false branch has NULL semantics.
+                            function.insert(
+                                "false_value".into(),
+                                serde_json::to_value(Expression::null()).map_err(|error| {
+                                    SidemanticError::SqlParse(error.to_string())
+                                })?,
+                            );
+                        }
+                    }
                 }
                 for kind in ["function", "aggregate_function"] {
                     let Some(function) = fields.get(kind) else {
@@ -211,7 +233,7 @@ pub(crate) fn parse_many(sql: &str, dialect: DialectType) -> Result<Vec<Expressi
             }
             Value::Array(children) => {
                 for child in children {
-                    restore(child, replacements)?;
+                    restore(child, replacements, complete_conditionals)?;
                 }
             }
             _ => {}
@@ -220,7 +242,7 @@ pub(crate) fn parse_many(sql: &str, dialect: DialectType) -> Result<Vec<Expressi
     }
     let mut value = serde_json::to_value(statements)
         .map_err(|error| SidemanticError::SqlParse(error.to_string()))?;
-    restore(&mut value, &replacements)?;
+    restore(&mut value, &replacements, complete_conditionals)?;
     serde_json::from_value(value).map_err(|error| SidemanticError::SqlParse(error.to_string()))
 }
 
@@ -521,6 +543,29 @@ mod tests {
                 generated
             );
         }
+    }
+
+    #[test]
+    fn omitted_conditional_false_branches_are_explicit_nulls_for_duckdb() {
+        for (input, expected) in [
+            ("IF(flag, 1)", "IF(flag, 1, NULL)"),
+            ("COUNT(IF(flag, 1))", "COUNT(IF(flag, 1, NULL))"),
+            (
+                "IF(flag, IF(other, 1), 0)",
+                "IF(flag, IF(other, 1, NULL), 0)",
+            ),
+            ("IF(flag, 1, 0)", "IF(flag, 1, 0)"),
+        ] {
+            let parsed = parse(&format!("SELECT {input}"), DialectType::DuckDB).unwrap();
+            let generated = polyglot_sql::generate(&parsed, DialectType::DuckDB).unwrap();
+            assert_eq!(generated, format!("SELECT {expected}"));
+        }
+        let sql = "SELECT 'IF(flag, 1)' AS label";
+        let parsed = parse(sql, DialectType::DuckDB).unwrap();
+        assert_eq!(
+            polyglot_sql::generate(&parsed, DialectType::DuckDB).unwrap(),
+            sql
+        );
     }
 
     #[test]

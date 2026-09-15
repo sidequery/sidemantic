@@ -51,9 +51,11 @@ def test_structured_compile_and_query_apply_invariant_before_aggregation():
 def test_semantic_sql_applies_invariant():
     layer = _layer()
 
-    assert sorted(layer.sql("SELECT orders.revenue, orders.status FROM orders").fetchall()) == [
-        ("new", 10),
-        ("paid", 20),
+    result = layer.sql("SELECT orders.revenue, orders.status FROM orders")
+    assert [column[0] for column in result.description] == ["revenue", "status"]
+    assert sorted(result.fetchall()) == [
+        (10, "new"),
+        (20, "paid"),
     ]
 
 

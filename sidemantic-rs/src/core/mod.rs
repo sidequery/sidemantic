@@ -13,6 +13,7 @@ mod segment;
 pub mod symmetric_agg;
 mod table_calc;
 
+pub(crate) use dependency::is_aggregate_ast_kind;
 pub use dependency::{
     check_circular_dependencies, extract_column_references_from_expr, extract_dependencies,
     extract_dependencies_with_context, outer_semantic_column_references, parse_semantic_expression,

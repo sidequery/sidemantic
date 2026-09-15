@@ -36,7 +36,106 @@ fn unsupported(capability: &str) -> SidemanticError {
     }
 }
 
+fn count_aggregate(expression: &Expression) -> bool {
+    match expression {
+        Expression::Count(_)
+        | Expression::CountIf(_)
+        | Expression::ApproxDistinct(_)
+        | Expression::ApproxCountDistinct(_) => true,
+        Expression::Filter(filter) => count_aggregate(&filter.this),
+        Expression::WithinGroup(group) => count_aggregate(&group.this),
+        _ => false,
+    }
+}
+
 impl<'a, 'g> Plan<'a, 'g> {
+    /// Split authored aggregate calls before expanding scalar metric references.
+    /// Each call must read one source; arithmetic combines its grouped output.
+    fn expand_calculation(
+        &mut self,
+        node: &mut serde_json::Value,
+        context: Option<&str>,
+    ) -> Result<()> {
+        if let serde_json::Value::Object(fields) = node {
+            let kind = (fields.len() == 1).then(|| fields.keys().next().unwrap().as_str());
+            if matches!(kind, Some("window" | "select" | "subquery" | "raw")) {
+                return Err(unsupported("calculation_shape"));
+            }
+            let aggregate = kind.is_some_and(crate::core::is_aggregate_ast_kind)
+                || matches!(kind, Some("filter" | "within_group"));
+            if aggregate || kind == Some("column") {
+                let expression: Expression = serde_json::from_value(node.clone())
+                    .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))?;
+                let sql = self.generator.emit_expression(&expression)?;
+                let replacement = if aggregate {
+                    let columns = semantic_column_references(&sql)?;
+                    let mut owners = HashSet::new();
+                    for column in columns {
+                        let owner = column
+                            .model
+                            .as_deref()
+                            .or(context)
+                            .ok_or_else(|| unsupported("unscoped_leaf"))?;
+                        if self.generator.graph.get_model(owner).is_none() {
+                            return Err(unsupported("cross_source_raw_input"));
+                        }
+                        owners.insert(owner.to_string());
+                    }
+                    if owners.is_empty() {
+                        owners.extend(context.map(str::to_string));
+                    }
+                    if owners.len() != 1 {
+                        return Err(unsupported("cross_source_raw_input"));
+                    }
+                    let model = owners.into_iter().next().unwrap();
+                    if !self.models.contains(&model) {
+                        self.models.push(model.clone());
+                    }
+                    let alias = format!("__sidemantic_metric_{}", self.leaves.len());
+                    let mut metric = Metric::derived(&alias, sql);
+                    metric.sql_is_complete = true;
+                    self.leaves.push(Leaf {
+                        reference: format!("{model}.{alias}"),
+                        model: model.clone(),
+                        metric,
+                        alias: alias.clone(),
+                    });
+                    let output = format!(
+                        "{}.{}",
+                        self.generator.quote_identifier(&format!("{model}_preagg")),
+                        self.generator.quote_identifier(&alias),
+                    );
+                    if count_aggregate(&expression) {
+                        format!("COALESCE({output}, 0)")
+                    } else {
+                        output
+                    }
+                } else {
+                    let column = semantic_column_references(&sql)?.remove(0);
+                    self.expand(&column.name(), context)?
+                };
+                *node =
+                    serde_json::to_value(parse_semantic_expression(&format!("({replacement})"))?)
+                        .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))?;
+                return Ok(());
+            }
+        }
+        match node {
+            serde_json::Value::Object(fields) => {
+                for child in fields.values_mut() {
+                    self.expand_calculation(child, context)?;
+                }
+            }
+            serde_json::Value::Array(children) => {
+                for child in children {
+                    self.expand_calculation(child, context)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     fn resolve(&self, reference: &str, context: Option<&str>) -> Result<Option<ResolvedMetric>> {
         let graph = self.generator.graph;
         if let Some((model_name, name)) = reference.split_once('.') {
@@ -115,8 +214,10 @@ impl<'a, 'g> Plan<'a, 'g> {
         {
             return Err(unsupported("calculation_filters"));
         }
-        let leaf_type = if metric.sql_is_complete {
+        let leaf_type = if metric.sql_is_complete && resolved.context.is_some() {
             MetricType::Simple
+        } else if metric.sql_is_complete {
+            MetricType::Derived
         } else {
             metric.r#type.clone()
         };
@@ -204,16 +305,11 @@ impl<'a, 'g> Plan<'a, 'g> {
                     ))
                 })?;
                 let sql = crate::core::replace_model_placeholder(sql, resolved.context.as_deref())?;
-                let mut replacements = HashMap::new();
-                for column in semantic_column_references(&sql)? {
-                    if column.aggregate_input {
-                        return Err(unsupported("inline_aggregate"));
-                    }
-                    let expanded = self.expand(&column.name(), resolved.context.as_deref())?;
-                    replacements.insert((column.model, column.field), format!("({expanded})"));
-                }
-                let expression =
-                    replace_semantic_columns(parse_semantic_expression(&sql)?, &replacements)?;
+                let mut ast = serde_json::to_value(parse_semantic_expression(&sql)?)
+                    .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))?;
+                self.expand_calculation(&mut ast, resolved.context.as_deref())?;
+                let expression = serde_json::from_value(ast)
+                    .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))?;
                 self.generator.emit_expression(&expression)?
             }
             _ => return Err(unsupported("calculation_shape")),
@@ -627,16 +723,21 @@ pub(super) fn try_generate(
                 &dimensions,
                 &metrics,
                 fanout_models.contains(model),
+                plan.models.len() > 1,
             )?
         } else {
             let mut projection = child_projection(generator, &dimensions, &leaves)?;
             if query.with_totals && !dimensions.is_empty() {
                 projection.push("__sidemantic_source._is_total AS _is_total".into());
             }
-            // Each child aggregates its own source inputs over the same
-            // requested dimension domain, including absent-source zero counts.
-            let anchor = generator
-                .query_base_model(&dimensions, &generator.parse_metric_refs(&child.metrics)?);
+            // Independent sources retain unmatched rows. Grouping order must
+            // not choose which population contributes to the calculation.
+            let anchor = if plan.models.len() > 1 {
+                Some(model.clone())
+            } else {
+                generator
+                    .query_base_model(&dimensions, &generator.parse_metric_refs(&child.metrics)?)
+            };
             let sql = generator.generate_from_model(&child, anchor.as_deref())?;
             format!(
                 "SELECT {}\nFROM (\n{sql}\n) AS __sidemantic_source",
@@ -915,35 +1016,90 @@ mod tests {
     }
 
     #[test]
-    fn grouped_children_preserve_dimension_domain_for_absent_sources() {
+    fn grouped_children_preserve_each_source_domain() {
         let graph = graph();
         for dimension in ["customers.region", "orders.region"] {
             let query = SemanticQuery::new()
                 .with_metrics(vec!["ratio".into()])
                 .with_dimensions(vec![dimension.into()]);
             let sql = SqlGenerator::new(&graph).generate(&query).unwrap();
-            let owner = dimension.split('.').next().unwrap();
-            let other = if owner == "orders" {
-                "customers"
-            } else {
-                "orders"
-            };
-            assert!(
-                sql.contains(&format!("FROM {owner}_cte AS {owner}_cte")),
-                "{sql}"
-            );
-            assert!(
-                sql.contains(&format!("LEFT JOIN {other}_cte AS {other}_cte")),
-                "{sql}"
-            );
-            assert!(
-                !sql.contains(&format!(
-                    "FROM {other}_cte AS {other}_cte\nLEFT JOIN {owner}_cte"
-                )),
-                "{sql}"
-            );
+            for owner in ["orders", "customers"] {
+                assert!(
+                    sql.contains(&format!("FROM {owner}_cte AS {owner}_cte")),
+                    "{sql}"
+                );
+            }
             assert_valid_sql(&sql);
         }
+    }
+
+    #[test]
+    fn inline_cross_source_aggregates_are_split_before_scalar_arithmetic() {
+        let mut graph = graph();
+        for (name, expression) in [
+            (
+                "inline_ratio",
+                "COUNT(orders.id) * 1.0 / NULLIF(COUNT(customers.id), 0)",
+            ),
+            (
+                "inline_sum",
+                "SUM(orders.amount) + SUM(CASE WHEN customers.id > 1 THEN customers.id ELSE 0 END)",
+            ),
+        ] {
+            let mut metric = Metric::derived(name, expression);
+            metric.sql_is_complete = true;
+            graph.add_metric_unvalidated(metric).unwrap();
+            let sql = compile(&graph, &[name], &[]).unwrap();
+            assert!(sql.contains("orders_preagg AS"), "{sql}");
+            assert!(sql.contains("customers_preagg AS"), "{sql}");
+            assert!(sql.contains("CROSS JOIN customers_preagg"), "{sql}");
+            assert_valid_sql(&sql);
+        }
+    }
+
+    #[test]
+    fn inline_filtered_distinct_count_restores_absent_sources_to_zero() {
+        let mut graph = graph();
+        let mut metric = Metric::derived(
+            "filtered_count_ratio",
+            "COUNT(DISTINCT orders.id) FILTER (WHERE orders.amount > 10) / NULLIF(COUNT(customers.id), 0)",
+        );
+        metric.sql_is_complete = true;
+        graph.add_metric_unvalidated(metric).unwrap();
+        let sql = compile(&graph, &["filtered_count_ratio"], &[]).unwrap();
+        assert!(
+            sql.contains("COALESCE(orders_preagg.__sidemantic_metric_"),
+            "{sql}"
+        );
+        assert!(
+            sql.contains("FILTER(WHERE") || sql.contains("FILTER (WHERE"),
+            "{sql}"
+        );
+        assert_valid_sql(&sql);
+    }
+
+    #[test]
+    fn inline_cross_source_metric_filters_are_not_discarded() {
+        let mut graph = graph();
+        let mut metric = Metric::derived(
+            "filtered_inline",
+            "SUM(orders.amount) + COUNT(customers.id)",
+        );
+        metric.sql_is_complete = true;
+        metric.filters.push("orders.amount > 10".into());
+        graph.add_metric_unvalidated(metric).unwrap();
+        let generator = SqlGenerator::new(&graph);
+        let mut plan = Plan {
+            generator: &generator,
+            leaves: Vec::new(),
+            models: Vec::new(),
+            expressions: HashMap::new(),
+            active: HashSet::new(),
+            cross_source_calculation: false,
+        };
+        assert!(matches!(plan.expand("filtered_inline", None),
+            Err(SidemanticError::UnsupportedSemanticFeatures { capabilities })
+            if capabilities == vec!["aggregation.calculation_filters"]));
     }
 
     #[test]

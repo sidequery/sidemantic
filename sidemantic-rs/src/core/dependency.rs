@@ -69,11 +69,18 @@ fn column_references(
     let ast = serde_json::to_value(expression)
         .map_err(|error| crate::error::SidemanticError::SqlParse(error.to_string()))?;
     let mut references = Vec::new();
-    let mut stack = vec![(&ast, false)];
-    while let Some((node, aggregate_input)) = stack.pop() {
+    let mut stack = vec![(&ast, false, HashSet::<String>::new())];
+    while let Some((node, aggregate_input, bindings)) = stack.pop() {
         match node {
             serde_json::Value::Object(fields) => {
                 let kind = (fields.len() == 1).then(|| fields.keys().next().unwrap().as_str());
+                if kind == Some("lambda") {
+                    let lambda = &fields["lambda"];
+                    let mut bindings = bindings;
+                    bindings.extend(lambda_parameter_names(lambda));
+                    stack.push((&lambda["body"], aggregate_input, bindings));
+                    continue;
+                }
                 if allow_subqueries
                     && matches!(
                         kind,
@@ -88,65 +95,92 @@ fn column_references(
                     });
                 }
                 let aggregate_input = aggregate_input
-                    || matches!(
-                        kind,
-                        Some(
-                            "count"
-                                | "sum"
-                                | "avg"
-                                | "min"
-                                | "max"
-                                | "median"
-                                | "mode"
-                                | "stddev"
-                                | "stddev_pop"
-                                | "stddev_samp"
-                                | "variance"
-                                | "var_pop"
-                                | "var_samp"
-                                | "aggregate_function"
-                                | "group_concat"
-                                | "string_agg"
-                                | "list_agg"
-                                | "array_agg"
-                                | "count_if"
-                                | "sum_if"
-                                | "first"
-                                | "last"
-                                | "any_value"
-                                | "approx_distinct"
-                                | "approx_count_distinct"
-                                | "approx_percentile"
-                                | "percentile"
-                                | "logical_and"
-                                | "logical_or"
-                                | "skewness"
-                                | "array_concat_agg"
-                                | "array_unique_agg"
-                                | "bool_xor_agg"
-                        )
-                    );
+                    || kind.is_some_and(is_aggregate_ast_kind)
+                    || matches!(kind, Some("window" | "window_function"));
                 if kind == Some("column") {
                     let column: polyglot_sql::expressions::Column =
                         serde_json::from_value(fields["column"].clone()).map_err(|error| {
                             crate::error::SidemanticError::SqlParse(error.to_string())
                         })?;
+                    if bindings.contains(
+                        column
+                            .table
+                            .as_ref()
+                            .map_or(column.name.name.as_str(), |table| table.name.as_str()),
+                    ) {
+                        continue;
+                    }
                     references.push(SemanticColumnReference {
                         model: column.table.map(|table| table.name),
                         field: column.name.name,
                         aggregate_input,
                     });
                 } else {
-                    stack.extend(fields.values().map(|child| (child, aggregate_input)));
+                    stack.extend(
+                        fields
+                            .values()
+                            .map(|child| (child, aggregate_input, bindings.clone())),
+                    );
                 }
             }
-            serde_json::Value::Array(children) => {
-                stack.extend(children.iter().map(|child| (child, aggregate_input)))
-            }
+            serde_json::Value::Array(children) => stack.extend(
+                children
+                    .iter()
+                    .map(|child| (child, aggregate_input, bindings.clone())),
+            ),
             _ => {}
         }
     }
     Ok(references)
+}
+
+/// Aggregate expression variants in the pinned SQL AST.
+pub(crate) fn is_aggregate_ast_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "count"
+            | "sum"
+            | "avg"
+            | "min"
+            | "max"
+            | "median"
+            | "mode"
+            | "stddev"
+            | "stddev_pop"
+            | "stddev_samp"
+            | "variance"
+            | "var_pop"
+            | "var_samp"
+            | "aggregate_function"
+            | "group_concat"
+            | "string_agg"
+            | "list_agg"
+            | "array_agg"
+            | "count_if"
+            | "sum_if"
+            | "first"
+            | "last"
+            | "any_value"
+            | "approx_distinct"
+            | "approx_count_distinct"
+            | "approx_percentile"
+            | "percentile"
+            | "logical_and"
+            | "logical_or"
+            | "skewness"
+            | "array_concat_agg"
+            | "array_unique_agg"
+            | "bool_xor_agg"
+    )
+}
+
+fn lambda_parameter_names(lambda: &serde_json::Value) -> Vec<String> {
+    lambda["parameters"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|parameter| parameter["name"].as_str().map(str::to_owned))
+        .collect()
 }
 
 /// Replace column nodes in every AST child, including typed functions that the
@@ -176,9 +210,21 @@ fn replace_columns(
         value: &mut serde_json::Value,
         replacements: &std::collections::HashMap<(Option<String>, String), String>,
         skip_subqueries: bool,
+        bindings: &HashSet<String>,
     ) -> crate::error::Result<()> {
         match value {
             serde_json::Value::Object(fields) => {
+                if fields.len() == 1 && fields.contains_key("lambda") {
+                    let lambda = fields.get_mut("lambda").unwrap();
+                    let mut bindings = bindings.clone();
+                    bindings.extend(lambda_parameter_names(lambda));
+                    return replace(
+                        &mut lambda["body"],
+                        replacements,
+                        skip_subqueries,
+                        &bindings,
+                    );
+                }
                 if skip_subqueries
                     && fields.len() == 1
                     && fields.keys().any(|name| {
@@ -195,6 +241,9 @@ fn replace_columns(
                         serde_json::from_value(fields["column"].clone())
                             .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))?;
                     let key = (column.table.map(|table| table.name), column.name.name);
+                    if bindings.contains(key.0.as_deref().unwrap_or(&key.1)) {
+                        return Ok(());
+                    }
                     if let Some(sql) = replacements.get(&key) {
                         *value =
                             serde_json::to_value(Expression::Raw(polyglot_sql::expressions::Raw {
@@ -204,13 +253,13 @@ fn replace_columns(
                     }
                 } else {
                     for child in fields.values_mut() {
-                        replace(child, replacements, skip_subqueries)?;
+                        replace(child, replacements, skip_subqueries, bindings)?;
                     }
                 }
             }
             serde_json::Value::Array(children) => {
                 for child in children {
-                    replace(child, replacements, skip_subqueries)?;
+                    replace(child, replacements, skip_subqueries, bindings)?;
                 }
             }
             _ => {}
@@ -219,7 +268,7 @@ fn replace_columns(
     }
     let mut value = serde_json::to_value(expression)
         .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))?;
-    replace(&mut value, replacements, skip_subqueries)?;
+    replace(&mut value, replacements, skip_subqueries, &HashSet::new())?;
     serde_json::from_value(value).map_err(|error| SidemanticError::SqlGeneration(error.to_string()))
 }
 
@@ -644,6 +693,46 @@ mod tests {
     use crate::core::model::{Aggregation, Dimension, Model};
 
     #[test]
+    fn lambda_bindings_are_local_to_the_body_for_dependencies_and_replacement() {
+        let sql = "list_transform(orders.items, x -> x.value + external.bias) + x.value";
+        let references = semantic_column_references(sql).unwrap();
+        let names: Vec<_> = references
+            .iter()
+            .map(SemanticColumnReference::name)
+            .collect();
+        assert_eq!(names.len(), 3, "{names:?}");
+        for name in ["orders.items", "external.bias", "x.value"] {
+            assert!(names.contains(&name.to_owned()), "{names:?}");
+        }
+        let replacements = std::collections::HashMap::from([
+            ((Some("x".into()), "value".into()), "outer_value".into()),
+            ((Some("external".into()), "bias".into()), "free_bias".into()),
+        ]);
+        let replaced =
+            replace_semantic_columns(parse_semantic_expression(sql).unwrap(), &replacements)
+                .unwrap();
+        let rendered = polyglot_sql::generate(&replaced, DialectType::DuckDB).unwrap();
+        assert_eq!(rendered.matches("outer_value").count(), 1, "{rendered}");
+        assert!(rendered.contains("x.value"), "{rendered}");
+        assert!(rendered.contains("free_bias"), "{rendered}");
+    }
+
+    #[test]
+    fn authored_window_partition_and_order_columns_are_physical_inputs() {
+        let references = semantic_column_references(
+            "sum(amount) over (partition by category order by year) + revenue",
+        )
+        .unwrap();
+        for reference in references {
+            assert_eq!(
+                reference.aggregate_input,
+                reference.field != "revenue",
+                "{reference:?}"
+            );
+        }
+    }
+
+    #[test]
     fn outer_filter_dependencies_do_not_capture_nested_columns_or_literals() {
         let sql = "orders.status IN (SELECT status FROM allowed WHERE note = 'orders.revenue AND customers.id')";
         let columns = outer_semantic_column_references(sql).unwrap();
@@ -767,49 +856,12 @@ pub fn validate_row_expression(
         match value {
             serde_json::Value::Object(fields) => {
                 let kind = (fields.len() == 1).then(|| fields.keys().next().unwrap().as_str());
-                matches!(
-                    kind,
-                    Some(
-                        "select"
-                            | "subquery"
-                            | "raw"
-                            | "window"
-                            | "window_function"
-                            | "count"
-                            | "sum"
-                            | "avg"
-                            | "min"
-                            | "max"
-                            | "median"
-                            | "mode"
-                            | "stddev"
-                            | "stddev_pop"
-                            | "stddev_samp"
-                            | "variance"
-                            | "var_pop"
-                            | "var_samp"
-                            | "aggregate_function"
-                            | "group_concat"
-                            | "string_agg"
-                            | "list_agg"
-                            | "array_agg"
-                            | "count_if"
-                            | "sum_if"
-                            | "first"
-                            | "last"
-                            | "any_value"
-                            | "approx_distinct"
-                            | "approx_count_distinct"
-                            | "approx_percentile"
-                            | "percentile"
-                            | "logical_and"
-                            | "logical_or"
-                            | "skewness"
-                            | "array_concat_agg"
-                            | "array_unique_agg"
-                            | "bool_xor_agg"
-                    )
-                ) || fields.values().any(visit)
+                (kind.is_some_and(is_aggregate_ast_kind)
+                    || matches!(
+                        kind,
+                        Some("select" | "subquery" | "raw" | "window" | "window_function")
+                    ))
+                    || fields.values().any(visit)
             }
             serde_json::Value::Array(values) => values.iter().any(visit),
             _ => false,

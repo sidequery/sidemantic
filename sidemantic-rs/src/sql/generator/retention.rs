@@ -357,7 +357,6 @@ mod tests {
         for (field, value) in [
             ("dimensions", json!(["events.person"])),
             ("filters", json!(["COUNT(*) > 1"])),
-            ("filters", json!(["ROW_NUMBER() OVER () > 1"])),
             ("filters", json!(["other.id = 1"])),
         ] {
             let mut query = query();
@@ -367,6 +366,22 @@ mod tests {
                 Err(SidemanticError::UnsupportedSemanticFeatures { .. })
             ));
         }
+    }
+
+    #[test]
+    fn retention_window_filter_is_rejected_at_query_boundary() {
+        let mut query = query();
+        query["filters"] = json!(["ROW_NUMBER() OVER () > 1"]);
+        let error =
+            compile_with_semantic_input(&input().to_string(), &query.to_string()).unwrap_err();
+        assert!(
+            matches!(
+                error,
+                SidemanticError::ValidationIssue { ref code, ref field, .. }
+                    if code == "invalid_semantic_input" && field == "query.filters"
+            ),
+            "{error}"
+        );
     }
 
     #[test]

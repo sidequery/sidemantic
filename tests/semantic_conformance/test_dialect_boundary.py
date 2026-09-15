@@ -98,7 +98,7 @@ def test_native_fragment_framing_and_source_snapshot(layer):
     source = graph_to_semantic_input(layer.graph)
     for field, sql in [("filters", "1 = 1 LIMIT 1"), ("order_by", "orders.value DESC LIMIT 1")]:
         query = {"metrics": ["orders.value"], "query_dialect": "bigquery", field: [sql]}
-        with pytest.raises(Exception, match="extra clauses"):
+        with pytest.raises(ValueError, match="extra clauses"):
             sidemantic_rs.compile_with_semantic_input(json.dumps(source), json.dumps(query))
     source["models"][0]["metrics"][0]["metadata"] = {"ossie_target_dialect": "bigquery"}
     source["models"][0]["metrics"][0]["sql"] = "IFNULL(`amount`, 0)"

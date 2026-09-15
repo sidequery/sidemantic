@@ -222,7 +222,7 @@ pub(super) fn validate_request_expression(
     if *select != Select::new() {
         return Err(super::invalid(
             path,
-            "Query expression contains disallowed SQL clauses",
+            "Query expression contains extra clauses",
         ));
     }
     let value = serde_json::to_value(expression).map_err(|error| super::invalid(path, error))?;

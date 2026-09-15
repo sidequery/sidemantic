@@ -95,7 +95,7 @@ fn column_references(
                     });
                 }
                 let aggregate_input = aggregate_input
-                    || kind.is_some_and(is_aggregate_ast_kind)
+                    || is_aggregate_ast_node(node)
                     || matches!(kind, Some("window" | "window_function"));
                 if kind == Some("column") {
                     let column: polyglot_sql::expressions::Column =
@@ -172,6 +172,19 @@ pub(crate) fn is_aggregate_ast_kind(kind: &str) -> bool {
             | "array_unique_agg"
             | "bool_xor_agg"
     )
+}
+
+pub(crate) fn is_aggregate_ast_node(node: &serde_json::Value) -> bool {
+    let Some(fields) = node.as_object().filter(|fields| fields.len() == 1) else {
+        return false;
+    };
+    let (kind, value) = fields.iter().next().unwrap();
+    is_aggregate_ast_kind(kind)
+        // polyglot 0.1.15 leaves bare DuckDB LIST as a generic function,
+        // while LIST with DISTINCT/ORDER/FILTER is an AggregateFunction.
+        || (kind == "function"
+            && value["quoted"].as_bool() != Some(true)
+            && value["name"].as_str().is_some_and(|name| name.eq_ignore_ascii_case("LIST")))
 }
 
 fn lambda_parameter_names(lambda: &serde_json::Value) -> Vec<String> {
@@ -718,6 +731,29 @@ mod tests {
     }
 
     #[test]
+    fn list_aggregate_inputs_stay_physical_through_scalar_list_functions() {
+        let sql = "LIST_AGGREGATE(LIST_TRANSFORM(LIST_DISTINCT(LIST(STRUCT_PACK(k := orders.id, v := orders.amount))), x -> x.v), 'quantile_cont', 0.5) + orders.revenue";
+        let references = semantic_column_references(sql).unwrap();
+        assert_eq!(references.len(), 3, "{references:?}");
+        for reference in references {
+            assert_eq!(
+                reference.aggregate_input,
+                reference.field != "revenue",
+                "{reference:?}"
+            );
+        }
+        assert!(validate_row_expression(
+            &parse_semantic_expression("LIST(amount)").unwrap(),
+            "test.row_scope"
+        )
+        .is_err());
+        let scalar_list =
+            semantic_column_references("list_transform(orders.amounts, x -> x + 1)").unwrap();
+        assert_eq!(scalar_list.len(), 1);
+        assert!(!scalar_list[0].aggregate_input);
+    }
+
+    #[test]
     fn authored_window_partition_and_order_columns_are_physical_inputs() {
         let references = semantic_column_references(
             "sum(amount) over (partition by category order by year) + revenue",
@@ -856,7 +892,7 @@ pub fn validate_row_expression(
         match value {
             serde_json::Value::Object(fields) => {
                 let kind = (fields.len() == 1).then(|| fields.keys().next().unwrap().as_str());
-                (kind.is_some_and(is_aggregate_ast_kind)
+                (is_aggregate_ast_node(value)
                     || matches!(
                         kind,
                         Some("select" | "subquery" | "raw" | "window" | "window_function")

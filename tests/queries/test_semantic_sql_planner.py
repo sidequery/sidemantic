@@ -2283,8 +2283,11 @@ def test_wrapped_fanout_preserves_aliases_and_executes(semantic_layer):
         "orders.revenue": "total_revenue",
         "customers.count": "customer_count",
     }
-    assert "orders_preagg.total_revenue AS total_revenue" in explanation.rewritten_sql
-    assert "customers_preagg.customer_count AS customer_count" in explanation.rewritten_sql
+    assert fetch_columns(semantic_layer.adapter.execute(explanation.rewritten_sql)) == [
+        "total_revenue",
+        "customer_count",
+    ]
+    assert fetch_rows(semantic_layer.adapter.execute(explanation.rewritten_sql)) == [(450, 2)]
 
 
 def test_wrapped_fanout_uses_child_preaggregations(semantic_layer):

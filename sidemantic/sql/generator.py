@@ -3045,6 +3045,10 @@ class SQLGenerator:
                     # A missing group has an empty count population. Restore
                     # zero before evaluating formulas or their outer defaults.
                     expression = f"COALESCE({expression}, 0)"
+                else:
+                    # A source can be absent from a sibling's group entirely,
+                    # so its child-level default has no row on which to run.
+                    expression = self._wrap_with_fill_nulls(expression, metric)
                 calculations[reference] = expression
                 return calculations[reference]
             stack = (*stack, reference)

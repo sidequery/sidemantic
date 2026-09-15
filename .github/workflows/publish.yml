@@ -39,6 +39,8 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: false
 
       - name: Set up Python
         run: uv python install 3.12
@@ -299,6 +301,8 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: false
 
       - name: Smoke runtime wheel
         shell: bash
@@ -325,6 +329,8 @@ jobs:
     steps:
       - name: Install uv
         uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: false
 
       - name: Download distributions
         uses: actions/download-artifact@v4

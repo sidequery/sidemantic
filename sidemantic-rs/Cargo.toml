@@ -44,7 +44,7 @@ url = { version = "2.5", optional = true }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 minijinja = { version = "2.5", features = ["builtins", "serde", "unstable_machinery"] }
 wasm-bindgen = { version = "0.2", optional = true }
-rmcp = { version = "1.4.0", optional = true, features = ["transport-io"] }
+rmcp = { version = "2.1.0", optional = true, features = ["transport-io"] }
 tokio = { version = "1", optional = true, features = ["rt-multi-thread", "macros", "io-std", "sync"] }
 tokio-stream = { version = "0.1", optional = true }
 axum = { version = "0.8.1", optional = true, features = ["json"] }

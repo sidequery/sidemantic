@@ -121,6 +121,11 @@ def _postgres_query_sql(sql: str, *, clause: str | None = None) -> str:
             raise ValueError(f"PostgreSQL {clause} input requires an expression")
         expression = wrapper.this if clause == "WHERE" else wrapper
     try:
+        # SQLGlot has already decoded PostgreSQL E-string escapes. Lower them
+        # to ordinary string literals; the native DuckDB parser does not
+        # preserve E-string quoting when re-emitting PostgreSQL SQL.
+        for literal in list(expression.find_all(exp.ByteString)):
+            literal.replace(exp.Literal.string(literal.this))
         # The intermediate parser must not infer DuckDB's default null ordering
         # after PostgreSQL defaults have been resolved. Emit that choice explicitly.
         for ordered in reversed(list(expression.find_all(exp.Ordered))):

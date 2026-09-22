@@ -223,6 +223,30 @@ def test_adbc_adapter_from_url():
     adapter.close()
 
 
+@pytest.mark.parametrize("url", ["sqlite:///:memory:", "adbc://sqlite/:memory:"])
+def test_adbc_url_resolves_packaged_driver_without_system_install(monkeypatch, url):
+    import adbc_driver_manager.dbapi as adbc
+
+    sqlite_package = pytest.importorskip("adbc_driver_sqlite")
+    from sidemantic.db.adbc import ADBCAdapter
+
+    connect = adbc.connect
+
+    def connect_with_bundled_driver(**kwargs):
+        # Require the wheel's absolute library path even on hosts where a
+        # system-installed SQLite driver would mask broken URL resolution.
+        assert kwargs["driver"] == sqlite_package._driver_path()
+        return connect(**kwargs)
+
+    monkeypatch.setattr(adbc, "connect", connect_with_bundled_driver)
+    adapter = ADBCAdapter.from_url(url)
+    try:
+        assert adapter.dialect == "sqlite"
+        assert adapter.execute("select 42").fetchone() == (42,)
+    finally:
+        adapter.close()
+
+
 def test_adbc_adapter_from_url_invalid_scheme():
     """Test that invalid URL scheme raises ValueError."""
     from sidemantic.db.adbc import ADBCAdapter

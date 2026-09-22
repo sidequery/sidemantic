@@ -5665,7 +5665,15 @@ impl<'a> SqlGenerator<'a> {
     }
 
     fn quote_identifier(&self, identifier: &str) -> String {
-        if Self::is_simple_identifier(identifier) {
+        // Rewriter leaves use DuckDB before final target emission. Preserve
+        // case there too so a PostgreSQL wrapper can reference the same alias.
+        let preserve_case = matches!(
+            self.dialect,
+            DialectType::DuckDB | DialectType::PostgreSQL | DialectType::Redshift
+        ) && identifier
+            .chars()
+            .any(|character| character.is_ascii_uppercase());
+        if Self::is_simple_identifier(identifier) && !preserve_case {
             // The SQL generator owns the dialect's reserved-word table.
             polyglot_sql::generate(
                 &Expression::Identifier(Identifier::new(identifier)),
@@ -6449,6 +6457,15 @@ mod tests {
                     format!("{quote}{name}{quote}")
                 );
             }
+        }
+        for dialect in [
+            DialectType::DuckDB,
+            DialectType::PostgreSQL,
+            DialectType::Redshift,
+        ] {
+            let generator = SqlGenerator::new(&graph).with_dialect(dialect);
+            assert_eq!(generator.quote_identifier("CaseSubject"), "\"CaseSubject\"");
+            assert_eq!(generator.quote_identifier("subject"), "subject");
         }
     }
 

@@ -429,3 +429,20 @@ def test_postgres_nested_window_null_order_survives_intermediate_dialect():
     assert _postgres_query_sql(sql) == (
         "SELECT x FROM events ORDER BY SUM(x) OVER (ORDER BY y DESC NULLS FIRST) ASC NULLS LAST"
     )
+
+
+@pytest.mark.parametrize(
+    "literal,expected",
+    [(r"E'O\'Brien'", "O'Brien"), (r"E'back\\slash'", "back\\slash"), (r"E'line\nbreak'", "line\nbreak")],
+)
+def test_postgres_escape_strings_preserve_values_as_ordinary_literals(literal, expected):
+    import duckdb
+    import sqlglot
+    from sqlglot import exp
+
+    from sidemantic.rust_bridge import _postgres_query_sql
+
+    sql = _postgres_query_sql(f"SELECT {literal} AS value")
+    assert not list(sqlglot.parse_one(sql, read="duckdb").find_all(exp.ByteString))
+    with duckdb.connect() as connection:
+        assert connection.execute(sql).fetchone() == (expected,)

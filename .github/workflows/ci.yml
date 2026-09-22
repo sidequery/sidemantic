@@ -560,6 +560,12 @@ jobs:
     needs: check-rust-changes
     if: needs.check-rust-changes.outputs.rust_changed == 'true'
     runs-on: ubuntu-latest
+    # This job builds many feature/host combinations. Full debug symbols make
+    # the completed-build cache too large to duplicate into its export tar.
+    # Keep debug assertions and unoptimized tests, but omit symbol data.
+    env:
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
     services:
       postgres:
         image: postgres:16
@@ -590,7 +596,7 @@ jobs:
         id: rust-cache
         uses: ./.github/actions/setup-rust-cache
         with:
-          suffix: ${{ github.workflow }}-${{ github.job }}-${{ strategy.job-index || 0 }}
+          suffix: ${{ github.workflow }}-${{ github.job }}-${{ strategy.job-index || 0 }}-no-debuginfo
 
       - name: Install uv
         id: uv

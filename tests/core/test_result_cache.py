@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import threading
+import time
 
 import pytest
 
@@ -29,6 +30,15 @@ class _Clock:
 
 def _table(nrows: int = 1) -> pa.Table:
     return pa.table({"a": list(range(nrows))})
+
+
+def _wait_for_two_misses(cache: ResultCache) -> None:
+    # stats() takes the cache lock, so the second miss is visible only after
+    # that caller has joined the leader's in-flight generation.
+    deadline = time.monotonic() + 5.0
+    while cache.stats()["misses"] < 2:
+        assert time.monotonic() < deadline, "second caller did not join the in-flight computation"
+        time.sleep(0.001)
 
 
 def test_hit_and_miss_counts():
@@ -129,7 +139,7 @@ def test_singleflight_runs_compute_once():
         calls["n"] += 1
         entered.set()
         # Block so the second thread joins as a waiter before we finish.
-        hold.wait(timeout=5.0)
+        assert hold.wait(timeout=10.0)
         return _table()
 
     results: dict[str, pa.Table] = {}
@@ -143,12 +153,14 @@ def test_singleflight_runs_compute_once():
 
     t2 = threading.Thread(target=worker, args=("t2",))
     t2.start()
-    # Give t2 a moment to register as a waiter, then release the leader.
-    hold.set()
+    try:
+        _wait_for_two_misses(cache)
+    finally:
+        hold.set()
+        t1.join(timeout=5.0)
+        t2.join(timeout=5.0)
 
-    t1.join(timeout=5.0)
-    t2.join(timeout=5.0)
-
+    assert not t1.is_alive() and not t2.is_alive()
     assert calls["n"] == 1
     assert results["t1"] is results["t2"]
 
@@ -166,7 +178,7 @@ def test_singleflight_compute_raises_propagates_without_deadlock():
     def compute():
         calls["n"] += 1
         entered.set()
-        hold.wait(timeout=5.0)
+        assert hold.wait(timeout=10.0)
         raise BoomError("compute failed")
 
     errors: dict[str, BaseException] = {}
@@ -183,11 +195,14 @@ def test_singleflight_compute_raises_propagates_without_deadlock():
 
     t2 = threading.Thread(target=worker, args=("t2",))
     t2.start()
-    hold.set()
+    try:
+        _wait_for_two_misses(cache)
+    finally:
+        hold.set()
+        t1.join(timeout=5.0)
+        t2.join(timeout=5.0)
 
-    t1.join(timeout=5.0)
-    t2.join(timeout=5.0)
-
+    assert not t1.is_alive() and not t2.is_alive()
     # The in-flight failure propagates to all waiters of that generation.
     assert calls["n"] == 1
     assert isinstance(errors.get("t1"), BoomError)

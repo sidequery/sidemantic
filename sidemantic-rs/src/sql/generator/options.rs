@@ -152,8 +152,18 @@ impl SqlGenerator<'_> {
         let mut projections = Vec::new();
         let mut replacements = HashMap::new();
         let mut renamed = false;
-        let quote =
-            |name: &str| self.emit_expression(&Expression::Identifier(Identifier::quoted(name)));
+        // polyglot 0.1.15 incorrectly splits ASC/DESC suffixes even inside
+        // quoted identifiers. Keep output names literal at this boundary.
+        let quote = |name: &str| {
+            let dialect = polyglot_sql::Dialect::get(self.dialect);
+            let style = &dialect.generator_config().identifier_quote_style;
+            format!(
+                "{}{}{}",
+                style.start,
+                name.replace(style.end, &format!("{}{}", style.end, style.end)),
+                style.end
+            )
+        };
         for expression in &select.expressions {
             let name = match expression {
                 Expression::Alias(alias) => &alias.alias.name,
@@ -168,10 +178,10 @@ impl SqlGenerator<'_> {
             renamed |= alias != name;
             projections.push(format!(
                 "__sidemantic_result.{} AS {}",
-                quote(name)?,
-                quote(alias)?
+                quote(name),
+                quote(alias)
             ));
-            replacements.insert((None, name.clone()), quote(alias)?);
+            replacements.insert((None, name.clone()), quote(alias));
             let source = match expression {
                 Expression::Alias(alias) => &alias.this,
                 other => other,
@@ -182,32 +192,40 @@ impl SqlGenerator<'_> {
                         column.table.as_ref().map(|table| table.name.clone()),
                         column.name.name.clone(),
                     ),
-                    quote(alias)?,
+                    quote(alias),
                 );
             }
         }
         if !renamed {
             return Ok(sql);
         }
+        let (inner_sql, used_preaggregation) = sql
+            .strip_suffix("\n-- used_preagg=true")
+            .map_or((sql.as_str(), false), |sql| (sql, true));
         let wrapper = format!(
-            "SELECT {} FROM ({sql}) AS __sidemantic_result",
+            "SELECT {} FROM ({inner_sql}\n) AS __sidemantic_result",
             projections.join(", ")
         );
         #[cfg(target_arch = "wasm32")]
         crate::wasm_sql_guard::check(&wrapper, self.dialect)?;
-        let Expression::Select(mut outer) =
-            crate::semantic_input::dialects::parse(&wrapper, self.dialect)
-                .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))?
-        else {
-            unreachable!()
-        };
-        outer.order_by = select.order_by;
-        if let Some(order) = &mut outer.order_by {
+        let mut order_by = select.order_by;
+        if let Some(order) = &mut order_by {
             for item in &mut order.expressions {
                 item.this = replace_semantic_columns(item.this.clone(), &replacements)?;
             }
         }
-        self.emit_expression(&Expression::Select(outer))
+        let mut result = if let Some(order) = order_by {
+            let order = self.emit_expression(&Expression::OrderBy(Box::new(order)))?;
+            format!("{wrapper} {order}")
+        } else {
+            wrapper
+        };
+        // Routing metadata belongs to the final statement, not a nested SQL
+        // comment that the next parser can discard or attach to another node.
+        if used_preaggregation {
+            result.push_str("\n-- used_preagg=true");
+        }
+        Ok(result)
     }
 }
 
@@ -229,6 +247,21 @@ mod tests {
             )
             .unwrap();
         graph
+    }
+
+    #[test]
+    fn alias_wrapper_preserves_trailing_rollup_marker() {
+        let graph = graph();
+        let generator = SqlGenerator::new(&graph);
+        let sql = generator
+            .alias_result(
+                "SELECT 42 AS revenue\n-- used_preagg=true".into(),
+                &HashMap::from([("revenue".into(), "total".into())]),
+            )
+            .unwrap();
+        assert!(sql.ends_with("\n-- used_preagg=true"), "{sql}");
+        crate::semantic_input::dialects::parse(&sql, DialectType::DuckDB).unwrap();
+        assert!(sql.contains("AS \"total\""), "{sql}");
     }
 
     #[test]
@@ -257,6 +290,26 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["Category label", "total", "_is_total"]
         );
+    }
+
+    #[test]
+    fn semantic_boundary_binds_spaced_order_aliases_before_policy_parsing() {
+        let source = json!({"version": 1, "input_dialect": "duckdb", "models": [{"name": "orders", "table": "orders", "primary_key": "id", "dimensions": [{"name": "category", "type": "categorical"}], "metrics": [{"name": "revenue", "agg": "sum", "sql": "amount"}]}]}).to_string();
+        for alias in ["Category label", "Category DESC", "Category NULLS FIRST"] {
+            for suffix in ["", " DESC", " ASC NULLS FIRST", "\tDESC\tNULLS\tLAST"] {
+                for dialect in ["duckdb", "postgres"] {
+                    let query = json!({
+                        "metrics": ["orders.revenue"], "dimensions": ["orders.category"],
+                        "aliases": {"orders.category": alias},
+                        "order_by": [format!("{alias}{suffix}")], "limit": 2,
+                        "query_dialect": dialect, "dialect": dialect
+                    });
+                    let sql = compile_with_semantic_input(&source, &query.to_string()).unwrap();
+                    assert!(sql.contains(&format!("ORDER BY \"{alias}\"")), "{sql}");
+                    assert!(sql.contains("LIMIT 2"), "{sql}");
+                }
+            }
+        }
     }
 
     #[test]

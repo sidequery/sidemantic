@@ -1,4 +1,9 @@
-"""Tests for semantic SQL rewrite planning and explanations."""
+"""Python optimizer explanations with engine-selected SQL execution checks.
+
+Plan names and rules describe the Python optimizer implementation. Queries sent
+through SemanticLayer execute with the suite's selected engine, and their rows
+are compared with the independently compiled Python baseline.
+"""
 
 import pytest
 
@@ -14,7 +19,7 @@ from tests.utils import fetch_columns, fetch_dicts, fetch_rows
 
 @pytest.fixture
 def semantic_layer():
-    layer = SemanticLayer(auto_register=False)
+    layer = SemanticLayer(auto_register=False, fallback=False)
 
     orders = Model(
         name="orders",
@@ -91,7 +96,20 @@ def _compiled_semantic_sql(layer: SemanticLayer, sql: str, use_preaggregations: 
         layer.graph,
         dialect="duckdb",
         use_preaggregations=use_preaggregations,
+        use_rust_rewriter=False,
     ).rewrite(sql)
+
+
+def _python_plan(layer: SemanticLayer, sql: str):
+    """Inspect Python optimizer internals separately from runtime execution."""
+    return QueryRewriter(
+        layer.graph,
+        dialect=layer.dialect,
+        use_preaggregations=layer.use_preaggregations,
+        enforce_visibility=layer.enforce_visibility,
+        use_rust_rewriter=False,
+        allow_non_additive_unsafe=layer.allow_non_additive_unsafe,
+    ).explain(sql)
 
 
 def _sorted_rows(rows):
@@ -104,8 +122,9 @@ def _assert_query_matches_baseline(
     baseline_sql: str,
     ordered: bool = False,
 ):
-    explanation = layer.explain_sql(sql)
+    explanation = _python_plan(layer, sql)
     optimized_result = layer.sql(sql)
+    assert layer.last_engine_selection == {"engine": layer.engine, "reason": None}
     optimized_columns = fetch_columns(optimized_result)
     optimized_rows = fetch_rows(optimized_result)
     baseline_result = layer.conn.execute(baseline_sql)
@@ -539,7 +558,7 @@ def test_bi_corpus_rejection_matrix_records_expected_reasons(semantic_layer, nam
         orders = semantic_layer.get_model("orders")
         orders.metrics.append(Metric(name="unique_customers", agg="count_distinct", sql="customer_id"))
 
-    explanation = semantic_layer.explain_sql(sql)
+    explanation = _python_plan(semantic_layer, sql)
 
     assert explanation.chosen_plan == "semantic_plus_postprocess"
     assert rejected_rule in explanation.rejected_rules
@@ -634,7 +653,7 @@ def test_external_cte_chain_corpus_flattens_linear_steps(semantic_layer):
     ],
 )
 def test_linear_cte_chain_rejects_unsafe_steps(semantic_layer, sql):
-    explanation = semantic_layer.explain_sql(sql)
+    explanation = _python_plan(semantic_layer, sql)
 
     assert explanation.chosen_plan == "semantic_plus_postprocess"
     assert explanation.post_process is not None
@@ -997,7 +1016,7 @@ def test_semantic_island_with_outer_dependency_is_rejected(semantic_layer):
         )
     """
 
-    explanation = semantic_layer.explain_sql(sql)
+    explanation = _python_plan(semantic_layer, sql)
 
     assert explanation.chosen_plan == "semantic_plus_postprocess"
     assert explanation.semantic_islands == []
@@ -1048,7 +1067,7 @@ def test_root_semantic_query_allows_redundant_group_by_dimensions(semantic_layer
     """
     direct_sql = "SELECT orders.revenue, orders.status FROM orders"
 
-    explanation = semantic_layer.explain_sql(sql)
+    explanation = _python_plan(semantic_layer, sql)
 
     assert explanation.chosen_plan == "direct_semantic"
     assert explanation.metrics == ["orders.revenue"]
@@ -1063,7 +1082,7 @@ def test_root_semantic_query_preserves_having_metric_filter(semantic_layer):
         HAVING orders.revenue > 225
     """
 
-    explanation = semantic_layer.explain_sql(sql)
+    explanation = _python_plan(semantic_layer, sql)
     rows = _rows(semantic_layer.sql(sql))
 
     assert explanation.chosen_plan == "direct_semantic"
@@ -1085,7 +1104,7 @@ def test_root_unqualified_dimension_filter_is_qualified_for_pushdown(semantic_la
         WHERE status = 'completed'
     """
 
-    explanation = semantic_layer.explain_sql(unqualified_sql)
+    explanation = _python_plan(semantic_layer, unqualified_sql)
 
     assert explanation.chosen_plan == "direct_semantic"
     assert explanation.filters == ["orders.status = 'completed'"]
@@ -1458,8 +1477,8 @@ def test_aggregate_boundary_rejects_non_additive_subtotals(semantic_layer):
         GROUP BY status
     """
 
-    ratio_explanation = semantic_layer.explain_sql(ratio_sql)
-    median_explanation = semantic_layer.explain_sql(median_sql)
+    ratio_explanation = _python_plan(semantic_layer, ratio_sql)
+    median_explanation = _python_plan(semantic_layer, median_sql)
 
     assert ratio_explanation.chosen_plan == "semantic_plus_postprocess"
     assert ratio_explanation.rejected_rules["aggregate_boundary_rollup"] == "outer_projection_computes_expression"
@@ -1587,7 +1606,7 @@ def test_aggregate_boundary_time_grain_rollup_rejects_week_to_month(semantic_lay
     ],
 )
 def test_aggregate_boundary_time_grain_rollup_rejects_unsafe_dimension_expressions(semantic_layer, sql, reason):
-    explanation = semantic_layer.explain_sql(sql)
+    explanation = _python_plan(semantic_layer, sql)
 
     assert explanation.chosen_plan == "semantic_plus_postprocess"
     assert explanation.rejected_rules["aggregate_boundary_rollup"] == reason
@@ -1738,7 +1757,7 @@ def test_conditional_aggregate_pivot_with_outer_row_filter_uses_preaggregation(s
     ],
 )
 def test_conditional_aggregate_pivot_rejects_unsafe_shapes(semantic_layer, sql, reason):
-    explanation = semantic_layer.explain_sql(sql)
+    explanation = _python_plan(semantic_layer, sql)
 
     assert explanation.chosen_plan == "semantic_plus_postprocess"
     assert "conditional_aggregate_wrapper" not in explanation.applied_rules
@@ -2100,7 +2119,7 @@ def test_wrapped_preaggregation_executes_against_materialized_table(semantic_lay
         ORDER BY status
     """
 
-    explanation = semantic_layer.explain_sql(wrapped_sql)
+    explanation = _python_plan(semantic_layer, wrapped_sql)
     preagg_rows = _rows(semantic_layer.sql(wrapped_sql))
     base_rows = _rows(
         semantic_layer.query(
@@ -2278,8 +2297,11 @@ def test_wrapped_fanout_preserves_aliases_and_executes(semantic_layer):
         "orders.revenue": "total_revenue",
         "customers.count": "customer_count",
     }
-    assert "orders_preagg.total_revenue AS total_revenue" in explanation.rewritten_sql
-    assert "customers_preagg.customer_count AS customer_count" in explanation.rewritten_sql
+    assert fetch_columns(semantic_layer.adapter.execute(explanation.rewritten_sql)) == [
+        "total_revenue",
+        "customer_count",
+    ]
+    assert fetch_rows(semantic_layer.adapter.execute(explanation.rewritten_sql)) == [(450, 2)]
 
 
 def test_wrapped_fanout_uses_child_preaggregations(semantic_layer):
@@ -2497,7 +2519,7 @@ def test_fanout_join_key_preaggregation_rejects_missing_join_key_rollup(semantic
     semantic_layer.use_preaggregations = True
     sql = "SELECT orders.revenue, customers.region FROM orders"
 
-    explanation = semantic_layer.explain_sql(sql)
+    explanation = _python_plan(semantic_layer, sql)
     candidates = _candidate_by_name(explanation)
 
     assert explanation.chosen_plan == "direct_semantic"
@@ -2517,7 +2539,7 @@ def test_fanout_join_key_preaggregation_rejects_one_to_many_remote_dimension(sem
     semantic_layer.use_preaggregations = True
     sql = "SELECT customers.count, orders.status FROM customers"
 
-    explanation = semantic_layer.explain_sql(sql)
+    explanation = _python_plan(semantic_layer, sql)
     candidates = _candidate_by_name(explanation)
 
     assert explanation.chosen_plan == "direct_semantic"
@@ -2923,7 +2945,7 @@ def test_global_topn_rejects_rank_tie_semantics(semantic_layer, window_fn, expec
         ORDER BY revenue DESC
     """
 
-    explanation = semantic_layer.explain_sql(sql)
+    explanation = _python_plan(semantic_layer, sql)
 
     assert explanation.chosen_plan == "semantic_plus_postprocess"
     assert explanation.rejected_rules["global_row_number_topn"] == expected_reason
@@ -2941,7 +2963,7 @@ def test_global_topn_rejects_outer_projection_of_rank_column(semantic_layer):
         ORDER BY revenue DESC
     """
 
-    explanation = semantic_layer.explain_sql(sql)
+    explanation = _python_plan(semantic_layer, sql)
 
     assert explanation.chosen_plan == "semantic_plus_postprocess"
     assert (
@@ -3093,7 +3115,7 @@ def test_set_operation_branch_order_by_is_rejected(semantic_layer):
         SELECT orders.revenue, orders.status FROM orders
     """
 
-    explanation = semantic_layer.explain_sql(sql)
+    explanation = _python_plan(semantic_layer, sql)
 
     assert explanation.chosen_plan == "passthrough_plain_sql"
     assert explanation.semantic_islands == []
@@ -3125,7 +3147,7 @@ def test_global_row_number_topn_rejects_partitioned_rank(semantic_layer):
 def test_projection_width_reduction_omits_unused_primary_key(semantic_layer):
     sql = "SELECT orders.revenue, orders.status FROM orders"
 
-    explanation = semantic_layer.explain_sql(sql)
+    explanation = _python_plan(semantic_layer, sql)
 
     assert explanation.chosen_plan == "direct_semantic"
     assert "id AS id" not in explanation.rewritten_sql
@@ -3137,7 +3159,7 @@ def test_projection_width_reduction_omits_unused_primary_key(semantic_layer):
 def test_projection_width_reduction_keeps_join_keys_for_joined_dimensions(semantic_layer):
     sql = "SELECT orders.revenue, customers.region FROM orders"
 
-    explanation = semantic_layer.explain_sql(sql)
+    explanation = _python_plan(semantic_layer, sql)
 
     assert explanation.chosen_plan == "direct_semantic"
     assert "customer_id AS customer_id" in explanation.rewritten_sql
@@ -3152,7 +3174,7 @@ def test_projection_width_reduction_keeps_count_distinct_key_state(semantic_laye
     orders.metrics.append(Metric(name="unique_orders", agg="count_distinct"))
     sql = "SELECT orders.unique_orders, orders.status FROM orders ORDER BY orders.status"
 
-    explanation = semantic_layer.explain_sql(sql)
+    explanation = _python_plan(semantic_layer, sql)
     rows = _rows(semantic_layer.sql(sql))
 
     assert explanation.chosen_plan == "direct_semantic"
@@ -3208,9 +3230,13 @@ def test_explain_passthrough_plain_sql_non_strict(semantic_layer):
 def test_semantic_layer_explain_sql(semantic_layer):
     explanation = semantic_layer.explain_sql("SELECT orders.revenue FROM orders")
 
-    assert explanation.chosen_plan == "direct_semantic"
-    assert explanation.metrics == ["orders.revenue"]
-    assert "orders_cte" in explanation.rewritten_sql
+    assert semantic_layer.last_engine_selection == {"engine": semantic_layer.engine, "reason": None}
+    assert semantic_layer.conn.execute(explanation.rewritten_sql).fetchall() == [(450,)]
+    if semantic_layer.engine == "rust":
+        assert explanation.chosen_plan == "rust_semantic_rewriter"
+    else:
+        assert explanation.chosen_plan == "direct_semantic"
+        assert explanation.metrics == ["orders.revenue"]
 
 
 def test_rewrite_simple_query_still_generates_same_sql(semantic_layer):

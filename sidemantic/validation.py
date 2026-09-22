@@ -897,11 +897,19 @@ def validate_query(metrics: list[str], dimensions: list[str], graph: "SemanticGr
             else:
                 _add_untranslated_dax_model_error(model_name, model)
                 dimension = model.get_dimension(dim_name)
-                if not dimension:
+                # The generator projects local many-to-one foreign keys when
+                # explicitly selected, even without a Dimension declaration.
+                relationship_key = any(
+                    relationship.type == "many_to_one"
+                    and not (relationship.sql and ("{from}" in relationship.sql or "{to}" in relationship.sql))
+                    and dim_name in relationship.foreign_key_columns
+                    for relationship in model.relationships
+                )
+                if not dimension and not relationship_key:
                     errors.append(
                         f"Dimension '{dim_name}' not found in model '{model_name}' (referenced in '{dim_ref}')"
                     )
-                else:
+                elif dimension:
                     _add_untranslated_dax_dimension_error(dim_ref, dimension)
         else:
             errors.append(f"Dimension reference '{dim_ref}' must be in 'model.dimension' format")

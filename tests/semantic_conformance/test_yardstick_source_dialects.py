@@ -54,12 +54,14 @@ def test_source_functions_and_quoted_all_dimensions(layer, source, quote, condit
 
 
 @pytest.mark.parametrize("source,quote", [("bigquery", "`"), ("snowflake", '"')])
-def test_source_current_modifier_uses_canonical_group_context(layer, source, quote):
+@pytest.mark.parametrize("qualified", [False, True])
+def test_source_current_modifier_uses_canonical_group_context(layer, source, quote, qualified):
     q = quote
+    current = f"{q}sales_v{q}.{q}year{q}" if qualified else f"{q}year{q}"
     assert result(
         layer,
         source,
-        f"SELECT {q}year{q}, AGGREGATE({q}revenue{q}) AT (SET {q}year{q} = CURRENT {q}year{q} - 1) AS prior "
+        f"SELECT {q}year{q}, AGGREGATE({q}revenue{q}) AT (SET {q}year{q} = CURRENT {current} - 1) AS prior "
         f"FROM {q}sales_v{q} GROUP BY {q}year{q} ORDER BY {q}year{q}",
     ) == [(2022, None), (2023, 150)]
 

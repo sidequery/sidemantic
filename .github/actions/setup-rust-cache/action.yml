@@ -1,0 +1,76 @@
+name: Cache Rust compilation
+description: Share completed compiler objects across Cargo, uv, maturin, and Make builds.
+inputs:
+  suffix:
+    description: Job and matrix partition for the compiler cache.
+    required: true
+outputs:
+  key:
+    description: Key used by the Boxington action.
+    value: ${{ steps.cache.outputs.cache-primary-key }}
+runs:
+  using: composite
+  steps:
+    # Upstream 1.11.0 publishes ARM macOS binaries, but no Intel macOS binary.
+    # Bootstrap that host once, then reuse the pinned executable across jobs.
+    - uses: actions/cache/restore@v4
+      if: runner.os == 'macOS' && runner.arch == 'X64'
+      id: intel
+      with:
+        path: ${{ runner.temp }}/mbx-intel/bin/mbx
+        key: mbx-1.11.0-macos-x64-v1
+
+    - name: Build Boxington for Intel macOS
+      if: runner.os == 'macOS' && runner.arch == 'X64' && steps.intel.outputs.cache-hit != 'true'
+      shell: bash
+      run: cargo install --git https://github.com/jdx/mr-boxington --rev 4ebd2af1eb7e70fee37ec8678c30c0619f5ed5af --locked --root "$RUNNER_TEMP/mbx-intel" mbx
+
+    - uses: actions/cache/save@v4
+      if: runner.os == 'macOS' && runner.arch == 'X64' && steps.intel.outputs.cache-hit != 'true'
+      with:
+        path: ${{ runner.temp }}/mbx-intel/bin/mbx
+        key: mbx-1.11.0-macos-x64-v1
+
+    - name: Enable pinned Intel Boxington
+      if: runner.os == 'macOS' && runner.arch == 'X64'
+      shell: bash
+      run: |
+        test "$("$RUNNER_TEMP/mbx-intel/bin/mbx" --version)" = 'mbx 1.11.0'
+        echo "$RUNNER_TEMP/mbx-intel/bin" >> "$GITHUB_PATH"
+
+    - uses: jdx/mr-boxington-action@a20e1ffcd962370fb2b6045c13b7b349f7b03386
+      id: cache
+      env:
+        MBX_CACHE_DIR: ${{ github.workspace }}/.ci-mbx
+        MBX_TARGET_VIEWS: '0'
+      with:
+        version: ${{ (runner.os != 'macOS' || runner.arch != 'X64') && '1.11.0' || '' }}
+        github-cache-mode: objects
+        cache-generation: sidemantic-v1-${{ inputs.suffix }}
+
+    - name: Remove imported Rust cache archive
+      env:
+        MBX_CACHE_DIR: ${{ github.workspace }}/.ci-mbx
+      shell: bash
+      run: |
+        # The pinned action imports this transport archive but leaves it on disk.
+        # Export writes a new full-size temporary tar before replacing this path;
+        # keep the imported objects and targets, not a second copy of their bytes.
+        rm -f -- "$(mbx cache dir)/github-actions-cache-v1.tar"
+
+    - name: Enable Cargo subprocess caching
+      shell: bash
+      run: |
+        # mbx dispatches as a Cargo shim when invoked under Cargo's filename.
+        # Keep the shim in the workspace so maturin's workspace mount can use it too.
+        shim_dir="$GITHUB_WORKSPACE/.ci-cache-bin"
+        mkdir -p "$shim_dir"
+        if [ "$RUNNER_OS" = Windows ]; then
+          cp "$(command -v mbx)" "$shim_dir/cargo.exe"
+        else
+          cp "$(command -v mbx)" "$shim_dir/cargo"
+          chmod +x "$shim_dir/cargo"
+        fi
+        echo "$shim_dir" >> "$GITHUB_PATH"
+        echo "MBX_CACHE_DIR=$GITHUB_WORKSPACE/.ci-mbx" >> "$GITHUB_ENV"
+        echo "MBX_TARGET_VIEWS=0" >> "$GITHUB_ENV"

@@ -98,7 +98,12 @@ def test_joined_populations(layer, relationship_type):
         Model(name="users", table="users", primary_key="id", dimensions=[Dimension(name="region", type="categorical")])
     )
     layer.graph.get_model("events").relationships.append(
-        Relationship(name="users", type=relationship_type, sql="user_id", foreign_key="id")
+        Relationship(
+            name="users",
+            type=relationship_type,
+            foreign_key="user_id" if relationship_type == "many_to_one" else "id",
+            primary_key="id" if relationship_type == "many_to_one" else "user_id",
+        )
     )
     sql = layer.compile(metrics=["events.users"], dimensions=["users.region"], filters=["events.user_id is not null"])
     expected = layer.adapter.execute("""

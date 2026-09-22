@@ -35,7 +35,7 @@ source: flights is duckdb.table('flights') extend {
     assert relationships["origin"].target_model == "airports"
     assert relationships["destination"].target_model == "airports"
 
-    layer = SemanticLayer(auto_register=False, engine="python")
+    layer = SemanticLayer(auto_register=False)
     layer.adapter.execute("create table airports(id int, city text)")
     layer.adapter.execute("insert into airports values (1, 'SFO'), (2, 'LAX'), (3, 'JFK')")
     layer.adapter.execute("create table flights(id int, origin_id int, destination_id int)")
@@ -118,7 +118,7 @@ def test_native_custom_join_sql_exports_exactly_and_executes_after_reparse(tmp_p
     relationship = reparsed.get_model("orders").relationships[0]
     assert relationship.sql == "{from}.customer_id = {to}.id and {to}.active = true"
 
-    layer = SemanticLayer(auto_register=False, engine="python")
+    layer = SemanticLayer(auto_register=False)
     layer.adapter.execute("create table customers(id int, name text, active boolean)")
     layer.adapter.execute("insert into customers values (1, 'Ada', true), (2, 'Grace', false)")
     layer.adapter.execute("create table orders(id int, customer_id int, amount int)")

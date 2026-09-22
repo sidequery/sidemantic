@@ -104,7 +104,7 @@ static REGISTRY_CONTEXTVAR: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
 pyo3::create_exception!(
     sidemantic_rs,
     UnsupportedSemanticFeaturesError,
-    PyRuntimeError
+    PyValueError
 );
 pyo3::create_exception!(sidemantic_rs, SecurityError, PyRuntimeError);
 pyo3::create_exception!(sidemantic_rs, QueryValidationError, PyValueError);
@@ -124,9 +124,10 @@ fn semantic_input_error(py: Python<'_>, error: SidemanticError) -> PyErr {
             }
             error
         }
-        SidemanticError::Validation(_) | SidemanticError::ValidationIssue { .. } => {
-            QueryValidationError::new_err(error.to_string())
-        }
+        SidemanticError::Validation(_)
+        | SidemanticError::ValidationIssue { .. }
+        | SidemanticError::NoJoinPath { .. }
+        | SidemanticError::SqlParse(_) => QueryValidationError::new_err(error.to_string()),
         SidemanticError::InvalidConfig(_) => PyValueError::new_err(error.to_string()),
         _ => PyRuntimeError::new_err(error.to_string()),
     }
@@ -515,12 +516,14 @@ fn validate_query_references(
 /// Generate materialization SQL for a model pre-aggregation using sidemantic-rs schema.
 #[pyfunction]
 fn generate_preaggregation_materialization_sql(
+    py: Python<'_>,
     yaml: &str,
     model_name: &str,
     preagg_name: &str,
 ) -> PyResult<String> {
     generate_preaggregation_materialization_sql_with_yaml_native(yaml, model_name, preagg_name)
         .map_err(|e| match e {
+            SidemanticError::UnsupportedSemanticFeatures { .. } => semantic_input_error(py, e),
             SidemanticError::Validation(_)
             | SidemanticError::YamlParse(_)
             | SidemanticError::InvalidConfig(_)

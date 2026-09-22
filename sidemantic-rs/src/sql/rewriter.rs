@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use polyglot_sql::parse as polyglot_parse;
+use crate::semantic_input::dialects::parse_many as polyglot_parse;
 use polyglot_sql::{
     expressions::{Identifier, Join, JoinKind, Select, TableRef, With},
     generate as polyglot_generate, DialectType, Expression,
@@ -26,6 +26,7 @@ pub struct QueryRewriter<'a> {
     rename_only: bool,
     security_controls: bool,
     warnings: std::cell::RefCell<Vec<String>>,
+    used_preaggregation: std::cell::Cell<bool>,
 }
 
 impl<'a> QueryRewriter<'a> {
@@ -37,6 +38,7 @@ impl<'a> QueryRewriter<'a> {
             rename_only: false,
             security_controls: false,
             warnings: std::cell::RefCell::new(Vec::new()),
+            used_preaggregation: std::cell::Cell::new(false),
         }
     }
 
@@ -73,6 +75,7 @@ impl<'a> QueryRewriter<'a> {
         input_dialect: DialectType,
         output_dialect: DialectType,
     ) -> Result<String> {
+        self.used_preaggregation.set(false);
         if let Some(rewritten) = self.rewrite_yardstick(sql, input_dialect, output_dialect)? {
             return Ok(rewritten);
         }
@@ -97,7 +100,14 @@ impl<'a> QueryRewriter<'a> {
             )?);
         }
 
-        Ok(rewritten_statements.join(";\n"))
+        let mut sql = rewritten_statements.join(";\n");
+        // Parsing semantic leaves into relational wrappers drops their trailing
+        // comments. Preserve routing independently so missing-rollup fallback
+        // and strict mode observe the compiler's actual selection.
+        if self.used_preaggregation.get() {
+            sql.push_str("\n-- used_preagg=true");
+        }
+        Ok(sql)
     }
 
     fn rewrite_statement(&self, statement: Expression) -> Result<Expression> {
@@ -114,7 +124,7 @@ fn parse_sql_with_dialect(sql: &str, dialect: DialectType) -> Result<Vec<Express
     run_parser(move || {
         #[cfg(target_arch = "wasm32")]
         crate::wasm_sql_guard::check(&sql, dialect)?;
-        polyglot_parse(&sql, dialect).map_err(|error| SidemanticError::SqlParse(error.to_string()))
+        polyglot_parse(&sql, dialect)
     })
 }
 
@@ -128,7 +138,6 @@ fn parse_rewrite_input(sql: &str, input_dialect: DialectType) -> Result<Vec<Expr
         #[cfg(target_arch = "wasm32")]
         crate::wasm_sql_guard::check(&sql, DialectType::DuckDB)?;
         polyglot_parse(&sql, DialectType::DuckDB)
-            .map_err(|error| SidemanticError::SqlParse(error.to_string()))
     })
 }
 

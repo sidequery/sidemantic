@@ -14,6 +14,7 @@ Fixtures sourced from:
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from sidemantic.adapters.metricflow import MetricFlowAdapter
 
@@ -622,23 +623,21 @@ class TestSubDailyGranularities:
 class TestUnsupportedFeatures:
     """Tests for MetricFlow features not yet supported by sidemantic."""
 
-    @pytest.mark.xfail(
-        reason="Dimension model does not support 'millisecond' granularity",
-        raises=Exception,
-    )
     def test_millisecond_granularity(self):
         """Parsing a dimension with millisecond granularity fails validation."""
         adapter = MetricFlowAdapter()
-        adapter.parse(FIXTURES / "sub_daily_millisecond.yml")
+        with pytest.raises(ValidationError) as error:
+            adapter.parse(FIXTURES / "sub_daily_millisecond.yml")
+        assert error.value.errors()[0]["loc"] == ("granularity",)
+        assert error.value.errors()[0]["input"] == "millisecond"
 
-    @pytest.mark.xfail(
-        reason="Metric model does not support sub-daily grain_to_date (hour)",
-        raises=Exception,
-    )
     def test_subdaily_grain_to_date(self):
         """Parsing a cumulative metric with grain_to_date: hour fails validation."""
         adapter = MetricFlowAdapter()
-        adapter.parse(FIXTURES / "sub_daily_grain_to_date_hour.yml")
+        with pytest.raises(ValidationError) as error:
+            adapter.parse(FIXTURES / "sub_daily_grain_to_date_hour.yml")
+        assert error.value.errors()[0]["loc"] == ("grain_to_date",)
+        assert error.value.errors()[0]["input"] == "hour"
 
 
 # =============================================================================

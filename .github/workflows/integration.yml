@@ -33,10 +33,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust compilation
+        id: rust-cache
+        uses: ./.github/actions/setup-rust-cache
+        with:
+          suffix: ${{ github.workflow }}-${{ github.job }}-${{ strategy.job-index || 0 }}
+
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        id: uv
+        uses: ./.github/actions/setup-uv
         with:
           enable-cache: true
+          suffix: ${{ github.workflow }}-${{ github.job }}-${{ strategy.job-index || 0 }}
 
       - name: Set up Python
         run: uv python install 3.12
@@ -53,7 +64,9 @@ jobs:
           POSTGRES_DB: "sidemantic_test"
           POSTGRES_USER: "test"
           POSTGRES_PASSWORD: "test"
-        run: uv run pytest -m integration tests/db/test_postgres_integration.py -v
+        run: |
+          uv run pytest --test-engine python -m integration tests/db/test_postgres_integration.py -v
+          uv run pytest --test-engine rust -m integration tests/db/test_postgres_integration.py -v
 
       - name: Run PostgreSQL CLI e2e test
         env:
@@ -63,13 +76,31 @@ jobs:
           POSTGRES_DB: "sidemantic_test"
           POSTGRES_USER: "test"
           POSTGRES_PASSWORD: "test"
-        run: uv run pytest -m integration tests/db/test_postgres_cli_e2e.py -v
+        run: |
+          uv run pytest --test-engine python -m integration tests/db/test_postgres_cli_e2e.py -v
+          uv run pytest --test-engine rust -m integration tests/db/test_postgres_cli_e2e.py -v
+
+      - name: Save completed build caches
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/save-build-caches
+        with:
+          rust-key: ${{ steps.rust-cache.outputs.key }}
+          uv-key: ${{ steps.uv.outputs.cache-key }}
 
   bigquery-integration:
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust compilation
+        id: rust-cache
+        uses: ./.github/actions/setup-rust-cache
+        with:
+          suffix: ${{ github.workflow }}-${{ github.job }}-${{ strategy.job-index || 0 }}
 
       - name: Start BigQuery emulator
         run: |
@@ -82,9 +113,11 @@ jobs:
           sleep 5
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        id: uv
+        uses: ./.github/actions/setup-uv
         with:
           enable-cache: true
+          suffix: ${{ github.workflow }}-${{ github.job }}-${{ strategy.job-index || 0 }}
 
       - name: Set up Python
         run: uv python install 3.12
@@ -98,7 +131,16 @@ jobs:
           BIGQUERY_EMULATOR_HOST: "localhost:9050"
           BIGQUERY_PROJECT: "test-project"
           BIGQUERY_DATASET: "test_dataset"
-        run: uv run pytest -m integration tests/db/test_bigquery_integration.py -v
+        run: |
+          uv run pytest --test-engine python -m integration tests/db/test_bigquery_integration.py -v
+          uv run pytest --test-engine rust -m integration tests/db/test_bigquery_integration.py -v
+
+      - name: Save completed build caches
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/save-build-caches
+        with:
+          rust-key: ${{ steps.rust-cache.outputs.key }}
+          uv-key: ${{ steps.uv.outputs.cache-key }}
 
   snowflake-integration:
     runs-on: ubuntu-latest
@@ -106,10 +148,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust compilation
+        id: rust-cache
+        uses: ./.github/actions/setup-rust-cache
+        with:
+          suffix: ${{ github.workflow }}-${{ github.job }}-${{ strategy.job-index || 0 }}
+
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        id: uv
+        uses: ./.github/actions/setup-uv
         with:
           enable-cache: true
+          suffix: ${{ github.workflow }}-${{ github.job }}-${{ strategy.job-index || 0 }}
 
       - name: Set up Python
         run: uv python install 3.12
@@ -123,7 +176,16 @@ jobs:
       - name: Run Snowflake integration tests
         env:
           SNOWFLAKE_TEST: "1"
-        run: uv run pytest -m integration tests/db/test_snowflake_integration.py -v
+        run: |
+          uv run pytest --test-engine python -m integration tests/db/test_snowflake_integration.py -v
+          uv run pytest --test-engine rust -m integration tests/db/test_snowflake_integration.py -v
+
+      - name: Save completed build caches
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/save-build-caches
+        with:
+          rust-key: ${{ steps.rust-cache.outputs.key }}
+          uv-key: ${{ steps.uv.outputs.cache-key }}
 
   clickhouse-integration:
     runs-on: ubuntu-latest
@@ -147,10 +209,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust compilation
+        id: rust-cache
+        uses: ./.github/actions/setup-rust-cache
+        with:
+          suffix: ${{ github.workflow }}-${{ github.job }}-${{ strategy.job-index || 0 }}
+
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        id: uv
+        uses: ./.github/actions/setup-uv
         with:
           enable-cache: true
+          suffix: ${{ github.workflow }}-${{ github.job }}-${{ strategy.job-index || 0 }}
 
       - name: Set up Python
         run: uv python install 3.12
@@ -164,7 +237,16 @@ jobs:
           CLICKHOUSE_HOST: "localhost"
           CLICKHOUSE_PORT: "8123"
           CLICKHOUSE_PASSWORD: "clickhouse"
-        run: uv run pytest -m integration tests/db/test_clickhouse_integration.py -v
+        run: |
+          uv run pytest --test-engine python -m integration tests/db/test_clickhouse_integration.py -v
+          uv run pytest --test-engine rust -m integration tests/db/test_clickhouse_integration.py -v
+
+      - name: Save completed build caches
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/save-build-caches
+        with:
+          rust-key: ${{ steps.rust-cache.outputs.key }}
+          uv-key: ${{ steps.uv.outputs.cache-key }}
 
   adbc-integration:
     name: ADBC integration (${{ matrix.db }})
@@ -205,6 +287,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install Rust for Rust ADBC probe
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust compilation
+        id: rust-cache
+        uses: ./.github/actions/setup-rust-cache
+        with:
+          suffix: ${{ github.workflow }}-${{ github.job }}-${{ strategy.job-index || 0 }}
+
       - name: Start BigQuery emulator
         if: matrix.db == 'bigquery'
         run: |
@@ -215,9 +306,11 @@ jobs:
           sleep 5
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        id: uv
+        uses: ./.github/actions/setup-uv
         with:
           enable-cache: true
+          suffix: ${{ github.workflow }}-${{ github.job }}-${{ strategy.job-index || 0 }}
 
       - name: Set up Python
         run: uv python install 3.12
@@ -255,10 +348,9 @@ jobs:
           CLICKHOUSE_HOST: "localhost"
           CLICKHOUSE_PORT: "8123"
           SNOWFLAKE_TEST: "1"
-        run: uv run pytest -m integration tests/db/test_adbc_ci_smoke.py -v
-
-      - name: Install Rust for Rust ADBC probe
-        uses: dtolnay/rust-toolchain@stable
+        run: |
+          uv run pytest --test-engine python -m integration tests/db/test_adbc_ci_smoke.py -v
+          uv run pytest --test-engine rust -m integration tests/db/test_adbc_ci_smoke.py -v
 
       - name: Export SQLite ADBC driver for Rust
         if: matrix.db == 'sqlite'
@@ -335,3 +427,10 @@ jobs:
 
       - name: Run Rust ADBC probe
         run: cargo test --manifest-path sidemantic-rs/Cargo.toml --features adbc-exec --test adbc_driver_matrix
+
+      - name: Save completed build caches
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/save-build-caches
+        with:
+          rust-key: ${{ steps.rust-cache.outputs.key }}
+          uv-key: ${{ steps.uv.outputs.cache-key }}

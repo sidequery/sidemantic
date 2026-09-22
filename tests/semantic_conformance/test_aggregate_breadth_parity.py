@@ -80,6 +80,19 @@ def test_complete_sql_and_wrappers_run_after_entity_dedup(layer):
     assert layer.adapter.execute(sql).fetchall() == [("all", 30.0, 3, 40.0, 60.0, 30.0)]
 
 
+def test_complete_aggregates_keep_groups_without_source_entities(layer):
+    layer.adapter.execute("insert into raw_items values (5, 99, 'orphan'), (6, 99, 'orphan')")
+    cursor = layer.query(
+        metrics=["orders.opaque_count", "orders.average"],
+        dimensions=["items.category"],
+        order_by=["items.category"],
+    )
+    assert [field[0] for field in cursor.description] == ["category", "opaque_count", "average"]
+    # Authored COUNT(*) counts the deduplicated null-extended SQL row. Ordinary
+    # semantic counts instead count source entities and return zero here.
+    assert cursor.fetchall() == [("all", 3, 30.0), ("orphan", 1, None)]
+
+
 def test_complete_and_advanced_totals_deduplicate_overlapping_entity_groups(layer):
     layer.adapter.execute("insert into raw_items values (5, 1, 'overlap'), (6, 2, null), (7, 2, null)")
     cursor = layer.query(

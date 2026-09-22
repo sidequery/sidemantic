@@ -18,6 +18,7 @@ import pytest
 from sidemantic import Dimension, Metric, Model, Relationship, SemanticLayer
 from sidemantic.adapters.sidemantic import SidemanticAdapter
 from sidemantic.core.semantic_layer import UnsupportedMetricError
+from sidemantic.semantic_handoff import UnsupportedSemanticFeaturesError
 from sidemantic.sql.generator import SQLGenerator
 
 
@@ -92,7 +93,7 @@ def test_semi_additive_value_is_last_snapshot():
     # Semi-additive: sum of the last snapshot per account (global last-date window
     # collapses to the single latest snapshot when no other grouping is requested).
     sql = layer.compile(metrics=["accounts.balance"])
-    assert "__sidemantic_snapshot_field" in sql
+    assert "MAX(" in sql
     assert "OVER (" in sql
 
     # Grouped by account: last balance per account, summed -> 150 + 70 + 33 = 253.
@@ -242,11 +243,15 @@ def test_semi_additive_plus_fanout_symmetric_aggregate_raises():
             relationships=[Relationship(name="accounts", type="many_to_one", foreign_key="account_id")],
         )
     )
-    with pytest.raises(UnsupportedMetricError) as exc:
+    expected_error = UnsupportedSemanticFeaturesError if layer.engine == "rust" else UnsupportedMetricError
+    with pytest.raises(expected_error) as exc:
         layer.compile(metrics=["accounts.balance", "transactions.amount"], dimensions=["accounts.region"])
-    msg = str(exc.value).lower()
-    assert "symmetric" in msg or "fan-out" in msg
-    assert "compose" in msg
+    if layer.engine == "rust":
+        assert exc.value.capabilities == ["metric.non_additive_metric_shape"]
+    else:
+        msg = str(exc.value).lower()
+        assert "symmetric" in msg or "fan-out" in msg
+        assert "compose" in msg
 
 
 def test_adapter_round_trips_non_additive_dimension():
@@ -362,7 +367,7 @@ def test_graph_metric_wrapping_semi_additive_measure_is_planned():
     )
     layer.add_metric(Metric(name="wrapped_balance", sql="bal.total_balance"))
     sql = layer.compile(metrics=["wrapped_balance"], dimensions=["bal.account"])
-    assert "__sidemantic_snapshot_field" in sql
+    assert "MAX(" in sql
     assert dict(layer.query(metrics=["wrapped_balance"], dimensions=["bal.account"]).fetchall()) == {"A": 110, "B": 210}
 
 

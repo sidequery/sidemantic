@@ -182,11 +182,12 @@ def test_canonical_validation_checks_active_calculations(mutation):
     elif mutation == "unknown_option":
         source["table_calculations"][0]["unknown_window"] = "future"
     if mutation is None:
-        assert json.loads(runtime.validate_with_semantic_input(json.dumps(source), json.dumps(query))) == []
+        assert runtime.validate_with_semantic_input(json.dumps(source), json.dumps(query)) == []
     else:
-        with pytest.raises(ValueError):
+        error = runtime.UnsupportedSemanticFeaturesError if mutation == "formula" else ValueError
+        with pytest.raises(error):
             runtime.validate_with_semantic_input(json.dumps(source), json.dumps(query))
-        with pytest.raises(ValueError):
+        with pytest.raises(error):
             runtime.compile_with_semantic_input(json.dumps(source), json.dumps(query))
 
 

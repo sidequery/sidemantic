@@ -164,17 +164,13 @@ def test_adbc_adapter_close(sqlite_adapter):
         sqlite_adapter.execute("SELECT 1")
 
 
-@pytest.mark.skipif(True, reason="Requires pyarrow (optional dependency)")
 def test_adbc_adapter_fetch_record_batch(sqlite_adapter):
-    """Test fetching Arrow RecordBatch.
-
-    Skipped by default since pyarrow is optional.
-    """
+    """Test fetching Arrow values when the optional dependencies are installed."""
     pytest.importorskip("pyarrow")
     result = sqlite_adapter.execute("SELECT 1 as x, 2 as y")
     batch = sqlite_adapter.fetch_record_batch(result)
     # Should return Arrow RecordBatchReader
-    assert batch is not None
+    assert batch.read_all().to_pydict() == {"x": [1], "y": [2]}
 
 
 def test_adbc_adapter_injection_attempt_in_table_name_is_rejected(sqlite_adapter):
@@ -225,6 +221,30 @@ def test_adbc_adapter_from_url():
     result = adapter.execute("SELECT 42")
     assert result.fetchone()[0] == 42
     adapter.close()
+
+
+@pytest.mark.parametrize("url", ["sqlite:///:memory:", "adbc://sqlite/:memory:"])
+def test_adbc_url_resolves_packaged_driver_without_system_install(monkeypatch, url):
+    import adbc_driver_manager.dbapi as adbc
+
+    sqlite_package = pytest.importorskip("adbc_driver_sqlite")
+    from sidemantic.db.adbc import ADBCAdapter
+
+    connect = adbc.connect
+
+    def connect_with_bundled_driver(**kwargs):
+        # Require the wheel's absolute library path even on hosts where a
+        # system-installed SQLite driver would mask broken URL resolution.
+        assert kwargs["driver"] == sqlite_package._driver_path()
+        return connect(**kwargs)
+
+    monkeypatch.setattr(adbc, "connect", connect_with_bundled_driver)
+    adapter = ADBCAdapter.from_url(url)
+    try:
+        assert adapter.dialect == "sqlite"
+        assert adapter.execute("select 42").fetchone() == (42,)
+    finally:
+        adapter.close()
 
 
 def test_adbc_adapter_from_url_invalid_scheme():

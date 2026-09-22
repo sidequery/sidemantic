@@ -40,7 +40,7 @@ source: orders is duckdb.table('orders') extend {
     assert relationship.primary_key == "external_ref"
     assert relationship.sql is None
 
-    layer = SemanticLayer(auto_register=False, engine="python")
+    layer = SemanticLayer(auto_register=False)
     layer.adapter.execute("create table customers (id int, external_ref text, name text)")
     layer.adapter.execute("create table orders (id int, customer_ref text, amount int)")
     layer.adapter.execute("insert into customers values (1, 'C-1', 'Ada'), (2, 'C-2', 'Grace')")
@@ -100,7 +100,7 @@ source: orders is duckdb.table('orders') extend {
     assert relationship.sql == "{from}.customer_id = {to}.id and {to}.active = true"
     assert relationship.metadata["join_key_pairs"] == [{"source": "customer_id", "target": "id"}]
 
-    layer = SemanticLayer(auto_register=False, engine="python")
+    layer = SemanticLayer(auto_register=False)
     layer.adapter.execute("create table customers (id int, name text, active boolean)")
     layer.adapter.execute("create table orders (id int, customer_id int, amount int)")
     layer.adapter.execute("insert into customers values (1, 'kept', true), (2, 'inactive', false)")
@@ -144,7 +144,7 @@ source: orders is duckdb.table('orders') extend {
     assert relationship.primary_key == "order_number"
     assert relationship.foreign_key == "order_ref"
 
-    layer = SemanticLayer(auto_register=False, engine="python")
+    layer = SemanticLayer(auto_register=False)
     layer.adapter.execute("create table items (id int, order_ref text, sku text)")
     layer.adapter.execute("create table orders (id int, order_number text, amount int)")
     layer.adapter.execute("insert into items values (1, 'O-1', 'A'), (2, 'O-1', 'B')")
@@ -184,7 +184,7 @@ source: orders is duckdb.table('orders') extend {
     assert relationship.primary_key is None
     assert relationship.sql == ("{from}.created_at >= {to}.valid_from and {from}.created_at < {to}.valid_to")
 
-    layer = SemanticLayer(auto_register=False, engine="python")
+    layer = SemanticLayer(auto_register=False)
     layer.adapter.execute("create table prices (id int, valid_from int, valid_to int, label text)")
     layer.adapter.execute("create table orders (id int, created_at int, amount int)")
     layer.adapter.execute("insert into prices values (1, 0, 10, 'early'), (2, 10, 20, 'late')")

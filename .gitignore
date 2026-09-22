@@ -53,3 +53,7 @@ package.json
 
 # Rust workspace build artifacts (dax local wheel builds)
 /target/
+
+# GitHub Actions compiler cache and Cargo shim
+/.ci-mbx/
+/.ci-cache-bin/

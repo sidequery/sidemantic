@@ -48,6 +48,16 @@ runs:
         github-cache-mode: objects
         cache-generation: sidemantic-v1-${{ inputs.suffix }}
 
+    - name: Remove imported Rust cache archive
+      env:
+        MBX_CACHE_DIR: ${{ github.workspace }}/.ci-mbx
+      shell: bash
+      run: |
+        # The pinned action imports this transport archive but leaves it on disk.
+        # Export writes a new full-size temporary tar before replacing this path;
+        # keep the imported objects and targets, not a second copy of their bytes.
+        rm -f -- "$(mbx cache dir)/github-actions-cache-v1.tar"
+
     - name: Enable Cargo subprocess caching
       shell: bash
       run: |

@@ -9,6 +9,47 @@ from pathlib import Path
 from textwrap import dedent
 
 import pytest
+import yaml
+
+
+@pytest.mark.parametrize("restored", [True, False])
+def test_imported_rust_cache_archive_is_removed_without_losing_build_state(tmp_path, restored):
+    repo = Path(__file__).resolve().parents[1]
+    action = yaml.safe_load((repo / ".github/actions/setup-rust-cache/action.yml").read_text())
+    steps = action["runs"]["steps"]
+    cleanup_index = next(i for i, step in enumerate(steps) if step.get("name") == "Remove imported Rust cache archive")
+    # A failed upstream import must stop setup before any cleanup takes place.
+    assert steps[cleanup_index - 1]["id"] == "cache"
+    assert steps[cleanup_index].get("if", "success()") == "success()"
+    assert steps[cleanup_index]["env"]["MBX_CACHE_DIR"] == steps[cleanup_index - 1]["env"]["MBX_CACHE_DIR"]
+
+    cache = tmp_path / "cache with spaces" / "actions"
+    cache.mkdir(parents=True)
+    archive = cache / "github-actions-cache-v1.tar"
+    if restored:
+        archive.write_bytes(b"imported transport archive")
+    retained = [cache / "objects" / "compiler-object", tmp_path / "target" / "compiled-library"]
+    for path in retained:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"reusable build state")
+
+    # Substitute only mbx's directory lookup; execute the action's real shell.
+    result = subprocess.run(
+        [
+            "bash",
+            "-e",
+            "-c",
+            'mbx() { test "$*" = "cache dir"; printf "%s\\n" "$TEST_CACHE_DIR"; }\n' + steps[cleanup_index]["run"],
+        ],
+        env={**os.environ, "TEST_CACHE_DIR": str(cache)},
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    assert not archive.exists()
+    for path in retained:
+        assert path.read_bytes() == b"reusable build state"
 
 
 @pytest.mark.parametrize(

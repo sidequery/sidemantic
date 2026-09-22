@@ -25,6 +25,28 @@ RUST_TARGET_DIR = Path("/tmp/sidemantic-rs-parity-target")
 RUST_ADAPTER_BIN = RUST_TARGET_DIR / "debug" / "examples" / f"parity_adapter{'.exe' if os.name == 'nt' else ''}"
 
 
+class RustRuntimeSemanticLayer(ProductionSemanticLayer):
+    """Public runtime with an executable guard against Python compilation.
+
+    Host responsibilities such as DB introspection and result execution use the
+    production layer. Query compilation and validation must use Rust, even
+    when the surrounding shared-suite run selects the Python engine.
+    """
+
+    def __init__(self, *args, **kwargs):
+        kwargs["engine"] = "rust"
+        kwargs["fallback"] = False
+        super().__init__(*args, **kwargs)
+
+    def _compile_with_python(self, *args, **kwargs):
+        raise AssertionError("Rust parity contract attempted Python compilation")
+
+    def compile(self, *args, **kwargs):
+        sql = super().compile(*args, **kwargs)
+        assert self.last_engine_selection == {"engine": "rust", "reason": None}
+        return sql
+
+
 class RustSemanticLayerAdapter:
     """Minimal SemanticLayer-compatible test adapter backed by sidemantic-rs.
 

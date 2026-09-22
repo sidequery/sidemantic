@@ -938,6 +938,10 @@ class SQLGenerator:
                 model_name, metric_obj = self.graph.resolve_metric_reference(metric_ref)
             except KeyError:
                 continue
+            # Retention uses its default time dimension as the cohort source,
+            # not an extra projected/grouped dimension in its fixed result.
+            if metric_obj is not None and metric_obj.type == "retention":
+                continue
             # A graph-level cumulative metric (e.g. a MetricFlow ``input_metric``)
             # resolves to no model, so the default-time-dimension logic below would
             # skip it and cumulative ordering would fail with "requires a time
@@ -4952,6 +4956,11 @@ class SQLGenerator:
         Returns:
             SQL expression string
         """
+        if metric.type == "retention":
+            raise QueryValidationError(
+                "Retention metrics have a fixed table output and cannot be wrapped in scalar metrics "
+                "(metric.retention_wrapped_metric)"
+            )
         if getattr(metric, "has_untranslated_dax", False):
             raise QueryValidationError(
                 f"Metric '{metric.name}' contains DAX expression but has no SQL translation. "
@@ -5496,7 +5505,7 @@ FROM (
 
         Args:
             metric_name: Name of the retention metric
-            dimensions: List of dimension references (unused for retention, reserved)
+            dimensions: Must be empty; retention has a fixed output projection
             filters: List of filter expressions
             order_by: List of fields to order by
             limit: Maximum number of rows to return
@@ -5506,6 +5515,11 @@ FROM (
             SQL query string
         """
         import re as _re
+
+        if dimensions:
+            raise QueryValidationError(
+                "Retention metrics do not support selected dimensions (metric.retention_query_shape)"
+            )
 
         # Resolve metric and model
         metric = None
@@ -5622,6 +5636,22 @@ FROM (
         all_filters = list(filters or [])
         if metric.filters:
             all_filters.extend(metric.filters)
+
+        # These predicates scope source rows, not an aggregate result. Previously
+        # metric references leaked into WHERE as nonexistent physical columns.
+        for filter_sql in all_filters:
+            parsed_filter = _parse_fragment(filter_sql.replace("{model}", model.name), self.dialect)
+            references_metric = any(
+                (not column.table or column.table == model.name)
+                and not model.get_dimension(column.name)
+                and (model.get_metric(column.name) or column.name in self.graph.metrics)
+                for column in parsed_filter.find_all(exp.Column)
+            )
+            if references_metric or sql_has_aggregate(filter_sql, self.dialect):
+                raise QueryValidationError(
+                    "Retention source filters cannot reference aggregate metrics or expressions "
+                    "(metric.retention_aggregate_filter)"
+                )
 
         # Normalize filters: strip model name prefixes and resolve dimension names
         normalized_filters = self._strip_model_prefixes(all_filters, model.name)

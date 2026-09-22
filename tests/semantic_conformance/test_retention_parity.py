@@ -8,7 +8,6 @@ import pytest
 from sidemantic import Explore, Metric, SemanticLayer
 from sidemantic.adapters.sidemantic import SidemanticAdapter
 from sidemantic.core.semantic_layer import SecurityError
-from sidemantic.semantic_handoff import UnsupportedSemanticFeaturesError
 
 FIXTURES = Path(__file__).parent / "fixtures"
 DAY_COLUMNS = ["cohort_date", "days_since", "active_users", "cohort_size", "retention_pct"]
@@ -154,11 +153,19 @@ def test_retention_cannot_combine_with_additive_metric(layer):
         layer.compile(metrics=["events.retained", "events.event_count"], user_attributes={"tenant": 1})
 
 
-@pytest.mark.parametrize("shape", ["dimension", "aggregate_filter", "wrapper"])
-def test_rust_rejects_unpromoted_retention_shapes(layer, shape):
-    if layer.engine != "rust":
-        pytest.skip("Rust capability boundary; Python retains its existing feature behavior")
-    query = {}
+@pytest.mark.parametrize(
+    "shape,capability",
+    [
+        ("dimension", "metric.retention_query_shape"),
+        ("aggregate_filter", "metric.retention_aggregate_filter"),
+        ("wrapper", "metric.retention_wrapped_metric"),
+    ],
+)
+def test_retention_rejects_unsupported_shapes_before_execution(layer, shape, capability):
+    # Python previously ignored selected dimensions, emitted invalid SQL for
+    # aggregate filters, or failed while expanding wrappers. None implemented
+    # these shapes: reject at compile time instead of claiming result parity.
+    query = {"metrics": ["events.retained"], "user_attributes": {"tenant": 1}}
     if shape == "dimension":
         query["dimensions"] = ["events.country"]
     elif shape == "aggregate_filter":
@@ -166,8 +173,24 @@ def test_rust_rejects_unpromoted_retention_shapes(layer, shape):
     else:
         layer.graph.get_model("events").metrics.append(Metric(name="wrapped", type="derived", sql="retained"))
         query["metrics"] = ["events.wrapped"]
-    with pytest.raises(UnsupportedSemanticFeaturesError):
-        result(layer, **query)
+    with pytest.raises(ValueError, match=capability):
+        layer.compile(**query)
+
+
+@pytest.mark.parametrize("predicate", ["event_count > 0", "events.event_count > 0", "COUNT(*) > 0"])
+@pytest.mark.parametrize("location", ["query", "metric"])
+def test_retention_rejects_aggregate_source_filters_before_execution(layer, predicate, location):
+    query = {"metrics": ["events.retained"], "user_attributes": {"tenant": 1}}
+    if location == "query":
+        query["filters"] = [predicate]
+    else:
+        layer.graph.get_model("events").get_metric("retained").filters = [predicate]
+    with pytest.raises(ValueError, match="retention"):
+        layer.compile(**query)
+
+
+def test_retention_filter_literals_are_not_metric_references(layer):
+    assert result(layer, filters=["events.country != 'event_count'"]) == (DAY_COLUMNS, DAY_ROWS)
 
 
 def test_selected_calculations_preserve_retention_fixed_projection(layer):

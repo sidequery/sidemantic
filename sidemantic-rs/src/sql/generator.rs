@@ -619,7 +619,7 @@ impl<'a> SqlGenerator<'a> {
                 } else {
                     self.dimension_select_expression(dimension, &alias)?
                 }
-            } else if Self::is_relationship_foreign_key_dimension(model, &dim_ref.name) {
+            } else if model.is_foreign_key_dimension(&dim_ref.name) {
                 format!("{}.{}", alias, self.quote_identifier(&dim_ref.name))
             } else {
                 let available: Vec<&str> =
@@ -1205,7 +1205,7 @@ impl<'a> SqlGenerator<'a> {
             return Ok(());
         };
         let Some(dimension) = model.get_dimension(dimension_name) else {
-            if Self::is_relationship_foreign_key_dimension(model, dimension_name) {
+            if model.is_foreign_key_dimension(dimension_name) {
                 return Err(SidemanticError::Validation(format!(
                     "Cannot apply granularity to non-time dimension '{dimension_name}'"
                 )));
@@ -3965,15 +3965,6 @@ impl<'a> SqlGenerator<'a> {
         } else {
             Ok(format!("DATE_TRUNC('{granularity}', {column_expr})"))
         }
-    }
-
-    fn is_relationship_foreign_key_dimension(model: &Model, dimension_name: &str) -> bool {
-        model.relationships.iter().any(|relationship| {
-            relationship
-                .foreign_key_columns()
-                .iter()
-                .any(|column| column == dimension_name)
-        })
     }
 
     fn interval_sql(&self, num: &str, unit: &str) -> String {

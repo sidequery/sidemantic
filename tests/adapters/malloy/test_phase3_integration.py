@@ -13,7 +13,7 @@ def _parse(tmp_path, source: str, *, strict: bool = True):
 
 
 def _layer(graph, *setup_sql):
-    layer = SemanticLayer(auto_register=False, engine="python")
+    layer = SemanticLayer(auto_register=False)
     for statement in setup_sql:
         layer.adapter.execute(statement)
     for model in graph.models.values():

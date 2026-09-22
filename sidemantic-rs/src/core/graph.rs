@@ -220,7 +220,9 @@ impl SemanticGraph {
 
             if let Some(dimensions) = preagg.dimensions.as_ref() {
                 for dimension in dimensions {
-                    if model.get_dimension(dimension).is_none() {
+                    if model.get_dimension(dimension).is_none()
+                        && !model.is_foreign_key_dimension(dimension)
+                    {
                         return Err(SidemanticError::Validation(format!(
                             "Pre-aggregation '{}.{}' references unknown dimension '{}'",
                             model.name, preagg.name, dimension
@@ -1670,6 +1672,40 @@ mod tests {
         assert!(err
             .to_string()
             .contains("references unknown measure 'missing_revenue'"));
+    }
+
+    #[test]
+    fn test_pre_aggregation_dimensions_accept_declared_foreign_keys() {
+        for (dimension, accepted) in [
+            ("status", true),
+            ("tenant_id", true),
+            ("customer_id", true),
+            ("missing", false),
+            ("customer_id__month", false),
+        ] {
+            let mut relationship = Relationship::many_to_one("customers");
+            relationship.foreign_key_columns = Some(vec!["tenant_id".into(), "customer_id".into()]);
+            let preagg = serde_json::from_value(serde_json::json!({
+                "name": "by_customer", "measures": ["revenue"],
+                "dimensions": [dimension]
+            }))
+            .unwrap();
+            let model = Model::new("orders", "id")
+                .with_table("orders")
+                .with_dimension(Dimension::categorical("status"))
+                .with_metric(Metric::sum("revenue", "amount"))
+                .with_relationship(relationship)
+                .with_pre_aggregation(preagg);
+            let result = SemanticGraph::new().add_model(model);
+            if accepted {
+                result.unwrap();
+            } else {
+                assert!(result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("references unknown dimension"));
+            }
+        }
     }
 
     #[test]

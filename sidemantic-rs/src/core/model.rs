@@ -1113,6 +1113,16 @@ impl Model {
         self.dimensions.iter().find(|d| d.name == name)
     }
 
+    /// Relationship foreign keys can be grouped without a separate dimension declaration.
+    pub fn is_foreign_key_dimension(&self, name: &str) -> bool {
+        self.relationships.iter().any(|relationship| {
+            relationship
+                .foreign_key_columns()
+                .iter()
+                .any(|column| column == name)
+        })
+    }
+
     /// Find a metric by name
     pub fn get_metric(&self, name: &str) -> Option<&Metric> {
         self.metrics.iter().find(|m| m.name == name)

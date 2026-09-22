@@ -164,17 +164,13 @@ def test_adbc_adapter_close(sqlite_adapter):
         sqlite_adapter.execute("SELECT 1")
 
 
-@pytest.mark.skipif(True, reason="Requires pyarrow (optional dependency)")
 def test_adbc_adapter_fetch_record_batch(sqlite_adapter):
-    """Test fetching Arrow RecordBatch.
-
-    Skipped by default since pyarrow is optional.
-    """
+    """Test fetching Arrow values when the optional dependencies are installed."""
     pytest.importorskip("pyarrow")
     result = sqlite_adapter.execute("SELECT 1 as x, 2 as y")
     batch = sqlite_adapter.fetch_record_batch(result)
     # Should return Arrow RecordBatchReader
-    assert batch is not None
+    assert batch.read_all().to_pydict() == {"x": [1], "y": [2]}
 
 
 def test_adbc_adapter_injection_attempt_in_table_name_is_rejected(sqlite_adapter):

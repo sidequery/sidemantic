@@ -150,6 +150,20 @@ class ADBCAdapter(BaseDatabaseAdapter):
             )
 
         self._driver_name = str(driver).lower()
+        if isinstance(driver, str) and driver.startswith("adbc_driver_") and driver.isidentifier():
+            # Python wheels locate their bundled library themselves; the driver
+            # manager searches manifests and system library paths, not site-packages.
+            from importlib import import_module
+
+            try:
+                driver_package = import_module(driver)
+            except ModuleNotFoundError as error:
+                if error.name != driver:
+                    raise
+            else:
+                locate_driver = getattr(driver_package, "_driver_path", None)
+                if callable(locate_driver):
+                    driver = locate_driver()
         self.conn = adbc.connect(
             driver=driver,
             uri=uri,

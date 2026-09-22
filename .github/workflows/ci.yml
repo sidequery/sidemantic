@@ -98,11 +98,11 @@ jobs:
 
       - name: Run Python reference suite
         if: matrix.engine == 'python'
-        run: uv run pytest -v --test-engine python --cov-fail-under=76 --junitxml=test-results.xml
+        run: uv run --with adbc-driver-sqlite pytest -v --test-engine python --cov-fail-under=76 --junitxml=test-results.xml
 
       - name: Run full shared suite against Rust
         if: matrix.engine == 'rust'
-        run: uv run pytest -v --test-engine rust --no-cov --junitxml=test-results.xml
+        run: uv run --with adbc-driver-sqlite pytest -v --test-engine rust --no-cov --junitxml=test-results.xml
 
       - name: Upload test results
         if: always()

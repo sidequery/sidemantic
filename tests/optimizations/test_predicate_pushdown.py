@@ -4,7 +4,6 @@ import sqlglot
 from sqlglot import exp
 
 from sidemantic import Dimension, Metric, Model, Segment
-from sidemantic.sql.generator import SQLGenerator
 
 
 def test_single_model_filter_pushdown(layer):
@@ -300,14 +299,12 @@ def test_segment_filter_skips_subquery_columns(layer):
 
     layer.add_model(model)
 
-    generator = SQLGenerator(layer.graph)
-    filters = generator._resolve_segments(["orders.in_other"])
-    assert len(filters) == 1
+    sql = layer.compile(metrics=["orders.count"], segments=["orders.in_other"])
+    parsed = sqlglot.parse_one(sql)
 
-    filter_sql = filters[0]
-    parsed = sqlglot.parse_one(filter_sql)
-
-    assert any(col.table == "orders_cte" for col in parsed.find_all(exp.Column))
+    membership = parsed.find(exp.In)
+    assert membership is not None
+    assert membership.this.name == "id"
 
     subquery = None
     for subquery_def in parsed.find_all(exp.Subquery):
@@ -318,6 +315,14 @@ def test_segment_filter_skips_subquery_columns(layer):
 
     for col in subquery.find_all(exp.Column):
         assert not col.table
+
+    # Executing the compiled query also catches accidental correlation of the
+    # subquery's id to the outer orders table, which changes which rows match.
+    layer.conn.execute("create table orders_table (id integer)")
+    layer.conn.execute("insert into orders_table values (1), (2)")
+    layer.conn.execute("create table other_table (id integer, flag varchar)")
+    layer.conn.execute("insert into other_table values (1, 'y'), (2, 'n')")
+    assert layer.conn.execute(sql).fetchall() == [(1,)]
 
 
 def test_metric_level_filters_not_pushed(layer):

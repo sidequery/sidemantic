@@ -66,7 +66,7 @@ def _layer(db, **kwargs):
 
     adapter = DuckDBAdapter()
     adapter.conn = db
-    return SemanticLayer(connection=adapter, auto_register=False, engine="python", **kwargs)
+    return SemanticLayer(connection=adapter, auto_register=False, **kwargs)
 
 
 def _customers_model(**security_kwargs):
@@ -144,7 +144,7 @@ def test_security_block_with_none_attributes_denies(db):
 
     # Empty dict is "provided but empty" -> not deny-by-default; here it triggers the
     # undefined-attribute guard from the row filter instead.
-    with pytest.raises(SecurityError, match="undefined user attribute"):
+    with pytest.raises(SecurityError, match="undefined (user attribute|value)"):
         layer.compile(metrics=["customers.customer_count"], user_attributes={})
 
 

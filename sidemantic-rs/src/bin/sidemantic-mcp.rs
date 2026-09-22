@@ -13,9 +13,8 @@ use adbc_core::options::{OptionConnection, OptionDatabase, OptionValue};
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{
-        Annotated, CallToolResult, ListResourcesResult, PaginatedRequestParams, RawResource,
-        ReadResourceRequestParams, ReadResourceResult, ResourceContents, ServerCapabilities,
-        ServerInfo,
+        CallToolResult, ListResourcesResult, PaginatedRequestParams, ReadResourceRequestParams,
+        ReadResourceResult, Resource, ResourceContents, ServerCapabilities, ServerInfo,
     },
     schemars,
     schemars::JsonSchema,
@@ -522,21 +521,10 @@ impl ServerHandler for SidemanticMcpServer {
         _context: RequestContext<RoleServer>,
     ) -> impl std::future::Future<Output = Result<ListResourcesResult, McpError>> + Send + '_ {
         std::future::ready(Ok(ListResourcesResult::with_all_items(vec![
-            Annotated::new(
-                RawResource {
-                    uri: CATALOG_RESOURCE_URI.to_string(),
-                    name: "catalog".to_string(),
-                    title: Some("Sidemantic Catalog Metadata".to_string()),
-                    description: Some(
-                        "Postgres-compatible catalog metadata for the semantic layer.".to_string(),
-                    ),
-                    mime_type: Some("application/json".to_string()),
-                    size: None,
-                    icons: None,
-                    meta: None,
-                },
-                None,
-            ),
+            Resource::new(CATALOG_RESOURCE_URI, "catalog")
+                .with_title("Sidemantic Catalog Metadata")
+                .with_description("Postgres-compatible catalog metadata for the semantic layer.")
+                .with_mime_type("application/json"),
         ])))
     }
 

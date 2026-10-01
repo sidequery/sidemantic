@@ -58,7 +58,10 @@ def graph():
             name="secured",
             table="policy_population",
             primary_key="id",
-            dimensions=[Dimension(name="id", type="numeric"), Dimension(name="subject", public=False)],
+            dimensions=[
+                Dimension(name="id", type="numeric"),
+                Dimension(name="subject", type="categorical", public=False),
+            ],
             metrics=[
                 Metric(name="total", agg="sum", sql="amount"),
                 Metric(name="private_total", agg="sum", sql="amount", public=False),
@@ -180,7 +183,7 @@ def test_postgres_date_diff_policy_is_not_claimed_equivalent(postgres, graph, mo
 
 @pytest.mark.parametrize("mode", ["compile", "query", "sql", "rewriter"])
 def test_postgres_public_paths_reach_rust_with_transport_syntax(postgres, graph, mode):
-    graph.models["secured"].dimensions.append(Dimension(name="CaseSubject", sql="subject"))
+    graph.models["secured"].dimensions.append(Dimension(name="CaseSubject", type="categorical", sql="subject"))
     attributes = {"role": "analyst", "tenant": 1, "enabled": True, "subject": "O'Brien"}
     layer = SemanticLayer(
         connection=postgres, engine="rust", fallback=False, enforce_visibility=True, auto_register=False
@@ -252,7 +255,7 @@ def test_explicit_postgres_graph_input_preserves_policy_results(postgres, graph)
 @pytest.mark.parametrize("mode", ["query", "sql"])
 def test_postgres_public_null_ordering_matches_adapter(postgres, graph, mode):
     model = graph.models["secured"]
-    model.dimensions.append(Dimension(name="CaseSubject", sql="subject"))
+    model.dimensions.append(Dimension(name="CaseSubject", type="categorical", sql="subject"))
     model.security.row_filters = ["tenant = {{ user.tenant }}"]
     layer = SemanticLayer(connection=postgres, engine="rust", auto_register=False)
     layer.graph = graph

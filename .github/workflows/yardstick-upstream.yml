@@ -11,6 +11,7 @@ on:
     - cron: "17 10 * * *"
   pull_request:
     paths:
+      - ".github/actions/**"
       - ".github/workflows/yardstick-upstream.yml"
       - "docs/compatibility/yardstick.md"
       - "sidemantic/adapters/yardstick.py"
@@ -38,10 +39,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust compilation
+        id: rust-cache
+        uses: ./.github/actions/setup-rust-cache
+        with:
+          suffix: ${{ github.workflow }}-${{ github.job }}-${{ strategy.job-index || 0 }}
+
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        id: uv
+        uses: ./.github/actions/setup-uv
         with:
           enable-cache: true
+          suffix: ${{ github.workflow }}-${{ github.job }}-${{ strategy.job-index || 0 }}
 
       - name: Set up Python
         run: uv python install 3.12
@@ -51,3 +63,10 @@ jobs:
 
       - name: Replay upstream Yardstick tests
         run: uv run pytest -q tests/queries/test_yardstick_measures_replay.py -m yardstick_upstream
+
+      - name: Save completed build caches
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/save-build-caches
+        with:
+          rust-key: ${{ steps.rust-cache.outputs.key }}
+          uv-key: ${{ steps.uv.outputs.cache-key }}

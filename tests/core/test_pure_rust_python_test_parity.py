@@ -1,4 +1,4 @@
-"""Run existing Python tests against the pure Rust test adapter."""
+"""Run shared contracts with fallback forbidden and direct Rust helper probes."""
 
 from __future__ import annotations
 
@@ -48,6 +48,7 @@ import tests.test_with_data as data_query_tests
 import tests.widget.test_widget_examples as widget_example_tests
 from tests.rust_layer_adapter import (
     RustQueryRewriterAdapter,
+    RustRuntimeSemanticLayer,
     RustSemanticGraphDirectAdapter,
     RustSemanticLayerAdapter,
     RustSQLGeneratorAdapter,
@@ -98,140 +99,6 @@ PYTHON_TEST_PARITY_MODULES = [
     semantic_graph_error_tests,
     widget_example_tests,
 ]
-
-
-PRE_RUN_XFAILS = {
-    "tests.optimizations.test_pre_aggregations::test_sql_generation_without_preagg": (
-        "Pre-aggregation metadata is not serialized to Rust yet, so this would be a false pass"
-    ),
-    "tests.optimizations.test_predicate_pushdown::test_segment_filter_skips_subquery_columns": (
-        "Test body asserts a private Python SQLGenerator segment-resolution helper, not Rust SQL behavior"
-    ),
-}
-
-
-EXPECTED_GAPS = {
-    "tests.test_catalog::test_foreign_key_catalog_uses_canonical_target_for_role_alias": (
-        "Rust catalog metadata does not yet preserve a relationship's canonical target_model for role aliases"
-    ),
-    "tests.test_validation::test_query_validation_reports_ambiguous_join_routes": (
-        "Rust query validation does not yet reject ambiguous join routes"
-    ),
-    "tests.core.test_auto_dimensions::test_auto_dimensions_from_table": (
-        "Rust adapter does not yet support Python auto-dimension DB introspection"
-    ),
-    "tests.core.test_auto_dimensions::test_auto_dimensions_type_mapping": (
-        "Rust adapter does not yet support Python auto-dimension DB introspection"
-    ),
-    "tests.core.test_auto_dimensions::test_explicit_dimensions_take_precedence": (
-        "Rust adapter does not yet support Python auto-dimension DB introspection"
-    ),
-    "tests.core.test_auto_dimensions::test_auto_dimensions_sql_model": (
-        "Rust adapter does not yet support Python auto-dimension DB introspection"
-    ),
-    "tests.core.test_auto_dimensions::test_auto_dimensions_composite_pk": (
-        "Rust adapter does not yet support Python auto-dimension DB introspection"
-    ),
-    "tests.core.test_auto_dimensions::test_auto_dimensions_query_works": (
-        "Rust adapter does not yet support query execution for auto-introspected dimensions"
-    ),
-    "tests.core.test_auto_dimensions::test_auto_dimensions_time_granularity_query": (
-        "Rust adapter does not yet support query execution for auto-introspected dimensions"
-    ),
-    "tests.core.test_auto_dimensions::test_auto_dimensions_non_string_type_metadata": (
-        "Rust adapter does not yet support Python auto-dimension DB introspection"
-    ),
-    "tests.optimizations.test_pre_aggregations::test_sql_generation_with_preagg": (
-        "Rust adapter does not yet support Python pre-aggregation routing"
-    ),
-    "tests.optimizations.test_pre_aggregations::test_sql_generation_without_preagg": (
-        "Pre-aggregation metadata is not serialized to Rust yet, so this would be a false pass"
-    ),
-    "tests.optimizations.test_pre_aggregations::test_preagg_with_filters": (
-        "Rust adapter does not yet support Python pre-aggregation routing"
-    ),
-    "tests.optimizations.test_pre_aggregations::test_preagg_granularity_conversion": (
-        "Rust adapter does not yet support Python pre-aggregation routing"
-    ),
-    "tests.optimizations.test_pre_aggregations::test_preagg_per_query_override": (
-        "Rust adapter does not yet support Python pre-aggregation routing"
-    ),
-    "tests.optimizations.test_pre_aggregations::test_avg_preaggregation_rolls_up_with_sum_count_state": (
-        "Rust adapter does not yet support Python pre-aggregation routing"
-    ),
-    "tests.optimizations.test_pre_aggregations::test_avg_preaggregation_rejects_missing_count_state": (
-        "Rust adapter does not yet support Python pre-aggregation routing"
-    ),
-    "tests.optimizations.test_pre_aggregations::test_ratio_metric_preaggregation_rebuilds_from_additive_leaves": (
-        "Rust adapter does not yet support Python pre-aggregation routing"
-    ),
-    "tests.optimizations.test_pre_aggregations::test_derived_metric_preaggregation_rebuilds_from_additive_leaves": (
-        "Rust adapter does not yet support Python pre-aggregation routing"
-    ),
-    "tests.optimizations.test_pre_aggregations::test_ratio_metric_preaggregation_rejects_count_distinct_leaf": (
-        "Rust adapter does not yet support Python pre-aggregation routing"
-    ),
-    "tests.optimizations.test_pre_aggregations::test_ungrouped_composite_pk_partial_rollup_falls_to_raw": (
-        "Rust adapter does not yet support Python pre-aggregation routing (ungrouped drill-to-detail)"
-    ),
-    "tests.optimizations.test_pre_aggregations::test_ungrouped_avg_metric_bails_to_raw": (
-        "Rust adapter does not yet support Python pre-aggregation routing (ungrouped drill-to-detail)"
-    ),
-    "tests.optimizations.test_pre_aggregations::test_ungrouped_strict_without_pk_rollup_raises": (
-        "Rust adapter does not yet support Python pre-aggregation routing (strict rollup-only mode)"
-    ),
-    "tests.optimizations.test_pre_aggregations::test_ungrouped_routes_to_pk_carrying_rollup": (
-        "Rust adapter does not yet support Python pre-aggregation routing (ungrouped drill-to-detail)"
-    ),
-    "tests.optimizations.test_pre_aggregations::test_ungrouped_preagg_sql_has_no_group_by": (
-        "Rust adapter does not yet support Python pre-aggregation routing (ungrouped drill-to-detail)"
-    ),
-    "tests.optimizations.test_pre_aggregations::test_ungrouped_explain_reports_pk_rollup_match": (
-        "Rust adapter does not yet support Python pre-aggregation routing (ungrouped drill-to-detail)"
-    ),
-    "tests.optimizations.test_pre_aggregations::test_ungrouped_rollup_without_pk_falls_to_raw": (
-        "Rust adapter does not yet support Python pre-aggregation routing (ungrouped drill-to-detail)"
-    ),
-    "tests.optimizations.test_pre_aggregations::test_ungrouped_keyless_model_falls_to_raw": (
-        "Rust adapter does not yet support Python pre-aggregation routing (ungrouped drill-to-detail)"
-    ),
-    "tests.optimizations.test_pre_aggregations::test_lambda_preaggregation_unions_batch_rollup_with_fresh_source": (
-        "Rust adapter does not yet support Python pre-aggregation routing (lambda union)"
-    ),
-    "tests.optimizations.test_pre_aggregations::test_lambda_preaggregation_unions_with_granularity_rollup": (
-        "Rust adapter does not yet support Python pre-aggregation routing (lambda union)"
-    ),
-    "tests.optimizations.test_pre_aggregations::test_lambda_preaggregation_without_build_range_end_is_plain_rollup": (
-        "Rust adapter does not yet support Python pre-aggregation routing (lambda union)"
-    ),
-    "tests.optimizations.test_preagg_recommender::test_query_instrumentation": (
-        "Rust SQL generator does not yet emit Python query instrumentation contracts"
-    ),
-    "tests.optimizations.test_preagg_recommender::test_end_to_end_with_semantic_layer": (
-        "Rust SQL generator does not yet emit Python query instrumentation contracts"
-    ),
-    "tests.metrics.test_cumulative::test_cumulative_with_time_comparison": (
-        "Rust strict model validation rejects this Python fixture's time dimension without granularity"
-    ),
-    "tests.test_preaggregation_bugs::test_avg_metric_with_filtered_count_fails": (
-        "Rust adapter does not yet support Python pre-aggregation routing bug contracts"
-    ),
-    "tests.test_preaggregation_bugs::test_filter_on_unmaterialized_dimension": (
-        "Rust adapter does not yet support Python pre-aggregation routing bug contracts"
-    ),
-    "tests.test_preaggregation_bugs::test_filter_on_unmaterialized_time_grain": (
-        "Rust adapter does not yet support Python pre-aggregation routing bug contracts"
-    ),
-    "tests.test_preaggregation_bugs::test_week_to_month_granularity_wrong_results": (
-        "Rust adapter does not yet support Python pre-aggregation routing bug contracts"
-    ),
-    "tests.test_preaggregation_bugs::test_avg_metric_needs_correct_count": (
-        "Rust adapter does not yet support Python pre-aggregation routing bug contracts"
-    ),
-    "tests.test_sql_generation_security::test_model_ref_rewrite_matches_cte_identifier_quoting": (
-        "Rust adapter does not yet support non-DuckDB dialect parity"
-    ),
-}
 
 
 DIRECT_RUST_GRAPH_PARITY_NODEIDS = {
@@ -359,35 +226,40 @@ PYTHON_LAYER_PARITY_CASES = [
 
 @pytest.mark.parametrize("case", PYTHON_LAYER_PARITY_CASES)
 def test_existing_python_layer_contract_matches_pure_rust(case: PythonTestParityCase, monkeypatch):
-    """Run the Python test function itself with a Rust-backed test layer."""
-    if reason := PRE_RUN_XFAILS.get(case.nodeid):
-        pytest.xfail(reason)
-
-    _patch_semantic_layer_constructors(monkeypatch, case.module)
+    """Exercise the public Rust engine; direct helper cases keep their Rust adapters."""
+    _patch_semantic_layer_constructors(monkeypatch, case)
     fixtures: dict[str, object] = {}
     try:
         fixtures = _fixture_values(case)
         _call_python_test_case(case, fixtures)
-    except NotImplementedError as exc:
-        if reason := _expected_gap_reason(case.nodeid):
-            pytest.xfail(f"{reason}: {exc}")
-        raise
-    except (Exception, pytest.fail.Exception) as exc:
-        if reason := _expected_gap_reason(case.nodeid):
-            pytest.xfail(f"{reason}: {exc}")
-        raise
     finally:
         _close_fixture_values(fixtures)
 
 
-def _patch_semantic_layer_constructors(monkeypatch, module: ModuleType) -> None:
-    monkeypatch.setattr(sidemantic, "SemanticLayer", RustSemanticLayerAdapter)
+def _patch_semantic_layer_constructors(monkeypatch, case: PythonTestParityCase) -> None:
+    module = case.module
+    direct_helper = (
+        _is_direct_rust_graph_test(case.nodeid, case.fixture_names)
+        or _is_direct_rust_sql_generator_test(case.nodeid, case.fixture_names)
+        or _is_direct_rust_function_test(case.nodeid, case.fixture_names)
+    )
+    layer_class = RustSemanticLayerAdapter if direct_helper else RustRuntimeSemanticLayer
+    monkeypatch.setattr(sidemantic, "SemanticLayer", layer_class)
+    monkeypatch.setattr(semantic_layer_module, "SemanticLayer", layer_class)
+    if hasattr(module, "SemanticLayer"):
+        monkeypatch.setattr(module, "SemanticLayer", layer_class)
+    if not direct_helper:
+        # Some shared bodies instantiate QueryRewriter directly from the layer
+        # graph; keep those calls on Rust too, not its legacy Python default.
+        monkeypatch.setenv("SIDEMANTIC_RS_REWRITER", "1")
+        monkeypatch.setenv("SIDEMANTIC_RS_NO_FALLBACK", "1")
+        return
+
+    # Keep the direct probes on their original pure-Rust graph/compiler harness.
+    # Public runtime host services are covered separately above.
     monkeypatch.setattr(semantic_graph_module, "SemanticGraph", RustSemanticGraphDirectAdapter)
-    monkeypatch.setattr(semantic_layer_module, "SemanticLayer", RustSemanticLayerAdapter, raising=False)
     monkeypatch.setattr(sql_generator_module, "SQLGenerator", RustSQLGeneratorAdapter)
     monkeypatch.setattr(query_rewriter_module, "QueryRewriter", RustQueryRewriterAdapter)
-    if hasattr(module, "SemanticLayer"):
-        monkeypatch.setattr(module, "SemanticLayer", RustSemanticLayerAdapter)
     if hasattr(module, "SemanticGraph"):
         monkeypatch.setattr(module, "SemanticGraph", RustSemanticGraphDirectAdapter)
     if hasattr(module, "SQLGenerator"):
@@ -404,7 +276,11 @@ def _fixture_values(case: PythonTestParityCase) -> dict[str, object]:
     values: dict[str, object] = {}
     for fixture_name in case.fixture_names:
         if fixture_name == "layer":
-            values[fixture_name] = RustSemanticLayerAdapter()
+            if case.module is auto_dimension_tests:
+                values["db"] = _call_fixture(case.module, "db")
+                values[fixture_name] = _call_fixture(case.module, "layer", values["db"])
+            else:
+                values[fixture_name] = RustRuntimeSemanticLayer(auto_register=False)
         elif fixture_name == "test_db":
             values[fixture_name] = _call_fixture(case.module, "test_db")
         elif fixture_name == "semantic_layer":
@@ -426,11 +302,11 @@ def _fixture_values(case: PythonTestParityCase) -> dict[str, object]:
 
 def _call_python_test_case(case: PythonTestParityCase, fixtures: dict[str, object]) -> None:
     if case.owner is None:
-        case.func(**fixtures)
+        case.func(**{name: fixtures[name] for name in case.fixture_names})
         return
 
     instance = case.owner()
-    case.func(instance, **fixtures)
+    case.func(instance, **{name: fixtures[name] for name in case.fixture_names})
 
 
 def _call_fixture(module: ModuleType, name: str, *args: object) -> object:
@@ -462,7 +338,3 @@ def _close_fixture_values(values: dict[str, object]) -> None:
         close = getattr(value, "close", None)
         if callable(close):
             close()
-
-
-def _expected_gap_reason(nodeid: str) -> str | None:
-    return PRE_RUN_XFAILS.get(nodeid) or EXPECTED_GAPS.get(nodeid)

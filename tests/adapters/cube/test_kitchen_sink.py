@@ -33,7 +33,7 @@ BUGS FOUND AND FIXED:
 import duckdb
 import pytest
 
-from sidemantic import SemanticLayer
+from sidemantic import Relationship, SemanticLayer
 from sidemantic.adapters.cube import CubeAdapter
 from tests.utils import fetch_dicts
 
@@ -679,14 +679,18 @@ class TestEdgeCasesAndHoles:
     """Test potential edge cases that might reveal holes in sidemantic."""
 
     def test_self_referential_join(self, kitchen_sink_layer):
-        """Test self-referential relationship (manager_id).
-
-        This is a potential hole - does sidemantic support self-joins?
-        """
-        # This would require a self-join: employees.manager_id -> employees.id
-        # Most semantic layers don't handle this well
-        # We skip this as a known limitation but document it
-        pytest.skip("Self-referential joins not currently supported - potential enhancement")
+        """Group employees by their manager's name, retaining employees without managers."""
+        kitchen_sink_layer.graph.models["employees"].relationships.append(
+            Relationship(name="manager", target_model="employees", type="many_to_one", foreign_key="manager_id")
+        )
+        result = kitchen_sink_layer.query(metrics=["employees.count"], dimensions=["manager.name"])
+        assert {row["name"]: row["count"] for row in fetch_dicts(result)} == {
+            None: 5,
+            "Alice Smith": 2,
+            "Dave Brown": 1,
+            "Frank Miller": 1,
+            "Henry Chen": 1,
+        }
 
     def test_multiple_paths_to_same_model(self, kitchen_sink_layer):
         """Test when there are multiple paths to the same model.
@@ -839,19 +843,12 @@ class TestEdgeCasesAndHoles:
         assert by_priority[4] == 1
 
     def test_aggregation_on_aggregation(self, kitchen_sink_layer):
-        """Test whether we can aggregate an already aggregated value.
-
-        E.g., AVG of department budgets per company.
-        This requires a two-level aggregation.
-        """
-        # This might not work - sidemantic might not support nested aggregation
-        try:
-            # First aggregate departments by company, then avg those budgets
-            # This would be: SELECT company, AVG(dept_budget_per_company)
-            # which requires subquery or window function
-            pytest.skip("Nested aggregation not directly supported")
-        except Exception:
-            pytest.skip("Nested aggregation not supported")
+        """Average company-level department budgets after semantic aggregation."""
+        result = kitchen_sink_layer.sql(
+            "SELECT AVG(total_budget) AS average_company_budget FROM "
+            "(SELECT companies.name, departments.total_budget FROM departments) AS company_budgets"
+        )
+        assert result.fetchone() == (4125000.0,)
 
 
 # ============================================================

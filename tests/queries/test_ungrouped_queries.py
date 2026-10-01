@@ -5,6 +5,7 @@ import re
 import pytest
 
 from sidemantic import Dimension, Metric, Model, SemanticLayer
+from sidemantic.semantic_handoff import UnsupportedSemanticFeaturesError
 from tests.utils import fetch_dicts
 
 
@@ -360,7 +361,7 @@ def test_with_totals_ignores_configured_default_limit():
 
 
 def test_with_totals_unsupported_window_path_raises(layer):
-    """with_totals on a window-function (cumulative) metric raises NotImplementedError."""
+    """with_totals on a window-function metric explicitly rejects the unsupported path."""
     orders = Model(
         name="orders",
         table="orders",
@@ -371,5 +372,9 @@ def test_with_totals_unsupported_window_path_raises(layer):
     layer.add_model(orders)
     layer.graph.add_metric(Metric(name="cumulative_revenue", type="cumulative", sql="orders.revenue"))
 
-    with pytest.raises(NotImplementedError, match="with_totals is not yet supported"):
+    with pytest.raises((NotImplementedError, UnsupportedSemanticFeaturesError)) as exc_info:
         layer.compile(metrics=["cumulative_revenue"], dimensions=["orders.order_date"], with_totals=True)
+    if isinstance(exc_info.value, UnsupportedSemanticFeaturesError):
+        assert exc_info.value.capabilities == ["query.totals.window"]
+    else:
+        assert "with_totals is not yet supported" in str(exc_info.value)

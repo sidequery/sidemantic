@@ -210,11 +210,13 @@ def test_explore_anchor_scopes_related_fields_and_policies():
         response = call("compile", source, dimensions)
         assert "error" not in response, response
         assert set(connection.execute(response["result"]).fetchall()) == {("paid",), (None,)}
+        independent = call("compile", source, {**query, "metrics": ["items.value", "orders.revenue"]})
+        assert "error" not in independent, independent
+        # Both aggregates retain the Explore's policy-filtered population;
+        # multiple items must not multiply revenue, and orphans stay excluded.
+        assert connection.execute(independent["result"]).fetchall() == [(12, 30)]
     assert json.loads(call("validate", source, query)["result"]) == []
     assert "no user_attributes" in call("compile", source, {**query, "user_attributes": None}).get("error", "")
-    assert "consumption_base_model.independent_aggregates" in call(
-        "compile", source, {**query, "metrics": ["items.value", "orders.revenue"]}
-    ).get("error", "")
     invalid = call("validate", source, {**query, "consumption_base_model": "missing"})
     assert "missing" in invalid.get("error", "")
 

@@ -236,14 +236,20 @@ def test_run_query_base_time_filter_uses_raw_expression(demo_layer):
 
 
 def test_run_query_explicit_time_grain_filter_truncates_expression(demo_layer):
+    demo_layer.conn.execute("ALTER TABLE orders_table ALTER COLUMN order_date TYPE TIMESTAMP")
+    demo_layer.conn.execute(
+        "INSERT INTO orders_table VALUES (99, '99', 'Midday', '2024-01-02 12:00:00', 999, 'completed')"
+    )
     result = run_query(
         metrics=["orders.total_revenue"],
-        where="orders.order_date__day >= DATE '2024-01-02'",
+        where="orders.order_date__day > DATE '2024-01-02'",
         dry_run=True,
     )
 
-    where_clause = result["sql"].split("WHERE", 1)[1].split(")\nSELECT", 1)[0]
-    assert "DATE_TRUNC('DAY', ORDER_DATE)" in where_clause.upper()
+    expected = demo_layer.conn.execute(
+        "SELECT SUM(amount) FROM orders_table WHERE DATE_TRUNC('day', order_date) > DATE '2024-01-02'"
+    ).fetchall()
+    assert demo_layer.conn.execute(result["sql"]).fetchall() == expected
 
 
 def test_run_query_freezes_current_timestamp_for_partition_pruning(demo_layer):

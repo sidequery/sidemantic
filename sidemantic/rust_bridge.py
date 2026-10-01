@@ -40,8 +40,7 @@ def get_rust_module() -> object:
             raise
         raise RustBackendUnavailableError(
             "Rust backend requires the sidemantic_rs Python extension. "
-            "Build it with: uv run --with maturin maturin develop "
-            "--manifest-path sidemantic-rs/Cargo.toml --features python-adbc"
+            "Install it with: uv pip install sidemantic-rs, or select --engine python."
         ) from e
     return sidemantic_rs
 
@@ -122,6 +121,11 @@ def _postgres_query_sql(sql: str, *, clause: str | None = None) -> str:
             raise ValueError(f"PostgreSQL {clause} input requires an expression")
         expression = wrapper.this if clause == "WHERE" else wrapper
     try:
+        # SQLGlot has already decoded PostgreSQL E-string escapes. Lower them
+        # to ordinary string literals; the native DuckDB parser does not
+        # preserve E-string quoting when re-emitting PostgreSQL SQL.
+        for literal in list(expression.find_all(exp.ByteString)):
+            literal.replace(exp.Literal.string(literal.this))
         # The intermediate parser must not infer DuckDB's default null ordering
         # after PostgreSQL defaults have been resolved. Emit that choice explicitly.
         for ordered in reversed(list(expression.find_all(exp.Ordered))):
@@ -173,6 +177,7 @@ def validate_semantic_input(
     dimensions: list[str],
     *,
     input_dialect: str = "duckdb",
+    allow_non_additive_unsafe: bool = False,
     rust_module=None,
 ) -> list[str]:
     """Validate references through the same input contract used by compilation."""
@@ -181,7 +186,14 @@ def validate_semantic_input(
         module,
         "validate_with_semantic_input",
         graph_to_semantic_json(graph, input_dialect=input_dialect),
-        json.dumps({"metrics": metrics, "dimensions": dimensions}, allow_nan=False),
+        json.dumps(
+            {
+                "metrics": metrics,
+                "dimensions": dimensions,
+                **({"allow_non_additive_unsafe": True} if allow_non_additive_unsafe else {}),
+            },
+            allow_nan=False,
+        ),
     )
     if not isinstance(errors, list) or not all(isinstance(error, str) for error in errors):
         raise TypeError("Rust validator returned an invalid errors payload")
@@ -197,6 +209,8 @@ def rewrite_semantic_input(
     output_dialect: str | None = None,
     user_attributes: dict | None = None,
     enforce_visibility: bool = False,
+    use_preaggregations: bool = False,
+    allow_non_additive_unsafe: bool = False,
     rust_module=None,
 ) -> str:
     """Rewrite SQL with caller context through the versioned graph contract."""
@@ -211,6 +225,8 @@ def rewrite_semantic_input(
         or sql_dialect is not None
         or user_attributes is not None
         or enforce_visibility
+        or use_preaggregations
+        or allow_non_additive_unsafe
         or any(model.security is not None or model.invariant_filters for model in graph.models.values())
     )
     args = [graph_to_semantic_json(graph, input_dialect=input_dialect), sql]
@@ -226,6 +242,8 @@ def rewrite_semantic_input(
                 {
                     "user_attributes": user_attributes,
                     "enforce_visibility": enforce_visibility,
+                    **({"use_preaggregations": True} if use_preaggregations else {}),
+                    **({"allow_non_additive_unsafe": True} if allow_non_additive_unsafe else {}),
                     **({"output_dialect": output_dialect} if output_dialect is not None else {}),
                     **({"sql_dialect": sql_dialect} if sql_dialect is not None else {}),
                 },
@@ -417,6 +435,9 @@ def _normalize_metric_type(metric_payload: dict, *, empty_filters_to_none: bool 
         normalized["type"] = None
     elif metric_type == "timecomparison":
         normalized["type"] = "time_comparison"
+    # Rust serializes an unset window as null; Python uses its default instead.
+    if normalized.get("non_additive_window") is None:
+        normalized.pop("non_additive_window", None)
     if empty_filters_to_none and normalized.get("filters") == []:
         normalized["filters"] = None
     return normalized

@@ -91,6 +91,42 @@ fn string_literal(value: &str, dialect: DialectType) -> std::result::Result<Stri
     .map_err(|error| error.to_string())
 }
 
+/// Polyglot marks E-strings separately and preserves their backslash sequences
+/// in token text (after an E:/e: prefix). Match the Python template lexer's
+/// decoding before inserting caller values; never decode the caller's text.
+fn escape_string_text(text: &str) -> std::result::Result<String, String> {
+    let text = text
+        .strip_prefix("E:")
+        .or_else(|| text.strip_prefix("e:"))
+        .ok_or("Invalid SQL escape-string token")?;
+    let mut characters = text.chars();
+    let mut result = String::new();
+    while let Some(character) = characters.next() {
+        if character != '\\' {
+            result.push(character);
+            continue;
+        }
+        let escaped = characters.next().ok_or("Invalid SQL escape-string token")?;
+        let decoded = match escaped {
+            '\\' | '\'' => escaped,
+            'a' => '\u{0007}',
+            'b' => '\u{0008}',
+            'f' => '\u{000c}',
+            'n' => '\n',
+            'r' => '\r',
+            't' => '\t',
+            'v' => '\u{000b}',
+            other => {
+                // SQLGlot preserves escapes outside its recognized table.
+                result.push('\\');
+                other
+            }
+        };
+        result.push(decoded);
+    }
+    Ok(result)
+}
+
 /// Wrap bare-name output expressions so declared string/unquoted/yesno types
 /// remain available to the formatter. Tokenization leaves conditions, complex
 /// expressions, quoted Jinja strings, comments and raw blocks untouched.
@@ -223,20 +259,24 @@ fn replace_outputs(
             .ok_or("Invalid SQL token span")?;
         if matches!(
             token.token_type,
-            TokenType::String | TokenType::DollarString | TokenType::ByteString
+            TokenType::String
+                | TokenType::DollarString
+                | TokenType::ByteString
+                | TokenType::EscapeString
         ) {
             let raw = sql.get(start..end).ok_or("Invalid SQL token span")?;
-            if token.token_type == TokenType::ByteString
-                || matches!(
-                    dialect,
-                    DialectType::MySQL
-                        | DialectType::BigQuery
-                        | DialectType::Snowflake
-                        | DialectType::Spark
-                        | DialectType::Databricks
-                        | DialectType::Hive
-                )
-            {
+            if matches!(
+                token.token_type,
+                TokenType::ByteString | TokenType::EscapeString
+            ) || matches!(
+                dialect,
+                DialectType::MySQL
+                    | DialectType::BigQuery
+                    | DialectType::Snowflake
+                    | DialectType::Spark
+                    | DialectType::Databricks
+                    | DialectType::Hive
+            ) {
                 let prefix = &sql[start..position];
                 if !(prefix.len() - prefix.trim_end_matches('\\').len()).is_multiple_of(2) {
                     return Err(
@@ -247,22 +287,28 @@ fn replace_outputs(
             let value = match literals.entry((start, end)) {
                 std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
                 std::collections::btree_map::Entry::Vacant(entry) => {
-                    let normalized = dialects::fragment(raw, dialect, dialects::Fragment::Scalar)
-                        .map_err(|error| error.to_string())?;
-                    let expression = crate::core::parse_semantic_expression(&normalized)
-                        .map_err(|error| error.to_string())?;
-                    let text = match expression {
-                        Expression::Literal(Literal::String(text)) => text,
-                        Expression::Literal(Literal::DollarString(text)) => {
-                            polyglot_sql::tokens::parse_dollar_string_token(&text).1
-                        }
-                        _ => {
-                            return Err(
-                                "Parameter output requires an ordinary SQL string literal".into()
-                            )
-                        }
-                    };
-                    entry.insert(text)
+                    if token.token_type == TokenType::EscapeString {
+                        entry.insert(escape_string_text(&token.text)?)
+                    } else {
+                        let normalized =
+                            dialects::fragment(raw, dialect, dialects::Fragment::Scalar)
+                                .map_err(|error| error.to_string())?;
+                        let expression = crate::core::parse_semantic_expression(&normalized)
+                            .map_err(|error| error.to_string())?;
+                        let text = match expression {
+                            Expression::Literal(Literal::String(text)) => text,
+                            Expression::Literal(Literal::DollarString(text)) => {
+                                polyglot_sql::tokens::parse_dollar_string_token(&text).1
+                            }
+                            _ => {
+                                return Err(
+                                    "Parameter output requires an ordinary SQL string literal"
+                                        .into(),
+                                )
+                            }
+                        };
+                        entry.insert(text)
+                    }
                 }
             };
             *value = value.replace(&output.marker, &output.text);
@@ -289,6 +335,45 @@ mod tests {
 
     fn parameter(name: &str, kind: &str) -> Parameter {
         serde_json::from_value(json!({"name":name, "type":kind})).unwrap()
+    }
+
+    #[test]
+    fn escape_string_outputs_keep_static_escapes_separate_from_values() {
+        for kind in ["string", "date"] {
+            let parameter = parameter("value", kind);
+            let definitions = HashMap::from([("value".to_owned(), &parameter)]);
+            for dialect in [DialectType::DuckDB, DialectType::PostgreSQL] {
+                for value in ["signup", "\\' OR 1=1 -- ", "O'Reilly\\folder"] {
+                    let values = HashMap::from([(
+                        "value".to_owned(),
+                        serde_yaml::Value::String(value.into()),
+                    )]);
+                    for (template, expected) in [
+                        ("{# c #}E'{{ value }}'", value.to_owned()),
+                        (
+                            r"{# c #}e'é prefix\'{{ value }}'",
+                            format!("é prefix'{value}"),
+                        ),
+                        (
+                            r"{# c #}E'line\n{{ value }}\\{{ value }}'",
+                            format!("line\n{value}\\{value}"),
+                        ),
+                    ] {
+                        let rendered = render(template, &definitions, &values, dialect).unwrap();
+                        assert_eq!(rendered, string_literal(&expected, dialect).unwrap());
+                        let expression = crate::core::parse_semantic_expression(&rendered).unwrap();
+                        assert_eq!(expression, Expression::Literal(Literal::String(expected)));
+                    }
+                }
+                let values =
+                    HashMap::from([("value".to_owned(), serde_yaml::Value::String("ok".into()))]);
+                for template in [r"{# c #}E'\{{ value }}'", r"{# c #}e'\\\{{ value }}'"] {
+                    assert!(render(template, &definitions, &values, dialect)
+                        .unwrap_err()
+                        .contains("unpaired SQL escape"));
+                }
+            }
+        }
     }
 
     #[test]

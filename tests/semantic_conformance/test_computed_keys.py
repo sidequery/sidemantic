@@ -107,10 +107,11 @@ def test_from_metrics_sql_uses_structured_key_planning(layer):
     assert data.fetchall() == [(101, 7), (201, 17)]
 
 
-def test_legacy_sql_shape_is_explicitly_unsupported(layer):
-    with pytest.raises(UnsupportedSemanticFeaturesError) as caught:
-        rewrite_semantic_input(layer.graph, "select accounts.id, accounts.budget from accounts")
-    assert "rewrite.computed_key_query_shape" in caught.value.capabilities
+def test_model_sql_uses_computed_identity(layer):
+    sql = rewrite_semantic_input(layer.graph, "select accounts.id, accounts.budget from accounts order by accounts.id")
+    data = layer.adapter.execute(sql)
+    assert [column[0] for column in data.description] == ["id", "budget"]
+    assert data.fetchall() == [(101, 10), (201, 20)]
 
 
 def test_compound_computed_keys_join_componentwise(layer):

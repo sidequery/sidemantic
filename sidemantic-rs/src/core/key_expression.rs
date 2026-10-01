@@ -42,6 +42,19 @@ fn deterministic_scalar(expression: &Expression) -> bool {
                 && deterministic_scalar(&concat.expression)
         }
         Expression::Coalesce(arguments) => arguments.expressions.iter().all(deterministic_scalar),
+        Expression::DateTrunc(trunc) | Expression::TimestampTrunc(trunc) => {
+            deterministic_scalar(&trunc.this)
+        }
+        Expression::Function(function)
+            if !function.quoted
+                && function.name.eq_ignore_ascii_case("DATE_TRUNC")
+                && function.args.len() == 2 =>
+        {
+            matches!(
+                &function.args[0],
+                Expression::Literal(polyglot_sql::expressions::Literal::String(_))
+            ) && deterministic_scalar(&function.args[1])
+        }
         _ => false,
     }
 }
@@ -153,6 +166,26 @@ pub fn has_computed_keys(graph: &SemanticGraph, model: &Model) -> Result<bool> {
 mod tests {
     use super::*;
     use crate::core::Dimension;
+
+    #[test]
+    fn date_bucket_keys_keep_physical_input_scope() {
+        let model = Model::new("monthly_sales", "month")
+            .with_dimension(Dimension::new("month").with_sql("DATE_TRUNC('month', order_date)"));
+        let expression = key_expression(&model, "month", Some("s"), DialectType::DuckDB).unwrap();
+        let sql = polyglot_sql::generate(&expression, DialectType::DuckDB).unwrap();
+        assert!(
+            sql.to_ascii_uppercase()
+                .contains("DATE_TRUNC('MONTH', S.ORDER_DATE)"),
+            "{sql}"
+        );
+        assert!(is_computed_key(&model, "month").unwrap());
+        for input in ["random()", "SUM(order_date)", "other.order_date"] {
+            let model = Model::new("monthly_sales", "month").with_dimension(
+                Dimension::new("month").with_sql(format!("DATE_TRUNC('month', {input})")),
+            );
+            assert!(key_expression(&model, "month", None, DialectType::DuckDB).is_err());
+        }
+    }
 
     #[test]
     fn key_classification_uses_resolved_direction_and_composite_defaults() {

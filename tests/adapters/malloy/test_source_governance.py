@@ -33,7 +33,7 @@ def test_source_where_is_conjunctive_invariant_and_executes(tmp_path):
     assert model.invariant_filters == ["tenant_id = 1", "active"]
     assert model.segments == []
 
-    layer = SemanticLayer(auto_register=False, engine="python")
+    layer = SemanticLayer(auto_register=False)
     layer.adapter.execute("create table orders (tenant_id int, active boolean, status text, amount int)")
     layer.adapter.execute(
         "insert into orders values (1, true, 'kept', 10), (1, false, 'inactive', 20), (2, true, 'other', 30)"
@@ -102,7 +102,7 @@ def test_private_and_internal_rename_visibility_executes_and_roundtrips(tmp_path
     }
     assert any("internal renamed dimension" in issue for _, issue in adapter.unsupported_features)
 
-    layer = SemanticLayer(auto_register=False, engine="python", enforce_visibility=True)
+    layer = SemanticLayer(auto_register=False, enforce_visibility=True)
     layer.adapter.execute("create table accounts (account_id int, region text, secret_token text)")
     layer.adapter.execute("insert into accounts values (1, 'west', 'hidden')")
     layer.add_model(model)
@@ -139,7 +139,7 @@ def test_intrinsic_columns_and_explicit_primary_key_execute(tmp_path):
     assert model.auto_dimensions is True
     assert model.schema_exposure.include_primary_key is True
 
-    layer = SemanticLayer(auto_register=False, engine="python")
+    layer = SemanticLayer(auto_register=False)
     layer.adapter.execute("create table orders (order_id int, region text, amount int)")
     layer.adapter.execute("insert into orders values (1, 'west', 10), (2, 'east', 20)")
     layer.add_model(model)
@@ -174,7 +174,7 @@ def test_accept_except_and_private_filter_before_schema_exposure(tmp_path):
     assert model.schema_exposure.private == ["secret_token"]
     assert adapter.unsupported_features == []
 
-    layer = SemanticLayer(auto_register=False, engine="python", enforce_visibility=True)
+    layer = SemanticLayer(auto_register=False, enforce_visibility=True)
     layer.adapter.execute("create table accounts (account_id int, region text, balance int, secret_token text)")
     layer.adapter.execute("insert into accounts values (1, 'west', 10, 'hidden')")
     layer.add_model(model)
@@ -280,7 +280,7 @@ def test_strict_schema_introspection_failure_and_lenient_unsafe_shape_report(tmp
     )
     model = graph.get_model("missing")
     assert model.schema_exposure.strict is True
-    layer = SemanticLayer(auto_register=False, engine="python")
+    layer = SemanticLayer(auto_register=False)
     with pytest.raises(SchemaIntrospectionError, match="missing"):
         layer.add_model(model)
 

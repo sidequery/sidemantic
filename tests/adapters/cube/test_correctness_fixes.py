@@ -1442,7 +1442,11 @@ cubes:
     layer.graph = graph
     compiled = layer.compile(metrics=["line_items.derived_x"])
     assert "${orders}" not in compiled and "{'orders'" not in compiled
-    assert "SUM(__sidemantic_dedup." in compiled
+    layer.conn.execute("CREATE TABLE orders (id INTEGER, amt INTEGER)")
+    layer.conn.execute("INSERT INTO orders VALUES (1, 10), (2, 20)")
+    layer.conn.execute("CREATE TABLE line_items (order_id INTEGER)")
+    layer.conn.execute("INSERT INTO line_items VALUES (1), (1), (2)")
+    assert layer.conn.execute(compiled).fetchall() == [(60,)]
 
 
 def test_rollup_with_only_unmaterializable_measures_is_rejected():

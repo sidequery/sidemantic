@@ -1,6 +1,7 @@
 """Tests for SQL query rewriter."""
 
 import pytest
+import sqlglot
 
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.metric import Metric
@@ -185,8 +186,9 @@ def test_zero_limit_and_offset_are_preserved(semantic_layer):
     sql = "SELECT orders.revenue, orders.status FROM orders ORDER BY orders.status LIMIT 0 OFFSET 0"
 
     rewritten = QueryRewriter(semantic_layer.graph).rewrite(sql)
-    assert "\nLIMIT 0" in rewritten
-    assert "\nOFFSET 0" in rewritten
+    parsed = sqlglot.parse_one(rewritten)
+    assert parsed.args["limit"].expression.this == "0"
+    assert parsed.args["offset"].expression.this == "0"
 
     result = semantic_layer.sql(sql)
     rows = _rows(result)
@@ -1478,8 +1480,9 @@ def test_postprocess_zero_limit_and_offset_in_outer(semantic_layer):
     """
 
     rewritten = QueryRewriter(semantic_layer.graph).rewrite(sql)
-    assert "\nLIMIT 0" in rewritten
-    assert "\nOFFSET 0" in rewritten
+    parsed = sqlglot.parse_one(rewritten)
+    assert parsed.args["limit"].expression.this == "0"
+    assert parsed.args["offset"].expression.this == "0"
 
     result = semantic_layer.sql(sql)
     rows = _rows(result)

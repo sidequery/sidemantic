@@ -147,7 +147,7 @@ def test_relationship_foreign_key_dimension_declines_unrelated_rollup(layer):
         {
             "metrics": ["orders.revenue"],
             "dimensions": ["orders.customer_id"],
-            "order_by": ["orders.customer_id"],
+            "order_by": ["orders.customer_id NULLS LAST"],
         },
         [(10, 30), (20, 940), (None, None)],
         routed=False,

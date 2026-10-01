@@ -351,8 +351,9 @@ synthetic fixtures, not production workload or performance qualification.
 Rust's `semantic_input` tests check decoding, keys, scope, dialects and rejection
 without relying on Python preprocessing.
 
-This contract does not change the default engine, retire the Python compiler,
-or claim that WASM, the DuckDB extension, and the Python binding already expose
+Native Python installations now default to Rust with a matching runtime package;
+Pyodide retains Python. This does not retire the Python compiler or claim that
+WASM, the DuckDB extension, and the Python binding already expose
 identical capabilities. Each host needs corresponding acceptance evidence
 before its default or implementation ownership changes.
 

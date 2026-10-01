@@ -320,12 +320,20 @@ def test_escaped_static_quote_before_parameter_keeps_literal_boundary(query_laye
 
 
 @pytest.mark.parametrize("use_segment", [False, True])
-def test_escaped_static_quote_before_parameter_through_query(query_layer, use_segment):
+@pytest.mark.parametrize(
+    "literal,static_prefix",
+    [
+        (r"E'prefix\'{{ value }}'", "prefix'"),
+        (r"e'é prefix\\{{ value }}'", "é prefix\\"),
+        (r"E'line\n{{ value }}'", "line\n"),
+    ],
+)
+def test_escaped_static_quote_before_parameter_through_query(query_layer, use_segment, literal, static_prefix):
     from sidemantic.core.segment import Segment
 
     query_layer.graph.add_parameter(Parameter(name="value", type="string"))
-    predicate = "{# c #}events.event_type = E'prefix\\'{{ value }}'"
-    query_layer.conn.execute("insert into events_raw values (3, 1, ?, '2024-01-03')", ["prefix'ok"])
+    predicate = "{# c #}events.event_type = " + literal
+    query_layer.conn.execute("insert into events_raw values (3, 1, ?, '2024-01-03')", [static_prefix + "ok"])
     if use_segment:
         query_layer.graph.models["events"].segments.append(Segment(name="prefixed", sql=predicate))
         query_args = {"segments": ["events.prefixed"]}

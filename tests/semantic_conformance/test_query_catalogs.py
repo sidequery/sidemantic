@@ -124,12 +124,14 @@ def test_raw_active_catalog_requests_are_never_ignored(layer, field, value):
                 layer.graph, {"metrics": ["orders.revenue"], "user_attributes": {"tenant": "a"}, field: value}
             )
     runtime = pytest.importorskip("sidemantic_rs")
-    with pytest.raises(ValueError, match=f"rewrite.context.{field}"):
+    with pytest.raises(ValueError, match=f"rewrite.context.{field}") as caught:
         runtime.rewrite_with_semantic_input_context(
             json.dumps(graph_to_semantic_input(layer.graph)),
             "select orders.revenue from metrics",
             json.dumps({"user_attributes": {"tenant": "a"}, field: value}),
         )
+    assert isinstance(caught.value, runtime.UnsupportedSemanticFeaturesError)
+    assert caught.value.capabilities == [f"rewrite.context.{field}"]
 
 
 @pytest.mark.parametrize("layer", ["rust"], indirect=True)

@@ -43,6 +43,37 @@ def layer(request):
         layer.adapter.close()
 
 
+def test_window_dimension_replaces_same_named_source_for_grouping_and_filters(layer):
+    layer.graph.models["events"].get_dimension("day").window = "MIN(day) OVER ()"
+    query = {
+        "metrics": ["events.daily_amount"],
+        "dimensions": ["events.day"],
+        "user_attributes": {"tenant": 1},
+    }
+    assert layer.query(**query).fetchall() == [(date(2024, 1, 1), 82)]
+    for predicate in ["events.day > '2024-01-02'", "coalesce(events.day, '2024-01-01') > '2024-01-02'"]:
+        assert layer.query(**query, filters=[predicate]).fetchall() == []
+    assert layer.query(**query, filters=["events.day = '2024-01-01'"]).fetchall() == [(date(2024, 1, 1), 82)]
+
+
+def test_graph_calculation_keeps_its_identity_beside_cumulative_metric(layer):
+    layer.add_metric(Metric(name="total", type="derived", sql="events.daily_amount"))
+    layer.add_metric(Metric(name="running", type="cumulative", sql="events.daily_amount"))
+    cursor = layer.query(
+        metrics=["total", "running"],
+        dimensions=["events.day"],
+        order_by=["events.day"],
+        user_attributes={"tenant": 1},
+    )
+    columns = [column[0] for column in cursor.description]
+    records = [dict(zip(columns, row)) for row in cursor.fetchall()]
+    assert [(record["day"], record["total"], record["running"]) for record in records] == [
+        (date(2024, 1, 1), 15, 15),
+        (date(2024, 1, 3), 27, 42),
+        (date(2024, 1, 4), 40, 82),
+    ]
+
+
 def run(
     layer,
     *,
@@ -243,7 +274,7 @@ def test_window_dependency_cycles_return_validation_errors(rust_layer, reference
                 window_expression=f"SUM(base.{reference})",
             )
         )
-    with pytest.raises(Exception, match="[Cc]ycl"):
+    with pytest.raises(Exception, match="[Cc](?:ircular|ycl)"):
         rust_layer.compile(metrics=["events.windowed"], dimensions=["events.day"], user_attributes={"tenant": 1})
 
 

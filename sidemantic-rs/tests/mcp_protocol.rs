@@ -434,9 +434,17 @@ fn mcp_server_exercises_tool_protocol_and_errors() {
     let resource_items = resources["result"]["resources"]
         .as_array()
         .expect("resources/list should return resources");
-    assert!(resource_items
+    let catalog_resource = resource_items
         .iter()
-        .any(|resource| resource["uri"] == "semantic://catalog"));
+        .find(|resource| resource["uri"] == "semantic://catalog")
+        .expect("resources/list should include the semantic catalog");
+    assert_eq!(catalog_resource["name"], "catalog");
+    assert_eq!(catalog_resource["title"], "Sidemantic Catalog Metadata");
+    assert_eq!(catalog_resource["mimeType"], "application/json");
+    assert_eq!(
+        catalog_resource["description"],
+        "Postgres-compatible catalog metadata for the semantic layer."
+    );
 
     let catalog = client.request(16, "resources/read", json!({ "uri": "semantic://catalog" }));
     let catalog_text = catalog["result"]["contents"][0]["text"]

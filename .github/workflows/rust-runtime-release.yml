@@ -20,6 +20,7 @@ on:
 
   pull_request:
     paths:
+      - ".github/actions/**"
       - ".github/workflows/rust-runtime-release.yml"
       - "sidemantic-rs/tests/packaged_cli_smoke.py"
 
@@ -43,6 +44,13 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Cache Rust compilation
+        if: github.event_name == 'pull_request'
+        id: rust-cache
+        uses: ./.github/actions/setup-rust-cache
+        with:
+          suffix: ${{ github.workflow }}-${{ github.job }}-${{ strategy.job-index || 0 }}
+
       - name: Run package metadata tests
         run: cargo test --locked --test package_metadata
 
@@ -63,6 +71,12 @@ jobs:
           fi
 
           cargo publish --locked
+
+      - name: Save completed build caches
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+        uses: ./.github/actions/save-build-caches
+        with:
+          rust-key: ${{ steps.rust-cache.outputs.key }}
 
   cli-artifacts:
     name: Build CLI artifact (${{ matrix.artifact }})
@@ -90,6 +104,13 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Cache Rust compilation
+        if: github.event_name == 'pull_request'
+        id: rust-cache
+        uses: ./.github/actions/setup-rust-cache
+        with:
+          suffix: ${{ github.workflow }}-${{ github.job }}-${{ strategy.job-index || 0 }}
+
       - name: Build CLI
         run: cargo build --release --locked --bin sidemantic
 
@@ -106,7 +127,11 @@ jobs:
           fi
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        id: uv
+        uses: ./.github/actions/setup-uv
+        with:
+          enable-cache: ${{ github.event_name == 'pull_request' }}
+          suffix: ${{ github.workflow }}-${{ github.job }}-${{ strategy.job-index || 0 }}
 
       - name: Smoke packaged CLI
         shell: bash
@@ -126,6 +151,13 @@ jobs:
           name: sidemantic-cli-${{ matrix.artifact }}
           path: sidemantic-rs/dist/*
           if-no-files-found: error
+
+      - name: Save completed build caches
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+        uses: ./.github/actions/save-build-caches
+        with:
+          rust-key: ${{ steps.rust-cache.outputs.key }}
+          uv-key: ${{ steps.uv.outputs.cache-key }}
 
   github-release:
     name: Attach CLI artifacts to GitHub release

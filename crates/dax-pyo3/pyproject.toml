@@ -15,3 +15,23 @@ module-name = "sidemantic_dax._native"
 python-source = "python"
 features = ["pyo3/extension-module", "pyo3/abi3-py311"]
 exclude = ["dist/*", "target/*"]
+
+# uv otherwise only checks Python packaging metadata for local wheel rebuilds.
+[tool.uv]
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "README.md" },
+    { file = "Cargo.toml" },
+    { file = "../../Cargo.toml" },
+    { file = "../../Cargo.lock" },
+    { file = "src/**/*" },
+    { file = "python/**/*.py" },
+    { file = "python/**/*.pyi" },
+    { file = "python/**/py.typed" },
+    { file = "../dax-parser/Cargo.toml" },
+    { file = "../dax-parser/src/**/*" },
+    { file = "../../.cargo/config.toml" },
+    { file = "../../rust-toolchain*" },
+    { env = "RUSTFLAGS" },
+    { env = "CARGO_ENCODED_RUSTFLAGS" },
+]

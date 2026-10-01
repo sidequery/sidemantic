@@ -26,8 +26,8 @@ def _orders() -> Model:
     )
 
 
-def _layer() -> SemanticLayer:
-    layer = SemanticLayer(auto_register=False, engine="python")
+def _layer(*, engine=None) -> SemanticLayer:
+    layer = SemanticLayer(auto_register=False, engine=engine)
     layer.adapter.execute("CREATE TABLE orders (id INT, customer_id INT, tenant_id INT, status TEXT, amount INT)")
     layer.adapter.execute(
         "INSERT INTO orders VALUES (1, 10, 1, 'new', 10), (2, 20, 2, 'new', 100), (3, 10, 1, 'paid', 20)"
@@ -51,9 +51,11 @@ def test_structured_compile_and_query_apply_invariant_before_aggregation():
 def test_semantic_sql_applies_invariant():
     layer = _layer()
 
-    assert sorted(layer.sql("SELECT orders.revenue, orders.status FROM orders").fetchall()) == [
-        ("new", 10),
-        ("paid", 20),
+    result = layer.sql("SELECT orders.revenue, orders.status FROM orders")
+    assert [column[0] for column in result.description] == ["revenue", "status"]
+    assert sorted(result.fetchall()) == [
+        (10, "new"),
+        (20, "paid"),
     ]
 
 
@@ -126,7 +128,7 @@ def test_preaggregation_bakes_invariant_but_query_keeps_live_scope():
 
 
 def test_partitioned_preaggregation_scopes_bucket_discovery_and_materialization():
-    layer = SemanticLayer(auto_register=False, engine="python")
+    layer = SemanticLayer(auto_register=False)
     layer.adapter.execute("CREATE TABLE scoped_orders (created_at TIMESTAMP, tenant_id INT, amount INT)")
     layer.adapter.execute(
         "INSERT INTO scoped_orders VALUES ('2024-01-01', 1, 10), ('2024-02-01', 2, 200), ('2024-03-01', 1, 30)"
@@ -215,8 +217,8 @@ def test_rust_payload_excludes_unsupported_invariants():
     assert "invariant_filters" not in payload
 
 
-def test_rust_sql_generator_falls_back_for_invariants(monkeypatch):
-    layer = _layer()
+def test_legacy_python_sql_generator_falls_back_for_invariants(monkeypatch):
+    layer = _layer(engine="python")
     layer._use_rust_sql_generator = True
 
     def unexpected_rust_compile(**_kwargs):

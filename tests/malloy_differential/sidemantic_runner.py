@@ -59,7 +59,7 @@ def _run_query(workspace: Path, source_file: Path, query: dict[str, Any]) -> dic
     layer = SemanticLayer(
         connection=f"duckdb:///{workspace / 'fixture.duckdb'}",
         auto_register=False,
-        engine="python",
+        fallback=False,
     )
     # Exercise the normal public registration path so intrinsic physical
     # dimensions are discovered before the differential query is validated.

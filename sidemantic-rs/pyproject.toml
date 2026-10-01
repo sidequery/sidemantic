@@ -4,11 +4,26 @@ build-backend = "maturin"
 
 [project]
 name = "sidemantic-rs"
-version = "0.1.0"
+version = "0.12.0"
 description = "Standalone Rust runtime bindings for Sidemantic"
 license = "AGPL-3.0-only"
 requires-python = ">=3.11"
 
 [tool.maturin]
 module-name = "sidemantic_rs"
-features = ["python-adbc"]
+features = ["python"]
+
+# uv otherwise only checks Python packaging metadata for local wheel rebuilds.
+[tool.uv]
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "Cargo.toml" },
+    { file = "../Cargo.toml" },
+    { file = "../Cargo.lock" },
+    { file = "build.rs" },
+    { file = "src/**/*" },
+    { file = "../.cargo/config.toml" },
+    { file = "../rust-toolchain*" },
+    { env = "RUSTFLAGS" },
+    { env = "CARGO_ENCODED_RUSTFLAGS" },
+]

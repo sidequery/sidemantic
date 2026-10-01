@@ -123,9 +123,20 @@ struct Bindings {
     aggregate_inputs: Vec<String>,
     next_metric: usize,
     strict_fields: bool,
+    secured_subquery: bool,
 }
 
 impl Bindings {
+    fn unknown_field(&self, reference: &str) -> SidemanticError {
+        if self.secured_subquery {
+            SidemanticError::Security(format!(
+                "Cannot authorize semantic subquery: field '{reference}' is not declared"
+            ))
+        } else {
+            SidemanticError::Validation(format!("Field '{reference}' not found"))
+        }
+    }
+
     fn resolve(&self, column: &Column) -> Result<String> {
         let name = &column.name.name;
         if let Some(table) = &column.table {
@@ -161,9 +172,7 @@ impl Bindings {
             } else if model.get_dimension(split_granularity(field).0).is_some() {
                 false
             } else {
-                return Err(SidemanticError::Validation(format!(
-                    "Field '{reference}' not found"
-                )));
+                return Err(self.unknown_field(&reference));
             }
         } else if self.graph.get_metric(&reference).is_some() {
             true
@@ -282,9 +291,7 @@ impl Bindings {
                 if model.get_metric(field).is_none()
                     && model.get_dimension(split_granularity(field).0).is_none()
                 {
-                    return Err(SidemanticError::Validation(format!(
-                        "Field '{reference}' not found"
-                    )));
+                    return Err(self.unknown_field(&reference));
                 }
             }
             Ok(Some(Expression::qualified_column(owner, field)))
@@ -409,7 +416,11 @@ impl Bindings {
 }
 
 impl QueryRewriter<'_> {
-    pub(super) fn compile_semantic_select(&self, mut select: Select) -> Result<Select> {
+    pub(super) fn compile_semantic_select(
+        &self,
+        mut select: Select,
+        nested: bool,
+    ) -> Result<Select> {
         let mut remainder = select.clone();
         remainder.expressions.clear();
         remainder.from = None;
@@ -453,6 +464,7 @@ impl QueryRewriter<'_> {
             aggregate_inputs: Vec::new(),
             next_metric: 0,
             strict_fields: self.security_controls,
+            secured_subquery: self.security_controls && nested,
         };
         let mut projections = Vec::new();
         let mut aliases = HashSet::new();
@@ -548,8 +560,16 @@ impl QueryRewriter<'_> {
             bindings.query.order_by.clear();
         }
         let sql = SqlGenerator::new(&bindings.graph).generate(&bindings.query)?;
+        // Preserve routing metadata outside the parsed subquery: trailing SQL
+        // comments are discarded by the parser and can consume its closing ')'.
+        let sql = if let Some(inner) = sql.strip_suffix("\n-- used_preagg=true") {
+            self.used_preaggregation.set(true);
+            inner
+        } else {
+            &sql
+        };
         let mut wrapper = parse_sql_with_dialect(
-            &format!("SELECT * FROM ({sql}) AS __semantic_query"),
+            &format!("SELECT * FROM ({sql}\n) AS __semantic_query"),
             DialectType::DuckDB,
         )?;
         let Expression::Select(mut outer) = wrapper.remove(0) else {

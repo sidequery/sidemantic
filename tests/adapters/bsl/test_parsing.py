@@ -1300,6 +1300,7 @@ flights:
         import tempfile
         from pathlib import Path
 
+        import duckdb
         import yaml
 
         from sidemantic.sql.generator import SQLGenerator
@@ -1394,7 +1395,7 @@ accounts:
                 dimensions=["orders.order_id"],
                 skip_default_time_dimensions=True,
             )
-            assert "JOIN orders_user_cte" in orders_sql
+            assert "orders_user_cte" in orders_sql
             assert "events_user_cte" not in orders_sql
             assert "FROM customers" in orders_sql
 
@@ -1403,9 +1404,21 @@ accounts:
                 dimensions=["events.event_id"],
                 skip_default_time_dimensions=True,
             )
-            assert "JOIN events_user_cte" in events_sql
+            assert "events_user_cte" in events_sql
             assert "orders_user_cte" not in events_sql
             assert "FROM accounts" in events_sql
+
+            with duckdb.connect() as conn:
+                conn.execute("CREATE TABLE orders (order_id INTEGER, user_id INTEGER)")
+                conn.execute("INSERT INTO orders VALUES (1, 10), (2, 10)")
+                conn.execute("CREATE TABLE customers (customer_id INTEGER, name VARCHAR)")
+                conn.execute("INSERT INTO customers VALUES (10, 'customer')")
+                conn.execute("CREATE TABLE events (event_id INTEGER, account_id INTEGER)")
+                conn.execute("INSERT INTO events VALUES (3, 20)")
+                conn.execute("CREATE TABLE accounts (account_id INTEGER, name VARCHAR)")
+                conn.execute("INSERT INTO accounts VALUES (20, 'account')")
+                assert sorted(conn.execute(orders_sql).fetchall()) == [(1, 1.0), (2, 1.0)]
+                assert conn.execute(events_sql).fetchall() == [(3, 1.0)]
 
             adapter.export(graph, export_path)
             with open(export_path) as f:

@@ -202,6 +202,8 @@ def test_unproven_nested_sql_fails_closed_across_http_and_mcp(tmp_path, query, m
 def test_unsupported_rust_shape_preserves_secured_transport_fallback(tmp_path, monkeypatch):
     attrs = {"role": "analyst", "tenant_id": 2}
     query = "SELECT tenant_id, total_amount FROM orders"
+    # Exercise legacy fallback independently of the shared-suite engine selection.
+    monkeypatch.delenv("SIDEMANTIC_ENGINE", raising=False)
     monkeypatch.setenv("SIDEMANTIC_RS_REWRITER", "1")
 
     calls = []

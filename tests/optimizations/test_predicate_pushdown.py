@@ -4,7 +4,6 @@ import sqlglot
 from sqlglot import exp
 
 from sidemantic import Dimension, Metric, Model, Segment
-from sidemantic.sql.generator import SQLGenerator
 
 
 def test_single_model_filter_pushdown(layer):
@@ -300,14 +299,12 @@ def test_segment_filter_skips_subquery_columns(layer):
 
     layer.add_model(model)
 
-    generator = SQLGenerator(layer.graph)
-    filters = generator._resolve_segments(["orders.in_other"])
-    assert len(filters) == 1
+    sql = layer.compile(metrics=["orders.count"], segments=["orders.in_other"])
+    parsed = sqlglot.parse_one(sql)
 
-    filter_sql = filters[0]
-    parsed = sqlglot.parse_one(filter_sql)
-
-    assert any(col.table == "orders_cte" for col in parsed.find_all(exp.Column))
+    membership = parsed.find(exp.In)
+    assert membership is not None
+    assert membership.this.name == "id"
 
     subquery = None
     for subquery_def in parsed.find_all(exp.Subquery):
@@ -318,6 +315,14 @@ def test_segment_filter_skips_subquery_columns(layer):
 
     for col in subquery.find_all(exp.Column):
         assert not col.table
+
+    # Executing the compiled query also catches accidental correlation of the
+    # subquery's id to the outer orders table, which changes which rows match.
+    layer.conn.execute("create table orders_table (id integer)")
+    layer.conn.execute("insert into orders_table values (1), (2)")
+    layer.conn.execute("create table other_table (id integer, flag varchar)")
+    layer.conn.execute("insert into other_table values (1, 'y'), (2, 'n')")
+    assert layer.conn.execute(sql).fetchall() == [(1,)]
 
 
 def test_metric_level_filters_not_pushed(layer):
@@ -740,6 +745,18 @@ def test_mixed_metric_and_window_dim_filter_pushed_into_model_subquery_in_preagg
     layer.add_model(order_items)
 
     # Filter references BOTH a window dim (next_status) and a metric (revenue)
+    layer.conn.execute("""
+        create table orders_table (
+            order_id integer, customer_id integer, status varchar,
+            created_at timestamp, order_date date, amount double
+        );
+        insert into orders_table values
+            (1, 1, 'pending', '2025-01-01 09:00:00', '2025-01-01', 50),
+            (2, 1, 'complete', '2025-01-01 10:00:00', '2025-01-01', 200),
+            (3, 2, 'pending', '2025-01-01 11:00:00', '2025-01-01', 5);
+        create table order_items_table (item_id integer, order_id integer, qty integer);
+        insert into order_items_table values (1, 1, 1), (2, 2, 2), (3, 3, 3);
+    """)
     sql = layer.compile(
         metrics=["orders.revenue", "order_items.quantity"],
         dimensions=["orders.order_date"],
@@ -759,3 +776,12 @@ def test_mixed_metric_and_window_dim_filter_pushed_into_model_subquery_in_preagg
     # The outer query should NOT have the window dim filter
     outer_query = sql[sql.rindex("SELECT") :]
     assert "next_status" not in outer_query, "Window dim filter should NOT be in outer WHERE"
+
+    # Order 1 qualifies through its next status; order 2 qualifies through its
+    # own amount. Order 3 is excluded from revenue, while all item rows still
+    # contribute to the independent quantity population.
+    cursor = layer.conn.execute(sql)
+    assert [column[0] for column in cursor.description] == ["order_date", "revenue", "quantity"]
+    rows = cursor.fetchall()
+    assert len(rows) == 1
+    assert rows[0][1:] == (250.0, 6)

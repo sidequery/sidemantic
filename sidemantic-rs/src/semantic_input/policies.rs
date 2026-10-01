@@ -156,7 +156,7 @@ fn prepare_with_dialects(
         population.expression(filter, None)?;
     }
     for order in &query.order_by {
-        for column in order_columns(order)? {
+        for column in order_columns(order, query)? {
             population.column(&column, None)?;
         }
     }
@@ -503,7 +503,7 @@ fn check_visibility(
         columns.extend(outer_columns(parse_semantic_expression(filter)?)?);
     }
     for order in &query.order_by {
-        columns.extend(order_columns(order)?);
+        columns.extend(order_columns(order, query)?);
     }
     for column in columns {
         if let Some(model) = column
@@ -530,11 +530,30 @@ fn check_visibility(
     Ok(())
 }
 
-fn order_columns(order: &str) -> Result<Vec<Column>> {
+fn order_columns(order: &str, query: &SemanticQuery) -> Result<Vec<Column>> {
+    let known: Vec<_> = query
+        .metrics
+        .iter()
+        .chain(&query.dimensions)
+        .map(String::as_str)
+        .collect();
+    let (field, suffix) = crate::sql::split_order_field(order, &known);
+    let framed = if known.contains(&field) {
+        // Selected fields are semantic names, including names with spaces.
+        // Quote only this parser input, leaving the request's binding keys intact.
+        let quote = |name: &str| format!("\"{}\"", name.replace('"', "\"\""));
+        let field = field.split_once('.').map_or_else(
+            || quote(field),
+            |(model, field)| format!("{}.{}", quote(model), quote(field)),
+        );
+        format!("{field} {suffix}")
+    } else {
+        order.to_owned()
+    };
     #[cfg(target_arch = "wasm32")]
-    crate::wasm_sql_guard::check(order, DialectType::DuckDB)?;
+    crate::wasm_sql_guard::check(&framed, DialectType::DuckDB)?;
     let expression =
-        polyglot_sql::parse_one(&format!("SELECT 1 ORDER BY {order}"), DialectType::DuckDB)
+        polyglot_sql::parse_one(&format!("SELECT 1 ORDER BY {framed}"), DialectType::DuckDB)
             .map_err(|error| SidemanticError::SqlParse(error.to_string()))?;
     outer_columns(expression)
 }

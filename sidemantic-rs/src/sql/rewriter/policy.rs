@@ -124,13 +124,14 @@ impl QueryRewriter<'_> {
             rename_only: true,
             security_controls: false,
             warnings: std::cell::RefCell::new(Vec::new()),
+            used_preaggregation: std::cell::Cell::new(false),
         };
         rewriter.rewrite_policy_statement(statement)
     }
 
     pub(super) fn rewrite_policy_statement(&self, statement: Expression) -> Result<Expression> {
         let mut names = CteNames::new(&statement, self.graph, self.policy_definitions)?;
-        self.rewrite_policy_query(statement, &HashMap::new(), &mut names)
+        self.rewrite_policy_query(statement, &HashMap::new(), &mut names, false)
     }
 
     fn rewrite_policy_query(
@@ -138,34 +139,36 @@ impl QueryRewriter<'_> {
         statement: Expression,
         inherited_ctes: &HashMap<String, Identifier>,
         names: &mut CteNames,
+        nested: bool,
     ) -> Result<Expression> {
         // Set operations own their WITH/ORDER/LIMIT clauses. Rewrite their
         // operands without moving those clauses onto an individual SELECT.
         match statement {
             Expression::Union(mut set) => {
                 let ctes = self.rewrite_ctes(&mut set.with, inherited_ctes, names)?;
-                set.left = self.rewrite_policy_query(set.left.clone(), &ctes, names)?;
-                set.right = self.rewrite_policy_query(set.right.clone(), &ctes, names)?;
+                set.left = self.rewrite_policy_query(set.left.clone(), &ctes, names, nested)?;
+                set.right = self.rewrite_policy_query(set.right.clone(), &ctes, names, nested)?;
                 return self.rewrite_set_clauses(Expression::Union(set), &ctes, names);
             }
             Expression::Intersect(mut set) => {
                 let ctes = self.rewrite_ctes(&mut set.with, inherited_ctes, names)?;
-                set.left = self.rewrite_policy_query(set.left.clone(), &ctes, names)?;
-                set.right = self.rewrite_policy_query(set.right.clone(), &ctes, names)?;
+                set.left = self.rewrite_policy_query(set.left.clone(), &ctes, names, nested)?;
+                set.right = self.rewrite_policy_query(set.right.clone(), &ctes, names, nested)?;
                 return self.rewrite_set_clauses(Expression::Intersect(set), &ctes, names);
             }
             Expression::Except(mut set) => {
                 let ctes = self.rewrite_ctes(&mut set.with, inherited_ctes, names)?;
-                set.left = self.rewrite_policy_query(set.left.clone(), &ctes, names)?;
-                set.right = self.rewrite_policy_query(set.right.clone(), &ctes, names)?;
+                set.left = self.rewrite_policy_query(set.left.clone(), &ctes, names, nested)?;
+                set.right = self.rewrite_policy_query(set.right.clone(), &ctes, names, nested)?;
                 return self.rewrite_set_clauses(Expression::Except(set), &ctes, names);
             }
             Expression::Subquery(mut query) => {
-                query.this = self.rewrite_policy_query(query.this, inherited_ctes, names)?;
+                query.this = self.rewrite_policy_query(query.this, inherited_ctes, names, true)?;
                 return Ok(Expression::Subquery(query));
             }
             Expression::Paren(mut paren) => {
-                paren.this = self.rewrite_policy_query(paren.this, inherited_ctes, names)?;
+                paren.this =
+                    self.rewrite_policy_query(paren.this, inherited_ctes, names, nested)?;
                 return Ok(Expression::Paren(paren));
             }
             Expression::Select(_) => {}
@@ -197,8 +200,8 @@ impl QueryRewriter<'_> {
             && select.from.as_ref().is_some_and(|from| {
                 from.expressions.first().is_some_and(|source| {
                     matches!(source, Expression::Table(table)
-                    if table.schema.is_none() && table.catalog.is_none()
-                        && !ctes.contains_key(&table.name.name.to_ascii_lowercase())
+                    if (table.schema.is_some() || table.catalog.is_some()
+                        || !ctes.contains_key(&table.name.name.to_ascii_lowercase()))
                         && (table.name.name.eq_ignore_ascii_case("metrics")
                             || self.graph.get_model(&table.name.name).is_some()))
                 })
@@ -217,13 +220,22 @@ impl QueryRewriter<'_> {
         if semantic_leaf {
             if let Some(from) = &select.from {
                 if let Some(Expression::Table(table)) = from.expressions.first() {
+                    // `metrics` is a virtual relation, not a physical table in
+                    // an arbitrary catalog/schema. Qualified model names still
+                    // resolve through the policy preparer below.
+                    if self.query_preparer.is_some()
+                        && table.name.name.eq_ignore_ascii_case("metrics")
+                        && (table.schema.is_some() || table.catalog.is_some())
+                    {
+                        return Err(unsupported());
+                    }
                     validate_table(table)?;
                     if !table.column_aliases.is_empty() {
                         return Err(unsupported());
                     }
                 }
             }
-            let mut compiled = self.compile_semantic_select(*select)?;
+            let mut compiled = self.compile_semantic_select(*select, nested)?;
             // Keep the existing semantic-root error contract even though the
             // renamed input CTE would no longer capture the generated source.
             // Only names actually emitted for this query are conflicts.
@@ -271,7 +283,7 @@ impl QueryRewriter<'_> {
                 if with.recursive {
                     ctes.insert(original.clone(), alias.clone());
                 }
-                cte.this = self.rewrite_policy_query(cte.this.clone(), &ctes, names)?;
+                cte.this = self.rewrite_policy_query(cte.this.clone(), &ctes, names, true)?;
                 cte.alias = alias.clone();
                 ctes.insert(original, alias);
             }
@@ -295,7 +307,7 @@ impl QueryRewriter<'_> {
                     | Expression::Except(_)
             ) {
                 return self
-                    .rewrite_policy_query(node.clone(), ctes, names)
+                    .rewrite_policy_query(node.clone(), ctes, names, true)
                     .map(Some);
             }
             if self.query_preparer.is_some()
@@ -389,7 +401,7 @@ impl QueryRewriter<'_> {
                 Ok(Expression::Table(table))
             }
             Expression::Subquery(mut subquery) => {
-                subquery.this = self.rewrite_policy_query(subquery.this, ctes, names)?;
+                subquery.this = self.rewrite_policy_query(subquery.this, ctes, names, true)?;
                 Ok(Expression::Subquery(subquery))
             }
             Expression::Alias(mut alias) => {
@@ -424,6 +436,11 @@ impl QueryRewriter<'_> {
 fn validate_table(table: &TableRef) -> Result<()> {
     let mut remainder = table.clone();
     remainder.name = Identifier::new("");
+    // Semantic model lookup uses the terminal relation name, including the
+    // schemas advertised by the PostgreSQL server. Qualifiers do not bypass
+    // semantic compilation or its policy preparer.
+    remainder.schema = None;
+    remainder.catalog = None;
     remainder.alias = None;
     remainder.alias_explicit_as = false;
     remainder.column_aliases.clear();
@@ -439,6 +456,102 @@ fn validate_table(table: &TableRef) -> Result<()> {
 mod tests {
     use super::*;
     use crate::core::{Dimension, Metric, Model};
+
+    #[test]
+    fn undeclared_nested_fields_are_security_errors_only_with_controls() {
+        let mut graph = SemanticGraph::new();
+        graph
+            .add_model(
+                Model::new("orders", "id")
+                    .with_table("physical_orders")
+                    .with_metric(Metric::sum("revenue", "amount")),
+            )
+            .unwrap();
+        let prepare = |_: &SemanticGraph, _: &mut SemanticQuery| Ok(());
+        for controls in [false, true] {
+            let rewriter = QueryRewriter::new(&graph).with_query_preparer(&prepare, "", controls);
+            let nested = rewriter
+                .rewrite("SELECT * FROM (SELECT amount FROM orders) AS scoped")
+                .unwrap_err();
+            if controls {
+                assert!(matches!(nested, SidemanticError::Security(ref message)
+                    if message.contains("semantic subquery")));
+            } else {
+                assert!(matches!(nested, SidemanticError::Validation(_)));
+            }
+            let root = rewriter.rewrite("SELECT amount FROM orders").unwrap_err();
+            assert!(matches!(root, SidemanticError::Validation(_)));
+        }
+    }
+
+    #[test]
+    fn qualified_semantic_sources_still_prepare_policy() {
+        let mut graph = SemanticGraph::new();
+        graph
+            .add_model(
+                Model::new("orders", "id")
+                    .with_table("private_orders")
+                    .with_dimension(Dimension::new("tenant"))
+                    .with_metric(Metric::sum("revenue", "amount")),
+            )
+            .unwrap();
+        let prepared = std::cell::Cell::new(0);
+        let prepare = |_: &SemanticGraph, query: &mut SemanticQuery| {
+            prepared.set(prepared.get() + 1);
+            assert_eq!(query.metrics, vec!["orders.revenue"]);
+            query.filters.push("orders.tenant = 1".into());
+            Ok(())
+        };
+        let rewriter = QueryRewriter::new(&graph).with_query_preparer(&prepare, "", true);
+        for source in [
+            "main.orders",
+            "\"main\".\"orders\"",
+            "semantic_layer.orders",
+        ] {
+            // A same-named CTE only shadows unqualified relations.
+            let sql =
+                format!("WITH orders AS (SELECT 0 AS revenue) SELECT o.revenue FROM {source} AS o");
+            let rewritten = rewriter.rewrite(&sql).unwrap();
+            assert!(rewritten.contains("private_orders"), "{rewritten}");
+            assert!(rewritten.contains("tenant = 1"), "{rewritten}");
+            assert!(!rewritten.contains(source), "{rewritten}");
+        }
+        assert_eq!(prepared.get(), 3);
+        for source in [
+            "main.metrics",
+            "\"main\".\"metrics\"",
+            "catalog.main.metrics",
+        ] {
+            for sql in [
+                format!("SELECT orders.revenue FROM {source}"),
+                format!("SELECT * FROM (SELECT orders.revenue FROM {source}) AS q"),
+            ] {
+                assert!(
+                    matches!(
+                        rewriter.rewrite(&sql),
+                        Err(SidemanticError::UnsupportedSemanticFeatures { .. })
+                    ),
+                    "{sql}"
+                );
+            }
+        }
+        assert_eq!(prepared.get(), 3);
+
+        let deny = |_: &SemanticGraph, _: &mut SemanticQuery| {
+            Err(SidemanticError::Validation("access denied".into()))
+        };
+        let rewriter = QueryRewriter::new(&graph).with_query_preparer(&deny, "", true);
+        assert!(rewriter
+            .rewrite("SELECT revenue FROM main.orders")
+            .unwrap_err()
+            .to_string()
+            .contains("access denied"));
+        assert!(rewriter
+            .rewrite("SELECT * FROM main.private_orders")
+            .unwrap_err()
+            .to_string()
+            .contains("rewrite.policy_select_shape"));
+    }
 
     #[test]
     fn generated_cte_conflicts_preserve_semantic_root_contract() {

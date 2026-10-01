@@ -102,8 +102,10 @@ def test_explore_qualifies_relative_filter_and_order_expressions():
 
     assert "status <> 'deleted'" in sql
     assert "status = 'paid'" in sql
-    assert "status AS status" in sql
     assert "revenue DESC" in sql
+    layer.conn.execute("CREATE TABLE orders (order_id INTEGER, status VARCHAR, amount INTEGER)")
+    layer.conn.execute("INSERT INTO orders VALUES (1, 'paid', 10), (2, 'deleted', 20), (3, 'pending', 30)")
+    assert layer.conn.execute(sql).fetchall() == [(10,)]
 
 
 def test_explore_filter_qualification_skips_subquery_columns():

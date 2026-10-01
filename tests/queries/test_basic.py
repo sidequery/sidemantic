@@ -511,7 +511,6 @@ def test_custom_join_sql_projects_extra_predicate_columns():
     )
 
     sql = layer.compile(metrics=["orders.revenue"], dimensions=["customers.country"], order_by=["customers.country"])
-    assert "valid_to AS valid_to" in sql
     assert "customers_cte.valid_to IS NULL" in sql
 
     rows = df_rows(
@@ -600,7 +599,6 @@ def test_dotted_graph_metric_projects_sql_column_and_orders_by_alias(layer):
         order_by=["events.p95.latency DESC"],
     )
 
-    assert "latency AS latency" in sql
     assert "ORDER BY" in sql
     assert '"events.p95.latency" DESC' in sql
 

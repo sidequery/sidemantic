@@ -521,7 +521,7 @@ def test_structured_filters_resolve_grained_and_computed_dimensions_before_where
     where_sql = postgres_sql.split("WHERE", 1)[1]
     assert "created_at__month" not in where_sql
     assert "events.gross" not in where_sql
-    assert "DATE_TRUNC('MONTH', occurred_at)" in where_sql
+    assert "DATE_TRUNC('MONTH', OCCURRED_AT)" in where_sql.upper()
     assert "(unit_price * quantity) >= 20" in where_sql
 
     assert df_rows(

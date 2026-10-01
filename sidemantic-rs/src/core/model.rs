@@ -190,6 +190,7 @@ pub enum ComparisonType {
     Wow, // Week over week
     Dod, // Day over day
     Qoq, // Quarter over quarter
+    #[serde(alias = "prior_period")]
     PriorPeriod,
 }
 
@@ -1112,6 +1113,16 @@ impl Model {
         self.dimensions.iter().find(|d| d.name == name)
     }
 
+    /// Relationship foreign keys can be grouped without a separate dimension declaration.
+    pub fn is_foreign_key_dimension(&self, name: &str) -> bool {
+        self.relationships.iter().any(|relationship| {
+            relationship
+                .foreign_key_columns()
+                .iter()
+                .any(|column| column == name)
+        })
+    }
+
     /// Find a metric by name
     pub fn get_metric(&self, name: &str) -> Option<&Metric> {
         self.metrics.iter().find(|m| m.name == name)
@@ -1136,6 +1147,15 @@ impl Model {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prior_period_accepts_python_and_legacy_spellings() {
+        for name in ["prior_period", "priorperiod"] {
+            let comparison: ComparisonType =
+                serde_json::from_value(serde_json::json!(name)).unwrap();
+            assert_eq!(comparison, ComparisonType::PriorPeriod);
+        }
+    }
 
     #[test]
     fn test_dimension_sql_expr() {

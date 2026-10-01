@@ -133,22 +133,11 @@ def test_filter_conjunction_preserves_disjunction_grouping(layer):
         "COUNT(CAST(NULL AS INTEGER))",
         "COUNT((SELECT 1))",
         "SUM(1)",
-        "SUM(CAST(amount AS DOUBLE))",
-        "SUM(amount / 2)",
-        "COUNT(COALESCE(amount, '{model}'))",
-        "COUNT(CASE WHEN amount > 0 THEN 'prefix{model}.value' ELSE 'other' END)",
         "SUM(COALESCE(other.amount, amount))",
         "SUM(CASE WHEN amount > 0 THEN other.amount ELSE 0 END)",
-        "SUM(COALESCE(SUM(amount), 0))",
-        "SUM(amount) + COUNT(amount)",
-        "SUM(amount) OVER ()",
         "SUM((SELECT amount))",
         "SUM(other.amount)",
-        "COUNT(DISTINCT ABS(amount))",
-        "AVG(DISTINCT amount)",
-        "AVG(amount) OVER ()",
         "AVG(other.amount)",
-        "COUNT(*) FILTER (WHERE amount > 0)",
         "COUNT(*) OVER ()",
         "COUNT(other.*)",
     ],
@@ -168,6 +157,76 @@ def test_unproven_complete_filter_shapes_fail_explicitly(expression):
         with pytest.raises(UnsupportedSemanticFeaturesError) as caught:
             layer.compile(metrics=["orders.value"])
         assert "metric.complete_filters" in caught.value.capabilities
+    finally:
+        layer.adapter.close()
+
+
+@pytest.mark.parametrize("engine", ["python", "rust"])
+@pytest.mark.parametrize(
+    "expression, expected",
+    [
+        ("SUM(CAST(amount AS DOUBLE))", [(8.0,)]),
+        ("SUM(amount / 2)", [(4.0,)]),
+        ("SUM(amount) + COUNT(amount)", [(11,)]),
+        ("COUNT(DISTINCT ABS(amount))", [(2,)]),
+        ("AVG(DISTINCT amount)", [(3.0,)]),
+        ("COUNT(*) FILTER (WHERE amount > 0)", [(3,)]),
+        # Complete expressions filter their physical inputs before evaluating
+        # the formula, including its CASE fallback and window cardinality.
+        ("COUNT(CASE WHEN amount > 0 THEN 'prefix{model}.value' ELSE 'other' END)", [(5,)]),
+        ("SUM(amount) OVER ()", [(8,)] * 5),
+        ("AVG(amount) OVER ()", [(pytest.approx(8 / 3),)] * 5),
+    ],
+)
+def test_complete_filter_formulas_execute_with_physical_inputs(engine, expression, expected):
+    if engine == "rust":
+        pytest.importorskip("sidemantic_rs")
+    layer = SemanticLayer(engine=engine, fallback=False, auto_register=False)
+    try:
+        layer.add_model(
+            Model(
+                name="orders",
+                table="orders",
+                primary_key="id",
+                metrics=[Metric(name="value", sql=expression, sql_is_complete=True, filters=["amount > 0"])],
+            )
+        )
+        layer.adapter.execute("""
+            create table orders(id integer, amount integer);
+            insert into orders values (1, 2), (2, 2), (3, 4), (4, -9), (5, null);
+        """)
+        assert_result(layer, {"metrics": ["orders.value"]}, ["value"], expected)
+    finally:
+        layer.adapter.close()
+
+
+@pytest.mark.parametrize("engine", ["python", "rust"])
+@pytest.mark.parametrize(
+    "expression, error",
+    [
+        ("SUM(COALESCE(SUM(amount), 0))", "aggregate function calls cannot be nested"),
+        ("COUNT(COALESCE(amount, '{model}'))", "Could not convert string"),
+    ],
+)
+def test_invalid_complete_sql_keeps_database_validation(engine, expression, error):
+    import duckdb
+
+    if engine == "rust":
+        pytest.importorskip("sidemantic_rs")
+    layer = SemanticLayer(engine=engine, fallback=False, auto_register=False)
+    try:
+        layer.add_model(
+            Model(
+                name="orders",
+                table="orders",
+                primary_key="id",
+                metrics=[Metric(name="value", sql=expression, sql_is_complete=True, filters=["amount > 0"])],
+            )
+        )
+        layer.adapter.execute("create table orders(id integer, amount integer); insert into orders values (1, null)")
+        sql = layer.compile(metrics=["orders.value"])
+        with pytest.raises(duckdb.Error, match=error):
+            layer.adapter.execute(sql)
     finally:
         layer.adapter.close()
 

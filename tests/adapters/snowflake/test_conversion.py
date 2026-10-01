@@ -114,16 +114,10 @@ class TestCubeToSnowflake:
 
     def test_convert_cube_to_snowflake(self, snowflake_adapter, cube_adapter, tmp_path):
         """Test converting a Cube model to Snowflake format."""
-        cube_examples = Path(__file__).parent.parent.parent.parent / "examples" / "cube"
-
-        if not cube_examples.exists():
-            pytest.skip("Cube examples not found")
-
         # Parse Cube
-        graph = cube_adapter.parse(cube_examples)
-
-        if not graph.models:
-            pytest.skip("No Cube models found")
+        fixture = Path(__file__).parents[2] / "fixtures" / "cube" / "orders.yml"
+        graph = cube_adapter.parse(fixture)
+        assert graph.models
 
         # Export to Snowflake
         output_file = tmp_path / "snowflake_output.yaml"
@@ -141,16 +135,10 @@ class TestMetricFlowToSnowflake:
 
     def test_convert_metricflow_to_snowflake(self, snowflake_adapter, metricflow_adapter, tmp_path):
         """Test converting a MetricFlow model to Snowflake format."""
-        mf_examples = Path(__file__).parent.parent.parent.parent / "examples" / "metricflow"
-
-        if not mf_examples.exists():
-            pytest.skip("MetricFlow examples not found")
-
         # Parse MetricFlow
-        graph = metricflow_adapter.parse(mf_examples)
-
-        if not graph.models:
-            pytest.skip("No MetricFlow models found")
+        fixture = Path(__file__).parents[2] / "fixtures" / "metricflow" / "semantic_models.yml"
+        graph = metricflow_adapter.parse(fixture)
+        assert graph.models
 
         # Export to Snowflake
         output_file = tmp_path / "snowflake_output.yaml"

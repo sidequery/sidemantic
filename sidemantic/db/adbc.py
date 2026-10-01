@@ -150,6 +150,26 @@ class ADBCAdapter(BaseDatabaseAdapter):
             )
 
         self._driver_name = str(driver).lower()
+        package_name = None
+        if isinstance(driver, str) and driver.isidentifier():
+            if driver.startswith("adbc_driver_"):
+                package_name = driver
+            elif driver in DRIVER_DIALECT_MAP:
+                package_name = f"adbc_driver_{'postgresql' if driver == 'postgres' else driver}"
+        if package_name is not None:
+            # Python wheels locate their bundled library themselves; the driver
+            # manager searches manifests and system library paths, not site-packages.
+            from importlib import import_module
+
+            try:
+                driver_package = import_module(package_name)
+            except ModuleNotFoundError as error:
+                if error.name != package_name:
+                    raise
+            else:
+                locate_driver = getattr(driver_package, "_driver_path", None)
+                if callable(locate_driver):
+                    driver = locate_driver()
         self.conn = adbc.connect(
             driver=driver,
             uri=uri,

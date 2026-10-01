@@ -4,6 +4,7 @@ These should have been included in the original commit but weren't.
 """
 
 import pytest
+from sqlglot import exp, parse_one
 
 from sidemantic import Dimension, Metric, Model
 from sidemantic.core.table_calculation import TableCalculation
@@ -219,9 +220,16 @@ def test_model_ref_rewrite_matches_cte_identifier_quoting(layer):
 
     sql = layer.compile(metrics=["ORDERS.inline_total"])
 
-    assert "WITH ORDERS_cte AS" in sql
-    assert "SUM(ORDERS_cte.amount) AS inline_total" in sql
-    assert 'SUM("ORDERS_cte".amount) AS inline_total' not in sql
+    parsed = parse_one(sql, dialect="postgres")
+    cte = next(cte for cte in parsed.find_all(exp.CTE) if cte.alias == "ORDERS_cte")
+    definition = cte.args["alias"].this
+    references = [table.this for table in parsed.find_all(exp.Table) if table.name == cte.alias]
+    references.extend(column.args["table"] for column in parsed.find_all(exp.Column) if column.table == cte.alias)
+    assert references
+    assert all(ref.args.get("quoted", False) == definition.args.get("quoted", False) for ref in references)
+    layer.conn.execute("CREATE TABLE orders_table (order_id INTEGER, amount INTEGER)")
+    layer.conn.execute("INSERT INTO orders_table VALUES (1, 10), (2, 25)")
+    assert layer.conn.execute(sql).fetchall() == [(35,)]
 
 
 def test_inline_aggregate_dependency_alias_uses_identifier_quoting(layer):
@@ -245,8 +253,12 @@ def test_inline_aggregate_dependency_alias_uses_identifier_quoting(layer):
 
     sql = layer.compile(metrics=["orders.inline_total"])
 
-    assert 'AS "order total"' in sql
-    assert "AS order total" not in sql
+    columns = [column for column in parse_one(sql).find_all(exp.Column) if column.name == "order total"]
+    assert columns
+    assert all(column.this.args.get("quoted") for column in columns)
+    layer.conn.execute('CREATE TABLE orders_table (id INTEGER, amount INTEGER, "order total" INTEGER)')
+    layer.conn.execute("INSERT INTO orders_table VALUES (1, 100, 10), (2, 200, 25)")
+    assert layer.conn.execute(sql).fetchall() == [(35,)]
 
 
 def test_count_metrics_with_filters(layer):

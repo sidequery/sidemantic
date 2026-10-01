@@ -17,7 +17,11 @@ jobs:
           node-version: '20'
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        id: uv
+        uses: ./.github/actions/setup-uv
+        with:
+          enable-cache: true
+          suffix: ${{ github.workflow }}-${{ github.job }}-${{ strategy.job-index || 0 }}
 
       - name: Build sidemantic wheel
         run: uv build
@@ -129,3 +133,9 @@ jobs:
           });
           EOF
           node test_pyodide.mjs
+
+      - name: Save completed build caches
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/save-build-caches
+        with:
+          uv-key: ${{ steps.uv.outputs.cache-key }}

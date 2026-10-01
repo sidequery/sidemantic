@@ -13,6 +13,7 @@ on:
       - "sidemantic-wasm-v*"
   pull_request:
     paths:
+      - ".github/actions/**"
       - "sidemantic-wasm/**"
       - "sidemantic-rs/**"
       - "Cargo.toml"
@@ -40,6 +41,13 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
+
+      - name: Cache Rust compilation
+        if: github.event_name == 'pull_request'
+        id: rust-cache
+        uses: ./.github/actions/setup-rust-cache
+        with:
+          suffix: ${{ github.workflow }}-${{ github.job }}-${{ strategy.job-index || 0 }}
 
       - name: Install wasm-bindgen-cli matching the crate
         working-directory: .
@@ -103,3 +111,9 @@ jobs:
           fi
           # Publish the exact tarball exercised by the isolated consumer above.
           npm publish sidemantic-wasm.tgz --access public --ignore-scripts
+
+      - name: Save completed build caches
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+        uses: ./.github/actions/save-build-caches
+        with:
+          rust-key: ${{ steps.rust-cache.outputs.key }}

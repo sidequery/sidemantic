@@ -413,13 +413,14 @@ ORDER BY year
     ]
 
 
-def test_yardstick_curly_measure_reference_without_semantic_prefix(yardstick_layer):
+@pytest.mark.parametrize("measure", ["{revenue}", "{sales_v.revenue}"])
+def test_yardstick_curly_measure_reference_without_semantic_prefix(yardstick_layer, measure):
     rows = fetch_dicts(
         yardstick_layer.sql(
-            """
+            f"""
 SELECT
     year,
-    {revenue} AS revenue
+    {measure} AS revenue
 FROM sales_v
 WHERE region = 'US'
 GROUP BY year
@@ -457,10 +458,11 @@ ORDER BY year
     ]
 
 
-def test_yardstick_listing8_rollup_parity(yardstick_paper_layer):
+@pytest.mark.parametrize("grouping", ["ROLLUP(o.prodName)", "CUBE(o.prodName)", "GROUPING SETS ((o.prodName), ())"])
+def test_yardstick_listing8_rollup_parity(yardstick_paper_layer, grouping):
     rows = fetch_dicts(
         yardstick_paper_layer.sql(
-            """
+            f"""
 SELECT
     o.prodName,
     COUNT(*) AS c,
@@ -469,7 +471,7 @@ SELECT
     o.sumRevenue AS r
 FROM paper_orders_v o
 WHERE o.custName <> 'Var Bob'
-GROUP BY ROLLUP(o.prodName)
+GROUP BY {grouping}
 ORDER BY o.prodName
 """
         )
@@ -1903,6 +1905,8 @@ SELECT
     category,
     PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY value) AS MEASURE p50,
     PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY value) AS MEASURE p50d,
+    PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY value DESC) FILTER (WHERE value > 1) AS MEASURE p25_desc,
+    PERCENTILE_DISC(0.25) WITHIN GROUP (ORDER BY value DESC) FILTER (WHERE value > 1) AS MEASURE p25d_desc,
     QUANTILE_CONT(value, 0.5) AS MEASURE q50,
     QUANTILE_DISC(value, 0.5) AS MEASURE q50d,
     MODE(value) AS MEASURE mode_value
@@ -1926,6 +1930,12 @@ INSERT INTO ordered_set_test VALUES
 
     p50d = fetch_dicts(layer.sql("SEMANTIC SELECT category, AGGREGATE(p50d) AS p50d FROM ordered_set_v"))
     assert {(row["category"], int(row["p50d"])) for row in p50d} == {("A", 2), ("B", 10)}
+
+    p25_desc = fetch_dicts(layer.sql("SEMANTIC SELECT category, AGGREGATE(p25_desc) AS p25_desc FROM ordered_set_v"))
+    assert {(row["category"], float(row["p25_desc"])) for row in p25_desc} == {("A", 3.5), ("B", 15.0)}
+
+    p25d_desc = fetch_dicts(layer.sql("SEMANTIC SELECT category, AGGREGATE(p25d_desc) AS p25d_desc FROM ordered_set_v"))
+    assert {(row["category"], int(row["p25d_desc"])) for row in p25d_desc} == {("A", 4), ("B", 20)}
 
     q50 = fetch_dicts(layer.sql("SEMANTIC SELECT category, AGGREGATE(q50) AS q50 FROM ordered_set_v"))
     assert {(row["category"], float(row["q50"])) for row in q50} == {("A", 2.0), ("B", 10.0)}

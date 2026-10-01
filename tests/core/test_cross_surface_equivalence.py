@@ -8,17 +8,9 @@ it, and executing that SQL must return identical results.
 Surfaces covered here (the ones that compile/rewrite SQL from the same graph):
 
 SQL-first family (semantic SQL string -> rewritten SQL):
-  1. Direct ``QueryRewriter`` -- the exact construction used by
-     ``sidemantic rewrite`` and ``sidemantic query --dry-run`` (see
-     ``sidemantic/cli.py``: ``QueryRewriter(layer.graph,
-     dialect=layer.adapter.dialect, use_preaggregations=layer.use_preaggregations)``).
-  2. ``SemanticLayer.sql()`` -- the ``sidemantic query`` execution path. It
-     rewrites through the identical ``QueryRewriter(self.graph,
-     dialect=self.dialect, use_preaggregations=self.use_preaggregations)`` call
-     before executing (``sidemantic/core/semantic_layer.py``). Covered as a
-     regression tripwire so a future divergence in that construction is caught.
-  3. HTTP API ``POST /sql/compile`` -- ``sidemantic/api_server.py`` calls
-     ``QueryRewriter(current_layer.graph, dialect=current_layer.dialect).rewrite(query)``.
+  1. Shared policy-aware transport rewrite, used by CLI rewrite and dry-run.
+  2. ``SemanticLayer.sql()`` uses the same transport rewrite before execution.
+  3. HTTP ``POST /sql/compile`` uses the same transport rewrite for preview.
 
 Structured family (dimensions/metrics -> compiled SQL):
   4. ``SemanticLayer.compile(...)`` -- the library/CLI compile entry point.
@@ -46,7 +38,7 @@ from fastapi.testclient import TestClient
 
 from sidemantic import Dimension, Metric, Model, Relationship, SemanticLayer
 from sidemantic.api_server import create_app
-from sidemantic.sql.query_rewriter import QueryRewriter
+from sidemantic.core.transport_security import rewrite_transport_sql
 
 # Representative semantic-SQL queries exercised across the SQL-first surfaces.
 # Chosen to hit: simple metric aggregation; metric + categorical dimension +
@@ -199,32 +191,13 @@ def client(layer: SemanticLayer) -> TestClient:
 
 
 def _rewrite_cli(layer: SemanticLayer, sql: str) -> str:
-    """Reproduce the exact QueryRewriter construction used by the CLI.
-
-    Mirrors ``sidemantic rewrite`` / ``sidemantic query --dry-run`` in
-    ``sidemantic/cli.py``.
-    """
-    return QueryRewriter(
-        layer.graph,
-        dialect=layer.adapter.dialect,
-        use_preaggregations=layer.use_preaggregations,
-    ).rewrite(sql)
+    """Use the CLI's actual policy-aware, engine-aware rewrite entry point."""
+    return rewrite_transport_sql(layer, sql, user_attributes=None, transport="CLI rewrite")
 
 
 def _rewrite_layer_sql_path(layer: SemanticLayer, sql: str) -> str:
-    """Reproduce the rewrite step inside ``SemanticLayer.sql()``.
-
-    ``SemanticLayer.sql()`` executes rather than returning SQL, so it cannot be
-    asserted on directly. This mirrors the exact construction it uses so a future
-    divergence between the ``sql()`` construction and the CLI construction fails
-    here (regression tripwire). The end-to-end ``sql()`` execution is separately
-    checked for result equality in ``test_execution_results_match_across_surfaces``.
-    """
-    return QueryRewriter(
-        layer.graph,
-        dialect=layer.dialect,
-        use_preaggregations=layer.use_preaggregations,
-    ).rewrite(sql)
+    """Use the rewrite entry point called by SemanticLayer.sql()."""
+    return rewrite_transport_sql(layer, sql, user_attributes=None, transport="SemanticLayer.sql()")
 
 
 def _fetch_sorted(layer: SemanticLayer, sql: str) -> list[tuple]:
@@ -248,7 +221,7 @@ def test_sql_first_rewrite_is_byte_identical(name: str, layer: SemanticLayer, cl
     assert response.status_code == 200, response.text
     api_sql = response.json()["sql"]
 
-    # Direct QueryRewriter (CLI) == SemanticLayer.sql() rewrite step == HTTP /sql/compile.
+    # CLI transport rewrite == SemanticLayer.sql() rewrite step == HTTP /sql/compile.
     assert cli_sql == layer_sql_path_sql, f"{name}: CLI rewrite diverged from SemanticLayer.sql() rewrite"
     assert cli_sql == api_sql, f"{name}: CLI rewrite diverged from HTTP /sql/compile"
 

@@ -11,7 +11,8 @@ from sidemantic.core.semantic_layer import SemanticLayer
 
 
 @pytest.fixture(autouse=True)
-def _reset_strict_targets_cache():
+def _reset_strict_targets_cache(monkeypatch):
+    monkeypatch.delenv("SIDEMANTIC_ENGINE", raising=False)
     rust_parity.strict_targets.cache_clear()
     yield
     rust_parity.strict_targets.cache_clear()

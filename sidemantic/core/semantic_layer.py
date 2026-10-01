@@ -115,8 +115,8 @@ class SemanticLayer:
                 loading extensions, attaching catalogs, creating secrets)
             engine: Runtime engine for native query validation/compilation.
                 Supported values are "python", "rust", and "auto". If omitted,
-                defaults to Rust (Python in Pyodide). SIDEMANTIC_ENGINE overrides
-                the platform default; legacy SIDEMANTIC_RS_* flags remain supported.
+                defaults to Python. SIDEMANTIC_ENGINE overrides that default and
+                legacy SIDEMANTIC_RS_* flags; explicit engine selection takes precedence.
             fallback: Whether an unavailable Rust backend or a known unsupported capability
                 may fall back to Python. Invalid input and unexpected compiler failures propagate.
                 Defaults to False for engine="rust" and True for engine="auto".
@@ -138,9 +138,11 @@ class SemanticLayer:
         """
         from sidemantic.db.base import BaseDatabaseAdapter
 
-        # Preserve explicitly configured legacy parity runs. Ordinary installs
-        # select the same native default as the CLI and project configuration.
-        if engine is None and not any(key.startswith("SIDEMANTIC_RS_") for key in os.environ):
+        # The process-wide choice takes precedence over legacy parity controls.
+        # Preserve legacy routing only when no engine choice has been supplied.
+        if engine is None and (
+            "SIDEMANTIC_ENGINE" in os.environ or not any(key.startswith("SIDEMANTIC_RS_") for key in os.environ)
+        ):
             engine = default_engine()
         if engine is not None:
             engine = engine.lower()

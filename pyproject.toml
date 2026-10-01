@@ -6,6 +6,7 @@ readme = "README.md"
 license = {file = "LICENSE"}
 requires-python = ">=3.11"
 dependencies = [
+    # PYODIDE: Native wheels are excluded from Emscripten installs.
     "sidemantic-rs==0.12.0; sys_platform != 'emscripten'",
     "antlr4-python3-runtime>=4.13.2",
     "sqlglot>=30.1.0",

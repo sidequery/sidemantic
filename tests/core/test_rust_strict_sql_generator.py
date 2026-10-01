@@ -20,6 +20,7 @@ def _reset_strict_targets_cache():
 
 
 def _configure_strict_sql_entrypoint(monkeypatch) -> None:
+    monkeypatch.delenv("SIDEMANTIC_ENGINE", raising=False)
     monkeypatch.setenv("SIDEMANTIC_RS_STRICT_SUBSYSTEMS", "sql_generator_entrypoint")
     monkeypatch.delenv("SIDEMANTIC_RS_SQL_GENERATOR", raising=False)
     monkeypatch.delenv("SIDEMANTIC_RS_SQL_GENERATOR_VERIFY", raising=False)

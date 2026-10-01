@@ -251,10 +251,12 @@ jobs:
 
           uv run --no-project --find-links /tmp/sidemantic-runtime-dist --with . python - <<'PYTHON'
           from sidemantic import SemanticLayer, Model, Metric
-          layer = SemanticLayer()
-          layer.add_model(Model(name="orders", table="orders", metrics=[Metric(name="count", agg="count")]))
-          layer.compile(metrics=["orders.count"])
-          assert layer.last_engine_selection == {"engine": "rust", "reason": None}
+          for engine in (None, "rust"):
+              layer = SemanticLayer(engine=engine)
+              layer.add_model(Model(name="orders", table="orders", metrics=[Metric(name="count", agg="count")]))
+              layer.compile(metrics=["orders.count"])
+              assert layer.last_engine_selection == {"engine": engine or "python", "reason": None}
+              layer.adapter.close()
           PYTHON
 
           set +e

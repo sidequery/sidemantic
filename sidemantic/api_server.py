@@ -14,7 +14,7 @@ from typing import Any, Literal
 try:
     from fastapi import Depends, FastAPI, HTTPException, Query, Request, Security
     from fastapi.middleware.cors import CORSMiddleware
-    from fastapi.responses import JSONResponse, Response
+    from fastapi.responses import JSONResponse, RedirectResponse, Response
     from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
     from pydantic import BaseModel, ConfigDict, Field
     from starlette.middleware.base import BaseHTTPMiddleware
@@ -434,6 +434,12 @@ def create_app(
                 await mcp_asgi(scope, receive, send)
             finally:
                 mcp_module._request_context.reset(token)
+
+        @app.api_route("/mcp", methods=["GET", "POST", "DELETE"], include_in_schema=False)
+        async def redirect_mcp(request: Request):
+            # The UI catch-all otherwise shadows Starlette's automatic slash
+            # redirect. Preserve the method and body when reaching the mount.
+            return RedirectResponse(request.url.replace(path=request.url.path + "/"), status_code=307)
 
         app.mount("/mcp", authenticated_mcp, name="mcp")
 

@@ -348,12 +348,21 @@ def test_proxy_mode_requires_authentication():
         create_app(_make_layer(), trust_user_header=True)
 
 
-def test_mounted_mcp_auth_and_request_identity(monkeypatch):
+@pytest.mark.parametrize("endpoint", ["/mcp", "/mcp/"])
+@pytest.mark.parametrize("serve_ui", [False, True])
+def test_mounted_mcp_auth_and_request_identity(monkeypatch, tmp_path, endpoint, serve_ui):
+    import sidemantic.api_server as api_module
     import sidemantic.mcp_server as mcp_module
 
+    (tmp_path / "index.html").write_text("<html>UI shell</html>")
+    monkeypatch.setattr(api_module, "ui_static_dir", lambda: tmp_path)
     monkeypatch.setattr(mcp_module, "_user_attributes", {"tenant_id": 2})
     app = create_app(
-        _make_layer(), auth_token="secret", serve_mcp=True, user_attributes_resolver=lambda request: {"tenant_id": 1}
+        _make_layer(),
+        auth_token="secret",
+        serve_mcp=True,
+        serve_ui=serve_ui,
+        user_attributes_resolver=lambda request: {"tenant_id": 1},
     )
     headers = {"Accept": "application/json, text/event-stream"}
     payload = {
@@ -363,10 +372,14 @@ def test_mounted_mcp_auth_and_request_identity(monkeypatch):
         "params": {"name": "run_sql", "arguments": {"query": "select order_count from orders"}},
     }
     with TestClient(app, base_url="http://localhost:4400") as client:
-        for method in ("GET", "POST", "DELETE"):
-            response = client.request(method, "/mcp/", headers=headers, json=payload)
+        if endpoint == "/mcp":
+            response = client.post(endpoint + "?client=test", headers=headers, json=payload, follow_redirects=False)
+            assert response.status_code == 307
+            assert response.headers["location"] == "http://localhost:4400/mcp/?client=test"
+        for method in ("POST", "GET", "DELETE"):
+            response = client.request(method, endpoint, headers=headers, json=payload)
             assert response.status_code == 401
-        response = client.post("/mcp/", headers={**headers, **_headers()}, json=payload)
+        response = client.post(endpoint, headers={**headers, **_headers()}, json=payload)
         assert response.status_code == 200, response.text
         assert '"order_count": 2' in response.text or '\\"order_count\\": 2' in response.text
 

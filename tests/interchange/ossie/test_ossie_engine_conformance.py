@@ -11,12 +11,18 @@ from pathlib import Path
 
 import duckdb
 import pytest
+import yaml
 from typer.testing import CliRunner
 
 from sidemantic import SemanticLayer
 from sidemantic.cli import app
-from sidemantic.interchange.ossie import OssieParseOptions, lower_ossie_document, parse_ossie_document
-from tests.rust_layer_adapter import RustRuntimeSemanticLayer, _rust_request
+from sidemantic.interchange.ossie import (
+    CURRENT_OSSIE_SCHEMA_COMMIT,
+    OssieParseOptions,
+    lower_ossie_document,
+    parse_ossie_document,
+)
+from tests.rust_layer_adapter import RustRuntimeSemanticLayer, _rust_request, rust_ossie_validate
 
 ROUTES = ["python", "public_rust", "native_rust"]
 PORTABLE_CASES = json.loads((Path(__file__).parent / "fixtures/portable_expressions.json").read_text())
@@ -104,6 +110,67 @@ def test_undeclared_physical_aggregate_input_is_preserved(route, shape):
         shape=shape,
     )
     assert _query(document, route, {"metrics": ["total"]}) == [(30,)]
+
+
+@pytest.mark.parametrize("route", ROUTES)
+@pytest.mark.parametrize("shape", ["current", "legacy"])
+@pytest.mark.parametrize("source", ["raw_orders", "SELECT id, amount FROM raw_orders"])
+def test_qualified_field_sources_have_one_meaning(route, shape, source):
+    document = _document(
+        [
+            {
+                "name": "orders",
+                "source": source,
+                "primary_key": ["id"],
+                "fields": [_field("id", "orders.id"), _field("amount", "orders.amount * 2")],
+            }
+        ],
+        [_field("revenue", "SUM(orders.amount)")],
+        shape=shape,
+    )
+    ddl = "create table raw_orders(id int, amount int); insert into raw_orders values (1, 10), (2, 20)"
+    assert _query(document, route, {"metrics": ["revenue"]}, ddl) == [(60,)]
+    assert _query(document, route, {"metrics": ["revenue"], "filters": ["orders.amount > 20"]}, ddl) == [(40,)]
+    assert _query(document, route, {"dimensions": ["orders.id", "orders.amount"], "order_by": ["orders.id"]}, ddl) == [
+        (1, 20),
+        (2, 40),
+    ]
+
+
+@pytest.mark.parametrize("serialization", ["json", "yaml"])
+@pytest.mark.parametrize("marker", ["legacy", "prefixes", "concept_iri", "relationship_iri", "embedded_model"])
+def test_ontology_revision_markers_match_both_importers(serialization, marker):
+    document = {
+        "version": "0.2.0.dev0",
+        "name": "business",
+        "ontology": [{"concept": "Order", "type": "EntityType"}],
+    }
+    if marker == "prefixes":
+        document["prefixes"] = {"ex": "https://example.com/"}
+    elif marker == "concept_iri":
+        document["ontology"][0]["iri"] = "https://example.com/Order"
+    elif marker == "relationship_iri":
+        document["ontology"][0]["relationships"] = [
+            {
+                "name": "related",
+                "roles": [{"concept": "Order", "name": "other"}],
+                "verbalizes": [],
+                "iri": "https://example.com/related",
+            }
+        ]
+    elif marker == "embedded_model":
+        document["ontology_mappings"] = [
+            {"semantic_model": _document([{"name": "orders", "source": "orders"}]), "concept_mappings": []}
+        ]
+    content = json.dumps(document) if serialization == "json" else yaml.safe_dump(document)
+    parsed = parse_ossie_document(
+        content.encode(), options=OssieParseOptions(serialization=serialization, validate_schema=True)
+    )
+    native = rust_ossie_validate(content, serialization)
+    assert parsed.valid, parsed.diagnostics
+    assert native["valid"], native["diagnostics"]
+    expected_revision = None if marker == "legacy" else CURRENT_OSSIE_SCHEMA_COMMIT
+    assert parsed.profile.schema_revision == native["profile"].get("schema_revision") == expected_revision
 
 
 @pytest.mark.parametrize("route", ROUTES)

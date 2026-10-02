@@ -1855,12 +1855,15 @@ impl<'a> SqlGenerator<'a> {
         ordered
     }
 
-    /// Graph measures reference semantic fields; model-local measures reference
-    /// physical inputs. Resolve the former once before creating row projections,
-    /// including metric filters, without recursively expanding same-named fields.
+    /// Unowned graph measures reference semantic fields. Model-local measures
+    /// and graph-addressable model measures retain physical inputs, including
+    /// complete filtered SQL already lowered to a simple owned measure.
     fn graph_metric_source_inputs(&self, metric: &Metric, owner: Option<&str>) -> Result<Metric> {
         let mut bound = metric.clone();
-        if metric.r#type != MetricType::Simple || metric.sql_is_complete {
+        if metric.r#type != MetricType::Simple
+            || metric.sql_is_complete
+            || self.graph.metric_owner(&metric.name).is_some()
+        {
             return Ok(bound);
         }
         let Some(model) = owner.and_then(|owner| self.graph.get_model(owner)) else {

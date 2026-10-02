@@ -201,7 +201,8 @@ def test_native_complete_sql_keeps_physical_input_semantics(joined):
 @pytest.mark.parametrize("plan", ["ordinary", "independent", "fanout"])
 @pytest.mark.parametrize("filtered", [False, True])
 @pytest.mark.parametrize("logical_name", ["amount", "gross"])
-def test_graph_measures_bind_logical_inputs_and_filters(plan, filtered, logical_name):
+@pytest.mark.parametrize("model_owned", [False, True])
+def test_graph_measures_preserve_input_scope(plan, filtered, logical_name, model_owned):
     pytest.importorskip("sidemantic_rs")
     layer = SemanticLayer(engine="rust", fallback=False, auto_register=False)
     layer.add_model(
@@ -213,17 +214,20 @@ def test_graph_measures_bind_logical_inputs_and_filters(plan, filtered, logical_
             metrics=[Metric(name="physical", agg="sum", sql="amount", filters=["amount > 7"] if filtered else None)],
         )
     )
-    layer.add_metric(
+    input_name = "amount" if model_owned else logical_name
+    layer.graph.add_metric(
         Metric(
             name="value",
             agg="sum",
-            sql=f"orders.{logical_name}",
-            filters=[f"orders.{logical_name} > 7"] if filtered else None,
-        )
+            sql=f"orders.{input_name}",
+            filters=[f"orders.{input_name} > 7"] if filtered else None,
+        ),
+        model_name="orders" if model_owned else None,
     )
     metrics = ["value", "orders.physical"]
     dimensions = []
-    expected = (30, 10 if filtered else 15)
+    physical_value = 10 if filtered else 15
+    expected = (physical_value if model_owned else 30, physical_value)
     if plan == "independent":
         layer.add_model(
             Model(

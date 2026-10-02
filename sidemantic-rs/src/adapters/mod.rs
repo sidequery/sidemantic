@@ -14,6 +14,7 @@ use crate::error::{Result, SidemanticError};
 pub mod cube;
 pub mod osi;
 pub mod ossie;
+pub mod ossie_sql;
 
 pub use cube::CubeAdapter;
 pub use osi::OsiAdapter;

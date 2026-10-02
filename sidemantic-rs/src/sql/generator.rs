@@ -210,7 +210,15 @@ impl<'a> SqlGenerator<'a> {
         // Native callers can use this API without the SemanticInput host. Keep
         // parsing, AST transformation, serialization and destruction on the same
         // protected stack instead of returning a deep AST to the caller stack.
-        crate::semantic_input::with_semantic_stack(|| self.generate_with_options(query))
+        crate::semantic_input::with_semantic_stack(|| {
+            if let Some(graph) = self.prepare_imported_window_dimensions()? {
+                return SqlGenerator::new(&graph)
+                    .with_dialect(self.dialect)
+                    .with_timezone(self.timezone.clone())
+                    .generate_with_options(query);
+            }
+            self.generate_with_options(query)
+        })
     }
 
     /// Aggregate children retain their own source population independently of
@@ -219,6 +227,15 @@ impl<'a> SqlGenerator<'a> {
         &self,
         query: &SemanticQuery,
         source_model: Option<&str>,
+    ) -> Result<String> {
+        self.generate_from_model_with_aggregation(query, source_model, true)
+    }
+
+    fn generate_from_model_with_aggregation(
+        &self,
+        query: &SemanticQuery,
+        source_model: Option<&str>,
+        plan_aggregates: bool,
     ) -> Result<String> {
         if query.consumption_base_model.is_some()
             && query.metrics.is_empty()
@@ -229,8 +246,10 @@ impl<'a> SqlGenerator<'a> {
             ));
         }
         self.validate_approximate_query(query)?;
-        if let Some(sql) = aggregate_plan::try_generate(self, query)? {
-            return Ok(sql);
+        if plan_aggregates {
+            if let Some(sql) = aggregate_plan::try_generate(self, query)? {
+                return Ok(sql);
+            }
         }
         if let Some(sql) = snapshots::try_generate(self, query)? {
             return Ok(sql);
@@ -284,7 +303,7 @@ impl<'a> SqlGenerator<'a> {
             );
         }
 
-        if self.needs_preaggregation_for_fanout(&metric_refs)? {
+        if plan_aggregates && self.needs_preaggregation_for_fanout(&metric_refs)? {
             self.reject_totals_route(query, "preaggregation")?;
             return self.generate_with_preaggregation(
                 query,
@@ -1463,6 +1482,9 @@ impl<'a> SqlGenerator<'a> {
             }
         }
         if owners.is_empty() {
+            owners.extend(self.logical_constant_owner(metric)?);
+        }
+        if owners.is_empty() {
             return Err(SidemanticError::UnsupportedSemanticFeatures {
                 capabilities: vec![format!("metric.graph_scope.{reference}")],
             });
@@ -1473,6 +1495,25 @@ impl<'a> SqlGenerator<'a> {
         let mut owners: Vec<_> = owners.into_iter().collect();
         owners.sort();
         Ok(owners)
+    }
+
+    /// A column-free Ossie aggregate still has an unambiguous population when
+    /// its scope declares exactly one dataset. Never guess among several.
+    fn logical_constant_owner(&self, metric: &Metric) -> Result<Option<String>> {
+        if !metric.sql_is_complete || !aggregate_plan::has_logical_inputs(metric) {
+            return Ok(None);
+        }
+        let Some(sql) = metric.sql.as_deref() else {
+            return Ok(None);
+        };
+        if !semantic_column_references(sql)?.is_empty() {
+            return Ok(None);
+        }
+        let mut models = self.graph.models();
+        let first = models.next();
+        Ok(first
+            .filter(|_| models.next().is_none())
+            .map(|model| model.name.clone()))
     }
 
     fn metric_reference_tokens(&self, expression: &str) -> Result<Vec<String>> {

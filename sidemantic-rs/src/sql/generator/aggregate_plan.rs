@@ -16,19 +16,34 @@ struct ResolvedMetric {
 #[derive(Clone)]
 struct Leaf {
     reference: String,
-    model: String,
     metric: Metric,
     alias: String,
+    population: String,
+}
+
+/// Aggregate inputs share a child only when they have the same row grain.
+/// A joined-row expression is distinct from either source's independent total.
+struct Population {
+    name: String,
+    sources: Vec<String>,
 }
 
 struct Plan<'a, 'g> {
     generator: &'a SqlGenerator<'g>,
     leaves: Vec<Leaf>,
     models: Vec<String>,
+    populations: Vec<Population>,
     expressions: HashMap<String, String>,
     active: HashSet<String>,
     cross_source_calculation: bool,
     inline_aggregates: bool,
+}
+
+pub(super) fn has_logical_inputs(metric: &Metric) -> bool {
+    metric
+        .metadata
+        .as_ref()
+        .is_some_and(|metadata| metadata.get("ossie_expression_dialect").is_some())
 }
 
 fn unsupported(capability: &str) -> SidemanticError {
@@ -50,13 +65,63 @@ fn count_aggregate(expression: &Expression) -> bool {
 }
 
 impl<'a, 'g> Plan<'a, 'g> {
+    fn population(&mut self, mut sources: Vec<String>) -> String {
+        sources.sort();
+        // Start joined rows at the finest declared grain. A many-to-one
+        // lookup must not discard unmatched fact rows by starting at its target.
+        if let Some(index) = sources.iter().position(|source| {
+            sources
+                .iter()
+                .filter(|target| *target != source)
+                .all(|target| {
+                    self.generator
+                        .graph
+                        .find_join_path(source, target)
+                        .is_ok_and(|path| !path.has_fan_out())
+                })
+        }) {
+            sources.swap(0, index);
+        }
+        if let Some(population) = self.populations.iter().find(|item| item.sources == sources) {
+            return population.name.clone();
+        }
+        for source in &sources {
+            if !self.models.contains(source) {
+                self.models.push(source.clone());
+            }
+        }
+        let name = if sources.len() == 1 {
+            sources[0].clone()
+        } else {
+            let mut index = self.populations.len();
+            loop {
+                let candidate = format!("__sidemantic_joined_{index}");
+                if self.generator.graph.get_model(&candidate).is_none()
+                    && !self
+                        .populations
+                        .iter()
+                        .any(|population| population.name == candidate)
+                {
+                    break candidate;
+                }
+                index += 1;
+            }
+        };
+        self.populations.push(Population {
+            name: name.clone(),
+            sources,
+        });
+        name
+    }
+
     /// Split authored aggregate calls before expanding scalar metric references.
-    /// Each call must read one source; arithmetic combines its grouped output.
+    /// Each call owns a source population; arithmetic combines grouped outputs.
     fn expand_calculation(
         &mut self,
         node: &mut serde_json::Value,
         context: Option<&str>,
         bindings: &HashSet<String>,
+        logical_inputs: bool,
     ) -> Result<()> {
         let aggregate_node = crate::core::is_aggregate_ast_node(node);
         if let serde_json::Value::Object(fields) = node {
@@ -71,7 +136,12 @@ impl<'a, 'g> Plan<'a, 'g> {
                             .filter_map(|parameter| parameter["name"].as_str().map(str::to_owned)),
                     );
                 }
-                return self.expand_calculation(&mut lambda["body"], context, &bindings);
+                return self.expand_calculation(
+                    &mut lambda["body"],
+                    context,
+                    &bindings,
+                    logical_inputs,
+                );
             }
             if matches!(
                 kind,
@@ -107,25 +177,30 @@ impl<'a, 'g> Plan<'a, 'g> {
                     if owners.is_empty() {
                         owners.extend(context.map(str::to_string));
                     }
-                    if owners.len() != 1 {
+                    if owners.is_empty() || (owners.len() > 1 && !logical_inputs) {
                         return Err(unsupported("cross_source_raw_input"));
                     }
-                    let model = owners.into_iter().next().unwrap();
-                    if !self.models.contains(&model) {
-                        self.models.push(model.clone());
-                    }
+                    let mut owners: Vec<_> = owners.into_iter().collect();
+                    owners.sort();
+                    let model = owners[0].clone();
+                    let population = self.population(owners);
                     let alias = format!("__sidemantic_metric_{}", self.leaves.len());
                     let mut metric = Metric::derived(&alias, sql);
                     metric.sql_is_complete = true;
+                    if logical_inputs {
+                        metric.metadata =
+                            Some(serde_json::json!({"ossie_expression_dialect": "ANSI_SQL"}));
+                    }
                     self.leaves.push(Leaf {
                         reference: format!("{model}.{alias}"),
-                        model: model.clone(),
                         metric,
                         alias: alias.clone(),
+                        population: population.clone(),
                     });
                     let output = format!(
                         "{}.{}",
-                        self.generator.quote_identifier(&format!("{model}_preagg")),
+                        self.generator
+                            .quote_identifier(&format!("{population}_preagg")),
                         self.generator.quote_identifier(&alias),
                     );
                     if count_aggregate(&expression) {
@@ -149,12 +224,12 @@ impl<'a, 'g> Plan<'a, 'g> {
         match node {
             serde_json::Value::Object(fields) => {
                 for child in fields.values_mut() {
-                    self.expand_calculation(child, context, bindings)?;
+                    self.expand_calculation(child, context, bindings, logical_inputs)?;
                 }
             }
             serde_json::Value::Array(children) => {
                 for child in children {
-                    self.expand_calculation(child, context, bindings)?;
+                    self.expand_calculation(child, context, bindings, logical_inputs)?;
                 }
             }
             _ => {}
@@ -165,6 +240,9 @@ impl<'a, 'g> Plan<'a, 'g> {
     fn graph_metric_context(&self, reference: &str, metric: &Metric) -> Result<Option<String>> {
         if let Some(owner) = self.generator.graph.metric_owner(reference) {
             return Ok(Some(owner.to_string()));
+        }
+        if let Some(owner) = self.generator.logical_constant_owner(metric)? {
+            return Ok(Some(owner));
         }
         // Imported graph aggregates can bind their source in qualified SQL
         // without an explicit owner annotation. Scalar calculations stay unowned.
@@ -292,15 +370,13 @@ impl<'a, 'g> Plan<'a, 'g> {
                         return Err(unsupported("cross_source_raw_input"));
                     }
                 }
-                if !self.models.contains(&model) {
-                    self.models.push(model.clone());
-                }
+                let population = self.population(vec![model.clone()]);
                 let alias = format!("__sidemantic_metric_{}", self.leaves.len());
                 self.leaves.push(Leaf {
                     reference: resolved.reference.clone(),
-                    model: model.clone(),
                     metric: metric.clone(),
                     alias: alias.clone(),
+                    population,
                 });
                 let output = format!(
                     "{}.{}",
@@ -350,7 +426,12 @@ impl<'a, 'g> Plan<'a, 'g> {
                 let sql = crate::core::replace_model_placeholder(sql, resolved.context.as_deref())?;
                 let mut ast = serde_json::to_value(parse_semantic_expression(&sql)?)
                     .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))?;
-                self.expand_calculation(&mut ast, resolved.context.as_deref(), &HashSet::new())?;
+                self.expand_calculation(
+                    &mut ast,
+                    resolved.context.as_deref(),
+                    &HashSet::new(),
+                    has_logical_inputs(metric),
+                )?;
                 let expression = serde_json::from_value(ast)
                     .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))?;
                 self.generator.emit_expression(&expression)?
@@ -481,6 +562,7 @@ pub(super) fn try_generate(
         generator,
         leaves: Vec::new(),
         models: Vec::new(),
+        populations: Vec::new(),
         expressions: HashMap::new(),
         active: HashSet::new(),
         cross_source_calculation: false,
@@ -534,7 +616,13 @@ pub(super) fn try_generate(
     // Inline splitting exists to combine independent sources. The ordinary
     // single-source compiler binds semantic dimension inputs and owns authored
     // aggregate/window expressions without manufacturing physical columns.
-    if plan.inline_aggregates && plan.models.len() < 2 {
+    if plan.inline_aggregates
+        && plan.models.len() < 2
+        && !plan
+            .leaves
+            .iter()
+            .any(|leaf| has_logical_inputs(&leaf.metric))
+    {
         return Ok(None);
     }
     // Cartesian products require every participating source even in a child
@@ -628,12 +716,12 @@ pub(super) fn try_generate(
         .enumerate()
         .map(|(index, (reference, _))| {
             let columns = plan
-                .models
+                .populations
                 .iter()
-                .map(|model| {
+                .map(|population| {
                     format!(
                         "{}.{}",
-                        generator.quote_identifier(&format!("{model}_preagg")),
+                        generator.quote_identifier(&format!("{}_preagg", population.name)),
                         dimension_alias(index)
                     )
                 })
@@ -764,14 +852,18 @@ pub(super) fn try_generate(
         }
     }
     let mut ctes = Vec::new();
-    for model in &plan.models {
+    for population in &plan.populations {
+        let model = &population.sources[0];
         let leaves: Vec<_> = plan
             .leaves
             .iter()
-            .filter(|leaf| &leaf.model == model)
+            .filter(|leaf| leaf.population == population.name)
             .collect();
         let mut child = query.clone();
         child.required_population_models = population_models.clone();
+        child
+            .required_population_models
+            .extend(population.sources.iter().cloned());
         child.metrics = leaves.iter().map(|leaf| leaf.reference.clone()).collect();
         child.filters = row_filters.clone();
         child
@@ -795,11 +887,11 @@ pub(super) fn try_generate(
             super::fanout_complete::generate_entity_aggregates(
                 generator,
                 &child,
-                model,
                 &dimensions,
                 &metrics,
                 fanout_models.contains(model),
                 plan.models.len() > 1,
+                &population.sources,
             )?
         } else {
             let mut projection = child_projection(generator, &dimensions, &leaves)?;
@@ -822,7 +914,7 @@ pub(super) fn try_generate(
         };
         ctes.push(format!(
             "{} AS (\n{child_sql}\n)",
-            generator.quote_identifier(&format!("{model}_preagg")),
+            generator.quote_identifier(&format!("{}_preagg", population.name)),
         ));
     }
     let mut names = HashMap::new();
@@ -875,12 +967,12 @@ pub(super) fn try_generate(
     }
     if query.with_totals && !dimensions.is_empty() {
         let markers: Vec<_> = plan
-            .models
+            .populations
             .iter()
-            .map(|model| {
+            .map(|population| {
                 format!(
                     "{}._is_total",
-                    generator.quote_identifier(&format!("{model}_preagg"))
+                    generator.quote_identifier(&format!("{}_preagg", population.name))
                 )
             })
             .collect();
@@ -895,10 +987,10 @@ pub(super) fn try_generate(
         "WITH {}\nSELECT {}\nFROM {}",
         ctes.join(",\n"),
         selections.join(",\n"),
-        generator.quote_identifier(&format!("{}_preagg", plan.models[0]))
+        generator.quote_identifier(&format!("{}_preagg", plan.populations[0].name))
     );
-    for (index, model) in plan.models.iter().enumerate().skip(1) {
-        let table = generator.quote_identifier(&format!("{model}_preagg"));
+    for (index, population) in plan.populations.iter().enumerate().skip(1) {
+        let table = generator.quote_identifier(&format!("{}_preagg", population.name));
         if dimensions.is_empty() {
             sql.push_str(&format!("\nCROSS JOIN {table}"));
         } else {
@@ -907,12 +999,12 @@ pub(super) fn try_generate(
                 .enumerate()
                 .map(|(dimension_index, _)| {
                     let name = dimension_alias(dimension_index);
-                    let previous: Vec<_> = plan.models[..index]
+                    let previous: Vec<_> = plan.populations[..index]
                         .iter()
-                        .map(|model| {
+                        .map(|population| {
                             format!(
                                 "{}.{name}",
-                                generator.quote_identifier(&format!("{model}_preagg"))
+                                generator.quote_identifier(&format!("{}_preagg", population.name))
                             )
                         })
                         .collect();
@@ -925,12 +1017,12 @@ pub(super) fn try_generate(
                 })
                 .collect::<Vec<_>>();
             if query.with_totals {
-                let previous: Vec<_> = plan.models[..index]
+                let previous: Vec<_> = plan.populations[..index]
                     .iter()
-                    .map(|model| {
+                    .map(|population| {
                         format!(
                             "{}._is_total",
-                            generator.quote_identifier(&format!("{model}_preagg"))
+                            generator.quote_identifier(&format!("{}_preagg", population.name))
                         )
                     })
                     .collect();
@@ -1188,6 +1280,7 @@ mod tests {
             generator: &generator,
             leaves: Vec::new(),
             models: Vec::new(),
+            populations: Vec::new(),
             expressions: HashMap::new(),
             active: HashSet::new(),
             cross_source_calculation: false,

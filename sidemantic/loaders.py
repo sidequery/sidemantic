@@ -441,7 +441,14 @@ def load_from_directory(
             # validated parser, so they cannot silently become an empty graph.
             if _is_generated_artifact(file_path, directory):
                 continue
-            adapter = ossie_adapter()
+            try:
+                # JSON is also valid YAML; this probe only selects the consumer.
+                # The Ossie parser still owns format and schema validation.
+                ossie_data = _load_yaml_mapping(file_path.read_text())
+            except yaml.YAMLError:
+                ossie_data = {}
+            consumer_profile = "dbt-1.12" if ossie_data.get("version") == "0.1.0" else "ossie-core"
+            adapter = ossie_adapter(consumer_profile)
         elif suffix == ".json":
             content = file_path.read_text()
             if '"ldm"' in content and '"datasets"' in content:
@@ -455,29 +462,25 @@ def load_from_directory(
             elif (
                 '"datasets"' in content
                 and ('"semantic_model"' in content or ('"version"' in content and '"name"' in content))
-                and (only_file is not None or _is_under_osi_tree(file_path, directory))
                 and not _is_generated_artifact(file_path, directory)
             ):
-                # Released-spec OSI profile (dbt OSI consumer) ships as JSON in an
-                # OSI/ directory at the project root. Mirror the YAML detection
-                # (semantic_model + datasets), but only inside that OSI/ tree:
-                # dbt's OSI consumer scans only ``<project_root>/OSI/``, so an
-                # archived or scratch OSI .json elsewhere under the project must
-                # not add stale models or collide with the real sources.
-                # Skip dbt-generated copies (e.g. target/osi_document.json) so a
-                # `dbt compile` artifact never shadows the real OSI/ sources.
-                try:
-                    is_osi = _looks_like_osi_json(content)
-                except ValueError as e:
-                    # The file textually looks like OSI (semantic_model + datasets)
-                    # but is malformed JSON. Surface it as a parse error instead of
-                    # silently skipping, mirroring the malformed-YAML handling above.
-                    _handle_parse_error(file_path, e, strict=strict)
-                    continue
-                if is_osi:
-                    import json
+                import json
 
-                    consumer_profile = "dbt-1.12" if json.loads(content).get("version") == "0.1.0" else "ossie-core"
+                legacy_location = only_file is not None or _is_under_osi_tree(file_path, directory)
+                try:
+                    ossie_data = json.loads(content)
+                except ValueError as exc:
+                    # Keep archived legacy envelopes outside OSI/ ignored, but
+                    # surface malformed current sources just as YAML does.
+                    if legacy_location or '"semantic_model"' not in content:
+                        _handle_parse_error(file_path, exc, strict=strict)
+                    continue
+                if _looks_like_ossie_mapping(ossie_data) and (
+                    legacy_location or {"version", "name", "datasets"}.issubset(ossie_data)
+                ):
+                    # Only released/legacy envelopes follow dbt's OSI/ source
+                    # restriction. Current flat documents have no such layout.
+                    consumer_profile = "dbt-1.12" if ossie_data.get("version") == "0.1.0" else "ossie-core"
                     adapter = ossie_adapter(consumer_profile)
             else:
                 import json
@@ -843,26 +846,6 @@ def _looks_like_ossie_mapping(data: object) -> bool:
         "name",
         "datasets",
     }.issubset(data)
-
-
-def _looks_like_osi_json(content: str) -> bool:
-    """Return True for a released or current Ossie JSON document.
-
-    Released OSI ships as JSON with a top-level ``semantic_model`` list whose
-    entries contain ``datasets``. This mirrors the YAML OSI detection and avoids
-    routing unrelated JSON (e.g. GoodData) to the OSI adapter.
-
-    Raises ``ValueError`` when ``content`` is not valid JSON so callers that have
-    already confirmed the OSI text markers can surface a parse error instead of
-    silently skipping a malformed OSI document.
-    """
-    import json
-
-    try:
-        data = json.loads(content)
-    except json.JSONDecodeError as e:
-        raise ValueError(f"Invalid JSON: {e}") from e
-    return _looks_like_ossie_mapping(data)
 
 
 # Directories that hold generated/compiled artifacts rather than source models.

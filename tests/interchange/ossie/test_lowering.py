@@ -53,6 +53,38 @@ def test_vendor_expression_alternatives_preserved_while_ansi_sql_is_selected() -
     assert lowered.document.to_parsed_data() == json.loads(source)
 
 
+@pytest.mark.parametrize("with_ansi", [False, True])
+def test_spark_selects_supplied_ansi_alternative_to_portable_sql(with_ansi):
+    def expression(portable, ansi):
+        dialects = [{"dialect": "OSSIE_SQL_2026", "expression": portable}]
+        if with_ansi:
+            dialects.append({"dialect": "ANSI_SQL", "expression": ansi})
+        return {"dialects": dialects}
+
+    source = {
+        "version": "0.2.0.dev0",
+        "name": "commerce",
+        "datasets": [
+            {
+                "name": "orders",
+                "source": "orders",
+                "fields": [{"name": "amount", "expression": expression("ZEROIFNULL(amount)", "COALESCE(amount, 0)")}],
+            }
+        ],
+        "metrics": [{"name": "revenue", "expression": expression("SUM(orders.amount)", "SUM(orders.amount)")}],
+    }
+    lowered = lower_ossie_document(_parse(json.dumps(source)), target_dialect="spark")
+
+    assert lowered.valid is with_ansi, lowered.diagnostics
+    if with_ansi:
+        graph = lowered.catalog["commerce"].graph
+        assert graph.get_model("orders").get_dimension("amount").sql == "COALESCE(amount, 0)"
+        assert graph.get_metric("revenue").metadata["ossie_expression_dialect"] == "ANSI_SQL"
+    else:
+        assert any("Unsupported OSSIE_SQL_2026 target 'spark'" in d.message for d in lowered.diagnostics)
+    assert lowered.document.to_parsed_data() == source
+
+
 def test_lowers_multiple_scopes_without_flattening_duplicate_model_names() -> None:
     parsed = _parse(
         """version: 0.2.0.dev0

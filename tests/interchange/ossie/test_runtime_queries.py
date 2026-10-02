@@ -140,3 +140,33 @@ def test_filtered_aggregate_and_columnless_leaf_keep_their_population():
     assert layer.query(
         metrics=["filtered_budget"], dimensions=["orders.customer_ref"], order_by=["orders.customer_ref"]
     ).fetchall() == [(1, 100), (2, None)]
+
+
+@pytest.mark.parametrize("source", ["raw_orders", "SELECT id, amount FROM raw_orders"])
+def test_qualified_fields_bind_to_the_dataset_source(source):
+    document = {
+        "version": "0.2.0.dev0",
+        "name": "commerce",
+        "datasets": [
+            {
+                "name": "orders",
+                "source": source,
+                "primary_key": ["id"],
+                "fields": [field("id", "orders.id"), field("amount", "orders.amount * 2")],
+            }
+        ],
+        "metrics": [field("revenue", "SUM(orders.amount)")],
+    }
+    parsed = parse_ossie_document(json.dumps(document).encode(), options=OssieParseOptions(target_dialect="duckdb"))
+    lowered = lower_ossie_document(parsed)
+    assert lowered.valid, lowered.diagnostics
+    layer = SemanticLayer.from_catalog(lowered.catalog, engine="python", fallback=False, auto_register=False)
+    layer.adapter.conn.execute("create table raw_orders(id int, amount int)")
+    layer.adapter.conn.execute("insert into raw_orders values (1, 10), (2, 20)")
+
+    assert layer.query(metrics=["revenue"]).fetchall() == [(60,)]
+    assert layer.query(metrics=["revenue"], filters=["orders.amount > 20"]).fetchall() == [(40,)]
+    assert layer.query(dimensions=["orders.id", "orders.amount"], order_by=["orders.id"]).fetchall() == [
+        (1, 20),
+        (2, 40),
+    ]

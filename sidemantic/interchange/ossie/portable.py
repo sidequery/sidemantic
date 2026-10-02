@@ -15,6 +15,7 @@ from sqlglot.errors import ErrorLevel, SqlglotError
 from sqlglot.tokens import TokenType
 
 _TARGETS = {"postgresql": "postgres", "ansi_sql": "duckdb", "ansi": "duckdb"}
+_SUPPORTED_TARGETS = {"duckdb", "postgres", "snowflake", "bigquery", "databricks"}
 _EXTRACTIONS = {
     exp.Year: "YEAR",
     exp.Quarter: "QUARTER",
@@ -141,6 +142,11 @@ def _part(node: exp.Expression) -> str:
     return part
 
 
+def supports_ossie_sql_target(target_dialect: str | None) -> bool:
+    target = (target_dialect or "duckdb").lower()
+    return _TARGETS.get(target, target) in _SUPPORTED_TARGETS
+
+
 def lower_ossie_sql(expression: str, target_dialect: str | None) -> str:
     """Translate portable SQL without silently approximating required operations.
 
@@ -149,7 +155,7 @@ def lower_ossie_sql(expression: str, target_dialect: str | None) -> str:
     rewrite (its exact percentiles are analytic-only), outside scalar lowering.
     """
     target = _TARGETS.get((target_dialect or "duckdb").lower(), (target_dialect or "duckdb").lower())
-    if target not in {"duckdb", "postgres", "snowflake", "bigquery", "databricks"}:
+    if not supports_ossie_sql_target(target):
         raise ValueError(f"Unsupported OSSIE_SQL_2026 target {target_dialect!r}")
     root = parse_portable_expression(expression)
 
@@ -243,6 +249,27 @@ def lower_ossie_sql(expression: str, target_dialect: str | None) -> str:
                             this=exp.Paren(this=years), expression=exp.Literal.number(12 if part == "MONTH" else 4)
                         ),
                         expression=exp.Sub(this=extract(end, unit), expression=extract(start, unit)),
+                    )
+                )
+            if part in {"DAY", "HOUR", "MINUTE", "SECOND"}:
+                # DATEDIFF counts boundaries, not elapsed whole units. Truncate
+                # both endpoints before subtracting, including for negative spans.
+                def truncate(value: exp.Expression) -> exp.Expression:
+                    return _call(
+                        "DATE_TRUNC",
+                        exp.Literal.string(part.lower()),
+                        exp.Cast(this=value, to=exp.DataType.build("TIMESTAMP")),
+                    )
+
+                seconds = exp.Paren(
+                    this=exp.Sub(this=extract(truncate(end), "EPOCH"), expression=extract(truncate(start), "EPOCH"))
+                )
+                return exp.Paren(
+                    this=exp.Div(
+                        this=seconds,
+                        expression=exp.Literal.number({"DAY": 86400, "HOUR": 3600, "MINUTE": 60, "SECOND": 1}[part]),
+                        safe=False,
+                        typed=True,
                     )
                 )
         if isinstance(node, exp.WithinGroup) and isinstance(node.this, (exp.PercentileCont, exp.PercentileDisc)):

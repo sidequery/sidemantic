@@ -165,7 +165,12 @@ def _expression_for_target(expression: object, target_dialect: str) -> tuple[str
     if target_label and target_label in by_dialect:
         return by_dialect[target_label], target_label
     if "OSSIE_SQL_2026" in by_dialect:
-        return by_dialect["OSSIE_SQL_2026"], "OSSIE_SQL_2026"
+        from sidemantic.interchange.ossie.portable import supports_ossie_sql_target
+
+        # A supplied ANSI alternative remains usable on targets such as Spark
+        # that have a SQL parser but no portable-expression lowering yet.
+        if supports_ossie_sql_target(normalized) or "ANSI_SQL" not in by_dialect:
+            return by_dialect["OSSIE_SQL_2026"], "OSSIE_SQL_2026"
     if "ANSI_SQL" in by_dialect:
         return by_dialect["ANSI_SQL"], "ANSI_SQL"
     return None

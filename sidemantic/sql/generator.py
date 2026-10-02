@@ -213,7 +213,7 @@ class SQLGenerator:
                             # projection; preserve their physical reference.
                             column.set("table", None)
                             continue
-                        field_sql = dimension.sql_expr.replace("{model}.", "")
+                        field_sql = self._strip_model_prefixes([dimension.sql_expr], model.name)[0]
                         column.replace(exp.Paren(this=_parse_fragment(field_sql, self.dialect)))
                     aggregation = aggregate_types.get(type(expression))
                     argument = expression.this
@@ -2501,13 +2501,24 @@ class SQLGenerator:
         # Track all columns added (not just join keys) to avoid duplicates
         columns_added = set()
 
+        # CTEs read the physical table or a source query aliased as t. Ossie
+        # field SQL may instead qualify its physical inputs by the dataset name.
+        model_table_alias = "t" if model.sql else ""
+
+        def replace_model_placeholder(sql_expr: str) -> str:
+            """Bind a field or measure expression to this CTE's source."""
+            if (model.metadata or {}).get("ossie_source_kind"):
+                sql_expr = self._strip_model_prefixes([sql_expr], model.name)[0]
+            if model_table_alias:
+                return sql_expr.replace("{model}", model_table_alias)
+            return sql_expr.replace("{model}.", "")
+
         def add_passthrough_column(column: str) -> None:
             if column not in columns_added:
                 dimension = model.get_dimension(column) if (model.metadata or {}).get("ossie_source_kind") else None
                 if dimension is not None:
                     self._ensure_sql_dimension(model_name, dimension)
-                    expression = self._dimension_base_expr(dimension)
-                    expression = expression.replace("{model}", "t") if model.sql else expression.replace("{model}.", "")
+                    expression = replace_model_placeholder(self._dimension_base_expr(dimension))
                 else:
                     expression = self._quote_identifier(column)
                 select_cols.append(f"{expression} AS {self._quote_alias(column)}")
@@ -2612,18 +2623,6 @@ class SQLGenerator:
                         if fk and fk not in columns_added:
                             select_cols.append(f"{self._quote_identifier(fk)} AS {self._quote_alias(fk)}")
                             columns_added.add(fk)
-
-        # Determine table alias for {model} placeholder replacement
-        # In CTEs, we're selecting from the raw table (or subquery AS t)
-        model_table_alias = "t" if model.sql else ""
-
-        def replace_model_placeholder(sql_expr: str) -> str:
-            """Replace {model} placeholder with appropriate table reference."""
-            if model_table_alias:
-                return sql_expr.replace("{model}", model_table_alias)
-            else:
-                # No alias needed - just remove {model}.
-                return sql_expr.replace("{model}.", "")
 
         # Add only needed dimension columns
         for dimension in model.dimensions:

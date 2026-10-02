@@ -111,6 +111,28 @@ def test_postgres_calendar_difference_arithmetic_keeps_parentheses():
         assert connection.execute(f"SELECT {sql}").fetchone() == (2,)
 
 
+@pytest.mark.parametrize(
+    "unit, start, end, expected",
+    [
+        ("day", "2024-01-01 23:59:00", "2024-01-02 00:01:00", 1),
+        ("hour", "2024-01-01 10:59:00", "2024-01-01 11:01:00", 1),
+        ("minute", "2024-01-01 10:00:59", "2024-01-01 10:01:01", 1),
+        ("second", "2024-01-01 10:00:00.999999", "2024-01-01 10:00:01.000001", 1),
+        ("hour", "2024-01-01 10:01:00", "2024-01-01 10:59:00", 0),
+        ("hour", "1969-12-31 23:59:00", "1970-01-01 00:01:00", 1),
+    ],
+)
+@pytest.mark.parametrize("reverse", [False, True])
+def test_postgres_datediff_counts_boundaries(unit, start, end, expected, reverse):
+    if reverse:
+        start, end, expected = end, start, -expected
+    sql = lower_ossie_sql(f"DATEDIFF({unit}, TIMESTAMP '{start}', TIMESTAMP '{end}')", "postgres")
+    # Execute the PostgreSQL arithmetic without round-tripping it through a
+    # transpiler. DuckDB supports the same EXTRACT/DATE_TRUNC timestamp operators.
+    with duckdb.connect() as connection:
+        assert connection.execute(f"SELECT {sql}").fetchone() == (expected,)
+
+
 def test_ansi_value_window_frames_preserve_explicit_frames_and_other_source_functions():
     source = "ZEROIFNULL(NTH_VALUE(DAYOFYEAR(d), 2) OVER (ORDER BY d))"
     sql = lower_ossie_sql(source, "duckdb")

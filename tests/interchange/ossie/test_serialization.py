@@ -85,6 +85,7 @@ def test_cross_serialization_is_canonical_and_does_not_reuse_source() -> None:
     assert json.loads(result.data) == LOGICAL_DATA
     assert result.data.endswith(b"\n")
     assert not result.exact_source_reused
+    assert [item.code for item in result.diagnostics] == ["ossie.serialization.exact_source_mismatch"]
 
 
 def test_canonical_json_and_yaml_are_deterministic_unicode_safe_and_tag_free() -> None:
@@ -196,3 +197,30 @@ def test_dbt_alias_serialization_rejects_missing_or_wrong_context() -> None:
 
     assert _diagnostic_codes(missing.value) == ["ossie.schema.profile_context_required"]
     assert _diagnostic_codes(wrong.value) == ["ossie.schema.profile_context_mismatch"]
+
+
+@pytest.mark.parametrize(("original_value", "current_value"), [(True, 1), (False, 0), (1, True), (1, 1.0)])
+@pytest.mark.parametrize("serialization", ["json", "yaml"])
+def test_exact_source_comparison_preserves_nested_scalar_types(original_value, current_value, serialization):
+    data = json.loads(json.dumps(LOGICAL_DATA))
+    data["semantic_model"][0]["ai_context"] = {"nested": [original_value]}
+    original = (json.dumps(data) if serialization == "json" else yaml.safe_dump(data)).encode()
+    data["semantic_model"][0]["ai_context"] = {"nested": [current_value]}
+    document = OssieLogicalDocument(
+        canonical_data=data,
+        serialization=serialization,
+        source=OssieDocumentSource(original_bytes=original),
+    )
+    result = serialize_ossie_document(document, serialization, exact_source=True)
+    assert not result.exact_source_reused
+    restored = json.loads(result.data) if serialization == "json" else yaml.safe_load(result.data)
+    assert type(restored["semantic_model"][0]["ai_context"]["nested"][0]) is type(current_value)
+    assert [item.code for item in result.diagnostics] == ["ossie.serialization.exact_source_mismatch"]
+
+
+@pytest.mark.parametrize("source", [None, OssieDocumentSource(identifier="unretained.yaml")])
+def test_exact_source_request_warns_when_bytes_were_not_retained(source):
+    result = serialize_ossie_document(_logical_document(source=source), "yaml", exact_source=True)
+    assert not result.exact_source_reused
+    assert yaml.safe_load(result.data) == LOGICAL_DATA
+    assert [item.code for item in result.diagnostics] == ["ossie.serialization.exact_source_mismatch"]

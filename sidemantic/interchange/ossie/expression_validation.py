@@ -33,7 +33,7 @@ _FORBIDDEN_NODE_TYPES = tuple(
 )
 
 
-def scalar_sql_expression_error(expression: str, *, sqlglot_dialect: str | None) -> str | None:
+def scalar_sql_expression_error(expression: str, *, sqlglot_dialect: str | None, row_level: bool = False) -> str | None:
     """Return why SQL is not one scalar Ossie expression, otherwise ``None``.
 
     Parsing uses the selected executable dialect. The structural gate rejects
@@ -49,7 +49,11 @@ def scalar_sql_expression_error(expression: str, *, sqlglot_dialect: str | None)
         return "expression must contain exactly one SQL expression"
 
     root = parsed[0]
+    if isinstance(root, (exp.Alias, exp.Aliases, exp.Star)):
+        return "expression must be a scalar value, without a projection alias or wildcard"
     for node in root.walk():
         if isinstance(node, _FORBIDDEN_NODE_TYPES):
             return f"Ossie expressions cannot contain {type(node).__name__}"
+        if row_level and isinstance(node, exp.AggFunc) and node.find_ancestor(exp.Window) is None:
+            return "Ossie dataset fields are row-level expressions and cannot contain aggregates"
     return None

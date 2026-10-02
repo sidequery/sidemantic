@@ -517,11 +517,51 @@ def test_load_from_directory_detects_explicit_ossie_json_outside_osi_tree(tmp_pa
     assert layer.graph.models["orders"]._source_format == "Ossie"
 
 
-@pytest.mark.parametrize("content", ['{"version":', "{}"])
-def test_load_from_directory_surfaces_invalid_explicit_ossie_json(tmp_path, content):
-    (tmp_path / "invalid.ossie.json").write_text(content)
+@pytest.mark.parametrize("suffix", ["yaml", "yml", "json"])
+def test_load_from_directory_detects_dbt_profile_for_explicit_ossie_files(tmp_path, suffix):
+    import json
 
-    with pytest.raises(ValueError, match=r"invalid\.ossie\.json"):
+    import yaml
+
+    document = {
+        "version": "0.1.0",
+        "semantic_model": [{"name": "analytics", "datasets": [{"name": "orders", "source": "analytics.orders"}]}],
+    }
+    content = json.dumps(document) if suffix == "json" else yaml.safe_dump(document)
+    (tmp_path / f"orders.ossie.{suffix}").write_text(content)
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+
+    assert list(layer.graph.models) == ["orders"]
+    assert layer.graph.models["orders"].table == "analytics.orders"
+
+
+@pytest.mark.parametrize("relative_path", ["commerce.json", "models/commerce.json"])
+def test_load_from_directory_detects_current_flat_ossie_json(tmp_path, relative_path):
+    from sidemantic.validation_runner import validate_directory
+
+    source = tmp_path / relative_path
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text(
+        '{"version": "0.2.0.dev0", "name": "analytics", "datasets": [{"name": "orders", "source": "analytics.orders"}]}'
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+
+    assert list(layer.graph.models) == ["orders"]
+    assert layer.graph.models["orders"].table == "analytics.orders"
+    assert layer.graph.models["orders"]._source_format == "Ossie"
+    assert validate_directory(tmp_path).passed
+
+
+@pytest.mark.parametrize("suffix", ["yaml", "yml", "json"])
+@pytest.mark.parametrize("content", ['{"version":', "{}"])
+def test_load_from_directory_surfaces_invalid_explicit_ossie_files(tmp_path, content, suffix):
+    (tmp_path / f"invalid.ossie.{suffix}").write_text(content)
+
+    with pytest.raises(ValueError, match=rf"invalid\.ossie\.{suffix}"):
         load_from_directory(SemanticLayer(), tmp_path)
 
     layer = SemanticLayer()

@@ -133,6 +133,145 @@ class SQLGenerator:
         self._generate_cache: dict[tuple[object, ...], str] = {}
         self._generate_cache_limit = 256
 
+    def _lower_ossie_aggregates(self) -> "SQLGenerator | None":
+        """Give semantic-model aggregates an explicit grain before native planning.
+
+        Ossie fields denote logical expressions, whereas native model measures
+        read physical columns. Resolve those expressions while creating private
+        leaves on a query-local graph; retain the public metric as a formula.
+        """
+        replacements = {}
+        graph_metrics = self.graph.metrics.copy()
+        changed = False
+        aggregate_types = {exp.Sum: "sum", exp.Avg: "avg", exp.Count: "count", exp.Min: "min", exp.Max: "max"}
+        for name, metric in self.graph.metrics.items():
+            if (
+                not metric.sql_is_complete
+                or not metric.sql
+                or not (metric.metadata or {}).get("ossie_target_dialect")
+                or (metric.metadata or {}).get("ossie_joined_leaf")
+            ):
+                continue
+            parsed = _parse_fragment(metric.sql, self.dialect)
+            # A window frame cannot be split into independent aggregate grains.
+            if parsed.find(exp.Window):
+                continue
+            aggregates = list(parsed.find_all(exp.AggFunc))
+            if any(aggregate.find_ancestor(exp.AggFunc) is not None for aggregate in aggregates):
+                continue
+            aggregates = [
+                aggregate.parent if isinstance(aggregate.parent, (exp.Filter, exp.WithinGroup)) else aggregate
+                for aggregate in aggregates
+            ]
+            expression_models = {column.table for column in parsed.find_all(exp.Column)}
+            owners = []
+            for aggregate in aggregates:
+                columns = list(aggregate.find_all(exp.Column))
+                models = {column.table for column in columns} if columns else expression_models
+                if not models or not models <= self.graph.models.keys() or (not columns and len(models) != 1):
+                    break
+                owners.append(next(iter(models)) if len(models) == 1 else None)
+            else:
+                # Every aggregate has a known row source. A formula with no
+                # aggregate leaves (e.g. revenue * 2) uses normal dependencies.
+                for aggregate, owner in zip(aggregates, owners, strict=True):
+                    if owner is None:
+                        # A row expression spanning datasets keeps its joined
+                        # population, independently of sibling aggregate leaves.
+                        index = 0
+                        occupied = {name.lower() for name in graph_metrics}
+                        while f"__ossie_joined_{index}" in occupied:
+                            index += 1
+                        leaf_name = f"__ossie_joined_{index}"
+                        graph_metrics[leaf_name] = metric.model_copy(
+                            update={
+                                "name": leaf_name,
+                                "sql": aggregate.sql(dialect=self.dialect),
+                                "type": None,
+                                "agg": None,
+                                "metadata": {**metric.metadata, "ossie_joined_leaf": True},
+                            }
+                        )
+                        reference = exp.column(leaf_name)
+                        if aggregate is parsed:
+                            parsed = reference
+                        else:
+                            aggregate.replace(reference)
+                        continue
+                    model = replacements.get(owner, self.graph.models[owner])
+                    occupied = {field.name.lower() for field in [*model.dimensions, *model.metrics]}
+                    occupied.update(key.lower() for key in model.primary_key_columns)
+                    index = 0
+                    while f"__ossie_aggregate_{index}" in occupied or f"__ossie_aggregate_{index}_raw" in occupied:
+                        index += 1
+                    leaf_name = f"__ossie_aggregate_{index}"
+                    expression = aggregate.copy()
+                    for column in list(expression.find_all(exp.Column)):
+                        dimension = model.get_dimension(column.name)
+                        if dimension is None:
+                            # Source fields may be implicit in a portable graph
+                            # projection; preserve their physical reference.
+                            column.set("table", None)
+                            continue
+                        field_sql = self._strip_model_prefixes([dimension.sql_expr], model.name)[0]
+                        column.replace(exp.Paren(this=_parse_fragment(field_sql, self.dialect)))
+                    aggregation = aggregate_types.get(type(expression))
+                    argument = expression.this
+                    if isinstance(argument, exp.Distinct):
+                        if aggregation == "count" and len(argument.expressions) == 1:
+                            aggregation = "count_distinct"
+                            argument = argument.expressions[0]
+                        else:
+                            aggregation = None
+                    if aggregation and any(
+                        value for key, value in expression.args.items() if key not in ("this", "big_int")
+                    ):
+                        aggregation = None
+                    leaf = metric.model_copy(
+                        update={
+                            "name": leaf_name,
+                            "type": "simple" if aggregation else None,
+                            "agg": aggregation,
+                            "sql": argument.sql(dialect=self.dialect)
+                            if aggregation
+                            else expression.sql(dialect=self.dialect),
+                            "sql_is_complete": aggregation is None,
+                        }
+                    )
+                    replacements[owner] = model.model_copy(update={"metrics": [*model.metrics, leaf]})
+                    reference = exp.column(leaf_name, table=owner)
+                    if aggregate is parsed:
+                        parsed = reference
+                    else:
+                        aggregate.replace(reference)
+                graph_metrics[name] = metric.model_copy(
+                    update={"sql": parsed.sql(dialect=self.dialect), "type": "derived", "sql_is_complete": False}
+                )
+                changed = True
+        if not changed:
+            return None
+        graph = copy(self.graph)
+        graph.models = {**self.graph.models, **replacements}
+        # Ossie permits unique keys without a primary key. Either declaration
+        # identifies entity rows for the native deduplication planner.
+        graph.models = {
+            name: model.model_copy(update={"primary_key": model.unique_keys[0]})
+            if (model.metadata or {}).get("ossie_source_kind") and not model.primary_key_columns and model.unique_keys
+            else model
+            for name, model in graph.models.items()
+        }
+        graph.metrics = graph_metrics
+        graph._adjacency_dirty = True
+        graph._adjacency = {}
+        graph._role_models = {}
+        graph._role_owners = {}
+        graph._relationship_instances = {}
+        graph._relationship_path_cache = {}
+        generator = copy(self)
+        generator.graph = graph
+        generator._generate_cache = {}
+        return generator
+
     def _lower_filtered_complete_aggregates(self) -> "SQLGenerator | None":
         """Reuse filtered aggregate planning without changing the caller's live graph."""
         # TSQL count widths require separate qualification; retain its existing
@@ -1256,7 +1395,7 @@ class SQLGenerator:
         Returns:
             SQL query string
         """
-        lowered = self._lower_filtered_complete_aggregates()
+        lowered = self._lower_ossie_aggregates() or self._lower_filtered_complete_aggregates()
         if lowered is not None:
             return lowered.generate(
                 metrics=metrics,
@@ -2362,9 +2501,27 @@ class SQLGenerator:
         # Track all columns added (not just join keys) to avoid duplicates
         columns_added = set()
 
+        # CTEs read the physical table or a source query aliased as t. Ossie
+        # field SQL may instead qualify its physical inputs by the dataset name.
+        model_table_alias = "t" if model.sql else ""
+
+        def replace_model_placeholder(sql_expr: str) -> str:
+            """Bind a field or measure expression to this CTE's source."""
+            if (model.metadata or {}).get("ossie_source_kind"):
+                sql_expr = self._strip_model_prefixes([sql_expr], model.name)[0]
+            if model_table_alias:
+                return sql_expr.replace("{model}", model_table_alias)
+            return sql_expr.replace("{model}.", "")
+
         def add_passthrough_column(column: str) -> None:
             if column not in columns_added:
-                select_cols.append(f"{self._quote_identifier(column)} AS {self._quote_alias(column)}")
+                dimension = model.get_dimension(column) if (model.metadata or {}).get("ossie_source_kind") else None
+                if dimension is not None:
+                    self._ensure_sql_dimension(model_name, dimension)
+                    expression = replace_model_placeholder(self._dimension_base_expr(dimension))
+                else:
+                    expression = self._quote_identifier(column)
+                select_cols.append(f"{expression} AS {self._quote_alias(column)}")
                 columns_added.add(column)
 
         # Cross joins do not need keys for the join predicate, but exact fan-out aggregation
@@ -2466,18 +2623,6 @@ class SQLGenerator:
                         if fk and fk not in columns_added:
                             select_cols.append(f"{self._quote_identifier(fk)} AS {self._quote_alias(fk)}")
                             columns_added.add(fk)
-
-        # Determine table alias for {model} placeholder replacement
-        # In CTEs, we're selecting from the raw table (or subquery AS t)
-        model_table_alias = "t" if model.sql else ""
-
-        def replace_model_placeholder(sql_expr: str) -> str:
-            """Replace {model} placeholder with appropriate table reference."""
-            if model_table_alias:
-                return sql_expr.replace("{model}", model_table_alias)
-            else:
-                # No alias needed - just remove {model}.
-                return sql_expr.replace("{model}.", "")
 
         # Add only needed dimension columns
         for dimension in model.dimensions:
@@ -2841,39 +2986,21 @@ class SQLGenerator:
         Returns:
             Dict mapping model names to whether they need symmetric aggregates
         """
-        needs_symmetric = {}
-
-        # Check if there are any one-to-many relationships
-        one_to_many_count = 0
-        many_to_one_models = []
-
-        for other_model in other_models:
-            try:
-                join_path = self.graph.find_relationship_path(base_model_name, other_model)
-                if not join_path:
+        models = [base_model_name, *other_models]
+        needs_symmetric = dict.fromkeys(models, False)
+        # A dimension can anchor the query on the many side. Assess fanout from
+        # each metric owner's perspective, not just the chosen FROM model.
+        for model_name in models:
+            for other_model in models:
+                if model_name == other_model:
                     continue
-                # Check all hops: any one_to_many in the path creates fan-out
-                has_fanout = any(hop.relationship == "one_to_many" for hop in join_path)
-                if has_fanout:
-                    one_to_many_count += 1
-                elif join_path[0].relationship == "many_to_one":
-                    many_to_one_models.append(other_model)
-            except (ValueError, KeyError):
-                pass
-
-        # Base model needs symmetric aggregates if there are any one-to-many joins
-        needs_symmetric[base_model_name] = one_to_many_count > 0
-
-        # Models on the "many" side of a many-to-one relationship also need symmetric
-        # aggregation if they're being joined (because from their perspective,
-        # they're creating fan-out for the "one" side)
-        for other_model in other_models:
-            if other_model in many_to_one_models:
-                # Check if the "one" side (base) has metrics - if so, it needs symmetric agg
-                # But we're checking from the perspective of this model, so mark False
-                needs_symmetric[other_model] = False
-            else:
-                needs_symmetric[other_model] = False
+                try:
+                    path = self.graph.find_relationship_path(model_name, other_model)
+                    if any(hop.relationship == "one_to_many" for hop in path):
+                        needs_symmetric[model_name] = True
+                        break
+                except (ValueError, KeyError):
+                    pass
 
         return needs_symmetric
 
@@ -2928,6 +3055,35 @@ class SQLGenerator:
             "full_outer": "full",
         }.get(how)
 
+    def _complete_graph_aggregates(self, metrics: list[str]) -> set[str]:
+        """Find joined-row Ossie aggregates that must keep their own row query."""
+        complete = set()
+        visited = set()
+
+        def visit(reference):
+            if reference in visited:
+                return
+            visited.add(reference)
+            try:
+                owner, metric = self.graph.resolve_metric_reference(reference)
+            except KeyError:
+                return
+            if (
+                owner is None
+                and metric.sql_is_complete
+                and metric.sql
+                and (metric.metadata or {}).get("ossie_target_dialect")
+                and sql_has_aggregate(metric.sql, self.dialect)
+            ):
+                complete.add(reference)
+                return
+            for dependency in metric.get_dependencies(self.graph, owner):
+                visit(dependency)
+
+        for reference in metrics:
+            visit(reference)
+        return complete
+
     def _needs_preaggregation_for_fanout(self, metrics: list[str], dimensions: list[str]) -> bool:
         """Determine if pre-aggregation is needed to avoid fan-out.
 
@@ -2954,6 +3110,9 @@ class SQLGenerator:
         # Calculated metrics can span multiple grains even when only one output
         # is selected (for example order revenue divided by customer count).
         metric_models = self._find_aggregate_metric_models(metrics)
+        complete_graph_metrics = self._complete_graph_aggregates(metrics)
+        if complete_graph_metrics and (metric_models or len(complete_graph_metrics) > 1):
+            return True
 
         if len(metric_models) < 2:
             return False
@@ -3025,6 +3184,8 @@ class SQLGenerator:
 
         calculations: dict[str, str] = {}
         leaf_refs: list[str] = []
+        complete_groups: dict[str, str] = {}
+        complete_metrics = self._complete_graph_aggregates(metrics)
         # Children need stable, distinct output names even when public fields
         # share a basename or a calculation hides a colliding aggregate leaf.
         child_aliases = {
@@ -3039,12 +3200,26 @@ class SQLGenerator:
                 raise ValueError(f"Circular metric dependency involving {reference}")
             model_name, metric = self.graph.resolve_metric_reference(reference)
             aggregate_models = self._find_aggregate_metric_models([reference])
-            if model_name is not None and aggregate_models == {model_name}:
+            if reference in self._complete_graph_aggregates([reference]):
+                complete_metrics.add(reference)
+            if reference in complete_metrics:
+                if reference not in complete_groups:
+                    index = len(complete_groups)
+                    while (
+                        f"__ossie_query_{index}" in self.graph.models
+                        or f"__ossie_query_{index}" in complete_groups.values()
+                    ):
+                        index += 1
+                    complete_groups[reference] = f"__ossie_query_{index}"
+                group_name = complete_groups[reference]
+            else:
+                group_name = model_name
+            if reference in complete_metrics or (model_name is not None and aggregate_models == {model_name}):
                 if reference not in leaf_refs:
                     leaf_refs.append(reference)
                     child_aliases[reference] = f"__sidemantic_metric_{len(leaf_refs) - 1}"
                 source_name = child_aliases[reference]
-                expression = f"{model_name}_preagg.{self._quote_identifier(source_name)}"
+                expression = f"{group_name}_preagg.{self._quote_identifier(source_name)}"
                 if metric.agg in ("count", "count_distinct", "approx_count_distinct"):
                     # A missing group has an empty count population. Restore
                     # zero before evaluating formulas or their outer defaults.
@@ -3099,6 +3274,7 @@ class SQLGenerator:
                 model_name, _ = self.graph.resolve_metric_reference(metric_ref)
             except KeyError:
                 model_name = None
+            model_name = complete_groups.get(metric_ref, model_name)
             if model_name:
                 if model_name not in metrics_by_model:
                     metrics_by_model[model_name] = []
@@ -3157,7 +3333,9 @@ class SQLGenerator:
         # Query-level row filters define one population, so every child query must
         # see them. Otherwise sibling metrics in the final row can describe different
         # populations. Metric filters remain at the outer aggregate grain.
-        all_model_names = set(metrics_by_model.keys())
+        all_model_names = set(metrics_by_model.keys()) - set(complete_groups.values())
+        for reference in complete_groups:
+            all_model_names.update(self._extract_models_from_sql(self.graph.get_metric(reference).sql))
         pushdown_by_model, shared_filters, window_dim_filters = self._classify_filters_for_pushdown(
             row_or_leaf_filters, all_model_names
         )
@@ -3190,7 +3368,9 @@ class SQLGenerator:
             # Preserve that source's unmatched rows regardless of dimension
             # order. An explicit Explore scope still controls the population.
             child_generator = copy(self)
-            child_generator.base_model = self.base_model or model_name
+            child_generator.base_model = self.base_model or (
+                None if model_name in complete_groups.values() else model_name
+            )
             child_generator._generate_cache = {}
             sub_query = child_generator.generate(
                 metrics=model_metrics,

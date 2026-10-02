@@ -18,6 +18,8 @@ from sidemantic.interchange.ossie.documents import (
     OssieOntologyDocument,
     UnsupportedOssieDocument,
     freeze_json,
+    is_logical_document_data,
+    logical_model_entries,
     thaw_json,
 )
 from sidemantic.interchange.ossie.lowering import OssieLoweringResult, lower_ossie_document
@@ -27,9 +29,12 @@ from sidemantic.interchange.ossie.parser import (
     parse_ossie_document,
 )
 from sidemantic.interchange.ossie.profiles import (
+    CURRENT_OSSIE_SCHEMA_COMMIT,
     DBT_1_12_0_1_0_ALIAS,
     DBT_1_12_0_1_1,
+    LEGACY_OSSIE_SCHEMA_COMMIT,
     OSSIE_CORE_0_1_1,
+    OSSIE_CORE_0_2_0_CURRENT,
     OSSIE_CORE_0_2_0_DEV0,
     OSSIE_PROFILES,
     OssieConsumerProfile,
@@ -59,10 +64,13 @@ from sidemantic.interchange.ossie.synthesis import (
 )
 
 __all__ = [
+    "CURRENT_OSSIE_SCHEMA_COMMIT",
+    "LEGACY_OSSIE_SCHEMA_COMMIT",
     "DBT_1_12_0_1_0_ALIAS",
     "DBT_1_12_0_1_1",
     "OSSIE_CORE_0_1_1",
     "OSSIE_CORE_0_2_0_DEV0",
+    "OSSIE_CORE_0_2_0_CURRENT",
     "OSSIE_PROFILES",
     "FrozenJSONValue",
     "FrozenJSONObject",
@@ -94,6 +102,8 @@ __all__ = [
     "UnsupportedOssieDocument",
     "diagnostic_sort_key",
     "freeze_json",
+    "is_logical_document_data",
+    "logical_model_entries",
     "lower_ossie_document",
     "parse_ossie_document",
     "resolve_ossie_profile",

@@ -168,6 +168,54 @@ fn period_interval(value: &str) -> Result<(u32, String)> {
 }
 
 impl SqlGenerator<'_> {
+    /// Ossie fields can carry window SQL in the ordinary expression slot.
+    /// Materialize it before grouping or filtering, just like native window
+    /// dimensions, while leaving the caller's semantic graph untouched.
+    pub(super) fn prepare_imported_window_dimensions(&self) -> Result<Option<SemanticGraph>> {
+        fn contains_window(node: &serde_json::Value) -> bool {
+            match node {
+                serde_json::Value::Object(fields) => {
+                    fields.contains_key("window")
+                        || fields.contains_key("window_function")
+                        || fields.values().any(contains_window)
+                }
+                serde_json::Value::Array(values) => values.iter().any(contains_window),
+                _ => false,
+            }
+        }
+        let mut graph = None;
+        for model in self.graph.models() {
+            if model
+                .metadata
+                .as_ref()
+                .is_none_or(|metadata| metadata.get("ossie_source_kind").is_none())
+            {
+                continue;
+            }
+            let mut updated = None;
+            for (index, dimension) in model.dimensions.iter().enumerate() {
+                if dimension.window.is_some() {
+                    continue;
+                }
+                let Some(sql) = dimension.sql.as_deref() else {
+                    continue;
+                };
+                let expression = serde_json::to_value(parse_semantic_expression(sql)?)
+                    .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))?;
+                if contains_window(&expression) {
+                    let model = updated.get_or_insert_with(|| model.clone());
+                    model.dimensions[index].window = Some(sql.to_string());
+                }
+            }
+            if let Some(model) = updated {
+                graph
+                    .get_or_insert_with(|| self.graph.clone())
+                    .replace_model(model)?;
+            }
+        }
+        Ok(graph)
+    }
+
     pub(super) fn window_dimension_alias(dimension: &crate::core::Dimension) -> String {
         format!("__sidemantic_window_{}", dimension.name)
     }

@@ -45,6 +45,28 @@ struct CompileRequest {
     parameter_values: std::collections::HashMap<String, serde_yaml::Value>,
 }
 
+// Native Ossie import already produces typed IR. Compile that graph directly;
+// native YAML configuration has a different metric ownership/input contract.
+#[derive(Debug, Deserialize)]
+struct OssieCompileRequest {
+    content: String,
+    serialization: String,
+    #[serde(default = "default_ossie_consumer_profile")]
+    consumer_profile: String,
+    #[serde(default = "default_ossie_target")]
+    target: String,
+    scope_id: Option<String>,
+    #[serde(default)]
+    metrics: Vec<String>,
+    #[serde(default)]
+    dimensions: Vec<String>,
+    #[serde(default)]
+    filters: Vec<String>,
+    #[serde(default)]
+    order_by: Vec<String>,
+    dialect: String,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 enum Request {
@@ -52,6 +74,7 @@ enum Request {
         models_yaml: String,
     },
     Compile(Box<CompileRequest>),
+    OssieCompile(Box<OssieCompileRequest>),
     JoinPath {
         models_yaml: String,
         from_model: String,
@@ -214,6 +237,31 @@ fn handle(request: Request) -> sidemantic::Result<Response> {
                 generator = generator.with_dialect(parse_dialect(&dialect)?);
             }
             let sql = generator.generate(&query)?;
+            Ok(Response::Ok {
+                sql: Some(sql),
+                path: None,
+                catalog: None,
+                value: None,
+            })
+        }
+        Request::OssieCompile(request) => {
+            let graph = OssieForwardAdapter
+                .select_scope(
+                    &request.content,
+                    parse_ossie_serialization(&request.serialization)?,
+                    parse_ossie_consumer(&request.consumer_profile)?,
+                    parse_ossie_target(&request.target)?,
+                    request.scope_id.as_deref(),
+                )?
+                .into_graph()?;
+            let query = SemanticQuery::new()
+                .with_metrics(request.metrics)
+                .with_dimensions(request.dimensions)
+                .with_filters(request.filters)
+                .with_order_by(request.order_by);
+            let sql = SqlGenerator::new(&graph)
+                .with_dialect(parse_dialect(&request.dialect)?)
+                .generate(&query)?;
             Ok(Response::Ok {
                 sql: Some(sql),
                 path: None,

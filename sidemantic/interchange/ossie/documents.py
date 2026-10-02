@@ -19,6 +19,29 @@ JSONScalar: TypeAlias = str | int | float | bool | None
 ParsedJSONValue: TypeAlias = JSONScalar | Mapping[str, object] | list[object] | tuple[object, ...]
 
 
+def is_logical_document_data(data: Mapping[str, object]) -> bool:
+    """Recognize current flat models and the earlier model-array envelope."""
+
+    return (
+        "semantic_model" in data
+        or "datasets" in data
+        or ("name" in data and "ontology" not in data and "ontology_mappings" not in data)
+    )
+
+
+def logical_model_entries(data: Mapping[str, object]) -> tuple[tuple[str, object], ...]:
+    """Expose model values and their source pointers without rewriting source data."""
+
+    if "semantic_model" in data:
+        models = data["semantic_model"]
+        if isinstance(models, (list, tuple)):
+            return tuple((f"/semantic_model/{index}", model) for index, model in enumerate(models))
+        return ()
+    if is_logical_document_data(data):
+        return (("", data),)
+    return ()
+
+
 @dataclass(frozen=True, slots=True)
 class FrozenJSONObject(Mapping[str, "FrozenJSONValue"]):
     """An insertion-ordered, deeply immutable JSON object."""
@@ -129,6 +152,7 @@ class _OssieDocumentBase:
     canonical_data: ParsedJSONValue | FrozenJSONObject
     serialization: OssieSerialization
     source: OssieDocumentSource | None = None
+    schema_revision: str | None = None
 
     _known_root_fields: ClassVar[frozenset[str]] = frozenset()
 
@@ -170,7 +194,21 @@ class _OssieDocumentBase:
 class OssieLogicalDocument(_OssieDocumentBase):
     """A logical-layer Ossie document, before validation or runtime lowering."""
 
-    _known_root_fields: ClassVar[frozenset[str]] = frozenset({"version", "dialects", "vendors", "semantic_model"})
+    _known_root_fields: ClassVar[frozenset[str]] = frozenset(
+        {
+            "version",
+            "dialects",
+            "vendors",
+            "semantic_model",
+            "name",
+            "description",
+            "ai_context",
+            "datasets",
+            "relationships",
+            "metrics",
+            "custom_extensions",
+        }
+    )
 
     def __post_init__(self) -> None:
         super(OssieLogicalDocument, self).__post_init__()
@@ -183,8 +221,11 @@ class OssieLogicalDocument(_OssieDocumentBase):
 
     @property
     def semantic_models(self) -> tuple[FrozenJSONValue, ...]:
-        value = self.semantic_model_value
-        return value if isinstance(value, tuple) else ()
+        return tuple(model for _, model in self.semantic_model_entries)
+
+    @property
+    def semantic_model_entries(self) -> tuple[tuple[str, FrozenJSONValue], ...]:
+        return logical_model_entries(self.canonical_data)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -192,7 +233,7 @@ class OssieOntologyDocument(_OssieDocumentBase):
     """An ontology-layer Ossie document, preserved without reasoning semantics."""
 
     _known_root_fields: ClassVar[frozenset[str]] = frozenset(
-        {"version", "name", "description", "ai_context", "ontology", "ontology_mappings"}
+        {"version", "name", "description", "ai_context", "requires", "ontology", "ontology_mappings", "prefixes"}
     )
 
     def __post_init__(self) -> None:

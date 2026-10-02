@@ -78,7 +78,7 @@ def test_synthesis_preserves_types_time_false_keys_and_edge_identity() -> None:
 
     assert result.valid
     data = result.document.to_parsed_data()
-    semantic_model = data["semantic_model"][0]
+    semantic_model = data
     orders = semantic_model["datasets"][0]
     loaded_at = orders["fields"][2]
     relationship = semantic_model["relationships"][0]
@@ -261,7 +261,7 @@ def test_synthesis_accepts_reordered_unique_key_without_reordering_join_pairs(ke
     result = synthesize_ossie_document(graph, scope_name="commerce", expression_dialect="ANSI_SQL")
 
     assert result.valid, result.diagnostics
-    relationship = result.document.to_parsed_data()["semantic_model"][0]["relationships"][0]
+    relationship = result.document.to_parsed_data()["relationships"][0]
     assert relationship["from_columns"] == ["region", "customer_id"]
     assert relationship["to_columns"] == ["region", "id"]
 
@@ -314,7 +314,7 @@ def test_synthesis_preserves_quoted_column_case_and_existing_qualifiers() -> Non
     result = synthesize_ossie_document(graph, scope_name="commerce", expression_dialect="ANSI_SQL")
 
     assert result.valid, result.diagnostics
-    expression = result.document.to_parsed_data()["semantic_model"][0]["metrics"][0]["expression"]
+    expression = result.document.to_parsed_data()["metrics"][0]["expression"]
     assert expression["dialects"][0]["expression"] == 'SUM(COALESCE(orders."Amount", 0) * orders."Quantity")'
 
 
@@ -326,7 +326,7 @@ def test_synthesis_preserves_model_metric_references_in_derived_formulas(express
     result = synthesize_ossie_document(graph, scope_name="commerce", expression_dialect="ANSI_SQL")
 
     assert result.valid, result.diagnostics
-    metrics = result.document.to_parsed_data()["semantic_model"][0]["metrics"]
+    metrics = result.document.to_parsed_data()["metrics"]
     assert metrics[1]["expression"]["dialects"][0]["expression"] == "revenue * 2"
 
 
@@ -338,7 +338,7 @@ def test_synthesis_retains_model_binding_for_columnless_aggregates(options: dict
     result = synthesize_ossie_document(graph, scope_name="commerce", expression_dialect="ANSI_SQL")
 
     assert result.valid, result.diagnostics
-    scope = result.document.to_parsed_data()["semantic_model"][0]
+    scope = result.document.to_parsed_data()
     assert "orders.__sidemantic_row" in scope["metrics"][0]["expression"]["dialects"][0]["expression"]
 
 
@@ -397,7 +397,7 @@ def test_synthesis_restores_native_metric_semantics_through_extension(options):
     assert result.valid, result.diagnostics
     assert any(d.code == "ossie.synthesis.runtime_extension_required" for d in result.diagnostics)
     document = result.document.to_parsed_data()
-    assert all("analytics.orders" not in d["source"] for d in document["semantic_model"][0]["datasets"])
+    assert all("analytics.orders" not in d["source"] for d in document["datasets"])
     lowered = lower_ossie_document(parse_ossie_document(json.dumps(document).encode()), target_dialect="duckdb")
     assert lowered.valid, lowered.diagnostics
     assert lowered.catalog["commerce"].graph.models["orders"].metrics[0] == graph.models["orders"].metrics[0]
@@ -614,3 +614,139 @@ def test_core_metric_dialect_provenance_is_not_native_semantics():
     refused = synthesize_ossie_document(graph, scope_name="commerce", expression_dialect="ANSI_SQL", portable_only=True)
     assert not refused.valid
     assert any("metadata" in item.message for item in refused.diagnostics)
+
+
+@pytest.mark.parametrize("dialect", ["ANSI_SQL", "BIGQUERY", "DATABRICKS", "SNOWFLAKE"])
+def test_portable_field_owner_placeholder_executes_without_native_template_expansion(dialect):
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="orders",
+            sql="SELECT 10 AS amount",
+            dimensions=[Dimension(name="amount", type="numeric", sql='COALESCE({model}."amount", 0) * 2')],
+        )
+    )
+    result = synthesize_ossie_document(graph, scope_name="commerce", expression_dialect=dialect, portable_only=True)
+    assert result.valid, result.diagnostics
+    scope = result.document.to_parsed_data()
+    expression = scope["datasets"][0]["fields"][0]["expression"]["dialects"][0]["expression"]
+    # Execute exported SQL directly: reimport alone would mask leaked templates.
+    layer = SemanticLayer(auto_register=False)
+    assert layer.adapter.conn.execute(f"SELECT {expression} FROM (SELECT 10 AS amount) AS source").fetchall() == [(20,)]
+
+
+def test_field_owner_placeholder_normalization_preserves_sql_literals():
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="orders",
+            sql="SELECT 'value' AS label",
+            dimensions=[Dimension(name="label", type="categorical", sql="{model}.label || '{model}.literal'")],
+        )
+    )
+    result = synthesize_ossie_document(graph, scope_name="commerce", expression_dialect="ANSI_SQL", portable_only=True)
+    assert result.valid, result.diagnostics
+    expression = result.document.to_parsed_data()["datasets"][0]["fields"][0]["expression"]["dialects"][0]["expression"]
+    layer = SemanticLayer(auto_register=False)
+    assert layer.adapter.conn.execute(f"SELECT {expression} FROM (SELECT 'value' AS label) AS source").fetchall() == [
+        ("value{model}.literal",)
+    ]
+
+
+@pytest.mark.parametrize("datatype", ["Date", "Time", "DateTime", "DateTimeTz"])
+def test_synthesis_preserves_native_non_time_role_for_temporal_datatype(datatype):
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="orders",
+            sql="SELECT TIMESTAMP '2026-01-02' AS ts",
+            dimensions=[Dimension(name="ts", type="categorical", logical_data_type=datatype)],
+        )
+    )
+    result = synthesize_ossie_document(graph, scope_name="commerce", expression_dialect="ANSI_SQL", portable_only=True)
+    assert result.valid, result.diagnostics
+    data = result.document.to_parsed_data()
+    field = data["datasets"][0]["fields"][0]
+    assert field["dimension"] == {"is_time": False}
+    lowered = lower_ossie_document(parse_ossie_document(json.dumps(data).encode()), target_dialect="duckdb")
+    assert lowered.valid, lowered.diagnostics
+    restored = lowered.catalog["commerce"].graph.models["orders"].dimensions[0]
+    assert restored.type == "categorical"
+    assert restored.logical_data_type == datatype
+    native = SemanticLayer(auto_register=False)
+    native.graph = graph
+    imported = SemanticLayer.from_catalog(lowered.catalog, auto_register=False)
+    assert imported.query(dimensions=["orders.ts"]).fetchall() == native.query(dimensions=["orders.ts"]).fetchall()
+
+
+def test_explicit_legacy_revision_preserves_enveloped_export_contract():
+    from sidemantic.interchange.ossie.profiles import LEGACY_OSSIE_SCHEMA_COMMIT
+
+    result = synthesize_ossie_document(
+        _graph(),
+        scope_name="commerce",
+        expression_dialect="ANSI_SQL",
+        schema_revision=LEGACY_OSSIE_SCHEMA_COMMIT,
+    )
+    assert result.valid, result.diagnostics
+    data = result.document.to_parsed_data()
+    assert data["semantic_model"][0]["name"] == "commerce"
+    assert "datasets" not in data
+    lowered = lower_ossie_document(parse_ossie_document(json.dumps(data).encode()), target_dialect="duckdb")
+    assert lowered.valid, lowered.diagnostics
+
+
+def test_stable_version_export_keeps_enveloped_shape():
+    graph = SemanticGraph()
+    graph.add_model(Model(name="orders", table="orders", dimensions=[Dimension(name="amount", type="numeric")]))
+    result = synthesize_ossie_document(
+        graph, scope_name="commerce", expression_dialect="ANSI_SQL", schema_version="0.1.1"
+    )
+    assert result.valid, result.diagnostics
+    assert result.document.to_parsed_data()["semantic_model"][0]["name"] == "commerce"
+
+
+@pytest.mark.parametrize("dataset_name", ["orders", '"orders"', '"Order Items"'])
+def test_imported_identifier_provenance_remains_portable_with_bound_runtime_names(dataset_name):
+    data = {
+        "version": "0.2.0.dev0",
+        "name": "commerce",
+        "datasets": [
+            {
+                "name": dataset_name,
+                "source": "SELECT 10 AS amount",
+                "fields": [
+                    {
+                        "name": '"line amount"',
+                        "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "amount"}]},
+                    }
+                ],
+            }
+        ],
+        "metrics": [
+            {
+                "name": '"total amount"',
+                "expression": {
+                    "dialects": [{"dialect": "ANSI_SQL", "expression": f'SUM({dataset_name}."line amount")'}]
+                },
+            }
+        ],
+    }
+    lowered = lower_ossie_document(parse_ossie_document(json.dumps(data).encode()), target_dialect="duckdb")
+    assert lowered.valid, lowered.diagnostics
+    graph = lowered.catalog["commerce"].graph
+    result = synthesize_ossie_document(graph, scope_name="commerce", expression_dialect="ANSI_SQL", portable_only=True)
+    assert result.valid, result.diagnostics
+    reloaded = lower_ossie_document(
+        parse_ossie_document(json.dumps(result.document.to_parsed_data()).encode()), target_dialect="duckdb"
+    )
+    assert reloaded.valid, reloaded.diagnostics
+    metric_name = next(iter(graph.metrics))
+    for catalog in (lowered.catalog, reloaded.catalog):
+        layer = SemanticLayer.from_catalog(catalog, engine="python", fallback=False, auto_register=False)
+        assert layer.query(metrics=[metric_name]).fetchall() == [(10,)]
+    model = next(iter(graph.models.values()))
+    model.dimensions[0].metadata["custom_behavior"] = "preserve"
+    refused = synthesize_ossie_document(graph, scope_name="commerce", expression_dialect="ANSI_SQL", portable_only=True)
+    assert not refused.valid
+    assert any(item.code == "ossie.synthesis.native_state_unrepresented" for item in refused.diagnostics)

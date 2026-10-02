@@ -5,6 +5,21 @@ from __future__ import annotations
 OSSIE_IDENTIFIER_MAX_LENGTH = 128
 
 
+def identifier_syntax_valid(identifier: str) -> bool:
+    """Accept regular names or nonempty ANSI delimited names with escaped quotes."""
+
+    if identifier.startswith('"'):
+        if len(identifier) < 3 or not identifier.endswith('"'):
+            return False
+        body = identifier[1:-1]
+        return "\x00" not in body and '"' not in body.replace('""', "")
+    return (
+        bool(identifier)
+        and (identifier[0].isalpha() or identifier[0] == "_")
+        and all(character.isalnum() or character == "_" for character in identifier)
+    )
+
+
 def is_quoted_identifier(identifier: str) -> bool:
     """Return whether *identifier* uses Ossie's ANSI double-quote form."""
 

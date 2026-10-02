@@ -614,7 +614,7 @@ def test_convert_native_metric_extension_roundtrip_and_portable_refusal(tmp_path
     with pytest.warns(UserWarning, match="requires Sidemantic runtime extension"):
         converted = runner.invoke(app, arguments)
     assert converted.exit_code == 0, converted.output
-    assert json.loads(output.read_text())["semantic_model"][0]["custom_extensions"]
+    assert json.loads(output.read_text())["custom_extensions"]
     reimported = runner.invoke(
         app,
         ["convert", str(output), "--from", target_format, "--to", "sidemantic", "--output", str(restored)],
@@ -675,7 +675,8 @@ models:
     assert json.loads(output.read_text())["version"] == "0.1.0"
 
 
-def test_convert_from_ossie_selects_scope_and_target_dialect(tmp_path: Path):
+@pytest.mark.parametrize("source_format", ["ossie", "auto"])
+def test_convert_from_ossie_selects_scope_and_target_dialect(tmp_path: Path, source_format: str):
     source = tmp_path / "source.ossie.yaml"
     output = tmp_path / "output.yml"
     source.write_text(
@@ -689,6 +690,12 @@ semantic_model:
     datasets:
       - name: orders
         source: marketing.orders
+        fields:
+          - name: integer_amount
+            expression:
+              dialects:
+                - {dialect: ANSI_SQL, expression: 'CAST(amount AS BIGINT)'}
+                - {dialect: BIGQUERY, expression: 'SAFE_CAST(amount AS INT64)'}
 """
     )
 
@@ -698,7 +705,7 @@ semantic_model:
             "convert",
             str(source),
             "--from",
-            "ossie",
+            source_format,
             "--to",
             "sidemantic",
             "--output",
@@ -706,12 +713,66 @@ semantic_model:
             "--ossie-scope",
             "marketing",
             "--ossie-target-dialect",
-            "duckdb",
+            "bigquery",
         ],
     )
 
     assert result.exit_code == 0, result.output
     assert "marketing.orders" in output.read_text()
+    assert "INT64" in output.read_text()
+
+
+@pytest.mark.parametrize("extension", [".yaml", ".json"])
+def test_convert_auto_current_ossie_does_not_produce_empty_graph(tmp_path: Path, extension: str):
+    source = tmp_path / f"current{extension}"
+    source.write_text(
+        json.dumps(
+            {
+                "version": "0.2.0.dev0",
+                "name": "commerce",
+                "datasets": [{"name": "orders", "source": "analytics.orders"}],
+            }
+        )
+    )
+    output = tmp_path / "native.yml"
+
+    result = runner.invoke(app, ["convert", str(source), "--output", str(output)])
+
+    assert result.exit_code == 0, result.output
+    assert "analytics.orders" in output.read_text()
+
+
+def test_convert_ossie_can_export_pinned_legacy_draft(tmp_path: Path):
+    source = tmp_path / "native.yml"
+    source.write_text("""models:
+  - name: orders
+    table: analytics.orders
+    primary_key: id
+    dimensions:
+      - {name: id, type: numeric}
+""")
+    output = tmp_path / "legacy.json"
+
+    result = runner.invoke(
+        app,
+        [
+            "convert",
+            str(source),
+            "--to",
+            "ossie",
+            "--output",
+            str(output),
+            "--ossie-scope",
+            "commerce",
+            "--ossie-expression-dialect",
+            "ANSI_SQL",
+            "--ossie-schema-revision",
+            "831f48e582731cf1ee2e65380ca5abf8157869c7",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(output.read_text())["semantic_model"][0]["name"] == "commerce"
 
 
 def test_info_and_validate_can_select_a_multi_scope_ossie_document(tmp_path: Path):

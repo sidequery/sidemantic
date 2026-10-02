@@ -72,8 +72,8 @@ semantic_model:
         datatype: Decimal
         expression:
           dialects:
-            - {dialect: ANSI_SQL, expression: SUM(amount)}
-            - {dialect: BIGQUERY, expression: SUM(SAFE_CAST(amount AS NUMERIC))}
+            - {dialect: ANSI_SQL, expression: SUM(orders.amount)}
+            - {dialect: BIGQUERY, expression: SUM(SAFE_CAST(orders.amount AS NUMERIC))}
   - name: operations
     datasets:
       - name: orders
@@ -84,6 +84,7 @@ semantic_model:
 
     rust = rust_ossie_select_scope(content, "yaml", "commerce", target="BIGQUERY")
     python = OssieAdapter(scope_id="commerce", target_dialect="bigquery").parse_document(source)
+    assert python.valid, python.diagnostics
     python_graph = python.catalog["commerce"].graph
 
     assert rust["scope_id"] == "commerce"
@@ -96,8 +97,13 @@ semantic_model:
     assert rust_dimension["declared_is_time"] is python_dimension.declared_is_time is False
     assert "declared_is_time" not in rust["models"][0]["dimensions"][1]
     assert rust["metrics"][0]["logical_data_type"] == "Decimal"
-    assert rust["metrics"][0]["agg"] == "sum"
-    assert rust["metrics"][0]["sql"] == "SAFE_CAST(amount AS NUMERIC)"
+    assert rust["metrics"][0].get("agg") is None
+    assert rust["metrics"][0]["sql_is_complete"]
+    assert (
+        rust["metrics"][0]["sql"]
+        == python_graph.get_metric("gross_amount").sql
+        == "SUM(SAFE_CAST(orders.amount AS NUMERIC))"
+    )
     assert rust["models"][0]["relationships"][0]["edge_id"] == "orders_customer"
     assert python_graph.get_model("orders").relationships[0].edge_id == "orders_customer"
     assert rust["models"][0]["primary_key"] == ""

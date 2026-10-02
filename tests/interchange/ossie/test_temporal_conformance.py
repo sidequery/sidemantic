@@ -68,8 +68,7 @@ def test_complete_datatype_and_time_role_matrix_survives_lowering_and_synthesis(
 
     assert synthesized.valid
     synthesized_fields = {
-        field["name"]: field
-        for field in synthesized.document.to_parsed_data()["semantic_model"][0]["datasets"][0]["fields"]
+        field["name"]: field for field in synthesized.document.to_parsed_data()["datasets"][0]["fields"]
     }
     for name, (_, data_type, declared_is_time) in expected.items():
         assert synthesized_fields[name]["datatype"] == data_type

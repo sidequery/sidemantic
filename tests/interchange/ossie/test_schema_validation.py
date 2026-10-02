@@ -101,6 +101,17 @@ def test_schema_profiles_have_exact_pins_and_integrity() -> None:
         ),
     }
 
+    expected["logical-0.2.0.dev0-b6c702e"] = (
+        "b6c702ed1c07e91382a69e870c875cbd19570828",
+        "5b9cf15d31057e2b7363194b1c254a6b669fc412b3f8f402d4efbdcfa25fcc87",
+        "5b9cf15d31057e2b7363194b1c254a6b669fc412b3f8f402d4efbdcfa25fcc87",
+    )
+    expected["ontology-0.2.0.dev0-b6c702e"] = (
+        "b6c702ed1c07e91382a69e870c875cbd19570828",
+        "a17df18b10aab95b4e890c8cecaba3fc3ee9a0cfc70352be32f9b55ea2c37bd5",
+        "0a742fc41b0999511084ea42f5070ceee19be3b542d81936c89e75b6800231a0",
+    )
+
     profiles = {profile.name: profile for profile in validation.available_schema_profiles()}
     assert set(profiles) == set(expected)
 

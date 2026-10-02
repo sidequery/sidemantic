@@ -210,7 +210,15 @@ impl<'a> SqlGenerator<'a> {
         // Native callers can use this API without the SemanticInput host. Keep
         // parsing, AST transformation, serialization and destruction on the same
         // protected stack instead of returning a deep AST to the caller stack.
-        crate::semantic_input::with_semantic_stack(|| self.generate_with_options(query))
+        crate::semantic_input::with_semantic_stack(|| {
+            if let Some(graph) = self.prepare_imported_window_dimensions()? {
+                return SqlGenerator::new(&graph)
+                    .with_dialect(self.dialect)
+                    .with_timezone(self.timezone.clone())
+                    .generate_with_options(query);
+            }
+            self.generate_with_options(query)
+        })
     }
 
     /// Aggregate children retain their own source population independently of
@@ -219,6 +227,15 @@ impl<'a> SqlGenerator<'a> {
         &self,
         query: &SemanticQuery,
         source_model: Option<&str>,
+    ) -> Result<String> {
+        self.generate_from_model_with_aggregation(query, source_model, true)
+    }
+
+    fn generate_from_model_with_aggregation(
+        &self,
+        query: &SemanticQuery,
+        source_model: Option<&str>,
+        plan_aggregates: bool,
     ) -> Result<String> {
         if query.consumption_base_model.is_some()
             && query.metrics.is_empty()
@@ -229,8 +246,10 @@ impl<'a> SqlGenerator<'a> {
             ));
         }
         self.validate_approximate_query(query)?;
-        if let Some(sql) = aggregate_plan::try_generate(self, query)? {
-            return Ok(sql);
+        if plan_aggregates {
+            if let Some(sql) = aggregate_plan::try_generate(self, query)? {
+                return Ok(sql);
+            }
         }
         if let Some(sql) = snapshots::try_generate(self, query)? {
             return Ok(sql);
@@ -284,7 +303,7 @@ impl<'a> SqlGenerator<'a> {
             );
         }
 
-        if self.needs_preaggregation_for_fanout(&metric_refs)? {
+        if plan_aggregates && self.needs_preaggregation_for_fanout(&metric_refs)? {
             self.reject_totals_route(query, "preaggregation")?;
             return self.generate_with_preaggregation(
                 query,
@@ -438,6 +457,10 @@ impl<'a> SqlGenerator<'a> {
             let metric =
                 self.metric_for_model_with_source(&model_name, &metric_name, graph_metric)?;
             let raw_alias = self.metric_raw_alias(model, &metric_name, metric);
+            let bound_metric = graph_metric
+                .then(|| self.graph_metric_source_inputs(metric, Some(&model_name)))
+                .transpose()?;
+            let metric = bound_metric.as_ref().unwrap_or(metric);
             let mut raw_expr = self.normalize_cte_source_expression(
                 &self.metric_raw_expression(metric, model)?,
                 model,
@@ -1463,6 +1486,9 @@ impl<'a> SqlGenerator<'a> {
             }
         }
         if owners.is_empty() {
+            owners.extend(self.logical_constant_owner(metric)?);
+        }
+        if owners.is_empty() {
             return Err(SidemanticError::UnsupportedSemanticFeatures {
                 capabilities: vec![format!("metric.graph_scope.{reference}")],
             });
@@ -1473,6 +1499,25 @@ impl<'a> SqlGenerator<'a> {
         let mut owners: Vec<_> = owners.into_iter().collect();
         owners.sort();
         Ok(owners)
+    }
+
+    /// A column-free Ossie aggregate still has an unambiguous population when
+    /// its scope declares exactly one dataset. Never guess among several.
+    fn logical_constant_owner(&self, metric: &Metric) -> Result<Option<String>> {
+        if !metric.sql_is_complete || !aggregate_plan::has_logical_inputs(metric) {
+            return Ok(None);
+        }
+        let Some(sql) = metric.sql.as_deref() else {
+            return Ok(None);
+        };
+        if !semantic_column_references(sql)?.is_empty() {
+            return Ok(None);
+        }
+        let mut models = self.graph.models();
+        let first = models.next();
+        Ok(first
+            .filter(|_| models.next().is_none())
+            .map(|model| model.name.clone()))
     }
 
     fn metric_reference_tokens(&self, expression: &str) -> Result<Vec<String>> {
@@ -1808,6 +1853,57 @@ impl<'a> SqlGenerator<'a> {
             }
         }
         ordered
+    }
+
+    /// Unowned graph measures reference semantic fields. Model-local measures
+    /// and graph-addressable model measures retain physical inputs, including
+    /// complete filtered SQL already lowered to a simple owned measure.
+    fn graph_metric_source_inputs(&self, metric: &Metric, owner: Option<&str>) -> Result<Metric> {
+        let mut bound = metric.clone();
+        if metric.r#type != MetricType::Simple
+            || metric.sql_is_complete
+            || self.graph.metric_owner(&metric.name).is_some()
+        {
+            return Ok(bound);
+        }
+        let Some(model) = owner.and_then(|owner| self.graph.get_model(owner)) else {
+            return Ok(bound);
+        };
+        let bind = |sql: &str| -> Result<String> {
+            let sql = crate::core::replace_model_placeholder(sql, Some(&model.name))?;
+            let mut replacements = HashMap::new();
+            for column in crate::core::outer_semantic_column_references(&sql)? {
+                if column
+                    .model
+                    .as_deref()
+                    .is_some_and(|source| source != model.name)
+                {
+                    continue;
+                }
+                if let Some(dimension) = model.get_dimension(&column.field) {
+                    let source =
+                        self.normalize_cte_source_expression(dimension.sql_expr(), model)?;
+                    replacements.insert((column.model, column.field), format!("({source})"));
+                }
+            }
+            self.emit_expression(&crate::core::replace_outer_semantic_columns(
+                parse_semantic_expression(&sql)?,
+                &replacements,
+            )?)
+        };
+        if let Some(sql) = metric
+            .sql
+            .as_deref()
+            .filter(|sql| !sql.is_empty() && *sql != "*")
+        {
+            bound.sql = Some(bind(sql)?);
+        }
+        bound.filters = metric
+            .filters
+            .iter()
+            .map(|filter| bind(filter))
+            .collect::<Result<_>>()?;
+        Ok(bound)
     }
 
     fn metric_raw_expression(

@@ -57,6 +57,8 @@ ontology_mappings:
           source: analytics.customers
     concept_mappings:
       - concept: Customer
+        object_mappings:
+          - expression: customers.id
 """
 
 
@@ -208,7 +210,7 @@ def test_graph_export_requires_explicit_scope_and_dialect(tmp_path: Path) -> Non
     output = tmp_path / "model.yaml"
     OssieAdapter(export_scope_name="commerce", expression_dialect="BIGQUERY").export(graph, output)
     data = yaml.safe_load(output.read_text())
-    dialect = data["semantic_model"][0]["datasets"][0]["fields"][0]["expression"]["dialects"][0]
+    dialect = data["datasets"][0]["fields"][0]["expression"]["dialects"][0]
     assert dialect == {"dialect": "BIGQUERY", "expression": "id"}
 
 
@@ -238,7 +240,7 @@ def test_filtered_metric_export_roundtrip_executes(tmp_path: Path, adapter_class
     )
     output = tmp_path / "model.yaml"
     adapter_class(export_scope_name="commerce", expression_dialect="ANSI_SQL").export(graph, output, portable_only=True)
-    assert not yaml.safe_load(output.read_text())["semantic_model"][0].get("custom_extensions")
+    assert not yaml.safe_load(output.read_text()).get("custom_extensions")
     layer = SemanticLayer()
     layer.graph = adapter_class().parse(output)
     layer.adapter.conn.execute("create table orders(amount integer, status varchar)")

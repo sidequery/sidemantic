@@ -261,23 +261,22 @@ def load_semantic_source(
 
     File inputs are always exact: auto-discovery parses only the named file and
     never scans its siblings. Directory inputs retain the existing project-wide
-    discovery behavior.
+    discovery behavior. In auto mode, adapter options apply only to detected
+    Ossie sources; other format options require an explicit source format.
     """
     source_path = Path(source)
     if not source_path.exists():
         raise FileNotFoundError(f"Semantic source does not exist: {source_path}")
 
     if source_format.strip().lower() == "auto":
-        if adapter_options:
-            raise ValueError("adapter_options require an explicit source_format")
         from sidemantic.core.semantic_layer import SemanticLayer
         from sidemantic.loaders import load_from_directory, load_from_file
 
         layer = SemanticLayer()
         if source_path.is_file():
-            load_from_file(layer, source_path)
+            load_from_file(layer, source_path, ossie_adapter_options=adapter_options)
         else:
-            load_from_directory(layer, source_path)
+            load_from_directory(layer, source_path, ossie_adapter_options=adapter_options)
         return layer.graph
 
     spec = get_semantic_format(source_format, operation="import")

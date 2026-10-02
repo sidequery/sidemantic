@@ -32,6 +32,7 @@ from sidemantic.interchange.ossie import (
     sort_diagnostics,
     synthesize_ossie_document,
 )
+from sidemantic.interchange.ossie.profiles import CURRENT_OSSIE_SCHEMA_COMMIT
 
 _GENERATED_DIRECTORIES = frozenset({"dbt_packages", "target"})
 
@@ -75,6 +76,7 @@ class OssieAdapter(BaseAdapter):
         export_scope_name: str | None = None,
         expression_dialect: str | None = None,
         schema_version: str = "0.2.0.dev0",
+        schema_revision: str | None = None,
         serialization: OssieSerialization | str | None = None,
     ) -> None:
         if not target_dialect.strip():
@@ -84,8 +86,10 @@ class OssieAdapter(BaseAdapter):
         self._export_scope_name = export_scope_name
         self._expression_dialect = expression_dialect
         self._schema_version = schema_version
+        self._schema_revision = schema_revision
         self._serialization = OssieSerialization(serialization) if serialization is not None else None
         self._parse_options = OssieParseOptions(
+            schema_revision=schema_revision,
             consumer_profile=consumer_profile,
             import_policy=import_policy,
             source_dialect=source_dialect,
@@ -212,6 +216,7 @@ class OssieAdapter(BaseAdapter):
         scope_name: str | None = None,
         expression_dialect: str | None = None,
         schema_version: str | None = None,
+        schema_revision: str | None = None,
         serialization: OssieSerialization | str | None = None,
         portable_only: bool = False,
     ) -> None:
@@ -234,6 +239,7 @@ class OssieAdapter(BaseAdapter):
             scope_name=selected_scope,
             expression_dialect=selected_dialect,
             schema_version=schema_version or self._schema_version,
+            schema_revision=schema_revision or self._schema_revision or CURRENT_OSSIE_SCHEMA_COMMIT,
             serialization=output_serialization,
             consumer_profile=self._parse_options.consumer_profile,
             portable_only=portable_only,

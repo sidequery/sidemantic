@@ -112,7 +112,7 @@ def test_classifies_supported_document_families(root, expected_type):
             "ossie.document.family_mixed",
             "mixes logical",
         ),
-        (b'{"version":"0.2.0.dev0","name":"unknown"}', "ossie.document.family_missing", "none of"),
+        (b'{"version":"0.2.0.dev0","unknown":true}', "ossie.document.family_missing", "neither"),
         (b'["version", "0.2.0.dev0"]', "ossie.document.root_type", "root must be an object"),
     ],
 )
@@ -297,3 +297,50 @@ def test_parser_enforces_a_bounded_input_budget():
 
     assert isinstance(result.document, UnsupportedOssieDocument)
     assert diagnostic_codes(result) == ["ossie.parse.limit"]
+
+
+def test_yaml_merge_overrides_are_not_duplicate_authored_keys():
+    raw = b"""version: 0.2.0.dev0
+semantic_model:
+- name: sales
+  datasets:
+  - &base {name: orders, source: orders}
+  - <<: *base
+    name: returns
+    source: returns
+"""
+    result = parse_ossie_document(raw, options=OssieParseOptions(validate_schema=True))
+    assert result.valid
+    assert [dataset["name"] for dataset in result.document.semantic_models[0]["datasets"]] == ["orders", "returns"]
+
+
+@pytest.mark.parametrize("merged", [False, True])
+def test_duplicate_explicit_keys_are_rejected_even_with_merge(merged):
+    prefix = "base: &base {name: base}\n" if merged else ""
+    merge = "  <<: *base\n" if merged else ""
+    raw = (prefix + "mapping:\n" + merge + "  name: first\n  name: second\n").encode()
+    result = parse_ossie_document(raw)
+    assert diagnostic_codes(result) == ["ossie.parse.duplicate_key"]
+
+
+@pytest.mark.parametrize("merge", [False, True])
+def test_yaml_alias_expansion_is_bounded_before_construction(merge):
+    if merge:
+        lines = ["a0: &a0 {name: source}"]
+        for index in range(1, 9):
+            aliases = ", ".join([f"*a{index - 1}"] * 10)
+            lines.append(f"a{index}: &a{index} {{<<: [{aliases}]}}")
+    else:
+        lines = ["a0: &a0 [0]"]
+        for index in range(1, 9):
+            aliases = ", ".join([f"*a{index - 1}"] * 10)
+            lines.append(f"a{index}: &a{index} [{aliases}]")
+    result = parse_ossie_document("\n".join(lines).encode())
+    assert diagnostic_codes(result) == ["ossie.parse.limit"]
+
+
+@pytest.mark.parametrize("serialization", ["json", "yaml", None])
+def test_oversized_integer_returns_diagnostic(serialization):
+    raw = b"9" * 4500
+    result = parse_ossie_document(raw, options=OssieParseOptions(serialization=serialization))
+    assert diagnostic_codes(result) == ["ossie.parse.non_json_value"]

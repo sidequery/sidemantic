@@ -14,15 +14,14 @@ fn unsupported(shape: &str) -> SidemanticError {
 
 struct Inputs<'a> {
     generator: &'a SqlGenerator<'a>,
-    owner: &'a str,
-    model: Model,
+    models: HashMap<String, Model>,
     names: HashSet<String>,
     references: Vec<String>,
     next: usize,
 }
 
 impl Inputs<'_> {
-    fn add(&mut self, sql: String, filters: &[String]) -> String {
+    fn add(&mut self, owner: &str, sql: String, filters: &[String]) -> String {
         let name = loop {
             let candidate = format!("sidemantic_input_{}", self.next);
             self.next += 1;
@@ -32,8 +31,8 @@ impl Inputs<'_> {
         };
         let mut metric = Metric::sum(&name, sql);
         metric.filters = filters.to_vec();
-        self.model.metrics.push(metric);
-        self.references.push(format!("{}.{}", self.owner, name));
+        self.models.get_mut(owner).unwrap().metrics.push(metric);
+        self.references.push(format!("{owner}.{name}"));
         self.generator.quote_identifier(&name)
     }
 }
@@ -41,18 +40,34 @@ impl Inputs<'_> {
 pub(super) fn generate_entity_aggregates(
     generator: &SqlGenerator<'_>,
     query: &SemanticQuery,
-    owner: &str,
     dimensions: &[DimensionRef],
     metrics: &[(&Metric, &str)],
     deduplicate: bool,
     independent_source: bool,
+    sources: &[String],
 ) -> Result<String> {
+    let owner = sources[0].as_str();
     let model = generator.graph.get_model(owner).unwrap();
-    if deduplicate && model.primary_keys().is_empty() {
-        return Err(SidemanticError::Validation(format!(
-            "Model '{owner}' has no primary key; cannot safely aggregate across a fanout join"
-        )));
-    }
+    // Joined expressions own a tuple of source rows. Include every source key
+    // when another relationship multiplies that tuple, rather than restoring
+    // only one source's grain or deduplicating equal measure values.
+    let mut required = query.required_population_models.clone();
+    required.extend(sources.iter().cloned());
+    required.extend(dimensions.iter().map(|dimension| dimension.model.clone()));
+    required.extend(generator.find_filter_models(&query.filters));
+    required.extend(query.prepared_policies.model_names().cloned());
+    let anchor = query.consumption_base_model.as_deref().unwrap_or(owner);
+    let paths = generator.build_join_paths(anchor, &required)?;
+    let source_paths = generator.build_join_paths(anchor, &sources.iter().cloned().collect())?;
+    let population_edges: HashSet<_> = source_paths
+        .values()
+        .flat_map(|path| &path.steps)
+        .map(|step| (&step.from_model, &step.to_model))
+        .collect();
+    let extra_fanout = paths.values().flat_map(|path| &path.steps).any(|step| {
+        step.causes_fan_out() && !population_edges.contains(&(&step.from_model, &step.to_model))
+    });
+    let deduplicate = deduplicate || (sources.len() > 1 && extra_fanout);
     let names = generator
         .graph
         .models()
@@ -72,15 +87,30 @@ pub(super) fn generate_entity_aggregates(
         .collect();
     let mut inputs = Inputs {
         generator,
-        owner,
-        model: model.clone(),
+        models: sources
+            .iter()
+            .map(|source| {
+                (
+                    source.clone(),
+                    generator.graph.get_model(source).unwrap().clone(),
+                )
+            })
+            .collect(),
         names,
         references: Vec::new(),
         next: 0,
     };
     if deduplicate {
-        for key in model.primary_keys() {
-            inputs.add(generator.key_sql(model, &key, None)?, &[]);
+        for source in sources {
+            let source_model = generator.graph.get_model(source).unwrap();
+            if source_model.primary_keys().is_empty() {
+                return Err(SidemanticError::Validation(format!(
+                    "Model '{source}' has no primary key; cannot safely aggregate across a fanout join"
+                )));
+            }
+            for key in source_model.primary_keys() {
+                inputs.add(source, generator.key_sql(source_model, &key, None)?, &[]);
+            }
         }
     }
     let mut selections = Vec::new();
@@ -97,19 +127,31 @@ pub(super) fn generate_entity_aggregates(
             }
             let mut replacements = HashMap::new();
             for column in columns {
-                if column
-                    .model
-                    .as_deref()
-                    .is_some_and(|name| name != owner && name != format!("{owner}_cte"))
-                {
+                let source = column.model.as_deref().unwrap_or(owner);
+                let source = source
+                    .strip_suffix("_cte")
+                    .filter(|source| sources.iter().any(|item| item == source))
+                    .unwrap_or(source);
+                if !sources.iter().any(|item| item == source) {
                     return Err(unsupported("cross_source_raw_input"));
                 }
-                let key = (column.model, column.field.clone());
+                let key = (column.model.clone(), column.field.clone());
                 if let std::collections::hash_map::Entry::Vacant(entry) = replacements.entry(key) {
-                    // Complete SQL names physical source columns. Do not expand
-                    // a coincidentally named semantic metric as a dependency.
-                    let input =
-                        inputs.add(generator.quote_identifier(&column.field), &metric.filters);
+                    // Ossie aggregate inputs prefer declared logical fields and
+                    // preserve undeclared physical references. Native complete
+                    // SQL retains its physical source-column contract. Project
+                    // either expression under a fresh internal metric name, never
+                    // beside SELECT * under a colliding source-column name.
+                    let source_model = generator.graph.get_model(source).unwrap();
+                    let raw = if super::aggregate_plan::has_logical_inputs(metric) {
+                        source_model
+                            .get_dimension(&column.field)
+                            .map(|dimension| dimension.sql_expr().to_string())
+                            .unwrap_or_else(|| generator.quote_identifier(&column.field))
+                    } else {
+                        generator.quote_identifier(&column.field)
+                    };
+                    let input = inputs.add(source, raw, &metric.filters);
                     entry.insert(input);
                 }
             }
@@ -132,7 +174,7 @@ pub(super) fn generate_entity_aggregates(
             } else {
                 generator.metric_raw_expression(metric, model)?
             };
-            let raw = inputs.add(raw, &metric.filters);
+            let raw = inputs.add(owner, raw, &metric.filters);
             if implicit_distinct {
                 format!("COUNT({raw})")
             } else {
@@ -152,10 +194,12 @@ pub(super) fn generate_entity_aggregates(
     // COUNT(*) can be the only output. Retain its source in the row query even
     // when every grouping dimension belongs to a different model.
     if inputs.references.is_empty() {
-        inputs.add("1".into(), &[]);
+        inputs.add(owner, "1".into(), &[]);
     }
     let mut graph = generator.graph.clone();
-    graph.replace_model(inputs.model)?;
+    for model in inputs.models.into_values() {
+        graph.replace_model(model)?;
+    }
     let row_generator = SqlGenerator::new(&graph)
         .with_dialect(generator.dialect)
         .with_timezone(generator.timezone.clone());
@@ -177,7 +221,8 @@ pub(super) fn generate_entity_aggregates(
     } else {
         row_generator.query_base_model(dimensions, &row_generator.parse_metric_refs(&rows.metrics)?)
     };
-    let row_sql = row_generator.generate_from_model(&rows, source.as_deref())?;
+    let row_sql =
+        row_generator.generate_from_model_with_aggregation(&rows, source.as_deref(), false)?;
     let mut collisions = HashMap::new();
     for dimension in dimensions {
         *collisions.entry(dimension.alias.clone()).or_insert(0usize) += 1;

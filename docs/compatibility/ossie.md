@@ -27,6 +27,8 @@ independent choices. Sidemantic supports these explicit contracts:
 | `ossie-core` | `0.1.1` | Logical | `logical-0.1.1` | `faf581054dcf7964d5fe0ceae7d6f415c8ce32a5` |
 | `ossie-core` | `0.2.0.dev0` | Logical | `logical-0.2.0.dev0` | `831f48e582731cf1ee2e65380ca5abf8157869c7` |
 | `ossie-core` | `0.2.0.dev0` | Ontology | `ontology-0.2.0.dev0` | `831f48e582731cf1ee2e65380ca5abf8157869c7` |
+| `ossie-core` | `0.2.0.dev0` | Current logical | `logical-0.2.0.dev0-b6c702e` | `b6c702ed1c07e91382a69e870c875cbd19570828` |
+| `ossie-core` | `0.2.0.dev0` | Current ontology | `ontology-0.2.0.dev0-b6c702e` | `b6c702ed1c07e91382a69e870c875cbd19570828` |
 | `dbt-1.12` | `0.1.0` | Logical compatibility alias | Pinned `logical-0.1.1`; the retained document still declares `0.1.0` | `faf581054dcf7964d5fe0ceae7d6f415c8ce32a5` |
 | `dbt-1.12` | `0.1.1` | Logical | `logical-0.1.1` | `faf581054dcf7964d5fe0ceae7d6f415c8ce32a5` |
 
@@ -43,20 +45,28 @@ untouched upstream ontology schema is retained alongside it. Exact paths,
 source URLs, transformations, and SHA-256 values are in
 [`sidemantic/interchange/ossie/schemas/manifest.json`](../../sidemantic/interchange/ossie/schemas/manifest.json).
 
-The `0.2.0.dev0` snapshot was refreshed against Apache HEAD on September 12,
-2026. It accepts root `dialects` and `vendors`, plus `SIGMA` and `THOUGHTSPOT`
-expression alternatives. The development version string alone does not identify
-a schema revision; the commit and checksums identify the supported snapshot.
+The September 12 snapshot retains the `semantic_model` array envelope, root
+`dialects` and `vendors`, and its original expression labels. The October 1
+snapshot uses a flat root containing `version`, `name`, and `datasets`, adds
+`DAX` and `OSSIE_SQL_2026`, and supports ontology `prefixes` and `iri` metadata.
+Both snapshots retain their original schema assets and checksums.
+
+Parsing infers the logical snapshot from its shape. Current ontology markers
+also select the newer snapshot; ambiguous ontology sources retain the older
+default unless `OssieParseOptions(schema_revision=...)` selects a pinned commit.
+The profile and preserved document carry that selection through serialization.
+The mutable development version alone does not identify a schema revision.
 
 ## Pinned upstream validator gate
 
 The conformance suite also runs the official Apache Ossie validator from a
 pinned local fixture, using only the vendored upstream schemas and validator
 code. It verifies that canonical Sidemantic exports pass for core `0.1.1`
-(JSON) and core `0.2.0.dev0` (YAML), and that a deliberately invalid document is
-rejected. The gate is implemented by
+(JSON), both pinned core `0.2.0.dev0` shapes, and current ontology. Deliberately
+invalid documents are rejected. The gates are implemented by
 [`tests/interchange/ossie/test_upstream_validator_gate.py`](../../tests/interchange/ossie/test_upstream_validator_gate.py)
-and does not require network access. This reproducible gate checks the pinned
+and [`tests/interchange/ossie/test_current_schema.py`](../../tests/interchange/ossie/test_current_schema.py)
+and do not require network access. These gates check the pinned
 revision; it does not monitor future upstream changes. The `dbt-1.12`
 compatibility alias is validated separately against its declared compatibility
 contract; it is not presented as an upstream Ossie schema version.
@@ -69,7 +79,7 @@ when requested, the original bytes. Unknown fields that pass the selected
 schema remain in that source document.
 
 A runtime `SemanticGraph` is a target-specific executable projection of one
-logical `semantic_model` scope. It contains only constructs Sidemantic can lower
+logical model scope, either at the root or inside the older envelope. It contains only constructs Sidemantic can lower
 safely for the selected runtime dialect. It is not an archival copy of the
 source document and cannot reproduce alternate expression dialects, lexical
 YAML details, ontology content, or every Ossie field.
@@ -98,7 +108,8 @@ diagnostics also identify the profile, schema commit, and checksum.
   goal is to inspect a partial migration result.
 
 The CLI exposes permissive parsing as `--ossie-permissive` and profile selection
-as `--ossie-consumer-profile`. These options do not weaken the runtime binding
+as `--ossie-consumer-profile`, including automatically detected Ossie conversion
+inputs. These options do not weaken the runtime binding
 safeguards described above.
 
 ## Scoped `SemanticCatalog` behavior
@@ -128,15 +139,24 @@ use the same dataset or metric names without colliding.
 Executable import requires a target dialect. For each field or metric,
 Sidemantic selects the exact matching Ossie expression when Ossie defines a
 label for that target: `BIGQUERY`, `SNOWFLAKE`, or `DATABRICKS`. Otherwise it
-uses an explicit `ANSI_SQL` variant. If neither exists, the construct is
+lowers an `OSSIE_SQL_2026` variant when present, then falls back to an explicit
+`ANSI_SQL` variant. If none exists, the construct is
 diagnosed and excluded; Sidemantic does not select an arbitrary first variant,
 relabel SQL, or claim that unchanged text was transpiled.
 
-The selected text must parse as exactly one scalar expression in the target
-runtime dialect. Following the structural boundary in the pinned
-[Apache expression-language proposal](https://github.com/apache/ossie/blob/88e0011148283302c9a04cd0287e00e0b9d87354/core-spec/expression_language.md),
+The portable dialect is parsed as source syntax before translating required
+functions to the execution dialect. It preserves logarithm argument order,
+truncation precision, date arithmetic, ANSI window frames, and exact statistical
+aggregates. BigQuery exact `MEDIAN` and ordered-set percentiles need query-level
+lowering and produce explicit unsupported-target diagnostics. They are never
+silently changed to approximate aggregates.
+
+Selected SQL must parse as exactly one expression. Following the structural
+boundary in the pinned
+[Apache expression-language proposal](https://github.com/apache/ossie/blob/b6c702ed1c07e91382a69e870c875cbd19570828/core-spec/expression_language.md),
 queries and nested subqueries, CTEs, set operations, query clauses, DDL, DML,
-commands, malformed text, and multiple statements are rejected. The gate does
+commands, projection aliases, malformed text, and multiple statements are
+rejected. Dataset fields also reject aggregates outside a window. The gate does
 not impose an ANSI function allowlist on vendor-dialect variants. Current target
 parsers are BigQuery, Databricks, DuckDB, Postgres, Snowflake, and Spark.
 `BIGQUERY` is supported both for target-aware import and explicit graph
@@ -150,7 +170,9 @@ identifiers are resolved case-insensitively after uppercasing. Double-quoted
 identifiers are resolved exactly after stripping the outer quotes and unescaping
 doubled quotes, so `orders` and `Orders` match while `orders` and `"orders"` do
 not. Duplicate detection, relationship references, and key references use that
-same normalization, but declarations and retained source text are not renamed.
+same normalization. Retained source text remains unchanged; runtime projections
+decode quoted names and use deterministic aliases where native naming rules
+would otherwise collide. Source-name metadata retains the declaration spelling.
 Identifiers longer than 128 decoded characters are diagnosed and excluded from
 executable lowering.
 
@@ -173,10 +195,19 @@ key, irrespective of declaration order. The original ordered source/target pairs
 are preserved when constructing the join; an unsafe relationship is
 preserved in the source document but excluded from executable topology.
 
+Both query engines evaluate declared logical fields before using them as keys or
+aggregate inputs. Independent dataset aggregates keep their own entity grain;
+an aggregate over a joined row expression keeps the joined population. Adding
+an independent metric does not duplicate the inputs of another aggregate.
+Metric references are bound before entering the runtime graph. Native model
+metrics continue to use their existing physical-column input conventions.
+
 ## Ontology documents
 
-Ontology documents use the pinned ontology schema and receive semantic checks
-for concept references and embedded logical-model structure. Their complete
+Ontology documents use the pinned ontology schema and receive static checks
+for built-in and declared concepts, duplicate identities, supertypes, role
+references, identifying and mapped relationships, tuple arity, required value
+ancestry, and embedded logical-model structure. Their complete
 validated canonical data can be preserved and serialized as an opaque source
 document.
 
@@ -207,7 +238,11 @@ Exporting a runtime graph creates a new logical document. It requires both:
   `ANSI_SQL`, `BIGQUERY`, `DATABRICKS`, and `SNOWFLAKE`.
 
 `schema_version` may also be selected explicitly; the current default is
-`0.2.0.dev0`. Sidemantic emits one expression variant with the supplied label
+`0.2.0.dev0` at revision `b6c702e`, producing the flat root. Pass
+`schema_revision="831f48e582731cf1ee2e65380ca5abf8157869c7"` or CLI
+`--ossie-schema-revision 831f48e582731cf1ee2e65380ca5abf8157869c7` to synthesize
+the older envelope. Preserved-document export retains its source shape.
+Sidemantic emits one expression variant with the supplied label
 and validates the completed document against the pinned schema. It validates
 that expression text in the named dialect but does not infer its origin,
 transpile it, or relabel it as another dialect.
@@ -242,10 +277,12 @@ qualifiers, and derived metric references retain their meaning.
 
 Graph synthesis cannot create ontology documents or recover source-only fields.
 
-Directory loading recognizes explicit `*.ossie.json` files anywhere in the
-source tree. Arbitrarily named JSON documents still follow the dbt `OSI/`
-directory convention; generated `target/` and `dbt_packages/` artifacts are
-excluded. Malformed explicitly named files report an error.
+Directory loading recognizes explicit `*.ossie.json`, `*.ossie.yaml`, and
+`*.ossie.yml` files anywhere in the source tree, plus both logical YAML shapes.
+Arbitrarily named JSON documents discovered in a directory follow the dbt
+`OSI/` convention; an explicitly selected JSON file is inspected directly.
+Generated `target/` and `dbt_packages/` artifacts are excluded. Malformed
+explicitly named files report an error.
 
 ## CLI examples
 
@@ -281,17 +318,24 @@ The experimental Rust runtime now has a strict forward Ossie import subset in
 its dedicated `ossie` adapter. It supports explicit consumer profiles,
 including `ossie-core` (`0.1.1` and `0.2.0.dev0`) and `dbt-1.12` compatibility
 profiles. It preserves separate semantic-model scopes and uses
-exact-target-then-`ANSI_SQL` expression selection for its supported runtime
+exact-target, portable, then `ANSI_SQL` expression selection for its supported runtime
 targets: `ANSI_SQL`, `DUCKDB`, `POSTGRES`, `SNOWFLAKE`, `DATABRICKS`, and
 `BIGQUERY`. Its import gate also checks scalar SQL structure, identifiers,
 declared primary and unique keys, relationship identity and endpoints, key
 arity, and target-key uniqueness. Invalid or unsupported input fails closed;
 the legacy `osi` adapter remains a separate compatibility surface.
 
-This is a forward import subset, not full parity with the Python contract. Rust
-does not yet provide the Python implementation's complete pinned JSON Schema
-validation, preserved source-document and exact-byte model, ontology
-preservation/reasoning boundary, permissive lowering mode, or Ossie export and
-graph-synthesis path. Rust checks therefore establish strict structural import
-coverage only; they are not live warehouse execution tests and do not claim
-runtime coverage for every target database.
+The Python CLI/API uses the shared Python source importer before selecting the
+Python or Rust query engine. Preserved source documents, complete pinned JSON
+Schema validation, ontology validation, permissive import, and export remain
+owned by that shared interchange API for both engine choices.
+
+The separate native Rust forward importer has strict structural validation,
+current and legacy logical shapes, and native expression lowering. It does not
+duplicate the shared preserved-document, exact-byte, or synthesis APIs. Native
+structural status is labelled `closed_structural_subset`, not full JSON Schema
+validation. Use `OssieCompiledScope::into_graph()` to retain graph-level metric
+scope and logical expression semantics when passing a native import to the
+compiler. The conformance tests execute one corpus through Python import and
+both runtimes, plus native Rust import/compilation, against DuckDB. They do not
+certify live warehouse behavior for every target database.

@@ -704,3 +704,49 @@ def test_stable_version_export_keeps_enveloped_shape():
     )
     assert result.valid, result.diagnostics
     assert result.document.to_parsed_data()["semantic_model"][0]["name"] == "commerce"
+
+
+@pytest.mark.parametrize("dataset_name", ["orders", '"orders"', '"Order Items"'])
+def test_imported_identifier_provenance_remains_portable_with_bound_runtime_names(dataset_name):
+    data = {
+        "version": "0.2.0.dev0",
+        "name": "commerce",
+        "datasets": [
+            {
+                "name": dataset_name,
+                "source": "SELECT 10 AS amount",
+                "fields": [
+                    {
+                        "name": '"line amount"',
+                        "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "amount"}]},
+                    }
+                ],
+            }
+        ],
+        "metrics": [
+            {
+                "name": '"total amount"',
+                "expression": {
+                    "dialects": [{"dialect": "ANSI_SQL", "expression": f'SUM({dataset_name}."line amount")'}]
+                },
+            }
+        ],
+    }
+    lowered = lower_ossie_document(parse_ossie_document(json.dumps(data).encode()), target_dialect="duckdb")
+    assert lowered.valid, lowered.diagnostics
+    graph = lowered.catalog["commerce"].graph
+    result = synthesize_ossie_document(graph, scope_name="commerce", expression_dialect="ANSI_SQL", portable_only=True)
+    assert result.valid, result.diagnostics
+    reloaded = lower_ossie_document(
+        parse_ossie_document(json.dumps(result.document.to_parsed_data()).encode()), target_dialect="duckdb"
+    )
+    assert reloaded.valid, reloaded.diagnostics
+    metric_name = next(iter(graph.metrics))
+    for catalog in (lowered.catalog, reloaded.catalog):
+        layer = SemanticLayer.from_catalog(catalog, engine="python", fallback=False, auto_register=False)
+        assert layer.query(metrics=[metric_name]).fetchall() == [(10,)]
+    model = next(iter(graph.models.values()))
+    model.dimensions[0].metadata["custom_behavior"] = "preserve"
+    refused = synthesize_ossie_document(graph, scope_name="commerce", expression_dialect="ANSI_SQL", portable_only=True)
+    assert not refused.valid
+    assert any(item.code == "ossie.synthesis.native_state_unrepresented" for item in refused.diagnostics)

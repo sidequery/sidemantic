@@ -161,12 +161,12 @@ def test_fanout_join_detection_multiple_joins():
 
     generator = SQLGenerator(graph)
 
-    # Multiple one-to-many joins SHOULD trigger symmetric aggregates for base model
+    # Each sibling is also repeated by the other sibling's rows.
     needs_symmetric = generator._has_fanout_joins("orders", ["order_items", "shipments"])
 
     assert needs_symmetric["orders"] is True
-    assert needs_symmetric["order_items"] is False
-    assert needs_symmetric["shipments"] is False
+    assert needs_symmetric["order_items"] is True
+    assert needs_symmetric["shipments"] is True
 
 
 def test_symmetric_aggregates_in_sql_generation():

@@ -708,7 +708,7 @@ impl OssieForwardAdapter {
             kind == Some(DocumentKind::Logical) && !object.contains_key("semantic_model");
         let mut diagnostics = Vec::new();
         let mut profile = resolve_profile(object.get("version"), consumer, &mut diagnostics);
-        if kind == Some(DocumentKind::Ontology) && object.contains_key("prefixes") {
+        if kind == Some(DocumentKind::Ontology) && current_ontology_shape(object) {
             if let Some(profile) = profile.as_mut() {
                 profile.schema_revision = Some(CURRENT_SCHEMA_REVISION.to_string());
             }
@@ -780,6 +780,41 @@ fn classify_document(root: &Map<String, Value>) -> Option<DocumentKind> {
         (false, true) => Some(DocumentKind::Ontology),
         _ => None,
     }
+}
+
+fn current_ontology_shape(root: &Map<String, Value>) -> bool {
+    if root.contains_key("prefixes") {
+        return true;
+    }
+    if root
+        .get("ontology")
+        .and_then(Value::as_array)
+        .is_some_and(|concepts| {
+            concepts.iter().any(|concept| {
+                concept.get("iri").is_some()
+                    || concept
+                        .get("relationships")
+                        .and_then(Value::as_array)
+                        .is_some_and(|relationships| {
+                            relationships
+                                .iter()
+                                .any(|relationship| relationship.get("iri").is_some())
+                        })
+            })
+        })
+    {
+        return true;
+    }
+    root.get("ontology_mappings")
+        .and_then(Value::as_array)
+        .is_some_and(|mappings| {
+            mappings.iter().any(|mapping| {
+                mapping
+                    .get("semantic_model")
+                    .and_then(Value::as_object)
+                    .is_some_and(|model| model.contains_key("version"))
+            })
+        })
 }
 
 fn resolve_profile(
@@ -3174,6 +3209,57 @@ datasets:
             status.profile.unwrap().schema_revision.as_deref(),
             Some(CURRENT_SCHEMA_REVISION)
         );
+    }
+
+    #[test]
+    fn ontology_revision_detects_all_current_markers_without_prefixes() {
+        for marker in [
+            "legacy",
+            "concept_iri",
+            "relationship_iri",
+            "embedded_model",
+        ] {
+            let mut document = serde_json::json!({
+                "version": "0.2.0.dev0", "name": "business",
+                "ontology": [{"concept": "Order", "type": "EntityType"}]
+            });
+            match marker {
+                "concept_iri" => {
+                    document["ontology"][0]["iri"] = "https://example.com/Order".into();
+                }
+                "relationship_iri" => {
+                    document["ontology"][0]["relationships"] = serde_json::json!([{
+                        "name": "related", "roles": [{"concept": "Order", "name": "other"}],
+                        "verbalizes": [],
+                        "iri": "https://example.com/related"
+                    }]);
+                }
+                "embedded_model" => {
+                    document["ontology_mappings"] = serde_json::json!([{
+                        "semantic_model": flat_document(), "concept_mappings": []
+                    }]);
+                }
+                _ => {}
+            }
+            for serialization in [OssieSerialization::Json, OssieSerialization::Yaml] {
+                let content = match serialization {
+                    OssieSerialization::Json => document.to_string(),
+                    OssieSerialization::Yaml => serde_yaml::to_string(&document).unwrap(),
+                };
+                let status = OssieForwardAdapter.inspect(
+                    &content,
+                    serialization,
+                    OssieConsumerProfile::OssieCore,
+                );
+                assert!(status.valid, "{marker}: {status:?}");
+                assert!(!status.executable);
+                assert_eq!(
+                    status.profile.unwrap().schema_revision.as_deref(),
+                    (marker != "legacy").then_some(CURRENT_SCHEMA_REVISION),
+                    "{marker}"
+                );
+            }
+        }
     }
 
     const MULTI_SCOPE: &str = r#"
